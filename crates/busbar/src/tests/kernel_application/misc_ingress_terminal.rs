@@ -14,7 +14,7 @@ use kernel::state::App;
 
 use crate::root::test_plugins as plugins;
 
-fn deployment(pool: &str) -> Arc<App> {
+async fn deployment(pool: &str) -> Arc<App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -67,7 +67,7 @@ fn deployment(pool: &str) -> Arc<App> {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -77,24 +77,30 @@ fn deployment(pool: &str) -> Arc<App> {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            145,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    145,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let retention = std::time::Duration::from_secs(3600);
     kernel::snapshot::configure(Some(retention));
@@ -147,10 +153,10 @@ fn terminals(proto: &str) -> u64 {
     request_terminals(proto, None)
 }
 
-#[test]
-fn a_destination_refusal_ends_the_unit_exactly_once() {
+#[tokio::test]
+async fn a_destination_refusal_ends_the_unit_exactly_once() {
     let pool = "ingress-terminal-acl-pool";
-    let app = deployment(pool);
+    let app = deployment(pool).await;
     let proto = "ingress-terminal-acl-proto";
     let before = terminals(proto);
     let Err(refused) = governance_guard(
@@ -171,10 +177,10 @@ fn a_destination_refusal_ends_the_unit_exactly_once() {
     );
 }
 
-#[test]
-fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
+#[tokio::test]
+async fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     let pool = "ingress-terminal-admitted-pool";
-    let app = deployment(pool);
+    let app = deployment(pool).await;
     let proto = "ingress-terminal-admitted-proto";
     let gov = caller(&[pool]);
     let before = terminals(proto);
@@ -202,10 +208,10 @@ fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     );
 }
 
-#[test]
-fn each_finish_door_is_one_terminal() {
+#[tokio::test]
+async fn each_finish_door_is_one_terminal() {
     let pool = "ingress-terminal-doors-pool";
-    let app = deployment(pool);
+    let app = deployment(pool).await;
     let proto = "ingress-terminal-doors-proto";
     let gov = caller(&[pool]);
     let before = terminals(proto);
@@ -232,10 +238,10 @@ fn each_finish_door_is_one_terminal() {
     assert_eq!(terminals(proto) - before, 2, "the charged door");
 }
 
-#[test]
-fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
+#[tokio::test]
+async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
     let pool = "ingress-terminal-label-pool";
-    let app = deployment(pool);
+    let app = deployment(pool).await;
     assert_eq!(
         pool_label(&app, pool),
         pool,

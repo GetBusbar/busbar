@@ -754,10 +754,7 @@ macro_rules! lend_kinds_list {
 
 lend_kinds_list!(lend);
 
-use crate::abi::store::{
-    AddUsageBatchIn, HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostRecords, OpBlobsIn,
-    RecordEntry, UsageCell,
-};
+use crate::abi::store::HostBuf as StoreHostBuf;
 
 /// The one list of these `in`s' pointer fields: [`lend!`] states their accessors from it, and the
 /// test support its pointer and length pairs.
@@ -765,11 +762,7 @@ macro_rules! lend_store_list {
     ($then:ident $($arg:tt)*) => {
         $then! {
             $($arg)*
-            AddUsageBatchIn { list(cells, cells_len) -> UsageCell; }
-            OpBlobsIn { list(records, records_len) -> Blob; }
             StoreHostBuf { buf(ptr, cap) -> u8; }
-            StoreHostBlobs { buf(items, items_cap) -> Blob; }
-            HostRecords { buf(items, items_cap) -> RecordEntry; }
         }
     };
 }
@@ -1291,135 +1284,8 @@ macro_rules! lent_field_list {
                 blob settings;
                 val secret_cap: usize;
             }
-            crate::abi::store::ledger::HostRecords {
-                val items_cap: usize;
-                sub bytes: crate::abi::store::HostBuf;
-            }
-            crate::abi::store::ledger::RecordEntry {
-                blob key;
-                blob value;
-            }
-            crate::abi::store::ledger::RecordGetIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str schema;
-                blob key;
-                sub value: crate::abi::store::HostBuf;
-            }
-            crate::abi::store::ledger::RecordPutIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str schema;
-                blob key;
-                blob value;
-            }
-            crate::abi::store::ledger::RecordScanIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str schema;
-                blob prefix;
-                val limit: u32;
-                sub out: crate::abi::store::ledger::HostRecords;
-            }
-            crate::abi::store::HostBlobs {
-                val items_cap: usize;
-                sub bytes: crate::abi::store::HostBuf;
-            }
             crate::abi::store::HostBuf {
                 val cap: usize;
-            }
-            crate::abi::store::money::AddUsageBatchIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                val cells_len: usize;
-            }
-            crate::abi::store::money::OpBlobsIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                val records_len: usize;
-            }
-            crate::abi::store::money::UsageCell {
-                str bucket;
-                val window_start: u64;
-                blob delta;
-            }
-            crate::abi::store::plane::AppendPlaneRecordIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                val op_id: crate::abi::store::OpId;
-                sub record: crate::abi::store::plane::PlaneRecordRow;
-            }
-            crate::abi::store::plane::GetPlaneRecordIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str kind;
-                str id;
-                sub body: crate::abi::store::HostBuf;
-            }
-            crate::abi::store::plane::KindBeforeIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str kind;
-                val before: u64;
-            }
-            crate::abi::store::plane::ListPlaneRecordsIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str kind;
-                val selector: u32;
-                str parent;
-                sub out: crate::abi::store::HostBlobs;
-            }
-            crate::abi::store::plane::PlaneRecordRow {
-                str kind;
-                str id;
-                str parent;
-                val seq: u64;
-                val ts: u64;
-                val disposition: u32;
-                blob body;
-            }
-            crate::abi::store::plane::TokenIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str kind;
-                str token;
-                val expires_at: u64;
-                val now: u64;
-            }
-            crate::abi::store::plane::UpsertPlaneRecordIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                sub record: crate::abi::store::plane::PlaneRecordRow;
-            }
-            crate::abi::store::records::BlobIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                blob record;
-            }
-            crate::abi::store::records::IdIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str id;
-            }
-            crate::abi::store::records::IdReasonIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str id;
-                str reason;
-            }
-            crate::abi::store::records::KeyWithCredentialIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                blob key;
-                blob credential;
-            }
-            crate::abi::store::records::KindIdIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str kind;
-                str id;
-            }
-            crate::abi::store::records::PutUsageIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str bucket;
-                val window_start: u64;
-                blob ledger;
-            }
-            crate::abi::store::records::U64In {
-                sub head: crate::abi::mechanism::call::InHead;
-                val value: u64;
-            }
-            crate::abi::store::records::WindowIn {
-                sub head: crate::abi::mechanism::call::InHead;
-                str bucket;
-                val window_start: u64;
             }
             crate::abi::transport::datagram::DatagramLane {
                 val size: u32;
@@ -1647,3 +1513,85 @@ impl<'a> Lent<'a, LineEntry> {
 #[cfg(test)]
 #[path = "tests/expand_tests.rs"]
 mod expand_tests;
+
+// Primitive Store output buffers contain initialized values. Unlike HostBuf's raw
+// writers, the encoder needs slices. Keep their construction at the loan boundary.
+fn v4_output_span<T>(pointer: *mut T, count: usize) -> Option<(usize, usize)> {
+    let size = count.checked_mul(core::mem::size_of::<T>())?;
+    if size > isize::MAX as usize
+        || (count != 0 && pointer.is_null())
+        || (!pointer.is_null() && !(pointer as usize).is_multiple_of(core::mem::align_of::<T>()))
+    {
+        return None;
+    }
+    Some((pointer as usize, (pointer as usize).checked_add(size)?))
+}
+
+fn v4_disjoint(a: (usize, usize), b: (usize, usize)) -> bool {
+    a.0 == a.1 || b.0 == b.1 || a.1 <= b.0 || b.1 <= a.0
+}
+
+/// # Safety
+/// The caller must have sole access to both initialized writable loans for the
+/// returned lifetime. The ABI caller guarantees allocation provenance/liveness
+/// and disjointness from every immutable input and the output frame. The checks
+/// here establish arithmetic, alignment, and mutual output nonoverlap only.
+unsafe fn v4_outputs<'a, T>(
+    items: *mut T,
+    count: usize,
+    bytes: crate::abi::store::HostBuf,
+) -> Option<(&'a mut [T], &'a mut [u8])> {
+    if !v4_disjoint(
+        v4_output_span(items, count)?,
+        v4_output_span(bytes.ptr, bytes.cap)?,
+    ) {
+        return None;
+    }
+    let items = if items.is_null() {
+        &mut []
+    } else {
+        // SAFETY: caller's exclusive initialized allocation contract, checked span.
+        unsafe { core::slice::from_raw_parts_mut(items, count) }
+    };
+    let bytes = if bytes.ptr.is_null() {
+        &mut []
+    } else {
+        // SAFETY: caller's exclusive initialized allocation contract, checked span.
+        unsafe { core::slice::from_raw_parts_mut(bytes.ptr, bytes.cap) }
+    };
+    Some((items, bytes))
+}
+
+impl<'a> Lent<'a, crate::abi::store::v4::ReadIn> {
+    /// Exclusive initialized output loans. Invoke once per crossing.
+    /// # Safety
+    /// No other access to these outputs may coexist with the returned slices.
+    pub(crate) unsafe fn v4_outputs(
+        self,
+    ) -> Option<(&'a mut [crate::abi::store::v4::ReadValue], &'a mut [u8])> {
+        let values = self.values;
+        // SAFETY: caller transfers the unique loans guaranteed by the ABI.
+        unsafe { v4_outputs(values.items, values.items_cap, values.bytes) }
+    }
+}
+impl<'a> Lent<'a, crate::abi::store::v4::ScanIn> {
+    /// Exclusive initialized output loans. Invoke once per crossing.
+    /// # Safety
+    /// No other access to these outputs may coexist with the returned slices.
+    pub(crate) unsafe fn v4_outputs(
+        self,
+    ) -> Option<(&'a mut [crate::abi::store::v4::ScanRow], &'a mut [u8])> {
+        let rows = self.rows;
+        // SAFETY: caller transfers the unique loans guaranteed by the ABI.
+        unsafe { v4_outputs(rows.items, rows.items_cap, rows.bytes) }
+    }
+}
+impl<'a> Lent<'a, crate::abi::store::v4::CommitIn> {
+    /// Exclusive initialized result loan. Invoke once per crossing.
+    /// # Safety
+    /// No other access to this output may coexist with the returned slice.
+    pub(crate) unsafe fn v4_output(self) -> Option<&'a mut [u8]> {
+        // SAFETY: caller transfers the unique loan guaranteed by the ABI.
+        unsafe { v4_outputs::<u8>(core::ptr::null_mut(), 0, self.result).map(|(_, bytes)| bytes) }
+    }
+}

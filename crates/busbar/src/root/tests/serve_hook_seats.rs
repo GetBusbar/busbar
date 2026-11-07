@@ -82,7 +82,7 @@ struct SeatProbe {
     seat: &'static str,
     log: Arc<Mutex<Vec<String>>>,
 
-    requests_now: Option<Box<dyn Fn() -> u64 + Send + Sync>>,
+    requests_now: Option<Box<dyn Fn() -> ReadFuture<u64> + Send + Sync>>,
 
     reject: Option<(u16, &'static str)>,
 
@@ -175,7 +175,10 @@ impl RoutingPolicy for SeatProbe {
         _req: &RoutingRequest<'_>,
         _budget: std::time::Duration,
     ) -> TransformOutcome {
-        let requests = self.requests_now.as_ref().map(|f| f());
+        let requests = match &self.requests_now {
+            Some(read) => Some(read().await),
+            None => None,
+        };
         self.log
             .lock()
             .unwrap()
@@ -382,6 +385,9 @@ async fn far_end() -> u16 {
     far_end_answering(200, ANSWER).await.port
 }
 
+type ReadFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+type Read<T> = Arc<dyn Fn() -> ReadFuture<T> + Send + Sync>;
+
 pub(super) type Ledger = (u64, i64, u64, u64);
 
 struct Ran {
@@ -389,7 +395,7 @@ struct Ran {
     log: Arc<Mutex<Vec<String>>>,
     request_tap: Arc<SeatProbe>,
     candidate_tap: Arc<SeatProbe>,
-    read: Arc<dyn Fn() -> Ledger + Send + Sync>,
+    read: Read<Ledger>,
 }
 
 /// HOW A RIG IS BUILT: the far ends of its pool `p`'s members (each a model `m<i>` on a provider
@@ -476,32 +482,31 @@ pub(crate) struct RigOpts<'a> {
     pub clock: Option<&'a Arc<dyn busbar_kernel_egress::ports::Clock>>,
 }
 
-pub(crate) fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durability::Durability>> {
-    let slots = crate::root::store_double::RecordSlots::new();
-    slots.refuse(true);
-    let lane = crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
-        .expect("the lane starts");
-    let book = Arc::new(std::sync::Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            0,
-            lane,
-            None,
-        )
-        .expect("the store reads back"),
-    ));
-    let token = busbar_kernel::test_hooks::tokens::grant::<busbar_contract::caps::DurableWrite>();
-    for _ in 0..3 {
-        let _lost = book.lock().unwrap().journal.append(
-            &token,
-            busbar_contract::caps::StepName::Meter,
-            &[busbar_kernel_wal::Entry::new(
-                busbar_kernel_wal::RecordClass::Load,
-                Vec::new(),
-            )],
-        );
-    }
-    book
+pub(crate) async fn full_journal_book() -> Arc<std::sync::Mutex<crate::root::durability::Durability>>
+{
+    let backend = crate::root::store_double::NativeFaults::open().await;
+    let core = crate::root::real_store::core_over(backend.clone()).await;
+    use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
+    let budget = BufferBudget {
+        records: 1,
+        bytes: 1024 * 1024,
+    };
+    let journal = RuntimeJournal::open(core, busbar_kernel::door::op_id().counter().max(1), budget)
+        .await
+        .expect("native journal");
+    let book = crate::root::durability::node_book(journal.clone(), budget)
+        .await
+        .expect("native node book");
+    backend
+        .refusing
+        .store(true, std::sync::atomic::Ordering::Release);
+    let _held = journal
+        .stage_run(&[busbar_kernel_wal::Entry::new(
+            busbar_kernel_wal::RecordClass::Load,
+            Vec::new(),
+        )])
+        .expect("the only journal slot is reserved");
+    book.durability
 }
 
 fn indented(text: &str, by: usize) -> String {
@@ -537,8 +542,8 @@ pub(crate) struct DoorRig {
     request_tap: Arc<SeatProbe>,
     candidate_tap: Arc<SeatProbe>,
     gate_seat: Arc<SeatProbe>,
-    read: Arc<dyn Fn() -> Ledger + Send + Sync>,
-    tokens: Arc<dyn Fn() -> u64 + Send + Sync>,
+    read: Read<Ledger>,
+    tokens: Read<u64>,
 }
 
 impl DoorRig {
@@ -623,19 +628,27 @@ impl DoorRig {
             .clone()
     }
 
-    pub fn bucket(&self, bucket: &str) -> (u64, i64, u64, u64) {
+    pub async fn bucket(&self, bucket: &str) -> (u64, i64, u64, u64) {
         let derived = self
             .gov
-            .derived_bucket_usage(
+            .derived_bucket_usage_async(
                 &self.app.cost,
                 bucket,
                 "total",
                 true,
                 busbar_kernel::store::now(),
             )
+            .await
             .expect("usage read");
-        self.gov.flush_budgets();
-        let row = self.gov.store().get_usage(bucket, 0).expect("ledger row");
+        self.gov.flush_budgets().await;
+        let row = self
+            .gov
+            .core_store_handle()
+            .unwrap()
+            .ledger()
+            .get_usage(bucket, 0)
+            .await
+            .expect("ledger row");
         (
             derived.requests,
             derived.spend_cents,
@@ -676,13 +689,13 @@ impl DoorRig {
     }
 
     pub async fn tokens_after(&self) -> u64 {
-        let mut tokens = (self.tokens)();
+        let mut tokens = (self.tokens)().await;
         for _ in 0..100 {
             if tokens != 0 {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            tokens = (self.tokens)();
+            tokens = (self.tokens)().await;
         }
         tokens
     }
@@ -698,13 +711,13 @@ impl DoorRig {
     }
 
     pub async fn ledger_after(&self, billable: u64) -> Ledger {
-        let mut ledger = (self.read)();
+        let mut ledger = (self.read)().await;
         for _ in 0..200 {
             if ledger.3 >= billable {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            ledger = (self.read)();
+            ledger = (self.read)().await;
         }
         ledger
     }
@@ -883,11 +896,14 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let sections = kernel_sections(&cfg)?;
     let model_pools = crate::root::model_egress::ModelPools::of(&cfg);
 
-    let store = crate::root::real_store::store();
+    let store = crate::root::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let gov =
-        Arc::new(GovState::new_with_signer(store.clone(), None, Some(signer)).expect("governance"));
-    gov.attach_store_calls(store.clone());
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, Some(signer))
+            .await
+            .expect("governance"),
+    );
+
     let configured = opts.group.map(|(name, limits)| {
         (
             name.to_string(),
@@ -965,7 +981,9 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         CostModel::resolve_parts(rate_card.as_ref(), fee, &groups)
     };
     for (bucket, requests) in opts.seed {
-        gov.store()
+        gov.core_store_handle()
+            .unwrap()
+            .ledger()
             .put_usage(
                 bucket,
                 0,
@@ -975,14 +993,32 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                     models: Vec::new(),
                 },
             )
+            .await
             .expect("seed the bucket");
     }
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
     let node = Arc::new(Node::new());
     let pin = opts.pin.unwrap_or(card_pin);
-    let book = crate::root::durability::node_book();
+    let book = crate::root::durability::node_book(
+        busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+            gov.core_store_handle().expect("native Store"),
+            busbar_kernel::door::op_id().counter().max(1),
+            busbar_kernel::persistence::journal::runtime::BufferBudget {
+                records: 4096,
+                bytes: 16 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("native journal"),
+        busbar_kernel::persistence::journal::runtime::BufferBudget {
+            records: 4096,
+            bytes: 16 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("native node book");
     let durability = if opts.full_journal {
-        full_journal_book()
+        full_journal_book().await
     } else {
         Arc::clone(&book.durability)
     };
@@ -1008,32 +1044,32 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store.clone()),
         false,
-    )?;
+    )
+    .await?;
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual configured Store owns governance")
-            .store_calls()
-            .expect("the actual configured Store exposes rate history calls"),
-        durability
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .record
-            .node(),
-    );
-    crate::root::kernel::ROOT_CARD.boot_in_store(None)?;
-    limits.keep()?;
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual configured Store owns governance")
+                .core_store_handle()
+                .expect("the actual configured Store exposes rate history calls"),
+            durability
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .record
+                .node(),
+        )
+        .expect("native rate history attaches");
+    crate::root::kernel::ROOT_CARD.boot_in_store(None).await?;
+    limits.keep().await?;
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "seats".to_string(),
                 group: opts
@@ -1048,10 +1084,11 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint");
     for group in exhausted_groups {
         let (warm, _) = gov
-            .mint_signed(
+            .mint_signed_async(
                 NewKeySpec {
                     name: "pre-exhausted-group".to_string(),
                     group: Some(group),
@@ -1060,6 +1097,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 4_000_000_000,
                 1_700_000_000,
             )
+            .await
             .expect("the prior caller uses the actual configured group");
 
         drop(
@@ -1076,35 +1114,52 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     app.cost = Arc::new(cost);
     let mut app = Arc::new(app);
     let log = Arc::new(Mutex::new(Vec::new()));
-    let read: Arc<dyn Fn() -> Ledger + Send + Sync> = {
+    let read: Read<Ledger> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
         Arc::new(move || {
-            let u = gov
-                .usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
-                .expect("usage read")
-                .expect("the key exists");
-            gov.flush_budgets();
+            let (gov, cost, key_id) = (gov.clone(), cost.clone(), key_id.clone());
+            Box::pin(async move {
+                let u = gov
+                    .usage_for_async(cost.as_ref(), &key_id, busbar_kernel::store::now())
+                    .await
+                    .expect("usage read")
+                    .expect("the key exists");
+                gov.flush_budgets().await;
 
-            let row = gov.store().get_usage(&key_id, 0).expect("ledger row");
-            (
-                u.requests,
-                u.spend_cents,
-                row.requests,
-                row.billable_requests,
-            )
+                let row = gov
+                    .core_store_handle()
+                    .unwrap()
+                    .ledger()
+                    .get_usage(&key_id, 0)
+                    .await
+                    .expect("ledger row");
+                (
+                    u.requests,
+                    u.spend_cents,
+                    row.requests,
+                    row.billable_requests,
+                )
+            })
         })
     };
-    let tokens: Arc<dyn Fn() -> u64 + Send + Sync> = {
+    let tokens: Read<u64> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
         Arc::new(move || {
-            gov.usage_for(cost.as_ref(), &key_id, busbar_kernel::store::now())
-                .expect("usage read")
-                .map_or(0, |u| u.tokens.whole_u64().expect("whole-count fixture"))
+            let (gov, cost, key_id) = (gov.clone(), cost.clone(), key_id.clone());
+            Box::pin(async move {
+                gov.usage_for_async(cost.as_ref(), &key_id, busbar_kernel::store::now())
+                    .await
+                    .expect("usage read")
+                    .map_or(0, |u| u.tokens.whole_u64().expect("whole-count fixture"))
+            })
         })
     };
     let mut rewrite = SeatProbe::new("rewrite", &log);
     let read_for_rewrite = Arc::clone(&read);
-    rewrite.requests_now = Some(Box::new(move || read_for_rewrite().0));
+    rewrite.requests_now = Some(Box::new(move || {
+        let read = read_for_rewrite();
+        Box::pin(async move { read.await.0 })
+    }));
     let request_tap = Arc::new(SeatProbe::new("request-tap", &log));
     let candidate_tap = Arc::new(SeatProbe::new("candidate-tap", &log));
     let mut gate_probe = SeatProbe::new("gate", &log);
@@ -1177,7 +1232,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             Arc::new(move || busbar_kernel::plane_driver::engine_host(&app))
         },
         gov: Arc::clone(&gov),
-        journal: None,
+        journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     };
     let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
 
@@ -1197,7 +1252,8 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         &clock,
         &busbar_contract::config_time::ConfigScope::config_time(),
         &app.serve_tables,
-    );
+    )
+    .await;
     let _ = std::fs::remove_file(&signing_file);
     let _ = std::fs::remove_file(&key_file);
     for file in &member_key_files {
@@ -1350,7 +1406,7 @@ async fn migrated_request_hook_seats_after_admit_before_candidate() {
         "the candidate tap is seated after the gates, so a gate reject must never reach it"
     );
 
-    let (requests, spend, row_requests, row_billable) = (ran.read)();
+    let (requests, spend, row_requests, row_billable) = (ran.read)().await;
     assert_eq!(requests, 1, "the admission count is never refunded");
     assert_eq!(
         spend, 0,
@@ -1388,13 +1444,13 @@ async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills
         "seat order must be rewrite, gate, candidate tap; log: {log:?}"
     );
 
-    let mut ledger = (ran.read)();
+    let mut ledger = (ran.read)().await;
     for _ in 0..200 {
         if ledger.3 == 1 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        ledger = (ran.read)();
+        ledger = (ran.read)().await;
     }
     let (requests, spend, row_requests, row_billable) = ledger;
     assert_eq!((requests, row_requests), (1, 1));
@@ -1446,11 +1502,14 @@ async fn accrued(rig: &DoorRig) -> Accrued {
         .governance
         .clone()
         .expect("the rig keeps a governance book");
-    gov.flush_budgets();
-    gov.flush_metering();
+    gov.flush_budgets().await;
+    gov.flush_metering().await;
     let durable = gov
-        .store()
+        .core_store_handle()
+        .unwrap()
+        .ledger()
         .get_usage(&rig.key_id, 0)
+        .await
         .expect("the durable ledger row")
         .models
         .iter()
@@ -1464,9 +1523,10 @@ async fn accrued(rig: &DoorRig) -> Accrued {
         })
         .unwrap_or_default();
     let metering = gov
-        .metering_for(busbar_kernel::governance::metering_bucket(
+        .metering_for_async(busbar_kernel::governance::metering_bucket(
             busbar_kernel::store::now(),
         ))
+        .await
         .expect("metering read")
         .into_iter()
         .filter(|row| row.key_id == rig.key_id)

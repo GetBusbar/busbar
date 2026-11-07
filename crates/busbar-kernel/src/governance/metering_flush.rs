@@ -1,6 +1,6 @@
 use super::*;
-use crate::diagnostics::{diag_error, diag_warn, METERING_FLUSH_PARTIAL_FAILURE};
-use busbar_contract::abi::store::OpId;
+use crate::diagnostics::{METERING_FLUSH_PARTIAL_FAILURE, diag_error, diag_warn};
+use busbar_contract::records::OpId;
 
 /// One raw count operation. Its identity and body remain together until acknowledgement.
 #[derive(Clone)]
@@ -120,41 +120,22 @@ fn finish_front(pending: &PendingMetering) {
     }
 }
 
-struct FlushOwner<'a>(&'a PendingMetering);
-impl Drop for FlushOwner<'_> {
-    fn drop(&mut self) {
-        *self.0.flushing.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        self.0.flush_finished.notify_all();
-    }
-}
-
 impl GovState {
-    pub(super) fn flush_metering_deduped(&self, shutdown: bool) -> usize {
+    pub(super) async fn flush_metering_deduped(&self, shutdown: bool) -> usize {
+        let core = match self.core_store() {
+            Ok(core) => core,
+            Err(error) => {
+                diag_warn!(METERING_FLUSH_PARTIAL_FAILURE, error = %error,
+                    "metering counts retained until async Store is attached");
+                return 0;
+            }
+        };
         let pending = &self.pending_metering;
-        let current = std::thread::current().id();
-        let mut runner = pending.flushing.lock().unwrap_or_else(|p| p.into_inner());
-        while let Some(owner) = *runner {
-            if !shutdown {
-                return 0;
-            }
-            if owner == current {
-                drop(runner);
-                diag_error!(
-                    METERING_FLUSH_PARTIAL_FAILURE,
-                    "shutdown metering flush reentered its own active store call; \
-                     the unacknowledged operation remains retained"
-                );
-                return 0;
-            }
-
-            runner = pending
-                .flush_finished
-                .wait(runner)
-                .unwrap_or_else(|p| p.into_inner());
-        }
-        *runner = Some(current);
-        drop(runner);
-        let _owner = FlushOwner(pending);
+        let owner = match pending.flush_runner.enter(shutdown).await {
+            Ok(owner) => owner,
+            Err(_) => return 0,
+        };
+        owner.scope(async {
         let mut captured = false;
         {
             let mut flight = pending.flight.lock().unwrap_or_else(|p| p.into_inner());
@@ -203,18 +184,19 @@ impl GovState {
             });
 
             if self.recovery_enabled() {
-                let result = (|| {
-                    self.confirm_pending_recovery(op.id.0)?;
+                let result = async {
+                    self.confirm_pending_recovery(op.id.0).await?;
                     if self.recovery_event(op.id.0).is_none() {
                         let event = self.metering_recovery_intent(
                             op.id.0,
                             op.first_sent_at_ms,
                             &write.delta,
                         )?;
-                        self.keep_recovery_event(&event)?;
+                        self.keep_recovery_event(&event).await?;
                     }
-                    self.drive_raw_recovery(op.id.0)
-                })();
+                    self.drive_raw_recovery(op.id.0).await
+                }
+                .await;
                 match result {
                     Ok(()) => {
                         let state = self
@@ -246,8 +228,9 @@ impl GovState {
                         .into(),
                 ))
             } else {
-                self.store
+                core.ledger()
                     .add_metering_batch_deduped(op.id, std::slice::from_ref(&write.delta))
+                    .await
             };
             match result {
                 Ok(()) => {
@@ -291,5 +274,6 @@ impl GovState {
                 }
             }
         }
+        }).await
     }
 }

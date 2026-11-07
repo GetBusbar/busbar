@@ -4491,7 +4491,7 @@ fn another_layout_is_refused<K: Kind>(kind: KindCode) {
 
 #[test]
 fn a_store_door_built_against_another_layout_is_refused() {
-    another_layout_is_refused::<crate::dispatch::kinds::store::Store>(KindCode::Store);
+    another_layout_is_refused::<crate::dispatch::kinds::store_v4::StoreV4>(KindCode::Store);
 }
 
 #[test]
@@ -4841,11 +4841,11 @@ fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
 }
 
 #[test]
-fn semantic_status_generation_one_is_rejected_before_reading_kind_metadata() {
+fn unknown_kind_versions_are_rejected_before_reading_kind_metadata() {
     fn rejected<K: Kind>() {
         let kind = K::CODE;
-        assert_eq!(kind.abi_version(), 2);
-        for version in [1, 3] {
+        assert_eq!(kind.abi_version(), 1);
+        for version in [0, 2] {
             let mut parts = plug::door().parts();
             parts.kind = kind as u32;
             parts.kind_abi = version;
@@ -4857,11 +4857,122 @@ fn semantic_status_generation_one_is_rejected_before_reading_kind_metadata() {
                 Some(LoadError::KindAbi {
                     kind,
                     door: version,
-                    host: 2
+                    host: 1
                 })
             );
         }
     }
     rejected::<crate::dispatch::kinds::transport::Transport>();
     rejected::<crate::dispatch::kinds::plane::Plane>();
+}
+
+struct StagedStoreV4;
+
+impl Kind for StagedStoreV4 {
+    const CODE: KindCode = KindCode::Store;
+    const ABI_VERSION: u32 = busbar_contract::abi::store::v4::ABI_VERSION;
+    const LAYOUT_FINGERPRINT: u64 = busbar_contract::abi::store::v4::LAYOUT_FINGERPRINT;
+    type Ops = busbar_contract::abi::store::v4::Ops;
+    const TIMEOUT: Outcome = Outcome::Failed;
+}
+
+static STAGED_STORE_V4: LinkedSlot = LinkedSlot::new();
+
+extern "C" fn staged_store_v4_door() -> *const Door {
+    STAGED_STORE_V4.get()
+}
+
+#[test]
+fn staged_store_v4_admission_is_explicit_and_exact() {
+    use crate::dispatch::kinds::store_v4::StoreV4 as Store;
+    use crate::dispatch::load::{prepare_linked, read_door, validate_any};
+    use busbar_contract::abi::mechanism::rendering::render;
+
+    let statement = Statement {
+        size: std::mem::size_of::<Statement>() as u32,
+        kind: KindCode::Store as u32,
+        kind_abi: StagedStoreV4::ABI_VERSION,
+        ..busbar_contract::abi::sdk::door::statement("staged-store-v4", "1.0.0", 1)
+    };
+    let base = door_over::<StagedStoreV4>(KindCode::Store, statement);
+    // SAFETY: the existing harness supplies a complete, static table of the v4 size and a
+    // well-formed static Statement. Only the ABI identity is restated for typed admission.
+    let door = unsafe {
+        Door::__from_parts(DoorParts {
+            kind_abi: StagedStoreV4::ABI_VERSION,
+            layout: StagedStoreV4::LAYOUT_FINGERPRINT,
+            ..base.parts()
+        })
+    };
+    validate_door::<StagedStoreV4>(&door).unwrap_or_else(|e| panic!("typed v4 admission: {e:?}"));
+    assert_eq!(StagedStoreV4::ABI_VERSION, KindCode::Store.abi_version());
+    assert!(read_door(&door, None).is_ok());
+    assert!(validate_any(&door).is_ok());
+    assert!(validate_door::<Store>(&door).is_ok());
+
+    let refuse = |mutate: &dyn Fn(&mut DoorParts)| {
+        let mut parts = door.parts();
+        mutate(&mut parts);
+        // SAFETY: the harness's complete static allocations remain unchanged; the checked
+        // version/layout/table pointer is restated to test a structural refusal.
+        let changed = unsafe { Door::__from_parts(parts) };
+        validate_door::<StagedStoreV4>(&changed).err()
+    };
+    for version in [
+        StagedStoreV4::ABI_VERSION - 1,
+        StagedStoreV4::ABI_VERSION + 1,
+    ] {
+        assert_eq!(
+            refuse(&|parts| parts.kind_abi = version),
+            Some(LoadError::KindAbi {
+                kind: KindCode::Store,
+                door: version,
+                host: StagedStoreV4::ABI_VERSION,
+            })
+        );
+    }
+    for layout in [
+        crate::retired_store_fixture::LAYOUT,
+        crate::retired_store_fixture::FOUR_PRIMITIVE_LAYOUT,
+        0,
+    ] {
+        assert_eq!(
+            refuse(&|parts| parts.layout = layout),
+            Some(LoadError::KindLayout {
+                plugin: "staged-store-v4".into(),
+                kind: KindCode::Store,
+                stated: layout,
+                host: StagedStoreV4::LAYOUT_FINGERPRINT,
+            })
+        );
+    }
+    let v3_table = crate::retired_store_fixture::table();
+    assert_eq!(
+        refuse(&|parts| parts.ops = v3_table),
+        Some(LoadError::TableSlots {
+            door: crate::retired_store_fixture::TABLE_SLOTS,
+            host: crate::dispatch::host_slots::<StagedStoreV4>(),
+        })
+    );
+    // SAFETY: the Statement's pointers are the static, checked harness metadata.
+    let stated = unsafe { render(&statement) }.unwrap();
+    STAGED_STORE_V4.set(door);
+    // SAFETY: the fixture retains the complete static door/table/Statement.
+    let loaded = unsafe { crate::dispatch::LoadedDoor::from_raw(staged_store_v4_door) };
+    assert!(LinkedRow::of_loaded(loaded).is_ok());
+    let row = LinkedRow::of_kind::<StagedStoreV4>(loaded).unwrap();
+    assert_eq!(row.statement, stated);
+    assert!(LinkedRow::of_kind::<Store>(loaded).is_ok());
+    assert!(prepare_linked::<StagedStoreV4>(&row).is_ok());
+    let mut old_row = row.clone();
+    let old_version = StagedStoreV4::ABI_VERSION - 1;
+    old_row.statement[16..20].copy_from_slice(&old_version.to_le_bytes());
+    assert_eq!(
+        prepare_linked::<StagedStoreV4>(&old_row).err(),
+        Some(LoadError::ManifestKindAbi {
+            stated: old_version,
+            host: StagedStoreV4::ABI_VERSION,
+        })
+    );
+    assert!(prepare_linked::<Store>(&row).is_ok());
 }

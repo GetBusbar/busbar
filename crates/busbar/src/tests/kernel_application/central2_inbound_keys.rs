@@ -3,7 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED};
+use busbar_contract::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED, UnitRef};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Strip;
 use busbar_kernel::governance::NewKeySpec;
@@ -120,25 +120,36 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         });
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let native_config = config;
+    let native_plugins = plugin_config;
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
-    limits.keep().expect("the product limits commit");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the actual Store boots rate history");
+    limits.keep().await.expect("the product limits commit");
     let _book = book;
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let gov = app
@@ -225,7 +236,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
     };
     let now = busbar_kernel::store::now();
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "inbound-custody".into(),
                 ..Default::default()
@@ -233,6 +244,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
             now + 3600,
             now,
         )
+        .await
         .expect("the actual Store mints the key");
     let token = token.expose(&busbar_kernel::seal::lend()).clone();
     let admitted = call(bearer(&token)).await;
@@ -250,7 +262,8 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         !format!("{admitted:?}").contains(&token),
         "transport answers contain no credential"
     );
-    gov.revoke(&key.id, "actual inbound revoke")
+    gov.revoke_async(&key.id, "actual inbound revoke")
+        .await
         .expect("the actual Store revokes");
     let revoked = call(bearer(&token)).await;
     assert_eq!(revoked.flow, FLOW_STOP);
@@ -270,7 +283,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
     assert_eq!(refusal.status, 401);
 
     let (key, old) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "inbound-rotate".into(),
                 ..Default::default()
@@ -278,10 +291,15 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     let old = old.expose(&busbar_kernel::seal::lend()).clone();
     assert_eq!(call(bearer(&old)).await.flow, FLOW_CONTINUE);
-    let new = gov.rotate_key(&key.id, now + 3600).unwrap().unwrap();
+    let new = gov
+        .rotate_key_outcome_async(&key.id, now + 3600)
+        .await
+        .unwrap()
+        .unwrap();
     let new = new.token.expose(&busbar_kernel::seal::lend()).clone();
     assert_eq!(
         call(bearer(&old)).await.flow,
@@ -294,7 +312,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
         "rotation admits its actual replacement"
     );
     let (_, expired) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "inbound-expired".into(),
                 ..Default::default()
@@ -302,6 +320,7 @@ async fn actual_inbound_keys_preserve_resolution_revocation_rotation_and_carrier
             now - 60,
             now - 3600,
         )
+        .await
         .unwrap();
     assert_eq!(
         call(bearer(expired.expose(&busbar_kernel::seal::lend())))

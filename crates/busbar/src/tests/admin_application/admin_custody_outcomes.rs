@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use busbar_contract::records::*;
+use busbar_contract::persistence::*;
 use busbar_kernel::state::AppHandle;
 use serde_json::{json, Value};
 use tokio::sync::Notify;
@@ -45,7 +45,8 @@ impl Drop for ReleaseOnDrop {
 }
 
 struct Store {
-    inner: Arc<dyn RecordStore>,
+    inner: Arc<dyn PersistenceBackend>,
+    core: std::sync::OnceLock<Arc<busbar_kernel::persistence::facade::CoreStore>>,
     pause_write: AtomicBool,
     write: Arc<Pause>,
     claimed: Notify,
@@ -55,13 +56,14 @@ struct Store {
     lose_write_reply: AtomicBool,
     fail_refresh_after_write: AtomicBool,
     fail_list: AtomicBool,
-    refuse_write_with_applied_text: AtomicBool,
+    refuse_write: AtomicBool,
 }
 
 impl Store {
-    fn new(inner: Arc<dyn RecordStore>) -> Arc<Self> {
+    fn new(inner: Arc<dyn PersistenceBackend>) -> Arc<Self> {
         Arc::new(Self {
             inner,
+            core: std::sync::OnceLock::new(),
             pause_write: AtomicBool::new(false),
             write: Arc::new(Pause::default()),
             claimed: Notify::new(),
@@ -71,219 +73,94 @@ impl Store {
             lose_write_reply: AtomicBool::new(false),
             fail_refresh_after_write: AtomicBool::new(false),
             fail_list: AtomicBool::new(false),
-            refuse_write_with_applied_text: AtomicBool::new(false),
+            refuse_write: AtomicBool::new(false),
         })
     }
 }
 
-impl RecordStore for Store {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        if self.refuse_write_with_applied_text.load(Ordering::SeqCst) {
-            return Err(RecordStoreError(
-                "MINT APPLIED (new secret not returned): untrusted Store error text".into(),
-            ));
-        }
-        if self.pause_write.swap(false, Ordering::SeqCst) {
-            self.write.wait();
-        }
-        self.inner.put_key(key)?;
-        if self.fail_refresh_after_write.load(Ordering::SeqCst) {
-            self.fail_list.store(true, Ordering::SeqCst);
-        }
-        if self.lose_write_reply.load(Ordering::SeqCst) {
-            return Err(RecordStoreError(
-                "reply lost after committed key write".into(),
-            ));
-        }
-        Ok(())
+impl PersistenceBackend for Store {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        if self.fail_read.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("key read unavailable".into()));
-        }
-        self.inner.get_key(id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        if self.fail_list.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("private refresh failure detail".into()));
-        }
-        self.inner.list_keys()
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        Box::pin(async move {
+            if request.addresses.iter().any(identity_key) && self.fail_read.load(Ordering::SeqCst) {
+                return Err(Failure::Unavailable);
+            }
+            self.inner.read(request).await
+        })
     }
-
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        if self.fail_delete.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("delete unavailable".into()));
-        }
-        self.inner.delete_key(id)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        Box::pin(async move {
+            if request.namespace.0 == *b"busbar.identity1" && self.fail_list.load(Ordering::SeqCst)
+            {
+                return Err(Failure::Unavailable);
+            }
+            self.inner.scan(request).await
+        })
     }
-
-    fn get_usage(&self, id: &str, start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, start)
-    }
-
-    fn put_usage(&self, id: &str, start: u64, ledger: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, start, ledger)
-    }
-
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.add_denylist(sub, reason)
-    }
-
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-
-    fn redeem_plane_token(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        let result = self.inner.redeem_plane_token(kind, token, expires_at, now);
-        if kind == busbar_core_admin::idempotency::durable::REPLAY_KIND {
-            self.claimed.notify_one();
-        }
-        result
-    }
-
-    fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        // A request binding is written before the mutation. Only its outcome row
-        // proves settlement and permits the abandoned caller's retry.
-        let replay = record.kind == busbar_core_admin::idempotency::durable::REPLAY_KIND
-            && !record.id.starts_with("binding:");
-        self.inner.upsert_plane_record(record)?;
-        if replay {
-            self.settled.notify_one();
-        }
-        Ok(())
-    }
-
-    fn get_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(kind, before)
-    }
-
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys_since(since)
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        self.inner.apply_usage_correction(request)
-    }
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-    fn put_credential(&self, secret: &CredentialSecret) -> RecordStoreResult<()> {
-        self.inner.put_credential(secret)
-    }
-    fn rewrap_credential(
-        &self,
-        expected: &CredentialSecret,
-        replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        self.inner.rewrap_credential(expected, replacement)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn append_audit(&self, entry: &AuditRecord) -> RecordStoreResult<()> {
-        self.inner.append_audit(entry)
-    }
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn append_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        self.inner.append_plane_record(record)
-    }
-    fn list_plane_records(
-        &self,
-        kind: &str,
-        selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn list_plane_record_parents(&self, kind: &str) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-    fn delete_plane_record(&self, kind: &str, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> RecordStoreResult<bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let key = key_mutation(&candidate);
+            if key && self.refuse_write.load(Ordering::SeqCst) {
+                return Err(Failure::Refused);
+            }
+            if self.fail_delete.load(Ordering::SeqCst) && candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, value } if identity_key(address) && serde_json::from_slice::<Value>(value.expose(&busbar_kernel::seal::lend())).is_ok_and(|row| !row["record"]["deleted_at"].is_null()))) {
+                return Err(Failure::Unavailable);
+            }
+            if key && self.pause_write.swap(false, Ordering::SeqCst) {
+                self.write.entered.notify_one();
+                loop {
+                    if *self.write.released.lock().unwrap() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+            let replay = candidate.candidate().mutations.iter().any(|m| match m {
+                Mutation::Put { address, .. } => {
+                    address.key.first() == Some(&b'R')
+                        && !address
+                            .key
+                            .windows(b"binding:".len())
+                            .any(|x| x == b"binding:")
+                        && address
+                            .key
+                            .windows(b"busbar.admin-idempotency".len())
+                            .any(|x| x == b"busbar.admin-idempotency")
+                }
+                _ => false,
+            });
+            let claim = candidate.candidate().mutations.iter().any(|m| match m {
+                Mutation::Put { address, .. } => {
+                    address.key.first() == Some(&b'C')
+                        && address
+                            .key
+                            .windows(b"busbar.admin-idempotency".len())
+                            .any(|x| x == b"busbar.admin-idempotency")
+                }
+                _ => false,
+            });
+            let answer = self.inner.commit(candidate).await?;
+            if matches!(answer, Decision::Applied(_)) {
+                if claim {
+                    self.claimed.notify_one();
+                }
+                if replay {
+                    self.settled.notify_one();
+                }
+                if key && self.fail_refresh_after_write.load(Ordering::SeqCst) {
+                    self.fail_list.store(true, Ordering::SeqCst);
+                }
+                if key && self.lose_write_reply.load(Ordering::SeqCst) {
+                    return Err(Failure::Unknown);
+                }
+            }
+            Ok(answer)
+        })
     }
 }
 
@@ -338,7 +215,7 @@ fn isolated() -> bool {
     }
 }
 
-fn app() -> (
+async fn app() -> (
     Arc<Store>,
     Arc<AppHandle>,
     axum::Router,
@@ -400,20 +277,13 @@ fn app() -> (
             name: "third-party".into(),
             public_key: hex::encode(plugins::key(0x33).verifying_key().as_bytes()),
         });
-    let anchor = crate::root::test_plugins::bootstrap_fresh_application_store(
-        &config,
-        &plugin_config,
-        &directory,
-    )
-    .unwrap();
-    let store = Store::new(anchor.records);
-    let anchor = busbar_contract::store_calls::OpenedStore {
-        records: store.clone(),
-        calls: anchor.calls,
-    };
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(anchor.calls.as_ref().unwrap().clone())
-            .unwrap();
+    let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .unwrap();
+    let store = Store::new(anchor);
+    let anchor = crate::root::real_store::core_over(store.clone()).await;
+    store.core.set(anchor.clone()).ok().unwrap();
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -428,15 +298,18 @@ fn app() -> (
         Some(anchor),
         true,
     )
+    .await
     .unwrap();
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).unwrap();
-    limits.keep().unwrap();
+    let book = crate::root::boot::book(&app, &module).await.unwrap();
+    limits.keep().await.unwrap();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("the actual root hydrates its audit stream");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual root hydrates its audit stream");
     let (router, handle) = busbar_kernel::build_router_with_limits(app, 1 << 20, 0, false);
     (store, handle, router, book)
 }
@@ -523,7 +396,7 @@ async fn abandoned_mint_finishes_replay_and_durable_settlement() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     store.pause_write.store(true, Ordering::SeqCst);
     let release = ReleaseOnDrop(store.write.clone());
     let caller = tokio::spawn(mint(router.clone(), "custody:mint", "mint"));
@@ -536,18 +409,44 @@ async fn abandoned_mint_finishes_replay_and_durable_settlement() {
     let response = mint(router.clone(), "custody:mint", "mint").await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let answer = body(response).await;
-    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
-    assert_eq!(store.inner.list_keys().unwrap()[0].id, answer["id"]);
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()[0]
+            .id,
+        answer["id"]
+    );
     assert_eq!(audit_rows("custody:mint", "key.create", "applied"), 1);
     assert!(matches!(
         busbar_core_admin::idempotency::durable::claim(
-            &*store,
+            &busbar_core_admin::idempotency::durable::scoped_store(
+                store.core.get().unwrap().clone()
+            )
+            .unwrap(),
             &(
                 common::credentials::principal_id("custody:mint"),
                 create_replay_key("mint")
             ),
             busbar_kernel::store::now(),
-        ),
+        )
+        .await,
         Err(busbar_core_admin::idempotency::durable::Refused::Applied(_))
     ));
     println!("custody assertions completed");
@@ -559,7 +458,7 @@ async fn abandoned_mint_queued_behind_config_write_still_settles() {
         return;
     }
     use busbar_kernel::config::transaction::{config_transaction, Outcome};
-    let (store, handle, router, _book) = app();
+    let (store, handle, router, _book) = app().await;
     let pause = Arc::new(Pause::default());
     let release = ReleaseOnDrop(pause.clone());
     let transaction_handle = handle.clone();
@@ -586,7 +485,18 @@ async fn abandoned_mint_queued_behind_config_write_still_settles() {
     signal(&store.settled).await;
     let response = mint(router.clone(), "custody:queued", "queued").await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(audit_rows("custody:queued", "key.create", "applied"), 1);
     println!("custody assertions completed");
 }
@@ -596,7 +506,7 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     let seeded = body(mint(router.clone(), "custody:rotate-seed", "seed").await).await;
     signal(&store.settled).await;
     let id = seeded["id"].as_str().unwrap().to_string();
@@ -615,7 +525,16 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
     assert!(caller.await.unwrap_err().is_cancelled());
     drop(release);
     signal(&store.settled).await;
-    let generation = store.inner.get_key(&id).unwrap().unwrap().generation_hash;
+    let generation = store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     let response = request(
         router.clone(),
         "POST",
@@ -628,7 +547,16 @@ async fn abandoned_rotate_finishes_replay_without_a_second_generation() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_ne!(body(response).await["token"], seeded["token"]);
     assert_eq!(
-        store.inner.get_key(&id).unwrap().unwrap().generation_hash,
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .get_key(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .generation_hash,
         generation
     );
     assert_eq!(audit_rows("custody:rotate", "key.rotate", "applied"), 1);
@@ -640,7 +568,7 @@ async fn key_mutation_store_failures_each_record_a_refusal() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     let seeded = body(mint(router.clone(), "custody:errors-seed", "seed").await).await;
     let id = seeded["id"].as_str().unwrap().to_string();
     store.fail_read.store(true, Ordering::SeqCst);
@@ -698,7 +626,7 @@ async fn failed_delete_records_the_revocation_that_already_applied() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     let seeded = body(mint(router.clone(), "custody:delete-seed", "seed").await).await;
     let id = seeded["id"].as_str().unwrap().to_string();
     store.fail_delete.store(true, Ordering::SeqCst);
@@ -712,10 +640,26 @@ async fn failed_delete_records_the_revocation_that_already_applied() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let key = store.inner.get_key(&id).unwrap().unwrap();
+    let key = store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!key.enabled);
     assert!(key.deleted_at.is_none());
-    assert!(store.inner.list_denylist().unwrap().contains(&id));
+    assert!(store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .list_denylist()
+        .await
+        .unwrap()
+        .contains(&id));
     assert_eq!(
         audit_rows("custody:partial-delete", "key.revoke", "applied"),
         1
@@ -736,15 +680,37 @@ async fn lost_mint_reply_does_not_release_a_committed_claim() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     store.lose_write_reply.store(true, Ordering::SeqCst);
     let first = mint(router.clone(), "custody:lost-mint", "lost").await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     store.lose_write_reply.store(false, Ordering::SeqCst);
     let retry = mint(router.clone(), "custody:lost-mint", "lost").await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
-    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     println!("custody assertions completed");
 }
 
@@ -753,7 +719,7 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     let seeded = body(mint(router.clone(), "custody:lost-rotate-seed", "seed").await).await;
     let id = seeded["id"].as_str().unwrap().to_string();
     store.lose_write_reply.store(true, Ordering::SeqCst);
@@ -767,7 +733,16 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
     )
     .await;
     assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let generation = store.inner.get_key(&id).unwrap().unwrap().generation_hash;
+    let generation = store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .get_key(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .generation_hash;
     store.lose_write_reply.store(false, Ordering::SeqCst);
     let retry = request(
         router.clone(),
@@ -780,34 +755,45 @@ async fn lost_rotate_reply_does_not_release_a_committed_claim() {
     .await;
     assert_eq!(retry.status(), StatusCode::CONFLICT);
     assert_eq!(
-        store.inner.get_key(&id).unwrap().unwrap().generation_hash,
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .get_key(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .generation_hash,
         generation
     );
     println!("custody assertions completed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_mint_again() {
+async fn committed_mint_publishes_without_refresh_and_same_idempotency_cannot_mint_again() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
+    let (store, _handle, router, _book) = app().await;
     store.fail_refresh_after_write.store(true, Ordering::SeqCst);
     let response = mint(router.clone(), "custody:applied-refresh", "applied-refresh").await;
-    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(response.status(), StatusCode::CREATED);
     let answer = body(response).await;
-    let rows = store.inner.list_keys().unwrap();
-    assert_eq!(rows.len(), 1);
-    let id = &rows[0].id;
-    let text = answer.to_string();
-    assert!(
-        text.contains("MINT APPLIED (new secret not returned)"),
-        "{text}"
-    );
-    assert!(text.contains(id));
-    assert!(!text.contains("private refresh failure detail"));
-    assert!(answer.get("token").is_none());
-    assert!(answer.get("aws_secret_access_key").is_none());
+    let id = answer["id"].as_str().unwrap().to_string();
+    assert!(answer["token"].is_string());
+    // Applied carries the exact committed rows into governance's cache. A failed
+    // full refresh cannot erase confirmation or manufacture an unknown outcome.
+    let listed = request(
+        router.clone(),
+        "GET",
+        format!("/{id}"),
+        "custody:applied-refresh",
+        None,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(listed.status(), StatusCode::OK);
     assert_eq!(
         audit_rows("custody:applied-refresh", "key.create", "applied"),
         1
@@ -817,10 +803,10 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
         0
     );
     assert!(matches!(busbar_core_admin::idempotency::durable::claim(
-        &*store,
+        &busbar_core_admin::idempotency::durable::scoped_store(store.core.get().unwrap().clone()).unwrap(),
         &(common::credentials::principal_id("custody:applied-refresh"), create_replay_key("applied-refresh")),
         busbar_kernel::store::now(),
-    ), Err(busbar_core_admin::idempotency::durable::Refused::Applied(what)) if what == format!("key:{id}")));
+    ).await, Err(busbar_core_admin::idempotency::durable::Refused::Applied(what)) if what == format!("key:{id}")));
     store.fail_list.store(false, Ordering::SeqCst);
     store
         .fail_refresh_after_write
@@ -840,7 +826,18 @@ async fn committed_mint_refresh_failure_is_truthful_and_same_idempotency_cannot_
     assert_eq!(retry["resource"], format!("key:{id}"));
     assert_eq!(retry["credential_recoverable"], false);
     assert!(retry.get("token").is_none());
-    assert_eq!(store.inner.list_keys().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .core
+            .get()
+            .unwrap()
+            .identity()
+            .list_keys()
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     println!("custody assertions completed");
 }
 
@@ -849,29 +846,49 @@ async fn a_store_error_cannot_spoof_the_typed_committed_mint_outcome() {
     if isolated() {
         return;
     }
-    let (store, _handle, router, _book) = app();
-    store
-        .refuse_write_with_applied_text
-        .store(true, Ordering::SeqCst);
+    let (store, _handle, router, _book) = app().await;
+    store.refuse_write.store(true, Ordering::SeqCst);
     let response = mint(router.clone(), "custody:spoofed-applied", "spoofed-applied").await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let answer = body(response).await;
     assert!(!answer.to_string().contains("MINT APPLIED"));
-    assert!(store.inner.list_keys().unwrap().is_empty());
+    assert!(store
+        .core
+        .get()
+        .unwrap()
+        .identity()
+        .list_keys()
+        .await
+        .unwrap()
+        .is_empty());
     assert_eq!(
         audit_rows("custody:spoofed-applied", "key.create", "applied"),
         0
     );
     assert!(matches!(
         busbar_core_admin::idempotency::durable::claim(
-            &*store,
+            &busbar_core_admin::idempotency::durable::scoped_store(
+                store.core.get().unwrap().clone()
+            )
+            .unwrap(),
             &(
                 common::credentials::principal_id("custody:spoofed-applied"),
                 create_replay_key("spoofed-applied")
             ),
             busbar_kernel::store::now(),
-        ),
+        )
+        .await,
         Err(busbar_core_admin::idempotency::durable::Refused::InFlight)
     ));
     println!("custody assertions completed");
+}
+
+fn identity_key(address: &Address) -> bool {
+    address.namespace == *b"busbar.identity1" && address.key.first() == Some(&b'K')
+}
+fn key_mutation(candidate: &PreparedCandidate) -> bool {
+    candidate.candidate().mutations.iter().any(|m| match m {
+        Mutation::Put { address, .. } | Mutation::Delete(address) => identity_key(address),
+        _ => false,
+    })
 }

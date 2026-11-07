@@ -87,6 +87,11 @@ pub use worker::{
 pub trait Kind: Send + Sync + 'static {
     const CODE: KindCode;
 
+    /// Exact wire version admitted by this typed binding.
+    const ABI_VERSION: u32 = Self::CODE.abi_version();
+    /// Exact wire layout admitted by this typed binding.
+    const LAYOUT_FINGERPRINT: u64 = Self::CODE.layout_fingerprint();
+
     type Ops: Copy;
 
     const TIMEOUT: Outcome;

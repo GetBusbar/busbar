@@ -89,16 +89,17 @@ pub struct AdminAnswer {
     pub body: Vec<u8>,
 }
 
+#[async_trait::async_trait]
 pub trait AdminDispatch: Send + Sync {
-    fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer;
+    async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer;
 
-    fn execute_admitted(
+    async fn execute_admitted(
         &self,
         verb: KernelVerb,
         request: &AdminRequest,
         _admission: &busbar_kernel::inbound::RequestAdmission,
     ) -> AdminAnswer {
-        self.execute(verb, request)
+        self.execute(verb, request).await
     }
 }
 
@@ -108,9 +109,12 @@ struct AdmittedDispatch {
     admission: busbar_kernel::inbound::RequestAdmission,
 }
 
+#[async_trait::async_trait]
 impl AdminDispatch for AdmittedDispatch {
-    fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
-        self.inner.execute_admitted(verb, request, &self.admission)
+    async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        self.inner
+            .execute_admitted(verb, request, &self.admission)
+            .await
     }
 }
 
@@ -123,8 +127,9 @@ impl AdminDispatch for AdmittedDispatch {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RefusingDispatch;
 
+#[async_trait::async_trait]
 impl AdminDispatch for RefusingDispatch {
-    fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+    async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
         AdminAnswer {
             status: 503,
             headers: vec![("content-type".to_string(), "application/json".to_string())],
@@ -169,8 +174,9 @@ pub struct PricedLedger {
     pub refused: Vec<RefusedRow>,
 }
 
+#[async_trait::async_trait]
 pub trait LedgerView: Send + Sync {
-    fn priced(&self) -> Result<PricedLedger, String>;
+    async fn priced(&self) -> Result<PricedLedger, String>;
 }
 
 /// The view a node has before a ledger is bound behind it: no rows, which is the truth about a node
@@ -178,8 +184,9 @@ pub trait LedgerView: Send + Sync {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnopenedLedger;
 
+#[async_trait::async_trait]
 impl LedgerView for UnopenedLedger {
-    fn priced(&self) -> Result<PricedLedger, String> {
+    async fn priced(&self) -> Result<PricedLedger, String> {
         Ok(PricedLedger::default())
     }
 }
@@ -201,29 +208,31 @@ impl CountsLedger {
     }
 }
 
+#[async_trait::async_trait]
 impl LedgerView for CountsLedger {
-    fn priced(&self) -> Result<PricedLedger, String> {
-        let app = self.app.load();
+    async fn priced(&self) -> Result<PricedLedger, String> {
+        let app = self.app.snapshot();
         let Some(gov) = app.governance.clone() else {
             return Ok(PricedLedger::default());
         };
         let now = busbar_kernel::store::now();
 
-        crate::root::durability::off_runtime(|| priced_keys(&gov, &app.cost, now))
+        priced_keys(&gov, &app.cost, now).await
     }
 }
 
-pub fn priced_keys(
+pub async fn priced_keys(
     gov: &busbar_kernel::governance::GovState,
     cost: &busbar_kernel::cost::CostModel,
     now: u64,
 ) -> Result<PricedLedger, String> {
-    let mut keys = gov.all_keys().map_err(|e| e.to_string())?;
+    let mut keys = gov.all_keys_async().await.map_err(|e| e.to_string())?;
     keys.sort_by(|a, b| a.id.cmp(&b.id));
     let mut ledger = PricedLedger::default();
     for key in keys {
         let bucket = gov
-            .priced_bucket(cost, &key.id, busbar_kernel::governance::WINDOW_TOTAL, now)
+            .priced_bucket_async(cost, &key.id, busbar_kernel::governance::WINDOW_TOTAL, now)
+            .await
             .map_err(|e| e.to_string())?;
         match bucket.spend {
             Ok(spend) => {
@@ -248,19 +257,21 @@ pub fn priced_keys(
     Ok(ledger)
 }
 
+#[async_trait::async_trait]
 pub trait AuditView: Send + Sync {
     fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>));
 
-    fn read_window(
+    async fn read_window(
         &self,
         _from: u64,
         _to: u64,
-        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
+        take: &mut (dyn for<'chain, 'records> FnMut(&'chain AuditChain, Option<&'records [AuditRecord]>)
+                  + Send),
     ) {
         self.read(take);
     }
 
-    fn range_page(
+    async fn range_page(
         &self,
         from: u64,
         to: u64,
@@ -274,7 +285,8 @@ pub trait AuditView: Send + Sync {
             answer = records
                 .map(|records| expose::range_body(chain, records, from, to).into_bytes())
                 .ok_or(busbar_core_admin::GovernanceError::NotFound);
-        });
+        })
+        .await;
         answer
     }
 
@@ -288,7 +300,7 @@ pub trait AuditView: Send + Sync {
         Vec::new()
     }
 
-    fn stored_chain_findings(&self) -> Vec<String> {
+    async fn stored_chain_findings(&self) -> Vec<String> {
         Vec::new()
     }
 }
@@ -314,17 +326,19 @@ impl NodeAudit {
     }
 }
 
+#[async_trait::async_trait]
 impl AuditView for NodeAudit {
     fn read(&self, take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>)) {
         let durability = self.lock();
         take(&durability.record, Some(&durability.audit_records));
     }
 
-    fn read_window(
+    async fn read_window(
         &self,
         from: u64,
         to: u64,
-        take: &mut dyn FnMut(&AuditChain, Option<&[AuditRecord]>),
+        take: &mut (dyn for<'chain, 'records> FnMut(&'chain AuditChain, Option<&'records [AuditRecord]>)
+                  + Send),
     ) {
         use crate::root::durability::AuditWindowAt;
         loop {
@@ -342,7 +356,7 @@ impl AuditView for NodeAudit {
                 }
             };
 
-            let Some(mut records) = chain.audit_window(from, to) else {
+            let Some(mut records) = chain.audit_window(from, to).await else {
                 return;
             };
             let durability = self.lock();
@@ -353,14 +367,14 @@ impl AuditView for NodeAudit {
         }
     }
 
-    fn range_page(
+    async fn range_page(
         &self,
         from: u64,
         to: u64,
         cursor: Option<&str>,
     ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
         let plan = self.lock().prepare_audit_page(from, to, cursor)?;
-        plan.finish()
+        plan.finish().await
     }
 
     fn keys(&self) -> AuditKeySet {
@@ -375,11 +389,11 @@ impl AuditView for NodeAudit {
         self.lock().retained_audit_findings()
     }
 
-    fn stored_chain_findings(&self) -> Vec<String> {
-        let Some((lane, own, keys)) = self.lock().stored_walk_inputs() else {
-            return Vec::new();
-        };
-        crate::root::durability::walk_stored_chains(&lane, own, &keys).findings
+    async fn stored_chain_findings(&self) -> Vec<String> {
+        let (journal, own, keys, budget) = self.lock().stored_walk_inputs();
+        crate::root::durability::walk_stored_chains(&journal, own, &keys, budget)
+            .await
+            .findings
     }
 }
 
@@ -401,7 +415,7 @@ fn audit_window(target: &str) -> Option<(u64, u64)> {
     (from <= to).then_some((from, to))
 }
 
-fn render_audit_view(
+async fn render_audit_view(
     verb: KernelVerb,
     target: &str,
     view: &dyn AuditView,
@@ -426,7 +440,7 @@ fn render_audit_view(
                         .split('&')
                         .find_map(|pair| pair.strip_prefix("cursor="))
                 });
-            view.range_page(from, to, cursor)
+            view.range_page(from, to, cursor).await
         }
         KernelVerb::GetAuditKeys => Ok(expose::keys_body(&view.keys()).into_bytes()),
 
@@ -577,40 +591,39 @@ impl CoreGovernance {
         self
     }
 
-    fn admit_effect(
+    async fn admit_effect(
         &self,
     ) -> Result<Option<busbar_kernel::config::transaction::EffectGuard>, AdminAnswer> {
-        self.effect
-            .as_ref()
-            .map(|(context, admit)| admit(context))
-            .transpose()
-            .map_err(|_| {
+        match self.effect.as_ref() {
+            None => Ok(None),
+            Some((context, admit)) => admit(context).await.map(Some).map_err(|_| {
                 admin_mount::error_answer_with_message(
                     403,
                     "forbidden",
                     "current authority does not admit this effect",
                 )
-            })
+            }),
+        }
     }
 
-    fn run(&self) -> AdminAnswer {
-        self.dispatch.execute(self.verb, &self.request)
+    async fn run(&self) -> AdminAnswer {
+        self.dispatch.execute(self.verb, &self.request).await
     }
 }
 
 impl busbar_core_admin::Governance for CoreGovernance {
     type Answer = AdminAnswer;
 
-    fn execute_legacy(
+    async fn execute_legacy(
         &self,
         _verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
     ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
-        Ok(self.run())
+        Ok(self.run().await)
     }
 
-    fn execute_new_verb(
+    async fn execute_new_verb(
         &self,
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
@@ -623,7 +636,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 | KernelVerb::TrustApprove
                 | KernelVerb::TrustRevoke
         ) {
-            match self.admit_effect() {
+            match self.admit_effect().await {
                 Ok(guard) => guard,
                 Err(answer) => return Ok(answer),
             }
@@ -637,7 +650,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 request,
                 self.request.at,
                 &self.attribution,
-            );
+            )
+            .await;
         }
 
         if verb == KernelVerb::Adjust {
@@ -653,7 +667,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 self.replay_store.as_ref(),
                 &*self.pools,
                 &self.adjuster,
-            );
+            )
+            .await;
         }
 
         match verb {
@@ -662,7 +677,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     self.ledger.as_ref(),
                     self.audit.as_deref(),
                     self.node_amendments.as_deref(),
-                );
+                )
+                .await;
             }
             KernelVerb::PlaneFacts => {
                 return bound::plane_facts_effect(&self.request.path, &*self.planes);
@@ -677,7 +693,7 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 } else {
                     busbar_kernel::trust::book::Ruling::Revoke
                 };
-                return bound::trust_decide_effect(request, ruling, &self.trust);
+                return bound::trust_decide_effect(request, ruling, &self.trust).await;
             }
 
             KernelVerb::PlaneRecordWrite => {
@@ -691,8 +707,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.request,
                     request,
                     self.amendments.as_deref(),
-                    || {
-                        let _effect = match self.admit_effect() {
+                    || async {
+                        let _effect = match self.admit_effect().await {
                             Ok(guard) => guard,
                             Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
                         };
@@ -702,8 +718,10 @@ impl busbar_core_admin::Governance for CoreGovernance {
                             &*self.planes,
                             self.records.as_ref(),
                         )
+                        .await
                     },
-                );
+                )
+                .await;
             }
             KernelVerb::CommitUpgrade => {
                 return bound::replayable(
@@ -716,8 +734,8 @@ impl busbar_core_admin::Governance for CoreGovernance {
                     &self.request,
                     request,
                     self.amendments.as_deref(),
-                    || {
-                        let _effect = match self.admit_effect() {
+                    || async {
+                        let _effect = match self.admit_effect().await {
                             Ok(guard) => guard,
                             Err(answer) => return Ok(bound::EffectAnswer::unapplied(answer)),
                         };
@@ -727,25 +745,27 @@ impl busbar_core_admin::Governance for CoreGovernance {
                             &self.attribution.principal,
                             self.amendments.as_deref(),
                         )
+                        .await
                     },
-                );
+                )
+                .await;
             }
             _ => {}
         }
-        Ok(self.run())
+        Ok(self.run().await)
     }
 
-    fn execute_ledger_read(
+    async fn execute_ledger_read(
         &self,
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
         _request: &[u8],
     ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
-        let body = render_ledger_view(verb, self.ledger.as_ref())?;
+        let body = render_ledger_view(verb, self.ledger.as_ref()).await?;
         Ok(json_answer(body))
     }
 
-    fn execute_audit_read(
+    async fn execute_audit_read(
         &self,
         verb: KernelVerb,
         _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
@@ -755,7 +775,9 @@ impl busbar_core_admin::Governance for CoreGovernance {
             .audit
             .as_deref()
             .ok_or(busbar_core_admin::GovernanceError::NotFound)?;
-        render_audit_view(verb, &self.request.path, view).map(json_answer)
+        render_audit_view(verb, &self.request.path, view)
+            .await
+            .map(json_answer)
     }
 }
 
@@ -790,7 +812,7 @@ fn already_applied(
     })
 }
 
-fn amend_rate_history_effect(
+async fn amend_rate_history_effect(
     history: &crate::root::kernel::RootHistory,
     journal: Option<&AmendmentJournal>,
     body: &[u8],
@@ -823,7 +845,7 @@ fn amend_rate_history_effect(
     match effective_until {
         None => return Err(GovernanceError::Validation),
         Some(until) if until > arrival_secs.saturating_mul(1000) => {
-            return Err(GovernanceError::Validation)
+            return Err(GovernanceError::Validation);
         }
         Some(_) => {}
     }
@@ -892,10 +914,12 @@ fn amend_rate_history_effect(
         Some(journal.ok_or(GovernanceError::Store)?)
     };
 
-    if let Some(Err(why)) = journal.map(AmendmentJournal::admit) {
-        return Ok(bound::journal_unavailable(&why));
+    if let Some(journal) = journal {
+        if let Err(why) = journal.admit().await {
+            return Ok(bound::journal_unavailable(&why));
+        }
     }
-    let sealed_at: std::cell::Cell<Option<u64>> = std::cell::Cell::new(None);
+    let sealed_at = Mutex::new(None);
     let correction = crate::root::kernel::Correction {
         effective_from,
         effective_until,
@@ -944,10 +968,13 @@ fn amend_rate_history_effect(
             match journal {
                 Some(journal) => journal
                     .seal_policy(amendment_body(&record)?, arrival_secs)
-                    .map(|(node_seq, _)| sealed_at.set(Some(node_seq))),
+                    .map(|(node_seq, _)| {
+                        *sealed_at.lock().unwrap_or_else(|p| p.into_inner()) = Some(node_seq)
+                    }),
                 None => Ok(()),
             }
         })
+        .await
         .map_err(|refused| match refused {
             crate::root::kernel::AmendRefused::NoHistory => GovernanceError::NotFound,
             crate::root::kernel::AmendRefused::NoSoleCard => GovernanceError::Validation,
@@ -967,8 +994,10 @@ fn amend_rate_history_effect(
             }
         })?;
 
-    if let (Some(node_seq), Some(journal)) = (sealed_at.get(), journal) {
-        if let Err(why) = journal.acked(node_seq) {
+    // Copy the position before awaiting persistence; the mutex protects only staging state.
+    let sealed_position = *sealed_at.lock().unwrap_or_else(|p| p.into_inner());
+    if let (Some(node_seq), Some(journal)) = (sealed_position, journal) {
+        if let Err(why) = journal.acked(node_seq).await {
             return Ok(bound::journal_unavailable(&format!(
                 "the correction is sealed at journal position {node_seq} and not yet kept by the \
                  store: {why}; do not re-submit"
@@ -1236,49 +1265,28 @@ impl AmendmentJournal {
         AmendmentJournal { book, token }
     }
 
-    pub fn record(
+    pub async fn record(
         &self,
         record: &AmendmentRecord,
         wall_secs: u64,
     ) -> Result<(), busbar_core_admin::GovernanceError> {
-        self.seal_policy(amendment_body(record)?, wall_secs)
-            .map(|_| ())
+        let (sequence, _) = self.seal_policy(amendment_body(record)?, wall_secs)?;
+        self.acked(sequence)
+            .await
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)
     }
 
-    pub fn admit(&self) -> Result<(), String> {
-        let lane = {
-            let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-            if !durability.durable_in_store() {
-                return Ok(());
-            }
-            durability.lane().cloned()
-        };
-        lane.map_or(Ok(()), |lane| lane.healthy())
+    pub async fn admit(&self) -> Result<(), String> {
+        let journal = Arc::clone(&self.book.lock().unwrap_or_else(|p| p.into_inner()).journal);
+        journal.flush().await.map_err(|error| format!("{error:?}"))
     }
 
-    pub fn acked(&self, node_seq: u64) -> Result<(), String> {
-        let (lane, node) = {
-            let durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-            let node = durability.journal.node();
-            let owed = durability.journal.log().owed().iter().any(|record| {
-                let (of, seq) = record.identity();
-                of == node && seq <= node_seq
-            });
-            if owed {
-                return Err(
-                    "the journal could not make the record durable; it is retained on \
-                     this node's journal and written ahead of the next record"
-                        .to_string(),
-                );
-            }
-            if !durability.durable_in_store() {
-                return Ok(());
-            }
-            (durability.lane().cloned(), node)
-        };
-        lane.map_or(Ok(()), |lane| {
-            lane.wait_acked(node, node_seq, crate::root::durability::ACK_DEADLINE)
-        })
+    pub async fn acked(&self, node_seq: u64) -> Result<(), String> {
+        let journal = Arc::clone(&self.book.lock().unwrap_or_else(|p| p.into_inner()).journal);
+        if node_seq >= journal.next_seq() {
+            return Err("the requested journal record has not been staged".into());
+        }
+        journal.flush().await.map_err(|error| format!("{error:?}"))
     }
 
     pub fn seal_policy(
@@ -1288,32 +1296,19 @@ impl AmendmentJournal {
     ) -> Result<(u64, [u8; 32]), busbar_core_admin::GovernanceError> {
         let entry = busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Policy, body)
             .at(wall_secs, 0);
-        let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        match durability.journal.append(
-            &self.token,
-            busbar_contract::caps::StepName::Route,
-            &[entry],
-        ) {
-            Ok(ack) => {
-                let sealed = ack
-                    .sealed
-                    .last()
-                    .ok_or(busbar_core_admin::GovernanceError::Store)?;
-                Ok((sealed.node_seq, sealed.hash))
-            }
-            Err(_lost) => {
-                let journal = &durability.journal;
-                let sealed = (journal.node(), journal.next_seq().saturating_sub(1));
-                let log = journal.log();
-                if log.holds(sealed.0, sealed.1)
-                    || log.owed().iter().any(|r| r.identity() == sealed)
-                {
-                    Ok((sealed.1, journal.head()))
-                } else {
-                    Err(busbar_core_admin::GovernanceError::Store)
-                }
-            }
-        }
+        let journal = Arc::clone(&self.book.lock().unwrap_or_else(|p| p.into_inner()).journal);
+        // The grant is held by this trusted root facade; staging reserves originals
+        // only. acked must confirm their native publication before durable success.
+        let _capability = &self.token;
+        let run = journal
+            .stage_run(&[entry])
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+        let records = busbar_kernel_wal::decode_run(run.records())
+            .map_err(|_| busbar_core_admin::GovernanceError::Store)?;
+        let sealed = records
+            .last()
+            .ok_or(busbar_core_admin::GovernanceError::Store)?;
+        Ok((sealed.node_seq, sealed.hash))
     }
 
     #[must_use]
@@ -1395,23 +1390,23 @@ fn canonical_amend_payload(obj: &serde_json::Map<String, serde_json::Value>) -> 
     payload.into_bytes()
 }
 
-fn render_ledger_view(
+async fn render_ledger_view(
     verb: KernelVerb,
     view: &dyn LedgerView,
 ) -> Result<Vec<u8>, busbar_core_admin::GovernanceError> {
-    let priced = || {
-        view.priced().map_err(|why| {
+    let priced = || async {
+        view.priced().await.map_err(|why| {
             tracing::warn!(why = %why, "a ledger view could not read the ledger's counts");
             busbar_core_admin::GovernanceError::Store
         })
     };
     Ok(match verb {
-        KernelVerb::GetLedgerTotals => render_totals(&priced()?)
+        KernelVerb::GetLedgerTotals => render_totals(&priced().await?)
             .map_err(|_| busbar_core_admin::GovernanceError::Store)?
             .into_bytes(),
 
         KernelVerb::GetLedgerCheckpoints => b"{\"checkpoints\":[]}".to_vec(),
-        KernelVerb::GetLedgerReconciliation => render_reconciliation(&priced()?).into_bytes(),
+        KernelVerb::GetLedgerReconciliation => render_reconciliation(&priced().await?).into_bytes(),
 
         KernelVerb::GetLedgerMigration => b"{\"migrated\":false,\"marker\":null}".to_vec(),
 
@@ -1589,11 +1584,18 @@ pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDo
 }
 
 pub type EffectAdmission = Arc<
-    dyn Fn(
-            &busbar_kernel::auth::effect::Context,
-        ) -> Result<
-            busbar_kernel::config::transaction::EffectGuard,
-            busbar_kernel::config::transaction::TxnError,
+    dyn for<'a> Fn(
+            &'a busbar_kernel::auth::effect::Context,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            busbar_kernel::config::transaction::EffectGuard,
+                            busbar_kernel::config::transaction::TxnError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
         > + Send
         + Sync,
 >;
@@ -1701,7 +1703,7 @@ pub fn mutation_class(verb: KernelVerb) -> MutationClass {
     MutationClass::for_verb(verb, CONFIG_CLASS_RULES)
 }
 
-pub(crate) fn decide(
+pub(crate) async fn decide(
     units: &crate::root::kernel::ProductionUnits,
     walk: &mut AdminWalk,
 ) -> Outcome {
@@ -1715,12 +1717,17 @@ pub(crate) fn decide(
         })
         .and_then(|principal| verify(walk, &principal).map_err(at(StepName::Verify)))
         .and_then(|()| approve(walk).map_err(at(StepName::Approve)))
-        .and_then(|()| admit(walk).map_err(at(StepName::Admit)))
-        .and_then(|()| claim(walk).map_err(at(StepName::Authenticate)))
-        .and_then(|()| {
-            route(&units.admin, units.store.clone(), &units.admin_token, walk)
-                .map_err(|reason| Outcome::Failed(StepName::Route, reason))
-        });
+        .and_then(|()| admit(walk).map_err(at(StepName::Admit)));
+    let ran = match ran {
+        Ok(()) => claim(walk).await.map_err(at(StepName::Authenticate)),
+        Err(ended) => Err(ended),
+    };
+    let ran = match ran {
+        Ok(()) => route(&units.admin, units.store.clone(), &units.admin_token, walk)
+            .await
+            .map_err(|reason| Outcome::Failed(StepName::Route, reason)),
+        Err(ended) => Err(ended),
+    };
     match ran {
         Ok(()) => Outcome::Completed,
         Err(ended) => ended,
@@ -1813,14 +1820,16 @@ pub(crate) fn authenticate(
     Ok(PrincipalId::new(principal))
 }
 
-pub(crate) fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
+pub(crate) async fn claim(walk: &mut AdminWalk) -> Result<(), ReasonCode> {
     if let Some(admission) = &walk.admission {
-        return crate::root::durability::wait_for(admission.claim_admin_replay())
+        return admission
+            .claim_admin_replay()
+            .await
             .then_some(())
             .ok_or(ReasonCode::Unauthenticated);
     }
     match walk.claim.take() {
-        Some(pending) if !pending.win_now() => Err(ReasonCode::Unauthenticated),
+        Some(pending) if !pending.win().await => Err(ReasonCode::Unauthenticated),
         _ => Ok(()),
     }
 }
@@ -1870,7 +1879,7 @@ pub(crate) fn admit(walk: &AdminWalk) -> Result<(), ReasonCode> {
     Ok(())
 }
 
-pub(crate) fn route(
+pub(crate) async fn route(
     binding: &AdminBinding,
     store: crate::root::kernel::VerbStoreHandle,
     admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
@@ -1896,7 +1905,7 @@ pub(crate) fn route(
     );
 
     if mints_its_own_identity(verb) {
-        walk.answer = Some(dispatch.execute(verb, request));
+        walk.answer = Some(dispatch.execute(verb, request).await);
         return Ok(());
     }
 
@@ -1941,15 +1950,19 @@ pub(crate) fn route(
 
     let answer = if let Some(recovery) = recovery_verb(verb) {
         let ran = match recovery {
-            RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at),
+            RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at).await,
             RecoveryVerb::StoreRestore => {
                 let backup_ref = backup_ref_of(&request.body).ok_or(ReasonCode::DecodeFailed)?;
-                verbs.store_restore(admin, &actor, granted, request.at, &backup_ref)
+                verbs
+                    .store_restore(admin, &actor, granted, request.at, &backup_ref)
+                    .await
             }
         };
         ran.map(|()| applied_answer())
     } else {
-        verbs.execute(verb, admin, &actor, granted, request.at, &request.body)
+        verbs
+            .execute(verb, admin, &actor, granted, request.at, &request.body)
+            .await
     };
     walk.answer = Some(answer.map_err(|refusal| verbs_reason(refusal.reason))?);
     Ok(())

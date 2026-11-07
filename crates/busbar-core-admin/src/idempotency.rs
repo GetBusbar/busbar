@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-pub use busbar_kernel_seams::verb_store::IDEMPOTENCY_TTL_SECS;
+pub use busbar_kernel::persistence::recovery_api::IDEMPOTENCY_TTL_SECS;
 
 enum KeyOperation<'a> {
     Create,
@@ -153,11 +153,26 @@ impl<'a, V: Clone> Drop for Reservation<'a, V> {
 }
 
 pub mod durable {
-    use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, RecordStore, Retention};
+    use busbar_contract::Secret;
+    use busbar_kernel::persistence::scoped::{ClaimOutcome, Outcome, ScopedStore};
 
     use super::{BindingMismatch, IDEMPOTENCY_TTL_SECS};
 
     pub const REPLAY_KIND: &str = "busbar.admin-idempotency";
+
+    /// Bind the host-owned admin replay records and token claims to one instance.
+    pub fn scoped_store(
+        core: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
+    ) -> Result<ScopedStore, busbar_kernel::persistence::scoped::Error> {
+        ScopedStore::host_private(
+            core,
+            "busbar.admin",
+            [
+                REPLAY_KIND.to_string(),
+                "busbar.admin-adjust-action.v1".to_string(),
+            ],
+        )
+    }
 
     const MAX_GENERATIONS: u32 = 64;
 
@@ -253,14 +268,40 @@ pub mod durable {
         Some((generation, written_at, settled))
     }
 
-    fn read_any(store: &dyn RecordStore, id: &str) -> Result<Option<(u32, u64, Settled)>, Refused> {
+    fn claimed(outcome: ClaimOutcome) -> Result<bool, Refused> {
+        match outcome {
+            ClaimOutcome::Claimed => Ok(true),
+            ClaimOutcome::AlreadyClaimed => Ok(false),
+            other => Err(Refused::Unavailable(format!(
+                "idempotency claim was not confirmed: {other:?}"
+            ))),
+        }
+    }
+
+    async fn put(store: &ScopedStore, id: &str, body: Vec<u8>) -> Result<(), String> {
+        match store
+            .put(REPLAY_KIND, id.as_bytes(), Secret::new(body))
+            .await
+        {
+            Ok(Outcome::Applied) => Ok(()),
+            other => Err(format!("idempotency write was not confirmed: {other:?}")),
+        }
+    }
+
+    async fn read_any(
+        store: &ScopedStore,
+        id: &str,
+    ) -> Result<Option<(u32, u64, Settled)>, Refused> {
         let Some(bytes) = store
-            .get_plane_record(REPLAY_KIND, id)
-            .map_err(|e| Refused::Unavailable(e.to_string()))?
+            .get(REPLAY_KIND, id.as_bytes())
+            .await
+            .map_err(|e| Refused::Unavailable(format!("{e:?}")))?
         else {
             return Ok(None);
         };
-        let Some((generation, written_at, settled)) = decode(&bytes) else {
+        let Some((generation, written_at, settled)) =
+            decode(bytes.expose(&busbar_kernel::seal::lend()))
+        else {
             return Err(Refused::Unavailable(format!(
                 "the idempotency record `{id}` in the store is not one this build wrote"
             )));
@@ -268,12 +309,12 @@ pub mod durable {
         Ok(Some((generation, written_at, settled)))
     }
 
-    fn read(
-        store: &dyn RecordStore,
+    async fn read(
+        store: &ScopedStore,
         id: &str,
         now: u64,
     ) -> Result<Option<(u32, Settled)>, Refused> {
-        let Some((generation, written_at, settled)) = read_any(store, id)? else {
+        let Some((generation, written_at, settled)) = read_any(store, id).await? else {
             return Ok(None);
         };
         if !matches!(settled, Settled::Retained(_))
@@ -286,16 +327,17 @@ pub mod durable {
 
     /// Bind a credential action before effects. Only digests are persisted; never secrets.
     /// A competing claim with no binding yet remains in flight and cannot replay an answer.
-    pub fn claim_bound(
-        store: &dyn RecordStore,
+    pub async fn claim_bound(
+        store: &ScopedStore,
         key: &(String, String),
         fingerprint: [u8; 32],
         now: u64,
     ) -> Result<Result<Claim, Refused>, BindingMismatch> {
         let id = format!("binding:{}", record_id(key));
-        let check = || -> Result<Result<(), Refused>, BindingMismatch> {
-            match store.get_plane_record(REPLAY_KIND, &id) {
-                Ok(Some(bytes)) if bytes.len() == 40 => {
+        let check = || async {
+            match store.get(REPLAY_KIND, id.as_bytes()).await {
+                Ok(Some(secret)) if secret.expose(&busbar_kernel::seal::lend()).len() == 40 => {
+                    let bytes = secret.expose(&busbar_kernel::seal::lend());
                     let written =
                         u64::from_be_bytes(bytes[..8].try_into().expect("length checked"));
                     if now.saturating_sub(written) < IDEMPOTENCY_TTL_SECS
@@ -309,19 +351,19 @@ pub mod durable {
                         "unreadable request binding".into(),
                     )))
                 }
-                Err(error) => return Ok(Err(Refused::Unavailable(error.to_string()))),
+                Err(error) => return Ok(Err(Refused::Unavailable(format!("{error:?}")))),
                 Ok(None) => {}
             }
             Ok(Ok(()))
         };
-        if let Err(refused) = check()? {
+        if let Err(refused) = check().await? {
             return Ok(Err(refused));
         }
-        let claim = match claim(store, key, now) {
+        let claim = match claim(store, key, now).await {
             Ok(claim) => claim,
             Err(refused) => {
                 // Another process may have installed the binding after our first read.
-                if let Err(error) = check()? {
+                if let Err(error) = check().await? {
                     return Ok(Err(error));
                 }
                 return Ok(Err(refused));
@@ -329,22 +371,14 @@ pub mod durable {
         };
         let mut body = now.to_be_bytes().to_vec();
         body.extend_from_slice(&fingerprint);
-        if let Err(error) = store.upsert_plane_record(PlaneRecordRef {
-            kind: REPLAY_KIND,
-            id: &id,
-            parent: None,
-            seq: 0,
-            ts: now,
-            disposition: PlaneDisposition::Terminal,
-            body: &body,
-        }) {
-            return Ok(Err(Refused::Unavailable(error.to_string())));
+        if let Err(error) = put(store, &id, body).await {
+            return Ok(Err(Refused::Unavailable(error)));
         }
         Ok(Ok(claim))
     }
 
-    pub fn claim(
-        store: &dyn RecordStore,
+    pub async fn claim(
+        store: &ScopedStore,
         key: &(String, String),
         now: u64,
     ) -> Result<Claim, Refused> {
@@ -353,16 +387,17 @@ pub mod durable {
         let mut generation = 0;
         while generation < MAX_GENERATIONS {
             let first = store
-                .redeem_plane_token(REPLAY_KIND, &token(&id, generation), expires_at, now)
-                .map_err(|e| Refused::Unavailable(e.to_string()))?;
-            if first {
+                .redeem(REPLAY_KIND, &token(&id, generation), expires_at)
+                .await
+                .map_err(|e| Refused::Unavailable(format!("{e:?}")))?;
+            if claimed(first)? {
                 return Ok(Claim {
                     id,
                     generation,
                     held: false,
                 });
             }
-            match read(store, &id, now)? {
+            match read(store, &id, now).await? {
                 Some((held, Settled::Released)) if held >= generation => {
                     generation = held.saturating_add(1)
                 }
@@ -375,8 +410,8 @@ pub mod durable {
         Err(Refused::InFlight)
     }
 
-    pub fn claim_held(
-        store: &dyn RecordStore,
+    pub async fn claim_held(
+        store: &ScopedStore,
         key: &(String, String),
         now: u64,
     ) -> Result<Claim, Refused> {
@@ -384,7 +419,7 @@ pub mod durable {
         let mut generation = 0;
         loop {
             let row = held_record_id(&id, generation);
-            if let Some((held, written_at, settled)) = read_any(store, &row)? {
+            if let Some((held, written_at, settled)) = read_any(store, &row).await? {
                 if held != generation {
                     return Err(Refused::Unavailable(format!(
                         "the held idempotency record `{row}` names a different generation"
@@ -395,7 +430,7 @@ pub mod durable {
                 continue;
             }
             if generation == 0 {
-                let legacy_generation = match read_any(store, &id)? {
+                let legacy_generation = match read_any(store, &id).await? {
                     Some((held, written_at, settled)) => {
                         advance_held(settled, written_at, now)?;
                         held.checked_add(1).ok_or(Refused::InFlight)?
@@ -404,16 +439,18 @@ pub mod durable {
                 };
 
                 let first = store
-                    .redeem_plane_token(REPLAY_KIND, &token(&id, legacy_generation), u64::MAX, now)
-                    .map_err(|e| Refused::Unavailable(e.to_string()))?;
-                if !first {
+                    .redeem(REPLAY_KIND, &token(&id, legacy_generation), u64::MAX)
+                    .await
+                    .map_err(|e| Refused::Unavailable(format!("{e:?}")))?;
+                if !claimed(first)? {
                     return Err(Refused::InFlight);
                 }
             }
             let first = store
-                .redeem_plane_token(REPLAY_KIND, &row, u64::MAX, now)
-                .map_err(|e| Refused::Unavailable(e.to_string()))?;
-            if first {
+                .redeem(REPLAY_KIND, &row, u64::MAX)
+                .await
+                .map_err(|e| Refused::Unavailable(format!("{e:?}")))?;
+            if claimed(first)? {
                 return Ok(Claim {
                     id,
                     generation,
@@ -421,7 +458,7 @@ pub mod durable {
                 });
             }
 
-            if read_any(store, &row)?.is_none() {
+            if read_any(store, &row).await?.is_none() {
                 return Err(Refused::InFlight);
             }
         }
@@ -440,8 +477,8 @@ pub mod durable {
         }
     }
 
-    pub fn settle(
-        store: &dyn RecordStore,
+    pub async fn settle(
+        store: &ScopedStore,
         claim: &Claim,
         now: u64,
         settled: &Settled,
@@ -452,27 +489,50 @@ pub mod durable {
         } else {
             claim.id.clone()
         };
-        store
-            .upsert_plane_record(PlaneRecordRef {
-                kind: REPLAY_KIND,
-                id: &id,
-                parent: None,
-                seq: 0,
-                ts: now,
-                disposition: if claim.held || matches!(settled, Settled::Retained(_)) {
-                    PlaneDisposition::Active
+        put(store, &id, body).await?;
+        // Held and retained receipts never expire through ordinary replay cleanup.
+        let mut cursor = None;
+        loop {
+            let page = match store.page(REPLAY_KIND, b"", cursor.as_ref()).await {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::warn!(error = ?error, "expired idempotency records were not swept; the next settle retries");
+                    break;
+                }
+            };
+            for (key, bytes) in page.rows {
+                if key.starts_with(b"held:") {
+                    continue;
+                }
+                let body = bytes.expose(&busbar_kernel::seal::lend());
+                let cutoff = now.saturating_sub(IDEMPOTENCY_TTL_SECS);
+                let expired = if key.starts_with(b"binding:") {
+                    body.len() == 40
+                        && u64::from_be_bytes(body[..8].try_into().expect("length checked"))
+                            < cutoff
                 } else {
-                    PlaneDisposition::Terminal
-                },
-                body: &body,
-            })
-            .map_err(|e| e.to_string())?;
-        if let Err(e) = store.purge_plane_records(
-            REPLAY_KIND,
-            now.saturating_sub(IDEMPOTENCY_TTL_SECS),
-            Retention::TerminalOnly,
-        ) {
-            tracing::warn!(error = %e, "expired idempotency records were not swept; the next settle retries");
+                    decode(body).is_some_and(|(_, written_at, outcome)| {
+                        !matches!(outcome, Settled::Retained(_)) && written_at < cutoff
+                    })
+                };
+                if expired {
+                    match store.prepare_delete_exact(REPLAY_KIND, &key, bytes) {
+                        Ok(request) => match store.conditional_native(&request).await {
+                            Ok(Outcome::Applied | Outcome::ConditionConflict) => {}
+                            other => {
+                                tracing::warn!(outcome = ?other, "expired idempotency record was not swept")
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(error = ?error, "expired idempotency record was not swept")
+                        }
+                    }
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
         }
         Ok(())
     }

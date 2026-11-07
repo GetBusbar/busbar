@@ -166,7 +166,7 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -176,13 +176,15 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -282,7 +284,7 @@ async fn install_catalog_remove_roundtrip() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -292,13 +294,15 @@ async fn install_catalog_remove_roundtrip() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
     app.plugins_cfg.trust.allow_unsigned = true;
@@ -448,7 +452,7 @@ async fn remove_filesystem_failure_is_internal_error() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -458,13 +462,15 @@ async fn remove_filesystem_failure_is_internal_error() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -575,7 +581,7 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -585,13 +591,15 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let observed = Box::leak(Box::new(InventoryReads {
         actual: app
@@ -747,7 +755,7 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -757,13 +765,15 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let catalog_dir = directory.join("catalog");
     std::fs::create_dir(&catalog_dir).unwrap();
@@ -894,7 +904,7 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -904,13 +914,15 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let observed = Box::leak(Box::new(InventoryReads {
         actual: app
@@ -1026,7 +1038,7 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1036,13 +1048,15 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let observed = Box::leak(Box::new(InventoryReads {
         actual: app
@@ -1160,7 +1174,7 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1170,13 +1184,15 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     for i in 0..2000 {
         std::fs::write(
@@ -1305,7 +1321,7 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1315,13 +1331,15 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let observed = Box::leak(Box::new(InventoryReads {
         actual: app
@@ -1464,7 +1482,7 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1474,13 +1492,15 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1584,7 +1604,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1594,13 +1614,15 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let evil_dir = directory.join("evil");
     std::fs::create_dir(&evil_dir).unwrap();
@@ -1694,7 +1716,7 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1704,13 +1726,15 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let observed = Box::leak(Box::new(InventoryReads {
         actual: app
@@ -1845,7 +1869,7 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -1855,21 +1879,23 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(calls)
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
         .expect("the actual Store opens its overlay");
     app.overlay_path = Some(overlay.clone());
     app.plugins_cfg
@@ -2022,7 +2048,7 @@ async fn rollback_reads_the_target_and_merges_pins() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -2032,13 +2058,15 @@ async fn rollback_reads_the_target_and_merges_pins() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let publisher_key = plugins::key(67);
@@ -2058,13 +2086,14 @@ async fn rollback_reads_the_target_and_merges_pins() {
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(calls).expect("actual Store overlay");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
+        .expect("actual Store overlay");
     let prior =
         std::collections::BTreeMap::from([("other-plugin".to_string(), "3.0.0".to_string())]);
-    busbar_kernel::config::overlay::try_persist_plugin_versions(Some(&overlay), &prior)
+    busbar_kernel::config::overlay::try_persist_plugin_versions_async(Some(&overlay), &prior)
+        .await
         .expect("the prior plugin pin persists in the actual Store");
     app.overlay_path = Some(overlay.clone());
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
@@ -2129,7 +2158,8 @@ async fn rollback_reads_the_target_and_merges_pins() {
     assert_eq!(view["name"], module);
     assert_eq!(view["version"], module_version);
     let persisted = overlay
-        .read_required()
+        .read_required_async()
+        .await
         .expect("the actual overlay reads")
         .expect("the actual overlay exists");
     assert_eq!(
@@ -2208,7 +2238,7 @@ async fn install_filesystem_failures_are_internal_errors() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -2218,13 +2248,15 @@ async fn install_filesystem_failures_are_internal_errors() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual configured Store binds rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let base_app = app.clone();
     let publish_dir = directory.join("publish");

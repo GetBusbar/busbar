@@ -23,7 +23,7 @@ fn caller() -> Caller {
 
 fn kernel() -> KernelServices {
     let k = KernelServices::new();
-    k.admit(
+    ready(k.admit(
         "inst",
         InstanceFacts {
             trust: vec![(
@@ -39,7 +39,7 @@ fn kernel() -> KernelServices {
             )],
             ..InstanceFacts::default()
         },
-    )
+    ))
     .expect("admitted");
     k
 }
@@ -76,7 +76,7 @@ fn generic_approve_never_pins_an_unverified_sighting() {
     assert_eq!(sight(&k, UNVERIFIED).value, svc::TRUST_NEW);
 
     assert!(
-        k.trust_rule("inst/cp", Ruling::Approve).is_err(),
+        ready(k.trust_rule("inst/cp", Ruling::Approve)).is_err(),
         "the generic approve refuses a sighting that failed verification"
     );
     assert_eq!(pinned(&k), None, "nothing is pinned");
@@ -87,7 +87,7 @@ fn generic_approve_never_pins_an_unverified_sighting() {
         item: None,
     };
     for expected in [None, Some(UNVERIFIED)] {
-        let decided = k.trust_decide(&caller(), key, expected, true);
+        let decided = immediate(|later| k.trust_decide(&caller(), key, expected, true, later));
         assert_eq!(
             decided.value,
             svc::UNDECIDED_UNPINNED,
@@ -97,14 +97,12 @@ fn generic_approve_never_pins_an_unverified_sighting() {
     }
 
     assert_eq!(sight(&k, "fp").value, svc::TRUST_NEW);
-    let row = k
-        .trust_rule("inst/cp", Ruling::Approve)
-        .expect("approvable");
+    let row = ready(k.trust_rule("inst/cp", Ruling::Approve)).expect("approvable");
     assert_eq!(row.approved.as_deref(), Some("fp"));
     assert_eq!(served(&k), Ok(()));
 
     assert_eq!(sight(&k, UNVERIFIED).value, svc::TRUST_DRIFTED);
-    assert!(k.trust_rule("inst/cp", Ruling::Approve).is_err());
+    assert!(ready(k.trust_rule("inst/cp", Ruling::Approve)).is_err());
     assert_eq!(pinned(&k).as_deref(), Some("fp"), "the pin stands");
     assert_eq!(served(&k), Err(Distrust::Quarantined));
 }
@@ -115,20 +113,18 @@ fn guarded_trust_rulings_compare_the_current_sighting_for_both_decisions() {
     let k = kernel();
     for ruling in [Ruling::Approve, Ruling::Revoke] {
         assert_eq!(
-            k.trust_rule_if_seen("inst/cp", ruling, Some("old")),
+            ready(k.trust_rule_if_seen("inst/cp", ruling, Some("old"))),
             Err(TrustRefused::NothingSighted)
         );
     }
     sight(&k, "old");
-    let approved = k
-        .trust_rule_if_seen("inst/cp", Ruling::Approve, Some("old"))
-        .unwrap();
+    let approved = ready(k.trust_rule_if_seen("inst/cp", Ruling::Approve, Some("old"))).unwrap();
     assert_eq!(approved.approved.as_deref(), Some("old"));
     sight(&k, "new");
     let before = k.trust_rows();
     for ruling in [Ruling::Approve, Ruling::Revoke] {
         assert_eq!(
-            k.trust_rule_if_seen("inst/cp", ruling, Some("old")),
+            ready(k.trust_rule_if_seen("inst/cp", ruling, Some("old"))),
             Err(TrustRefused::Stale)
         );
         assert_eq!(
@@ -137,20 +133,18 @@ fn guarded_trust_rulings_compare_the_current_sighting_for_both_decisions() {
             "a stale review changes no trust row"
         );
     }
-    let revoked = k
-        .trust_rule_if_seen("inst/cp", Ruling::Revoke, Some("new"))
-        .unwrap();
+    let revoked = ready(k.trust_rule_if_seen("inst/cp", Ruling::Revoke, Some("new"))).unwrap();
     // A whole-key revoke retains its historical pin; its serving state carries the refusal.
     assert_eq!(revoked.approved.as_deref(), Some("old"));
     assert_eq!(revoked.seen.as_deref(), Some("new"));
     assert_eq!(served(&k), Err(Distrust::Quarantined));
-    let approved = k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    let approved = ready(k.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     assert_eq!(
         approved.approved.as_deref(),
         Some("new"),
         "key-only approval remains compatible"
     );
-    let revoked = k.trust_rule("inst/cp", Ruling::Revoke).unwrap();
+    let revoked = ready(k.trust_rule("inst/cp", Ruling::Revoke)).unwrap();
     assert_eq!(revoked.approved.as_deref(), Some("new"));
     assert_eq!(revoked.state, crate::trust::book::KeyState::New);
     assert_eq!(served(&k), Err(Distrust::NotApproved));
@@ -161,28 +155,25 @@ fn guarded_item_rulings_compare_the_item_digest() {
     use super::TrustRefused;
     let k = kernel();
     sight(&k, "catalogue");
-    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
-    k.trust_sight_item(&caller(), "cp", "tool", "old");
-    k.trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("old"))
-        .unwrap();
-    k.trust_sight_item(&caller(), "cp", "tool", "new");
+    ready(k.trust_rule("inst/cp", Ruling::Approve)).unwrap();
+    immediate(|later| k.trust_sight_item(&caller(), "cp", "tool", "old", later));
+    ready(k.trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("old"))).unwrap();
+    immediate(|later| k.trust_sight_item(&caller(), "cp", "tool", "new", later));
     let before = k.trust_rows();
     for ruling in [Ruling::Approve, Ruling::Revoke] {
         for wrong in ["old", "catalogue"] {
             assert_eq!(
-                k.trust_rule_if_seen("inst/cp/tool", ruling, Some(wrong)),
+                ready(k.trust_rule_if_seen("inst/cp/tool", ruling, Some(wrong))),
                 Err(TrustRefused::Stale)
             );
             assert_eq!(k.trust_rows(), before);
         }
     }
-    let row = k
-        .trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("new"))
-        .unwrap();
+    let row = ready(k.trust_rule_if_seen("inst/cp/tool", Ruling::Approve, Some("new"))).unwrap();
     assert_eq!(row.approved.as_deref(), Some("new"));
     assert_eq!(row.seen.as_deref(), Some("new"));
     assert_eq!(
-        k.trust_rule_if_seen("inst/cp/tool", Ruling::Revoke, Some("new"))
+        ready(k.trust_rule_if_seen("inst/cp/tool", Ruling::Revoke, Some("new")))
             .unwrap()
             .approved,
         None
@@ -193,13 +184,27 @@ fn guarded_item_rulings_compare_the_item_digest() {
 fn plugin_revoke_retains_its_existing_expected_digest_semantics() {
     let k = kernel();
     sight(&k, "current");
-    k.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    ready(k.trust_rule("inst/cp", Ruling::Approve)).unwrap();
     let key = TrustKeyRef {
         counterparty: "cp",
         item: None,
     };
-    let decided = k.trust_decide(&caller(), key, Some("obsolete"), false);
+    let decided = immediate(|later| k.trust_decide(&caller(), key, Some("obsolete"), false, later));
     assert_eq!(decided.value, svc::TRUST_DECIDED_PENDING);
     assert_eq!(pinned(&k).as_deref(), Some("current"));
     assert_eq!(served(&k), Err(Distrust::NotApproved));
+}
+
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    use futures::FutureExt;
+    future
+        .now_or_never()
+        .expect("the pure trust fixture completes in one poll")
+}
+
+fn immediate(operation: impl FnOnce(Later) -> Ran) -> Stored {
+    match operation(Box::new(|_| panic!("the pure trust fixture cannot pend"))) {
+        Ran::Now(stored) => stored,
+        Ran::Later => panic!("the pure trust fixture cannot pend"),
+    }
 }

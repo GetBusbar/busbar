@@ -195,15 +195,11 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config.clone(),
@@ -216,12 +212,15 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the opening rate and usage recovery");
     limits
         .keep()
+        .await
         .expect("the historical boot card activates in its Store");
     let dated_key = crate::root::kernel::ROOT_CARD
         .history()
@@ -229,7 +228,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         .head_key()
         .expect("the historical boot card has a stable entry key");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         current_config,
@@ -243,12 +242,14 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
         None,
         false,
     )
+    .await
     .expect("the normal reload builds the current lower rate on the same actual Store");
     limits
         .keep()
+        .await
         .expect("the current card activates after the historical card");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_ne!(
         crate::root::kernel::ROOT_CARD.history().unwrap().head_key(),
@@ -260,7 +261,9 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
     app.governance
         .as_ref()
         .expect("the actual Store opened governance")
-        .store()
+        .core_store()
+        .expect("the actual Store remains admitted")
+        .ledger()
         .add_metering(&MeteringDelta {
             scale: 0,
             usage_units: Default::default(),
@@ -278,6 +281,7 @@ async fn the_usage_read_prices_through_the_kernels_rate_dater() {
             pricing_version: String::new(),
             priced_from_ms: 0,
         })
+        .await
         .expect("the real Store accepts the metering delta");
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);

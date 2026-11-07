@@ -26,7 +26,7 @@ fn door_at(path: &str, auth: RouteAuth) -> PlaneRouteSpec {
     }
 }
 
-fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
+async fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -74,7 +74,7 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -84,24 +84,30 @@ fn data_router(doors: Vec<PlaneRouteSpec>) -> Router {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     std::fs::remove_file(&operator_token)
         .expect("the actual operator module resolved its credential during boot");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the application has its configured governance Store")
-            .store_calls()
-            .expect("the configured product Store exposes actual calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured product Store exposes actual calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     kernel::build_split_routers_serving(
@@ -132,7 +138,7 @@ async fn post(router: Router, path: &str) -> (u16, String) {
 
 #[tokio::test]
 async fn without_the_install_the_same_path_is_the_fallbacks() {
-    let (code, body) = post(data_router(Vec::new()), DOOR).await;
+    let (code, body) = post(data_router(Vec::new()).await, DOOR).await;
     assert_ne!(code, 200, "no door route, so the fallback answers: {body}");
     assert!(!body.starts_with("door "), "{body}");
 }
@@ -142,7 +148,7 @@ const CLAIMED_UNDER_API: &str = "/api/door-route-test/evaluate";
 #[tokio::test]
 async fn a_planes_exact_claim_under_the_api_root_is_admitted_at_its_own_bar() {
     let (code, body) = post(
-        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]),
+        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]).await,
         CLAIMED_UNDER_API,
     )
     .await;
@@ -153,7 +159,7 @@ async fn a_planes_exact_claim_under_the_api_root_is_admitted_at_its_own_bar() {
 #[tokio::test]
 async fn an_unclaimed_path_under_the_api_root_stays_behind_the_operator_chain() {
     let (code, body) = post(
-        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]),
+        data_router(vec![door_at(CLAIMED_UNDER_API, RouteAuth::Key)]).await,
         "/api/door-route-test/unclaimed",
     )
     .await;
@@ -174,7 +180,7 @@ async fn a_http_plane_receives_no_scheme_derived_from_a_raw_credential() {
             })
         }),
     };
-    let router = data_router(vec![spec]);
+    let router = data_router(vec![spec]).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

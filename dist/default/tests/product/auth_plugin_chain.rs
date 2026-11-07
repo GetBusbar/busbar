@@ -350,8 +350,8 @@ fn auth_plugin_loads_and_identifies_through_middleware() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn admin_modules_rebuilt_on_reload() {
+#[tokio::test]
+async fn admin_modules_rebuilt_on_reload() {
     crate::dist_root_install::install();
     let dir = tmp_plugin_dir("admin-modules-reload");
     let (_, store) = write_application_store(&dir);
@@ -363,7 +363,7 @@ fn admin_modules_rebuilt_on_reload() {
     let settings = serde_json::Value::Object(settings()).to_string();
     let rules = std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let build = |provider: &str, prior: Option<&busbar_kernel::state::App>| {
+    let build = async |provider: &str, prior: Option<&busbar_kernel::state::App>| {
         std::fs::write(
             &config,
             format!(
@@ -386,10 +386,19 @@ fn admin_modules_rebuilt_on_reload() {
         let cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
             .expect("the configuration resolves");
         // Initialize only at first construction; reload retains the same baseline and Store.
-        let anchor = prior.is_none().then(|| {
-            common::plugins::bootstrap_fresh_application_store(&cfg, &loaded.deploy.plugins, &dir)
-                .expect("the actual new Store initializes its principal baseline")
-        });
+        let anchor = if prior.is_none() {
+            Some(
+                common::plugins::bootstrap_fresh_application_store(
+                    &cfg,
+                    &loaded.deploy.plugins,
+                    &dir,
+                )
+                .await
+                .expect("the actual new Store initializes its principal baseline"),
+            )
+        } else {
+            None
+        };
         let (app, _rotation, _limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
             loaded.deploy.plugins.clone(),
@@ -402,11 +411,12 @@ fn admin_modules_rebuilt_on_reload() {
             anchor,
             false,
         )
+        .await
         .expect("the real application builds its admin chain");
         app
     };
     // Keep both marked provider definitions stable; reload changes admin-chain membership.
-    let boot = build("admin-oidc", None);
+    let boot = build("admin-oidc", None).await;
     assert!(
         boot.admin_modules.modules.contains_key("admin-oidc"),
         "keyed by the config module name"
@@ -417,7 +427,7 @@ fn admin_modules_rebuilt_on_reload() {
         "the operator credential is held apart, never inserted into admin_modules"
     );
 
-    let reload = build("reloaded-admin", Some(&boot));
+    let reload = build("reloaded-admin", Some(&boot)).await;
     assert!(
         reload.admin_modules.modules.contains_key("reloaded-admin"),
         "the reload installs its newly configured provider"
@@ -441,8 +451,8 @@ fn admin_modules_rebuilt_on_reload() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
+#[tokio::test]
+async fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login() {
     crate::dist_root_install::install();
     let dir = tmp_plugin_dir("auth-login-v1-gate");
     let lib = std::fs::read(auth_cdylib()).expect("read the auth module's cdylib");
@@ -493,6 +503,7 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
         .expect("the configuration resolves");
     let anchor =
         common::plugins::bootstrap_fresh_application_store(&cfg, &loaded.deploy.plugins, &dir2)
+            .await
             .expect("the actual new Store initializes its principal baseline");
     let built = busbar_kernel::appbuild::build_app_from_config_with_store(
         cfg,
@@ -506,14 +517,17 @@ fn a_v1_auth_plugin_is_refused_at_boot_and_the_current_one_builds_browser_login(
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
         Some(anchor),
         true,
-    );
+    )
+    .await;
     let (app, _rotation, limits) =
         built.expect("the current login-capable plugin with browser_login builds");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &store_module)
+        .await
         .expect("the real configured Store binds the boot rate authority before activation");
     limits
         .keep()
+        .await
         .expect("the login-capable app activates its configuration");
 
     let _ = std::fs::remove_dir_all(&dir);

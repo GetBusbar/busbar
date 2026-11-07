@@ -56,8 +56,8 @@ fn the_opaque_caller_uses_only_the_verified_credential_for_every_carrier() {
     assert!(verified_caller_credential(Some(None), Some("must-not-fall-back")).is_none());
 }
 
-#[test]
-fn inbound_candidate_metadata_preserves_bearer_and_only_enables_dpop_with_the_as() {
+#[tokio::test]
+async fn inbound_candidate_metadata_preserves_bearer_and_only_enables_dpop_with_the_as() {
     let carriers = [HeaderName::from_static("authorization")];
     for (has_as, scheme, expected) in [
         (false, "Bearer", Some("candidate")),
@@ -83,8 +83,8 @@ fn inbound_candidate_metadata_preserves_bearer_and_only_enables_dpop_with_the_as
         );
         assert_eq!(headers.get("x-safe").unwrap(), "unchanged");
     }
-    let store = crate::real_store::store();
-    let gov = crate::governance::GovState::new_with_signer(
+    let store = crate::real_store::core().await;
+    let gov = crate::governance::GovState::new_with_core(
         store,
         None,
         Some(crate::governance::signing::TokenSigner::from_secret_bytes(
@@ -92,10 +92,12 @@ fn inbound_candidate_metadata_preserves_bearer_and_only_enables_dpop_with_the_as
             crate::governance::signing::DEFAULT_KID,
         )),
     )
+    .await
     .unwrap();
     let now = crate::store::now();
     let (key, token) = gov
-        .mint_signed(crate::governance::NewKeySpec::default(), now + 3600, now)
+        .mint_signed_async(crate::governance::NewKeySpec::default(), now + 3600, now)
+        .await
         .unwrap();
     let mut headers = HeaderMap::new();
     headers.insert(

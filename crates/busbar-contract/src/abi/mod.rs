@@ -191,6 +191,9 @@ pub use crate::read_sized_field;
 
 extern "Rust" {
     fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
+    fn __busbar_migrations_root(
+        seal: crate::caps::MigrationSeal,
+    ) -> Box<dyn std::any::Any + Send + Sync>;
 }
 
 /// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
@@ -204,14 +207,23 @@ pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::An
     unsafe { __busbar_kernel_root(seal) }
 }
 
+#[inline]
+pub(crate) fn migration_root(
+    seal: crate::caps::MigrationSeal,
+) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: busbar-migrations defines this Rust-ABI symbol exactly once with
+    // this signature and private return holder, just like the kernel root above.
+    unsafe { __busbar_migrations_root(seal) }
+}
+
 /// The magic value every plugin-ABI peer stamps into [`AbiPreamble::magic`]. A wrong magic means the
 pub const ABI_MAGIC: u64 = u64::from_le_bytes(*b"BUSPLANE");
 
 /// The MAJOR airlock version. Bumping this is a no-turning-back linker event: a reorder/resize/
-pub const ABI_MAJOR: u32 = 2;
+pub const ABI_MAJOR: u32 = 1;
 
 /// The MINOR airlock version. Bumped for every APPEND-ONLY addition (a new trailing struct field, a
-pub const ABI_MINOR: u32 = 34;
+pub const ABI_MINOR: u32 = 0;
 
 /// The FROZEN-FOR-ALL-TIME ABI header. This exact layout — `magic` at offset 0, `abi_major` at 8,
 /// `abi_minor` at 12 — is a permanent contract: it may NEVER be reordered, resized, extended, or

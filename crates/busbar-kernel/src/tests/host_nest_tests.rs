@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+trait ReadyAdmission {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused>;
+}
+impl ReadyAdmission for crate::host_services::KernelServices {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused> {
+        futures::FutureExt::now_or_never(self.admit(instance, facts))
+            .expect("in-memory fixture admission finishes in one poll")
+    }
+}
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -51,7 +68,7 @@ fn caller() -> Caller {
 
 fn services(seam: Arc<Seam>) -> KernelServices {
     let s = KernelServices::new();
-    s.admit("inst", InstanceFacts::default()).unwrap();
+    s.admit_ready("inst", InstanceFacts::default()).unwrap();
     assert!(s.attach_nest(seam));
     s
 }
@@ -171,7 +188,7 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
 #[test]
 fn services_with_no_seam_refuse_a_nest() {
     let s = KernelServices::new();
-    s.admit("inst", InstanceFacts::default()).unwrap();
+    s.admit_ready("inst", InstanceFacts::default()).unwrap();
     s.units().admitted(1, UnitRecord::default());
     let r = run(|l| s.unit_nest(&caller(), Some(1), ask(b""), l)).expect("answered");
     assert_eq!((r.outcome, r.error), (Outcome::Refused, NO_NEST_ROUTE));

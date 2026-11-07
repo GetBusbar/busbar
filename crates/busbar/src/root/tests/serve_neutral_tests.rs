@@ -130,7 +130,7 @@ fn admission_with_scope(
 #[tokio::test]
 async fn a_third_claim_dispatches_opaque_heads_through_the_governed_plane_once() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("neutral-data-ingress", false);
+    let g = governed("neutral-data-ingress", false).await;
     let mut served = g.served.clone();
     served.planes[0].snapshot.claims[2].verb = "*".into();
     served.planes[0].snapshot.claims[2].carrier = "quartz".into();
@@ -205,7 +205,7 @@ async fn a_third_claim_dispatches_opaque_heads_through_the_governed_plane_once()
 #[tokio::test]
 async fn a_revoked_admission_cannot_enter_the_neutral_plane_dispatcher() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("neutral-data-revoked", false);
+    let g = governed("neutral-data-revoked", false).await;
     let mounts =
         crate::root::serve::door_mounts(g.served.clone(), || None, &[], &[], &[], &[]).unwrap();
     let head = Head {
@@ -240,7 +240,7 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     use std::time::Duration;
 
     let _one = PUBLISHING.lock().await;
-    let g = governed("neutral-auth-refusal", false);
+    let g = governed("neutral-auth-refusal", false).await;
     let mounts =
         crate::root::serve::door_mounts(g.served.clone(), || None, &[], &[], &[], &[]).unwrap();
     let routes = mounts.data;

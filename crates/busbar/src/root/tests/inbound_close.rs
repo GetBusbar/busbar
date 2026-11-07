@@ -94,13 +94,13 @@ mod fixture {
     }
 }
 
-fn plain_app() -> Arc<busbar_kernel::state::App> {
-    let (app, _listener_config, _book) = super::app(false);
+async fn plain_app() -> Arc<busbar_kernel::state::App> {
+    let (app, _listener_config, _book) = super::app(false).await;
     app
 }
 
-fn hooked_app() -> Arc<busbar_kernel::state::App> {
-    let mut app = (*plain_app()).clone();
+async fn hooked_app() -> Arc<busbar_kernel::state::App> {
+    let mut app = (*plain_app().await).clone();
     let directory = crate::root::test_plugins::scratch(&format!(
         "inbound-close-secret-{}",
         busbar_kernel::door::op_id().counter(),
@@ -174,8 +174,8 @@ fn listener(app: Arc<busbar_kernel::state::App>) -> kin::Listener {
     }
 }
 
-#[test]
-fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_lock() {
     for replace in [false, true] {
         *GATE.0.lock().unwrap() = Gate {
             closes: 0,
@@ -189,12 +189,16 @@ fn retiring_or_replacing_a_generation_closes_its_real_hook_outside_the_table_loc
             Arc::new(|_| {}),
             Arc::new(|_| {}),
         );
-        inbound.install(OWNER, 1, listener(hooked_app())).unwrap();
+        inbound
+            .install(OWNER, 1, listener(hooked_app().await))
+            .unwrap();
         if !replace {
-            inbound.install(OWNER, 2, listener(plain_app())).unwrap();
+            inbound
+                .install(OWNER, 2, listener(plain_app().await))
+                .unwrap();
         }
         let generation = if replace { 1 } else { 3 };
-        let next = listener(plain_app());
+        let next = listener(plain_app().await);
         let expected = next.specs();
         let release = Release;
         {

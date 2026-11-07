@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::abi::mechanism::extensions;
-use crate::abi::sdk::store::dedupe::{Dedupe, Seen};
-use crate::abi::store::OpId;
+use crate::host_records::dedupe::{Dedupe, Seen};
+use crate::records::OpId;
 use crate::records::{ModelTokens, UsageLedger, UNIT_INPUT};
 
 fn candidate() -> Request {

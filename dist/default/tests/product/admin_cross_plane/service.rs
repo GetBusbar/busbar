@@ -24,8 +24,8 @@ fn hook(module: &str, kind: HookKind, global: bool) -> HookCfg {
     }
 }
 
-#[test]
-fn build_with_hook_makes_a_plane_attach_live() {
+#[tokio::test]
+async fn build_with_hook_makes_a_plane_attach_live() {
     let tools = {
         crate::distribution::admin_cross_plane::ensure_seam();
         busbar_kernel::plane_driver::registry::plane_decl_for_config_section("tools")
@@ -98,7 +98,7 @@ fn build_with_hook_makes_a_plane_attach_live() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -108,13 +108,15 @@ fn build_with_hook_makes_a_plane_attach_live() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
 
         (std::sync::Arc::new(app), hook_module)

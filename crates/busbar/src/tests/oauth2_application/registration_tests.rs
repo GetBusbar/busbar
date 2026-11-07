@@ -19,7 +19,7 @@ async fn serve() -> (String, Arc<busbar_kernel::state::App>) {
         default_grant: vec![SCOPE.into()],
         ..Default::default()
     };
-    let app = application(Some(&config), None);
+    let app = application(Some(&config), None).await;
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");

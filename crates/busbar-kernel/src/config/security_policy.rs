@@ -160,6 +160,35 @@ pub(super) fn scoped<T, E: From<TxnError>>(
     }
 }
 
+/// Restore synchronous builder authority separately on every future poll. No thread-local
+/// authority is left installed when native persistence yields to another task.
+pub(super) async fn scoped_async<T, E: From<TxnError>>(
+    authority: Option<Authority>,
+    future: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let mut future = std::pin::pin!(future);
+    let mut refusal = None;
+    std::future::poll_fn(move |context| {
+        match scoped(authority, || {
+            if let Some(saved) = refusal.take() {
+                BUILD_AUTHORITY.with(|held| held.borrow_mut().refusal = Some(saved));
+            }
+            match future.as_mut().poll(context) {
+                std::task::Poll::Pending => {
+                    refusal = BUILD_AUTHORITY.with(|held| held.borrow_mut().refusal.take());
+                    Ok(std::task::Poll::Pending)
+                }
+                std::task::Poll::Ready(result) => result.map(std::task::Poll::Ready),
+            }
+        }) {
+            Ok(std::task::Poll::Pending) => std::task::Poll::Pending,
+            Ok(std::task::Poll::Ready(value)) => std::task::Poll::Ready(Ok(value)),
+            Err(error) => std::task::Poll::Ready(Err(error)),
+        }
+    })
+    .await
+}
+
 /// Same semantic rules, before builder work can open a proposed auth/secret/plugin instance.
 /// The transaction transports the typed refusal through the builder's existing String API.
 pub(crate) fn check_candidate(
@@ -195,4 +224,40 @@ pub(crate) fn check_candidate(
         BUILD_AUTHORITY.with(|held| held.borrow_mut().refusal = Some(refusal));
         message
     })
+}
+
+#[cfg(test)]
+mod async_scope_tests {
+    use super::*;
+    use std::{
+        future::Future as _,
+        task::{Context, Poll, Waker},
+    };
+
+    #[test]
+    fn typed_builder_refusal_survives_an_async_cleanup_without_lending_thread_authority() {
+        let mut future = Box::pin(scoped_async::<(), TxnError>(None, async {
+            BUILD_AUTHORITY.with(|held| held.borrow_mut().refusal = Some(TxnError::Forbidden));
+            let mut first = true;
+            std::future::poll_fn(move |_| {
+                if std::mem::take(&mut first) {
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+            Err(TxnError::Validation(
+                "a failed builder finished its cleanup".into(),
+            ))
+        }));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        assert!(BUILD_AUTHORITY.with(|held| held.borrow().refusal.is_none()));
+        assert!(matches!(
+            future.as_mut().poll(&mut context),
+            Poll::Ready(Err(TxnError::Forbidden))
+        ));
+        assert!(BUILD_AUTHORITY.with(|held| held.borrow().refusal.is_none()));
+    }
 }

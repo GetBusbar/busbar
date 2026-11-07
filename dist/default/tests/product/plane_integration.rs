@@ -246,7 +246,7 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -256,13 +256,15 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -347,7 +349,7 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -357,13 +359,15 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -470,7 +474,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -480,13 +484,15 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -542,8 +548,8 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
     }
 }
 
-#[test]
-fn plane_slot_is_none_when_the_plane_is_not_configured() {
+#[tokio::test]
+async fn plane_slot_is_none_when_the_plane_is_not_configured() {
     const CHILD: &str = "BUSBAR_PLANE_INTEGRATION_CHILD";
     if std::env::var(CHILD).ok().as_deref()
         != Some("plane_slot_is_none_when_the_plane_is_not_configured")
@@ -617,7 +623,7 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -627,13 +633,15 @@ fn plane_slot_is_none_when_the_plane_is_not_configured() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -771,7 +779,7 @@ mod metrics_scrape {
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
         busbar_kernel::export::plugin::open(&cfg.export).expect("the configured exporter opens");
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             plugin_config,
             None,
@@ -781,18 +789,21 @@ mod metrics_scrape {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the door deployment");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
 
-        let (traffic_bearer, door_bearer) = plane_bearers(&app, &sections, "plane-metrics-traffic");
-        let router = plane_router(app, &sections, usize::MAX, &["keys"]);
+        let (traffic_bearer, door_bearer) =
+            plane_bearers(&app, &sections, "plane-metrics-traffic").await;
+        let router = plane_router(app, &sections, usize::MAX, &["keys"]).await;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -953,14 +964,16 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         ));
     }
 
-    let store = crate::root::real_store::records();
+    let store = crate::root::real_store::core().await;
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
+        GovState::new_with_core(store, Some("admintok".to_string()), Some(signer))
+            .await
+            .unwrap(),
     );
 
     let (key, plain_token) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "door-agent".to_string(),
                 allowed_pools: None,
@@ -971,6 +984,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             2_000_000_000,
             1_000_000_000,
         )
+        .await
         .unwrap();
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
@@ -1024,7 +1038,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -1034,13 +1048,15 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -1091,7 +1107,7 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         "an empty table would make every assertion below vacuous"
     );
 
-    let router = plane_router(app, &sections, usize::MAX, &["keys"]);
+    let router = plane_router(app, &sections, usize::MAX, &["keys"]).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1306,7 +1322,11 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
 }
 
-fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) -> (String, String) {
+async fn plane_bearers(
+    app: &busbar_kernel::state::App,
+    sections: &str,
+    name: &str,
+) -> (String, String) {
     use busbar_kernel::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     let now = busbar_kernel::store::now();
     let expiry = now.saturating_add(300);
@@ -1314,7 +1334,7 @@ fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) ->
         .governance
         .as_ref()
         .expect("actual governance book")
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: name.to_string(),
                 ..Default::default()
@@ -1322,6 +1342,7 @@ fn plane_bearers(app: &busbar_kernel::state::App, sections: &str, name: &str) ->
             expiry,
             now,
         )
+        .await
         .expect("mint an actual key for the protected plane traffic");
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let generation = TokenVerifier::single(signer.kid(), signer.verifying_key())
@@ -1352,14 +1373,14 @@ async fn oversized_413_body(
     sections: &str,
     path: &str,
 ) -> serde_json::Value {
-    let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit");
+    let (plain_bearer, door_bearer) = plane_bearers(&app, sections, "plane-body-limit").await;
     let mount = jsonrpc_mount(door_plane(), sections);
     let bearer = if path == mount || path.starts_with(&format!("{mount}/")) {
         door_bearer
     } else {
         plain_bearer
     };
-    let router = plane_router(app, sections, 64, &["keys"]);
+    let router = plane_router(app, sections, 64, &["keys"]).await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -1385,7 +1406,7 @@ async fn oversized_413_body(
     serde_json::from_slice(&bytes).expect("the refusal is JSON")
 }
 
-fn plane_router(
+async fn plane_router(
     app: Arc<busbar_kernel::state::App>,
     sections: &str,
     body_limit: usize,
@@ -1461,6 +1482,7 @@ fn plane_router(
         None,
         &app.serve_tables,
     )
+    .await
     .expect("the actual plane generations open through the production composition");
     let data_chain: Vec<_> = chain
         .iter()

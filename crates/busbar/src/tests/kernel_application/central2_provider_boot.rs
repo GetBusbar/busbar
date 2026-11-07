@@ -3,8 +3,8 @@
 use crate::root::test_plugins as plugins;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[test]
-fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+#[tokio::test]
+async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PROVIDER_CHILD";
     const WITNESS: &str = "actual root provider boot assertion completed";
     if std::env::var_os(CHILD).is_none() {
@@ -122,7 +122,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let result = busbar_kernel::build_app_from_config(
+    let result = crate::root::real_store::build_app(
         cfg,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -131,7 +131,8 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
         (None, None),
         None,
         &rules,
-    );
+    )
+    .await;
     let err = result
         .err()
         .expect("an api_key that does not resolve must refuse boot, not degrade to an empty key");
@@ -155,8 +156,8 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     std::env::remove_var(&set_var);
     println!("{WITNESS}");
 }
-#[test]
-fn boot_starts_a_keyless_lane_declared_none() {
+#[tokio::test]
+async fn boot_starts_a_keyless_lane_declared_none() {
     const CHILD: &str = "BUSBAR_CENTRAL2_PROVIDER_CHILD";
     const WITNESS: &str = "actual root provider boot assertion completed";
     if std::env::var_os(CHILD).is_none() {
@@ -257,7 +258,7 @@ fn boot_starts_a_keyless_lane_declared_none() {
         .insert("m0".to_string(), model_cfg_for_provider("acme"));
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let result = busbar_kernel::build_app_from_config(
+    let result = crate::root::real_store::build_app(
         cfg,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -266,23 +267,29 @@ fn boot_starts_a_keyless_lane_declared_none() {
         (None, None),
         None,
         &rules,
-    );
+    )
+    .await;
     let (app, rotate, limits) = result.expect("`api_key: none` starts the lane");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-        109,
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .unwrap()
+                    .core_store_handle()
+                    .expect("actual Store calls"),
+                109,
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("actual rate history boots");
-    limits.keep().expect("actual rates and limits commit");
+    limits.keep().await.expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     println!("{WITNESS}");

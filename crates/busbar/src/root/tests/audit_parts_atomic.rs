@@ -106,7 +106,7 @@ fn refused_whole_audit_transaction_publishes_no_parts_or_head() {
     slots.on_transaction(move |request| {
         if is_final(request) {
             seen.store(true, Ordering::SeqCst);
-            Some(StoreFailure::Refused(
+            Some(RecordFailure::Refused(
                 "definitive final transaction refusal".into(),
             ))
         } else {
@@ -200,7 +200,7 @@ fn authority_lost_after_actual_cleanup_cannot_publish_any_audit_part_or_head() {
                     assert_eq!(successor.id, node);
                     assert_ne!(lease_row(&actual, host).unwrap().0, old_holder);
                 }
-                return Some(StoreFailure::Failed(
+                return Some(RecordFailure::Failed(
                     "cleanup applied but reply lost".into(),
                 ));
             }
@@ -251,7 +251,7 @@ fn oversized_whole_audit_frame_is_preflighted_before_cleanup_and_uses_split_fall
             "the preserved fallback writes one ordinary part at a time"
         );
         split.store(true, Ordering::SeqCst);
-        Some(StoreFailure::Refused(
+        Some(RecordFailure::Refused(
             "stop after proving the original split fallback".into(),
         ))
     });

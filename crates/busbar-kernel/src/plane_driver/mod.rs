@@ -290,13 +290,13 @@ pub struct PreparedSection<'a> {
 
 impl PreparedSection<'_> {
     /// Commit after every other fallible step of a generation refresh has succeeded.
-    pub fn commit(self) -> Result<(), String> {
-        self.commit_typed().map_err(|e| e.to_string())
+    pub async fn commit(self) -> Result<(), String> {
+        self.commit_typed().await.map_err(|e| e.to_string())
     }
 
     /// Preserve admission refusal identity for the composition root’s refresh observation.
-    pub fn commit_typed(self) -> Result<(), crate::host_services::AdmitRefused> {
-        self.services.admit(&self.label, self.facts)?;
+    pub async fn commit_typed(self) -> Result<(), crate::host_services::AdmitRefused> {
+        self.services.admit(&self.label, self.facts).await?;
         self.services.bound_work(&self.label, self.work);
         Ok(())
     }
@@ -313,6 +313,7 @@ fn prepare_admission<'a>(
     let trust = parse_section(section.0, section.1, &d.trust_keys)?;
     let facts = InstanceFacts {
         conditional_record_kinds: d.conditional_record_kinds.clone(),
+        record_collections: d.record_collections.clone(),
         record_kinds: d
             .record_kinds
             .iter()
@@ -344,7 +345,7 @@ fn prepare_admission<'a>(
 }
 
 impl PlaneDriver {
-    pub fn new(
+    pub async fn new(
         calls: Arc<dyn PlaneCalls>,
         config: DriverConfig,
         money: Arc<dyn MoneySeam>,
@@ -352,7 +353,7 @@ impl PlaneDriver {
         section: (&str, &serde_yaml::Value),
     ) -> Result<Self, String> {
         let d = calls.declared();
-        prepare_admission(&d, &services, section)?.commit()?;
+        prepare_admission(&d, &services, section)?.commit().await?;
         let driver = calls.driver();
         Ok(PlaneDriver {
             calls,
@@ -1700,7 +1701,7 @@ mod section_admission_tests {
         )
     }
 
-    fn approve(services: &KernelServices) {
+    async fn approve(services: &KernelServices) {
         let caller = Caller {
             instance: Arc::from(INSTANCE),
             plugin: Arc::from("test-plane"),
@@ -1717,23 +1718,25 @@ mod section_admission_tests {
         assert_eq!(answer.outcome, AbiOutcome::Ready);
         services
             .trust_rule(&format!("{INSTANCE}/peer"), Ruling::Approve)
+            .await
             .expect("the operator approves the sighted card");
         assert_eq!(judge(services), Ok(()));
     }
 
-    fn approved() -> KernelServices {
+    async fn approved() -> KernelServices {
         let services = KernelServices::new();
         prepare_admission(&declaration(), &services, ("peers", &section("root-a", 32)))
             .unwrap()
             .commit()
+            .await
             .unwrap();
-        approve(&services);
+        approve(&services).await;
         services
     }
 
-    #[test]
-    fn dropping_a_prepared_section_preserves_live_approval_and_work_bounds() {
-        let services = approved();
+    #[tokio::test]
+    async fn dropping_a_prepared_section_preserves_live_approval_and_work_bounds() {
+        let services = approved().await;
         let before = services.trust_rows();
         let work = services.work_bounds_of(INSTANCE);
         let candidate =
@@ -1747,9 +1750,9 @@ mod section_admission_tests {
         assert_eq!(judge(&services), Ok(()));
     }
 
-    #[test]
-    fn a_rejected_section_preserves_live_approval_and_work_bounds() {
-        let services = approved();
+    #[tokio::test]
+    async fn a_rejected_section_preserves_live_approval_and_work_bounds() {
+        let services = approved().await;
         let before = services.trust_rows();
         let work = services.work_bounds_of(INSTANCE);
         let error = prepare_admission(&declaration(), &services, ("peers", &section("root-b", 0)))
@@ -1761,9 +1764,9 @@ mod section_admission_tests {
         assert_eq!(judge(&services), Ok(()));
     }
 
-    #[test]
-    fn a_refused_admission_commit_preserves_live_approval_and_work_bounds() {
-        let services = approved();
+    #[tokio::test]
+    async fn a_refused_admission_commit_preserves_live_approval_and_work_bounds() {
+        let services = approved().await;
         services
             .admit(
                 "other",
@@ -1775,6 +1778,7 @@ mod section_admission_tests {
                     ..InstanceFacts::default()
                 },
             )
+            .await
             .unwrap();
         let before = services.trust_rows();
         let work = services.work_bounds_of(INSTANCE);
@@ -1783,7 +1787,7 @@ mod section_admission_tests {
         let candidate =
             prepare_admission(&changed, &services, ("peers", &section("root-b", 64))).unwrap();
         assert!(
-            candidate.commit().is_err(),
+            candidate.commit().await.is_err(),
             "the other instance owns its signing domain"
         );
         assert_eq!(services.trust_rows(), before);
@@ -1791,13 +1795,14 @@ mod section_admission_tests {
         assert_eq!(judge(&services), Ok(()));
     }
 
-    #[test]
-    fn a_committed_section_keeps_same_pin_approval_and_requires_approval_for_a_new_pin() {
-        let services = approved();
+    #[tokio::test]
+    async fn a_committed_section_keeps_same_pin_approval_and_requires_approval_for_a_new_pin() {
+        let services = approved().await;
         let before = services.trust_rows();
         prepare_admission(&declaration(), &services, ("peers", &section("root-a", 48)))
             .unwrap()
             .commit()
+            .await
             .unwrap();
         assert_eq!(services.trust_rows(), before);
         assert_eq!(services.work_bounds_of(INSTANCE).max_live, 48);
@@ -1805,6 +1810,7 @@ mod section_admission_tests {
         prepare_admission(&declaration(), &services, ("peers", &section("root-b", 64)))
             .unwrap()
             .commit()
+            .await
             .unwrap();
         assert_eq!(services.work_bounds_of(INSTANCE).max_live, 64);
         assert_eq!(judge(&services), Err(Distrust::Unsighted));
@@ -1812,6 +1818,6 @@ mod section_admission_tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].approved, None);
         assert_eq!(rows[0].seen, None);
-        approve(&services);
+        approve(&services).await;
     }
 }

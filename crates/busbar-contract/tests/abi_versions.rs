@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pin the current 1.6 ABI generations independently of historical release numbering.
+//! Pin ABI counters to one increment from released v1.5.5; new kinds start at one.
 
 use std::os::raw::c_void;
 
@@ -14,16 +14,19 @@ use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 
 #[test]
 fn current_abi_generations_are_explicit() {
+    assert_eq!(busbar_contract::abi::ABI_MAJOR, 1);
+    assert_eq!(busbar_contract::abi::ABI_MINOR, 0);
     assert_eq!(MECHANISM_VERSION, 2);
     assert_eq!(store::ABI_VERSION, 3);
     assert_eq!(secret::ABI_VERSION, 2);
     assert_eq!(auth::ABI_VERSION, 3);
     assert_eq!(hook::ABI_VERSION, 2);
     assert_eq!(export::ABI_VERSION, 3);
-    // Generation 2 requires semantic rate-limit faults and namespace provenance;
-    // the unreleased generation 1 must not be accepted as the current plane ABI.
-    assert_eq!(plane::ABI_VERSION, 2);
-    assert_eq!(transport::ABI_VERSION, 2);
+    // Plane and Transport are new kinds since v1.5.5.
+    assert_eq!(plane::ABI_VERSION, 1);
+    assert_eq!(transport::ABI_VERSION, 1);
+    assert_eq!(store::v4::ABI_VERSION, 3);
+    assert_ne!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
 }
 
 #[test]

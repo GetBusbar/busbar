@@ -141,7 +141,7 @@ fn canonical(value: &serde_json::Value) -> String {
 
 /// Consume only the genuine public witness committed by the exclusive fresh-Store provisioner.
 /// Each instance is migrated before any ordinary serving or lifecycle assertion starts.
-fn cold_record_receipt(
+async fn cold_record_receipt(
     directory: &std::path::Path,
     gov: &busbar_kernel::governance::GovState,
     instance: &str,
@@ -150,13 +150,19 @@ fn cold_record_receipt(
     let creation = std::fs::read(directory.join("principal-creation-evidence.json"))
         .expect("the exclusive Store creation provenance is retained");
     let witness = crate::root::loader::sign::sha256_hex(&creation);
-    let calls = gov
-        .store_calls()
-        .expect("the actual Store has typed records");
     let schema = "test.fixture.principal-creation";
-    let committed = futures::executor::block_on(calls.record_get(schema, b"namespace"))
+    let scope = busbar_kernel::persistence::scoped::ScopedStore::host_private(
+        gov.core_store_handle().unwrap(),
+        "busbar.fixture.principal-creation",
+        [schema.into()],
+    )
+    .expect("fixture witness scope");
+    let committed = scope
+        .get(schema, b"namespace")
+        .await
         .expect("the actual public witness reads")
         .expect("fresh principal initialization committed its public witness");
+    let committed = committed.expose(&busbar_kernel::seal::lend());
     assert_eq!(committed.as_slice(), witness.as_bytes());
     let mut epoch = [0u8; 16];
     getrandom::fill(&mut epoch).expect("a fresh cold migration epoch");
@@ -1066,9 +1072,11 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     );
     let fresh =
         crate::root::test_plugins::provision_fresh_application_store(&config, &plugins, &directory)
+            .await
             .expect("exclusively provision the real durable Store");
     fresh
         .commit_creation_witness()
+        .await
         .expect("commit the actual exclusive Store creation witness");
     let opened = fresh.opened();
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1083,13 +1091,15 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         Some(opened),
         false,
     )
+    .await
     .expect("the actual Store boots the normal root");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the normal node book opens on its actual Store");
-    limits.keep().expect("the actual boot card activates");
+    limits.keep().await.expect("the actual boot card activates");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let ctx = crate::root::linked::BookCtx {
         book: &book,
@@ -1100,6 +1110,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     }
     let app = Arc::new(app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("normal startup hydrates the actual durable admin audit stream");
     let gov = app
         .governance
@@ -1107,7 +1118,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         .expect("the actual governance Store")
         .clone();
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "a2a-parity".into(),
                 plane_scopes: Some(vec![busbar_contract::records::ScopeRef {
@@ -1119,8 +1130,9 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             4_000_000_000,
             busbar_kernel::store::now(),
         )
+        .await
         .unwrap();
-    gov.hydrate_budgets(&app.cost, 0).unwrap();
+    gov.hydrate_budgets_async(&app.cost, 0).await.unwrap();
     let verified = gov
         .verify_token(
             token.expose(&busbar_kernel::seal::lend()),
@@ -1215,17 +1227,28 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             .with_pool(Arc::new(BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
-            )))
-            .with_records(Arc::new(busbar_kernel::host_records::StoreRows(
-                gov.store_calls().expect("the real Store has typed records"),
             ))),
         );
+        assert!(kernel.attach_persistence(gov.core_store_handle().unwrap()));
         if initializing {
             kernel
                 .arm_record_bootstrap(
-                    cold_record_receipt(&directory, &gov, &instance, &store_fingerprint),
+                    cold_record_receipt(&directory, &gov, &instance, &store_fingerprint).await,
                     &store_fingerprint,
+                    |schema, key, _| {
+                        if schema != "test.fixture.principal-creation" || key != b"namespace" {
+                            return Err("unexpected fixture creation witness");
+                        }
+                        busbar_kernel::persistence::scoped::migration_address(
+                            true,
+                            "busbar.fixture.principal-creation",
+                            schema,
+                            key,
+                        )
+                        .map_err(|_| "invalid fixture witness address")
+                    },
                 )
+                .await
                 .expect("the actual cold host consumes the committed fresh-Store witness");
         }
         services.install_kernel(kernel.clone(), kernel).unwrap();
@@ -1310,6 +1333,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             None,
             &tables,
         )
+        .await
         .expect("the actual A2A product composes through normal root services");
         assert_eq!(served.planes.len(), 1);
         assert_eq!(served.planes[0].snapshot.claims.len(), 19);
@@ -1394,7 +1418,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             tables.withdraw(&instance);
             continue;
         }
-        gov.flush_budgets();
+        gov.flush_budgets().await;
 
         let fee_lane = busbar_kernel_ledger::cost::plane_fee_lane(plane.name());
         let fee_quantity = |ledger: &busbar_contract::records::UsageLedger| {
@@ -1413,12 +1437,16 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 .sum::<u64>()
         };
         let before_ledger = gov
-            .store()
+            .core_store()
+            .unwrap()
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .expect("the actual Store reads the total fee quantity before the request");
         let before_billable = fee_quantity(&before_ledger);
         let before = gov
-            .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+            .usage_for_async(&app.cost, &key.id, busbar_kernel::store::now())
+            .await
             .unwrap()
             .unwrap_or_default();
         let (status, answer) =
@@ -1430,7 +1458,8 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         );
 
         let after = gov
-            .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+            .usage_for_async(&app.cost, &key.id, busbar_kernel::store::now())
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1438,10 +1467,13 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             before.requests + 1,
             "the actual root counts one completed request"
         );
-        gov.flush_budgets();
+        gov.flush_budgets().await;
         let after_ledger = gov
-            .store()
+            .core_store()
+            .unwrap()
+            .ledger()
             .get_usage(&key.id, 0)
+            .await
             .expect("the actual Store reads the settled total fee quantity");
         let after_billable = fee_quantity(&after_ledger);
         assert_eq!(

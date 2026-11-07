@@ -401,7 +401,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-kernel-seams",
  "flate2",
  "schemars",
  "serde",
@@ -459,6 +458,7 @@ dependencies = [
  "serde_yaml_ng",
  "tokio",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -494,7 +494,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-seams",
  "busbar-kernel-wal",
  "busbar-plane-a2a",
  "busbar-plane-decisions",
@@ -653,7 +652,6 @@ dependencies = [
  "busbar-kernel-egress",
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
- "busbar-kernel-seams",
  "busbar-kernel-wal",
  "bytes",
  "crc32fast",
@@ -727,13 +725,6 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "serde",
-]
-
-[[package]]
-name = "busbar-kernel-seams"
-version = "1.6.0"
-dependencies = [
- "busbar-contract",
 ]
 
 [[package]]

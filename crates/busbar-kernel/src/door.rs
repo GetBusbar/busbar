@@ -20,12 +20,12 @@ pub struct UnitKeyMint(std::sync::atomic::AtomicU64);
 
 impl UnitKeyMint {
     pub fn mint(&self) -> busbar_contract::ids::UnitKey {
-        let n = self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = next_counter(&self.0);
         busbar_contract::ids::UnitKey::new(n + 1)
     }
 }
 
-pub fn op_id() -> busbar_contract::abi::store::OpId {
+pub fn op_id() -> busbar_contract::records::OpId {
     IDS.mint()
 }
 
@@ -51,12 +51,19 @@ impl OpIds {
         }
     }
 
-    pub(crate) fn mint(&self) -> busbar_contract::abi::store::OpId {
-        let n = self
-            .counter
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        busbar_contract::abi::store::OpId::from_parts(self.node, n + 1)
+    pub(crate) fn mint(&self) -> busbar_contract::records::OpId {
+        let n = next_counter(&self.counter);
+        busbar_contract::records::OpId::from_parts(self.node, n + 1)
     }
+}
+
+// Exhaustion leaves the allocator exhausted. In particular, catching a panic
+// must not allow a subsequent call to reuse an identity under the same node.
+fn next_counter(counter: &std::sync::atomic::AtomicU64) -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    counter
+        .fetch_update(Relaxed, Relaxed, |current| current.checked_add(1))
+        .expect("the kernel identity counter is exhausted")
 }
 
 fn boot_node() -> u64 {

@@ -125,10 +125,11 @@ fn with_handle<H>(
         .or_insert(handle);
 }
 
-pub fn refresh_scrape_gauges(app: &App) {
+pub async fn refresh_scrape_gauges(app: &App) -> Result<(), &'static str> {
     let now = busbar_kernel::store::now();
 
-    money::refresh_money_gauges(app, now);
+    // Persistence outages must not suppress the independent in-memory lane gauges.
+    let money_result = money::refresh_money_gauges(app, now).await;
 
     let mut snap_cache: std::collections::HashMap<usize, busbar_kernel::store::LaneSnapshot> =
         std::collections::HashMap::new();
@@ -189,6 +190,7 @@ pub fn refresh_scrape_gauges(app: &App) {
         let avail = app.store.classify("", lane_idx, now);
         emit_lane_gauges(model, &lane_model, snap, &avail, now);
     }
+    money_result
 }
 
 fn lane_state_value(
@@ -396,7 +398,7 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             diag_error!(
                 METRICS_RECORDER_INSTALL_FAILED,
                 "{}: {e}",
-                crate::config::migration_table::text("snapshot_recorder_failed")
+                crate::config::declared_vocabulary::text("snapshot_recorder_failed")
             );
             None
         }

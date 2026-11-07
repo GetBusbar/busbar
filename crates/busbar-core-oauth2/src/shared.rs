@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-mod records;
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use busbar_contract::abi::sdk::store::conditional::{
+use busbar_contract::host_records::conditional::{
     Decision, Expected, Mutation, Predicate, Request,
 };
-use busbar_contract::records::{PlaneDisposition, PlaneRecordRef, PlaneSelector};
-use busbar_contract::store_calls::{StoreCalls, StoreFailure};
+use busbar_contract::Secret;
+use busbar_kernel::persistence::facade::PendingId;
+use busbar_kernel::persistence::scoped::{self, ScopedStore};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientId};
 use oauth_as::consent::ConsentRecord;
@@ -21,6 +20,7 @@ use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 pub(crate) const LABEL: &str = "\u{1}oauth_as\u{1}";
 
@@ -33,6 +33,10 @@ pub(crate) const RETIRE_AFTER_SECS: u64 = VERSION_CLAIM_SECS + CLOCK_SKEW_SECS;
 pub(crate) const INDEX_GRACE_SECS: u64 = 600;
 
 const SWAP_ATTEMPTS: u32 = 64;
+
+// Preserve the OAuth logical-cell admission boundary that preceded the native
+// port. This is a domain budget, independent of plane and generic Store bounds.
+const MAX_LOGICAL_CELL_BYTES: usize = 16 * 1024 * 1024;
 
 fn kind(name: &str) -> String {
     format!("{LABEL}{name}")
@@ -93,7 +97,7 @@ fn secs_of(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-fn failed(what: &str, f: StoreFailure) -> StorageError {
+fn failed(what: &str, f: impl std::fmt::Debug) -> StorageError {
     StorageError::new(format!("oauth_as store: {what}: {f:?}"))
 }
 
@@ -111,36 +115,6 @@ fn decode<T: DeserializeOwned>(what: &str, body: &[u8]) -> Result<T, StorageErro
 
 fn user_code(d: &DeviceGrant) -> (String, String) {
     (normalize_user_code(&d.user_code), d.device_code.clone())
-}
-
-pub(crate) fn wait_for<F: std::future::Future>(fut: F) -> F::Output {
-    use std::task::{Context, Poll, Wake, Waker};
-    struct Unpark(std::thread::Thread);
-    impl Wake for Unpark {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let run = move || {
-        let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
-        let mut cx = Context::from_waker(&waker);
-        let mut fut = std::pin::pin!(fut);
-        loop {
-            if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
-                return out;
-            }
-            std::thread::park();
-        }
-    };
-    match tokio::runtime::Handle::try_current() {
-        Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(run)
-        }
-        _ => run(),
-    }
 }
 
 /// A revocation barrier's two instants (`oauth_as::store::RevocationWindow`, kept).
@@ -247,100 +221,174 @@ impl<R> Swap<R> {
     }
 }
 
-pub(crate) struct Shared {
-    calls: Arc<dyn StoreCalls>,
+struct Pending {
+    state: tokio::sync::Mutex<PendingState>,
+    request: Arc<scoped::Request>,
+    addresses: Vec<(String, Vec<u8>)>,
+}
 
-    pending: Mutex<Vec<Arc<Request>>>,
+#[derive(Default)]
+struct PendingState {
+    id: Option<PendingId>,
+    decision: Option<Decision>,
+}
+
+type ClaimAddress = (String, String);
+type ClaimState = (u64, Option<scoped::PendingClaim>);
+
+pub(crate) struct Shared {
+    store: Arc<ScopedStore>,
+    pending: Mutex<Vec<Arc<Pending>>>,
+    claims: Mutex<BTreeMap<ClaimAddress, ClaimState>>,
 }
 
 impl Shared {
-    pub(crate) fn new(calls: Arc<dyn StoreCalls>) -> Self {
+    pub(crate) fn schemas() -> Vec<String> {
+        [
+            "bucket", "family", "uc", "key", "ix.tok", "ix.rt", "ix.code", "ix.par", "ix.dev",
+            "ix.cons", "ix.fam", "ix.subj", "session", "stake", "replay",
+        ]
+        .into_iter()
+        .map(Self::schema)
+        .collect()
+    }
+
+    pub(crate) fn new(store: Arc<ScopedStore>) -> Self {
         Self {
-            calls,
+            store,
             pending: Mutex::new(Vec::new()),
+            claims: Mutex::new(BTreeMap::new()),
         }
     }
 
-    pub(crate) fn require_atomic(calls: &dyn StoreCalls) -> Result<(), String> {
-        if calls.supports_record_transaction() {
-            Ok(())
-        } else {
-            Err("oauth_as requires a store with atomic conditional-record transactions".into())
+    fn decision(outcome: scoped::Outcome) -> Result<Decision, StorageError> {
+        match outcome {
+            scoped::Outcome::Applied => Ok(Decision::Applied),
+            scoped::Outcome::ConditionConflict => Ok(Decision::ConditionConflict),
+            other => Err(failed("unresolved conditional record", other)),
         }
     }
 
-    async fn submit(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-
-        let mut observed = Vec::new();
-        for mutation in &request.mutations {
-            if let Mutation::Put { schema, key, value } = mutation {
-                if value.len() > busbar_contract::bounded::MAX_RECORD_BYTES
-                    && !request
-                        .predicates
-                        .iter()
-                        .any(|p| p.schema == *schema && p.key == *key)
-                {
-                    let previous = self
-                        .calls
-                        .record_get(schema, key)
-                        .await
-                        .map_err(|f| failed("record cleanup root", f))?;
-                    if let Some(previous) = previous {
-                        observed.push(Predicate {
-                            schema: schema.clone(),
-                            key: key.clone(),
-                            expected: Expected::Bytes(previous.as_slice().to_vec()),
-                        });
-                    }
-                }
+    async fn submit(&self, request: Arc<Zeroizing<Request>>) -> Result<Decision, StorageError> {
+        let oversized = request.mutations.iter().any(|mutation| matches!(mutation,
+            Mutation::Put {schema,value,..} if schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
+        )) || request.predicates.iter().any(|predicate| matches!(&predicate.expected,
+            Expected::Bytes(value) if predicate.schema.ends_with(".atomic.v1") && value.len()>MAX_LOGICAL_CELL_BYTES
+        ));
+        if oversized {
+            return Err(StorageError::new(
+                "oauth_as store: logical cell exceeds byte budget",
+            ));
+        }
+        let request = scoped::Request {
+            op_id: request.op_id.0,
+            predicates: request
+                .predicates
+                .iter()
+                .map(|p| scoped::Predicate {
+                    schema: p.schema.clone(),
+                    key: p.key.clone(),
+                    expected: match &p.expected {
+                        Expected::Absent => scoped::Expected::Absent,
+                        Expected::Bytes(bytes) => {
+                            scoped::Expected::Exact(Secret::new(bytes.clone()))
+                        }
+                    },
+                })
+                .collect(),
+            mutations: request
+                .mutations
+                .iter()
+                .map(|m| match m {
+                    Mutation::Put { schema, key, value } => scoped::Mutation::Put {
+                        schema: schema.clone(),
+                        key: key.clone(),
+                        value: Secret::new(value.clone()),
+                    },
+                    Mutation::Delete { schema, key } => scoped::Mutation::Delete {
+                        schema: schema.clone(),
+                        key: key.clone(),
+                    },
+                    Mutation::DeleteRange {
+                        schema,
+                        prefix,
+                        exact_key_length,
+                    } => scoped::Mutation::DeleteRange {
+                        schema: schema.clone(),
+                        prefix: prefix.clone(),
+                        exact_key_length: *exact_key_length,
+                    },
+                })
+                .collect(),
+        };
+        let request = Arc::new(request);
+        let mut addresses: Vec<_> = request
+            .predicates
+            .iter()
+            .map(|p| (p.schema.clone(), p.key.clone()))
+            .collect();
+        addresses.extend(request.mutations.iter().map(|m| match m {
+            scoped::Mutation::Put { schema, key, .. }
+            | scoped::Mutation::Delete { schema, key } => (schema.clone(), key.clone()),
+            scoped::Mutation::DeleteRange { schema, prefix, .. } => {
+                (schema.clone(), prefix.clone())
             }
-        }
-        self.submit_physical(records::physical(request, &observed)?)
-            .await
-    }
-
-    async fn submit_physical(&self, request: Arc<Request>) -> Result<Decision, StorageError> {
-        request
-            .encode()
-            .map_err(|e| StorageError::new(format!("oauth_as store: {e}")))?;
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
-            if !pending.iter().any(|r| r.op_id == request.op_id) {
-                pending.push(Arc::clone(&request));
-            }
-        }
-        let decision = self
-            .calls
-            .record_transaction(&request)
-            .await
-            .map_err(|f| failed("conditional record", f))?;
+        }));
+        let pending = Arc::new(Pending {
+            state: tokio::sync::Mutex::new(PendingState::default()),
+            request,
+            addresses,
+        });
         self.pending
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .retain(|r| r.op_id != request.op_id);
-        Ok(decision)
+            .push(pending.clone());
+        self.submit_pending(pending).await
+    }
+
+    async fn submit_pending(&self, pending: Arc<Pending>) -> Result<Decision, StorageError> {
+        // Every waiter shares the definitive answer. Cancellation releases this
+        // gate while the immutable request and CoreStore attempt remain owned.
+        let mut state = pending.state.lock().await;
+        if let Some(decision) = state.decision {
+            return Ok(decision);
+        }
+        let outcome = match state.id {
+            Some(id) => self.store.retry(id).await,
+            None => self.store.conditional_native(&pending.request).await,
+        }
+        .map_err(|e| failed("conditional record", e))?;
+        match outcome {
+            scoped::Outcome::Pending(id)
+            | scoped::Outcome::Reconcile(id)
+            | scoped::Outcome::Busy(Some(id)) => state.id = Some(id),
+            scoped::Outcome::Busy(None) => {}
+            _ => {
+                state.decision = Self::decision(outcome).ok();
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .retain(|p| !Arc::ptr_eq(p, &pending));
+            }
+        }
+        Self::decision(outcome)
     }
 
     async fn settle(&self, schema: &str, key: Option<&[u8]>) -> Result<(), StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        let pending: Vec<_> =
-            self.pending
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .iter()
-                .filter(|r| {
-                    r.predicates.iter().any(|p| {
-                        p.schema == schema && key.is_none_or(|key| p.key.as_slice() == key)
-                    }) || r.mutations.iter().any(|m| {
-                        let (s, k) = m.address();
-                        s == schema && key.is_none_or(|key| k == key)
-                    })
-                })
-                .cloned()
-                .collect();
-        for request in pending {
-            self.submit_physical(request).await?;
+        let pending: Vec<_> = self
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter(|p| {
+                p.addresses
+                    .iter()
+                    .any(|(s, k)| s == schema && key.is_none_or(|key| k == key))
+            })
+            .cloned()
+            .collect();
+        for pending in pending {
+            self.submit_pending(pending).await?;
         }
         Ok(())
     }
@@ -350,9 +398,9 @@ impl Shared {
         id: &str,
         expected: Option<Vec<u8>>,
         value: Vec<u8>,
-    ) -> Arc<Request> {
-        Arc::new(Request {
-            version: busbar_contract::abi::sdk::store::conditional::VERSION,
+    ) -> Arc<Zeroizing<Request>> {
+        Arc::new(Zeroizing::new(Request {
+            version: busbar_contract::host_records::conditional::VERSION,
             op_id: busbar_kernel::door::op_id(),
             predicates: vec![Predicate {
                 schema: schema.to_string(),
@@ -364,7 +412,7 @@ impl Shared {
                 key: id.as_bytes().to_vec(),
                 value,
             }],
-        })
+        }))
     }
 
     async fn bucket_indexes(
@@ -562,262 +610,204 @@ impl Shared {
     }
 
     async fn read_record(&self, schema: &str, key: &[u8]) -> Result<Option<Vec<u8>>, StorageError> {
-        let root = self
-            .calls
-            .record_get(schema, key)
+        self.store
+            .get(schema, key)
             .await
-            .map_err(|f| failed("record root", f))?;
-        match root {
-            Some(root) => {
-                self.read_record_at(schema, key, root.as_slice().to_vec())
-                    .await
-            }
-            None => Ok(None),
-        }
-    }
-
-    async fn read_record_at(
-        &self,
-        schema: &str,
-        key: &[u8],
-        mut root: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, StorageError> {
-        for _ in 0..SWAP_ATTEMPTS {
-            let Some(descriptor) = records::Descriptor::decode(&root)? else {
-                return Ok(Some(root));
-            };
-            let mut bytes = Vec::new();
-            let parts_schema = records::parts_schema(schema);
-            for part in 0..descriptor.parts() {
-                let part_key = descriptor.key(key, part);
-                let Some(part) = self
-                    .calls
-                    .record_get(&parts_schema, &part_key)
-                    .await
-                    .map_err(|f| failed("record chunk", f))?
-                else {
-                    break;
-                };
-                bytes.extend_from_slice(part.as_slice());
-            }
-            if descriptor.check(&bytes) {
-                return Ok(Some(bytes));
-            }
-            let current = self
-                .calls
-                .record_get(schema, key)
-                .await
-                .map_err(|f| failed("record root", f))?;
-            match current {
-                None => return Ok(None),
-                Some(current) if current.as_slice() != root => root = current.as_slice().to_vec(),
-                Some(_) => {
-                    return Err(StorageError::new(
-                        "oauth_as store: incomplete or corrupt chunked record",
-                    ))
-                }
-            }
-        }
-        Err(StorageError::new(
-            "oauth_as store: chunked record repeatedly changed",
-        ))
+            .map(|v| v.map(|v| v.expose(&busbar_kernel::seal::lend()).clone()))
+            .map_err(|e| failed("read record", e))
     }
 
     async fn authority(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
         let schema = atomic_schema(name);
         self.settle(&schema, Some(id.as_bytes())).await?;
-        for _ in 0..SWAP_ATTEMPTS {
-            if let Some(value) = self.read_record(&schema, id.as_bytes()).await? {
-                authority_body(value.as_slice())?;
-                if name == "key" {
-                    self.cleanup_legacy(name, id).await;
-                }
-                return Ok(Some(value.as_slice().to_vec()));
-            }
-            let Some(legacy) = self
-                .calls
-                .get_plane_record(&kind(name), id)
-                .await
-                .map_err(|f| failed(name, f))?
-            else {
-                return Ok(None);
-            };
-            let value = live_body(&legacy);
-            match self
-                .submit(Self::candidate(&schema, id, None, value.clone()))
-                .await?
-            {
-                Decision::Applied => {
-                    self.cleanup_legacy(name, id).await;
-                    return Ok(Some(value));
-                }
-                Decision::ConditionConflict => continue,
-            }
+        let value = self.read_record(&schema, id.as_bytes()).await?;
+        if let Some(value) = &value {
+            authority_body(value)?;
         }
-        Err(StorageError::new(
-            "oauth_as store: legacy import repeatedly conflicted",
-        ))
+        Ok(value)
     }
 
-    async fn cleanup_legacy(&self, name: &str, id: &str) {
-        if let Err(f) = self.calls.delete_plane_record(&kind(name), id).await {
-            tracing::warn!(error = %failed(name, f), "oauth_as: a superseded legacy row was not reclaimed");
+    fn schema(name: &str) -> String {
+        if atomic_kind(name) {
+            atomic_schema(name)
+        } else {
+            kind(name)
         }
     }
 
-    async fn get_body(&self, kind_name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        if atomic_kind(kind_name) {
+    async fn get_body(&self, name: &str, id: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        if atomic_kind(name) {
             return self
-                .authority(kind_name, id)
+                .authority(name, id)
                 .await?
                 .map(|v| authority_body(&v).map(|b| b.map(<[u8]>::to_vec)))
                 .transpose()
                 .map(Option::flatten);
         }
-        self.calls
-            .get_plane_record(&kind(kind_name), id)
-            .await
-            .map_err(|f| failed(kind_name, f))
+        self.settle(&Self::schema(name), Some(id.as_bytes()))
+            .await?;
+        self.read_record(&Self::schema(name), id.as_bytes()).await
     }
 
     async fn get<T: DeserializeOwned>(
         &self,
-        kind_name: &str,
+        name: &str,
         id: &str,
     ) -> Result<Option<T>, StorageError> {
-        match self.get_body(kind_name, id).await? {
-            Some(body) => decode(kind_name, &body).map(Some),
-            None => Ok(None),
-        }
+        self.get_body(name, id)
+            .await?
+            .map(|body| decode(name, &body))
+            .transpose()
     }
 
-    async fn put_body(&self, kind_name: &str, id: &str, body: &[u8]) -> Result<(), StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        if atomic_kind(kind_name) {
+    async fn put_body(&self, name: &str, id: &str, body: &[u8]) -> Result<(), StorageError> {
+        if atomic_kind(name) {
             return Err(StorageError::new(
                 "oauth_as store: authoritative records require an exact candidate",
             ));
         }
-        let k = kind(kind_name);
-        self.calls
-            .upsert_plane_record(PlaneRecordRef {
-                kind: &k,
-                id,
-                parent: None,
-                seq: 0,
-                ts: now_secs(),
-                disposition: PlaneDisposition::Active,
-                body,
-            })
-            .await
-            .map_err(|f| failed(kind_name, f))
+        self.settle(&Self::schema(name), Some(id.as_bytes()))
+            .await?;
+        self.submit(Arc::new(Zeroizing::new(Request {
+            version: busbar_contract::host_records::conditional::VERSION,
+            op_id: busbar_kernel::door::op_id(),
+            predicates: vec![],
+            mutations: vec![Mutation::Put {
+                schema: Self::schema(name),
+                key: id.as_bytes().to_vec(),
+                value: body.to_vec(),
+            }],
+        })))
+        .await
+        .map(drop)
     }
 
-    async fn put<T: Serialize>(
-        &self,
-        kind_name: &str,
-        id: &str,
-        value: &T,
-    ) -> Result<(), StorageError> {
-        self.put_body(kind_name, id, &encode(kind_name, value)?)
-            .await
+    async fn put<T: Serialize>(&self, name: &str, id: &str, value: &T) -> Result<(), StorageError> {
+        self.put_body(name, id, &encode(name, value)?).await
     }
 
-    async fn list<T: DeserializeOwned>(&self, kind_name: &str) -> Result<Vec<T>, StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        let mut rows = self
-            .calls
-            .list_plane_records(&kind(kind_name), &PlaneSelector::All)
-            .await
-            .map_err(|f| failed(kind_name, f))?;
-        if atomic_kind(kind_name) {
-            let schema = atomic_schema(kind_name);
-            self.settle(&schema, None).await?;
-            let raw: BTreeMap<_, _> = self
-                .calls
-                .record_scan(&schema, b"", u32::MAX)
+    async fn list<T: DeserializeOwned>(&self, name: &str) -> Result<Vec<T>, StorageError> {
+        let schema = Self::schema(name);
+        self.settle(&schema, None).await?;
+        let mut after = None;
+        let mut rows = Vec::new();
+        loop {
+            let page = self
+                .store
+                .page(&schema, b"", after.as_ref())
                 .await
-                .map_err(|f| failed(kind_name, f))?
-                .into_iter()
-                .collect();
-
-            let mut superseded = Vec::new();
-            rows.retain(|body| {
-                let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-                    return true;
-                };
-                let id = value
-                    .get("id")
-                    .or_else(|| value.get("key"))
-                    .and_then(|v| v.as_str())
-                    .filter(|id| !id.is_empty())
-                    .map(str::to_string)
-                    .or_else(|| {
-                        value
-                            .get("b")
-                            .and_then(|b| b.get("id"))
-                            .and_then(|v| v.as_str())
-                            .map(|id| {
-                                if kind_name == "bucket" {
-                                    digest(id)
-                                } else {
-                                    id.to_string()
-                                }
-                            })
-                    });
-                if let Some(id) = id.filter(|id| raw.contains_key(id.as_bytes())) {
-                    superseded.push(id);
-                    false
+                .map_err(|e| failed("scan records", e))?;
+            for (_, value) in page.rows {
+                let seal = busbar_kernel::seal::lend();
+                let bytes = value.expose(&seal);
+                let body = if atomic_kind(name) {
+                    authority_body(bytes)?
                 } else {
-                    true
+                    Some(bytes.as_slice())
+                };
+                if let Some(body) = body {
+                    rows.push(decode(name, body)?);
                 }
-            });
-            for id in superseded {
-                self.cleanup_legacy(kind_name, &id).await;
             }
-            for (key, root) in &raw {
-                let value = self
-                    .read_record_at(&schema, key, root.as_slice().to_vec())
-                    .await?;
-                if let Some(value) = value {
-                    if let Some(body) = authority_body(&value)? {
-                        rows.push(body.to_vec());
-                    }
-                }
+            after = page.next;
+            if after.is_none() {
+                break;
             }
         }
-        Ok(rows
-            .iter()
-            .filter_map(|body| serde_json::from_slice(body).ok())
-            .collect())
+        Ok(rows)
     }
 
-    async fn delete(&self, kind_name: &str, id: &str) -> Result<(), StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        if atomic_kind(kind_name) {
+    async fn delete(&self, name: &str, id: &str) -> Result<(), StorageError> {
+        if atomic_kind(name) {
             return Err(StorageError::new(
                 "oauth_as store: authoritative records retire through CAS",
             ));
         }
-        self.calls
-            .delete_plane_record(&kind(kind_name), id)
-            .await
-            .map_err(|f| failed(kind_name, f))
+        self.settle(&Self::schema(name), Some(id.as_bytes()))
+            .await?;
+        self.submit(Arc::new(Zeroizing::new(Request {
+            version: busbar_contract::host_records::conditional::VERSION,
+            op_id: busbar_kernel::door::op_id(),
+            predicates: vec![],
+            mutations: vec![Mutation::Delete {
+                schema: Self::schema(name),
+                key: id.as_bytes().to_vec(),
+            }],
+        })))
+        .await
+        .map(drop)
     }
 
-    async fn claim(
-        &self,
-        kind_name: &str,
-        token: &str,
-        expires_at: u64,
-    ) -> Result<bool, StorageError> {
-        Self::require_atomic(self.calls.as_ref()).map_err(StorageError::new)?;
-        let now = now_secs();
-        self.calls
-            .redeem_plane_token(&kind(kind_name), token, expires_at, now)
-            .await
-            .map_err(|f| failed(kind_name, f))
+    async fn claim(&self, name: &str, token: &str, expires_at: u64) -> Result<bool, StorageError> {
+        let kind = kind(name);
+        self.store
+            .register_claims(&kind)
+            .map_err(|error| failed("register claim cleanup", error))?;
+        let address = (kind.clone(), token.to_string());
+        let claim = {
+            let mut claims = self.claims.lock().unwrap_or_else(|p| p.into_inner());
+            let (expiry, claim) = claims.entry(address.clone()).or_insert((expires_at, None));
+            if *expiry != expires_at {
+                return Err(StorageError::new(
+                    "oauth_as store: pending claim expiry changed",
+                ));
+            }
+            *claim
+        };
+        let outcome = match claim {
+            Some(claim) => self.store.retry_claim(&kind, claim).await,
+            None => self.store.redeem(&kind, token, expires_at).await,
+        }
+        .map_err(|e| failed("redeem", e))?;
+        match outcome {
+            scoped::ClaimOutcome::Claimed
+            | scoped::ClaimOutcome::AlreadyClaimed
+            | scoped::ClaimOutcome::Expired => {
+                self.claims
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&address);
+                Ok(matches!(outcome, scoped::ClaimOutcome::Claimed))
+            }
+            scoped::ClaimOutcome::Pending(claim)
+            | scoped::ClaimOutcome::Reconcile(claim)
+            | scoped::ClaimOutcome::Busy(claim) => {
+                self.claims
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(address, (expires_at, Some(claim)));
+                Err(failed("unresolved claim", outcome))
+            }
+        }
+    }
+
+    async fn sweep_claims(&self) -> Result<(), StorageError> {
+        for name in ["replay", "spent", "shown"] {
+            self.store
+                .register_claims(&kind(name))
+                .map_err(|error| failed("register claim cleanup", error))?;
+        }
+        let mut failure = None;
+        for _ in 0..3 {
+            match self.store.sweep_claims().await {
+                Ok(
+                    None
+                    | Some(
+                        scoped::ClaimSweepOutcome::Complete
+                        | scoped::ClaimSweepOutcome::Page { .. }
+                        | scoped::ClaimSweepOutcome::Contended,
+                    ),
+                ) => {}
+                Ok(Some(outcome)) => {
+                    failure
+                        .get_or_insert_with(|| failed("claim sweep remains unresolved", outcome));
+                }
+                Err(error) => {
+                    failure.get_or_insert_with(|| failed("claim sweep", error));
+                }
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
 
     async fn read_cell<T: DeserializeOwned + Default>(
@@ -1984,6 +1974,10 @@ impl Storage for SharedStorage {
 
     async fn sweep_expired(&self, now: SystemTime) -> Result<u64, StorageError> {
         let s = &self.shared;
+        if let Err(error) = s.sweep_claims().await {
+            tracing::warn!(%error,"oauth_as: native claim cleanup remains owned for the next tick");
+        }
+
         let mut removed = 0u64;
         let cells = s.list::<Cell<Bucket>>("bucket").await?;
         for mut cell in cells.into_iter().filter(|cell| !cell.b.id.is_empty()) {

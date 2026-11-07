@@ -5,8 +5,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use busbar_contract::kinds::RecordBytes;
+use busbar_contract::Secret;
 use busbar_kernel::audit_ring;
+use busbar_kernel::persistence::scoped::ScopedStore;
 
 use crate::root::test_plugins as plugins;
 
@@ -127,20 +128,17 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let calls = anchor
-        .calls
-        .as_ref()
-        .expect("the actual Store exposes typed calls")
-        .clone();
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let calls = ScopedStore::host_private(
+        anchor.clone(),
+        "busbar.config.overlay",
+        [OVERLAY_SCHEMA.to_string()],
     )
-    .expect("the actual Store supports conditional configuration records");
+    .unwrap();
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -153,17 +151,20 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("the actual root hydrates audit storage before admin mutations");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -186,19 +187,20 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_corrupt() {
         .await
         .unwrap();
     assert!(
-        busbar_kernel::config::overlay::read(&overlay)
+        busbar_kernel::config::overlay::read_async(&overlay)
+            .await
             .and_then(|d| d.root)
             .is_some(),
         "root override present before corrupting the overlay"
     );
 
-    let corrupted = RecordBytes::new(b"{ not json".to_vec()).expect("bounded corrupt head bytes");
+    let corrupted = Secret::new(b"{ not json".to_vec());
     calls
-        .record_put(OVERLAY_SCHEMA, b"head", &corrupted)
+        .put(OVERLAY_SCHEMA, b"head", corrupted)
         .await
         .expect("the actual Store persists the corrupted head");
     assert!(
-        overlay.read_bytes().is_err(),
+        overlay.read_bytes_async().await.is_err(),
         "the actual Store-backed carrier now refuses its corrupt head"
     );
 
@@ -350,20 +352,17 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let calls = anchor
-        .calls
-        .as_ref()
-        .expect("the actual Store exposes typed calls")
-        .clone();
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let calls = ScopedStore::host_private(
+        anchor.clone(),
+        "busbar.config.overlay",
+        [OVERLAY_SCHEMA.to_string()],
     )
-    .expect("the actual Store supports conditional configuration records");
+    .unwrap();
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -376,17 +375,20 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("the actual root hydrates audit storage before admin mutations");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -404,7 +406,8 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         .unwrap();
     let mut doc: serde_json::Value = serde_json::from_slice(
         &overlay
-            .read_bytes()
+            .read_bytes_async()
+            .await
             .unwrap()
             .expect("the actual overlay has a generation"),
     )
@@ -416,12 +419,13 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         "the existing one-chunk test generation stays bounded"
     );
     let head = calls
-        .record_get(OVERLAY_SCHEMA, b"head")
+        .get(OVERLAY_SCHEMA, b"head")
         .await
         .unwrap()
         .expect("the actual head exists");
-    let mut head: serde_json::Value = serde_json::from_slice(head.as_slice()).unwrap();
-    let records = calls.record_scan(OVERLAY_SCHEMA, &[], 8).await.unwrap();
+    let mut head: serde_json::Value =
+        serde_json::from_slice(head.expose(&busbar_kernel::seal::lend())).unwrap();
+    let records = calls.page(OVERLAY_SCHEMA, &[], None).await.unwrap().rows;
     let chunks: Vec<_> = records
         .into_iter()
         .filter(|(key, _)| key.as_slice() != b"head")
@@ -431,21 +435,19 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
         1,
         "the actual first overlay generation has exactly one payload chunk"
     );
-    let value = RecordBytes::new(payload.clone()).unwrap();
+    let value = Secret::new(payload.clone());
     calls
-        .record_put(OVERLAY_SCHEMA, &chunks[0].0, &value)
+        .put(OVERLAY_SCHEMA, &chunks[0].0, value)
         .await
         .unwrap();
     head["length"] = serde_json::json!(payload.len());
     head["digest"] =
         serde_json::json!(hex::decode(busbar_contract::redacted::sha256_hex(&payload)).unwrap());
-    let value = RecordBytes::new(serde_json::to_vec(&head).unwrap()).unwrap();
-    calls
-        .record_put(OVERLAY_SCHEMA, b"head", &value)
-        .await
-        .unwrap();
+    let value = Secret::new(serde_json::to_vec(&head).unwrap());
+    calls.put(OVERLAY_SCHEMA, b"head", value).await.unwrap();
     assert!(overlay
-        .read_required()
+        .read_required_async()
+        .await
         .expect_err("the actual carrier refuses the newer document")
         .contains("newer"));
 

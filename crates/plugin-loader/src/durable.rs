@@ -26,6 +26,19 @@
 use std::io;
 use std::path::Path;
 
+#[path = "durable_documents.rs"]
+// This is the existing native filesystem owner boundary; its safe API never exposes handles.
+#[allow(unsafe_code)]
+pub(crate) mod documents;
+#[path = "durable_spool.rs"]
+#[allow(unsafe_code)]
+pub mod spool;
+pub use spool::{SpoolReader, SpoolWriter};
+
+pub use documents::{
+    inspect_document, recover_document, replace_document, DocumentInspection, DocumentReplace,
+};
+
 /// Options a FEW call-sites need beyond the default. `Default` = the overlay/state posture (the
 /// common case): OS/umask-default mode, truncate-create the temp.
 #[derive(Clone, Copy, Default)]

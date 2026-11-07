@@ -32,6 +32,9 @@ struct Crossings {
     reads: HashMap<CompletionHandle, (usize, usize)>,
     chunks: usize,
     pending_reads: usize,
+    partial_write: bool,
+    write_handles: Vec<CompletionHandle>,
+    wakes: Vec<(Ticket, usize)>,
 }
 thread_local! {static CROSSINGS: RefCell<Crossings> = RefCell::new(Crossings::default());}
 fn state<T>(f: impl FnOnce(&mut Crossings) -> T) -> T {
@@ -78,8 +81,17 @@ extern "C" fn write(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> R
     unsafe {
         let input = &*input.cast::<IoIn>();
         let bytes = std::slice::from_raw_parts(input.buf, input.len);
-        state(|s| s.written.extend_from_slice(bytes));
-        (*out).len = input.len as u64;
+        let count = state(|s| {
+            let count = if s.partial_write {
+                bytes.len().min(1)
+            } else {
+                bytes.len()
+            };
+            s.written.extend_from_slice(&bytes[..count]);
+            s.write_handles.push(input.head.handle);
+            count
+        });
+        (*out).len = count as u64;
     }
     RawOutcome::of(Outcome::Ready)
 }
@@ -113,7 +125,13 @@ extern "C" fn read(_: HostCtx, input: *const c_void, out: *mut ServiceOut) -> Ra
         })
     }
 }
+extern "C" fn wake(_: HostCtx, ticket: Ticket) {
+    state(|s| s.wakes.push((ticket, s.written.len())));
+}
 fn host(refuse: bool) -> Host {
+    host_config(refuse, false)
+}
+fn host_config(refuse: bool, with_wake: bool) -> Host {
     state(|s| {
         *s = Crossings {
             refuse,
@@ -135,7 +153,7 @@ fn host(refuse: bool) -> Host {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
             ctx: HostCtx::NONE,
-            wake: None,
+            wake: with_wake.then_some(wake),
             conns: &table,
             services: std::ptr::null(),
             io: std::ptr::null(),
@@ -262,7 +280,7 @@ fn a_wire_body_pends_on_its_reads_and_answers_the_backends_reply() {
 
 #[test]
 fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
-    use crate::abi::sdk::store::door::pending_parked;
+    use crate::abi::sdk::store::v4::door::park as pending_parked;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     struct DropProbe(Arc<AtomicUsize>);
@@ -277,7 +295,7 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     let mut idle = Op::enter(TICKET, Some(&host), None, None);
     idle.park(DropProbe(drops.clone()));
     assert!(
-        matches!(pending_parked(idle, 0), Err(Outcome::Fault)),
+        pending_parked(idle, 0).is_none(),
         "the production Store pending guard returns Fault when no service or timed wake arms it"
     );
     assert_eq!(
@@ -306,7 +324,7 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
         "cancelling the retained wait drops once"
     );
     assert!(
-        matches!(pending_parked(Op::detached(), 1), Err(Outcome::Fault)),
+        pending_parked(Op::detached(), 1).is_none(),
         "a wake cannot give a no-ticket call pending authority"
     );
 
@@ -324,4 +342,102 @@ fn pending_on_the_connector_with_no_service_in_flight_is_fault() {
     );
     drop(parked);
     assert_eq!(drops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn always_ready_stream_yields_keeps_partial_writes_and_never_replays_ready_io() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    for (cancel, with_wake) in [(false, true), (true, true), (false, false)] {
+        let host = host_config(false, with_wake);
+        state(|s| s.partial_write = true);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let mut parked = None;
+        let mut finished = false;
+        for turn in 0..64 {
+            let mut op = Op::enter(TICKET, Some(&host), parked.take(), None);
+            let started = starts.clone();
+            let before = state(|s| s.wakes.len());
+            let answer = drive(&mut op, move |wire| {
+                started.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    wire.connect(0, Some("ready.internal:6379")).await?;
+                    let payload: Vec<u8> = (0..=255).collect();
+                    wire.write_all(&payload).await?;
+                    for byte in 0..96u8 {
+                        wire.write_all(&[byte]).await?;
+                    }
+                    wire.close().await;
+                    Ok::<_, ConnFailure>(())
+                })
+            });
+            match answer {
+                Step::Pending { .. } => {
+                    assert_eq!(
+                        state(|s| s.wakes.len()),
+                        before + 1,
+                        "wake is latched before returning Pending"
+                    );
+                    assert!(state(|s| s
+                        .wakes
+                        .last()
+                        .is_some_and(|(ticket, _)| *ticket == TICKET)));
+                    if turn == 0 {
+                        assert!(
+                            state(|s| s.written.len()) < 256,
+                            "partial native write yields before completion"
+                        );
+                    }
+                    let pending = op.into_parked();
+                    if cancel {
+                        drop(pending);
+                        finished = true;
+                        break;
+                    }
+                    parked = Some(pending);
+                }
+                Step::Ready(result) => {
+                    result.unwrap();
+                    if with_wake {
+                        assert!(turn > 0, "an always-ready stream must yield");
+                    } else {
+                        assert_eq!(turn, 0);
+                    }
+                    drop(op.into_parked());
+                    finished = true;
+                    break;
+                }
+            }
+        }
+        assert!(finished);
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "resume retains the exact body"
+        );
+        state(|s| {
+            assert_eq!(s.opened.len(), 1);
+            assert_eq!(s.closed, 1, "yield/cancel retain one checkout owner");
+            let unique: std::collections::HashSet<_> = s.write_handles.iter().copied().collect();
+            assert_eq!(
+                unique.len(),
+                s.write_handles.len(),
+                "no already-ready I/O handle is replayed"
+            );
+            if !cancel {
+                let expected: Vec<u8> = (0..=255).chain(0..96).collect();
+                assert_eq!(s.written, expected);
+                if with_wake {
+                    assert!(
+                        s.wakes.iter().any(|(_, bytes)| *bytes > 256),
+                        "separate ready write requests also yield"
+                    );
+                } else {
+                    assert!(s.wakes.is_empty());
+                }
+            }
+        });
+    }
 }

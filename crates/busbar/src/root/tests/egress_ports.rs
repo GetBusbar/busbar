@@ -187,7 +187,7 @@ fn a_linked_dialect() -> String {
         .expect("the fixture names a body-model dialect")
 }
 
-fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
+async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     crate::root::test_plane_registry::register();
     let dialect = a_linked_dialect();
     let mut defs = std::collections::HashMap::new();
@@ -211,7 +211,7 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
     .expect("the serving deployment parses");
     let empty = busbar_kernel::config::resolve(&empty, &Default::default())
         .expect("the serving deployment resolves");
-    let store = crate::root::real_store::store();
+    let store = crate::root::real_store::core().await;
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -223,30 +223,31 @@ fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store.clone()),
         false,
     )
+    .await
     .expect("the product builds the timeout sealing application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("native rate history attaches");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its rate history");
     }
-    limits.keep().expect("the serving limits commit");
+    limits.keep().await.expect("the serving limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let serving = crate::root::model_egress::ModelServing {
@@ -304,13 +305,13 @@ fn sealed_attempt_ms(
 }
 
 #[cfg(linked_section_pools)]
-#[test]
-fn the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution() {
+#[tokio::test]
+async fn the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution() {
     let actual = crate::root::test_plane_registry::fallback();
     assert!(actual.fallback);
     assert_ne!(actual.key, "neutral-test-fallback");
     crate::root::test_plane_registry::register();
-    let egress = sealed_timeouts();
+    let egress = sealed_timeouts().await;
     assert_eq!(sealed_attempt_ms(&egress, "fast", "patient"), Some(50));
     let rows = busbar_kernel::plane_driver::registry::plane_decls();
     let fallback: Vec<_> = rows.iter().filter(|row| row.fallback).collect();
@@ -322,9 +323,9 @@ fn the_root_fixture_cohort_keeps_one_actual_fallback_after_timeout_resolution() 
     );
 }
 
-#[test]
-fn a_members_attempt_timeout_wins_over_its_models_default() {
-    let egress = sealed_timeouts();
+#[tokio::test]
+async fn a_members_attempt_timeout_wins_over_its_models_default() {
+    let egress = sealed_timeouts().await;
     assert_eq!(
         sealed_attempt_ms(&egress, "fast", "patient"),
         Some(50),
@@ -332,9 +333,9 @@ fn a_members_attempt_timeout_wins_over_its_models_default() {
     );
 }
 
-#[test]
-fn test_model_default_applies_when_member_has_no_override() {
-    let egress = sealed_timeouts();
+#[tokio::test]
+async fn test_model_default_applies_when_member_has_no_override() {
+    let egress = sealed_timeouts().await;
     assert_eq!(
         sealed_attempt_ms(&egress, "slow", "patient"),
         Some(10_000),
@@ -342,15 +343,15 @@ fn test_model_default_applies_when_member_has_no_override() {
     );
 }
 
-#[test]
-fn test_no_cap_anywhere_is_none() {
-    let egress = sealed_timeouts();
+#[tokio::test]
+async fn test_no_cap_anywhere_is_none() {
+    let egress = sealed_timeouts().await;
     assert_eq!(sealed_attempt_ms(&egress, "fast", "plain"), None);
 }
 
-#[test]
-fn test_empty_cands_uses_model_default() {
-    let egress = sealed_timeouts();
+#[tokio::test]
+async fn test_empty_cands_uses_model_default() {
+    let egress = sealed_timeouts().await;
     assert_eq!(
         sealed_attempt_ms(&egress, "patient", "patient"),
         Some(10_000)

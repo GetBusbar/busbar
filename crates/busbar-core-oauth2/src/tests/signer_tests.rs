@@ -148,6 +148,7 @@ async fn the_jwks_and_metadata_documents_are_byte_identical_to_1_5_5() {
         vec!["https://gw.example.com/rpc".to_string()],
         crate::cimd::unconnected(),
     )
+    .await
     .expect("the plane builds with an operator-supplied key");
 
     let get = |path: String| {

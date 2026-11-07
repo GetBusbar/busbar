@@ -63,11 +63,14 @@ fn peer_only_identity_survives_an_earlier_head_pass_and_a_mixed_provisional_iden
     }
 }
 
-#[test]
-fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_order() {
-    let actual = crate::real_store::store();
-    let gov = Arc::new(crate::governance::GovState::new(actual.clone(), None).unwrap());
-    assert!(gov.attach_store_calls(actual));
+#[tokio::test]
+async fn inherited_peer_positions_keep_the_exact_replay_authority_and_provider_order() {
+    let core = crate::real_store::core().await;
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(core, None, None)
+            .await
+            .unwrap(),
+    );
     let identity = VerifiedIdentity {
         subject: "peer-principal".to_string(),
         replay: Some(Box::new(busbar_contract::auth_calls::Replay {
@@ -216,14 +219,16 @@ fn mixed_peer_metadata_requires_each_declared_request_point_and_peer_only_never_
         let points = AuthPoints(POINT_PEER | request_point);
         assert!(points.has(AuthPoint::Peer));
         assert!(points.has(AuthPoint::from_bit(request_point).unwrap()));
-        assert!(!points.has(
-            AuthPoint::from_bit(if request_point == POINT_HEAD {
-                POINT_HEAD_BODY
-            } else {
-                POINT_HEAD
-            })
-            .unwrap()
-        ));
+        assert!(
+            !points.has(
+                AuthPoint::from_bit(if request_point == POINT_HEAD {
+                    POINT_HEAD_BODY
+                } else {
+                    POINT_HEAD
+                })
+                .unwrap()
+            )
+        );
     }
     assert!(AuthPoints::PEER.has(AuthPoint::Peer));
     assert!(!AuthPoints::PEER.has(AuthPoint::Head));

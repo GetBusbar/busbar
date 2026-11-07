@@ -26,6 +26,16 @@ impl fmt::Debug for SourceFingerprints {
     }
 }
 impl SourceFingerprints {
+    /// Private binding for startup/recovery custody, never an admin-visible digest.
+    pub fn binding_digest(&self) -> [u8; 32] {
+        use sha2::Digest;
+        let mut digest = sha2::Sha256::new();
+        digest.update(b"busbar.configuration.sources.1\0");
+        digest.update(self.config);
+        digest.update(self.catalog);
+        digest.finalize().into()
+    }
+
     pub fn from_sources(config: &str, catalog: &str) -> Self {
         Self {
             config: source_digest(config),

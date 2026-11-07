@@ -28,10 +28,7 @@ use busbar_kernel::diagnostics::{
     diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
     ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
 };
-use busbar_kernel::governance::claims::ClaimSet;
 use busbar_kernel::governance::{NewKeySpec, VirtualKey};
-
-static EXISTENCE_GATE: ClaimSet<String> = ClaimSet::new();
 
 /// `POST /keys` body (1.5.0 signed-token keys): PURE AUTH + a signed expiring token. A minted
 /// key is a busbar-signed `{sub, exp, kid}` token, returned ONCE. No rpm/tpm/budget on a key - all
@@ -426,13 +423,11 @@ async fn admit_key_effect(
     }
 }
 
-fn start_key_effect(
+async fn start_key_effect(
     handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
     effect: &busbar_kernel::auth::effect::PinnedEffect,
 ) -> Option<busbar_kernel::auth::effect::Completion> {
-    tokio::runtime::Handle::current()
-        .block_on(effect.start(handle))
-        .ok()
+    effect.start(handle).await.ok()
 }
 
 fn key_effect_forbidden(who: KeyAudit<'_>) -> Response {
@@ -443,37 +438,32 @@ fn key_effect_forbidden(who: KeyAudit<'_>) -> Response {
 }
 
 async fn claim_in_store(
-    store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
+    store: busbar_kernel::persistence::scoped::ScopedStore,
     key: (String, String),
     fingerprint: [u8; 32],
 ) -> Result<Result<Claim, Refused>, crate::idempotency::BindingMismatch> {
-    let now = busbar_kernel::store::now();
-    tokio::task::spawn_blocking(move || durable::claim_bound(&*store, &key, fingerprint, now))
-        .await
-        .unwrap_or_else(|e| {
-            Ok(Err(Refused::Unavailable(format!(
-                "the claim did not run: {e}"
-            ))))
-        })
+    durable::claim_bound(&store, &key, fingerprint, busbar_kernel::store::now()).await
 }
 
 async fn settle_in_store(
-    store: std::sync::Arc<dyn busbar_kernel::governance::RecordStore>,
+    store: busbar_kernel::persistence::scoped::ScopedStore,
     claim: Option<Claim>,
     settled: Settled,
 ) {
     let Some(claim) = claim else {
         return;
     };
-    let now = busbar_kernel::store::now();
-    let kept =
-        tokio::task::spawn_blocking(move || durable::settle(&*store, &claim, now, &settled)).await;
-    let why = match kept {
-        Ok(Ok(())) => return,
-        Ok(Err(why)) => why,
-        Err(e) => e.to_string(),
-    };
-    diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.settle", error = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+    if let Err(why) = durable::settle(&store, &claim, busbar_kernel::store::now(), &settled).await {
+        diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "idempotency.settle", error = %why, "the store did not keep an Idempotency-Key's outcome; a retry is refused as in flight until the claim lapses");
+    }
+}
+
+fn replay_store(
+    gov: &busbar_kernel::governance::GovState,
+) -> busbar_kernel::governance::RecordStoreResult<busbar_kernel::persistence::scoped::ScopedStore> {
+    durable::scoped_store(gov.core_store_handle()?).map_err(|error| {
+        busbar_kernel::governance::RecordStoreError(format!("admin replay scope: {error:?}"))
+    })
 }
 
 fn applied_mutation(operation: &str, resource: &str) -> Response {
@@ -546,7 +536,7 @@ fn claim_refused(who: KeyAudit<'_>, refused: Refused) -> Response {
 
 const UNBOUND_BUCKET_LABEL: &str = "(no group)";
 
-fn check_key_cap(
+async fn check_key_cap(
     gov: &busbar_kernel::governance::GovState,
     cap: usize,
     group: Option<&str>,
@@ -555,7 +545,7 @@ fn check_key_cap(
     if cap == 0 {
         return Ok(None);
     }
-    let keys = gov.all_keys()?;
+    let keys = gov.all_keys_async().await?;
     Ok(check_key_cap_for_keys(
         &keys,
         cap,
@@ -849,21 +839,16 @@ async fn create_key_owned(
     let gov = gov.clone();
     let txn_actor = actor.clone();
 
-    let replay_store = gov.store();
+    let replay_store = match replay_store(&gov) {
+        Ok(store) => store,
+        Err(error) => return internal_error("idempotency.scope", &error),
+    };
     let claim = match idem_reservation.as_ref() {
-        Some(r) => {
-            match claim_in_store(
-                std::sync::Arc::clone(&replay_store),
-                r.key().clone(),
-                fingerprint,
-            )
-            .await
-            {
-                Ok(Ok(claim)) => Some(claim),
-                Ok(Err(refused)) => return claim_refused(who, refused),
-                Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
-            }
-        }
+        Some(r) => match claim_in_store(replay_store.clone(), r.key().clone(), fingerprint).await {
+            Ok(Ok(claim)) => Some(claim),
+            Ok(Err(refused)) => return claim_refused(who, refused),
+            Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
+        },
         None => None,
     };
 
@@ -914,7 +899,8 @@ async fn create_key_owned(
             )
         });
 
-        let mint = move || {
+        let mint = async move {
+            let identity_guard = gov.identity_mint_guard(spec.minted_by.as_deref().unwrap_or("")).await;
 
 
             if let Some((installed, group, parent, actor)) = provision_record {
@@ -926,8 +912,8 @@ async fn create_key_owned(
                 );
                 installed.record_version(&actor, &format!("group.provision group:{group} (auto, parent {parent})"));
             }
-            let minted = (|| -> Result<MintOutcome, busbar_kernel::governance::MintError> {
-                if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None)? {
+            let minted: Result<MintOutcome, busbar_kernel::governance::MintError> = async {
+                if let Some((group, n)) = check_key_cap(&gov, cap, cap_group.as_deref(), None).await? {
                     return Ok(MintOutcome::AtCap { group, n, cap });
                 }
                 if let Some(issued) = &issued {
@@ -940,16 +926,16 @@ async fn create_key_owned(
                                 .to_string(),
                         ).into());
                     };
-                    gov.mint_signed_with_credential(spec, exp, now, kind, shape)
+                    gov.mint_signed_with_credential_claimed_async(spec, exp, now, kind, shape, &identity_guard).await
                         .map(|m| MintOutcome::Aws(Box::new(m)))
                 } else {
                     match audience.as_deref() {
-                        Some(audience) => gov.mint_signed_for_audience(spec, exp, now, audience),
-                        None => gov.mint_signed(spec, exp, now),
+                        Some(audience) => gov.mint_signed_for_audience_claimed_async(spec, exp, now, audience, &identity_guard).await,
+                        None => gov.mint_signed_claimed_async(spec, exp, now, &identity_guard).await,
                     }
                     .map(|m| MintOutcome::TokenOnly(Box::new(m)))
                 }
-            })();
+            }.await;
             let minted = match minted {
                 Err(busbar_kernel::governance::MintError::Applied { key_id, .. }) => {
                     diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "create_key", key_id = %key_id, "key mint committed but cache reconciliation failed; no secret was returned");
@@ -971,9 +957,9 @@ async fn create_key_owned(
 
             Some(installed) => {
                 let group = want_group.clone().unwrap_or_default();
-                Ok(crate::v1::json::Outcome::commit_then(
+                Ok(crate::v1::json::Outcome::commit_async_then(
                     installed.clone(),
-                    crate::v1::json::persist_provisioned_group(
+                    busbar_kernel::governance::group_provision::persist_provisioned_group_async(
                         installed,
                         group,
                         txn_actor.clone(),
@@ -981,7 +967,7 @@ async fn create_key_owned(
                     mint,
                 ))
             }
-            None => Ok(txn.store_write(mint)),
+            None => Ok(txn.store_write_async(mint)),
         }
     })
     .await;
@@ -1194,21 +1180,20 @@ async fn update_key_owned(
         let (enabled, group) = (req.enabled, req.group);
 
         let cap = current.max_keys_per_principal;
-        Ok(txn.store_write(move || {
-            let _existence_guard = EXISTENCE_GATE.claim(id.clone());
+        Ok(txn.store_write_async(async move {
+            let identity_guard = gov.identity_key_guard(&id).await;
             if let Some(context) = effect_context {
-                tokio::runtime::Handle::current()
-                    .block_on(context.revalidate(&effect_app))
+                context.revalidate(&effect_app).await
                     .map_err(AdminError::from)?;
             }
-            let outcome = (|| -> busbar_kernel::governance::RecordStoreResult<UpdateOutcome> {
+            let outcome: busbar_kernel::governance::RecordStoreResult<UpdateOutcome> = async {
 
 
 
 
 
 
-                let Some(before) = gov.store().get_key(&id)? else {
+                let Some(before) = gov.core_store()?.identity().get_key(&id).await? else {
                     return Ok(UpdateOutcome::NotFound);
                 };
                 if let Some(tag) = &if_match {
@@ -1243,12 +1228,12 @@ async fn update_key_owned(
                 let will_be_counted = enabled.unwrap_or(before.enabled) && !revoked;
                 if will_be_counted && (!was_counted || dest_group != before.group) {
                     if let Some((g, n)) =
-                        check_key_cap(&gov, cap, dest_group.as_deref(), Some(id.as_str()))?
+                        check_key_cap(&gov, cap, dest_group.as_deref(), Some(id.as_str())).await?
                     {
                         return Ok(UpdateOutcome::AtCap { group: g, n, cap });
                     }
                 }
-                Ok(match gov.update_key_outcome(&id, enabled, group) {
+                Ok(match gov.update_key_outcome_claimed_async(&id, enabled, group, &identity_guard).await {
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => UpdateOutcome::Applied,
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => return Err(error),
                     Ok(Some(key)) => {
@@ -1257,8 +1242,8 @@ async fn update_key_owned(
                     }
                     Ok(None) => UpdateOutcome::NotFound,
                 })
-            })()
-            .map_err(|e| {
+            }.await;
+            let outcome = outcome.map_err(|e| {
                 diag_error!(ADMIN_STORE_OPERATION_FAILED, operation = "update_key", error = %e, "admin store operation failed");
                 AdminError::Internal
             })?;
@@ -1376,8 +1361,8 @@ pub(crate) async fn list_keys(
         return disabled_empty_list();
     };
     let gov = gov.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let keys = gov.all_keys()?;
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        let keys = gov.all_keys_async().await?;
 
         Ok::<_, busbar_kernel::governance::RecordStoreError>(
             keys.into_iter()
@@ -1387,10 +1372,10 @@ pub(crate) async fn list_keys(
                 })
                 .collect::<Vec<_>>(),
         )
-    })
+    }
     .await;
     match res {
-        Ok(Ok(keys)) => {
+        Ok(keys) => {
             let mut filtered: Vec<_> = keys
                 .iter()
                 .filter(|(k, _)| include_tombstoned || k.deleted_at.is_none())
@@ -1423,8 +1408,7 @@ pub(crate) async fn list_keys(
                 json!({ "items": page, "next_cursor": next_cursor }),
             )
         }
-        Ok(Err(e)) => internal_error("list_keys", &e),
-        Err(e) => join_error("list_keys", &e),
+        Err(e) => internal_error("list_keys", &e),
     }
 }
 
@@ -1521,83 +1505,79 @@ async fn rotate_key_owned(
         .map_or_else(Vec::new, |p| p.roles.clone());
     let policy = std::sync::Arc::clone(&app.mint_policy);
 
-    let replay_store = gov.store();
+    let replay_store = match replay_store(&gov) {
+        Ok(store) => store,
+        Err(error) => return internal_error("idempotency.scope", &error),
+    };
     let claim = match idem_reservation.as_ref() {
-        Some(r) => {
-            match claim_in_store(
-                std::sync::Arc::clone(&replay_store),
-                r.key().clone(),
-                fingerprint,
-            )
-            .await
-            {
-                Ok(Ok(claim)) => Some(claim),
-                Ok(Err(refused)) => return claim_refused(who, refused),
-                Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
-            }
-        }
+        Some(r) => match claim_in_store(replay_store.clone(), r.key().clone(), fingerprint).await {
+            Ok(Ok(claim)) => Some(claim),
+            Ok(Err(refused)) => return claim_refused(who, refused),
+            Err(crate::idempotency::BindingMismatch) => return idempotency_mismatch(who),
+        },
         None => None,
     };
 
     if let Some(r) = idem_reservation.as_mut() {
         r.in_flight();
     }
-    let res = tokio::task::spawn_blocking(
-        move || -> Result<RotateOutcome, busbar_kernel::governance::RecordStoreError> {
-            let _existence_guard = EXISTENCE_GATE.claim(gid.clone());
-            let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
-                return Ok(RotateOutcome::Forbidden);
-            };
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        let identity_guard = gov.identity_key_guard(&gid).await;
+        let Some(_completion) = start_key_effect(&handle, &effect_guard).await else {
+            return Ok(RotateOutcome::Forbidden);
+        };
 
-            let Some(key) = gov
-                .store()
-                .get_key(&gid)?
-                .filter(|k| k.deleted_at.is_none())
-            else {
-                return Ok(RotateOutcome::Unknown);
-            };
-            let (pools, grants_other_kinds) =
-                busbar_kernel::governance::mint_policy::requested_grant(
-                    key.allowed_scopes.as_deref(),
-                );
-            let ttl = match policy.check_mint(&MintRequest {
-                roles: &caller_roles,
-                requested_pools: pools.as_deref(),
-                grants_other_kinds,
-                requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
-                explicit_ttl: false,
-                requested_mode: key.binding_mode.as_deref(),
-            }) {
-                Ok(ttl) => ttl,
-                Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
-            };
+        let Some(key) = gov
+            .core_store()?
+            .identity()
+            .get_key(&gid)
+            .await?
+            .filter(|k| k.deleted_at.is_none())
+        else {
+            return Ok(RotateOutcome::Unknown);
+        };
+        let (pools, grants_other_kinds) =
+            busbar_kernel::governance::mint_policy::requested_grant(key.allowed_scopes.as_deref());
+        let ttl = match policy.check_mint(&MintRequest {
+            roles: &caller_roles,
+            requested_pools: pools.as_deref(),
+            grants_other_kinds,
+            requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
+            explicit_ttl: false,
+            requested_mode: key.binding_mode.as_deref(),
+        }) {
+            Ok(ttl) => ttl,
+            Err(msg) => return Ok(RotateOutcome::PastCeiling(msg)),
+        };
 
-            Ok(
-                match gov.rotate_key_outcome(&gid, now.saturating_add(ttl)) {
-                    Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
-                        RotateOutcome::Applied
-                    }
-                    Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
-                        return Err(error)
-                    }
-                    Ok(Some(rotated)) => {
-                        RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
-                    }
-                    Ok(None) => RotateOutcome::Unknown,
-                },
-            )
-        },
-    )
+        Ok(
+            match gov
+                .rotate_key_outcome_claimed_async(&gid, now.saturating_add(ttl), &identity_guard)
+                .await
+            {
+                Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
+                    RotateOutcome::Applied
+                }
+                Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
+                    return Err(error)
+                }
+                Ok(Some(rotated)) => {
+                    RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
+                }
+                Ok(None) => RotateOutcome::Unknown,
+            },
+        )
+    }
     .await;
     match res {
-        Ok(Ok(RotateOutcome::Forbidden)) => {
+        Ok(RotateOutcome::Forbidden) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             settle_in_store(replay_store, claim, Settled::Released).await;
             key_effect_forbidden(who)
         }
-        Ok(Ok(RotateOutcome::Applied)) => {
+        Ok(RotateOutcome::Applied) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             if let Some(r) = idem_reservation.take() {
                 r.clear();
@@ -1605,7 +1585,7 @@ async fn rotate_key_owned(
             settle_in_store(replay_store, claim, Settled::Applied(resource.clone())).await;
             applied_mutation("key.rotate", &resource)
         }
-        Ok(Ok(RotateOutcome::Rotated(state, rotated))) => {
+        Ok(RotateOutcome::Rotated(state, rotated)) => {
             audit::AUDIT.record_by("key.rotate", &resource, audit::OUTCOME_APPLIED, &actor);
             let mut body = key_meta(&rotated.key);
             body["state"] = json!(state);
@@ -1620,35 +1600,27 @@ async fn rotate_key_owned(
             json_response(StatusCode::OK, body)
         }
 
-        Ok(Ok(RotateOutcome::Unknown)) => {
+        Ok(RotateOutcome::Unknown) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             settle_in_store(replay_store, claim, Settled::Released).await;
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
         }
-        Ok(Ok(RotateOutcome::PastCeiling(msg))) => {
+        Ok(RotateOutcome::PastCeiling(msg)) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
             settle_in_store(replay_store, claim, Settled::Released).await;
             key_err(who, &AdminError::Validation(msg), Cond::KeyExpiryFields)
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             if let Some(r) = idem_reservation.take() {
                 r.clear();
             }
 
             record_key_refusal(who);
             internal_error("rotate_key", &e)
-        }
-
-        Err(e) => {
-            if let Some(r) = idem_reservation.take() {
-                r.clear();
-            }
-            record_key_refusal(who);
-            join_error("rotate_key", &e)
         }
     }
 }
@@ -1695,38 +1667,38 @@ async fn revoke_key_owned(
         NotFound,
         Forbidden,
     }
-    let res = tokio::task::spawn_blocking(
-        move || -> busbar_kernel::governance::RecordStoreResult<RevokeOutcome> {
-            let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-            let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
-                return Ok(RevokeOutcome::Forbidden);
-            };
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        let identity_guard = gov.identity_key_guard(&id_for_task).await;
+        let Some(_completion) = start_key_effect(&handle, &effect_guard).await else {
+            return Ok(RevokeOutcome::Forbidden);
+        };
 
-            let exists = gov.store().get_key(&id_for_task)?.is_some();
-            if !exists {
-                return Ok(RevokeOutcome::NotFound);
-            }
-            gov.revoke(&id_for_task, "revoked via admin API")?;
-            Ok(RevokeOutcome::Applied)
-        },
-    )
+        let exists = gov
+            .core_store()?
+            .identity()
+            .get_key(&id_for_task)
+            .await?
+            .is_some();
+        if !exists {
+            return Ok(RevokeOutcome::NotFound);
+        }
+        gov.revoke_claimed_async(&id_for_task, "revoked via admin API", &identity_guard)
+            .await?;
+        Ok(RevokeOutcome::Applied)
+    }
     .await;
     match res {
-        Ok(Ok(RevokeOutcome::Forbidden)) => key_effect_forbidden(who),
-        Ok(Ok(RevokeOutcome::Applied)) => {
+        Ok(RevokeOutcome::Forbidden) => key_effect_forbidden(who),
+        Ok(RevokeOutcome::Applied) => {
             audit::AUDIT.record_by("key.revoke", &resource, audit::OUTCOME_APPLIED, &actor);
             json_response(StatusCode::OK, json!({ "revoked": id }))
         }
-        Ok(Ok(RevokeOutcome::NotFound)) => {
+        Ok(RevokeOutcome::NotFound) => {
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
-        }
-        Ok(Err(e)) => {
-            record_key_refusal(who);
-            internal_error("revoke_key", &e)
         }
         Err(e) => {
             record_key_refusal(who);
-            join_error("revoke_key", &e)
+            internal_error("revoke_key", &e)
         }
     }
 }
@@ -1785,14 +1757,16 @@ pub(crate) async fn get_key(
     let gov = gov.clone();
     let id2 = id.clone();
 
-    let res = tokio::task::spawn_blocking(move || {
-        gov.store()
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        gov.core_store()?
+            .identity()
             .get_key(&id2)
+            .await
             .map(|opt| opt.map(|k| (key_state(&k, &gov), k)))
-    })
+    }
     .await;
     match res {
-        Ok(Ok(Some((state, k)))) => {
+        Ok(Some((state, k))) => {
             let etag = key_etag(&k);
 
             let mut meta = key_meta(&k);
@@ -1803,13 +1777,12 @@ pub(crate) async fn get_key(
             }
             resp
         }
-        Ok(Ok(None)) => key_err(
+        Ok(None) => key_err(
             KeyAudit::Read,
             &AdminError::not_found("key"),
             Cond::UnknownResource,
         ),
-        Ok(Err(e)) => internal_error("get_key", &e),
-        Err(e) => join_error("get_key", &e),
+        Err(e) => internal_error("get_key", &e),
     }
 }
 
@@ -1828,29 +1801,31 @@ pub(crate) async fn key_usage(
     let id2 = id.clone();
 
     let cost = app.cost.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let key = gov2.store().get_key(&id2)?;
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        let key = gov2.core_store()?.identity().get_key(&id2).await?;
 
         let Some(key) = key.filter(|k| k.deleted_at.is_none()) else {
             return Ok::<_, busbar_kernel::governance::RecordStoreError>(None);
         };
 
-        let usage = gov2.derived_bucket_usage_priced(
-            &cost,
-            &id2,
-            busbar_kernel::governance::WINDOW_TOTAL,
-            true,
-            now,
-        )?;
+        let usage = gov2
+            .derived_bucket_usage_priced_async(
+                &cost,
+                &id2,
+                busbar_kernel::governance::WINDOW_TOTAL,
+                true,
+                now,
+            )
+            .await?;
         Ok::<_, busbar_kernel::governance::RecordStoreError>(Some((usage, Some(key))))
-    })
+    }
     .await;
     match res {
-        Ok(Ok(Some((Err(refused), _)))) => crate::v1::json::err_json_cond(
+        Ok(Some((Err(refused), _))) => crate::v1::json::err_json_cond(
             &crate::v1::service::usage_refusal("key_usage", &refused),
             Cond::Unpriced,
         ),
-        Ok(Ok(Some((Ok(u), key)))) => {
+        Ok(Some((Ok(u), key))) => {
             let headroom = key
                 .as_ref()
                 .and_then(|k| gov.rate_headroom(&app.cost, k, None, now));
@@ -1870,13 +1845,12 @@ pub(crate) async fn key_usage(
                 }),
             )
         }
-        Ok(Ok(None)) => key_err(
+        Ok(None) => key_err(
             KeyAudit::Read,
             &AdminError::not_found("key"),
             Cond::UnknownResource,
         ),
-        Ok(Err(e)) => internal_error("key_usage", &e),
-        Err(e) => join_error("key_usage", &e),
+        Err(e) => internal_error("key_usage", &e),
     }
 }
 
@@ -1936,13 +1910,13 @@ async fn delete_key_owned(
     let gov = gov.clone();
     let id_for_task = id.clone();
     let task_actor = actor.clone();
-    let res = tokio::task::spawn_blocking(move || {
-        let _existence_guard = EXISTENCE_GATE.claim(id_for_task.clone());
-        let Some(_completion) = start_key_effect(&handle, &effect_guard) else {
+    let res: busbar_kernel::governance::RecordStoreResult<_> = async move {
+        let identity_guard = gov.identity_key_guard(&id_for_task).await;
+        let Some(_completion) = start_key_effect(&handle, &effect_guard).await else {
             return Ok(DeleteOutcome::Forbidden);
         };
 
-        let key = gov.store().get_key(&id_for_task)?;
+        let key = gov.core_store()?.identity().get_key(&id_for_task).await?;
         match key {
             None => Ok(DeleteOutcome::NotFound),
 
@@ -1954,8 +1928,12 @@ async fn delete_key_owned(
                     }
                 }
 
-                gov.revoke(&id_for_task, "key deleted")?;
-                match gov.delete_key_outcome(&id_for_task) {
+                gov.revoke_claimed_async(&id_for_task, "key deleted", &identity_guard)
+                    .await?;
+                match gov
+                    .delete_key_outcome_claimed_async(&id_for_task, &identity_guard)
+                    .await
+                {
                     Ok(()) => Ok(DeleteOutcome::Deleted),
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
                         Ok(DeleteOutcome::Applied)
@@ -1972,23 +1950,23 @@ async fn delete_key_owned(
                 }
             }
         }
-    })
+    }
     .await;
     match res {
-        Ok(Ok(DeleteOutcome::Forbidden)) => key_effect_forbidden(who),
-        Ok(Ok(DeleteOutcome::Applied)) => {
+        Ok(DeleteOutcome::Forbidden) => key_effect_forbidden(who),
+        Ok(DeleteOutcome::Applied) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
             applied_mutation("key.delete", &resource)
         }
-        Ok(Ok(DeleteOutcome::Deleted)) => {
+        Ok(DeleteOutcome::Deleted) => {
             audit::AUDIT.record_by("key.delete", &resource, audit::OUTCOME_APPLIED, &actor);
 
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(Ok(DeleteOutcome::NotFound)) => {
+        Ok(DeleteOutcome::NotFound) => {
             key_err(who, &AdminError::not_found("key"), Cond::UnknownResource)
         }
-        Ok(Ok(DeleteOutcome::EtagStale)) => key_err(
+        Ok(DeleteOutcome::EtagStale) => key_err(
             who,
             &AdminError::VersionConflict(
                 "If-Match ETag is stale: the key changed since you read it (re-read and retry)"
@@ -1996,13 +1974,9 @@ async fn delete_key_owned(
             ),
             Cond::StaleIfMatch,
         ),
-        Ok(Err(e)) => {
-            record_key_refusal(who);
-            internal_error("delete_key", &e)
-        }
         Err(e) => {
             record_key_refusal(who);
-            join_error("delete_key", &e)
+            internal_error("delete_key", &e)
         }
     }
 }

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::sync::Arc;
+use tracing::instrument::WithSubscriber as _;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -75,19 +76,22 @@ async fn read_snapshot(
         }) {
             return Ok::<_, AdminError>(txn.done((current, PendingDefs::new())));
         }
-        Ok(txn.read_store(move || {
-            let pending = tracing::dispatcher::with_default(&dispatch, || {
-                busbar_kernel::config::overlay::unparseable_named_map_entries(
+        Ok(txn.store_write_async(async move {
+            let pending = async {
+                busbar_kernel::config::overlay::unparseable_named_map_entries_async(
                     current.overlay_path.as_deref(),
                     section,
                 )
-            })
+                .await
+            }
+            .with_subscriber(dispatch)
+            .await
             .map_err(AdminError::Validation)?;
             Ok(Outcome::Value((current, pending)))
         }))
     })
     .await?;
-    Ok((super::response_snapshot(current), pending))
+    Ok((super::response_snapshot(current).await, pending))
 }
 
 async fn list(
@@ -395,7 +399,7 @@ async fn apply(
         let snapshot = current.clone();
 
 
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let mut loaded = busbar_kernel::load_config_from_disk_with_store(
                 &config_path,
                 snapshot.providers_override.as_deref(),
@@ -403,7 +407,7 @@ async fn apply(
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
                 snapshot.overlay_path.clone(),
-            )
+            ).await
             .map_err(AdminError::Validation)?;
 
 
@@ -532,7 +536,7 @@ async fn apply(
 
 
             loaded.overlay_doc = Some(doc.clone());
-            let built = (|| {
+            let built = async {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, &doc);
                 let mut cfg = busbar_kernel::config::resolve(&loaded.deploy, &loaded.defs)
                     .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
@@ -551,8 +555,8 @@ async fn apply(
                     (Some(config_path), Some(loaded.providers_path.clone())),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                )
-            })();
+                ).await
+            }.await;
             let (mut built, gov_rotate, limits) = match built {
                 Ok(v) => v,
 
@@ -601,15 +605,15 @@ async fn apply(
             let persist_overlay = snapshot.overlay_path.clone();
             let persist_name = txn_name.clone();
             let persist_def = next_def.clone();
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist_named_map(
+                async move {
+                    busbar_kernel::config::overlay::persist_named_map_async(
                         persist_overlay.as_deref(),
                         txn_section,
                         &persist_name,
                         persist_def.as_ref(),
-                    )
+                    ).await
                     .map_err(|e| {
                         format!(
                             "the `{}` change persistence to the overlay was not confirmed: {e}; \
@@ -620,9 +624,9 @@ async fn apply(
                 },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value(Ok((installed, awaiting_restart))))
                 },

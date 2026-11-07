@@ -188,7 +188,7 @@ fn migrate_config_then_load_config_from_disk_boots_the_real_migrated_file() {
 
     let raw = std::fs::read_to_string(&legacy_config_path).unwrap();
     let migrated =
-        busbar_kernel::config::migrate::migrate_config(&raw).expect("legacy config migrates");
+        busbar_migrations::config::migrate::migrate_config(&raw).expect("legacy config migrates");
 
     let migrated_path = dir.join("migrated-config.yaml");
     std::fs::write(&migrated_path, &migrated.yaml).unwrap();
@@ -368,7 +368,8 @@ fn boot_mutable_with_overlay_disabled_refuses_to_boot() {
             false,
             busbar_kernel::config::EnvSubst::Strict,
             &crate::root::door_steps::Rules::default(),
-        ).is_ok(),
+        )
+        .is_ok(),
         "otherwise identical mutable configuration uses its configured Store without an overlay selector"
     );
     let _ = std::fs::remove_dir_all(&dir);

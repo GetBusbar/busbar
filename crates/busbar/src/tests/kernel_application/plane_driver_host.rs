@@ -8,8 +8,8 @@ use busbar_kernel::plane_driver::live_standing;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
+#[tokio::test]
+async fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
     let mut roles = std::collections::BTreeMap::new();
     roles.insert("eng".to_string(), kernel::config::RoleBindingCfg::default());
     let mut rb = kernel::config::RoleBindings::new();
@@ -62,7 +62,7 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -72,22 +72,24 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
+    let _ = crate::root::kernel::ROOT_CARD.keep_in_store(
         app.governance
             .as_ref()
             .expect("the application has its configured governance Store")
-            .store_calls()
+            .core_store_handle()
             .expect("the configured product Store exposes actual calls"),
         busbar_kernel::door::op_id().counter(),
     );
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured product Store boots its rate-card history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let without_bindings = Arc::new(app.clone());
     assert!(without_bindings.role_bindings.is_empty());
@@ -98,7 +100,7 @@ fn a_role_bound_standing_is_rechecked_against_the_live_snapshot_bindings() {
     let now = standing(&key, 1_700_000_000).expect("the binding stands");
     assert_eq!(now.id, "alice@example.com");
 
-    handle.swap(without_bindings);
+    handle.swap(without_bindings).await;
     assert!(
         standing(&key, 1_700_000_000).is_none(),
         "the binding is gone from the live snapshot, so the principal no longer stands"
@@ -119,10 +121,10 @@ fn hook_accesses_under(
         .collect()
 }
 
-#[test]
-fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
+#[tokio::test]
+async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
     const OP: &str = "access-host-port";
-    let build = || {
+    let build = async || {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -164,7 +166,7 @@ fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -174,29 +176,33 @@ fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the host deployment");
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
+        let _ = crate::root::kernel::ROOT_CARD.keep_in_store(
             app.governance
                 .as_ref()
                 .expect("the application has its configured governance Store")
-                .store_calls()
+                .core_store_handle()
                 .expect("the configured product Store exposes actual calls"),
             busbar_kernel::door::op_id().counter(),
         );
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured product Store boots its rate-card history");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
-    let app = build();
-    let other = build();
+    let app = build().await;
+    let other = build().await;
     let host = kernel::plane_driver::engine_host(&app);
-    host.hook_read("port-hook", Some("key-1"), OP, true);
+    host.hook_read("port-hook", Some("key-1"), OP, true)
+        .await
+        .expect("the native journal confirms the hook access amendment");
     assert!(
         hook_accesses_under(&other.amendments, OP).is_empty(),
         "another node's journal recorded this node's hook read"

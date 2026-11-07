@@ -29,7 +29,7 @@ async fn serve_with_scopes(scopes: &[&str]) -> (String, Arc<busbar_kernel::state
         default_grant: scopes.iter().map(|scope| (*scope).into()).collect(),
         ..Default::default()
     };
-    let app = application_with_resource_auth(Some(&config), None, true);
+    let app = application_with_resource_auth(Some(&config), None, true).await;
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         super::serve_tls(listener, router).await;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::root::test_plugins as plugins;
 
-fn app() -> Arc<busbar_kernel::state::App> {
+async fn app() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -43,7 +43,7 @@ fn app() -> Arc<busbar_kernel::state::App> {
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -53,6 +53,7 @@ fn app() -> Arc<busbar_kernel::state::App> {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     drop(limits);
     drop(rotate);
@@ -101,7 +102,7 @@ async fn ask(addr: SocketAddr, path: &str) -> Answer {
 async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
     busbar_core_admin::install();
 
-    let app = app();
+    let app = app().await;
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
@@ -137,7 +138,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_ledger_path() {
 #[tokio::test]
 async fn the_served_document_describes_the_ledger_views_as_the_loops() {
     busbar_core_admin::install();
-    let app = app();
+    let app = app().await;
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 

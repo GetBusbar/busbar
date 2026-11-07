@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::host::service::LINE_NONE;
@@ -156,11 +156,12 @@ async fn through_final_gate_identity(
 #[tokio::test]
 async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let gov = signing_gov();
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (id, _) = minted(&gov, now + 3600, now);
+    let (id, _) = minted(&gov, now + 3600, now).await;
     let (ticket, _) = gov
         .mint_ticket(&id, "tk_", 600, None, b"ticket-record", now)
+        .await
         .unwrap();
     let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
     let k = ticket_kit(&gov, Arc::clone(&earlier));
@@ -213,7 +214,7 @@ async fn ticket_preflight_skips_the_chain_and_only_the_final_gate_spends_it() {
         (200, Some(b"ticket-record".to_vec()))
     );
     assert!(
-        gov.admit_ticket("tk_", &ticket, now).is_none(),
+        gov.admit_ticket_async("tk_", &ticket, now).await.is_none(),
         "the final gate spent exactly once"
     );
     assert_eq!(
@@ -230,7 +231,7 @@ async fn ticket_callers_leave_the_reactor_live_during_store_waits(ops: &[&'stati
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for &op in ops {
         let (gov, id, ticket, release, entered) =
-            crate::governance::GovState::paused_ticket_for_test(op, crate::store::now());
+            crate::governance::GovState::paused_ticket_for_test(op, crate::store::now()).await;
         let earlier = Script::new(AuthPoints::HEAD, Verified::Reject, Vec::new());
         let k = ticket_kit(&gov, Arc::clone(&earlier));
         let original = bearer(&ticket);
@@ -265,9 +266,11 @@ async fn ticket_callers_leave_the_reactor_live_during_store_waits(ops: &[&'stati
             release.release();
         }
         assert_eq!(admitted.await, (200, Some(b"record".to_vec()), Some(id)));
-        assert!(gov
-            .admit_ticket("tk_", &ticket, crate::store::now())
-            .is_none());
+        assert!(
+            gov.admit_ticket_async("tk_", &ticket, crate::store::now())
+                .await
+                .is_none()
+        );
     }
 }
 
@@ -281,11 +284,11 @@ async fn ticket_final_auth_leaves_the_reactor_live_during_store_waits() {
     ticket_callers_leave_the_reactor_live_during_store_waits(&["get"]).await;
 }
 
-#[test]
-fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (id, key) = minted(&gov, now + 3600, now);
+    let (id, key) = minted(&gov, now + 3600, now).await;
     let earlier = Script::new(
         AuthPoints::HEAD,
         identity("must-not-win", "wrong"),
@@ -294,6 +297,7 @@ fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
     let k = ticket_kit(&gov, Arc::clone(&earlier));
     let (expired, _) = gov
         .mint_ticket(&id, "tk_", 1, None, b"record", now - 5)
+        .await
         .unwrap();
     let relabeled_key = format!("tk_{}", key.strip_prefix("bbk_").unwrap());
     for invalid in ["tk_malformed", expired.as_str(), relabeled_key.as_str()] {
@@ -306,13 +310,14 @@ fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
     }
     let (ticket, _) = gov
         .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .await
         .unwrap();
-    gov.revoke(&id, "preflight").unwrap();
+    gov.revoke_async(&id, "preflight").await.unwrap();
     assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
     assert_eq!(earlier.calls(), 0);
     let ordinary = Script::new(AuthPoints::HEAD, Verified::Pass, Vec::new());
-    let fresh = signing_gov();
-    let (id, token) = minted(&fresh, now + 3600, now);
+    let fresh = signing_gov().await;
+    let (id, token) = minted(&fresh, now + 3600, now).await;
     let k = ticket_kit(&fresh, Arc::clone(&ordinary));
     assert_eq!(
         spend(&k, bearer(&token)).0,
@@ -321,10 +326,14 @@ fn ticket_preflight_checks_signature_expiry_standing_record_and_route_prefix() {
     );
     let (wrong_prefix, _) = fresh
         .mint_ticket(&id, "other_", 600, None, b"record", now)
+        .await
         .unwrap();
     assert_eq!(spend(&k, bearer(&wrong_prefix)).0, FLOW_STOP);
     assert!(
-        fresh.admit_ticket("other_", &wrong_prefix, now).is_some(),
+        fresh
+            .admit_ticket_async("other_", &wrong_prefix, now)
+            .await
+            .is_some(),
         "the wrong route did not spend it"
     );
 }
@@ -371,11 +380,11 @@ fn the_inbound_verifier_receives_the_default_candidate_without_rewriting_lines()
     }
 }
 
-#[test]
-fn dpop_candidate_preflight_verifies_the_key_but_does_not_require_or_claim_a_proof() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn dpop_candidate_preflight_verifies_the_key_but_does_not_require_or_claim_a_proof() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (_, token) = minted(&gov, now + 3600, now);
+    let (_, token) = minted(&gov, now + 3600, now).await;
     for configured_as in [false, true] {
         let mut app = crate::test_support::TestApp::new()
             .keys_chain()
@@ -415,11 +424,11 @@ fn dpop_candidate_preflight_verifies_the_key_but_does_not_require_or_claim_a_pro
     }
 }
 
-#[test]
-fn later_verifiers_and_keys_keep_the_original_candidate_after_declared_stripping() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn later_verifiers_and_keys_keep_the_original_candidate_after_declared_stripping() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (_, token) = minted(&gov, now + 3600, now);
+    let (_, token) = minted(&gov, now + 3600, now).await;
     for scheme in ["Bearer", "DPoP"] {
         let head_auth = Script::new(
             AuthPoints::HEAD,
@@ -467,13 +476,14 @@ fn later_verifiers_and_keys_keep_the_original_candidate_after_declared_stripping
     }
 }
 
-#[test]
-fn a_ticket_never_overrides_a_refused_connection() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn a_ticket_never_overrides_a_refused_connection() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (id, _) = minted(&gov, now + 3600, now);
+    let (id, _) = minted(&gov, now + 3600, now).await;
     let (ticket, _) = gov
         .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .await
         .unwrap();
     let earlier = Script::new(AuthPoints(POINT_PEER), Verified::Reject, Vec::new());
     let k = ticket_kit(&gov, earlier);
@@ -485,7 +495,7 @@ fn a_ticket_never_overrides_a_refused_connection() {
     );
     assert_eq!(spend(&k, bearer(&ticket)).0, FLOW_STOP);
     assert!(
-        gov.admit_ticket("tk_", &ticket, now).is_some(),
+        gov.admit_ticket_async("tk_", &ticket, now).await.is_some(),
         "a refused connection spent nothing"
     );
 }
@@ -658,7 +668,7 @@ fn kit_signed(
     }
 }
 
-fn line_ids(n: u64) -> Vec<u64> {
+async fn line_ids(n: u64) -> Vec<u64> {
     (0..n).map(|i| 7_000 + 13 * i).collect()
 }
 
@@ -899,10 +909,11 @@ fn only_the_successful_unchanged_hand_in_can_be_claimed_once() {
             .0,
         FLOW_CONTINUE
     );
-    assert!(k
-        .inbound
-        .claim_request(OWNER + 1, 1, 1, &sanitized)
-        .is_err());
+    assert!(
+        k.inbound
+            .claim_request(OWNER + 1, 1, 1, &sanitized)
+            .is_err()
+    );
     assert!(k.inbound.claim_request(OWNER, 1, 2, &sanitized).is_err());
     let changed = post(OTHER, &[("x-trace", "one")], Some("a=1"));
     assert!(k.inbound.claim_request(OWNER, 1, 1, &changed).is_err());
@@ -1124,18 +1135,22 @@ fn another_request_with_identical_numeric_handles_cannot_use_an_upgrade_permit()
 fn expired_or_retired_request_cannot_authorize_an_upgrade() {
     let (_k, _, mut expired, _) = transfer_request_with_upgrade(Some("fixture-session"));
     Arc::get_mut(&mut expired.inner).unwrap().deadline = Some(std::time::Instant::now());
-    assert!(expired
-        .upgrade_permit()
-        .unwrap()
-        .consume(&expired, OWNER, 1, 1)
-        .is_none());
+    assert!(
+        expired
+            .upgrade_permit()
+            .unwrap()
+            .consume(&expired, OWNER, 1, 1)
+            .is_none()
+    );
     let (_k, _, retired, _) = transfer_request_with_upgrade(Some("fixture-session"));
     retired.inner.alive.store(false, Ordering::Release);
-    assert!(retired
-        .upgrade_permit()
-        .unwrap()
-        .consume(&retired, OWNER, 1, 1)
-        .is_none());
+    assert!(
+        retired
+            .upgrade_permit()
+            .unwrap()
+            .consume(&retired, OWNER, 1, 1)
+            .is_none()
+    );
 }
 
 fn transfer_source() -> busbar_contract::framing_scope::AdoptionSource {
@@ -1168,10 +1183,11 @@ fn an_adopted_session_moves_owner_token_and_mac_without_reauthenticating_or_chan
             k.inbound.unit_secret(destination_owner, old.id).is_none(),
             "staging grants no service authority"
         );
-        assert!(k
-            .inbound
-            .grant_stream(destination_owner, 19, 2, GEN)
-            .is_err());
+        assert!(
+            k.inbound
+                .grant_stream(destination_owner, 19, 2, GEN)
+                .is_err()
+        );
         let binding = RequestBinding {
             conn: 803,
             stream: 1,
@@ -1198,9 +1214,10 @@ fn an_adopted_session_moves_owner_token_and_mac_without_reauthenticating_or_chan
             k.inbound.unit_secret(destination_owner, old.id).unwrap().0,
             old_secret
         );
-        assert!(!k
-            .inbound
-            .verified(destination_owner, Some(GEN), Some(line), binding, old));
+        assert!(
+            !k.inbound
+                .verified(destination_owner, Some(GEN), Some(line), binding, old)
+        );
         assert!(k.inbound.verified(
             destination_owner,
             Some(GEN),
@@ -1290,10 +1307,11 @@ fn an_abandoned_session_transfer_retires_its_credential_and_cannot_commit_late()
         k.inbound.framing_ended(ended);
         assert!(k.inbound.framing_adopted(OWNER + 90, 19, 803).is_err());
         assert!(k.inbound.unit_secret(OWNER, old.id).is_none());
-        assert!(k
-            .inbound
-            .unit_secret(OWNER + 90, moved.session.unit.id)
-            .is_none());
+        assert!(
+            k.inbound
+                .unit_secret(OWNER + 90, moved.session.unit.id)
+                .is_none()
+        );
         assert!(k.inbound.with_credential(old.id, |_| ()).is_none());
         assert!(!futures::executor::block_on(admission.claim_replay()));
         k.inbound.framing_ended(1);
@@ -1333,10 +1351,11 @@ fn transfer_requires_the_live_claimed_hand_in_on_the_exact_detached_source() {
     }
     assert!(k.inbound.unit_secret(OWNER, old.id).is_some());
     k.inbound.stream_ended(OWNER, 1, 1);
-    assert!(k
-        .inbound
-        .framing_adopting(transfer_source(), OWNER + 90, 19)
-        .is_err());
+    assert!(
+        k.inbound
+            .framing_adopting(transfer_source(), OWNER + 90, 19)
+            .is_err()
+    );
 
     let script = Script::new(
         AuthPoints::HEAD,
@@ -1408,10 +1427,11 @@ fn two_claimed_requests_cannot_be_guessed_into_one_session_transfer() {
     );
     let _second_admission = k.inbound.claim_request(OWNER, 1, 2, &head).unwrap();
     k.inbound.framing_detached(OWNER, 1).unwrap();
-    assert!(k
-        .inbound
-        .framing_adopting(transfer_source(), OWNER + 90, 19)
-        .is_err());
+    assert!(
+        k.inbound
+            .framing_adopting(transfer_source(), OWNER + 90, 19)
+            .is_err()
+    );
     assert!(k.inbound.unit_secret(OWNER, first.id).is_some());
     assert!(k.inbound.unit_secret(OWNER, second.id).is_some());
     k.inbound.framing_ended(1);
@@ -1751,10 +1771,12 @@ fn red_every_refusal_is_the_kernels_and_byte_identical_to_todays_builders() {
         ))
     );
     assert_eq!(no_route.status, 404);
-    assert!(no_route
-        .fields
-        .iter()
-        .any(|(n, v)| n == "content-type" && v == b"application/json"));
+    assert!(
+        no_route
+            .fields
+            .iter()
+            .any(|(n, v)| n == "content-type" && v == b"application/json")
+    );
     assert_eq!(
         k.inbound.units().len(),
         units_before,
@@ -2000,17 +2022,18 @@ fn red_a_call_past_its_ops_deadline_runs_no_verify_and_stops() {
     assert_eq!(a.calls(), 1);
 }
 
-fn signing_gov() -> Arc<crate::governance::GovState> {
+async fn signing_gov() -> Arc<crate::governance::GovState> {
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
     );
     let gov = Arc::new(
-        crate::governance::GovState::new_with_signer(
-            crate::real_store::store(),
+        crate::governance::GovState::new_with_core(
+            crate::real_store::core().await,
             Some("admintok".to_string()),
             Some(signer),
         )
+        .await
         .expect("a governance"),
     );
     gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
@@ -2019,9 +2042,9 @@ fn signing_gov() -> Arc<crate::governance::GovState> {
     gov
 }
 
-fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, String) {
+async fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, String) {
     let (key, secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             crate::governance::NewKeySpec {
                 name: "vk".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
@@ -2030,6 +2053,7 @@ fn minted(gov: &crate::governance::GovState, exp: u64, now: u64) -> (String, Str
             exp,
             now,
         )
+        .await
         .expect("minted");
     (key.id.clone(), secret.expose(&crate::seal::lend()).clone())
 }
@@ -2061,11 +2085,11 @@ fn spend(k: &Kit, head: Head) -> (u32, UnitRef) {
     (ans.flow, ans.unit)
 }
 
-#[test]
-fn red_keys_a_revoked_key_is_refused() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_keys_a_revoked_key_is_refused() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (id, token) = minted(&gov, now + 3_600, now);
+    let (id, token) = minted(&gov, now + 3_600, now).await;
     let k = keys_kit(&gov);
     let ans = k
         .call(MESSAGES, UnitRef::NONE, POINT_HEAD, bearer(&token))
@@ -2082,7 +2106,9 @@ fn red_keys_a_revoked_key_is_refused() {
         !format!("{ans:?}").contains(&token),
         "the token reached the transport"
     );
-    gov.revoke(&id, "oracle key-revoke").expect("revoked");
+    gov.revoke_async(&id, "oracle key-revoke")
+        .await
+        .expect("revoked");
     let (flow, unit) = spend(&k, bearer(&token));
     assert_eq!(flow, FLOW_STOP);
     let refusal = k.refuse(REFUSE_STOPPED, k.line(MESSAGES), unit, MESSAGES);
@@ -2094,15 +2120,16 @@ fn red_keys_a_revoked_key_is_refused() {
     );
 }
 
-#[test]
-fn red_keys_a_rotated_keys_old_token_is_refused() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_keys_a_rotated_keys_old_token_is_refused() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (id, old) = minted(&gov, now + 3_600, now);
+    let (id, old) = minted(&gov, now + 3_600, now).await;
     let k = keys_kit(&gov);
     assert_eq!(spend(&k, bearer(&old)).0, FLOW_CONTINUE);
     let rotated = gov
-        .rotate_key(&id, now + 3_600)
+        .rotate_key_outcome_async(&id, now + 3_600)
+        .await
         .expect("rotated")
         .expect("a key to rotate");
     let new = rotated.token.expose(&crate::seal::lend()).clone();
@@ -2118,18 +2145,18 @@ fn red_keys_a_rotated_keys_old_token_is_refused() {
     );
 }
 
-#[test]
-fn red_keys_an_expired_key_is_refused() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_keys_an_expired_key_is_refused() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (_, token) = minted(&gov, now - 60, now - 3_600);
+    let (_, token) = minted(&gov, now - 60, now - 3_600).await;
     let k = keys_kit(&gov);
     assert_eq!(spend(&k, bearer(&token)).0, FLOW_STOP);
 }
 
-#[test]
-fn red_keys_a_bad_x_api_key_alone_is_refused() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_keys_a_bad_x_api_key_alone_is_refused() {
+    let gov = signing_gov().await;
     let k = keys_kit(&gov);
     let (flow, unit) = spend(&k, post(MESSAGES, &[("x-api-key", "not-a-key")], None));
     assert_eq!(flow, FLOW_STOP);
@@ -2138,11 +2165,11 @@ fn red_keys_a_bad_x_api_key_alone_is_refused() {
     assert_eq!(spend(&k, post(MESSAGES, &[], None)).0, FLOW_STOP);
 }
 
-#[test]
-fn red_keys_the_bearer_decides_beside_an_x_api_key() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_keys_the_bearer_decides_beside_an_x_api_key() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (_, token) = minted(&gov, now + 3_600, now);
+    let (_, token) = minted(&gov, now + 3_600, now).await;
     let k = keys_kit(&gov);
     let ans = k
         .call(
@@ -2211,11 +2238,11 @@ fn reader_kit<R: AuthCalls + 'static>(
     )
 }
 
-fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String) {
+async fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String) {
     let (kind, shape) = crate::test_support::issued::double();
     let now = crate::store::now();
     let (key, _token, public_id, _secret) = gov
-        .mint_signed_with_credential(
+        .mint_signed_with_credential_async(
             crate::governance::NewKeySpec {
                 name: "signed".to_string(),
                 allowed_pools: Some(vec!["pa".to_string()]),
@@ -2226,6 +2253,7 @@ fn minted_with_credential(gov: &crate::governance::GovState) -> (String, String)
             &kind,
             &shape,
         )
+        .await
         .expect("minted");
     (key.id.clone(), public_id)
 }
@@ -2287,12 +2315,13 @@ fn declared_signed_ticket_kit(
 async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_final_gate() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     for valid_ticket in [true, false] {
-        let gov = signing_gov();
+        let gov = signing_gov().await;
         let now = crate::store::now();
-        let (signed_id, public_id) = minted_with_credential(&gov);
-        let (ticket_id, _) = minted(&gov, now + 3600, now);
+        let (signed_id, public_id) = minted_with_credential(&gov).await;
+        let (ticket_id, _) = minted(&gov, now + 3600, now).await;
         let (ticket, _) = gov
             .mint_ticket(&ticket_id, "tk_", 600, None, b"record", now)
+            .await
             .unwrap();
         let reader = Script::new(
             AuthPoints::HEAD_BODY,
@@ -2350,7 +2379,7 @@ async fn a_declared_signed_identity_preempts_ticket_and_plugins_through_the_fina
             "the root reuses the actual signed result"
         );
         assert!(
-            gov.admit_ticket("tk_", &ticket, now).is_some(),
+            gov.admit_ticket_async("tk_", &ticket, now).await.is_some(),
             "signed identity leaves the accompanying ticket unspent"
         );
     }
@@ -2366,11 +2395,12 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
         Verified::Overloaded,
     ] {
         let pass = matches!(verdict, Verified::Pass);
-        let gov = signing_gov();
+        let gov = signing_gov().await;
         let now = crate::store::now();
-        let (id, _) = minted(&gov, now + 3600, now);
+        let (id, _) = minted(&gov, now + 3600, now).await;
         let (ticket, _) = gov
             .mint_ticket(&id, "tk_", 600, None, b"record", now)
+            .await
             .unwrap();
         let reader = Script::new(
             AuthPoints::HEAD_BODY,
@@ -2407,44 +2437,37 @@ async fn a_signed_pass_reaches_ticket_once_but_a_signed_refusal_never_does() {
                 through_final_gate_identity(&k, receipt, &sanitized).await,
                 (200, Some(b"record".to_vec()), Some(id))
             );
-            assert!(gov.admit_ticket("tk_", &ticket, now).is_none());
+            assert!(gov.admit_ticket_async("tk_", &ticket, now).await.is_none());
         } else {
-            assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
+            assert!(gov.admit_ticket_async("tk_", &ticket, now).await.is_some());
         }
     }
 }
 
 #[tokio::test]
 async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_stays_unspent() {
-    use busbar_contract::store_calls::StoreDoor;
-
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let opened = crate::test_support::store_axis_stand_in()
-        .open(
-            StoreDoor::Linked(crate::test_support::store_double::door),
-            crate::test_support::store_double::NAME,
-            b"{}",
-        )
-        .expect("the replay store opens through its real door");
     let gov = Arc::new(
-        crate::governance::GovState::new_with_signer(
-            opened.records,
+        crate::governance::GovState::new_with_core(
+            crate::real_store::core().await,
             Some("admintok".to_string()),
             Some(crate::governance::signing::TokenSigner::from_secret_bytes(
                 &[7; 32],
                 crate::governance::signing::DEFAULT_KID,
             )),
         )
+        .await
         .expect("a signing governance"),
     );
-    assert!(gov.attach_store_calls(opened.calls.expect("the door supplies atomic replay calls")));
+
     gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
         &[9; 32], None,
     )));
     let now = crate::store::now();
-    let (id, public_id) = minted_with_credential(&gov);
+    let (id, public_id) = minted_with_credential(&gov).await;
     let (ticket, _) = gov
         .mint_ticket(&id, "tk_", 600, None, b"record", now)
+        .await
         .unwrap();
     let reader = Script::new(
         AuthPoints::HEAD_BODY,
@@ -2500,13 +2523,13 @@ async fn signed_receipt_replay_is_claimed_only_at_final_admission_and_ticket_sta
         2,
         "one signed verify per body, none repeated by middleware"
     );
-    assert!(gov.admit_ticket("tk_", &ticket, now).is_some());
+    assert!(gov.admit_ticket_async("tk_", &ticket, now).await.is_some());
 }
 
-#[test]
-fn red_signed_a_verified_signature_is_its_credentials_key() {
-    let gov = signing_gov();
-    let (key_id, public_id) = minted_with_credential(&gov);
+#[tokio::test]
+async fn red_signed_a_verified_signature_is_its_credentials_key() {
+    let gov = signing_gov().await;
+    let (key_id, public_id) = minted_with_credential(&gov).await;
     let reader = Script::new(
         AuthPoints::HEAD_BODY,
         Verified::Identity(VerifiedIdentity {
@@ -2527,10 +2550,10 @@ fn red_signed_a_verified_signature_is_its_credentials_key() {
     assert!(ans.strips.contains(&Strip::field(SIGNED_LINE)));
 }
 
-#[test]
-fn red_signed_a_rejected_or_revoked_signature_is_refused() {
-    let gov = signing_gov();
-    let (key_id, public_id) = minted_with_credential(&gov);
+#[tokio::test]
+async fn red_signed_a_rejected_or_revoked_signature_is_refused() {
+    let gov = signing_gov().await;
+    let (key_id, public_id) = minted_with_credential(&gov).await;
     let reject = Script::new(AuthPoints::HEAD_BODY, Verified::Reject, Vec::new());
     let k = reader_kit(&gov, reject, true);
     let ans = signed_call(&k, signed_head());
@@ -2540,7 +2563,9 @@ fn red_signed_a_rejected_or_revoked_signature_is_refused() {
             .status,
         401
     );
-    gov.revoke(&key_id, "signed revoke").expect("revoked");
+    gov.revoke_async(&key_id, "signed revoke")
+        .await
+        .expect("revoked");
     let identity = Script::new(
         AuthPoints::HEAD_BODY,
         Verified::Identity(VerifiedIdentity {
@@ -2553,11 +2578,11 @@ fn red_signed_a_rejected_or_revoked_signature_is_refused() {
     assert_eq!(signed_call(&k, signed_head()).flow, FLOW_STOP);
 }
 
-#[test]
-fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_verifier() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_verifier() {
+    let gov = signing_gov().await;
     let now = crate::store::now();
-    let (_, token) = minted(&gov, now + 3_600, now);
+    let (_, token) = minted(&gov, now + 3_600, now).await;
     let pass = Script::new(AuthPoints::HEAD_BODY, Verified::Pass, Vec::new());
     let k = reader_kit(&gov, Arc::clone(&pass), true);
     let both = post(
@@ -2581,9 +2606,9 @@ fn red_signed_a_pass_falls_to_the_token_path_and_an_unsigned_dialect_asks_no_ver
     );
 }
 
-#[test]
-fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
-    let gov = signing_gov();
+#[tokio::test]
+async fn red_signed_a_body_over_the_gate_is_the_413_before_any_verdict() {
+    let gov = signing_gov().await;
     let reader = Script::new(AuthPoints::HEAD_BODY, Verified::Reject, Vec::new());
     let k = reader_kit(&gov, Arc::clone(&reader), true);
     let over = k.inbound.auth_call(

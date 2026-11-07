@@ -22,6 +22,7 @@ struct NativeImage {
     archive: String,
     release_keys_version: Option<u64>,
     plugins: Arc<PluginsCfg>,
+    floor: Option<Arc<busbar_kernel::persistence::plugin_floor::AdmissionProof>>,
 }
 
 static NATIVE_IMAGES: std::sync::Mutex<Vec<NativeImage>> = std::sync::Mutex::new(Vec::new());
@@ -39,6 +40,7 @@ fn remember_native_images(registry: &PluginRegistry, plugins: &PluginsCfg) {
                 archive: image.archive_sha256.clone()?,
                 release_keys_version: image.release_keys_version(),
                 plugins: Arc::clone(&plugins),
+                floor: None,
             })
         })
         .collect();
@@ -64,12 +66,16 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
         format!("native plugin '{display}' has no retained admitted archive proof")
     })?;
     if let Some(authority) = PLUGIN_FLOOR.get() {
-        super::durability::check_plugin_floor_candidate(
-            authority.calls.as_ref(),
+        super::durability::check_prepared_plugin_floor_candidate(
+            image
+                .floor
+                .as_deref()
+                .ok_or("native image lacks completed Store floor admission")?,
             &authority.host,
             &image.row,
             image.release_keys_version,
             &image.plugins.first_party_floors,
+            &image.archive,
         )
     } else {
         busbar_kernel::appbuild::validate_bootstrap_archive(
@@ -81,51 +87,157 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
+/// Retained admission owner. Hydration and routing begin only after this has
+/// confirmed the logical format and registered this process's writer.
+pub async fn admit_store(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    admit_format(backend, true).await
+}
+
+/// Only the native prepared session may supply a checkpoint-bound recovery backend.
+/// A recovery target must already contain the confirmed current-format manifest.
+pub async fn admit_prepared_store(
+    prepared: &busbar_migrations::RecoveryPending,
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    if let Some(recovery) = &prepared.recovery {
+        if recovery.upgrade != prepared.upgrade_id
+            || recovery.target != prepared.backend.info().dataset
+            || recovery.activation_receipt_digest == [0; 32]
+            || recovery.selector_digest == [0; 32]
+        {
+            return Err("native cold recovery binding does not match its prepared target".into());
+        }
+    }
+    admit_format(prepared.backend.clone(), prepared.recovery.is_none()).await
+}
+
+async fn admit_format(
+    backend: busbar_contract::persistence::axis::OpenedBackend,
+    initialize_empty: bool,
+) -> Result<busbar_kernel::persistence::startup::Startup, String> {
+    use busbar_kernel::persistence::{
+        facade::Limits,
+        startup::{Progress, Startup},
+    };
+    let mut startup = Startup::new(
+        backend,
+        Limits {
+            pending_operations: 4096,
+            conflict_retries: 16,
+            scan_items: 4096,
+            // Include framing above the existing 16-MiB OAuth logical cell.
+            scan_bytes: 32 * 1024 * 1024,
+        },
+        // The configured adapter may initialize only a proven wholly empty
+        // dataset. An existing legacy or incomplete dataset is never relabelled.
+        initialize_empty,
+    )
+    .map_err(|error| format!("Store format admission refused: {error:?}"))?;
+    loop {
+        match startup
+            .advance()
+            .await
+            .map_err(|error| format!("Store format admission refused: {error:?}"))?
+        {
+            Progress::Advanced => {}
+            Progress::Admitted => return Ok(startup),
+            Progress::Pending => {
+                // The same Startup owns the original candidate throughout uncertainty.
+                // Advancing it reconciles that candidate; it never allocates a replacement.
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Progress::Reconcile => {
+                return Err(
+                    "Store admission has an unresolved original operation; serving remains closed"
+                        .into(),
+                );
+            }
+            Progress::Draining | Progress::Retired => {
+                return Err("Store admission entered an invalid boot state".into());
+            }
+        }
+    }
+}
+
 struct PluginFloorAuthority {
-    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+    owner: busbar_kernel::persistence::plugin_floor::PluginFloor,
     host: String,
+    release_keys: std::sync::atomic::AtomicU64,
 }
 
 static PLUGIN_FLOOR: std::sync::OnceLock<PluginFloorAuthority> = std::sync::OnceLock::new();
 
-pub fn bind_plugin_floor(
-    calls: Arc<dyn busbar_contract::store_calls::StoreCalls>,
+pub async fn bind_plugin_floor(
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
+    let owner = busbar_kernel::persistence::plugin_floor::PluginFloor::new(core)?;
+    let host = super::durability::host_identity();
+    let release_keys = owner.release_keys_floor(&host).await?;
     PLUGIN_FLOOR
         .set(PluginFloorAuthority {
-            calls,
-            host: super::durability::host_identity(),
+            owner,
+            host,
+            release_keys: std::sync::atomic::AtomicU64::new(release_keys),
         })
         .map_err(|_| "the plugin floor Store is already bound".to_string())
 }
 
-fn check_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
-    if let Some(authority) = PLUGIN_FLOOR.get() {
-        super::durability::check_plugin_floor(
-            authority.calls.as_ref(),
-            &authority.host,
-            rows,
-            &plugins.first_party_floors,
-        )?;
-    }
-    Ok(())
-}
-
-fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
+async fn hold_plugin_floor(rows: &dyn PluginRows, plugins: &PluginsCfg) -> Result<(), String> {
     if let Some(authority) = PLUGIN_FLOOR.get() {
         super::durability::hold_plugin_floor(
-            authority.calls.as_ref(),
+            &authority.owner,
             &authority.host,
             rows,
             &plugins.first_party_floors,
-        )?;
+        )
+        .await?;
+        let floor = authority.owner.release_keys_floor(&authority.host).await?;
+        authority
+            .release_keys
+            .fetch_max(floor, std::sync::atomic::Ordering::AcqRel);
+        // Each native image receives an exact archive-bound admission observation.
+        // The synchronous dlopen guard checks this proof; it performs no Store I/O.
+        if let Some(registry) = super::loader::rows::registry_of(rows) {
+            let mut prepared = Vec::new();
+            for image in registry.loadable().iter().filter(|image| !image.linked()) {
+                let row = PluginRows::resolve(registry, &image.manifest.name)
+                    .ok_or("admitted native image lost its registry row")?;
+                let archive = image
+                    .archive_sha256
+                    .clone()
+                    .ok_or("native image lacks archive digest")?;
+                let proof = super::durability::prepare_plugin_floor_candidate(
+                    &authority.owner,
+                    &authority.host,
+                    &row,
+                    image.release_keys_version(),
+                    &plugins.first_party_floors,
+                    &archive,
+                )
+                .await?;
+                prepared.push(NativeImage {
+                    bytes: Arc::downgrade(&image.lib_bytes),
+                    row,
+                    archive,
+                    release_keys_version: image.release_keys_version(),
+                    plugins: Arc::new(plugins.clone()),
+                    floor: Some(Arc::new(proof)),
+                });
+            }
+            let mut images = NATIVE_IMAGES.lock().unwrap_or_else(|p| p.into_inner());
+            for image in prepared {
+                images.retain(|old| !old.bytes.ptr_eq(&image.bytes));
+                images.push(image);
+            }
+        }
     }
     Ok(())
 }
 
-pub fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
+pub async fn admit_recovered_plugins(plugins: &PluginsCfg) -> Result<(), String> {
     if let Some(registry) = REGISTRY.get() {
-        hold_plugin_floor(registry, plugins)?;
+        hold_plugin_floor(registry, plugins).await?;
     }
     Ok(())
 }
@@ -142,7 +254,7 @@ pub fn registry(
 fn registry_with_floor(
     linked: Vec<LinkedPlugin>,
     plugins: Option<&PluginsCfg>,
-    check_floor: bool,
+    _check_floor: bool,
     note: &mut dyn FnMut(Note<'_>),
 ) -> Result<PluginRegistry, String> {
     let scan = match plugins {
@@ -160,22 +272,21 @@ fn registry_with_floor(
         remember_native_images(&registry, plugins);
     }
 
-    if check_floor {
-        if let Some(plugins) = plugins {
-            check_plugin_floor(&registry, plugins)?;
-        }
-    }
-
     super::linked::secret_rows().judge_dropped(discovered(&registry, |kind| kind == "secret")?)?;
     Ok(registry)
 }
 
-pub fn admit_secrets(rows: &Arc<dyn PluginRows>, plugins: &PluginsCfg) -> Result<(), String> {
-    hold_plugin_floor(rows.as_ref(), plugins)?;
-    match super::loader::rows::registry_arc(Arc::clone(rows)) {
-        Some(registry) => admit_dropped_secrets(&registry),
-        None => Ok(()),
-    }
+pub fn admit_secrets<'a>(
+    rows: &'a Arc<dyn PluginRows>,
+    plugins: &'a PluginsCfg,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        hold_plugin_floor(rows.as_ref(), plugins).await?;
+        match super::loader::rows::registry_arc(Arc::clone(rows)) {
+            Some(registry) => admit_dropped_secrets(&registry),
+            None => Ok(()),
+        }
+    })
 }
 
 pub fn admit_dropped_secrets(registry: &PluginRegistry) -> Result<(), String> {
@@ -216,10 +327,10 @@ pub fn registry_rows(
 pub fn linked_row(row: &LinkedRow) -> LinkedPlugin {
     match *row {
         LinkedRow::Store((key, ephemeral, door, canonical)) => {
-            answering_former_names(LinkedPlugin::store_named(canonical, key, door, ephemeral))
+            LinkedPlugin::store_named(canonical, key, door, ephemeral)
         }
         LinkedRow::Auth((key, canonical, door)) => {
-            answering_former_names(LinkedPlugin::auth_door_named(canonical, key, door))
+            LinkedPlugin::auth_door_named(canonical, key, door)
         }
     }
 }
@@ -239,12 +350,6 @@ pub fn linked_registry() -> PluginRegistry {
         .expect("the build's linked plugin declarations must not conflict")
 }
 
-#[must_use]
-pub fn answering_former_names(row: LinkedPlugin) -> LinkedPlugin {
-    let former = busbar_kernel::config::migration_table::former_names(&row.manifest.alias);
-    row.with_former_names(former)
-}
-
 pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
@@ -259,8 +364,9 @@ pub fn trust_policy(
             binary_version,
         })?;
     if let Some(authority) = PLUGIN_FLOOR.get() {
-        policy.release_keys_floor =
-            super::durability::release_keys_floor(authority.calls.as_ref(), &authority.host)?;
+        policy.release_keys_floor = authority
+            .release_keys
+            .load(std::sync::atomic::Ordering::Acquire);
     }
     #[cfg(feature = "test-harness")]
     if let Some(key) =
@@ -411,13 +517,6 @@ fn listener_candidates_from(
     );
     for door in linked.plane_doors.iter().chain(linked.hook_doors) {
         let candidate = Candidate::linked(*door)?;
-        let former: Vec<_> = candidate
-            .aliases
-            .iter()
-            .chain(std::iter::once(&candidate.name))
-            .flat_map(|name| busbar_kernel::config::migration_table::former_names(name))
-            .collect();
-        let candidate = candidate.answering(former);
         if !candidates
             .iter()
             .any(|c| c.kind == candidate.kind && c.name == candidate.name)
@@ -1356,137 +1455,324 @@ fn publish_transport_inventory(
     drop(previous);
 }
 
-pub fn compose_book(
-    lane: super::durability::JournalLane,
-    data_dir: Option<std::path::PathBuf>,
+#[cfg(test)]
+pub async fn compose_book(
+    journal: Arc<busbar_kernel::persistence::journal::RuntimeJournal>,
+    identity: &busbar_kernel::persistence::boot_identity::BootIdentity,
     node: u64,
     now: u64,
     token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 ) -> Result<super::durability::Durability, String> {
     let mut durability = super::durability::build_on_store(
-        &super::durability::DurabilityConfig { data_dir },
+        &super::durability::DurabilityConfig::default(),
         node,
-        lane,
+        journal,
         Some(&crate::root::kernel::ROOT_CARD),
+        journal_history_budget(),
     )
-    .map_err(|e| format!("the boot journal could not be opened: {e}"))?;
-
-    if let Err(lost) =
-        durability.journal_quarantines(token, busbar_contract::caps::StepName::Meter, now)
-    {
-        tracing::error!(
-            step = lost.step().as_str(),
-            "the journal could not record the quarantine boot recovery made"
-        );
-    }
-
-    super::keyset::bind(
-        &mut durability,
-        None,
-        token,
-        busbar_contract::caps::StepName::Meter,
-        now,
-    )
-    .map_err(|e| e.to_string())?;
+    .await
+    .map_err(|e| format!("the native boot journal could not be opened: {e}"))?;
+    bind_boot_keyset(&mut durability, identity, token, now).await?;
     Ok(durability)
 }
 
-pub fn book(
-    app: &busbar_kernel::state::App,
-    store: &str,
-) -> Result<super::durability::NodeBook, String> {
-    let Some(gov) = app.governance.as_ref() else {
-        return Err(
-            "the boot book needs the configured store and none resolved; add a store, e.g. \
-             `store: {module: memory}`, or run `busbar migrate` (Q-STORE)"
-                .to_string(),
-        );
-    };
-    let Some(calls) = gov.store_calls() else {
-        return Err(no_record_slots(store));
-    };
-    let lane = super::durability::JournalLane::start(calls, store)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-
-    let data_dir = busbar_kernel::preflight::fleet_data_dir();
-    let host = super::durability::host_identity();
-    let calls = lane.calls();
-    let taken = super::durability::take_node(calls.as_ref(), &host)
-        .map_err(|why| format!("this node's identity in the store `{store}`: {why}"))?;
-
-    super::durability::hold_plugin_floor(
-        calls.as_ref(),
-        &host,
-        app.hook_env.registry.as_ref(),
-        &app.plugins_cfg.first_party_floors,
-    )?;
-
-    if let Some(lease) = taken.lease {
-        lane.hold_lease(lease);
+fn journal_history_budget() -> busbar_kernel::persistence::journal::BufferBudget {
+    busbar_kernel::persistence::journal::BufferBudget {
+        records: 1_048_576,
+        bytes: 512 * 1024 * 1024,
     }
-    let node = taken.id;
-    lane.bind_recovery_identity(&host, node)?;
-
-    super::kernel::ROOT_CARD.keep_in_store(calls.clone(), node);
-    let token = super::kernel::new_kernel().durability_token();
-    let mut durability = compose_book(lane, data_dir, node, now, &token)?;
-
-    durability.restore_amendments(&app.amendments, &token)?;
-
-    super::durability::report_operator_breaks(&durability);
-
-    if let Some(material) = durability
-        .record
-        .derived_secret(super::keyset::CALLER_REF_MATERIAL)
-    {
-        gov.bind_deployment_caller_ref(material);
-    } else {
-        tracing::debug!(
-            node,
-            "no deployment keyset is bound: caller references are keyed by this boot's random key \
-             unless the node keeps signing material, so they differ per node and per restart"
-        );
-    }
-    let durability = Arc::new(std::sync::Mutex::new(durability));
-
-    gov.attach_recovery_sink(super::durability::usage_recovery_sink(&durability))
-        .map_err(|why| {
-            format!("usage recovery could not be restored from the Store journal: {why}")
-        })?;
-    gov.attach_unit_checkpoint_sink(super::durability::unit_checkpoint_sink(&durability))
-        .map_err(|why| {
-            format!("running unit checkpoints could not be restored from the Store journal: {why}")
-        })?;
-    gov.hydrate_budgets(&app.cost, now)
-        .map_err(|why| format!("budget hydration after usage recovery failed: {why}"))?;
-    if let Err(why) = gov.resume_correction_verdicts(&app.cost) {
-        use busbar_kernel::diagnostics::{diag_warn, BUDGET_FLUSH_PARTIAL_FAILURE};
-        diag_warn!(BUDGET_FLUSH_PARTIAL_FAILURE, error = %why,
-            "usage correction recovery remains retained after boot; background continuation will retry");
-    }
-
-    super::durability::bind_amendments(&durability, &app.amendments);
-
-    let verb_store = super::durability::node_verb_store(
-        Arc::clone(&durability),
-        super::kernel::new_kernel().durability_token(),
-        store,
-    );
-    Ok(super::durability::NodeBook {
-        durability,
-        verb_store,
-    })
 }
 
-#[must_use]
-pub fn no_record_slots(store: &str) -> String {
-    format!(
-        "the configured store `{store}` does not offer the record slots ({}) the node's journal is \
-         kept in; configure a store that implements store ABI v3",
-        super::durability::RECORD_SLOTS
-    )
+pub type NodeLeaseTask = tokio::task::JoinHandle<Result<(), String>>;
+pub type WatchedBook = (super::durability::NodeBook, Option<NodeLeaseTask>);
+
+/// Construction retains the actual owners before every asynchronous crossing.
+/// A pending native original suspends this same preparation; it never restarts
+/// node allocation, global price binding, or application construction.
+pub struct BookPreparation {
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    governance: Arc<busbar_kernel::governance::GovState>,
+    identity: Arc<busbar_kernel::persistence::boot_identity::BootIdentity>,
+    taken: Option<busbar_kernel::persistence::boot_identity::TakenNode>,
+    journal: Option<Arc<busbar_kernel::persistence::journal::RuntimeJournal>>,
+    durability: Option<super::durability::Durability>,
+    shared: Option<Arc<std::sync::Mutex<super::durability::Durability>>>,
+    token: Option<busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>>,
+    phase: BookPhase,
+    lease_watch: Option<LeaseWatch>,
+    node_lease_task: Option<NodeLeaseTask>,
+    node_lease: Option<Arc<busbar_kernel::persistence::boot_identity::NodeLease>>,
+}
+struct LeaseWatch {
+    stop: tokio::sync::watch::Receiver<bool>,
+    failure: tokio::sync::watch::Sender<bool>,
+}
+impl Drop for BookPreparation {
+    fn drop(&mut self) {
+        if let Some(task) = &self.node_lease_task {
+            task.abort();
+        }
+    }
+}
+#[derive(Debug, Clone, Copy)]
+enum BookPhase {
+    AllocateNode,
+    OpenJournal,
+    BindPrices,
+    BuildDurability,
+    BootPrices,
+    BindKeyset,
+    RestoreAmendments,
+    AttachRecovery,
+    Hydrate,
+    Ready,
+}
+/// A terminal refusal owns the interrupted preparation for explicit disposal.
+/// Dropping a displayed error is not permission to construct a replacement book.
+pub struct BookFailure {
+    reason: String,
+    _preparation: Option<Box<BookPreparation>>,
+}
+impl BookFailure {
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+    fn unstarted(reason: String) -> Self {
+        Self {
+            reason,
+            _preparation: None,
+        }
+    }
+}
+impl std::fmt::Display for BookFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+impl std::fmt::Debug for BookFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BookFailure")
+            .field("reason", &self.reason)
+            .field("phase", &self._preparation.as_ref().map(|p| p.phase))
+            .finish_non_exhaustive()
+    }
+}
+impl std::error::Error for BookFailure {}
+impl BookPreparation {
+    fn new(app: &busbar_kernel::state::App) -> Result<Self, String> {
+        let governance = app
+            .governance
+            .clone()
+            .ok_or("the boot book requires admitted core persistence")?;
+        let core = governance
+            .core_store_handle()
+            .map_err(|error| error.to_string())?;
+        let identity =
+            Arc::new(busbar_kernel::persistence::boot_identity::BootIdentity::new(core.clone())?);
+        Ok(Self {
+            core,
+            governance,
+            identity,
+            taken: None,
+            journal: None,
+            durability: None,
+            shared: None,
+            token: Some(super::kernel::new_kernel().durability_token()),
+            phase: BookPhase::AllocateNode,
+            lease_watch: None,
+            node_lease_task: None,
+            node_lease: None,
+        })
+    }
+    async fn finish(
+        mut self,
+        app: &busbar_kernel::state::App,
+        store: &str,
+    ) -> Result<WatchedBook, BookFailure> {
+        let result = if let Some(mut stop) =
+            self.lease_watch.as_ref().map(|watch| watch.stop.clone())
+        {
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|stopping| *stopping) => Err("startup stopped during boot book preparation".to_owned()),
+                result = self.run(app, store) => result,
+            }
+        } else {
+            self.run(app, store).await
+        };
+        match result {
+            Ok(book) => Ok((book, self.node_lease_task.take())),
+            Err(reason) => {
+                if let Some(task) = &self.node_lease_task {
+                    task.abort();
+                }
+                Err(BookFailure {
+                    reason,
+                    _preparation: Some(Box::new(self)),
+                })
+            }
+        }
+    }
+    async fn run(
+        &mut self,
+        app: &busbar_kernel::state::App,
+        store: &str,
+    ) -> Result<super::durability::NodeBook, String> {
+        use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
+        let host = super::durability::host_identity();
+        self.taken = Some(super::durability::take_node(&self.identity, &host).await?);
+        self.node_lease = self.taken.as_mut().unwrap().lease.take().map(Arc::new);
+        if self.lease_watch.is_some() && self.node_lease.is_none() {
+            return Err("the admitted startup node has no writer lease".into());
+        }
+        // Recovery may wait for foreign writers' leases. Renew our actual writer
+        // before any journal, keyset, price or recovery await can outlast its lease.
+        if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
+            self.node_lease_task = Some(tokio::spawn(crate::refresh_node_lease(
+                lease,
+                watch.stop.clone(),
+                watch.failure.clone(),
+            )));
+        }
+        let node = self.taken.as_ref().expect("retained node result").id;
+        self.phase = BookPhase::OpenJournal;
+        self.journal = Some(
+            RuntimeJournal::open(
+                self.core.clone(),
+                node,
+                BufferBudget {
+                    records: 65_536,
+                    bytes: 64 * 1024 * 1024,
+                },
+            )
+            .await
+            .map_err(|error| format!("native journal admission refused: {error:?}"))?,
+        );
+        self.phase = BookPhase::BindPrices;
+        super::kernel::ROOT_CARD.keep_in_store(self.core.clone(), node)?;
+        self.phase = BookPhase::BuildDurability;
+        self.durability = Some(
+            super::durability::build_on_store(
+                &super::durability::DurabilityConfig::default(),
+                node,
+                self.journal.as_ref().unwrap().clone(),
+                None,
+                journal_history_budget(),
+            )
+            .await
+            .map_err(|error| format!("the native boot journal could not be opened: {error}"))?,
+        );
+        self.phase = BookPhase::BootPrices;
+        super::kernel::ROOT_CARD.boot_bound_store().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        self.phase = BookPhase::BindKeyset;
+        bind_boot_keyset(
+            self.durability.as_mut().unwrap(),
+            &self.identity,
+            self.token.as_ref().unwrap(),
+            now,
+        )
+        .await?;
+        self.phase = BookPhase::RestoreAmendments;
+        let durability = self.durability.as_mut().unwrap();
+        durability
+            .restore_amendments(&app.amendments, self.token.as_ref().unwrap())
+            .await?;
+        super::durability::report_operator_breaks(durability).await;
+        if let Some(material) = durability
+            .record
+            .derived_secret(super::keyset::CALLER_REF_MATERIAL)
+        {
+            self.governance.bind_deployment_caller_ref(material);
+        }
+        self.shared = Some(Arc::new(std::sync::Mutex::new(
+            self.durability.take().unwrap(),
+        )));
+        let journal = self.journal.as_ref().unwrap().clone();
+        let shared = self.shared.as_ref().unwrap();
+        self.phase = BookPhase::AttachRecovery;
+        self.governance
+            .attach_recovery_sink(
+                super::durability::usage_recovery_sink(journal.clone())
+                    .map_err(|error| error.to_string())?,
+            )
+            .await
+            .map_err(|error| format!("usage recovery: {error}"))?;
+        self.governance
+            .attach_unit_checkpoint_sink(
+                super::durability::unit_checkpoint_sink(shared, journal.clone())
+                    .map_err(|error| error.to_string())?,
+            )
+            .await
+            .map_err(|error| format!("unit checkpoint recovery: {error}"))?;
+        self.phase = BookPhase::Hydrate;
+        self.governance
+            .hydrate_budgets_async(&app.cost, now)
+            .await
+            .map_err(|error| format!("budget hydration: {error}"))?;
+        if let Err(error) = self.governance.resume_correction_verdicts(&app.cost).await {
+            tracing::warn!(%error,"usage correction remains retained for continuation");
+        }
+        super::durability::bind_amendments(shared, &app.amendments).await?;
+        let token = self.token.take().unwrap();
+        let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
+        self.phase = BookPhase::Ready;
+        Ok(super::durability::NodeBook {
+            durability: self.shared.take().unwrap(),
+            runtime_journal: self.journal.take().unwrap(),
+            node_lease: self.node_lease.take(),
+            verb_store,
+        })
+    }
+}
+async fn bind_boot_keyset(
+    durability: &mut super::durability::Durability,
+    identity: &busbar_kernel::persistence::boot_identity::BootIdentity,
+    token: &busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
+    now: u64,
+) -> Result<(), String> {
+    loop {
+        match super::keyset::bind(
+            durability,
+            identity,
+            token,
+            busbar_contract::caps::StepName::Meter,
+            now,
+        )
+        .await
+        {
+            Ok(_) => return Ok(()),
+            Err(super::keyset::KeysetError::PendingOriginal { .. }) => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+}
+pub async fn book(
+    app: &busbar_kernel::state::App,
+    store: &str,
+) -> Result<super::durability::NodeBook, BookFailure> {
+    BookPreparation::new(app)
+        .map_err(BookFailure::unstarted)?
+        .finish(app, store)
+        .await
+        .map(|(book, _)| book)
+}
+
+/// Start the existing lease watcher before boot recovery, then transfer that
+/// exact task alongside the book into the retained serving candidate.
+pub async fn book_with_lease_watch(
+    app: &busbar_kernel::state::App,
+    store: &str,
+    stop: tokio::sync::watch::Receiver<bool>,
+    failure: tokio::sync::watch::Sender<bool>,
+) -> Result<WatchedBook, BookFailure> {
+    let mut preparation = BookPreparation::new(app).map_err(BookFailure::unstarted)?;
+    preparation.lease_watch = Some(LeaseWatch { stop, failure });
+    preparation.finish(app, store).await
 }
 
 #[cfg(test)]
@@ -1579,7 +1865,7 @@ fn locate_provider_destination_with(
                     .map(|p| p.name())
                     .collect::<Vec<_>>()
                     .join(", ")
-            ))
+            ));
         }
     };
     let facts = plugin
@@ -1597,4 +1883,30 @@ fn locate_provider_destination_with(
         secure: located.secure,
         name: located.name,
     })
+}
+
+/// Resolve only compiled core schemas or the attested instance's exact historical
+/// raw-record framing. An unscoped unknown schema is never guessed into a namespace.
+pub fn bootstrap_witness(
+    instance: &str,
+    schema: &str,
+    key: &[u8],
+    value: &[u8],
+) -> Result<busbar_contract::persistence::Address, &'static str> {
+    use busbar_migrations::legacy::archive::{route_record, Binding, Route, Scope};
+    let bindings = [Binding {
+        schema,
+        instance,
+        private: false,
+        source_scope: Scope::Instance,
+    }];
+    match route_record(schema, key, value, &bindings)
+        .map_err(|_| "unsupported or ambiguous bootstrap witness binding")?
+    {
+        Route::Record {
+            address,
+            value: mapped,
+        } if mapped == value => Ok(address),
+        _ => Err("bootstrap witness requires an explicit supported exact-record binding"),
+    }
 }

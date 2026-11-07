@@ -1394,7 +1394,7 @@ fn a_tail_declares_its_record_retentions_and_a_bad_one_does_not_bind() {
         KindTailHead, Section, Statement, SECTION_DECLARING,
     };
     use busbar_contract::abi::plane::{PlaneTail, RecordRetention, INGRESS_REQUEST_RESPONSE};
-    use busbar_contract::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use busbar_contract::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
     fn s(text: &'static str) -> AbiStr {
         AbiStr {
             ptr: text.as_ptr(),

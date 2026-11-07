@@ -125,10 +125,10 @@ async fn session(
     .expect("actual session admission is bounded")
 }
 
-fn mint(gov: &busbar_kernel::governance::GovState, name: &str) -> (String, String) {
+async fn mint(gov: &busbar_kernel::governance::GovState, name: &str) -> (String, String) {
     let now = busbar_kernel::store::now();
     let (key, secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: name.into(),
                 ..Default::default()
@@ -136,6 +136,7 @@ fn mint(gov: &busbar_kernel::governance::GovState, name: &str) -> (String, Strin
             now + 3600,
             now,
         )
+        .await
         .expect("actual Store-minted signed credential");
     (
         key.id,
@@ -198,6 +199,12 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("actual native Store opens"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -207,24 +214,28 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         (None, None),
         None,
         &rules,
-        None,
+        Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
-    let (enabled_id, enabled) = mint(gov, "enabled");
-    let (disabled_id, disabled) = mint(gov, "disabled");
-    gov.update_key(&disabled_id, Some(false), None).unwrap();
+    let (enabled_id, enabled) = mint(gov, "enabled").await;
+    let (disabled_id, disabled) = mint(gov, "disabled").await;
+    gov.update_key_outcome_async(&disabled_id, Some(false), None)
+        .await
+        .unwrap();
     let router = busbar_kernel::build_router(app.clone());
     for token in [&disabled, "sk-vk-nope"] {
         native_refusal(
@@ -267,14 +278,16 @@ async fn keys_chain_preserves_carriers_disable_revoke_and_metering_controls() {
         .unwrap(),
     );
     let usage = gov
-        .usage_for(&app.cost, &enabled_id, busbar_kernel::store::now())
+        .usage_for_async(&app.cost, &enabled_id, busbar_kernel::store::now())
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
         usage.spend_cents, 1,
         "one real configured request fee is charged"
     );
-    gov.revoke(&enabled_id, "ordinary auth revocation control")
+    gov.revoke_async(&enabled_id, "ordinary auth revocation control")
+        .await
         .unwrap();
     assert!(gov.is_revoked(&enabled_id));
     native_refusal(
@@ -343,6 +356,12 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("actual native Store opens"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -352,22 +371,24 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         (None, None),
         None,
         &rules,
-        None,
+        Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
-    let (key_id, secret) = mint(gov, "ignored-in-open-chain");
+    let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
         let (principal, context) = session(app.clone(), token).await.expect("open front door");
@@ -385,7 +406,8 @@ async fn open_chain_with_operator_is_anonymous_keyless_and_unmetered() {
         );
     }
     let spend = gov
-        .usage_for(&app.cost, &key_id, busbar_kernel::store::now())
+        .usage_for_async(&app.cost, &key_id, busbar_kernel::store::now())
+        .await
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -445,6 +467,12 @@ async fn open_chain_without_operator_still_inserts_default_context() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let anchor = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("actual native Store opens"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -454,22 +482,24 @@ async fn open_chain_without_operator_still_inserts_default_context() {
         (None, None),
         None,
         &rules,
-        None,
+        Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_none());
-    let (key_id, secret) = mint(gov, "ignored-in-open-chain");
+    let (key_id, secret) = mint(gov, "ignored-in-open-chain").await;
     let router = busbar_kernel::build_router(app.clone());
     for token in [None, Some(secret.as_str()), Some("unknown")] {
         let (principal, context) = session(app.clone(), token).await.expect("open front door");
@@ -487,7 +517,8 @@ async fn open_chain_without_operator_still_inserts_default_context() {
         );
     }
     let spend = gov
-        .usage_for(&app.cost, &key_id, busbar_kernel::store::now())
+        .usage_for_async(&app.cost, &key_id, busbar_kernel::store::now())
+        .await
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -561,6 +592,7 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -576,19 +608,21 @@ async fn ordinary_oidc_chain_keeps_grants_carriers_and_native_refusals() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_some());
-    let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");
+    let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
     for carrier in ["authorization", "x-api-key", "x-goog-api-key"] {
@@ -688,6 +722,7 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         &plugin_config,
         &directory,
     )
+    .await
     .expect("the new fixture Store initializes the admitted OIDC principal namespace");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -703,19 +738,21 @@ async fn ordinary_oidc_chain_without_operator_ignores_persisted_keys() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the actual product builds the session deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
     let gov = app.governance.as_ref().expect("actual Store governance");
     assert!(gov.admin_token_hash().is_none());
-    let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain");
+    let (persisted_id, persisted) = mint(gov, "persisted-keys-do-not-override-chain").await;
     let token = common::credentials::token_for("static-chain", &["bound"], AUDIENCE);
     let router = busbar_kernel::build_router(app.clone());
     for carrier in ["authorization", "x-api-key", "x-goog-api-key"] {

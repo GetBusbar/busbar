@@ -4,13 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_plugin_loader::dispatch::kinds::store::Store;
 use busbar_plugin_loader::dispatch::{
     load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
 };
-use busbar_plugin_loader::store_v3::LoadedStore;
 
-pub(crate) fn store() -> Arc<LoadedStore> {
+pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::PersistenceBackend> {
     let path = PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").expect(
             "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN must name the freshly built product store",
@@ -20,7 +18,7 @@ pub(crate) fn store() -> Arc<LoadedStore> {
         .expect("the product store library's statement is readable")
         .expect("the product store library carries its statement");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let plugin = load_dropped::<Store>(
+    let plugin = load_dropped::<busbar_plugin_loader::dispatch::kinds::store_v4::StoreV4>(
         &path,
         &stated,
         Bind {
@@ -36,8 +34,47 @@ pub(crate) fn store() -> Arc<LoadedStore> {
         std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
     let _: serde_json::Value =
         serde_json::from_str(&settings).expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
-    Arc::new(
-        LoadedStore::open(plugin, dispatcher, settings.as_bytes(), crate::door::op_id)
-            .expect("the product store opens with its supplied settings"),
+    let backend = busbar_plugin_loader::store_v4::LoadedPersistence::open(
+        plugin,
+        dispatcher,
+        settings.as_bytes(),
+        busbar_plugin_loader::store_v4::Limits {
+            descriptor_bytes: 32 * 1024 * 1024,
+            output_items: 4096,
+            output_bytes: 32 * 1024 * 1024,
+            decode_bytes: 32 * 1024 * 1024,
+        },
     )
+    .await
+    .expect("the primitive product store opens with supplied settings");
+    Arc::new(backend)
+}
+
+pub(crate) async fn core() -> Arc<crate::persistence::facade::CoreStore> {
+    core_over(native_backend().await).await
+}
+
+pub(crate) async fn core_over(
+    backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+) -> Arc<crate::persistence::facade::CoreStore> {
+    let mut startup = crate::persistence::startup::Startup::new(
+        backend,
+        crate::persistence::facade::Limits {
+            pending_operations: 1024,
+            conflict_retries: 8,
+            scan_items: 128,
+            scan_bytes: 1024 * 1024,
+        },
+        true,
+    )
+    .expect("valid native test storage authority");
+    loop {
+        use crate::persistence::startup::Progress;
+        match startup.advance().await.expect("native storage startup") {
+            Progress::Advanced => {}
+            Progress::Admitted => break,
+            other => panic!("test startup did not admit: {other:?}"),
+        }
+    }
+    startup.store().expect("admitted core store")
 }

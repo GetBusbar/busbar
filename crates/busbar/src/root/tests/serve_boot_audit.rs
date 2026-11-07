@@ -122,7 +122,7 @@ pub(super) async fn run() {
     for step in crate::ROOT_UNITS.iter().filter_map(|unit| unit.on_config) {
         step(&config.limits);
     }
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the boot deployment resolves for its owned build"),
         plugins.clone(),
@@ -133,14 +133,18 @@ pub(super) async fn run() {
         None,
         &rules,
     )
+    .await
     .expect("the configured actual Store builds the boot app");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the production boot book opens");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the production boot book opens");
     limits
         .keep()
+        .await
         .expect("the boot card activates in its actual Store");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(crate::root::kernel::ROOT_CARD.pin().is_some());
     let ctx = crate::root::linked::BookCtx {
@@ -153,7 +157,7 @@ pub(super) async fn run() {
 
     let mut applied = config;
     applied.per_request_fee = 3;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         applied,
         plugins,
         None,
@@ -163,10 +167,11 @@ pub(super) async fn run() {
         Some(&app),
         &rules,
     )
+    .await
     .expect("the real deployment applies its changed rate");
-    limits.keep().expect("the changed rate activates");
+    limits.keep().await.expect("the changed rate activates");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let pinned = {
@@ -191,7 +196,7 @@ pub(super) async fn run() {
         .expect("the real Store owns governance")
         .clone();
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "boot-audit".into(),
                 ..Default::default()
@@ -199,8 +204,10 @@ pub(super) async fn run() {
             4_000_000_000,
             busbar_kernel::store::now(),
         )
+        .await
         .expect("the boot's actual governance mints a key");
-    gov.hydrate_budgets(&app.cost, 0)
+    gov.hydrate_budgets_async(&app.cost, 0)
+        .await
         .expect("the key's budgets hydrate");
 
     let _one = crate::root::PUBLISHING.lock().await;
@@ -311,6 +318,7 @@ pub(super) async fn run() {
         None,
         &app.serve_tables,
     )
+    .await
     .expect("the real Decisions plane composes with production money and egress");
     served.post = Some(post.clone());
     let routes =
@@ -319,16 +327,16 @@ pub(super) async fn run() {
     let (router, _, _) =
         busbar_kernel::build_split_routers_serving(app.clone(), routes, 1 << 20, 0, false);
     let lines = || {
-        book.durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .journal
-            .replay()
-            .expect("the book replays")
-            .expect("the chain verifies")
-            .len()
+        let journal = book.runtime_journal();
+        async move {
+            journal
+                .read_records(crate::root::durability::tests::BUDGET)
+                .await
+                .expect("the native chain verifies")
+                .len()
+        }
     };
-    let before = lines();
+    let before = lines().await;
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/v1/systemone")
@@ -366,14 +374,18 @@ pub(super) async fn run() {
         .await
         .expect("the actual provider exchange completed");
     assert_eq!(
-        gov.usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+        gov.usage_for_async(&app.cost, &key.id, busbar_kernel::store::now())
+            .await
             .unwrap()
             .unwrap()
             .requests,
         1
     );
     assert_eq!(post.open_units(), 0, "node facts close when the unit ends");
-    assert!(lines() > before, "the real unit posts to the durable book");
+    assert!(
+        lines().await > before,
+        "the real unit posts to the durable book"
+    );
     let durability = book.durability.lock().unwrap_or_else(|p| p.into_inner());
     let record = durability
         .audit_records

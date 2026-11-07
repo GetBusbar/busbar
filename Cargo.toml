@@ -9,13 +9,13 @@ members = [
     "crates/busbar-core-oauth2",
     "crates/busbar-contract",
     "crates/busbar-kernel",
+    "crates/busbar-migrations",
     "crates/busbar-kernel-identity",
     "crates/busbar-kernel-ledger",
     "crates/busbar-kernel-egress",
     "crates/busbar-kernel-breaker",
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
-    "crates/busbar-kernel-seams",
     "crates/plugin-loader",
 ]
 

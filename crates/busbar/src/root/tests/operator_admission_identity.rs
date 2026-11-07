@@ -120,20 +120,17 @@ async fn admitted(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn operator_first_auth_identity_survives_reload_and_seals_once_without_charges() {
-    let (original, _, _) = app(false);
+    let (original, _, _) = app(false).await;
     let mut pinned = (*original).clone();
     pinned.role_bindings = serde_json::from_value(serde_json::json!({
         (PROVIDER): {"reader": {"admin_scope": "read-only"}}
     }))
     .unwrap();
     let pinned = Arc::new(pinned);
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane =
-        crate::root::durability::JournalLane::start(slots.calls(), "operator-identity").unwrap();
     let node_id = busbar_kernel::door::op_id().counter();
-    let mut durability =
-        crate::root::durability::build_on_store(&Default::default(), node_id, lane.clone(), None)
-            .unwrap();
+    let fixture = crate::root::durability::tests::NativeFixture::new(node_id).await;
+    let journal = fixture.journal.clone();
+    let mut durability = fixture.book().await;
     durability.record = busbar_kernel_audit::AuditChain::new()
         .sealing_as(node_id)
         .signing_with(busbar_kernel_audit::AuditSigningKey::from_seed(&[0x73; 32]));
@@ -242,8 +239,9 @@ async fn operator_first_auth_identity_survives_reload_and_seals_once_without_cha
             "the operation already owns its terminal record"
         );
     }
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
-    let records = book.lock().unwrap().chain_at().audit_window(1, 4).unwrap();
+    journal.flush().await.unwrap();
+    let chain = book.lock().unwrap().chain_at();
+    let records = chain.audit_window(1, 4).await.unwrap();
     assert_eq!(records.len(), 4);
     for (record, id) in records.iter().zip(ids) {
         assert_eq!(record.what.unit_key, id);
@@ -276,13 +274,6 @@ async fn operator_first_auth_identity_survives_reload_and_seals_once_without_cha
         .unwrap();
     }
     assert!(busbar_kernel_audit::AuditChain::verify_chain(&records).is_ok());
-    let reopened = crate::root::durability::build_on_store(
-        &Default::default(),
-        node_id,
-        crate::root::durability::JournalLane::start(slots.calls(), "operator-identity-reopen")
-            .unwrap(),
-        None,
-    )
-    .unwrap();
-    assert_eq!(reopened.audit_window(1, 4), Some(records));
+    let reopened = fixture.reopen().await;
+    assert_eq!(reopened.audit_window(1, 4).await, Some(records));
 }

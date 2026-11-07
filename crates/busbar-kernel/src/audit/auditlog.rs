@@ -9,10 +9,16 @@ use crate::audit::journal::NeutralBody;
 use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
-use crate::store::plane_view::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
+use crate::host_records_async::{AsyncHistory, HistoryCollection, HistoryMode, HistoryOutcome};
+use crate::persistence::facade::CoreStore;
+use crate::store::plane_view::{encode, KIND_AUDIT};
+use busbar_contract::records::Retention;
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
+
+/// Stable core-owned audit lineage, independent of a plugin instance name.
+pub const PERSISTENCE_OWNER: &str = "busbar.core.admin-audit";
 
 pub(crate) const KIND_ID_AUDIT: u32 = 3;
 
@@ -26,6 +32,8 @@ pub(crate) fn register_audit_stream(app: &Arc<crate::state::App>) {
 }
 
 pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
+    // The legacy registry retains framing/read-cache ownership only. It receives
+    // no synchronous backend sink and never authorizes durable publication.
     stream_registry::register(
         kind_id,
         KIND_AUDIT.to_string(),
@@ -33,10 +41,16 @@ pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App
         AUDIT_DIGESTS_SCOPE,
         Decode::Native(reframe_audit),
         usize::MAX,
-        app.governance
-            .as_ref()
-            .map(|gov| PlaneStoreView::narrow(gov.store())),
     );
+    if let Some(store) = app
+        .governance
+        .as_ref()
+        .and_then(|gov| gov.core_store_handle().ok())
+    {
+        if let Err(error) = install_native(kind_id, store) {
+            tracing::error!("{error}");
+        }
+    }
 }
 
 pub(crate) fn audit_suffix(
@@ -141,8 +155,27 @@ fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String, u
     )
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedAuditBody {
+    seq: u64,
+    prev_hash: String,
+    hash: String,
+    content: Vec<u8>,
+}
+fn decode_audit_body(body: &[u8]) -> RecordStoreResult<NeutralBody> {
+    let value: PersistedAuditBody = serde_json::from_slice(body)
+        .map_err(|_| RecordStoreError("unknown or damaged native audit body".into()))?;
+    Ok(NeutralBody {
+        seq: value.seq,
+        prev_hash: value.prev_hash,
+        hash: value.hash,
+        content: value.content,
+    })
+}
+
 fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
-    let nb: NeutralBody = decode(body)?;
+    let nb = decode_audit_body(body)?;
     Ok(StreamRecord::from_parts(
         scope.to_string(),
         nb.seq,
@@ -155,7 +188,7 @@ fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
 }
 
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> RecordStoreResult<AuditEntry> {
-    let nb: NeutralBody = decode(body)?;
+    let nb = decode_audit_body(body)?;
     let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&nb.content);
     Ok(AuditEntry {
         seq: nb.seq,
@@ -330,64 +363,6 @@ impl PlaneAuditLog {
             .collect()
     }
 
-    pub(crate) fn restore_from_store(
-        &self,
-        store: &dyn PlaneStore,
-    ) -> RecordStoreResult<AuditRestored> {
-        let restored = self.read_and_seed(store);
-        if restored.is_err() {
-            if let Some(stream) = stream_registry::handle(self.kind_id) {
-                stream.journal.forget(ADMIN_LOG);
-            }
-        }
-        restored
-    }
-
-    fn read_and_seed(&self, store: &dyn PlaneStore) -> RecordStoreResult<AuditRestored> {
-        let scopes = store.list_plane_record_parents(KIND_AUDIT)?;
-        let mut out = AuditRestored::default();
-        for scope in &scopes {
-            let bodies = store
-                .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(scope.as_str().into()))?;
-
-            let mut good_bodies: Vec<Vec<u8>> = Vec::with_capacity(bodies.len());
-            for body in bodies {
-                match audit_entry_from_body(scope, &body) {
-                    Ok(entry) => {
-                        let neutral: NeutralBody = decode(&body)?;
-                        self.push_entry(entry, scope, neutral.content, true);
-                        good_bodies.push(body);
-                    }
-                    Err(e) => {
-                        out.unreadable += 1;
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::PLANE_AUDIT_ROW_UNREADABLE,
-                            scope = %scope,
-                            error = %e,
-                            "a persisted admin audit record could NOT be decoded on restore; it is \
-                             being SKIPPED and counted rather than aborting the whole restore. The \
-                             evidence in this one row is lost — reported here, never skipped \
-                             silently, because on the admin audit log an undecodable row may be \
-                             tamper evidence."
-                        );
-                    }
-                }
-            }
-            out.records += good_bodies.len();
-            if let Some(brk) = self.seed_chain(scope, &good_bodies)? {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
-                    break_detail = %brk,
-                    "admin audit CHAIN VERIFICATION FAILED on restore — the persisted records do not \
-                     verify against their own hash chain. They are still restored and the chain \
-                     resumes from the broken tail."
-                );
-                out.chain_breaks.push(brk);
-            }
-        }
-        Ok(out)
-    }
-
     fn seed_chain(&self, scope: &str, bodies: &[Vec<u8>]) -> RecordStoreResult<Option<ChainBreak>> {
         let broke = stream_registry::seed(self.kind_id, scope, bodies).map_err(|()| {
             RecordStoreError("admin audit chain seed failed at the durable seam".to_string())
@@ -436,6 +411,10 @@ struct PendingAudit {
     scope: String,
     suffix: Vec<u8>,
     origin: EventOrigin,
+    /// Logical identity is installed before any native planning or send.
+    operation: [u8; 16],
+    /// Exact source envelope survives unknown outcomes and cancelled drains.
+    prepared: Option<PreparedAudit>,
 }
 
 struct PendingAuditQueue {
@@ -481,15 +460,12 @@ impl PendingAuditQueue {
 
     fn enqueue(&self, p: PendingAudit) {
         let mut q = self.rows.lock().unwrap_or_else(|e| e.into_inner());
-        let evicted = q.queued.len() >= self.cap;
-        if evicted {
-            q.queued.pop_front();
+        if q.queued.len() >= self.cap {
+            drop(q);
+            self.record_gap();
+            return;
         }
         q.queued.push_back(p);
-        drop(q);
-        if evicted {
-            self.record_gap();
-        }
     }
 
     fn record_gap(&self) {
@@ -498,13 +474,13 @@ impl PendingAuditQueue {
             crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
             gap_detected = true,
             dropped_total,
-            "the admin audit recovery queue is full (bound {MAX_PENDING_AUDIT}); the OLDEST \
-                 queued record was evicted to admit this new failure and its evidence is now \
-                 PERMANENTLY LOST — a DETECTED GAP in the audit trail, not a delayed recovery. \
+            "the admin audit recovery queue is full (bound {MAX_PENDING_AUDIT}); the new \
+                 event cannot be queued and its evidence is PERMANENTLY LOST — a DETECTED GAP in the audit trail, not a delayed recovery. \
                  {dropped_total} record(s) lost to this gap since boot."
         );
     }
 
+    #[cfg(test)]
     fn drain_with(
         &self,
         mint: impl Fn(&str, &[u8]) -> Result<(u64, String, String), ()>,
@@ -570,33 +546,21 @@ impl PendingAuditQueue {
 static PENDING_AUDIT: PendingAuditQueue = PendingAuditQueue::new(MAX_PENDING_AUDIT);
 
 fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>, origin: EventOrigin) {
+    let mut operation = [0; 16];
+    if getrandom::fill(&mut operation).is_err() {
+        PENDING_AUDIT.record_gap();
+        return;
+    }
     PENDING_AUDIT.enqueue(PendingAudit {
         scope: scope.to_string(),
         suffix,
         origin,
+        operation,
+        prepared: None,
     });
 }
 
-fn report_unwritten(latch: &AtomicBool) {
-    if !latch.swap(true, Ordering::Relaxed) {
-        crate::diagnostics::diag_error!(
-            crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-            "the durable admin audit record could NOT be written through the journal seam: this \
-             mutation is being served and its evidence is QUEUED for recovery rather than lost — it \
-             will be retried the next time this stream writes successfully. The chain position is \
-             unchanged, so the chain stays contiguous — what is missing FOR NOW is this record, not \
-             the ones after it."
-        );
-    } else {
-        crate::diagnostics::diag_debug!(
-            crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
-            "the durable admin audit record could NOT be written through the journal seam; its \
-             evidence is QUEUED for recovery. The chain position is unchanged, so the chain stays \
-             contiguous."
-        );
-    }
-}
-
+#[cfg(test)]
 fn normalize_queued_append(
     result: RecordStoreResult<(u64, String, String)>,
 ) -> Result<(u64, String, String), ()> {
@@ -604,42 +568,65 @@ fn normalize_queued_append(
 }
 
 fn drain_pending_audit() {
-    static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
-    PENDING_AUDIT.drain_with(
-        |scope, suffix| match normalize_queued_append(stream_registry::append_full(
-            KIND_ID_AUDIT,
-            scope,
-            suffix,
-        )) {
-            Ok(written) => {
-                WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
-                Ok(written)
-            }
-            Err(_) => {
-                report_unwritten(&WRITE_FAILED_LATCHED);
-                Err(())
-            }
-        },
-        |p, seq, prev_hash, hash| {
-            let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&p.suffix);
-            let entry = AuditEntry {
-                seq,
-                ts,
-                action,
-                resource,
-                outcome,
-                principal,
-                prev_hash,
-                hash,
-                scheme,
-                recorded_here: true,
-            };
-            AUDIT_LOG.push_entry(entry.clone(), &p.scope, p.suffix.clone(), false);
-            if p.origin.redispatch() {
-                deliver_audit_event(&entry);
-            }
-        },
-    );
+    let Some(native) = native_owner(KIND_ID_AUDIT) else {
+        return;
+    };
+    if !native.ready.load(Ordering::Acquire) {
+        return;
+    }
+    {
+        let mut queue = PENDING_AUDIT
+            .rows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if queue.draining || queue.queued.is_empty() {
+            return;
+        }
+        queue.draining = true;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        PENDING_AUDIT
+            .rows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .draining = false;
+        return;
+    };
+    runtime.spawn(async move {
+        let _owner = PendingAuditDrain {
+            queue: &PENDING_AUDIT,
+            active: true,
+        };
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            drain_native(&PENDING_AUDIT, &AUDIT_LOG, native),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!("{error}"),
+            Err(_) => tracing::warn!(
+                "native audit drain timed out; original operation and envelope remain queued"
+            ),
+        }
+    });
+}
+
+/// Resolve retained audit originals during orderly shutdown or an explicit retry.
+/// Success means this observed queue drained; new callers may enqueue afterwards.
+pub async fn flush_pending() -> RecordStoreResult<()> {
+    let native = native_owner(KIND_ID_AUDIT)
+        .ok_or_else(|| RecordStoreError("native audit owner is not installed".into()))?;
+    drain_native(&PENDING_AUDIT, &AUDIT_LOG, native).await
+}
+
+/// Recheck after producers have stopped and `flush_pending` has succeeded.
+pub fn has_unsettled_audit() -> bool {
+    let queue = PENDING_AUDIT
+        .rows
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    !queue.queued.is_empty()
 }
 
 fn deliver_audit_event(entry: &AuditEntry) {
@@ -669,102 +656,26 @@ fn project_audit_event(
     record.finish()
 }
 
-pub(crate) fn migrate_legacy_table_to_plane_records(
-    store: &dyn busbar_contract::records::RecordStore,
-) -> RecordStoreResult<usize> {
-    let records = store.list_audit()?;
-    let Some(legacy_tail) = records.last() else {
-        return Ok(0);
-    };
-
-    let existing: std::collections::BTreeMap<u64, String> = store
-        .list_plane_records(KIND_AUDIT, &PlaneSelector::Parent(ADMIN_LOG.into()))?
-        .iter()
-        .filter_map(|body| audit_entry_from_body(ADMIN_LOG, body).ok())
-        .map(|e| (e.seq, e.hash))
-        .collect();
-
-    let copied_through = match existing.keys().next_back() {
-        None => 0,
-        Some(&top) => top.min(legacy_tail.seq),
-    };
-    if copied_through > 0 {
-        let legacy_at = records.iter().find(|r| r.seq == copied_through);
-        if legacy_at.map(|r| &r.hash) != existing.get(&copied_through) {
-            return Err(busbar_contract::records::RecordStoreError(format!(
-                "the admin audit plane_records disagree with the legacy audit table at seq \
-                 {copied_through}: the legacy records above it are not copied, because two chains \
-                 cannot be joined without re-sealing"
-            )));
-        }
-    }
-    let mut copied = 0;
-    for r in records.iter().filter(|r| r.seq > copied_through) {
-        let content = audit_suffix(r.ts, &r.action, &r.resource, &r.outcome, &r.principal);
-        let body = encode(&NeutralBody {
-            seq: r.seq,
-            prev_hash: r.prev_hash.clone(),
-            hash: r.hash.clone(),
-            content,
-        })?;
-
-        store.append_plane_record(
-            PlaneRecord {
-                kind: KIND_AUDIT.to_string(),
-                id: ADMIN_LOG.to_string(),
-                parent: Some(ADMIN_LOG.to_string()),
-                seq: r.seq,
-                ts: r.ts,
-                disposition: PlaneDisposition::Active,
-                body,
-            }
-            .view(),
-        )?;
-        copied += 1;
-    }
-    Ok(copied)
-}
-
-pub(crate) fn register_and_migrate(
+pub(crate) async fn register_and_restore(
     app: &Arc<crate::state::App>,
-    store: &Arc<dyn busbar_contract::records::RecordStore>,
-) {
+    store: Arc<CoreStore>,
+) -> RecordStoreResult<()> {
     register_audit_stream(app);
-
-    match migrate_legacy_table_to_plane_records(store.as_ref()) {
-        Ok(0) => {}
-        Ok(n) => tracing::info!(
-            records = n,
-            "migrated the legacy durable audit table into the neutral plane_records seam"
-        ),
-        Err(e) => crate::diagnostics::diag_error!(
-            crate::diagnostics::BOOT_AUDIT_MIGRATE_FAILED,
-            error = %e.0,
-            "could not migrate the legacy durable audit table into plane_records; the durable audit \
-             seam will restore only what plane_records already holds and the migration retries on the \
-             next boot"
-        ),
+    let native = install_native(KIND_ID_AUDIT, store)?;
+    if native.ready.load(Ordering::Acquire) {
+        return drain_native(&PENDING_AUDIT, &AUDIT_LOG, native).await;
     }
-
-    let plane_store = PlaneStoreView::narrow(store.clone());
-    match AUDIT_LOG.restore_from_store(plane_store.as_ref()) {
-        Ok(restored) if restored.records > 0 || restored.unreadable > 0 => tracing::info!(
-            records = restored.records,
-            unreadable = restored.unreadable,
-            chain_breaks = restored.chain_breaks.len(),
-            "admin audit restored from the durable plane_records seam"
-        ),
-        Ok(_) => {}
-        Err(e) => crate::diagnostics::diag_warn!(
-            crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
-            error = %e.0,
-            "could not read the durable audit plane_records to seed the journal seam; the seam \
-             read model starts empty, and the next admin audit write reads the persisted tail back \
-             and continues the chain from it (a write the store still cannot serve is queued)"
-        ),
-    }
-
+    let restored = restore_native(&AUDIT_LOG, &native).await?;
+    native.ready.store(true, Ordering::Release);
+    tracing::info!(
+        records = restored.records,
+        unreadable = restored.unreadable,
+        chain_breaks = restored.chain_breaks.len(),
+        "admin audit restored from canonical native storage"
+    );
     open_plugin_refusals();
+    drain_pending_audit();
+    Ok(())
 }
 
 pub(crate) fn emit_admin_hostless(
@@ -1013,63 +924,404 @@ pub(crate) fn fresh_test_kind_id() -> u32 {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn register_test_audit_stream(app: &Arc<crate::state::App>) {
-    register_audit_stream(app);
-    open_plugin_refusals();
-}
-
-#[cfg(test)]
-pub(crate) fn ensure_global_audit_stream_registered() {
-    static REGISTERED: std::sync::Once = std::sync::Once::new();
-    REGISTERED.call_once(|| {
-        stream_registry::register(
-            KIND_ID_AUDIT,
-            KIND_AUDIT.to_string(),
-            AUDIT_FRAMING,
-            AUDIT_DIGESTS_SCOPE,
-            Decode::Native(reframe_audit),
-            usize::MAX,
-            None,
-        );
-        open_plugin_refusals();
-    });
-}
-
-#[cfg(test)]
-pub(crate) struct AuditTestHarness {
-    pub(crate) log: PlaneAuditLog,
-}
-
-#[cfg(test)]
-impl AuditTestHarness {
-    pub(crate) fn over(store: Arc<dyn busbar_contract::records::RecordStore>) -> Self {
-        let kind_id = fresh_test_kind_id();
-        stream_registry::register(
-            kind_id,
-            KIND_AUDIT.to_string(),
-            AUDIT_FRAMING,
-            AUDIT_DIGESTS_SCOPE,
-            Decode::Native(reframe_audit),
-            usize::MAX,
-            Some(PlaneStoreView::narrow(store)),
-        );
-        Self {
-            log: PlaneAuditLog::with_kind_id(kind_id),
+pub async fn register_test_audit_stream(app: &Arc<crate::state::App>) {
+    let store = app
+        .governance
+        .as_ref()
+        .expect("native audit test governance")
+        .core_store_handle()
+        .expect("native audit test Store");
+    if let Some(previous) = native_owner(KIND_ID_AUDIT) {
+        if !Arc::ptr_eq(&previous.store, &store) {
+            // A test's new deployment must finish the prior deployment's real
+            // native queue before replacing its global test registration.
+            flush_pending()
+                .await
+                .expect("prior native audit originals resolve");
+            native_owners()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&KIND_ID_AUDIT);
         }
     }
+    register_and_restore(app, store)
+        .await
+        .expect("native audit test restore");
+    flush_pending()
+        .await
+        .expect("native audit test setup drains");
+}
 
-    pub(crate) fn restore_from_store(
-        &self,
-        store: &dyn PlaneStore,
-    ) -> RecordStoreResult<AuditRestored> {
-        self.log.restore_from_store(store)
-    }
-
-    pub(crate) fn emit_full(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
-        stream_registry::append_full(self.log.kind_id, scope, &suffix).expect("seam append")
-    }
+#[cfg(test)]
+pub(crate) async fn ensure_global_audit_stream_registered() {
+    static REGISTERED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    REGISTERED
+        .get_or_init(|| async {
+            stream_registry::register(
+                KIND_ID_AUDIT,
+                KIND_AUDIT.to_string(),
+                AUDIT_FRAMING,
+                AUDIT_DIGESTS_SCOPE,
+                Decode::Native(reframe_audit),
+                usize::MAX,
+            );
+            let native = match native_owner(KIND_ID_AUDIT) {
+                Some(native) => native,
+                None => install_native(KIND_ID_AUDIT, crate::real_store::core().await)
+                    .expect("native audit test owner"),
+            };
+            if !native.ready.load(Ordering::Acquire) {
+                restore_native(&AUDIT_LOG, &native)
+                    .await
+                    .expect("native audit test restore");
+                native.ready.store(true, Ordering::Release);
+            }
+            open_plugin_refusals();
+        })
+        .await;
+    flush_pending()
+        .await
+        .expect("native audit test setup drains");
 }
 
 #[cfg(test)]
 #[path = "tests/auditlog_tests.rs"]
 mod tests;
+
+struct NativeAudit {
+    store: Arc<CoreStore>,
+    history: AsyncHistory,
+    heads: Mutex<std::collections::BTreeMap<String, (u64, String)>>,
+    driving: tokio::sync::Mutex<()>,
+    ready: AtomicBool,
+}
+#[derive(Clone)]
+struct PreparedAudit {
+    native: Arc<NativeAudit>,
+    envelope: PlaneRecord,
+    entry: AuditEntry,
+}
+fn native_owners() -> &'static Mutex<std::collections::HashMap<u32, Arc<NativeAudit>>> {
+    static OWNERS: std::sync::OnceLock<Mutex<std::collections::HashMap<u32, Arc<NativeAudit>>>> =
+        std::sync::OnceLock::new();
+    OWNERS.get_or_init(Mutex::default)
+}
+fn native_owner(kind: u32) -> Option<Arc<NativeAudit>> {
+    native_owners()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&kind)
+        .cloned()
+}
+fn install_native(kind: u32, store: Arc<CoreStore>) -> RecordStoreResult<Arc<NativeAudit>> {
+    let mut owners = native_owners()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(held) = owners.get(&kind) {
+        if !Arc::ptr_eq(&held.store, &store) {
+            return Err(RecordStoreError(
+                "audit owner cannot retarget retained operations to another CoreStore attachment"
+                    .into(),
+            ));
+        }
+        return Ok(held.clone());
+    }
+    let history = AsyncHistory::authorized(
+        store.clone(),
+        PERSISTENCE_OWNER,
+        [HistoryCollection {
+            kind: KIND_AUDIT,
+            mode: HistoryMode::Append,
+            retention: Retention::Age,
+            parent: None,
+        }],
+    )
+    .map_err(native_error)?;
+    let native = Arc::new(NativeAudit {
+        store,
+        history,
+        heads: Mutex::default(),
+        driving: tokio::sync::Mutex::new(()),
+        ready: AtomicBool::new(false),
+    });
+    owners.insert(kind, native.clone());
+    Ok(native)
+}
+fn native_error(error: crate::host_records_async::HistoryError) -> RecordStoreError {
+    RecordStoreError(format!("native audit persistence: {error:?}"))
+}
+
+/// Read both canonical representations. Old pipe-record fields keep their exact
+/// preimages; modern neutral bodies keep their original suffix recipe. This
+/// performs no migration writes, resealing, or hash repair.
+async fn restore_native(
+    log: &PlaneAuditLog,
+    native: &NativeAudit,
+) -> RecordStoreResult<AuditRestored> {
+    let mut scopes: std::collections::BTreeMap<String, Vec<Vec<u8>>> =
+        std::collections::BTreeMap::new();
+    let legacy = crate::persistence::history::Audit::authorized(&native.store, PERSISTENCE_OWNER)
+        .list()
+        .await
+        .map_err(native_error)?;
+    for record in legacy {
+        scopes
+            .entry(ADMIN_LOG.into())
+            .or_default()
+            .push(encode(&NeutralBody {
+                seq: record.seq,
+                prev_hash: record.prev_hash,
+                hash: record.hash,
+                content: audit_suffix(
+                    record.ts,
+                    &record.action,
+                    &record.resource,
+                    &record.outcome,
+                    &record.principal,
+                ),
+            })?);
+    }
+    for record in native
+        .history
+        .list(KIND_AUDIT, &PlaneSelector::All)
+        .await
+        .map_err(native_error)?
+    {
+        if record.kind != KIND_AUDIT || record.parent.as_deref() != Some(record.id.as_str()) {
+            return Err(RecordStoreError(
+                "canonical audit envelope has an invalid scope identity".into(),
+            ));
+        }
+        if let Ok(body) = decode_audit_body(&record.body) {
+            if body.seq != record.seq {
+                return Err(RecordStoreError(
+                    "canonical audit envelope and original sequence disagree".into(),
+                ));
+            }
+        }
+        scopes.entry(record.id).or_default().push(record.body);
+    }
+    let mut restored = AuditRestored::default();
+    let mut heads = std::collections::BTreeMap::new();
+    let mut ambiguous = false;
+    for (scope, bodies) in scopes {
+        let mut decoded: std::collections::BTreeMap<u64, Vec<(Vec<u8>, NeutralBody)>> =
+            std::collections::BTreeMap::new();
+        for body in bodies {
+            match decode_audit_body(&body) {
+                Ok(neutral) => {
+                    let rows = decoded.entry(neutral.seq).or_default();
+                    if !rows.iter().any(|(_, held)| {
+                        held.prev_hash == neutral.prev_hash
+                            && held.hash == neutral.hash
+                            && held.content == neutral.content
+                    }) {
+                        rows.push((body, neutral));
+                    }
+                }
+                Err(error) => {
+                    restored.unreadable += 1;
+                    crate::diagnostics::diag_error!(crate::diagnostics::PLANE_AUDIT_ROW_UNREADABLE,error=%error,"canonical audit body is unreadable; its original remains stored and continuation is refused");
+                }
+            }
+        }
+        let mut accepted = Vec::new();
+        for rows in decoded.values() {
+            if rows.len() > 1 {
+                ambiguous = true;
+            }
+            for (body, neutral) in rows {
+                let entry = audit_entry_from_body(&scope, body)?;
+                log.push_entry(entry, &scope, neutral.content.clone(), true);
+                accepted.push(body.clone());
+                restored.records += 1;
+            }
+        }
+        if let Some((_, rows)) = decoded.last_key_value() {
+            if rows.len() == 1 {
+                let neutral = &rows[0].1;
+                heads.insert(scope.clone(), (neutral.seq, neutral.hash.clone()));
+            }
+        }
+        if let Some(broken) = log.seed_chain(&scope, &accepted)? {
+            crate::diagnostics::diag_error!(crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,break_detail=%broken,"canonical audit chain does not verify; original records are retained as evidence");
+            restored.chain_breaks.push(broken);
+        }
+    }
+    if ambiguous || restored.unreadable != 0 {
+        return Err(RecordStoreError("canonical audit evidence has ambiguous positions or unreadable bodies; continuation requires explicit recovery".into()));
+    }
+    *native
+        .heads
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = heads;
+    Ok(restored)
+}
+
+fn prepare_native(
+    pending: &PendingAudit,
+    native: Arc<NativeAudit>,
+) -> RecordStoreResult<PreparedAudit> {
+    let (previous, prev_hash) = native
+        .heads
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .get(&pending.scope)
+        .cloned()
+        .unwrap_or_default();
+    let seq = previous
+        .checked_add(1)
+        .ok_or_else(|| RecordStoreError("audit sequence overflow".into()))?;
+    let framed = StreamRecord::from_parts(
+        pending.scope.clone(),
+        seq,
+        prev_hash.clone(),
+        String::new(),
+        pending.suffix.clone(),
+        AUDIT_FRAMING,
+        AUDIT_DIGESTS_SCOPE,
+    );
+    let hash = crate::audit::digest(&framed);
+    let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&pending.suffix);
+    let body = encode(&NeutralBody {
+        seq,
+        prev_hash: prev_hash.clone(),
+        hash: hash.clone(),
+        content: pending.suffix.clone(),
+    })?;
+    Ok(PreparedAudit {
+        native,
+        envelope: PlaneRecord {
+            kind: KIND_AUDIT.into(),
+            id: pending.scope.clone(),
+            parent: Some(pending.scope.clone()),
+            seq,
+            ts,
+            disposition: PlaneDisposition::Active,
+            body,
+        },
+        entry: AuditEntry {
+            seq,
+            ts,
+            action,
+            resource,
+            outcome,
+            principal,
+            prev_hash,
+            hash,
+            scheme,
+            recorded_here: true,
+        },
+    })
+}
+async fn drain_native(
+    queue: &PendingAuditQueue,
+    log: &PlaneAuditLog,
+    native: Arc<NativeAudit>,
+) -> RecordStoreResult<()> {
+    let _driving = native.driving.lock().await;
+    if !native.ready.load(Ordering::Acquire) {
+        return Err(RecordStoreError(
+            "canonical audit restore has not completed".into(),
+        ));
+    }
+    loop {
+        let Some(mut pending) = queue
+            .rows
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .queued
+            .front()
+            .cloned()
+        else {
+            return Ok(());
+        };
+        if pending.prepared.is_none() {
+            pending.prepared = Some(prepare_native(&pending, native.clone())?);
+            let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());
+            let first = held
+                .queued
+                .front_mut()
+                .ok_or_else(|| RecordStoreError("audit queue ownership changed".into()))?;
+            if first.operation != pending.operation {
+                return Err(RecordStoreError("audit queue original changed".into()));
+            }
+            first.prepared = pending.prepared.clone();
+        }
+        let prepared = pending.prepared.as_ref().expect("retained audit original");
+        if !Arc::ptr_eq(&prepared.native, &native) {
+            return Err(RecordStoreError(
+                "audit attempt belongs to another native attachment".into(),
+            ));
+        }
+        let outcome = native
+            .history
+            .append_with_id(pending.operation, prepared.envelope.view())
+            .await;
+        match outcome {
+            Ok(HistoryOutcome::Applied) => {}
+            Ok(HistoryOutcome::Conflict) | Err(crate::host_records_async::HistoryError::Fork) => {
+                // This original definitely had no effects. Rebase only its
+                // framing after refreshing the canonical head; preserve suffix.
+                restore_native(log, &native).await?;
+                let mut operation = [0; 16];
+                getrandom::fill(&mut operation)
+                    .map_err(|_| RecordStoreError("audit operation entropy unavailable".into()))?;
+                let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());
+                let first = held
+                    .queued
+                    .front_mut()
+                    .ok_or_else(|| RecordStoreError("audit queue ownership changed".into()))?;
+                if first.operation != pending.operation {
+                    return Err(RecordStoreError("audit queue original changed".into()));
+                }
+                first.operation = operation;
+                first.prepared = None;
+                return Err(RecordStoreError(
+                    "audit head changed; original event retained for another guarded attempt"
+                        .into(),
+                ));
+            }
+            Ok(outcome) => {
+                return Err(RecordStoreError(format!(
+                    "audit original remains pending or refused: {outcome:?}"
+                )));
+            }
+            Err(error) => return Err(native_error(error)),
+        }
+        native
+            .heads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                pending.scope.clone(),
+                (prepared.entry.seq, prepared.entry.hash.clone()),
+            );
+        log.push_entry(
+            prepared.entry.clone(),
+            &pending.scope,
+            pending.suffix.clone(),
+            false,
+        );
+        if pending.origin.redispatch() {
+            deliver_audit_event(&prepared.entry);
+        }
+        {
+            let mut held = queue.rows.lock().unwrap_or_else(|error| error.into_inner());
+            if held
+                .queued
+                .front()
+                .is_none_or(|first| first.operation != pending.operation)
+            {
+                return Err(RecordStoreError(
+                    "confirmed audit original lost queue ownership".into(),
+                ));
+            }
+            held.queued.pop_front();
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/auditlog_native_tests.rs"]
+mod native_tests;

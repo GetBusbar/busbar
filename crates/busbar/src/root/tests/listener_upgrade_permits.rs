@@ -12,8 +12,8 @@ const LISTENER: u64 = 73;
 const FRAMING: u64 = 79;
 const STREAM: u64 = 83;
 
-fn listener(upgrade: Option<&str>, generation: u64) -> Listener {
-    let app = projection_boundary_app(topology(), vec![], generation);
+async fn listener(upgrade: Option<&str>, generation: u64) -> Listener {
+    let app = projection_boundary_app(topology(), vec![], generation).await;
     let guests = GuestList::seal(vec![Line {
         route: Route {
             methods: METHOD_GET,
@@ -41,7 +41,7 @@ fn listener(upgrade: Option<&str>, generation: u64) -> Listener {
     }
 }
 
-fn admitted(
+async fn admitted(
     upgrade: Option<&str>,
     deadline: Option<std::time::Instant>,
 ) -> (Arc<Inbound>, RequestAdmission) {
@@ -66,7 +66,7 @@ fn admitted(
         Arc::new(|_| {}),
     );
     inbound
-        .install_at(OWNER, LISTENER, 1, listener(upgrade, 1))
+        .install_at(OWNER, LISTENER, 1, listener(upgrade, 1).await)
         .unwrap();
     inbound
         .framing_started(OWNER, LISTENER, FRAMING, 1)
@@ -102,9 +102,9 @@ fn admitted(
     (inbound, admission)
 }
 
-#[test]
-fn upgrade_authority_uses_the_exact_admitted_route_and_is_consumed_once() {
-    let (_inbound, admission) = admitted(Some("fixture-session"), None);
+#[tokio::test]
+async fn upgrade_authority_uses_the_exact_admitted_route_and_is_consumed_once() {
+    let (_inbound, admission) = admitted(Some("fixture-session"), None).await;
     let permit = admission.upgrade_permit().unwrap();
     let copy = permit.clone();
     assert!(permit
@@ -121,14 +121,14 @@ fn upgrade_authority_uses_the_exact_admitted_route_and_is_consumed_once() {
         Some("fixture-session")
     );
     assert!(copy.consume(&admission, OWNER, FRAMING, STREAM).is_none());
-    let (_plain, ordinary) = admitted(None, None);
+    let (_plain, ordinary) = admitted(None, None).await;
     assert!(ordinary.upgrade_permit().is_none());
 }
 
-#[test]
-fn another_request_with_identical_numeric_handles_cannot_use_an_upgrade_permit() {
-    let (_first_inbound, first) = admitted(Some("fixture-session"), None);
-    let (_second_inbound, second) = admitted(Some("fixture-session"), None);
+#[tokio::test]
+async fn another_request_with_identical_numeric_handles_cannot_use_an_upgrade_permit() {
+    let (_first_inbound, first) = admitted(Some("fixture-session"), None).await;
+    let (_second_inbound, second) = admitted(Some("fixture-session"), None).await;
     let permit = first.upgrade_permit().unwrap();
     assert!(permit.consume(&second, OWNER, FRAMING, STREAM).is_none());
     assert_eq!(
@@ -137,16 +137,17 @@ fn another_request_with_identical_numeric_handles_cannot_use_an_upgrade_permit()
     );
 }
 
-#[test]
-fn expired_or_retired_request_cannot_authorize_an_upgrade() {
-    let (_inbound, expired) = admitted(Some("fixture-session"), Some(std::time::Instant::now()));
+#[tokio::test]
+async fn expired_or_retired_request_cannot_authorize_an_upgrade() {
+    let (_inbound, expired) =
+        admitted(Some("fixture-session"), Some(std::time::Instant::now())).await;
     assert!(expired
         .upgrade_permit()
         .unwrap()
         .consume(&expired, OWNER, FRAMING, STREAM)
         .is_none());
     for connection_ended in [false, true] {
-        let (inbound, retired) = admitted(Some("fixture-session"), None);
+        let (inbound, retired) = admitted(Some("fixture-session"), None).await;
         let permit = retired.upgrade_permit().unwrap();
         if connection_ended {
             inbound.framing_ended(FRAMING);
@@ -157,9 +158,9 @@ fn expired_or_retired_request_cannot_authorize_an_upgrade() {
     }
 }
 
-#[test]
-fn an_admitted_upgrade_retains_its_exact_claim_across_listener_reload() {
-    let (inbound, admitted) = admitted(Some("old-session"), None);
+#[tokio::test]
+async fn an_admitted_upgrade_retains_its_exact_claim_across_listener_reload() {
+    let (inbound, admitted) = admitted(Some("old-session"), None).await;
     let permit = admitted.upgrade_permit().unwrap();
     for generation in 2..=4 {
         inbound
@@ -167,7 +168,7 @@ fn an_admitted_upgrade_retains_its_exact_claim_across_listener_reload() {
                 OWNER,
                 LISTENER,
                 generation,
-                listener(Some("new-session"), generation),
+                listener(Some("new-session"), generation).await,
             )
             .unwrap();
     }

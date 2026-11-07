@@ -45,7 +45,13 @@ pub trait EngineHost: Send + Sync {
         Arc<dyn busbar_contract::hooks::RoutingPolicy>,
     )];
 
-    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool);
+    fn hook_read<'a>(
+        &'a self,
+        name: &'a str,
+        principal: Option<&'a str>,
+        op: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a>;
 
     fn plane_gates_of(
         &self,
@@ -123,8 +129,20 @@ pub trait EngineHost: Send + Sync {
 }
 
 impl EngineHost for EngineHostImpl {
-    fn hook_read(&self, name: &str, principal: Option<&str>, op: &str, identity: bool) {
-        crate::audit::amend::hook_read(&self.app.amendments, name, principal, op, identity);
+    fn hook_read<'a>(
+        &'a self,
+        name: &'a str,
+        principal: Option<&'a str>,
+        op: &'a str,
+        identity: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a> {
+        Box::pin(crate::audit::amend::hook_read(
+            &self.app.amendments,
+            name,
+            principal,
+            op,
+            identity,
+        ))
     }
 
     fn caller_in_hook_groups(&self, caller_group: Option<&str>, hook_groups: &[String]) -> bool {

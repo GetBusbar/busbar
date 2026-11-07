@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
+use busbar_contract::{persistence::*, Secret};
 use busbar_core_admin::v1::contract::AdminError;
 use busbar_kernel::config::transaction::config_transaction;
+use busbar_kernel::persistence::scoped::ScopedStore;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -111,7 +109,13 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("actual native Store opens");
+        let faults = OverlayFaults::new(actual);
+        let core = crate::root::real_store::core_over(faults.clone()).await;
+        let calls = overlay_scope(core.clone());
+        let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -120,24 +124,21 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             (None, None),
             None,
             &rules,
+            Some(core.clone()),
+            false,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
-        let boot_calls = app
-            .governance
-            .as_ref()
-            .expect("actual governance")
-            .store_calls()
-            .expect("actual boot Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual rate history boots before rates are committed");
+        let _book = crate::root::boot::book(&app, &module)
+            .await
+            .expect("native rate history boots before activation");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
 
         app.hook_registry.insert(
@@ -147,18 +148,8 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             }))
             .unwrap(),
         );
-        let calls = app
-            .governance
-            .as_ref()
-            .expect("actual governance")
-            .store_calls()
-            .expect("actual Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual rate history boots in the configured Store");
-        let faults = OverlayFaults::new(calls);
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
         let (_data, admin, handle) =
@@ -171,12 +162,11 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         match failure {
             "read" => faults.fail_reads.store(true, Ordering::SeqCst),
             "corrupt" => {
-                faults
-                    .inner
-                    .record_put(
+                calls
+                    .put(
                         "busbar.config.overlay.v1",
                         b"head",
-                        &RecordBytes::new(b"{ not json".to_vec()).unwrap(),
+                        Secret::new(b"{ not json".to_vec()),
                     )
                     .await
                     .unwrap();
@@ -186,17 +176,15 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     version: busbar_kernel::config::overlay::OVERLAY_VERSION + 1,
                     ..Default::default()
                 };
-                busbar_kernel::config::overlay::write(&overlay, &doc).unwrap();
+                busbar_kernel::config::overlay::write_async(&overlay, &doc)
+                    .await
+                    .unwrap();
 
                 use sha2::Digest as _;
                 let schema = "busbar.config.overlay.v1";
-                let raw = faults
-                    .inner
-                    .record_get(schema, b"head")
-                    .await
-                    .unwrap()
-                    .unwrap();
-                let mut head: serde_json::Value = serde_json::from_slice(raw.as_slice()).unwrap();
+                let raw = calls.get(schema, b"head").await.unwrap().unwrap();
+                let mut head: serde_json::Value =
+                    serde_json::from_slice(raw.expose(&busbar_kernel::seal::lend())).unwrap();
                 let generation: [u8; 16] =
                     serde_json::from_value(head["generation"].clone()).unwrap();
                 let bytes = serde_json::to_vec(&doc).unwrap();
@@ -204,25 +192,23 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                 let mut chunk = b"chunk:".to_vec();
                 chunk.extend_from_slice(&generation);
                 chunk.extend_from_slice(&0_u64.to_be_bytes());
-                faults
-                    .inner
-                    .record_put(schema, &chunk, &RecordBytes::new(bytes.clone()).unwrap())
+                calls
+                    .put(schema, &chunk, Secret::new(bytes.clone()))
                     .await
                     .unwrap();
                 head["length"] = serde_json::json!(bytes.len());
                 let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
                 head["digest"] = serde_json::json!(digest);
-                faults
-                    .inner
-                    .record_put(
+                calls
+                    .put(
                         schema,
                         b"head",
-                        &RecordBytes::new(serde_json::to_vec(&head).unwrap()).unwrap(),
+                        Secret::new(serde_json::to_vec(&head).unwrap()),
                     )
                     .await
                     .unwrap();
                 assert!(matches!(
-                    busbar_kernel::config::overlay::read_state(&overlay),
+                    busbar_kernel::config::overlay::read_state_async(&overlay).await,
                     busbar_kernel::config::overlay::OverlayReadState::VersionTooNew(_)
                 ));
             }
@@ -339,7 +325,12 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("actual native Store opens");
+    let faults = OverlayFaults::new(actual);
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -348,24 +339,21 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
         (None, None),
         None,
         &rules,
+        Some(core.clone()),
+        false,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots before rates are committed");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("native rate history boots before activation");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -374,18 +362,8 @@ async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generatio
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path);
     app.providers_path = Some(providers_path);
-    let calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in the configured Store");
-    let faults = OverlayFaults::new(calls);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, handle) =
@@ -503,7 +481,12 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("actual native Store opens");
+        let faults = OverlayFaults::new(actual);
+        let core = crate::root::real_store::core_over(faults.clone()).await;
+        let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -512,37 +495,24 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             (None, None),
             None,
             &rules,
+            Some(core.clone()),
+            false,
         )
+        .await
         .expect("the actual product builds the swap deployment");
         limits.stage_boot();
-        let boot_calls = app
-            .governance
-            .as_ref()
-            .expect("actual governance")
-            .store_calls()
-            .expect("actual boot Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual rate history boots before rates are committed");
+        let _book = crate::root::boot::book(&app, &module)
+            .await
+            .expect("native rate history boots before activation");
         limits
             .keep()
+            .await
             .expect("the booted actual rates and limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
-        let calls = app
-            .governance
-            .as_ref()
-            .expect("actual governance")
-            .store_calls()
-            .expect("actual Store calls");
-        crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .expect("the actual rate history boots in the configured Store");
-        let faults = OverlayFaults::new(calls);
-        let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+        let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
         let (_data, admin, handle) =
@@ -572,7 +542,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         assert!(Arc::ptr_eq(&after, &before));
         assert!(!after.groups_registry.contains_key("candidate_team"));
         faults.fail_reads.store(false, Ordering::SeqCst);
-        let durable = overlay.read_required().unwrap();
+        let durable = overlay.read_required_async().await.unwrap();
         assert_eq!(
             durable.is_some_and(|doc| doc.groups.contains_key("candidate_team")),
             unknown,
@@ -675,7 +645,12 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("actual native Store opens");
+    let faults = OverlayFaults::new(actual);
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -684,24 +659,21 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         (None, None),
         None,
         &rules,
+        Some(core.clone()),
+        false,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots before rates are committed");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("native rate history boots before activation");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -710,18 +682,8 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     std::fs::write(&providers_path, "{}\n").unwrap();
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
-    let calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in the configured Store");
-    let faults = OverlayFaults::new(calls);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, _handle) =
@@ -733,13 +695,14 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     let groups: std::collections::BTreeMap<String, busbar_kernel::config::GroupCfg> = (0..32)
         .map(|index| (format!("persisted-team-{index:04}"), Default::default()))
         .collect();
-    busbar_kernel::config::overlay::write(
+    busbar_kernel::config::overlay::write_async(
         &overlay,
         &busbar_kernel::config::overlay::OverlayDoc {
             groups: groups.clone(),
             ..Default::default()
         },
     )
+    .await
     .unwrap();
     let response = reqwest::Client::new()
         .put(format!("http://{addr}/api/v1/admin/config/settings"))
@@ -762,6 +725,7 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
         rules.as_ref(),
         Some(overlay.clone()),
     )
+    .await
     .unwrap();
     let doc = loaded.overlay_doc.unwrap();
     assert_eq!(doc.root.unwrap().per_request_fee, Some(31));
@@ -771,7 +735,8 @@ async fn settings_preserves_a_large_store_overlay_across_reload() {
     );
     assert!(
         overlay
-            .read_bytes()
+            .read_bytes_async()
+            .await
             .unwrap()
             .expect("actual stored overlay bytes")
             .len()
@@ -874,7 +839,12 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("actual native Store opens");
+    let faults = OverlayFaults::new(actual);
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -883,24 +853,21 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         (None, None),
         None,
         &rules,
+        Some(core.clone()),
+        false,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots before rates are committed");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("native rate history boots before activation");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let dir = directory.clone();
     let config_path = dir.join("config.yaml");
@@ -910,18 +877,8 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     app.config_path = Some(config_path.clone());
     app.providers_path = Some(providers_path);
     let original_config = std::fs::read(&config_path).unwrap();
-    let calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls.clone(), 91);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots in the configured Store");
-    let faults = OverlayFaults::new(calls);
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let (_data, admin, handle) =
@@ -947,7 +904,8 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     assert!(Arc::ptr_eq(&handle.load(), &before));
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .unwrap()
             .root
@@ -961,7 +919,10 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     assert!(Arc::ptr_eq(&handle.load(), &before));
     let candidates = faults.requests.lock().unwrap().clone();
     assert_eq!(candidates.len(), 2);
-    assert_eq!(candidates[0].op_id, candidates[1].op_id);
+    assert_eq!(
+        candidates[0].candidate().id.operation,
+        candidates[1].candidate().id.operation
+    );
     assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
 
     let mut invalid = document.clone();
@@ -1015,7 +976,8 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
             .overlay_path
             .as_ref()
             .unwrap()
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .unwrap()
             .root
@@ -1031,7 +993,8 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
     );
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .unwrap()
             .root
@@ -1041,10 +1004,11 @@ async fn unknown_settings_receipt_requires_successful_reload_before_new_mutation
         "the new mutation persists to the same configured Store"
     );
     assert!(
-        busbar_kernel::config::overlay::persist_root(
+        busbar_kernel::config::overlay::persist_root_async(
             Some(&overlay),
             &busbar_kernel::config::overlay::RootSettings::default(),
         )
+        .await
         .is_err(),
         "publishing a new carrier never clears the old generation's quarantine"
     );
@@ -1145,7 +1109,12 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("actual native Store opens");
+    let faults = OverlayFaults::new(actual);
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -1154,33 +1123,24 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         (None, None),
         None,
         &rules,
+        Some(core.clone()),
+        false,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots before rates are committed");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("native rate history boots before activation");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let faults = OverlayFaults::new(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-    );
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
@@ -1191,16 +1151,17 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
         config_transaction::<_, _, AdminError>(&handle, move |txn| {
             let mut next = (**txn.app()).clone();
             next.config_version = next.config_version.wrapping_add(1);
-            Ok(txn.commit(
+            Ok(txn.commit_async(
                 Arc::new(next),
-                move || {
-                    busbar_kernel::config::overlay::persist_root(
+                async move {
+                    busbar_kernel::config::overlay::persist_root_async(
                         Some(&overlay),
                         &busbar_kernel::config::overlay::RootSettings {
                             per_request_fee: Some(17),
                             ..Default::default()
                         },
                     )
+                    .await
                 },
                 (),
             ))
@@ -1216,7 +1177,8 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     );
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .unwrap()
             .root
@@ -1232,7 +1194,10 @@ async fn an_unknown_store_overlay_commit_never_swaps_or_claims_success() {
     assert!(Arc::ptr_eq(&handle.load(), &before));
     let candidates = faults.requests.lock().unwrap().clone();
     assert_eq!(candidates.len(), 2, "one write and its exact replay");
-    assert_eq!(candidates[0].op_id, candidates[1].op_id);
+    assert_eq!(
+        candidates[0].candidate().id.operation,
+        candidates[1].candidate().id.operation
+    );
     assert_eq!(candidates[0].fingerprint(), candidates[1].fingerprint());
     println!("{WITNESS}");
 }
@@ -1329,7 +1294,12 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let actual = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
+        .expect("actual native Store opens");
+    let faults = OverlayFaults::new(actual);
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
         None,
@@ -1338,40 +1308,31 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
         (None, None),
         None,
         &rules,
+        Some(core.clone()),
+        false,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let boot_calls = app
-        .governance
-        .as_ref()
-        .expect("actual governance")
-        .store_calls()
-        .expect("actual boot Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(boot_calls, 101);
-    crate::root::kernel::ROOT_CARD
-        .boot_in_store(None)
-        .expect("the actual rate history boots before rates are committed");
+    let _book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("native rate history boots before activation");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
-    let faults = OverlayFaults::new(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-    );
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(faults.clone())
+
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::new(app)));
     let before = handle.load().config_version;
-    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let barrier = Arc::new(tokio::sync::Notify::new());
     *faults.block_read.lock().unwrap() = Some(barrier.clone());
-    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let victim = {
         let handle = handle.clone();
         let backend = overlay.clone();
@@ -1379,17 +1340,18 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
             config_transaction::<_, _, AdminError>(&handle, move |txn| {
                 let mut next = (**txn.app()).clone();
                 next.config_version = next.config_version.wrapping_add(1);
-                Ok(txn.commit(
+                Ok(txn.commit_async(
                     Arc::new(next),
-                    move || {
+                    async move {
                         entered_tx.send(()).unwrap();
-                        busbar_kernel::config::overlay::persist_root(
+                        busbar_kernel::config::overlay::persist_root_async(
                             Some(&backend),
                             &busbar_kernel::config::overlay::RootSettings {
                                 per_request_fee: Some(23),
                                 ..Default::default()
                             },
                         )
+                        .await
                     },
                     (),
                 ))
@@ -1397,7 +1359,10 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
             .await
         })
     };
-    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), entered_rx)
+        .await
+        .unwrap()
+        .unwrap();
     victim.abort();
     assert!(victim.await.is_err());
     let domain_held = tokio::time::timeout(
@@ -1408,9 +1373,7 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     .is_err();
     let version_while_blocked = handle.load().config_version;
 
-    tokio::task::spawn_blocking(move || barrier.wait())
-        .await
-        .unwrap();
+    barrier.notify_one();
     assert!(
         domain_held,
         "the cancelled caller's Store operation still owns the domain"
@@ -1426,7 +1389,8 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     assert_eq!(handle.load().config_version, before + 1);
     assert_eq!(
         overlay
-            .read_required()
+            .read_required_async()
+            .await
             .unwrap()
             .unwrap()
             .root
@@ -1438,225 +1402,83 @@ async fn a_cancelled_store_overlay_persist_finishes_before_releasing_the_domain(
     println!("{WITNESS}");
 }
 
+fn overlay_scope(core: Arc<busbar_kernel::persistence::facade::CoreStore>) -> ScopedStore {
+    ScopedStore::host_private(
+        core,
+        "busbar.config.overlay",
+        ["busbar.config.overlay.v1".to_string()],
+    )
+    .unwrap()
+}
+
 struct OverlayFaults {
-    inner: Arc<dyn StoreCalls>,
+    inner: Arc<dyn PersistenceBackend>,
     fail_reads: AtomicBool,
     fail_writes: AtomicBool,
     lose_reply: AtomicBool,
-    block_read: std::sync::Mutex<Option<Arc<std::sync::Barrier>>>,
-    requests: std::sync::Mutex<Vec<busbar_contract::abi::sdk::store::conditional::Request>>,
+    block_read: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
+    requests: std::sync::Mutex<Vec<PreparedCandidate>>,
 }
 impl OverlayFaults {
-    fn new(inner: Arc<dyn StoreCalls>) -> Arc<Self> {
+    fn new(inner: Arc<dyn PersistenceBackend>) -> Arc<Self> {
         Arc::new(Self {
             inner,
             fail_reads: AtomicBool::new(false),
             fail_writes: AtomicBool::new(false),
             lose_reply: AtomicBool::new(false),
-            block_read: std::sync::Mutex::new(None),
+            block_read: Default::default(),
             requests: Default::default(),
         })
     }
 }
-impl StoreCalls for OverlayFaults {
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
+impl PersistenceBackend for OverlayFaults {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.inner.apply_usage_correction(request)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-    fn supports_record_transaction(&self) -> bool {
-        self.inner.supports_record_transaction()
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
     }
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        self.requests.lock().unwrap().push(request.clone());
-        if self.fail_writes.load(Ordering::SeqCst) {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "planted overlay conditional refusal".into(),
-                ))
-            });
-        }
-        let lose = self.lose_reply.swap(false, Ordering::SeqCst);
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
-            let result = self.inner.record_transaction(request).await;
-            if lose && result.is_ok() {
-                Err(StoreFailure::Failed(
-                    "planted lost commit reply after actual Store commit".into(),
-                ))
-            } else {
-                result
+            let schema = b"busbar.config.overlay.v1";
+            let overlay = request.addresses.iter().any(|address| {
+                address
+                    .key
+                    .windows(schema.len())
+                    .any(|bytes| bytes == schema)
+            });
+            if overlay {
+                if self.fail_reads.load(Ordering::SeqCst) {
+                    return Err(Failure::Unavailable);
+                }
+                let block = self.block_read.lock().unwrap().take();
+                if let Some(block) = block {
+                    block.notified().await;
+                }
             }
+            self.inner.read(request).await
         })
     }
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_usage_batch(op, cells)
-    }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        if self.fail_writes.load(Ordering::SeqCst) {
-            return Box::pin(async {
-                Err(StoreFailure::Refused(
-                    "planted overlay write refusal".into(),
-                ))
-            });
-        }
-        self.inner.record_put(schema, key, value)
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        if self.fail_reads.load(Ordering::SeqCst) {
-            return Box::pin(async {
-                Err(StoreFailure::Failed("planted overlay read outage".into()))
-            });
-        }
-        if let Some(barrier) = self.block_read.lock().unwrap().take() {
-            barrier.wait();
-        }
-        self.inner.record_get(schema, key)
-    }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.inner.record_scan(schema, prefix, limit)
-    }
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.inner.put_key(key)
-    }
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_key(id)
-    }
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.inner.list_credentials(key_id)
-    }
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.inner.list_denylist()
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit()
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.inner.list_audit_tail(limit)
-    }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.inner.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.inner.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.inner.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
-    }
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.inner.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.inner.purge_plane_records_before(kind, before)
-    }
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.inner.purge_usage_before(before)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let schema = b"busbar.config.overlay.v1";
+            let publication = candidate.candidate().mutations.iter().any(|mutation| matches!(mutation, Mutation::Put { address, .. } if address.key.ends_with(b"head") && address.key.windows(schema.len()).any(|bytes| bytes == schema)));
+            if publication {
+                self.requests.lock().unwrap().push(candidate.clone());
+                if self.fail_writes.load(Ordering::SeqCst) {
+                    return Err(Failure::Refused);
+                }
+            }
+            let lose = publication && self.lose_reply.swap(false, Ordering::SeqCst);
+            let result = self.inner.commit(candidate).await?;
+            if lose {
+                Err(Failure::Unknown)
+            } else {
+                Ok(result)
+            }
+        })
     }
 }

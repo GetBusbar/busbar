@@ -6,6 +6,7 @@ use busbar_kernel::diagnostics::{
     diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
     PLUGIN_ROLLBACK_REVERT_FAILED,
 };
+use tracing::instrument::WithSubscriber as _;
 
 /// Unwrap a `Result<_, Response>` (or, with `boxed`, a `Result<_, Box<Response>>`) or return the
 /// ready-made response from the handler.
@@ -68,7 +69,7 @@ pub(crate) async fn list_providers(State(handle): State<Arc<AppHandle>>) -> Resp
 }
 
 pub(crate) async fn list_hooks(State(handle): State<Arc<AppHandle>>) -> Response {
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -83,7 +84,7 @@ pub(crate) async fn get_hook(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -100,7 +101,7 @@ pub(crate) async fn list_groups(
 ) -> Response {
     let (start, limit) =
         ok_or_respond!(boxed page_window(&q, crate::v1::contract::LIST_LIMIT_DEFAULT));
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -115,7 +116,7 @@ pub(crate) async fn get_group(
     State(handle): State<Arc<AppHandle>>,
     Path(name): Path<String>,
 ) -> Response {
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -154,7 +155,7 @@ pub(crate) async fn list_plugins(
         // blocking transaction retains that fence even if this caller disconnects.
         let _ = entered.send(());
         let snapshot = txn.app().clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             Ok(Outcome::Value(
                 AdminService::new(snapshot).list_plugins_current(&ptype)?,
             ))
@@ -222,7 +223,7 @@ pub(crate) async fn install_plugin(
     let file = req.file.clone();
     let out = config_transaction(&handle, move |txn| {
         let snapshot = txn.app().clone();
-        Ok(txn.store_write(move || {
+        Ok(txn.store_write_async(async move {
             let view = AdminService::new(snapshot).install_store_plugin(&file, &tarball)?;
 
             Ok(Outcome::Value(view))
@@ -306,7 +307,7 @@ pub(crate) async fn remove_plugin(
 
     let out = config_transaction(&handle, move |txn| {
         let snapshot = txn.app().clone();
-        Ok(txn.store_write(move || {
+        Ok(txn.store_write_async(async move {
             AdminService::new(snapshot)
                 .remove_store_plugin_if_archive(&file, expected.as_deref())?;
             Ok(Outcome::Value(()))
@@ -331,25 +332,26 @@ pub(crate) async fn reload_plugins(
 
     let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             if snapshot.config_path.is_none() || snapshot.providers_path.is_none() {
                 let view = AdminService::new(snapshot).reload_store_plugins()?;
                 return Ok(Outcome::Value((None, Ok(view))));
             }
-            let (next, gov_rotate, limits) =
-                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
+            let (next, gov_rotate, limits) = rebuild_app_from_disk(&snapshot)
+                .await
+                .map_err(AdminError::Validation)?;
             let installed = Arc::new(next);
 
             let projected = AdminService::new(installed.clone()).reload_store_plugins();
 
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                || Ok(()),
+                async { Ok(()) },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value((Some(installed), projected)))
                 },
@@ -464,9 +466,9 @@ pub(crate) async fn rollback_plugin(
             ));
         };
         let snapshot = current.clone();
-        Ok(txn.store_write(move || {
+        Ok(txn.store_write_async(async move {
 
-            let prior_pins = match overlay_path.read_required().map_err(AdminError::Validation)? {
+            let prior_pins = match overlay_path.read_required_async().await.map_err(AdminError::Validation)? {
                 Some(doc) => doc.plugin_versions,
                 None => std::collections::BTreeMap::new(),
             };
@@ -484,7 +486,7 @@ pub(crate) async fn rollback_plugin(
 
 
             if let Err(e) =
-                busbar_kernel::config::overlay::try_persist_plugin_versions(Some(&overlay_path), &pins)
+                busbar_kernel::config::overlay::try_persist_plugin_versions_async(Some(&overlay_path), &pins).await
             {
                 diag_error!(PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, plugin = %audit_resource, error = %e, "plugin rollback: persisting the version pin failed; nothing swapped");
                 return Err(AdminError::Validation(format!(
@@ -493,7 +495,7 @@ pub(crate) async fn rollback_plugin(
                 )));
             }
             let pin_publication = UnpublishedPluginPin(Some(overlay_path.clone()));
-            let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot) {
+            let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot).await {
                 Ok(triple) => triple,
                 Err(e) => {
 
@@ -504,10 +506,10 @@ pub(crate) async fn rollback_plugin(
 
 
 
-                    if let Err(revert_err) = busbar_kernel::config::overlay::try_persist_plugin_versions(
+                    if let Err(revert_err) = busbar_kernel::config::overlay::try_persist_plugin_versions_async(
                         Some(&overlay_path),
                         &prior_pins,
-                    ) {
+                    ).await {
                         diag_error!(
                             PLUGIN_ROLLBACK_REVERT_FAILED,
                             plugin = %audit_resource, rebuild_error = %e, revert_error = %revert_err,
@@ -525,12 +527,12 @@ pub(crate) async fn rollback_plugin(
             let installed = Arc::new(next);
 
 
-            Ok(Outcome::commit_rates_then(installed.clone(), move || {
+            Ok(Outcome::commit_rates_async_then(installed.clone(), async move {
                 pin_publication.release();
                 Ok(())
-            }, limits, card_origin, move || {
+            }, limits, card_origin, async move {
                 if let Some(rotate) = gov_rotate {
-                    rotate();
+                    rotate.await;
                 }
                 Ok(Outcome::Value((installed, manifest)))
             }))
@@ -571,7 +573,7 @@ pub(crate) async fn get_auth(State(handle): State<Arc<AppHandle>>) -> Response {
 }
 
 pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Response {
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -616,7 +618,7 @@ pub(crate) async fn get_usage(
 }
 
 pub(crate) async fn get_config(State(handle): State<Arc<AppHandle>>) -> Response {
-    let current = response_snapshot(handle.load());
+    let current = response_snapshot(handle.load()).await;
     let version = current.config_version;
     with_config_etag(
         respond(
@@ -743,14 +745,14 @@ pub(crate) async fn register_hook(
         let existed = current.hook_registry.contains_key(&txn_name);
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let installed = Arc::new(build_with_hook(&snapshot, &txn_name, cfg)?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist(
+                async move {
+                    busbar_kernel::config::overlay::persist_async(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -758,6 +760,7 @@ pub(crate) async fn register_hook(
                         Some(&txn_name),
                         &p.base_hook_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "hook persistence to the overlay was not confirmed: {e}; \
@@ -782,7 +785,7 @@ pub(crate) async fn register_hook(
                     } else {
                         StatusCode::CREATED
                     },
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_hook(&name)
                         .await,
                 ),
@@ -819,14 +822,14 @@ pub(crate) async fn put_hook(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let installed = Arc::new(build_with_hook(&snapshot, &txn_name, cfg)?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist(
+                async move {
+                    busbar_kernel::config::overlay::persist_async(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -834,6 +837,7 @@ pub(crate) async fn put_hook(
                         Some(&txn_name),
                         &p.base_hook_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "hook persistence to the overlay was not confirmed: {e}; \
@@ -853,7 +857,7 @@ pub(crate) async fn put_hook(
             with_config_etag(
                 respond(
                     StatusCode::OK,
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_hook(&name)
                         .await,
                 ),
@@ -890,14 +894,14 @@ pub(crate) async fn delete_hook(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let installed = Arc::new(build_without_hook(&snapshot, &txn_name)?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist(
+                async move {
+                    busbar_kernel::config::overlay::persist_async(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -905,6 +909,7 @@ pub(crate) async fn delete_hook(
                         None,
                         &p.base_hook_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "hook deletion persistence to the overlay was not confirmed: {e}; \
@@ -931,9 +936,7 @@ pub(crate) async fn delete_hook(
     }
 }
 
-pub(crate) use busbar_kernel::governance::group_provision::{
-    persist_provisioned_group, plan_mint_group,
-};
+pub(crate) use busbar_kernel::governance::group_provision::plan_mint_group;
 
 pub(crate) async fn register_group(
     State(handle): State<Arc<AppHandle>>,
@@ -961,9 +964,9 @@ pub(crate) async fn register_group(
         let installed = Arc::new(build_with_group(current, &txn_name, cfg)?);
 
         let p = installed.clone();
-        Ok(txn.commit(
+        Ok(txn.commit_async(
             installed.clone(),
-            move || persist_group(&p, &txn_name),
+            async move { persist_group(&p, &txn_name).await },
             (installed, existed),
         ))
     })
@@ -979,7 +982,7 @@ pub(crate) async fn register_group(
                     } else {
                         StatusCode::CREATED
                     },
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_group(&name)
                         .await,
                 ),
@@ -1017,9 +1020,9 @@ pub(crate) async fn put_group(
         let installed = Arc::new(build_with_group(current, &txn_name, cfg)?);
 
         let p = installed.clone();
-        Ok(txn.commit(
+        Ok(txn.commit_async(
             installed.clone(),
-            move || persist_group(&p, &txn_name),
+            async move { persist_group(&p, &txn_name).await },
             installed,
         ))
     })
@@ -1031,7 +1034,7 @@ pub(crate) async fn put_group(
             with_config_etag(
                 respond(
                     StatusCode::OK,
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_group(&name)
                         .await,
                 ),
@@ -1077,9 +1080,9 @@ pub(crate) async fn patch_group(
         let installed = Arc::new(build_with_group(current, &txn_name, merged)?);
 
         let p = installed.clone();
-        Ok(txn.commit(
+        Ok(txn.commit_async(
             installed.clone(),
-            move || persist_group(&p, &txn_name),
+            async move { persist_group(&p, &txn_name).await },
             installed,
         ))
     })
@@ -1091,7 +1094,7 @@ pub(crate) async fn patch_group(
             with_config_etag(
                 respond(
                     StatusCode::OK,
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_group(&name)
                         .await,
                 ),
@@ -1126,21 +1129,22 @@ pub(crate) async fn delete_group(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            let bound = crate::v1::service::count_keys_bound_to(&snapshot, &txn_name)?;
+        Ok(txn.store_write_async(async move {
+            let bound = crate::v1::service::count_keys_bound_to(&snapshot, &txn_name).await?;
             let installed = Arc::new(build_without_group(&snapshot, &txn_name, bound)?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist_groups(
+                async move {
+                    busbar_kernel::config::overlay::persist_groups_async(
                         p.overlay_path.as_deref(),
                         &p.groups_registry,
                         Some(&txn_name),
                         None,
                         &p.base_group_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "group deletion persistence to the overlay was not confirmed: {e}; \
@@ -1220,14 +1224,14 @@ pub(crate) async fn reset_overlay_section(
             return Err(e);
         }
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
 
 
 
 
             let overlay_empty = match snapshot.overlay_path.as_deref() {
                 None => true,
-                Some(p) => match busbar_kernel::config::overlay::read_state(p) {
+                Some(p) => match busbar_kernel::config::overlay::read_state_async(p).await {
                     busbar_kernel::config::overlay::OverlayReadState::Absent => true,
                     busbar_kernel::config::overlay::OverlayReadState::Loaded(doc) => {
                         doc.section_is_empty(section)
@@ -1281,7 +1285,7 @@ pub(crate) async fn reset_overlay_section(
                 busbar_kernel::config::EnvSubst::Strict,
                 &*snapshot.root_rules,
                 snapshot.overlay_path.clone(),
-            )
+            ).await
             .map_err(AdminError::Validation)?;
 
 
@@ -1324,8 +1328,8 @@ pub(crate) async fn reset_overlay_section(
                     )));
                 }
             }
-            let built = Ok(loaded_base)
-            .and_then(|mut loaded| {
+            let built = async {
+                let mut loaded = loaded_base;
 
 
 
@@ -1360,13 +1364,13 @@ pub(crate) async fn reset_overlay_section(
                     (Some(config_path), Some(loaded.providers_path)),
                     Some(&snapshot),
                     &snapshot.root_rules,
-                ).map(|(mut app, rotate, limits)| {
+                ).await.map(|(mut app, rotate, limits)| {
                     busbar_kernel::config::readback::ConfiguredView::capture_documents(
                         &mut app, &loaded.deploy, &loaded.defs,
                     );
                     (app, rotate, limits)
                 })
-            })
+            }.await
             .map_err(AdminError::Validation)?;
             let (built, gov_rotate, limits) = built;
             let installed = Arc::new(built);
@@ -1383,10 +1387,10 @@ pub(crate) async fn reset_overlay_section(
             let version = installed.config_version;
 
 
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::clear_section(persist_overlay.as_deref(), section).map_err(
+                async move {
+                    busbar_kernel::config::overlay::clear_section_async(persist_overlay.as_deref(), section).await.map_err(
                         |e| {
                             format!(
                                 "overlay section reset persistence was not confirmed: {e}; \
@@ -1397,9 +1401,9 @@ pub(crate) async fn reset_overlay_section(
                 },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value((version, Some(installed))))
                 },
@@ -1476,14 +1480,15 @@ fn merge_group_patch(
     base
 }
 
-fn persist_group(installed: &busbar_kernel::state::App, name: &str) -> Result<(), String> {
-    busbar_kernel::config::overlay::persist_groups(
+async fn persist_group(installed: &busbar_kernel::state::App, name: &str) -> Result<(), String> {
+    busbar_kernel::config::overlay::persist_groups_async(
         installed.overlay_path.as_deref(),
         &installed.groups_registry,
         None,
         Some(name),
         &installed.base_group_names,
     )
+    .await
     .map_err(|e| {
         format!(
             "group persistence to the overlay was not confirmed: {e}; \
@@ -1684,7 +1689,7 @@ pub(crate) async fn rollback_config(
 
         let snapshot = current.clone();
         let registry = decode_hook_registry(&target.hook_registry)?;
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let installed = Arc::new(build_with_registry(
                 &snapshot,
                 registry,
@@ -1692,10 +1697,10 @@ pub(crate) async fn rollback_config(
             )?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist(
+                async move {
+                    busbar_kernel::config::overlay::persist_async(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -1703,6 +1708,7 @@ pub(crate) async fn rollback_config(
                         None,
                         &p.base_hook_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "config rollback persistence to the overlay was not confirmed: {e}; \
@@ -1908,7 +1914,7 @@ fn credential_flush_response(
 
 #[cold]
 #[inline(never)]
-pub(crate) fn rebuild_app_from_disk(
+pub(crate) async fn rebuild_app_from_disk(
     current: &Arc<busbar_kernel::state::App>,
 ) -> Result<
     (
@@ -1944,11 +1950,15 @@ pub(crate) fn rebuild_app_from_disk(
                 let calls = current
                     .governance
                     .as_ref()
-                    .and_then(|gov| gov.store_calls())
+                    .map(|gov| gov.core_store_handle())
+                    .transpose()
+                    .map_err(|error| error.to_string())?
                     .ok_or_else(|| {
                         "running config has no opened Store for config persistence".to_string()
                     })?;
-                Some(busbar_kernel::config::overlay::OverlayStore::new(calls)?)
+                Some(busbar_kernel::config::overlay::OverlayStore::from_core(
+                    calls,
+                )?)
             }
         }
     };
@@ -1959,7 +1969,8 @@ pub(crate) fn rebuild_app_from_disk(
         busbar_kernel::config::EnvSubst::Strict,
         &*current.root_rules,
         overlay,
-    )?;
+    )
+    .await?;
 
     if let Some(doc) = loaded.overlay_doc.as_ref() {
         busbar_kernel::config::overlay::apply_root_to_deploy(&mut loaded.deploy, doc);
@@ -1983,6 +1994,7 @@ pub(crate) fn rebuild_app_from_disk(
         Some(current.as_ref()),
         &current.root_rules,
     )
+    .await
     .map(|(mut app, rotate, limits)| {
         busbar_kernel::config::readback::ConfiguredView::capture_documents(
             &mut app,
@@ -2002,20 +2014,21 @@ pub(crate) async fn reload_config(
 
     let out = busbar_kernel::config::transaction::config_reload_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
-        Ok(txn.read_store(move || {
-            let (next, gov_rotate, limits) =
-                rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
+        Ok(txn.store_write_async(async move {
+            let (next, gov_rotate, limits) = rebuild_app_from_disk(&snapshot)
+                .await
+                .map_err(AdminError::Validation)?;
 
             let installed = Arc::new(next);
 
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                || Ok(()),
+                async { Ok(()) },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value(installed))
                 },
@@ -2184,62 +2197,64 @@ pub(crate) async fn apply_config(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
-            let overlay_doc = snapshot
-                .overlay_path
-                .as_deref()
-                .map(busbar_kernel::config::overlay::OverlayStore::read_required)
-                .transpose()
-                .map_err(AdminError::Validation)?
-                .flatten();
+        Ok(txn.store_write_async(async move {
+            let overlay_doc = match snapshot.overlay_path.as_deref() {
+                Some(store) => store
+                    .read_required_async()
+                    .await
+                    .map_err(AdminError::Validation)?,
+                None => None,
+            };
             let (mut deploy, providers) = (req_deploy, req_providers);
             if let Some(doc) = overlay_doc.as_ref() {
                 busbar_kernel::config::overlay::apply_root_to_deploy(&mut deploy, doc);
 
                 busbar_kernel::config::overlay::apply_plugin_versions_to_deploy(&mut deploy, doc);
             }
-            let next = busbar_kernel::config::resolve(&deploy, &providers)
-                .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))
-                .and_then(|mut cfg| {
-                    let base_hook_names: std::collections::HashSet<String> =
-                        cfg.hooks.keys().cloned().collect();
-                    let base_group_names: std::collections::HashSet<String> =
-                        cfg.groups.keys().cloned().collect();
-                    if let Some(doc) = overlay_doc {
-                        busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
-                    }
-                    busbar_kernel::build_app_from_config(
-                        cfg,
-                        deploy.plugins.clone(),
-                        snapshot.overlay_path.clone(),
-                        base_hook_names,
-                        base_group_names,
-                        (
-                            snapshot.config_path.clone(),
-                            snapshot.providers_path.clone(),
-                        ),
-                        Some(&snapshot),
-                        &snapshot.root_rules,
-                    )
-                    .map(|(mut app, rotate, limits)| {
-                        busbar_kernel::config::readback::ConfiguredView::capture_documents(
-                            &mut app, &deploy, &providers,
-                        );
-                        (app, rotate, limits)
-                    })
+            let next = async {
+                let mut cfg = busbar_kernel::config::resolve(&deploy, &providers)
+                    .map_err(|errs| format!("config errors:\n  - {}", errs.join("\n  - ")))?;
+                let base_hook_names: std::collections::HashSet<String> =
+                    cfg.hooks.keys().cloned().collect();
+                let base_group_names: std::collections::HashSet<String> =
+                    cfg.groups.keys().cloned().collect();
+                if let Some(doc) = overlay_doc {
+                    busbar_kernel::config::overlay::merge_into(&mut cfg, doc);
+                }
+                busbar_kernel::build_app_from_config(
+                    cfg,
+                    deploy.plugins.clone(),
+                    snapshot.overlay_path.clone(),
+                    base_hook_names,
+                    base_group_names,
+                    (
+                        snapshot.config_path.clone(),
+                        snapshot.providers_path.clone(),
+                    ),
+                    Some(&snapshot),
+                    &snapshot.root_rules,
+                )
+                .await
+                .map(|(mut app, rotate, limits)| {
+                    busbar_kernel::config::readback::ConfiguredView::capture_documents(
+                        &mut app, &deploy, &providers,
+                    );
+                    (app, rotate, limits)
                 })
-                .map_err(AdminError::Validation)?;
+            }
+            .await
+            .map_err(AdminError::Validation)?;
             let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
 
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                || Ok(()),
+                async { Ok(()) },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value(installed))
                 },
@@ -2430,7 +2445,7 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
     out
 }
 
-fn current_root_settings(
+async fn current_root_settings(
     overlay_path: Option<&busbar_kernel::config::overlay::OverlayStore>,
     endpoint: &str,
 ) -> (
@@ -2445,7 +2460,7 @@ fn current_root_settings(
             "disabled",
         );
     };
-    let (revision, state) = busbar_kernel::config::overlay::read_state_with_revision(p);
+    let (revision, state) = busbar_kernel::config::overlay::read_state_with_revision_async(p).await;
     let (root, status) = match state {
         busbar_kernel::config::overlay::OverlayReadState::Absent => (
             busbar_kernel::config::overlay::RootSettings::default(),
@@ -2489,10 +2504,12 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
     let dispatch = tracing::dispatcher::get_default(|d| d.clone());
     let read = config_transaction(&handle, move |txn| {
         let current = txn.app().clone();
-        Ok::<_, AdminError>(txn.read_store(move || {
-            let root = tracing::dispatcher::with_default(&dispatch, || {
-                current_root_settings(current.overlay_path.as_deref(), "GET /config/settings")
-            });
+        Ok::<_, AdminError>(txn.store_write_async(async move {
+            let root = async {
+                current_root_settings(current.overlay_path.as_deref(), "GET /config/settings").await
+            }
+            .with_subscriber(dispatch)
+            .await;
             Ok(Outcome::Value((current, root)))
         }))
     })
@@ -2560,7 +2577,7 @@ pub(crate) async fn put_config_settings(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let (Some(config_path), Some(_)) = (
                 snapshot.config_path.clone(),
                 snapshot.providers_path.clone(),
@@ -2572,28 +2589,29 @@ pub(crate) async fn put_config_settings(
                 ));
             };
 
-            let current_doc = snapshot
-                .overlay_path
-                .as_deref()
-                .map(busbar_kernel::config::overlay::OverlayStore::read_required)
-                .transpose()
-                .map_err(AdminError::Validation)?
-                .flatten();
+            let current_doc = match snapshot.overlay_path.as_deref() {
+                Some(store) => store
+                    .read_required_async()
+                    .await
+                    .map_err(AdminError::Validation)?,
+                None => None,
+            };
             let merged = merge_root_settings(
                 current_doc.and_then(|doc| doc.root).unwrap_or_default(),
                 want,
             );
             let merged_for_build = merged.clone();
 
-            let next = busbar_kernel::load_config_from_disk_with_store(
-                &config_path,
-                snapshot.providers_override.as_deref(),
-                false,
-                busbar_kernel::config::EnvSubst::Strict,
-                &*snapshot.root_rules,
-                snapshot.overlay_path.clone(),
-            )
-            .and_then(|mut loaded| {
+            let next = async {
+                let mut loaded = busbar_kernel::load_config_from_disk_with_store(
+                    &config_path,
+                    snapshot.providers_override.as_deref(),
+                    false,
+                    busbar_kernel::config::EnvSubst::Strict,
+                    &*snapshot.root_rules,
+                    snapshot.overlay_path.clone(),
+                )
+                .await?;
                 merged_for_build.apply_to_deploy(&mut loaded.deploy);
 
                 if let Some(doc) = loaded.overlay_doc.as_ref() {
@@ -2621,6 +2639,7 @@ pub(crate) async fn put_config_settings(
                     Some(&snapshot),
                     &snapshot.root_rules,
                 )
+                .await
                 .map(|(mut app, rotate, limits)| {
                     busbar_kernel::config::readback::ConfiguredView::capture_documents(
                         &mut app,
@@ -2629,7 +2648,8 @@ pub(crate) async fn put_config_settings(
                     );
                     (app, rotate, limits)
                 })
-            })
+            }
+            .await
             .map_err(AdminError::Validation)?;
             let (mut next, gov_rotate, limits) = next;
             next.config_pending_restart.extend(pending);
@@ -2640,13 +2660,14 @@ pub(crate) async fn put_config_settings(
             let persist_overlay = snapshot.overlay_path.clone();
             let to_persist = merged.clone();
 
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist_root(
+                async move {
+                    busbar_kernel::config::overlay::persist_root_async(
                         persist_overlay.as_deref(),
                         &to_persist,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "config settings persistence to the overlay was not confirmed: {e}; \
@@ -2656,9 +2677,9 @@ pub(crate) async fn put_config_settings(
                 },
                 limits,
                 card_origin,
-                move || {
+                async move {
                     if let Some(rotate) = gov_rotate {
-                        rotate();
+                        rotate.await;
                     }
                     Ok(Outcome::Value((installed, merged)))
                 },
@@ -2801,14 +2822,14 @@ pub(crate) async fn patch_hook_settings(
         }
 
         let snapshot = current.clone();
-        Ok(txn.read_store(move || {
+        Ok(txn.store_write_async(async move {
             let installed = Arc::new(build_with_hook(&snapshot, &txn_name, updated)?);
 
             let p = installed.clone();
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 installed.clone(),
-                move || {
-                    busbar_kernel::config::overlay::persist(
+                async move {
+                    busbar_kernel::config::overlay::persist_async(
                         p.overlay_path.as_deref(),
                         &p.hook_registry,
                         &p.global_hooks,
@@ -2816,6 +2837,7 @@ pub(crate) async fn patch_hook_settings(
                         Some(&txn_name),
                         &p.base_hook_names,
                     )
+                    .await
                     .map_err(|e| {
                         format!(
                             "hook settings persistence to the overlay was not confirmed: {e}; \
@@ -2835,7 +2857,7 @@ pub(crate) async fn patch_hook_settings(
             with_config_etag(
                 respond(
                     StatusCode::OK,
-                    AdminService::new(response_snapshot(installed.clone()))
+                    AdminService::new(response_snapshot(installed.clone()).await)
                         .get_hook(&name)
                         .await,
                 ),
@@ -2901,7 +2923,7 @@ pub(crate) async fn plugin_schema(
         let out =
             busbar_kernel::config::transaction::config_reload_transaction(&handle, move |txn| {
                 let snapshot = txn.app().clone();
-                Ok(txn.read_store(move || {
+                Ok(txn.store_write_async(async move {
                     Ok(Outcome::Value(
                         AdminService::new(snapshot)
                             .installed_plugin_schema(&name, expected.as_deref())?,

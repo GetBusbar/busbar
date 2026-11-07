@@ -139,8 +139,8 @@ pub(super) async fn put(
             "document_patch requires an operator config file as its base".into(),
         ))?;
         let providers_override = snapshot.providers_override.clone();
-        Ok(txn.read_store(move || {
-            let mut doc = store.read_required().map_err(AdminError::Validation)?.unwrap_or_default();
+        Ok(txn.store_write_async(async move {
+            let mut doc = store.read_required_async().await.map_err(AdminError::Validation)?.unwrap_or_default();
             if providers_override.is_some() && request.document_patch.overlaps_path("/providers_file")
                 .map_err(|error| AdminError::Validation(error.to_string()))? {
                 return Err(AdminError::Conflict(format!(
@@ -223,7 +223,7 @@ pub(super) async fn put(
                 (Some(config_path), Some(loaded.providers_path)),
                 Some(&snapshot),
                 &snapshot.root_rules,
-            ).map_err(|_| AdminError::Validation("patched configuration failed runtime validation".into()))?;
+            ).await.map_err(|_| AdminError::Validation("patched configuration failed runtime validation".into()))?;
             busbar_kernel::config::readback::ConfiguredView::capture_documents(
                 &mut next, &loaded.deploy, &loaded.defs,
             );
@@ -241,13 +241,13 @@ pub(super) async fn put(
             next.config_pending_restart.sort();
             next.config_pending_restart.dedup();
             let installed = Arc::new(next);
-            Ok(Outcome::commit_rates_then(
+            Ok(Outcome::commit_rates_async_then(
                 installed.clone(),
-                move || busbar_kernel::config::overlay::write(&store, &doc),
+                async move { busbar_kernel::config::overlay::write_async(&store, &doc).await },
                 limits,
                 origin,
-                move || {
-                    if let Some(rotate) = rotate { rotate(); }
+                async move {
+                    if let Some(rotate) = rotate { rotate.await; }
                     Ok(Outcome::Value(installed))
                 },
             ))

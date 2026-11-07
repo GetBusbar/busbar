@@ -6,6 +6,11 @@
 /// Atomic correction vocabulary for the existing raw usage ledger.
 pub mod correction;
 
+/// Stable operation fingerprints and replay comparisons.
+pub mod dedupe;
+mod op_id;
+pub use op_id::OpId;
+
 mod count_scale;
 
 /// A kind-tagged scope reference — e.g. `{ kind: "pool", value: "fast" }`. The generic
@@ -243,10 +248,10 @@ pub struct VirtualKey {
     /// TOMBSTONE marker. `None` = live. `Some(ts)` = this key was hard-deleted at `ts`: `enabled`
     /// is false, every credential row for it has been destroyed, and the id will never be
     /// reissued — but the row itself (id/name/group/labels) is KEPT so anything that attributes by
-    /// key id (billing, audit) keeps resolving forever. See [`RecordStore::delete_key`].
+    /// key id (billing, audit) keeps resolving forever.
     pub deleted_at: Option<u64>,
     /// Store-global monotonic revision, bumped on every mutation to this row. Used by
-    /// [`RecordStore::list_keys_since`] for incremental hydration. `0` for a row a pre-revision backend
+    /// Incremental hydration revision. `0` for a row a pre-revision backend
     /// never stamped (treated as "always changed" by a delta consumer, which is safe — a bare
     /// full-scan degrades to correct-but-inefficient, never incorrect).
     pub revision: u64,
@@ -407,7 +412,7 @@ impl CredentialMeta {
 ///
 /// DOES carry `Serialize`/`Deserialize` — this is the successor to `AwsCredential` (which also
 /// carried the plaintext secret and also derived serde), not to the old `AwsKeyEntry` (a purely
-/// in-memory type that withheld it): a real plugin `RecordStore` crosses the plugin ABI as JSON over a
+/// in-memory type that withheld it): persisted records use JSON over a
 /// ptr+len boundary (see `plugin-abi`), and this type is exactly what a backend both persists and
 /// returns across that wire, so the derive is load-bearing, not optional. The leak surface this
 /// closes is DEBUG-LOGGING (`tracing` records via `Debug`, never serde), so that is where the
@@ -741,7 +746,7 @@ pub struct AuditRecord {
     pub hash: String,
 }
 
-/// The result type every `RecordStore` method returns.
+/// A result from core domain-record persistence.
 pub type RecordStoreResult<T> = Result<T, RecordStoreError>;
 
 /// A durable-store failure, carried as a human-readable message. Deliberately backend-agnostic: a
@@ -769,7 +774,7 @@ impl From<&str> for RecordStoreError {
 }
 
 /// Whether a plane record is in a TERMINAL (final) state or still ACTIVE. This is the sidecar column
-/// that lets [`RecordStore::purge_plane_records_before`] honor a per-kind retention contract that opaque
+/// that lets core honor a per-kind retention contract that opaque
 /// `body` bytes cannot express: the `task` kind drops only TERMINAL rows older than the cutoff (an
 /// interrupted task waiting on a human is exactly the old row that must survive), while the `call`
 /// kind drops ALL rows older than the cutoff. Encoding "terminal" in the opaque body would hide it
@@ -874,8 +879,7 @@ impl PlaneRecord {
     }
 }
 
-/// A [`PlaneRecord`] BORROWED: what [`RecordStore::upsert_plane_record`] and
-/// [`RecordStore::append_plane_record`] take, so the store door hands a store the host's ABI memory
+/// A borrowed [`PlaneRecord`] for core history operations.
 /// as it is, with no copy on the request path. A store that keeps the
 /// record copies it itself ([`PlaneRecordRef::to_record`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -912,7 +916,7 @@ impl PlaneRecordRef<'_> {
     }
 }
 
-/// How [`RecordStore::list_plane_records`] narrows a kind's records — the neutral form of "everything of
+/// How history selection narrows a kind's records — the neutral form of "everything of
 /// this kind" vs "one parent's chain of this kind". The parent is borrowed where the caller holds it
 /// (the store door passes the host's ABI string straight through) and owned where it came off a
 /// wire.
@@ -932,272 +936,6 @@ impl PlaneSelector<'_> {
             Self::All => PlaneSelector::All,
             Self::Parent(p) => PlaneSelector::Parent(std::borrow::Cow::Owned(p.to_string())),
         }
-    }
-}
-
-/// The durable governance store — the `db` plugin contract. A backend (the built-in `SqliteStore`,
-pub trait RecordStore: Send + Sync + 'static {
-    /// UPSERT `key` by `key.id` — the mint path and every in-place update (rename, enable/disable,
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()>;
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>>;
-    /// EVERY key, live or tombstoned (`deleted_at` set or not) — deliberately UNFILTERED, so this
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>>;
-    /// TOMBSTONE `id`: the row is NOT removed. An implementation must, atomically:
-    /// 1. Destroy every credential row for this key (see [`RecordStore::list_credentials`]) — secret
-    ///    material must not outlive the key.
-    /// 2. Set `enabled = false`, `deleted_at = now()`.
-    /// 3. Leave every other field (`id`/`name`/`group`/`labels`) untouched, so anything that
-    ///    attributes by key id — billing/metering rows, audit records — keeps resolving forever.
-    ///    The id is never reissued.
-    ///
-    /// This is a CONTRACT CHANGE from an earlier hard-delete semantics: a raw row removal would
-    /// make `usage_metering`-shaped durable ledgers (in a real backend) either orphan their
-    /// `key_id` or require a CASCADE that destroys billing evidence — tombstoning avoids both by
-    /// construction. Idempotent: deleting an already-tombstoned key is a no-op, not an error.
-    ///
-    /// An id that names NO ROW AT ALL is a loud error, and that is a DIFFERENT case from the
-    /// idempotent one above. "Already tombstoned" means the operator's intent is satisfied and the
-    /// evidence is on disk. "No such id" means it is not, and the likeliest cause is a typo or a
-    /// stale id — where returning `Ok(())` tells an operator a key was revoked when nothing was
-    /// touched. Same reasoning [`RecordStore::revoke_credential`] gives for its own default; the two are
-    /// deliberately settled the same way.
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()>;
-
-    /// Every key with `revision > since` — the INCREMENTAL hydration delta, used instead of a full
-    fn list_keys_since(&self, since: u64) -> RecordStoreResult<Vec<VirtualKey>> {
-        Ok(self
-            .list_keys()?
-            .into_iter()
-            .filter(|k| k.revision == 0 || k.revision > since)
-            .collect())
-    }
-
-    /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger>;
-
-    /// Atomically compare raw pre-states and commit every replacement with its applied receipt.
-    fn apply_usage_correction(
-        &self,
-        request: &correction::Request,
-    ) -> RecordStoreResult<correction::Decision> {
-        let _ = request;
-        Err(RecordStoreError("usage corrections unsupported".into()))
-    }
-
-    /// Whether this implementation supplies atomic raw-usage correction acceptance.
-    fn supports_usage_correction(&self) -> bool {
-        false
-    }
-
-    /// Write-behind ABSOLUTE set of a bucket's window ledger. SETS (replaces) the whole
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()>;
-
-    /// Write-behind ADDITIVE accumulate of a bucket's window ledger: adds the signed requests
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        let mut cur = self.get_usage(bucket_id, window_start)?;
-        cur.checked_apply_delta(delta)
-            .map_err(|error| RecordStoreError(error.to_string()))?;
-        self.put_usage(bucket_id, window_start, &cur)
-    }
-
-    /// Apply this complete usage batch atomically under the caller's immutable operation identity.
-    fn add_usage_batch_deduped(
-        &self,
-        op: crate::abi::store::OpId,
-        cells: &[(&str, u64, UsageDelta)],
-    ) -> RecordStoreResult<()> {
-        let _ = (op, cells);
-        Err(RecordStoreError("deduped usage batches unsupported".into()))
-    }
-
-    /// Whether this implementation accepts caller-owned immutable usage batch identities.
-    fn supports_usage_batch_deduped(&self) -> bool {
-        false
-    }
-
-    /// Whether this implementation accepts caller-owned immutable metering batch identities.
-    fn supports_metering_batch_deduped(&self) -> bool {
-        false
-    }
-
-    /// Apply the immutable metering body once under `op`. Replaying the same id and body
-    fn add_metering_batch_deduped(
-        &self,
-        op: crate::abi::store::OpId,
-        deltas: &[MeteringDelta],
-    ) -> RecordStoreResult<()> {
-        let _ = (op, deltas);
-        Err(RecordStoreError(
-            "deduped metering batches unsupported".into(),
-        ))
-    }
-
-    /// Accumulate one completed response's RAW consumption into the per-(key, bucket, model,
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()>;
-
-    /// Every metering row accumulated in `bucket` (a metering-bucket day start), for the usage read's
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>>;
-
-    /// Persist a row-looked-up credential (today: only the request-signing auth's kind) — see
-    fn put_credential(&self, _secret: &CredentialSecret) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support row-looked-up credentials".to_string(),
-        ))
-    }
-
-    /// Update only the envelope of an existing, unrevoked Recoverable credential, atomically
-    fn rewrap_credential(
-        &self,
-        _expected: &CredentialSecret,
-        _replacement: &str,
-    ) -> RecordStoreResult<bool> {
-        Err(RecordStoreError(
-            "this Store does not support credential rewrap CAS".into(),
-        ))
-    }
-
-    /// ATOMIC key+credential mint. Persist the bearer `VirtualKey` row AND its paired credential row
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.put_key(key)?;
-        self.put_credential(secret)?;
-        Ok(())
-    }
-
-    /// Every credential row for `key_id`, metadata only, never the secret. The admin/listing
-    fn list_credentials(&self, _key_id: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        Ok(Vec::new())
-    }
-
-    /// Revoke ONE credential by id (independent of the owning key — see
-    fn revoke_credential(&self, _id: &str, _reason: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support credential revocation".to_string(),
-        ))
-    }
-
-    /// Every credential row with `revision > since`, SECRET included — the incremental hydration
-    fn list_credentials_since(&self, _since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        Ok(Vec::new())
-    }
-
-    /// Append one 1.5.5 admin AUDIT row. No production path writes these rows any more (1.6.0's
-    fn append_audit(&self, _entry: &AuditRecord) -> RecordStoreResult<()> {
-        Ok(())
-    }
-
-    /// Every persisted audit record, oldest-first (by `seq`) — the boot RESTORE source when a durable
-    fn list_audit(&self) -> RecordStoreResult<Vec<AuditRecord>> {
-        Ok(Vec::new())
-    }
-
-    /// Add `sub` to the REVOCATION DENYLIST (1.5.0 signed-token keys): a minted token is stateless,
-    fn add_denylist(&self, _sub: &str, _reason: &str) -> RecordStoreResult<()> {
-        Err(RecordStoreError(
-            "this Store does not support the revocation denylist".to_string(),
-        ))
-    }
-
-    /// Every denied subject id (for the boot hydrate of the in-memory denylist set). DEFAULTED to
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
-
-    /// The most-recent `limit` audit records, oldest-first - the BOUNDED boot restore source. The
-    fn list_audit_tail(&self, limit: u64) -> RecordStoreResult<Vec<AuditRecord>> {
-        let mut all = self.list_audit()?;
-        let limit = limit as usize;
-        if all.len() > limit {
-            all.drain(0..all.len() - limit);
-        }
-        Ok(all)
-    }
-
-    /// UPSERT one plane record by `(record.kind, record.id)`, for any registered record kind.
-    fn upsert_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        Ok(())
-    }
-
-    /// The opaque `body` of the record identified by `(kind, id)`, or `None` when absent.
-    fn get_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<Option<Vec<u8>>> {
-        Ok(None)
-    }
-
-    /// APPEND one child plane record within `record.parent`, keyed and ordered by `record.seq`. The
-    fn append_plane_record(&self, _record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
-        Ok(())
-    }
-
-    /// The opaque bodies of a kind's records, narrowed by `selector` — every record of the kind
-    fn list_plane_records(
-        &self,
-        _kind: &str,
-        _selector: &PlaneSelector<'_>,
-    ) -> RecordStoreResult<Vec<Vec<u8>>> {
-        Ok(Vec::new())
-    }
-
-    /// Every distinct [`PlaneRecord::parent`] with at least one record of `kind` (the boot
-    fn list_plane_record_parents(&self, _kind: &str) -> RecordStoreResult<Vec<String>> {
-        Ok(Vec::new())
-    }
-
-    /// RETENTION: drop records of `kind` older than `before`, returning how many went. WHICH
-    fn purge_plane_records_before(&self, _kind: &str, _before: u64) -> RecordStoreResult<u64> {
-        Ok(0)
-    }
-
-    /// RETENTION, with the predicate named: drop records of `kind` older than `before` under
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: Retention,
-    ) -> RecordStoreResult<u64> {
-        match retention {
-            Retention::Age => self.purge_plane_records_before(kind, before),
-            Retention::TerminalOnly => Ok(0),
-        }
-    }
-
-    /// DELETE the record identified by `(kind, id)`; absent is a no-op. DEFAULTED to `Ok(())`.
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> RecordStoreResult<()> {
-        Ok(())
-    }
-
-    /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(false)
-    }
-
-    /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> RecordStoreResult<bool> {
-        Ok(false)
     }
 }
 

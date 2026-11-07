@@ -434,7 +434,7 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -444,22 +444,26 @@ async fn an_empty_plane_set_still_stages_the_core_listener_lines() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the empty-plane deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the serving application has its configured Store")
-            .store_calls()
-            .expect("the configured Store exposes its actual rate-history calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .core_store_handle()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the serving application's actual Store boots its rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(app);
     crate::root::inbound::stage(busbar_kernel::guest::GuestList::default(), Vec::new());
@@ -796,11 +800,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
+        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+            .await
             .expect("governance"),
     );
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "decider".to_string(),
                 ..Default::default()
@@ -808,12 +813,31 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint");
     let key = Arc::new(key);
-    gov.hydrate_budgets(&CostModel::flat(1), 0)
+    gov.hydrate_budgets_async(&CostModel::flat(1), 0)
+        .await
         .expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let book = crate::root::durability::node_book(
+        busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+            gov.core_store_handle().expect("native Store"),
+            busbar_kernel::door::op_id().counter().max(1),
+            busbar_kernel::persistence::journal::runtime::BufferBudget {
+                records: 4096,
+                bytes: 16 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("native journal"),
+        busbar_kernel::persistence::journal::runtime::BufferBudget {
+            records: 4096,
+            bytes: 16 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("native node book");
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -883,6 +907,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("the door plane composes, its egress sealed");
     let _ = std::fs::remove_file(&key_file);
     let composed = &mut served.planes[0];
@@ -931,7 +956,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -941,22 +966,26 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the serving application has its configured Store")
-            .store_calls()
-            .expect("the configured Store exposes its actual rate-history calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .core_store_handle()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the serving application's actual Store boots its rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(CostModel::flat(1));
@@ -1001,7 +1030,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     );
 
     let usage = gov
-        .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+        .usage_for_async(&app.cost, &key.id, busbar_kernel::store::now())
+        .await
         .expect("a read")
         .expect("the key exists");
     assert_eq!(usage.requests, 1, "one admitted request");
@@ -1073,7 +1103,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -1083,22 +1113,26 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the serving application has its configured Store")
-            .store_calls()
-            .expect("the configured Store exposes its actual rate-history calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .core_store_handle()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the serving application's actual Store boots its rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(app);
 
@@ -1137,17 +1171,19 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         ))
         .expect("a section"),
     );
+    let empty_money = money().await;
     let served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
         &composed_services(),
         &sections,
         None,
-        &money,
+        &|| Arc::clone(&empty_money),
         None,
         None,
         &app.serve_tables,
     )
+    .await
     .expect("the door plane composes");
     let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
     assert!(!doors.is_empty(), "the claim is a route");
@@ -1222,7 +1258,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -1232,22 +1268,26 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the serving application has its configured Store")
-            .store_calls()
-            .expect("the configured Store exposes its actual rate-history calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .core_store_handle()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the serving application's actual Store boots its rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(app);
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -1280,17 +1320,19 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         ))
         .expect("a section"),
     );
+    let empty_money = money().await;
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
         &composed_services(),
         &sections,
         None,
-        &money,
+        &|| Arc::clone(&empty_money),
         None,
         None,
         &app.serve_tables,
     )
+    .await
     .expect("the door plane composes");
 
     let claims = &mut served.planes[0].snapshot.claims;
@@ -1952,12 +1994,13 @@ pub(super) mod session_door {
         };
         let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
         let gov = Arc::new(
-            GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
+            GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+                .await
                 .expect("governance"),
         );
         super::super::door_rig::attach_late(&services, &gov);
         let (key, plain) = gov
-            .mint_signed(
+            .mint_signed_async(
                 NewKeySpec {
                     name: "browser".to_string(),
                     group: groups.keys().next().cloned(),
@@ -1967,10 +2010,28 @@ pub(super) mod session_door {
                 4_000_000_000,
                 1_700_000_000,
             )
+            .await
             .expect("mint");
-        gov.hydrate_budgets(&cost, 0).expect("hydrate");
+        gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
         let node = Arc::new(Node::with_inbound_keys());
-        let book = crate::root::durability::node_book();
+        let book = crate::root::durability::node_book(
+            busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+                gov.core_store_handle().expect("native Store"),
+                busbar_kernel::door::op_id().counter().max(1),
+                busbar_kernel::persistence::journal::runtime::BufferBudget {
+                    records: 4096,
+                    bytes: 16 * 1024 * 1024,
+                },
+            )
+            .await
+            .expect("native journal"),
+            busbar_kernel::persistence::journal::runtime::BufferBudget {
+                records: 4096,
+                bytes: 16 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("native node book");
         node.bind_book(Arc::clone(&book.durability));
         let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
         let money = Arc::new(PlaneMoney::new(
@@ -2050,7 +2111,7 @@ pub(super) mod session_door {
                 })
             },
             gov: Arc::clone(&gov),
-            journal: None,
+            journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
         });
 
         let tables = busbar_kernel::plane_driver::serve::ServeTables::default();
@@ -2083,7 +2144,9 @@ pub(super) mod session_door {
             }),
             stage.as_ref(),
             &tables,
-        ) {
+        )
+        .await
+        {
             Ok(served) => served,
             Err(refusal) => return Some(Err(refusal)),
         };
@@ -2243,7 +2306,7 @@ pub(super) mod session_door {
         let plugins = crate::root::test_plugins::trusted_config(&directory);
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugins,
             None,
@@ -2253,26 +2316,30 @@ pub(super) mod session_door {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the session deployment");
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the serving application has its configured Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the serving application has its configured Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its actual rate-history calls"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("native rate history attaches");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the serving application's actual Store boots its rate history");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         if budget == Some(0) {
             let (warm, _) = gov
-                .mint_signed(
+                .mint_signed_async(
                     NewKeySpec {
                         name: "pre-exhausted-session-group".to_string(),
                         group: groups.keys().next().cloned(),
@@ -2281,6 +2348,7 @@ pub(super) mod session_door {
                     4_000_000_000,
                     1_700_000_000,
                 )
+                .await
                 .expect("the prior caller shares the actual configured session group");
             let pool = crate::root::door_steps::plane_lane(&plane_name, "m-cap");
             drop(
@@ -2434,9 +2502,10 @@ pub(super) mod session_door {
             send_body(&self.router, MINT, Some(&self.plain), "{}").await
         }
 
-        fn requests(&self) -> u64 {
+        async fn requests(&self) -> u64 {
             self.gov
-                .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+                .usage_for_async(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+                .await
                 .expect("a read")
                 .expect("the key exists")
                 .requests
@@ -2661,7 +2730,7 @@ pub(super) mod session_door {
 
         async fn signal_once(&mut self) -> (bool, bool) {
             let ticket = self.local_ticket().await;
-            let admitted = self.requests();
+            let admitted = self.requests().await;
             let after_mint = self.audit_records().last().map_or(0, |record| record.seq);
             let (status, _) = self.signal_inner(&ticket, false).await;
             let failed = if status.is_success() {
@@ -2691,7 +2760,7 @@ pub(super) mod session_door {
                 true
             };
             assert_eq!(
-                self.requests(),
+                self.requests().await,
                 admitted,
                 "consuming the ticket never adds a second admission"
             );
@@ -2767,10 +2836,10 @@ pub(super) mod session_door {
             "an unkeyed caller is refused at the session door"
         );
         assert!(s.heard.try_recv().is_err(), "nothing was dialled for it");
-        assert_eq!(s.requests(), 0, "nor charged");
+        assert_eq!(s.requests().await, 0, "nor charged");
 
         let ticket = s.local_ticket().await;
-        assert_eq!(s.requests(), 1, "local issuance is the one admission");
+        assert_eq!(s.requests().await, 1, "local issuance is the one admission");
         let issuance = s.audit_records();
         assert_eq!(
             issuance.len(),
@@ -2809,7 +2878,7 @@ pub(super) mod session_door {
 
         s.finish_media().await;
         assert_eq!(
-            s.requests(),
+            s.requests().await,
             1,
             "one admitted request, on the presenting key"
         );
@@ -2900,7 +2969,7 @@ pub(super) mod session_door {
             s.heard.try_recv().is_err(),
             "the provider was never dialled"
         );
-        assert_eq!(s.requests(), 0, "the refusal charged nothing");
+        assert_eq!(s.requests().await, 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no record carries counts");
@@ -3002,13 +3071,13 @@ pub(super) mod session_door {
         .await
         .expect("the build links the session door");
         let ticket = s.local_ticket().await;
-        let admitted = s.requests();
+        let admitted = s.requests().await;
         let completed_before_signal = s.lines();
         armed.store(true, std::sync::atomic::Ordering::SeqCst);
         let (status, _) = s.signal(&ticket).await;
         let heard = s.heard.try_recv().is_ok();
         assert_eq!(
-            s.requests(),
+            s.requests().await,
             admitted,
             "a gated signal adds no second admission"
         );
@@ -3044,7 +3113,11 @@ pub(super) mod session_door {
         .await
         .expect("the build links the session door");
         let ticket = s.local_ticket().await;
-        assert_eq!(s.requests(), 1, "the local ticket is the one admission");
+        assert_eq!(
+            s.requests().await,
+            1,
+            "the local ticket is the one admission"
+        );
         let answer_bound = tokio::time::Instant::now() + ANSWER_BOUND;
         let (status, _signal) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the admitted ticket places its call");
@@ -3064,7 +3137,7 @@ pub(super) mod session_door {
             "the signal reached its provider"
         );
         assert_eq!(
-            s.requests(),
+            s.requests().await,
             1,
             "ticket consumption never charges a second admission"
         );
@@ -3144,7 +3217,7 @@ pub(super) mod session_door {
             busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
         );
         let ticket = s.local_ticket().await;
-        let admitted = s.requests();
+        let admitted = s.requests().await;
         let (status, _) = s.signal(&ticket).await;
         assert_eq!(status.as_u16(), 201, "the actual signal is served");
         let heard = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
@@ -3153,7 +3226,7 @@ pub(super) mod session_door {
             .is_some();
         s.finish_media().await;
         assert_eq!(
-            s.requests(),
+            s.requests().await,
             admitted,
             "ticket consumption adds no second admission"
         );
@@ -3187,7 +3260,7 @@ pub(super) mod session_door {
             "a key outside the door's grant is refused: {status}"
         );
         assert!(!heard, "the provider was never dialled");
-        assert_eq!(s.requests(), 0, "the refusal charged nothing");
+        assert_eq!(s.requests().await, 0, "the refusal charged nothing");
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no record carries counts");
@@ -3200,7 +3273,11 @@ pub(super) mod session_door {
             s.heard.try_recv().is_err(),
             "nor can the denied signal dial"
         );
-        assert_eq!(s.requests(), 0, "neither denied entry charges the caller");
+        assert_eq!(
+            s.requests().await,
+            0,
+            "neither denied entry charges the caller"
+        );
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
     }
@@ -3756,6 +3833,7 @@ pub(super) mod session_door {
         .await
         .expect("the build links the session door");
         busbar_kernel::boot::hydrate_all(&s.app)
+            .await
             .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
         let (_browser, offer) = RtcPeer::offer(
@@ -3779,6 +3857,7 @@ pub(super) mod session_door {
             .await
             .expect("the build links the session door");
         busbar_kernel::boot::hydrate_all(&s.app)
+            .await
             .expect("the actual boot registers the durable audit stream before serving units");
         let before = session_open_refusals(&s);
         let (status, content_type, body) = post_offer(
@@ -4116,12 +4195,14 @@ mod tools_door {
             .as_mapping_mut()
             .expect("a mapping")
             .extend(healthy.as_mapping().expect("a mapping").clone());
-        let rig = bad_server.rig_with_footing(
-            instance,
-            tools,
-            bad_server.footing_with_peers(&[&good_server]),
-            &|app| app,
-        );
+        let rig = bad_server
+            .rig_with_footing(
+                instance,
+                tools,
+                bad_server.footing_with_peers(&[&good_server]),
+                &|app| app,
+            )
+            .await;
         let cell = lane(&rig, "tripper");
         let failures = || scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())]);
         let before = failures();
@@ -4187,9 +4268,11 @@ mod tools_door {
         let instance = "serve-door-tools-fastfail";
         let mut port_server = answering_calls_with(503).await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(instance, registration("flaky", &port_server, ""), &|app| {
-            app
-        });
+        let rig = port_server
+            .rig(instance, registration("flaky", &port_server, ""), &|app| {
+                app
+            })
+            .await;
 
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
@@ -4244,12 +4327,14 @@ mod tools_door {
         ))
         .expect("a section");
         let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
-        let rig = bad_server.rig_with_footing(
-            instance,
-            tools,
-            bad_server.footing_with_peers(&[&good_server]),
-            &|app| app,
-        );
+        let rig = bad_server
+            .rig_with_footing(
+                instance,
+                tools,
+                bad_server.footing_with_peers(&[&good_server]),
+                &|app| app,
+            )
+            .await;
         assert_eq!(
             rig.app
                 .planes
@@ -4327,7 +4412,7 @@ mod tools_door {
             );
         }
         assert_eq!(
-            rig.admitted(),
+            rig.admitted().await,
             u64::try_from(sent).expect("a count"),
             "every call, one unit each"
         );
@@ -4378,12 +4463,14 @@ mod tools_door {
         ))
         .expect("a section");
         let tools = pooled(tools, "twins", &["fs", "fs2"], &["read_file"]);
-        let rig = primary_server.rig_with_footing(
-            instance,
-            tools,
-            primary_server.footing_with_peers(&[&twin_server]),
-            &|app| app,
-        );
+        let rig = primary_server
+            .rig_with_footing(
+                instance,
+                tools,
+                primary_server.footing_with_peers(&[&twin_server]),
+                &|app| app,
+            )
+            .await;
         assert_eq!(
             rig.app
                 .planes
@@ -4418,7 +4505,7 @@ mod tools_door {
                 "call {n}: the twin is not reached while the primary is healthy"
             );
         }
-        assert_eq!(rig.admitted(), sent, "every call, one unit each");
+        assert_eq!(rig.admitted().await, sent, "every call, one unit each");
         assert!(rig.all_ended(), "every unit ended");
     }
 
@@ -4443,7 +4530,9 @@ mod tools_door {
         }))
         .await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(instance, registration("blip", &port_server, ""), &|app| app);
+        let rig = port_server
+            .rig(instance, registration("blip", &port_server, ""), &|app| app)
+            .await;
 
         let (status, answer) = call(
             &rig,
@@ -4499,11 +4588,13 @@ mod tools_door {
         }))
         .await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("stall", &port_server, "  timeout: 2s\n"),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("stall", &port_server, "  timeout: 2s\n"),
+                &|app| app,
+            )
+            .await;
 
         let started = Instant::now();
         let (status, answer) = tokio::time::timeout(
@@ -4560,9 +4651,11 @@ mod tools_door {
         }))
         .await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(instance, registration("stall", &port_server, ""), &|app| {
-            app
-        });
+        let rig = port_server
+            .rig(instance, registration("stall", &port_server, ""), &|app| {
+                app
+            })
+            .await;
 
         let started = Instant::now();
         let (status, answer) = tokio::time::timeout(
@@ -4601,11 +4694,13 @@ mod tools_door {
         let instance = "serve-door-tools-dial-failed";
 
         let port_server = TlsToolServer::once().await;
-        let rig = port_server.rig(
-            instance,
-            registration("gone", &port_server, "  timeout: 2s\n"),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("gone", &port_server, "  timeout: 2s\n"),
+                &|app| app,
+            )
+            .await;
 
         let (status, answer) = tokio::time::timeout(
             Duration::from_secs(20),
@@ -4636,7 +4731,7 @@ mod tools_door {
         let mut heard = take_heard(&mut port_server);
         let arguments = serde_json::json!({ "path": "/home/caller/secret.txt" });
 
-        let control = hook_parity::rig(instance, &port_server, Vec::new());
+        let control = hook_parity::rig(instance, &port_server, Vec::new()).await;
         let (status, _) = call(
             &control,
             &control.bound_token(),
@@ -4666,7 +4761,8 @@ mod tools_door {
                     } }),
                 ),
             )],
-        );
+        )
+        .await;
         let (status, answer) =
             call(&tapped, &tapped.bound_token(), "fs_read_file", arguments).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
@@ -4682,7 +4778,7 @@ mod tools_door {
             sent[0]
         );
         assert_eq!(
-            tapped.admitted(),
+            tapped.admitted().await,
             1,
             "the rewritten call is the one served unit"
         );
@@ -4707,7 +4803,7 @@ mod tools_door {
                     }),
                 ),
             )],
-        );
+        ).await;
         let (status, answer) = call(
             &gated,
             &gated.bound_token(),
@@ -4721,13 +4817,14 @@ mod tools_door {
             hook_parity::calls_heard(&mut heard).is_empty(),
             "the gated call never reached the server"
         );
-        assert_eq!(gated.admitted(), 0, "a gated call is charged nothing");
+        assert_eq!(gated.admitted().await, 0, "a gated call is charged nothing");
         assert!(gated.all_ended(), "the refused unit ended");
     }
 
-    fn call_chain(rig: &Rig, want: usize) -> Vec<u64> {
+    async fn call_chain(rig: &Rig, want: usize) -> Vec<u64> {
         let (_, records) = crate::root::serve::planes_tests::chained_records(
             &rig.store,
+            rig.instance,
             surface("record_kind_call"),
             busbar_contract::abi::plane::RecordChain {
                 kind: 0,
@@ -4736,7 +4833,8 @@ mod tools_door {
                 _reserved: 0,
             },
             want,
-        );
+        )
+        .await;
         let scopes: std::collections::BTreeSet<&Vec<u8>> = records.iter().map(|r| &r.0).collect();
         assert_eq!(scopes.len(), 1, "one chain, the caller's: {records:?}");
         records.into_iter().map(|r| r.1).collect()
@@ -4748,12 +4846,15 @@ mod tools_door {
         let instance = "serve-door-tools-audit";
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("audited", &port_server, ""),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("audited", &port_server, ""),
+                &|app| app,
+            )
+            .await;
         busbar_kernel::boot::hydrate_all(&rig.app)
+            .await
             .expect("the actual boot registers the durable audit stream before serving units");
         let upstream_calls =
             |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
@@ -4787,7 +4888,7 @@ mod tools_door {
             "the refused call never made an upstream leg"
         );
 
-        let chain = call_chain(&rig, 3);
+        let chain = call_chain(&rig, 3).await;
         assert_eq!(
             chain.len(),
             3,
@@ -4836,11 +4937,13 @@ mod tools_door {
         let instance = "serve-door-tools-decode";
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("decoded", &port_server, ""),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("decoded", &port_server, ""),
+                &|app| app,
+            )
+            .await;
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
         drain(&mut heard);
 
@@ -4865,7 +4968,7 @@ mod tools_door {
             "refused with -32700, the parse error: {answer}"
         );
         assert_eq!(
-            rig.admitted(),
+            rig.admitted().await,
             0,
             "it never became a unit: nothing admitted"
         );
@@ -4899,11 +5002,13 @@ mod tools_door {
              token_exchange:\n    token_url: \"https://as.example/token\"\n    \
              subject_token: {{ env: {SUBJECT} }}\n"
         );
-        let rig = port_server.rig(
-            instance,
-            registration("authed", &port_server, &extra),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("authed", &port_server, &extra),
+                &|app| app,
+            )
+            .await;
         let calls = |heard: &mut Heard| drain(heard).iter().filter(|w| **w == "call").count();
 
         for token in [None, Some("bb_a_bearer_this_deployment_never_minted")] {
@@ -4923,7 +5028,7 @@ mod tools_door {
             );
             assert_eq!(calls(&mut heard), 0, "{token:?} never reached the server");
         }
-        assert_eq!(rig.admitted(), 0, "a refused caller opens no unit");
+        assert_eq!(rig.admitted().await, 0, "a refused caller opens no unit");
         assert!(rig.all_ended(), "no unit left open");
 
         let (status, answer) = call(
@@ -4987,12 +5092,14 @@ mod tools_door {
             .as_mapping_mut()
             .expect("a mapping")
             .extend(other.as_mapping().expect("a mapping").clone());
-        let rig = granted_server.rig_with_footing(
-            instance,
-            tools,
-            granted_server.footing_with_peers(&[&fenced_server]),
-            &|app| app,
-        );
+        let rig = granted_server
+            .rig_with_footing(
+                instance,
+                tools,
+                granted_server.footing_with_peers(&[&fenced_server]),
+                &|app| app,
+            )
+            .await;
         let (_, token) = key_on(
             &rig,
             busbar_kernel::governance::NewKeySpec {
@@ -5004,7 +5111,8 @@ mod tools_door {
                 ("scope_tool", "granted_read_file"),
                 ("scope_tool", "fenced_read_file"),
             ]),
-        );
+        )
+        .await;
 
         let (status, answer) = call(&rig, &token, "fenced_read_file", serde_json::json!({})).await;
         assert_ne!(
@@ -5032,7 +5140,9 @@ mod tools_door {
         let instance = "serve-door-tools-single-503";
         let mut port_server = answering_calls_with(503).await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(instance, registration("solo", &port_server, ""), &|app| app);
+        let rig = port_server
+            .rig(instance, registration("solo", &port_server, ""), &|app| app)
+            .await;
 
         let (status, answer) = call(
             &rig,
@@ -5052,7 +5162,7 @@ mod tools_door {
         );
         let calls = drain(&mut heard).iter().filter(|w| **w == "call").count();
         assert_eq!(calls, 1, "exactly one attempt at the one target");
-        assert_eq!(rig.admitted(), 1, "one unit");
+        assert_eq!(rig.admitted().await, 1, "one unit");
         assert!(rig.all_ended(), "the unit ended");
     }
 
@@ -5062,11 +5172,13 @@ mod tools_door {
         let instance = "serve-door-tools-meter-row";
         let mut port_server = TlsToolServer::new().await;
         let _heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("metered", &port_server, ""),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("metered", &port_server, ""),
+                &|app| app,
+            )
+            .await;
         let charged_at = busbar_kernel::store::now();
 
         let (status, answer) = call(
@@ -5085,10 +5197,11 @@ mod tools_door {
             answer["result"]["isError"], true,
             "the actual tool call succeeded: {answer}"
         );
-        rig.gov.flush_metering();
+        rig.gov.flush_metering().await;
         let rows = rig
             .gov
-            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .metering_for_async(busbar_kernel::governance::metering_bucket(charged_at))
+            .await
             .expect("metering read");
         let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key.id).collect();
         assert_eq!(mine.len(), 1, "one metering row for the key: {rows:?}");
@@ -5105,15 +5218,17 @@ mod tools_door {
         );
     }
 
-    fn key_on(
+    async fn key_on(
         rig: &Rig,
         spec: busbar_kernel::governance::NewKeySpec,
         scopes: Option<&[(&str, &str)]>,
     ) -> (String, String) {
         let (mut key, token) = rig
             .gov
-            .mint_signed(spec, 4_000_000_000, 1_700_000_000)
+            .mint_signed_async(spec, 4_000_000_000, 1_700_000_000)
+            .await
             .expect("mint");
+        let before = key.clone();
         if let Some(scopes) = scopes {
             key.allowed_scopes = Some(
                 scopes
@@ -5124,9 +5239,15 @@ mod tools_door {
                     })
                     .collect(),
             );
-            rig.gov.store().put_key(&key).expect("the key is stored");
+            rig.gov
+                .core_store_handle()
+                .unwrap()
+                .identity()
+                .compare_key(Some(&before), &key)
+                .await
+                .expect("the key is stored");
         }
-        rig.gov.refresh().expect("the book refreshes");
+        rig.gov.refresh_async().await.expect("the book refreshes");
         (
             key.id.clone(),
             rig.bound_token_for(token.expose(&busbar_kernel::seal::lend())),
@@ -5174,20 +5295,22 @@ mod tools_door {
         };
         let mut port_server = TlsToolServer::new().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig_with_footing(
-            instance,
-            registration("metered", &port_server, ""),
-            crate::root::door_steps::tests::tool_door::Footing {
-                groups: Some(&groups),
-                plane_fees: Some(&fees),
-                fee_cents: Some(0),
-                ..port_server.footing()
-            },
-            &|mut app| {
-                app.cost = Arc::new(cost());
-                app
-            },
-        );
+        let rig = port_server
+            .rig_with_footing(
+                instance,
+                registration("metered", &port_server, ""),
+                crate::root::door_steps::tests::tool_door::Footing {
+                    groups: Some(&groups),
+                    plane_fees: Some(&fees),
+                    fee_cents: Some(0),
+                    ..port_server.footing()
+                },
+                &|mut app| {
+                    app.cost = Arc::new(cost());
+                    app
+                },
+            )
+            .await;
         let (budgeted, token) = key_on(
             &rig,
             busbar_kernel::governance::NewKeySpec {
@@ -5196,11 +5319,16 @@ mod tools_door {
                 ..Default::default()
             },
             None,
-        );
-        rig.gov.hydrate_budgets(&cost(), 0).expect("hydrate");
-        let requests = |id: &str| {
+        )
+        .await;
+        rig.gov
+            .hydrate_budgets_async(&cost(), 0)
+            .await
+            .expect("hydrate");
+        let requests = async |id: &str| {
             rig.gov
-                .usage_for(&rig.app.cost, id, busbar_kernel::store::now())
+                .usage_for_async(&rig.app.cost, id, busbar_kernel::store::now())
+                .await
                 .expect("a read")
                 .expect("the key exists")
                 .requests
@@ -5209,11 +5337,11 @@ mod tools_door {
         let (status, answer) = call(&rig, &token, "metered_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
         assert_eq!(
-            requests(&budgeted),
+            requests(&budgeted).await,
             1,
             "charged to the key that presented it"
         );
-        assert_eq!(requests(&rig.key.id), 0, "and to no other key");
+        assert_eq!(requests(&rig.key.id).await, 0, "and to no other key");
         assert!(drain(&mut heard).contains(&"call"));
 
         let (status, head, body) = send_headed(
@@ -5273,12 +5401,14 @@ mod tools_door {
                 .expect("a mapping")
                 .clone(),
         );
-        let rig = faulted_server.rig_with_footing(
-            instance,
-            tools,
-            faulted_server.footing_with_peers(&[&failing_server]),
-            &|app| app,
-        );
+        let rig = faulted_server
+            .rig_with_footing(
+                instance,
+                tools,
+                faulted_server.footing_with_peers(&[&failing_server]),
+                &|app| app,
+            )
+            .await;
         let failures = |server: &str| {
             let cell = lane(&rig, server);
             scraped("busbar_upstream_failures_total", &[("lane", cell.as_str())])
@@ -5370,9 +5500,11 @@ mod tools_door {
         door_boundary::registry(row);
         let tools = registration("observed", &port_server, "");
         let slot = door_boundary::slot_over(row, tools.clone());
-        let rig = port_server.rig(instance, tools, &|app| {
-            door_boundary::dispatched(app, row, &slot)
-        });
+        let rig = port_server
+            .rig(instance, tools, &|app| {
+                door_boundary::dispatched(app, row, &slot)
+            })
+            .await;
 
         let audience = (row.admission)(&*slot)
             .map(|a| a.audience)
@@ -5442,11 +5574,13 @@ mod tools_door {
         let live = Arc::new(std::sync::Mutex::new(tool_listing()));
         let mut port_server = TlsToolServer::listing(Arc::clone(&live)).await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("pinned", &port_server, "  verify_ttl: 0s\n"),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("pinned", &port_server, "  verify_ttl: 0s\n"),
+                &|app| app,
+            )
+            .await;
         let (status, answer) = call(
             &rig,
             &rig.bound_token(),
@@ -5502,7 +5636,9 @@ mod tools_door {
         );
         let mut footing = walled_server.footing_with_peers(&[&reached_server]);
         footing.guarded = true;
-        let rig = walled_server.rig_with_footing(instance, tools, footing, &|app| app);
+        let rig = walled_server
+            .rig_with_footing(instance, tools, footing, &|app| app)
+            .await;
         let (status, answer) = call(
             &rig,
             &rig.bound_token(),
@@ -5589,6 +5725,7 @@ mod tools_door {
                 ),
                 &|app| app,
             )
+            .await
             .err()
             .expect("MCP refuses to forward the caller's credential at registration");
         crate::root::door_steps::tests::tool_door::assert_member_passthrough_refused(
@@ -5600,12 +5737,14 @@ mod tools_door {
             wire(&mut lent_heard).is_empty(),
             "a refused registration sends no upstream HTTP"
         );
-        let rig = plain_server.rig_with_footing(
-            instance,
-            tools,
-            plain_server.footing_with_peers(&[&exchanged_server]),
-            &|app| app,
-        );
+        let rig = plain_server
+            .rig_with_footing(
+                instance,
+                tools,
+                plain_server.footing_with_peers(&[&exchanged_server]),
+                &|app| app,
+            )
+            .await;
         let caller = format!("bearer {}", rig.bound_token().to_ascii_lowercase());
         let heard_call = |heard: &mut Heard| {
             wire(heard)
@@ -5664,7 +5803,7 @@ mod tools_door {
             surface("stat_digest"),
         ))
         .expect("a section");
-        let rig = port_server.rig(instance, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app).await;
         let spec = |name: &str| busbar_kernel::governance::NewKeySpec {
             name: name.to_string(),
             ..Default::default()
@@ -5673,7 +5812,8 @@ mod tools_door {
             &rig,
             spec("reader"),
             Some(&[("scope_server", "cat"), ("scope_tool", "cat_read_file")]),
-        );
+        )
+        .await;
         let (_, writer) = key_on(
             &rig,
             spec("writer"),
@@ -5682,8 +5822,9 @@ mod tools_door {
                 ("scope_tool", "cat_write_file"),
                 ("scope_tool", "cat_stat"),
             ]),
-        );
-        let (_, nobody) = key_on(&rig, spec("nobody"), Some(&[]));
+        )
+        .await;
+        let (_, nobody) = key_on(&rig, spec("nobody"), Some(&[])).await;
 
         assert_eq!(listed(&rig, &reader).await, ["cat_read_file"]);
         assert_eq!(listed(&rig, &writer).await, ["cat_stat", "cat_write_file"]);
@@ -5780,34 +5921,36 @@ mod tools_door {
         registry(row());
         crate::dist_root_install::install();
         let chain = vec![busbar_kernel::config::operator_provider().to_string()];
-        let rig = port_server.rig(instance, tools, &|mut app| {
-            let auth = busbar_kernel::config::AuthCfg {
-                admin_auth: chain
-                    .iter()
-                    .cloned()
-                    .map(busbar_kernel::config::AuthChainEntry::bare)
-                    .collect(),
-                ..busbar_kernel::config::AuthCfg::default_none()
-            };
-            let mut modules = busbar_kernel::auth::AdminAuthChain::build(
-                &auth,
-                &app.hook_env.registry,
-                &app.secret_resolver,
-            )
-            .expect("the real operator admin chain opens");
-            modules.operator = busbar_kernel::auth::open_operator(
-                &app.hook_env.registry,
-                app.governance
-                    .as_ref()
-                    .expect("the configured governance book")
-                    .admin_token_hash(),
-                &Default::default(),
-            )
-            .expect("the actual operator authenticates the configured governance credential");
-            app.admin_modules = Arc::new(modules);
-            app.admin_chain = chain.clone();
-            app
-        });
+        let rig = port_server
+            .rig(instance, tools, &|mut app| {
+                let auth = busbar_kernel::config::AuthCfg {
+                    admin_auth: chain
+                        .iter()
+                        .cloned()
+                        .map(busbar_kernel::config::AuthChainEntry::bare)
+                        .collect(),
+                    ..busbar_kernel::config::AuthCfg::default_none()
+                };
+                let mut modules = busbar_kernel::auth::AdminAuthChain::build(
+                    &auth,
+                    &app.hook_env.registry,
+                    &app.secret_resolver,
+                )
+                .expect("the real operator admin chain opens");
+                modules.operator = busbar_kernel::auth::open_operator(
+                    &app.hook_env.registry,
+                    app.governance
+                        .as_ref()
+                        .expect("the configured governance book")
+                        .admin_token_hash(),
+                    &Default::default(),
+                )
+                .expect("the actual operator authenticates the configured governance credential");
+                app.admin_modules = Arc::new(modules);
+                app.admin_chain = chain.clone();
+                app
+            })
+            .await;
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
 
         let (status, reader) = over_admin(
@@ -5945,7 +6088,7 @@ mod tools_door {
             surface("stat_digest"),
         ))
         .expect("a section");
-        let rig = port_server.rig(instance, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app).await;
         let (server, tool) = (grant_field("scope_server"), grant_field("scope_tool"));
         let bound = |yaml: &str| {
             let binding: busbar_kernel::config::RoleBindingCfg =
@@ -5961,21 +6104,33 @@ mod tools_door {
         };
 
         let presenting = |granted: &busbar_contract::records::VirtualKey| {
-            let (mut key, token) = rig
-                .gov
-                .mint_signed(
-                    busbar_kernel::governance::NewKeySpec {
-                        name: "sso".to_string(),
-                        ..Default::default()
-                    },
-                    4_000_000_000,
-                    1_700_000_000,
-                )
-                .expect("mint");
-            key.allowed_scopes = granted.allowed_scopes.clone();
-            rig.gov.store().put_key(&key).expect("the key is stored");
-            rig.gov.refresh().expect("the book refreshes");
-            rig.bound_token_for(token.expose(&busbar_kernel::seal::lend()))
+            let scopes = granted.allowed_scopes.clone();
+            let rig = &rig;
+            async move {
+                let (mut key, token) = rig
+                    .gov
+                    .mint_signed_async(
+                        busbar_kernel::governance::NewKeySpec {
+                            name: "sso".to_string(),
+                            ..Default::default()
+                        },
+                        4_000_000_000,
+                        1_700_000_000,
+                    )
+                    .await
+                    .expect("mint");
+                let before = key.clone();
+                key.allowed_scopes = scopes;
+                rig.gov
+                    .core_store_handle()
+                    .unwrap()
+                    .identity()
+                    .compare_key(Some(&before), &key)
+                    .await
+                    .expect("the key is stored");
+                rig.gov.refresh_async().await.expect("the book refreshes");
+                rig.bound_token_for(token.expose(&busbar_kernel::seal::lend()))
+            }
         };
 
         let reader =
@@ -5986,7 +6141,7 @@ mod tools_door {
             !reader.scope_allowed("pool", "cat"),
             "a tool grant is never a pool grant"
         );
-        let token = presenting(&reader);
+        let token = presenting(&reader).await;
         assert_eq!(listed(&rig, &token).await, ["cat_read_file"]);
         let (status, answer) = call(&rig, &token, "cat_read_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "its own tool is served: {answer}");
@@ -6009,7 +6164,7 @@ mod tools_door {
             everyone.allowed_scopes, None,
             "no grant named is everything"
         );
-        let token = presenting(&everyone);
+        let token = presenting(&everyone).await;
         let (status, answer) = call(&rig, &token, "cat_write_file", serde_json::json!({})).await;
         assert_eq!(status, StatusCode::OK, "{answer}");
     }
@@ -6123,9 +6278,11 @@ mod tools_door {
         let instance = "serve-door-tools-exhausted-bytes";
         let mut port_server = answering_calls_with(503).await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(instance, registration("flaky", &port_server, ""), &|app| {
-            app
-        });
+        let rig = port_server
+            .rig(instance, registration("flaky", &port_server, ""), &|app| {
+                app
+            })
+            .await;
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let (status, headers, body) = send_headed(
@@ -6173,11 +6330,13 @@ mod tools_door {
         let instance = "serve-door-tools-exhausted-unlisted";
         let mut port_server = stalling_calls().await;
         let mut heard = take_heard(&mut port_server);
-        let rig = port_server.rig(
-            instance,
-            registration("stall", &port_server, "  timeout: 2s\n"),
-            &|app| app,
-        );
+        let rig = port_server
+            .rig(
+                instance,
+                registration("stall", &port_server, "  timeout: 2s\n"),
+                &|app| app,
+            )
+            .await;
         let (router, token) = (rig.router.clone(), rig.bound_token());
         let pending = tokio::spawn(async move {
             send_headed(
@@ -6254,7 +6413,7 @@ mod tools_door {
             tool_digest()
         ))
         .expect("a section");
-        let rig = port_server.rig(instance, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app).await;
 
         let (status, body) = send_as(
             &rig.router,
@@ -6296,7 +6455,7 @@ mod tools_door {
             tool_digest()
         ))
         .expect("a section");
-        let rig = port_server.rig(instance, tools, &|app| app);
+        let rig = port_server.rig(instance, tools, &|app| app).await;
         fail_to_the_trip(&rig, "flaky_read_file", &mut heard, 0).await;
 
         let (status, headers, body) = send_headed(
@@ -6516,7 +6675,8 @@ async fn serve_configured(
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
+        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+            .await
             .expect("governance"),
     );
     let group = format!("decider-{instance}");
@@ -6548,7 +6708,7 @@ async fn serve_configured(
         )]))
     };
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "decider".to_string(),
                 allowed_pools,
@@ -6558,10 +6718,28 @@ async fn serve_configured(
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint");
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let book = crate::root::durability::node_book(
+        busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+            gov.core_store_handle().expect("native Store"),
+            busbar_kernel::door::op_id().counter().max(1),
+            busbar_kernel::persistence::journal::runtime::BufferBudget {
+                records: 4096,
+                bytes: 16 * 1024 * 1024,
+            },
+        )
+        .await
+        .expect("native journal"),
+        busbar_kernel::persistence::journal::runtime::BufferBudget {
+            records: 4096,
+            bytes: 16 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("native node book");
     node.bind_book(Arc::clone(&book.durability));
     let post = Arc::new(NodeEndPost::new(Arc::clone(&node)));
     let site = Arc::clone(&post);
@@ -6629,7 +6807,8 @@ async fn serve_configured(
             as Arc<dyn busbar_kernel_egress::ports::Clock>),
         &busbar_contract::config_time::ConfigScope::config_time(),
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
-    )?;
+    )
+    .await?;
     let live = Arc::clone(&served.planes[0].live);
     served.post = Some(Arc::clone(&post));
     let composed = &served.planes[0];
@@ -6687,7 +6866,7 @@ async fn serve_configured(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -6697,22 +6876,26 @@ async fn serve_configured(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the door deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the serving application has its configured Store")
-            .store_calls()
-            .expect("the configured Store exposes its actual rate-history calls"),
-        busbar_kernel::door::op_id().counter(),
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the serving application has its configured Store")
+                .core_store_handle()
+                .expect("the configured Store exposes its actual rate-history calls"),
+            busbar_kernel::door::op_id().counter(),
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the serving application's actual Store boots its rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
@@ -7274,17 +7457,17 @@ async fn the_pools_door_refuses_a_new_unit_503_with_the_reason_while_its_journal
     let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON envelope");
     let message = answer["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("journal is full") && message.contains("`test-store`"),
-        "the reason names the full journal and the store: {answer}"
+        message.contains("native journal custody buffer is full"),
+        "the reason identifies the full native journal: {answer}"
     );
     assert!(answer["error"]["type"].is_string(), "{answer}");
     assert_eq!(far.served(), 0, "nothing dispatched");
     let (requests, spend, _, billable) = rig.ledger_after(0).await;
     assert_eq!((requests, spend, billable), (0, 0, 0), "nothing charged");
     assert_eq!(
-        rig.book.lock().unwrap().journal.dropped_total(),
-        0,
-        "no record is dropped"
+        rig.book.lock().unwrap().journal.pending_records(),
+        1,
+        "the original reserved record remains in custody"
     );
 }
 
@@ -7478,6 +7661,7 @@ async fn the_pools_door_audits_a_control_the_far_dialect_cannot_carry() {
     )
     .await;
     busbar_kernel::boot::hydrate_all(&rig.app)
+        .await
         .expect("the actual boot registers the durable audit stream before serving units");
     let rows = |resource: &str| {
         busbar_kernel::audit::auditlog::AUDIT_LOG
@@ -7829,6 +8013,7 @@ mod pools_door_walk_and_breaker {
         )
         .await;
         busbar_kernel::boot::hydrate_all(&rig.app)
+            .await
             .expect("the actual boot registers the durable audit stream before serving units");
         let (status, _, body) = rig
             .send(
@@ -10404,10 +10589,11 @@ mod pools_door_money {
                 i64::try_from(billable).expect("a count"),
                 "{path}: the fee alone, no token spend"
             );
-            rig.gov.flush_metering();
+            rig.gov.flush_metering().await;
             let rows = rig
                 .gov
-                .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+                .metering_for_async(busbar_kernel::governance::metering_bucket(charged_at))
+                .await
                 .expect("metering read");
             let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key_id).collect();
             assert_eq!(mine.len(), 1, "{path}: one metering row: {rows:?}");
@@ -10442,7 +10628,7 @@ mod pools_door_money {
             },
         )
         .await;
-        let group_before = rig.bucket("group:bgrp@total");
+        let group_before = rig.bucket("group:bgrp@total").await;
         assert_eq!(
             group_before,
             (250, 250, 250, 250),
@@ -10453,7 +10639,7 @@ mod pools_door_money {
         let (status, _, _) = rig.chat().await;
         assert_eq!(status, 429, "an exhausted budget is a 429");
         assert_eq!(
-            rig.bucket("group:bgrp@total"),
+            rig.bucket("group:bgrp@total").await,
             group_before,
             "the refusal moved nothing on the blocking bucket"
         );
@@ -10504,10 +10690,11 @@ mod pools_door_money {
             18,
             "the stream-end report, once"
         );
-        streamed.gov.flush_metering();
+        streamed.gov.flush_metering().await;
         let rows = streamed
             .gov
-            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .metering_for_async(busbar_kernel::governance::metering_bucket(charged_at))
+            .await
             .expect("metering read");
         let mine: Vec<String> = rows
             .iter()
@@ -10560,10 +10747,11 @@ mod pools_door_money {
         }
         assert_eq!(ledger.0, 1, "the failed unit keeps its admitted request");
         assert_eq!(failed.tokens_after().await, 0, "and accrues no tokens");
-        failed.gov.flush_metering();
+        failed.gov.flush_metering().await;
         let rows = failed
             .gov
-            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .metering_for_async(busbar_kernel::governance::metering_bucket(charged_at))
+            .await
             .expect("metering read");
         assert!(
             rows.iter().all(|row| row.key_id != failed.key_id),
@@ -12057,7 +12245,8 @@ async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
     assert_eq!(wait, None, "a served unit names no wait");
     let usage = serving
         .gov
-        .usage_for(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+        .usage_for_async(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+        .await
         .expect("a read")
         .expect("the key exists");
     assert_eq!(usage.requests, 1, "its spend is the presenting key's");
@@ -12463,19 +12652,25 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_refused_on_the_data_plane(
         String::from_utf8_lossy(&body)
     );
 
-    let store = rig.gov.store();
+    let core = rig.gov.core_store_handle().unwrap();
+    let store = core.identity();
     let mut row = store
         .get_key(&rig.key_id)
+        .await
         .expect("store read")
         .expect("the minted row");
     assert_eq!(
         row.expires_at, None,
         "mint never stamps expires_at; it is a stored field nothing in the engine writes"
     );
+    let before = row.clone();
     let past = busbar_kernel::store::now() - 30 * 86_400;
     row.expires_at = Some(past);
-    store.put_key(&row).expect("rewrite the row");
-    rig.gov.refresh().expect("reload caches");
+    store
+        .compare_key(Some(&before), &row)
+        .await
+        .expect("rewrite the row");
+    rig.gov.refresh_async().await.expect("reload caches");
 
     let (expired, _, expired_body) = rig.send("POST", path, Some(ask.clone())).await;
     assert_eq!(
@@ -12549,7 +12744,7 @@ async fn an_expired_virtual_key_is_refused() {
     let now = busbar_kernel::store::now();
     let (_, expired) = rig
         .gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "expired".to_string(),
                 allowed_pools: Some(vec!["p".to_string()]),
@@ -12558,6 +12753,7 @@ async fn an_expired_virtual_key_is_refused() {
             now - 3_000,
             now - 3_600,
         )
+        .await
         .expect("mint");
     let expired = expired.expose(&busbar_kernel::seal::lend()).to_string();
 

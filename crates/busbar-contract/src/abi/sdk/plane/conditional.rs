@@ -5,7 +5,7 @@
 
 use crate::abi::mechanism::{extensions, ticket::Ticket};
 use crate::abi::sdk::secret_bytes::SecretBytes;
-use crate::abi::sdk::store::conditional::{Decision, Expected};
+use crate::host_records::{Decision, Expected};
 use zeroize::{Zeroize, Zeroizing};
 
 /// Host capability, present only with a supporting configured store.

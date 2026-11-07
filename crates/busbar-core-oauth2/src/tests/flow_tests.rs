@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-
-use busbar_contract::abi::store::OpId;
-use busbar_contract::kinds::RecordBytes;
-use busbar_contract::records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta};
-use busbar_contract::store_calls::{StoreCall, StoreCalls, StoreFailure};
 
 use oauth_as::client::{Client, ClientAuth, ClientId};
 use oauth_as::grant::GrantType;
@@ -269,7 +264,7 @@ async fn register_defaulting_to(plane: &crate::plane::AsPlane, client_id: &str, 
 
 #[tokio::test]
 async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_granted() {
-    let plane = owner_plane();
+    let plane = owner_plane().await;
     plane
         .server()
         .store()
@@ -298,13 +293,10 @@ async fn a_metadata_document_client_naming_no_scope_is_shown_the_default_it_is_g
 
 #[tokio::test]
 async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
-    let fault = Arc::new(FailClientRead {
-        inner: crate::testkit::store_calls(),
-        fail_next: AtomicBool::new(false),
-    });
-    let plane = owner_plane_with_store(fault.clone());
+    let fault = Arc::new(crate::testkit::MemoryBackend::default());
+    let plane = owner_plane_with_store(crate::testkit::memory_store_on(fault.clone()).await).await;
     register_defaulting_to(&plane, CLIENT_ID, &[SCOPE]).await;
-    fault.fail_next.store(true, Ordering::SeqCst);
+    fault.fail_client_read.store(true, Ordering::SeqCst);
     assert!(
         plane.granted_scope(CLIENT_ID, None).await.is_err(),
         "an unresolved grant cannot be approved"
@@ -347,136 +339,6 @@ async fn a_failed_default_scope_lookup_refuses_consent_and_recovers() {
     assert_eq!(shown, "");
 }
 
-struct FailClientRead {
-    inner: Arc<dyn StoreCalls>,
-    fail_next: AtomicBool,
-}
-
-impl StoreCalls for FailClientRead {
-    fn supports_record_transaction(&self) -> bool {
-        self.inner.supports_record_transaction()
-    }
-
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        self.inner.record_transaction(request)
-    }
-
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_usage_batch(op, cells)
-    }
-
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.inner.add_metering_batch(op, deltas)
-    }
-
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        self.inner.record_put(schema, key, value)
-    }
-
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        if schema == format!("{}bucket.atomic.v1", crate::shared::LABEL)
-            && self.fail_next.swap(false, Ordering::SeqCst)
-        {
-            return Box::pin(async {
-                Err(StoreFailure::Failed(
-                    "client lookup unavailable".to_string(),
-                ))
-            });
-        }
-        self.inner.record_get(schema, key)
-    }
-
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.inner.record_scan(schema, prefix, limit)
-    }
-
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.inner.upsert_plane_record(record)
-    }
-
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        if kind == format!("{}bucket", crate::shared::LABEL)
-            && self.fail_next.swap(false, Ordering::SeqCst)
-        {
-            return Box::pin(async {
-                Err(StoreFailure::Failed(
-                    "client lookup unavailable".to_string(),
-                ))
-            });
-        }
-        self.inner.get_plane_record(kind, id)
-    }
-
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.inner.append_plane_record(op, record)
-    }
-
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.inner.list_plane_records(kind, selector)
-    }
-
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.inner.delete_plane_record(kind, id)
-    }
-
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.redeem_plane_token(kind, token, expires_at, now)
-    }
-
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.inner.plane_token_live(kind, token, expires_at, now)
-    }
-}
-
 const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 
 struct StubDocumentHost(serde_json::Value);
@@ -499,7 +361,7 @@ impl crate::cimd::CimdFetch for StubDocumentHost {
 
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
-    let plane = owner_plane();
+    let plane = owner_plane().await;
     plane
         .server()
         .store()
@@ -522,11 +384,13 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     assert_eq!(record.scope.to_string(), SCOPE);
 }
 
-fn owner_plane() -> Arc<crate::plane::AsPlane> {
-    owner_plane_with_store(crate::testkit::store_calls())
+async fn owner_plane() -> Arc<crate::plane::AsPlane> {
+    owner_plane_with_store(crate::testkit::memory_store().await).await
 }
 
-fn owner_plane_with_store(store: Arc<dyn StoreCalls>) -> Arc<crate::plane::AsPlane> {
+async fn owner_plane_with_store(
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
+) -> Arc<crate::plane::AsPlane> {
     let config = OauthAsCfg {
         issuer: "https://as.example.com".into(),
         default_grant: vec![SCOPE.into()],
@@ -534,12 +398,13 @@ fn owner_plane_with_store(store: Arc<dyn StoreCalls>) -> Arc<crate::plane::AsPla
     };
     let block = serde_yaml::to_value(config).expect("owner config serializes");
     crate::plane::seam_build::<crate::NoConnections>(
-        &block,
+        block,
         Vec::new(),
         Vec::new(),
         None,
         Some(store),
     )
+    .await
     .expect("the actual owner seam builds over the supplied Store product")
     .downcast::<crate::plane::AsPlane>()
     .unwrap_or_else(|_| panic!("the owner seam returns its plane"))
@@ -617,12 +482,13 @@ async fn issued_code_tokens_retain_their_live_private_records_for_each_default_s
     })
     .unwrap();
     let opaque = crate::plane::seam_build::<crate::NoConnections>(
-        &block,
+        block,
         Vec::new(),
         Vec::new(),
         None,
-        Some(crate::testkit::store_calls()),
+        Some(crate::testkit::memory_store().await),
     )
+    .await
     .expect("the actual owner seam builds over the supplied Store product");
     let plane = opaque
         .downcast::<crate::plane::AsPlane>()

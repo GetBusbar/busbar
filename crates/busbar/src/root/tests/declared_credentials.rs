@@ -296,7 +296,12 @@ fn each_declared_scheme_presents_what_its_dialect_builder_wrote() {
                         Ok(_) => panic!("the signed malformed credential must not open"),
                         Err(error) => error,
                     };
-                    assert_eq!(error, format!("`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: {reason}"));
+                    assert_eq!(
+                        error,
+                        format!(
+                            "`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: {reason}"
+                        )
+                    );
                 } else {
                     assert!(present(twin(dialect), &key, &ctx).is_empty());
                 }
@@ -975,7 +980,10 @@ fn an_unsendable_session_token_is_refused_with_the_signers_own_reason() {
         Ok(_) => panic!("an unsendable session token must not open"),
         Err(error) => error,
     };
-    assert_eq!(error, "`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: the session token holds a byte no header value may carry");
+    assert_eq!(
+        error,
+        "`busbar-auth-sigv4` did not open the outbound style `sigv4`: Failed credential: the session token holds a byte no header value may carry"
+    );
     assert!(!error.contains("SECRET"));
     assert!(!error.contains("TOK"));
     assert!(!error.contains("Bedrock lane session token"));

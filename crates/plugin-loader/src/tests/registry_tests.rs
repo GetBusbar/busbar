@@ -84,8 +84,8 @@ fn supported_abi_is_one_version_per_kind() {
         ("auth", abi::auth::ABI_VERSION, 3),
         ("hook", abi::hook::ABI_VERSION, 2),
         ("export", abi::export::ABI_VERSION, 3),
-        ("plane", abi::plane::ABI_VERSION, 2),
-        ("transport", abi::transport::ABI_VERSION, 2),
+        ("plane", abi::plane::ABI_VERSION, 1),
+        ("transport", abi::transport::ABI_VERSION, 1),
     ];
     for &(kind, version, number) in shipped {
         assert_eq!(supported_abi(kind), &[version], "{kind}");

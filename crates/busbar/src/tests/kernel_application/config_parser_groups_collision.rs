@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn boot_group_updates_and_self_mint_all_refuse_bucket_identity_collisions() {
+#[tokio::test]
+async fn boot_group_updates_and_self_mint_all_refuse_bucket_identity_collisions() {
     use busbar_kernel::governance::group_provision::{build_with_group, plan_mint_group};
     use std::sync::Arc;
 
@@ -67,7 +67,7 @@ parent:
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -77,22 +77,28 @@ parent:
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the configured Store exposes its rate-history slots"),
-        132,
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the actual deployment configured governance")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its rate-history slots"),
+                132,
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured Store boots its initial rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let mut app = (*app).clone();

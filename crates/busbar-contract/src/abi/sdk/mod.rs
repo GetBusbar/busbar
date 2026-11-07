@@ -58,7 +58,7 @@ pub mod hmac;
 
 pub mod cred;
 
-mod secret_bytes;
+pub(crate) mod secret_bytes;
 
 pub mod chip;
 

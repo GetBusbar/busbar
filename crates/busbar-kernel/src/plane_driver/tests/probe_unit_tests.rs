@@ -280,7 +280,7 @@ struct Probing {
     probes: PlaneProbes,
 }
 
-fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option<Probing> {
+async fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option<Probing> {
     let mut r = rig(hosts, OnExhausted::Status503, None);
     let journal = Arc::new(Ledger::default());
     r.egress.journal = journal.clone();
@@ -300,6 +300,7 @@ fn probing(hosts: &[(&'static str, Script)], plane: Prober, tail: u32) -> Option
         Arc::new(crate::host_services::KernelServices::new()),
         ("probe", &serde_yaml::Value::Null),
     )
+    .await
     .expect("the instance is admitted");
     let probes = PlaneProbes::new(
         tail,
@@ -441,7 +442,7 @@ impl busbar_kernel_egress::ports::Breaker for Cells {
     }
 }
 
-fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
+async fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
     let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
     let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
     let _ = cells.0.cell(POOL, TRIPPED);
@@ -459,6 +460,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
         Arc::new(crate::host_services::KernelServices::new()),
         ("probe", &serde_yaml::Value::Null),
     )
+    .await
     .expect("the instance is admitted");
     let probes = PlaneProbes::new(
         TAIL_PROBES,
@@ -475,7 +477,7 @@ fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
 #[tokio::test]
 async fn test_health_probe_failure_records_transient() {
     let (probes, cells, table) =
-        probing_served(Script::Answer(500, None, vec![b"{\"error\":\"down\"}"]));
+        probing_served(Script::Answer(500, None, vec![b"{\"error\":\"down\"}"])).await;
     let before = (
         cells.0.cell("", TRIPPED).err_count(),
         cells.0.cell(POOL, TRIPPED).err_count(),
@@ -494,7 +496,8 @@ async fn test_health_probe_failure_records_transient() {
 
 #[tokio::test]
 async fn test_probe_auth_failure_is_hard_down_not_transient() {
-    let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
+    let (probes, cells, _table) =
+        probing_served(Script::Answer(401, None, vec![b"unauthorized"])).await;
 
     probes.probe(0, TIMEOUT).await;
 
@@ -530,7 +533,8 @@ async fn test_probe_server_error_is_transient_not_hard_down() {
         503,
         None,
         vec![b"{\"error\":\"upstream down\"}"],
-    ));
+    ))
+    .await;
 
     probes.probe(0, TIMEOUT).await;
 
@@ -544,7 +548,8 @@ async fn test_probe_server_error_is_transient_not_hard_down() {
 
 #[tokio::test]
 async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
-    let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
+    let (probes, cells, _table) =
+        probing_served(Script::Answer(401, None, vec![b"unauthorized"])).await;
 
     probes.probe(0, Duration::from_secs(1u64 << 63)).await;
 
@@ -561,7 +566,9 @@ async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
 #[tokio::test]
 async fn a_probe_recovers_a_tripped_member() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
-    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     assert!(p.probes.suppressing(0));
 
     p.probes.probe(0, TIMEOUT).await;
@@ -591,6 +598,7 @@ async fn a_probe_recovers_a_tripped_member() {
 async fn a_probe_writes_no_dispatch_record() {
     for script in [Script::Answer(200, None, vec![b"ok"]), Script::Refused] {
         let p = probing(&[("a.test", script)], Prober::default(), TAIL_PROBES)
+            .await
             .expect("the plane declares probes");
         p.probes.probe(0, TIMEOUT).await;
         assert_eq!(
@@ -606,7 +614,9 @@ async fn a_probe_writes_no_dispatch_record() {
 #[tokio::test]
 async fn a_client_fault_answer_records_nothing() {
     let hosts = [("a.test", Script::Answer(400, None, vec![b"bad probe"]))];
-    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(probed(&p), vec![(TRIPPED, Outcome::RecordNothing)]);
     assert!(p.probes.suppressing(0), "still tripped");
@@ -622,7 +632,9 @@ async fn a_probe_answer_the_plane_reads_healthy_records_success() {
         fault: FAULT_HEALTHY,
         ..Prober::default()
     };
-    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, plane, TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(probed(&p), vec![(TRIPPED, Outcome::Success)]);
     assert!(!p.probes.suppressing(0), "recovered");
@@ -647,7 +659,9 @@ async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
             fault,
             ..Prober::default()
         };
-        let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+        let p = probing(&hosts, plane, TAIL_PROBES)
+            .await
+            .expect("the plane declares probes");
         p.probes.probe(0, TIMEOUT).await;
         assert_eq!(probed(&p), vec![(TRIPPED, outcome)], "{code}");
         assert!(p.probes.suppressing(0), "{code}: still tripped");
@@ -657,7 +671,9 @@ async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
 #[tokio::test]
 async fn a_probe_answer_the_plane_states_no_reading_of_records_the_tables() {
     let hosts = [("a.test", Script::Answer(502, None, vec![b"down"]))];
-    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(
         probed(&p),
@@ -671,7 +687,9 @@ async fn a_probe_that_brings_no_answer_is_a_transient_and_tries_no_other_member(
         ("a.test", Script::Refused),
         ("b.test", Script::Answer(200, None, vec![b"ok"])),
     ];
-    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(
         probed(&p),
@@ -690,7 +708,9 @@ async fn a_plane_that_refuses_the_probe_sends_nothing() {
         refuse: true,
         ..Prober::default()
     };
-    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, plane, TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert!(p.table.opened.lock().unwrap().is_empty());
     assert!(probed(&p).is_empty());
@@ -704,16 +724,18 @@ async fn a_plane_that_refuses_the_probe_about_an_entry_sends_nothing() {
         refuse_about_entry: true,
         ..Prober::default()
     };
-    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    let p = probing(&hosts, plane, TAIL_PROBES)
+        .await
+        .expect("the plane declares probes");
     p.probes.probe(0, TIMEOUT).await;
     assert!(p.table.opened.lock().unwrap().is_empty());
     assert!(probed(&p).is_empty());
 }
 
-#[test]
-fn an_undeclared_plane_and_a_passthrough_member_are_never_probed() {
+#[tokio::test]
+async fn an_undeclared_plane_and_a_passthrough_member_are_never_probed() {
     let hosts = [("a.test", Script::Answer(200, None, vec![b"ok"]))];
-    assert!(probing(&hosts, Prober::default(), 0).is_none());
+    assert!(probing(&hosts, Prober::default(), 0).await.is_none());
     let r = rig(
         &[
             ("a.test", Script::Answer(200, None, vec![b"ok"])),

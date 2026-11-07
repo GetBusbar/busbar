@@ -250,7 +250,7 @@ extern "C" fn snapshot_not_ready(
     _input: *const c_void,
     out: *mut ServiceOut,
 ) -> RawOutcome {
-    answer(out, Outcome::Failed, 0, 0, 0)
+    answer(out, Outcome::Failed, SNAPSHOT_NOT_READY_VALUE, 0, 0)
 }
 
 #[test]
@@ -263,22 +263,22 @@ fn snapshot_receipt_tracks_successful_wire_bytes_and_can_shrink() {
     };
     let s = services(&t);
     let mut buf = [0u64; 128];
-    let (large, used_large) = s
-        .snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf)
-        .expect("read")
-        .expect("ready");
+    let (large, used_large) =
+        service_ready(s.snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf))
+            .expect("read")
+            .expect("ready");
     assert_eq!(large[0].name, "a_larger_snapshot_family");
     assert_eq!(used_large, size_of::<ScrapeFamily>() + large[0].name.len());
     assert!(used_large < std::mem::size_of_val(&buf));
-    let (small, used_small) = s
-        .snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf)
-        .expect("read")
-        .expect("ready");
+    let (small, used_small) =
+        service_ready(s.snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf))
+            .expect("read")
+            .expect("ready");
     assert_eq!(small[0].name, "x");
     assert_eq!(used_small, size_of::<ScrapeFamily>() + 1);
     assert!(used_small < used_large);
     assert_eq!(
-        s.snapshot_read(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf),
+        service_ready(s.snapshot_read(handle(), SNAPSHOT_SCOPE_HOOKS, &mut buf)),
         Ok(Some(small))
     );
 }
@@ -292,7 +292,11 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
         ..table(None)
     };
     assert_eq!(
-        services(&not_ready).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        service_ready(services(&not_ready).snapshot_read_with_used(
+            handle(),
+            SNAPSHOT_SCOPE_WHOLE,
+            &mut buf
+        )),
         Ok(None)
     );
     let broken = HostSlots {
@@ -300,14 +304,22 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
         ..table(None)
     };
     assert_eq!(
-        services(&broken).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        service_ready(services(&broken).snapshot_read_with_used(
+            handle(),
+            SNAPSHOT_SCOPE_WHOLE,
+            &mut buf
+        )),
         Err(ServiceError::Broken)
     );
     let short = HostSlots {
         snapshot_read: Some(snapshots),
         ..table(None)
     };
-    let answer = services(&short).snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut []);
+    let answer = service_ready(services(&short).snapshot_read_with_used(
+        handle(),
+        SNAPSHOT_SCOPE_WHOLE,
+        &mut [],
+    ));
     assert!(matches!(answer, Err(ServiceError::Short { bytes, .. }) if bytes > 0));
 }
 
@@ -2270,8 +2282,7 @@ fn a_minted_ticket_reaches_the_plane_sealed() {
         ..table(None)
     };
     let before = MINTS.load(Ordering::SeqCst);
-    let minted = services(&t)
-        .ticket_mint(handle(), 600, br#"{"locked":true}"#)
+    let minted = service_ready(services(&t).ticket_mint(handle(), 600, br#"{"locked":true}"#))
         .expect("minted");
     assert_eq!(
         MINTS.load(Ordering::SeqCst) - before,
@@ -2318,9 +2329,7 @@ fn a_minted_ticket_that_is_not_text_is_broken() {
         ..table(None)
     };
     assert_eq!(
-        services(&t)
-            .ticket_mint(handle(), 600, b"{}")
-            .map(|m| m.expires_at_unix),
+        service_ready(services(&t).ticket_mint(handle(), 600, b"{}")).map(|m| m.expires_at_unix),
         Err(ServiceError::Broken)
     );
 }
@@ -2412,5 +2421,50 @@ fn work_status_tail_is_unserved_when_old_host_size_or_slot_count_excludes_it() {
     assert_eq!(
         services(&t).work_status(handle(), "settled"),
         Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+fn service_ready<T>(
+    result: std::task::Poll<Result<T, crate::abi::sdk::ServiceError>>,
+) -> Result<T, crate::abi::sdk::ServiceError> {
+    match result {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => panic!("the synchronous test provider unexpectedly pended"),
+    }
+}
+
+extern "C" fn snapshot_failed(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Failed, 0, 0, 0)
+}
+extern "C" fn snapshot_pending(
+    _ctx: HostCtx,
+    _input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    answer(out, Outcome::Pending, 0, 0, 0)
+}
+#[test]
+fn async_snapshot_failure_is_not_recorder_not_ready() {
+    use crate::abi::host::service::SNAPSHOT_SCOPE_WHOLE;
+    let mut buf = [0u64; 16];
+    let failed = HostSlots {
+        snapshot_read: Some(snapshot_failed),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&failed).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
+    );
+    let pending = HostSlots {
+        snapshot_read: Some(snapshot_pending),
+        ..table(None)
+    };
+    assert_eq!(
+        services(&pending).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Poll::Pending
     );
 }

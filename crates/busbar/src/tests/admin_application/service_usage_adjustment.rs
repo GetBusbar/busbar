@@ -131,7 +131,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config.clone(),
         None,
@@ -140,18 +140,19 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         (None, None),
         None,
         &rules,
-        None,
-        true,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history");
     limits
         .keep()
+        .await
         .expect("the actual boot card commits after the book opens");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     document["rate_card"] = serde_json::to_value(BTreeMap::from([(
         LANE,
@@ -170,7 +171,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         .expect("the current deployment parses");
     let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
-    let (next, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (next, rotate, limits) = crate::root::real_store::build_app(
         current,
         plugin_config,
         None,
@@ -179,13 +180,15 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         (None, None),
         Some(&app),
         &rules,
-        None,
-        false,
     )
+    .await
     .expect("the actual current configuration rebuilds against the same Store");
-    limits.keep().expect("the actual current rates commit");
+    limits
+        .keep()
+        .await
+        .expect("the actual current rates commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app = next;
     let gov = app
@@ -193,13 +196,13 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         .as_ref()
         .expect("the actual Store opened governance")
         .clone();
-    let store = gov.store();
+    let store = gov.core_store_handle().expect("actual admitted CoreStore");
     assert!(
-        store.supports_usage_correction(),
-        "the actual Store supports atomic usage correction"
+        store.authority().is_ok(),
+        "the actual native Store is admitted for mandatory atomic correction commits"
     );
     let calls = gov
-        .store_calls()
+        .core_store_handle()
         .expect("the actual Store calls remain attached");
     let key = VirtualKey {
         id: ADJUSTED_KEY.into(),
@@ -210,9 +213,12 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         ..Default::default()
     };
     store
+        .identity()
         .put_key(&key)
+        .await
         .expect("the actual Store persists the key");
     store
+        .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
             scale: 0,
             key_id: ADJUSTED_KEY.into(),
@@ -230,8 +236,9 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
             priced_from_ms: 0,
             usage_units: Default::default(),
         })
+        .await
         .expect("the actual Store retains the metering delta");
-    gov.refresh().expect("the actual key refreshes");
+    gov.refresh_async().await.expect("the actual key refreshes");
     let cost = app.cost.clone();
     let units = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), TOKENS)]);
     gov.record_usage_served_in_era(
@@ -245,7 +252,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         busbar_kernel::cost::RawRateEra::legacy(0),
     );
     assert!(
-        gov.flush_budgets_final() > 0,
+        gov.flush_budgets_final().await > 0,
         "the actual Store confirms the recorded budget before correction"
     );
     let (router, handle) =
@@ -277,25 +284,30 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         (1_000, 2_500)
     );
     let adjust = |key_id: &'static str, by: i64| {
-        let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), by)]);
-        gov.adjust_usage(
-            &cost,
-            &Adjustment {
-                key_id,
-                pool: "",
-                model: LANE,
-                entry_era: 0,
-                entry_id: None,
-                card_epoch_ms: served_at * 1_000,
-                delta: &delta,
-                now: busbar_kernel::store::now(),
-            },
-        )
-        .expect("the actual Store reads")
+        let gov = gov.clone();
+        let cost = cost.clone();
+        async move {
+            let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), by)]);
+            gov.adjust_usage_async(
+                &cost,
+                &Adjustment {
+                    key_id,
+                    pool: "",
+                    model: LANE,
+                    entry_era: 0,
+                    entry_id: None,
+                    card_epoch_ms: served_at * 1_000,
+                    delta: &delta,
+                    now: busbar_kernel::store::now(),
+                },
+            )
+            .await
+            .expect("the actual Store reads")
+        }
     };
     assert!(
         matches!(
-            adjust(ADJUSTED_KEY, -1_001),
+            adjust(ADJUSTED_KEY, -1_001).await,
             Err(AdjustRefused::Exceeds { .. })
         ),
         "an adjustment past the metered count is refused"
@@ -305,7 +317,7 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         2_500,
         "a refused adjustment moves nothing"
     );
-    assert_eq!(adjust(ADJUSTED_KEY, -200), Ok(()));
+    assert_eq!(adjust(ADJUSTED_KEY, -200).await, Ok(()));
     let after = total(&client, addr, day).await;
     assert_eq!(
         (
@@ -316,13 +328,14 @@ async fn an_adjust_of_a_units_counts_moves_the_served_usage_figure() {
         "the served figure prices the adjusted counts: 800 x 2.5"
     );
     let restarted = Arc::new(
-        GovState::new_with_signer(store, None, None)
+        GovState::new_with_core(store, None, None)
+            .await
             .expect("governance restarts against the same actual Store"),
     );
-    assert!(restarted.attach_store_calls(calls));
+    assert!(Arc::ptr_eq(&restarted.core_store_handle().unwrap(), &calls));
     let mut next = (*handle.load()).clone();
     next.governance = Some(restarted);
-    handle.swap(Arc::new(next));
+    handle.swap(Arc::new(next)).await;
     let again = total(&client, addr, day).await;
     assert_eq!(
         (

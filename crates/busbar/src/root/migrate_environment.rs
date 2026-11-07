@@ -114,8 +114,12 @@ mod tests {
         let captured = under(
             "providers_file: from-config.yaml\nadvanced: {worker_threads: 7, upstream_http1_only: true, upstream_h2_prior_knowledge: false}\n",
             None,
-            &[("BUSBAR_PROVIDERS", "catalog/old.yaml"), ("BUSBAR_WORKER_THREADS", " 999 "),
-              ("BUSBAR_UPSTREAM_HTTP1_ONLY", "0"), ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "false")],
+            &[
+                ("BUSBAR_PROVIDERS", "catalog/old.yaml"),
+                ("BUSBAR_WORKER_THREADS", " 999 "),
+                ("BUSBAR_UPSTREAM_HTTP1_ONLY", "0"),
+                ("BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE", "false"),
+            ],
         );
         let doc: Value = serde_yaml::from_str(&captured.yaml).unwrap();
         assert_eq!(doc["providers_file"], "/launch/catalog/old.yaml");

@@ -6,14 +6,14 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_kernel as kernel;
-use busbar_plugin_loader::dispatch::kinds::plane::{open_door, Plane};
+use busbar_plugin_loader::dispatch::kinds::plane::{Plane, open_door};
 use busbar_plugin_loader::dispatch::plane_calls::PlaneInstance;
-use busbar_plugin_loader::dispatch::{load_linked, Bind, ConnTable, LinkedRow, NoSink};
+use busbar_plugin_loader::dispatch::{Bind, ConnTable, LinkedRow, NoSink, load_linked};
 use kernel::plane_driver::serve::{AdminServe, ServeRoute, ServeTable};
 
 use crate::root::test_plugins as plugins;
 
-fn actual_mcp_health_calls(
+async fn actual_mcp_health_calls(
     app: &kernel::state::App,
     config: &kernel::config::RootCfg,
 ) -> (
@@ -110,6 +110,7 @@ fn actual_mcp_health_calls(
                 .expect("the actual host services are composed"),
             ("tools", &section),
         )
+        .await
         .expect("the actual MCP declaration admits its health subject"),
     );
     (calls, routes, driver)
@@ -152,7 +153,7 @@ fn asked<'a>(path: &'a str, headers: &'a axum::http::HeaderMap) -> AdminServe<'a
 #[tokio::test]
 async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
     let _publishing = crate::root::PUBLISHING.lock().await;
-    let build = || {
+    let build = || async {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -194,7 +195,7 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -204,31 +205,37 @@ async fn two_apps_lent_two_tables_each_serve_only_their_own_instance() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the host deployment");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the actual deployment configured governance")
-                    .store_calls()
-                    .expect("the configured Store exposes its rate-history slots"),
-                147,
-            );
+            if !crate::root::kernel::ROOT_CARD.keeps_store() {
+                crate::root::kernel::ROOT_CARD
+                    .keep_in_store(
+                        app.governance
+                            .as_ref()
+                            .expect("the actual deployment configured governance")
+                            .core_store_handle()
+                            .expect("the configured Store exposes its rate-history slots"),
+                        147,
+                    )
+                    .expect("the native rate-card Store binds");
+            };
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the configured Store boots its initial rate history");
         }
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         (app, calls_config)
     };
-    let (mut a, config) = build();
-    let (mut b, _) = build();
-    let (unlent, _) = build();
-    let (calls, routes, _driver) = actual_mcp_health_calls(&a, &config);
+    let (mut a, config) = build().await;
+    let (mut b, _) = build().await;
+    let (unlent, _) = build().await;
+    let (calls, routes, _driver) = actual_mcp_health_calls(&a, &config).await;
     let (lent_a, lent_b) = (
         kernel::plane_driver::serve::ServeTables::default(),
         kernel::plane_driver::serve::ServeTables::default(),
@@ -319,7 +326,7 @@ async fn a_rebuild_carries_the_published_admin_table() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (boot, rotate, limits) = kernel::build_app_from_config(
+    let (boot, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config.clone(),
         None,
@@ -329,27 +336,33 @@ async fn a_rebuild_carries_the_published_admin_table() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            boot.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            147,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    boot.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    147,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
-    let (calls, routes, _driver) = actual_mcp_health_calls(&boot, &calls_config);
+    let (calls, routes, _driver) = actual_mcp_health_calls(&boot, &calls_config).await;
     let headers = axum::http::HeaderMap::new();
     let served = |on: &kernel::state::App, path: &str| {
         let headers = headers.clone();
@@ -370,7 +383,7 @@ async fn a_rebuild_carries_the_published_admin_table() {
     boot.serve_tables
         .publish(health_table("carried", calls.clone(), &routes), &[])
         .expect("publishes");
-    let (applied, rotate, limits) = kernel::build_app_from_config(
+    let (applied, rotate, limits) = crate::root::real_store::build_app(
         kernel::config::resolve(&deploy, &Default::default())
             .expect("the same normal deployment resolves"),
         plugin_config,
@@ -381,10 +394,14 @@ async fn a_rebuild_carries_the_published_admin_table() {
         Some(&boot),
         &rules,
     )
+    .await
     .expect("rebuild");
-    limits.keep().expect("the rebuilt product limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the rebuilt product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     applied
         .serve_tables

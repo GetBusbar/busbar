@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel::config::migrate::*;
+use busbar_migrations::config::migrate::*;
 
 fn migrate_to_value(raw: &str) -> (MigrateOutput, serde_yaml::Value) {
     let out = migrate_config(raw).expect("migrates");
@@ -372,8 +372,11 @@ pools: {}
         "a 1.5.3 chain is a list of bare PROVIDER NAMES"
     );
     assert_eq!(
-        dig(&doc, &["identity-providers", "test-idp-double", "max_admin_scope"])
-            .and_then(|v| v.as_str()),
+        dig(
+            &doc,
+            &["identity-providers", "test-idp-double", "max_admin_scope"]
+        )
+        .and_then(|v| v.as_str()),
         Some("full"),
         "auth.modules.test-idp-double.max_admin_scope must fold onto the identity-providers DEFINITION"
     );

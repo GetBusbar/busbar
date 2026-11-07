@@ -7,8 +7,8 @@ fn wire_provider(dialect: &str) -> HashMap<String, busbar_kernel::config::Provid
     .expect("the configured wire provider has its actual catalog declaration")
 }
 
-#[test]
-fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
+#[tokio::test]
+async fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
     use busbar_kernel::plane_driver::route_tables::{ConfigTables, EngineTablesView};
     use busbar_kernel_egress::ports::Telemetry as _;
     let app = {
@@ -24,12 +24,12 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -41,32 +41,34 @@ fn queue_depth_counts_waiters_from_overlapping_egress_generations() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -132,8 +134,8 @@ fn cells_routing(app: LiveApp, pools: &[&str], direct: &[&str]) -> WalkCells {
     )
 }
 
-#[test]
-fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
+#[tokio::test]
+async fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     use busbar_kernel::plane_driver::MemberSignals as _;
     use busbar_kernel_egress::ports::Telemetry as _;
     let first = {
@@ -149,12 +151,12 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         let models = "{m-z: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -166,32 +168,34 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -208,12 +212,12 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         let models = "{m-a: {provider: wire}, m-z: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -225,32 +229,34 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -267,12 +273,12 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
         let models = "{m-a: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -284,32 +290,34 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -332,7 +340,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     let token = busbar_kernel::test_hooks::tokens::pass();
     let destination = DestinationId::new(0);
     let now = wall_secs();
-    handle.swap(Arc::clone(&second));
+    handle.swap(Arc::clone(&second)).await;
     cells.observe("p", destination, Outcome::HardDown, now, &token);
     assert!(
         matches!(
@@ -351,7 +359,7 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     telemetry.upstream_latency(destination, 23.0);
     assert_eq!(second.store.lane_latency_ms(0), None);
     assert_eq!(signals.standing("p", destination).latency_ms, Some(23.0));
-    handle.swap(Arc::clone(&removed));
+    handle.swap(Arc::clone(&removed)).await;
     assert!(
         !cells.admissible(destination),
         "a removed model is unavailable"
@@ -373,8 +381,8 @@ fn retained_destinations_follow_the_model_name_across_reorder_and_removal() {
     assert_eq!(removed.store.snapshot(0, now).err, 0);
 }
 
-#[test]
-fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
+#[tokio::test]
+async fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
     let first = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -388,12 +396,12 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         let models = "{m-z: {provider: wire, max_requests: 2}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -405,32 +413,34 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -448,12 +458,12 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             "{m-a: {provider: wire, max_requests: 11}, m-z: {provider: wire, max_requests: 7}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -465,32 +475,34 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -510,7 +522,7 @@ fn budget_refunds_and_probe_releases_keep_their_originating_unit() {
         .unwrap()
         .probe_epoch
         .expect("probe owned");
-    handle.swap(Arc::clone(&second));
+    handle.swap(Arc::clone(&second)).await;
     cells.refund_budget(destination);
     cells.release_probe("p", destination, epoch, later);
     assert_eq!(first.store.lane_budget_remaining(0), Some(2));
@@ -530,8 +542,8 @@ fn wall_secs() -> u64 {
         .as_secs()
 }
 
-#[test]
-fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
+#[tokio::test]
+async fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     let pools = ["first", "second", "third"];
     let app = {
         crate::dist_root_install::install();
@@ -546,12 +558,12 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
         let models = "{m0: {provider: wire}}";
         let pools = "{first: {members: [m0]}, second: {members: [m0]}, third: {members: [m0]}}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -563,32 +575,34 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -612,8 +626,8 @@ fn a_successful_probe_counts_once_on_the_lanes_ok_whatever_its_pools() {
     );
 }
 
-#[test]
-fn a_success_is_recorded_on_the_walks_clock() {
+#[tokio::test]
+async fn a_success_is_recorded_on_the_walks_clock() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -627,12 +641,12 @@ fn a_success_is_recorded_on_the_walks_clock() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -644,32 +658,34 @@ fn a_success_is_recorded_on_the_walks_clock() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -704,8 +720,8 @@ fn a_success_is_recorded_on_the_walks_clock() {
     );
 }
 
-#[test]
-fn a_probe_success_joins_the_walks_window() {
+#[tokio::test]
+async fn a_probe_success_joins_the_walks_window() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -719,12 +735,12 @@ fn a_probe_success_joins_the_walks_window() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -736,32 +752,34 @@ fn a_probe_success_joins_the_walks_window() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -797,12 +815,12 @@ fn a_probe_success_joins_the_walks_window() {
     );
 }
 
-#[test]
-fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
+#[tokio::test]
+async fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
     let token = busbar_kernel::test_hooks::tokens::pass();
     let dest = DestinationId::new(0);
     let now = wall_secs() + 3_600;
-    let fresh = || {
+    let fresh = || async {
         let app = {
             crate::dist_root_install::install();
             crate::root::test_plane_registry::register();
@@ -816,12 +834,12 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
             let models = "{m0: {provider: wire}}";
             let pools = "{p: {members: [m0]}}";
             let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+                "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+            );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
             let cfg =
                 busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-            let store = crate::root::real_store::store();
+            let store = crate::root::real_store::core().await;
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -833,32 +851,34 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
                 (None, None),
                 None,
                 &rules,
-                Some(busbar_contract::store_calls::OpenedStore {
-                    records: store.clone(),
-                    calls: Some(store),
-                }),
+                Some(store),
                 false,
             )
+            .await
             .expect("the product builds the configured model generation");
             if !crate::root::kernel::ROOT_CARD.keeps_store() {
                 limits.stage_boot();
-                crate::root::kernel::ROOT_CARD.keep_in_store(
-                    app.governance
-                        .as_ref()
-                        .expect("the serving application has its configured governance Store")
-                        .store_calls()
-                        .expect("the configured Store exposes actual rate-history calls"),
-                    busbar_kernel::door::op_id().counter(),
-                );
+                crate::root::kernel::ROOT_CARD
+                    .keep_in_store(
+                        app.governance
+                            .as_ref()
+                            .expect("the serving application has its configured governance Store")
+                            .core_store_handle()
+                            .expect("the configured Store exposes actual rate-history calls"),
+                        busbar_kernel::door::op_id().counter(),
+                    )
+                    .expect("native rate history binds");
                 crate::root::kernel::ROOT_CARD
                     .boot_in_store(None)
+                    .await
                     .expect("the actual configured Store boots its rate history");
             }
             limits
                 .keep()
+                .await
                 .expect("the model generation commits its limits");
             if let Some(rotate) = rotate {
-                rotate();
+                rotate.await;
             }
             Arc::new(app)
         };
@@ -868,7 +888,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
         (app, cells)
     };
 
-    let (app, cells) = fresh();
+    let (app, cells) = fresh().await;
     cells.probed(dest, Outcome::Transient { retry_after: None }, now, &token);
     let cooling = app.store.cooldown_remaining_in("p", 0, now);
     assert!(
@@ -877,7 +897,7 @@ fn probe_failures_and_hard_downs_cool_on_the_walks_clock() {
     );
 
     for probe in [false, true] {
-        let (app, cells) = fresh();
+        let (app, cells) = fresh().await;
         let what = if probe {
             cells.probed(dest, Outcome::HardDown, now, &token);
             "a probe's hard-down"
@@ -935,8 +955,8 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
     );
 }
 
-#[test]
-fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
+#[tokio::test]
+async fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -950,12 +970,12 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
         let models = "{m0: {provider: wire}}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -967,32 +987,34 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -1024,9 +1046,9 @@ fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
     );
 }
 
-#[test]
-fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
-    let generation = || {
+#[tokio::test]
+async fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
+    let generation = || async {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
         let dialects: serde_json::Value =
@@ -1039,12 +1061,12 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1056,36 +1078,38 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
-    let (first, second) = (generation(), generation());
+    let (first, second) = (generation().await, generation().await);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&first)));
     let live = Arc::new(std::sync::OnceLock::new());
     let _ = live.set(Arc::downgrade(&handle));
@@ -1098,7 +1122,7 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     cells.observe("p", dest, Outcome::Success, now, &token);
     assert_eq!(first.store.error_rate_in("p", 0, now), Some(0.0));
 
-    handle.swap(Arc::clone(&second));
+    handle.swap(Arc::clone(&second)).await;
     cells.observe("p", dest, fault, now, &token);
     assert_eq!(
         second.store.error_rate_in("p", 0, now),
@@ -1112,8 +1136,8 @@ fn a_walk_spanning_a_config_apply_records_into_the_new_store() {
     );
 }
 
-#[test]
-fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
+#[tokio::test]
+async fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
     let boot = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -1127,12 +1151,12 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1144,32 +1168,34 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -1193,12 +1219,12 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
         let models = "{}";
         let pools = "{}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1210,32 +1236,34 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };
@@ -1256,8 +1284,8 @@ fn live_egress_borrows_its_owner_and_never_reverts_after_that_owner_retires() {
     );
 }
 
-#[test]
-fn a_keyless_lane_is_not_probed() {
+#[tokio::test]
+async fn a_keyless_lane_is_not_probed() {
     crate::root::test_plane_registry::register();
     let mut defs = std::collections::HashMap::new();
     for name in ["keyed", "local"] {
@@ -1290,12 +1318,12 @@ fn a_keyless_lane_is_not_probed() {
             let models = "{}";
             let pools = "{}";
             let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+                "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+            );
             let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
             let cfg =
                 busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-            let store = crate::root::real_store::store();
+            let store = crate::root::real_store::core().await;
             let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
                 Arc::new(crate::root::door_steps::Rules::default());
             let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1307,32 +1335,34 @@ fn a_keyless_lane_is_not_probed() {
                 (None, None),
                 None,
                 &rules,
-                Some(busbar_contract::store_calls::OpenedStore {
-                    records: store.clone(),
-                    calls: Some(store),
-                }),
+                Some(store),
                 false,
             )
+            .await
             .expect("the product builds the configured model generation");
             if !crate::root::kernel::ROOT_CARD.keeps_store() {
                 limits.stage_boot();
-                crate::root::kernel::ROOT_CARD.keep_in_store(
-                    app.governance
-                        .as_ref()
-                        .expect("the serving application has its configured governance Store")
-                        .store_calls()
-                        .expect("the configured Store exposes actual rate-history calls"),
-                    busbar_kernel::door::op_id().counter(),
-                );
+                crate::root::kernel::ROOT_CARD
+                    .keep_in_store(
+                        app.governance
+                            .as_ref()
+                            .expect("the serving application has its configured governance Store")
+                            .core_store_handle()
+                            .expect("the configured Store exposes actual rate-history calls"),
+                        busbar_kernel::door::op_id().counter(),
+                    )
+                    .expect("native rate history binds");
                 crate::root::kernel::ROOT_CARD
                     .boot_in_store(None)
+                    .await
                     .expect("the actual configured Store boots its rate history");
             }
             limits
                 .keep()
+                .await
                 .expect("the model generation commits its limits");
             if let Some(rotate) = rotate {
-                rotate();
+                rotate.await;
             }
             Arc::new(app)
         }),
@@ -1346,8 +1376,8 @@ fn a_keyless_lane_is_not_probed() {
     );
 }
 
-#[test]
-fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbers() {
+#[tokio::test]
+async fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbers() {
     let app = {
         crate::dist_root_install::install();
         crate::root::test_plane_registry::register();
@@ -1361,12 +1391,12 @@ fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbe
         let models = "{m0: {provider: wire}}";
         let pools = "{p: {members: [m0]}}";
         let yaml = format!(
-        "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
-    );
+            "store: {{module: memory}}\nauth: {{chain: [], admin_auth: []}}\nproviders:\n  wire:\n    protocol: {dialect}\n    base_url: http://127.0.0.1:9\n    api_key: none\nmodels: {models}\npools: {pools}\nadvanced:\n  allow_destinations: [127.0.0.1]\n"
+        );
         let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("parses");
         let cfg =
             busbar_kernel::config::resolve(&deploy, &wire_provider(dialect)).expect("resolves");
-        let store = crate::root::real_store::store();
+        let store = crate::root::real_store::core().await;
         let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
             Arc::new(crate::root::door_steps::Rules::default());
         let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -1378,32 +1408,34 @@ fn semantic_rate_limit_preserves_the_store_ladder_without_reading_protocol_numbe
             (None, None),
             None,
             &rules,
-            Some(busbar_contract::store_calls::OpenedStore {
-                records: store.clone(),
-                calls: Some(store),
-            }),
+            Some(store),
             false,
         )
+        .await
         .expect("the product builds the configured model generation");
         if !crate::root::kernel::ROOT_CARD.keeps_store() {
             limits.stage_boot();
-            crate::root::kernel::ROOT_CARD.keep_in_store(
-                app.governance
-                    .as_ref()
-                    .expect("the serving application has its configured governance Store")
-                    .store_calls()
-                    .expect("the configured Store exposes actual rate-history calls"),
-                busbar_kernel::door::op_id().counter(),
-            );
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the serving application has its configured governance Store")
+                        .core_store_handle()
+                        .expect("the configured Store exposes actual rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("native rate history binds");
             crate::root::kernel::ROOT_CARD
                 .boot_in_store(None)
+                .await
                 .expect("the actual configured Store boots its rate history");
         }
         limits
             .keep()
+            .await
             .expect("the model generation commits its limits");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         Arc::new(app)
     };

@@ -78,20 +78,8 @@ pub struct StoreCfg {
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
-#[must_use]
-pub fn migrated_store_module() -> &'static str {
-    crate::config::migration_table::text("store_1_5_default")
-}
-
 pub fn store_required() -> String {
-    format!(
-        "store is required; add a `store:` block, e.g. `store: {{module: {m}}}` (the compiled-in \
-         RAM store, what a 1.5.x config without one ran on) or a store plugin name/alias ({} | \
-         <third-party>), or run `busbar --migrate-config <config.yaml>`, which inserts \
-         `store: {{module: {m}}}`",
-        crate::config::migrate::legacy_store_text("module_examples"),
-        m = migrated_store_module(),
-    )
+    "store is required; add a `store:` block with the configured Store module and settings".into()
 }
 
 /// A top-level `secrets:` entry — MODULE-LEVEL initialization config for a `kind: secret` plugin,

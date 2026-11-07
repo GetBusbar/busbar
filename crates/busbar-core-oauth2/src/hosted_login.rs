@@ -518,7 +518,7 @@ const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000
 
 fn button_brand(name: &str, issuer: Option<&str>) -> (String, &'static str) {
     brand_from(
-        busbar_kernel::config::migration_table::text("login_brands"),
+        busbar_kernel::config::declared_vocabulary::text("login_brands"),
         name,
         issuer,
     )

@@ -12,7 +12,7 @@ const KINDS: [(KindCode, u64, &[&[u64]]); 7] = [
     (
         KindCode::Store,
         store::LAYOUT_FINGERPRINT,
-        store::LAYOUT_SHAPES,
+        store::v4::LAYOUT_SHAPES,
     ),
     (
         KindCode::Secret,

@@ -1243,8 +1243,8 @@ service! {
         // SAFETY: no buffer is named.
         unsafe {
             let req = Fp::of(&[counterparty.as_bytes(), item.as_bytes(), digest.as_bytes()]);
-            serve(served.store, &route, &head, req, None, |_| {
-                Ran::Now(provider.trust_sight_item(caller, &counterparty, &item, &digest))
+            pended(&served, &route, &head, req, None, |later| {
+                provider.trust_sight_item(caller, &counterparty, &item, &digest, later)
             })
         }
     }
@@ -1302,12 +1302,12 @@ service! {
         let provider = served.provider;
         // SAFETY: no buffer is named.
         unsafe {
-            serve(served.store, &route, &head, req, None, |_| {
+            pended(&served, &route, &head, req, None, |later| {
                 let key = busbar_contract::services::TrustKeyRef {
                     counterparty: &counterparty,
                     item: item.as_deref(),
                 };
-                Ran::Now(provider.trust_decide(caller, key, expected.as_deref(), approve))
+                provider.trust_decide(caller, key, expected.as_deref(), approve, later)
             })
         }
     }
@@ -2060,8 +2060,8 @@ service! {
         // SAFETY: `into` checked above; the caller's buffers.
         unsafe {
             let req = Fp::of(&[&i.ttl_secs.to_le_bytes(), &record]);
-            serve(served.store, &route, &head, req, Some(&i.into), |_| {
-                Ran::Now(provider.ticket_mint(caller, unit, i.ttl_secs, &record))
+            pended(&served, &route, &head, req, Some(&i.into), |later| {
+                provider.ticket_mint(caller, unit, i.ttl_secs, &record, later)
             })
         }
     }
@@ -2419,34 +2419,26 @@ extern "C" fn need_admit(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
 mod tests;
 
 service! {
-    snapshot_read, scoped, op::SNAPSHOT_READ, SnapshotReadIn, |served, _, _, caller, i| {
-        if check_bufs(&i.into).is_err() {
-            return Answered::fault();
-        }
-        if svc::check_snapshot_read_in(&i).is_err() {
-            return Answered::fault();
-        }
-        match served.provider.snapshot_read(caller, i.scope) {
-            Snapshot::Families(families) => {
-                let needed = super::snapshot::size_of_layout(&families);
-                if needed > i.into.cap {
-                    return Answered {
-                        needed_bytes: needed as u64,
-                        ..Answered::bare(Outcome::Failed, SHORT)
-                    };
-                }
-                // SAFETY: `into` was checked above (a capacity never behind NULL, the
-                // alignment the layout needs), and the layout fits its capacity.
-                let used = unsafe { super::snapshot::lay_out(&families, i.into.buf) };
-                Answered {
-                    value: families.len() as u64,
-                    len: used as u64,
-                    ..Answered::bare(Outcome::Ready, "")
-                }
+    snapshot_read, scoped, op::SNAPSHOT_READ, SnapshotReadIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() || svc::check_snapshot_read_in(&i).is_err() {return Answered::fault();}
+        let provider=served.provider;
+        let req=Fp::of(&[&i.scope.to_le_bytes()]);
+        serve_with(served.store,&route,&head,req,|stored| {
+            if stored.outcome!=Outcome::Ready {
+                // SAFETY: input buffers were checked and non-ready results carry no layout.
+                return unsafe {deliver(stored,Some(&i.into))};
             }
-            Snapshot::NotReady => Answered::bare(Outcome::Failed, SNAPSHOT_NOT_READY),
-            Snapshot::Refused(why) => Answered::bare(Outcome::Refused, why),
-        }
+            let families:Vec<busbar_contract::export_calls::Family>=match serde_json::from_slice(&stored.bytes) {Ok(families)=>families,Err(_)=>return Ok(Answered::fault())};
+            if families.len() as u64!=stored.value {return Ok(Answered::fault())}
+            let needed=super::snapshot::size_of_layout(&families);
+            if needed>i.into.cap {return Err(Answered {needed_bytes:needed as u64,..Answered::bare(Outcome::Failed,SHORT)})}
+            // SAFETY: checked alignment/capacity, and this call owns the current destination.
+            let used=unsafe {super::snapshot::lay_out(&families,i.into.buf)};
+            Ok(Answered {value:families.len() as u64,len:used as u64,..Answered::bare(Outcome::Ready,"")})
+        },|completer|match later_of(completer) {
+            Some(later)=>provider.snapshot_read(caller,i.scope,later),
+            None=>Ran::Now(Stored::refused(UNTICKETED)),
+        })
     }
 }
 

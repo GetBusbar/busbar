@@ -24,7 +24,15 @@ impl CallerFacts for NoCaller {
     fn budget(&self, _principal: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
-    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
+    fn hook_read<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: &'a str,
+        _: bool,
+    ) -> busbar_kernel::audit::amend::ReadConfirmation<'a> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[tokio::test]
@@ -123,7 +131,7 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -133,24 +141,30 @@ async fn a_routed_planes_section_attach_binds_to_its_units() {
         None,
         &rules,
     )
+    .await
     .expect("the actual products build the section hook chains");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the application has its actual configured Store")
-                .store_calls()
-                .expect("the actual Store exposes rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the application has its actual configured Store")
+                        .core_store_handle()
+                        .expect("the actual Store exposes rate-history calls"),
+                    busbar_kernel::door::op_id().counter(),
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual Store boots its rate history before activation");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let attached =

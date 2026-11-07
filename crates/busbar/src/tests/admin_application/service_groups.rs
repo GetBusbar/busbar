@@ -107,7 +107,7 @@ async fn list_groups_projects_the_limit_tree() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -117,13 +117,15 @@ async fn list_groups_projects_the_limit_tree() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -226,7 +228,7 @@ async fn list_groups_is_cursor_paginated() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -236,13 +238,15 @@ async fn list_groups_is_cursor_paginated() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -369,7 +373,7 @@ async fn get_group_by_name_and_not_found() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -379,13 +383,15 @@ async fn get_group_by_name_and_not_found() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
     let router = busbar_kernel::build_router(app);
@@ -421,8 +427,8 @@ async fn get_group_by_name_and_not_found() {
     server.abort();
 }
 
-#[test]
-fn build_with_group_creates_leaf_and_rebuilds_cost() {
+#[tokio::test]
+async fn build_with_group_creates_leaf_and_rebuilds_cost() {
     let groups = BTreeMap::from([(
         "team".to_string(),
         GroupCfg {
@@ -472,7 +478,7 @@ fn build_with_group_creates_leaf_and_rebuilds_cost() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -482,13 +488,15 @@ fn build_with_group_creates_leaf_and_rebuilds_cost() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -510,8 +518,8 @@ fn build_with_group_creates_leaf_and_rebuilds_cost() {
     assert!(next.cost.group_named("team").is_some());
 }
 
-#[test]
-fn build_with_group_rejects_dangling_parent() {
+#[tokio::test]
+async fn build_with_group_rejects_dangling_parent() {
     let groups = BTreeMap::from([(
         "team".to_string(),
         GroupCfg {
@@ -561,7 +569,7 @@ fn build_with_group_rejects_dangling_parent() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -571,13 +579,15 @@ fn build_with_group_rejects_dangling_parent() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -594,8 +604,8 @@ fn build_with_group_rejects_dangling_parent() {
     );
 }
 
-#[test]
-fn build_with_group_rejects_empty_name() {
+#[tokio::test]
+async fn build_with_group_rejects_empty_name() {
     let groups = BTreeMap::from([(
         "team".to_string(),
         GroupCfg {
@@ -645,7 +655,7 @@ fn build_with_group_rejects_empty_name() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -655,13 +665,15 @@ fn build_with_group_rejects_empty_name() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -674,8 +686,8 @@ fn build_with_group_rejects_empty_name() {
     ));
 }
 
-#[test]
-fn build_with_group_name_length_boundary_is_exact() {
+#[tokio::test]
+async fn build_with_group_name_length_boundary_is_exact() {
     let groups = BTreeMap::from([(
         "team".to_string(),
         GroupCfg {
@@ -725,7 +737,7 @@ fn build_with_group_name_length_boundary_is_exact() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -735,13 +747,15 @@ fn build_with_group_name_length_boundary_is_exact() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 
@@ -806,7 +820,7 @@ async fn healthz_returns_a_real_response_not_the_default() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -816,13 +830,15 @@ async fn healthz_returns_a_real_response_not_the_default() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
 

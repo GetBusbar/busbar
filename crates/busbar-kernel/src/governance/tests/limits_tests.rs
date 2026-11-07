@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use super::native_ledger_fixture;
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use crate::cost::CostModel;
+use crate::persistence::facade::CoreStore;
+use native_ledger_fixture::*;
 use std::collections::BTreeMap;
 
-fn gov() -> GovState {
-    GovState::new(crate::real_store::store(), None).expect("memory store constructs")
+async fn gov() -> GovState {
+    GovState::new_with_core(crate::real_store::core().await, None, None)
+        .await
+        .expect("native Store constructs")
 }
 
 fn limit(metric: LimitMetric, amount: u64, per: Option<LimitWindow>) -> LimitCfg {
@@ -110,9 +115,9 @@ fn assert_blocked(
     }
 }
 
-#[test]
-fn requests_per_minute_enforced_and_window_rolls() {
-    let g = gov();
+#[tokio::test]
+async fn requests_per_minute_enforced_and_window_rolls() {
+    let g = gov().await;
     let cm = model(&[(
         "bob",
         group_cfg(
@@ -133,9 +138,9 @@ fn requests_per_minute_enforced_and_window_rolls() {
         .expect("new window admits");
 }
 
-#[test]
-fn hour_and_day_windows_enforce_independently() {
-    let g = gov();
+#[tokio::test]
+async fn hour_and_day_windows_enforce_independently() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -171,9 +176,9 @@ fn hour_and_day_windows_enforce_independently() {
     );
 }
 
-#[test]
-fn total_window_blocks_without_retry_after() {
-    let g = gov();
+#[tokio::test]
+async fn total_window_blocks_without_retry_after() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -193,9 +198,9 @@ fn total_window_blocks_without_retry_after() {
     );
 }
 
-#[test]
-fn tokens_cap_blocks_after_ledger_crosses() {
-    let g = gov();
+#[tokio::test]
+async fn tokens_cap_blocks_after_ledger_crosses() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -242,9 +247,9 @@ fn toks_tiers(
     m
 }
 
-#[test]
-fn tokens_input_cap_blocks_on_input_tier_only() {
-    let g = gov();
+#[tokio::test]
+async fn tokens_input_cap_blocks_on_input_tier_only() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -279,9 +284,9 @@ fn tokens_input_cap_blocks_on_input_tier_only() {
     g.try_admit(&cm, &k, "", now + 60).expect("fresh window");
 }
 
-#[test]
-fn cached_read_tokens_do_not_count_against_tokens_input() {
-    let g = gov();
+#[tokio::test]
+async fn cached_read_tokens_do_not_count_against_tokens_input() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -312,9 +317,9 @@ fn cached_read_tokens_do_not_count_against_tokens_input() {
     );
 }
 
-#[test]
-fn tokens_cache_write_cap_blocks_on_its_tier() {
-    let g = gov();
+#[tokio::test]
+async fn tokens_cache_write_cap_blocks_on_its_tier() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -344,9 +349,9 @@ fn tokens_cache_write_cap_blocks_on_its_tier() {
     );
 }
 
-#[test]
-fn budget_cap_derives_from_ledger_and_rate_card() {
-    let g = gov();
+#[tokio::test]
+async fn budget_cap_derives_from_ledger_and_rate_card() {
+    let g = gov().await;
 
     let cm = model_with_card(
         &[(
@@ -375,9 +380,9 @@ fn budget_cap_derives_from_ledger_and_rate_card() {
     );
 }
 
-#[test]
-fn per_request_fee_counts_into_group_budget() {
-    let g = gov();
+#[tokio::test]
+async fn per_request_fee_counts_into_group_budget() {
+    let g = gov().await;
     let cm = model_with_card(
         &[(
             "g",
@@ -407,9 +412,9 @@ fn per_request_fee_counts_into_group_budget() {
         .expect("refund re-opened the cap");
 }
 
-#[test]
-fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
-    let g = gov();
+#[tokio::test]
+async fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
+    let g = gov().await;
 
     let cm = model_with_card(
         &[(
@@ -443,7 +448,8 @@ fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
     );
 
     let u = g
-        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+        .await
         .unwrap();
     assert_eq!(u.requests, 2, "admission count is never refunded");
     assert_eq!(
@@ -452,9 +458,9 @@ fn refund_returns_the_fee_but_never_the_requests_limit_slot() {
     );
 }
 
-#[test]
-fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
-    let g = gov();
+#[tokio::test]
+async fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
+    let g = gov().await;
     let cm = model_with_card(
         &[(
             "g",
@@ -489,7 +495,8 @@ fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
 
     g.refund_charge(straddler.charge());
     let u = g
-        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, after)
+        .derived_bucket_usage_async(&cm, "group:g@minute", "minute", true, after)
+        .await
         .expect("the rolled cell reads");
     assert_eq!(
         u.spend_cents, 10,
@@ -499,9 +506,9 @@ fn a_refund_after_a_window_roll_reaches_the_cell_the_charge_reached() {
         .expect("the returned fee re-opened the budget the failed straddler was holding");
 }
 
-#[test]
-fn concurrent_gauge_holds_and_releases() {
-    let g = gov();
+#[tokio::test]
+async fn concurrent_gauge_holds_and_releases() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(None, true, vec![limit(LimitMetric::Concurrent, 2, None)]),
@@ -527,9 +534,9 @@ fn concurrent_gauge_holds_and_releases() {
     assert_eq!(g.concurrent_in_flight("g"), 0, "all holds released");
 }
 
-#[test]
-fn rejected_admission_releases_concurrent_holds() {
-    let g = gov();
+#[tokio::test]
+async fn rejected_admission_releases_concurrent_holds() {
+    let g = gov().await;
     let cm = model(&[
         (
             "parent",
@@ -567,9 +574,9 @@ fn rejected_admission_releases_concurrent_holds() {
     );
 }
 
-#[test]
-fn chain_and_parent_blocks_child_and_charges_nothing() {
-    let g = gov();
+#[tokio::test]
+async fn chain_and_parent_blocks_child_and_charges_nothing() {
+    let g = gov().await;
     let cm = model(&[
         (
             "acme",
@@ -602,14 +609,15 @@ fn chain_and_parent_blocks_child_and_charges_nothing() {
     );
 
     let child = g
-        .derived_bucket_usage(&cm, "group:growth@minute", "minute", true, now)
+        .derived_bucket_usage_async(&cm, "group:growth@minute", "minute", true, now)
+        .await
         .unwrap();
     assert_eq!(child.requests, 2);
 }
 
-#[test]
-fn runtime_added_user_leaf_is_capped_by_the_team_ceiling() {
-    let g = gov();
+#[tokio::test]
+async fn runtime_added_user_leaf_is_capped_by_the_team_ceiling() {
+    let g = gov().await;
 
     let base = model(&[(
         "team",
@@ -652,9 +660,9 @@ fn runtime_added_user_leaf_is_capped_by_the_team_ceiling() {
     );
 }
 
-#[test]
-fn disabled_group_freezes_the_chain() {
-    let g = gov();
+#[tokio::test]
+async fn disabled_group_freezes_the_chain() {
+    let g = gov().await;
     let build = |parent_enabled: bool| {
         model(&[
             (
@@ -681,7 +689,8 @@ fn disabled_group_freezes_the_chain() {
     }
 
     let hist = g
-        .derived_bucket_usage(&frozen, "group:parent@minute", "minute", true, now)
+        .derived_bucket_usage_async(&frozen, "group:parent@minute", "minute", true, now)
+        .await
         .unwrap();
     assert_eq!(hist.requests, 1, "freezing keeps history");
 
@@ -689,9 +698,9 @@ fn disabled_group_freezes_the_chain() {
         .expect("unfrozen admits");
 }
 
-#[test]
-fn key_with_no_group_is_unlimited() {
-    let g = gov();
+#[tokio::test]
+async fn key_with_no_group_is_unlimited() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -705,23 +714,25 @@ fn key_with_no_group_is_unlimited() {
     for _ in 0..100 {
         g.try_admit(&cm, &k, "", now).expect("no group = no caps");
     }
-    let usage = g.usage_for(&cm, "vk_free", now).unwrap();
+    let usage = g.usage_for_async(&cm, "vk_free", now).await.unwrap();
 
     assert!(usage.is_none());
     let bucket = g
-        .derived_bucket_usage(&cm, "vk_free", super::WINDOW_TOTAL, true, now)
+        .derived_bucket_usage_async(&cm, "vk_free", super::WINDOW_TOTAL, true, now)
+        .await
         .unwrap();
     assert_eq!(bucket.requests, 100);
 
     let other = g
-        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@minute", "minute", true, now)
+        .await
         .unwrap();
     assert_eq!(other.requests, 0);
 }
 
-#[test]
-fn missing_group_fails_closed() {
-    let g = gov();
+#[tokio::test]
+async fn missing_group_fails_closed() {
+    let g = gov().await;
     let cm = model(&[]);
     let k = key("vk_ghost", Some("ghost"));
     match g.try_admit(&cm, &k, "", 1_700_000_000).unwrap_err() {
@@ -730,10 +741,12 @@ fn missing_group_fails_closed() {
     }
 }
 
-#[test]
-fn accrual_and_hydrate_cover_every_chain_bucket() {
-    let store = crate::real_store::store();
-    let g = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn accrual_and_hydrate_cover_every_chain_bucket() {
+    let store = crate::real_store::core().await;
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let cm = model_with_card(
         &[(
             "g",
@@ -762,7 +775,8 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
             super::WINDOW_MONTH
         };
         let u = g
-            .derived_bucket_usage(&cm, bucket, window, true, now)
+            .derived_bucket_usage_async(&cm, bucket, window, true, now)
+            .await
             .unwrap();
         assert_eq!(
             u.tokens.whole_for_test(),
@@ -771,11 +785,14 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
         );
     }
 
-    assert!(g.flush_budgets() >= 1);
-    let g2 = GovState::new(store, None).unwrap();
-    g2.hydrate_budgets(&cm, now).unwrap();
+    assert!(g.flush_budgets().await >= 1);
+    let g2 = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    g2.hydrate_budgets_async(&cm, now).await.unwrap();
     let day = g2
-        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+        .await
         .unwrap();
     assert_eq!(
         day.tokens.whole_for_test(),
@@ -783,7 +800,8 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
         "hydrate restored the day bucket"
     );
     let month = g2
-        .derived_bucket_usage(&cm, "group:g@month", "month", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@month", "month", true, now)
+        .await
         .unwrap();
     assert_eq!(
         month.tokens.whole_for_test(),
@@ -792,9 +810,9 @@ fn accrual_and_hydrate_cover_every_chain_bucket() {
     );
 }
 
-#[test]
-fn rate_headroom_reads_the_chain() {
-    let g = gov();
+#[tokio::test]
+async fn rate_headroom_reads_the_chain() {
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -831,9 +849,9 @@ fn pooled(metric: LimitMetric, amount: u64, per: LimitWindow, pool: &str) -> Lim
     }
 }
 
-#[test]
-fn pool_scoped_budgets_account_independently() {
-    let g = gov();
+#[tokio::test]
+async fn pool_scoped_budgets_account_independently() {
+    let g = gov().await;
     let cm = model_with_card(
         &[(
             "team",
@@ -883,9 +901,9 @@ fn pool_scoped_budgets_account_independently() {
         .expect("unqualified pool is not pool-capped");
 }
 
-#[test]
-fn group_wide_limit_ands_with_pool_scoped() {
-    let g = gov();
+#[tokio::test]
+async fn group_wide_limit_ands_with_pool_scoped() {
+    let g = gov().await;
     let cm = model_with_card(
         &[(
             "team",
@@ -916,9 +934,9 @@ fn group_wide_limit_ands_with_pool_scoped() {
     );
 }
 
-#[test]
-fn pool_scoped_accrual_and_refund_mirror_the_charge() {
-    let g = gov();
+#[tokio::test]
+async fn pool_scoped_accrual_and_refund_mirror_the_charge() {
+    let g = gov().await;
 
     let cm = model_with_card(
         &[(
@@ -948,7 +966,7 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         other => panic!("expected value's budget to block, got {other:?}"),
     }
 
-    let g2 = gov();
+    let g2 = gov().await;
     let cm2 = model_with_card(
         &[(
             "team",
@@ -974,9 +992,9 @@ fn pool_scoped_accrual_and_refund_mirror_the_charge() {
         .expect("the refunded fee re-opened frontier's bucket");
 }
 
-#[test]
-fn budget_block_carries_downgrade_target() {
-    let g = gov();
+#[tokio::test]
+async fn budget_block_carries_downgrade_target() {
+    let g = gov().await;
     let mut teach = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
     teach.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
     teach.downgrade_to = Some(ScopeRef::pool("value"));
@@ -997,7 +1015,7 @@ fn budget_block_carries_downgrade_target() {
     g.try_admit(&cm, &k, "value", now)
         .expect("the value pool is not capped here");
 
-    let g2 = gov();
+    let g2 = gov().await;
     let mut tight = pooled(LimitMetric::Budget, 25, LimitWindow::Day, "frontier");
     tight.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
     tight.downgrade_to = Some(ScopeRef::pool("value"));
@@ -1018,8 +1036,8 @@ fn budget_block_carries_downgrade_target() {
     }
 }
 
-#[test]
-fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
+#[tokio::test]
+async fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
     let card: BTreeMap<String, crate::config::RateEntryCfg> =
         serde_yaml::from_str("rerank: { input_utok: 1, units: { search_units: 2000 } }\n")
             .expect("an open class parses under units:");
@@ -1033,7 +1051,7 @@ fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
     )]
     .into();
     let cm = CostModel::resolve_parts(Some(&card), 0, &groups);
-    let g = gov();
+    let g = gov().await;
     let k = key("vk_rerank", Some("g"));
     let now = 1_700_000_000;
     let search = |n: u64| BTreeMap::from([("search_units".to_string(), n)]);
@@ -1041,7 +1059,8 @@ fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
     g.try_admit(&cm, &k, "", now).expect("nothing spent");
     g.record_usage(&cm, &k, "", "rerank", &search(499), now);
     let read = g
-        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+        .await
         .expect("the read prices");
     assert_eq!(
         read.spend_cents, 99,
@@ -1056,7 +1075,8 @@ fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
 
     g.record_usage(&cm, &k, "", "rerank", &search(1), now);
     let read = g
-        .derived_bucket_usage(&cm, "group:g@day", "day", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+        .await
         .expect("the read prices");
     assert_eq!(read.spend_cents, 100, "500 search units = the whole budget");
     assert_blocked(
@@ -1068,8 +1088,8 @@ fn an_open_class_priced_in_config_is_charged_and_capped_end_to_end() {
     );
 }
 
-#[test]
-fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero() {
+#[tokio::test]
+async fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero() {
     let groups: BTreeMap<String, GroupCfg> = [(
         "g".to_string(),
         group_cfg(
@@ -1103,7 +1123,7 @@ fn an_open_class_the_present_card_does_not_price_refuses_and_absent_reads_zero()
         ),
         "a present card silent about a hit class refuses (#42)"
     );
-    let g = gov();
+    let g = gov().await;
     g.record_usage(&cm, &k, "", "rerank", &units, now);
     assert_blocked(
         g.try_admit(&cm, &k, "", now).unwrap_err(),
@@ -1184,8 +1204,8 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
         door: None,
     };
 
-#[test]
-fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
+#[tokio::test]
+async fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
     const CHILD: &str =
         "BUSBAR_OWNER_REGISTRY_TOKENS_CAP_COUNTS_EVERY_TOKEN_FAMILY_CLASS_A_PLANE_DECLARES";
     if std::env::var_os(CHILD).is_none() {
@@ -1208,7 +1228,7 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
         return;
     }
     crate::plane_driver::registry::publish_planes(&[&TOKEN_FAMILY_PLANE]);
-    let g = gov();
+    let g = gov().await;
     let cm = model(&[(
         "g",
         group_cfg(
@@ -1242,7 +1262,8 @@ fn tokens_cap_counts_every_token_family_class_a_plane_declares() {
         now,
     );
     let read = g
-        .derived_bucket_usage(&cm, "group:g@minute", "minute", true, now)
+        .derived_bucket_usage_async(&cm, "group:g@minute", "minute", true, now)
+        .await
         .expect("the read derives");
     assert_eq!(
         read.tokens.whole_for_test(),
@@ -1262,8 +1283,10 @@ fn era_now() -> u64 {
     crate::rate_apply::effective_from_at(crate::store::now_ms())
 }
 
-fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
-    g.store
+async fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
+    g.core_store()
+        .unwrap()
+        .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
             scale: 0,
             key_id: key_id.to_string(),
@@ -1281,13 +1304,14 @@ fn metered(g: &GovState, key_id: &str, model: &str, n: u64, now: u64) {
             priced_from_ms: era_now(),
             usage_units: Default::default(),
         })
+        .await
         .expect("the memory store accepts a metering delta");
 }
 
-#[test]
-fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
+#[tokio::test]
+async fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
     use busbar_contract::records::UNIT_INPUT;
-    let g = gov();
+    let g = gov().await;
     let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
     let cm = model_with_card(
         &[("g", group_cfg(None, true, vec![day]))],
@@ -1295,14 +1319,25 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         &[("m", 2.5, 0.0)],
     );
     let k = key("vk_q51_adjust_reads", Some("g"));
-    g.store.put_key(&k).expect("key persists");
+    g.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&k)
+        .await
+        .expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(1_000_000, 0), now);
-    metered(&g, &k.id, "m", 1_000_000, now);
-    let read = |g: &GovState| {
-        let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
-        let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
-        let gauge = g.bucket_model_tokens(&k.id, super::WINDOW_TOTAL, now);
+    metered(&g, &k.id, "m", 1_000_000, now).await;
+    let read = async |g: &GovState| {
+        let key = g.usage_for_async(&cm, &k.id, now).await.unwrap().unwrap();
+        let group = (g
+            .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+            .await)
+            .unwrap();
+        let gauge = g
+            .bucket_model_tokens_async(&k.id, super::WINDOW_TOTAL, now)
+            .await
+            .unwrap();
         (
             key.spend_cents,
             key.tokens.whole_for_test(),
@@ -1310,7 +1345,11 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
             gauge[0].1[UNIT_INPUT].whole_for_test(),
         )
     };
-    assert_eq!(read(&g), (250, 1_000_000, 250, 1_000_000), "as recorded");
+    assert_eq!(
+        read(&g).await,
+        (250, 1_000_000, 250, 1_000_000),
+        "as recorded"
+    );
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
     let adjustment = super::Adjustment {
         key_id: &k.id,
@@ -1322,16 +1361,17 @@ fn an_adjust_moves_the_key_group_and_metrics_reads_of_the_budget_book() {
         delta: &delta,
         now,
     };
-    g.adjust_usage(&cm, &adjustment)
+    g.adjust_usage_async(&cm, &adjustment)
+        .await
         .expect("the store reads")
         .expect("the correction applies");
-    assert_eq!(read(&g), (200, 800_000, 200, 800_000), "as corrected");
+    assert_eq!(read(&g).await, (200, 800_000, 200, 800_000), "as corrected");
 }
 
-#[test]
-fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
+#[tokio::test]
+async fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
     use busbar_contract::records::UNIT_INPUT;
-    let g = gov();
+    let g = gov().await;
     let day = limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day));
     let cm = model_with_card(
         &[("g", group_cfg(None, true, vec![day]))],
@@ -1339,16 +1379,24 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         &[("m", 2.5, 0.0)],
     );
     let k = key("vk_adjust_exceeds", Some("g"));
-    g.store.put_key(&k).expect("key persists");
+    g.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&k)
+        .await
+        .expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(1_000, 0), now);
-    metered(&g, &k.id, "m", 1_000, now);
-    let read = |g: &GovState| {
-        let key = g.usage_for(&cm, &k.id, now).unwrap().unwrap();
-        let group = (g.derived_bucket_usage(&cm, "group:g@day", "day", true, now)).unwrap();
+    metered(&g, &k.id, "m", 1_000, now).await;
+    let read = async |g: &GovState| {
+        let key = g.usage_for_async(&cm, &k.id, now).await.unwrap().unwrap();
+        let group = (g
+            .derived_bucket_usage_async(&cm, "group:g@day", "day", true, now)
+            .await)
+            .unwrap();
         (key.tokens.whole_for_test(), group.tokens.whole_for_test())
     };
-    assert_eq!(read(&g), (1_000, 1_000));
+    assert_eq!(read(&g).await, (1_000, 1_000));
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -1_001i64)]);
     let adjustment = super::Adjustment {
         key_id: &k.id,
@@ -1360,7 +1408,11 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         delta: &delta,
         now,
     };
-    match g.adjust_usage(&cm, &adjustment).expect("the store reads") {
+    match g
+        .adjust_usage_async(&cm, &adjustment)
+        .await
+        .expect("the store reads")
+    {
         Err(super::AdjustRefused::Exceeds { count, delta, .. }) => {
             assert_eq!(
                 (count, delta),
@@ -1372,7 +1424,11 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         }
         other => panic!("a correction past the count is refused, got {other:?}"),
     }
-    assert_eq!(read(&g), (1_000, 1_000), "nothing was applied anywhere");
+    assert_eq!(
+        read(&g).await,
+        (1_000, 1_000),
+        "nothing was applied anywhere"
+    );
 
     let other_lane = super::Adjustment {
         model: "never-served",
@@ -1380,7 +1436,9 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         ..adjustment
     };
     assert!(matches!(
-        g.adjust_usage(&cm, &other_lane).expect("the store reads"),
+        g.adjust_usage_async(&cm, &other_lane)
+            .await
+            .expect("the store reads"),
         Err(super::AdjustRefused::NotMetered { .. })
     ));
 
@@ -1389,7 +1447,9 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         ..adjustment.clone()
     };
     assert_eq!(
-        g.adjust_usage(&cm, &unknown).expect("the store reads"),
+        g.adjust_usage_async(&cm, &unknown)
+            .await
+            .expect("the store reads"),
         Err(super::AdjustRefused::UnknownKey)
     );
     let empty = BTreeMap::from([(UNIT_INPUT.to_string(), 0i64)]);
@@ -1398,14 +1458,16 @@ fn an_adjust_larger_than_its_segment_is_refused_and_moves_nothing() {
         ..adjustment
     };
     assert_eq!(
-        g.adjust_usage(&cm, &nothing).expect("the store reads"),
+        g.adjust_usage_async(&cm, &nothing)
+            .await
+            .expect("the store reads"),
         Err(super::AdjustRefused::Empty)
     );
 }
 
-fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool, i64) {
+async fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool, i64) {
     use busbar_contract::records::UNIT_INPUT;
-    let g = gov();
+    let g = gov().await;
     let day = limit(LimitMetric::Budget, 300, Some(LimitWindow::Day));
     let group = id.trim_start_matches("vk_");
     let cm = model_with_card(
@@ -1414,10 +1476,15 @@ fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool,
         &[("m", 2.5, 0.0)],
     );
     let k = key(id, Some(group));
-    g.store.put_key(&k).expect("key persists");
+    g.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&k)
+        .await
+        .expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "", "m", &toks(recorded, 0), now);
-    metered(&g, &k.id, "m", recorded, now);
+    metered(&g, &k.id, "m", recorded, now).await;
     let signed = |n: u64| i64::try_from(n).expect("the fixture's counts fit i64");
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), signed(corrected) - signed(recorded))]);
     let adjustment = super::Adjustment {
@@ -1430,36 +1497,42 @@ fn admit_after_adjust(id: &'static str, recorded: u64, corrected: u64) -> (bool,
         delta: &delta,
         now,
     };
-    g.adjust_usage(&cm, &adjustment)
+    g.adjust_usage_async(&cm, &adjustment)
+        .await
         .expect("the store reads")
         .expect("the correction applies");
     let bucket = format!("group:{group}@day");
-    let read = (g.derived_bucket_usage(&cm, &bucket, "day", true, now))
+    let read = (g
+        .derived_bucket_usage_async(&cm, &bucket, "day", true, now)
+        .await)
         .expect("the read derives")
         .spend_cents;
     (g.try_admit(&cm, &k, "", now).is_ok(), read)
 }
 
-#[test]
-fn an_upward_adjust_past_the_cap_is_enforced_at_admission() {
+#[tokio::test]
+async fn an_upward_adjust_past_the_cap_is_enforced_at_admission() {
     assert_eq!(
-        admit_after_adjust("vk_q51_door_up", 1_000_000, 1_400_000),
+        admit_after_adjust("vk_q51_door_up", 1_000_000, 1_400_000).await,
         (false, 350),
         "the book reads 350 of 300 cents, so admission refuses"
     );
 }
 
-#[test]
-fn a_downward_adjust_under_the_cap_admits_at_admission() {
+#[tokio::test]
+async fn a_downward_adjust_under_the_cap_admits_at_admission() {
     assert_eq!(
-        admit_after_adjust("vk_q51_door_down", 1_300_000, 800_000),
+        admit_after_adjust("vk_q51_door_down", 1_300_000, 800_000).await,
         (true, 200),
         "the book reads 200 of 300 cents, so admission admits"
     );
 }
 
-fn q64_two_pools(id: &'static str, group: &'static str) -> (GovState, CostModel, VirtualKey, u64) {
-    let g = gov();
+async fn q64_two_pools(
+    id: &'static str,
+    group: &'static str,
+) -> (GovState, CostModel, VirtualKey, u64) {
+    let g = gov().await;
     let limits = vec![
         limit(LimitMetric::Budget, 100_000, Some(LimitWindow::Day)),
         pooled(LimitMetric::Budget, 100_000, LimitWindow::Day, "pool-a"),
@@ -1471,15 +1544,20 @@ fn q64_two_pools(id: &'static str, group: &'static str) -> (GovState, CostModel,
         &[("m", 2.5, 0.0)],
     );
     let k = key(id, Some(group));
-    g.store.put_key(&k).expect("key persists");
+    g.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&k)
+        .await
+        .expect("key persists");
     let now = crate::store::now();
     g.record_usage(&cm, &k, "pool-a", "m", &toks(1_000_000, 0), now);
     g.record_usage(&cm, &k, "pool-b", "m", &toks(1_000_000, 0), now);
-    metered(&g, &k.id, "m", 2_000_000, now);
+    metered(&g, &k.id, "m", 2_000_000, now).await;
     (g, cm, k, now)
 }
 
-fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&str>) {
+async fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&str>) {
     use busbar_contract::records::UNIT_INPUT;
     let delta = BTreeMap::from([(UNIT_INPUT.to_string(), -200_000i64)]);
     let adjustment = super::Adjustment {
@@ -1492,25 +1570,28 @@ fn q64_adjust(g: &GovState, cm: &CostModel, id: &str, now: u64, pool: Option<&st
         delta: &delta,
         now,
     };
-    g.adjust_usage(cm, &adjustment)
+    g.adjust_usage_async(cm, &adjustment)
+        .await
         .expect("the store reads")
         .expect("the correction applies");
 }
 
-fn q64_read(
+async fn q64_read(
     g: &GovState,
     cm: &CostModel,
     k: &VirtualKey,
     group: &str,
     now: u64,
 ) -> [(i64, u64); 4] {
-    let key = g.usage_for(cm, &k.id, now).unwrap().unwrap();
-    let bucket = |suffix: &str| {
+    let key = g.usage_for_async(cm, &k.id, now).await.unwrap().unwrap();
+    let bucket = async |suffix: &str| {
         let id = format!("group:{group}@day{suffix}");
-        let spend = (g.derived_bucket_usage(cm, &id, "day", true, now))
+        let spend = (g
+            .derived_bucket_usage_async(cm, &id, "day", true, now)
+            .await)
             .unwrap()
             .spend_cents;
-        let gauge = g.bucket_model_tokens(&id, "day", now);
+        let gauge = g.bucket_model_tokens_async(&id, "day", now).await.unwrap();
         (
             spend,
             gauge[0].1[busbar_contract::records::UNIT_INPUT].whole_for_test(),
@@ -1518,15 +1599,15 @@ fn q64_read(
     };
     [
         (key.spend_cents, key.tokens.whole_for_test()),
-        bucket(""),
-        bucket("#pool:pool-a"),
-        bucket("#pool:pool-b"),
+        bucket("").await,
+        bucket("#pool:pool-a").await,
+        bucket("#pool:pool-b").await,
     ]
 }
 
-#[test]
-fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
-    let (g, cm, k, now) = q64_two_pools("vk_q64_pooled", "q64p");
+#[tokio::test]
+async fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
+    let (g, cm, k, now) = q64_two_pools("vk_q64_pooled", "q64p").await;
     let read = || q64_read(&g, &cm, &k, "q64p", now);
     let recorded = [
         (500, 2_000_000),
@@ -1534,10 +1615,10 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
         (250, 1_000_000),
         (250, 1_000_000),
     ];
-    assert_eq!(read(), recorded, "as recorded");
-    q64_adjust(&g, &cm, "vk_q64_pooled", now, Some("pool-a"));
+    assert_eq!(read().await, recorded, "as recorded");
+    q64_adjust(&g, &cm, "vk_q64_pooled", now, Some("pool-a")).await;
     assert_eq!(
-        read(),
+        read().await,
         [
             (450, 1_800_000),
             (450, 1_800_000),
@@ -1548,12 +1629,12 @@ fn a_pooled_adjust_moves_its_own_pool_bucket_and_no_other() {
     );
 }
 
-#[test]
-fn an_adjust_naming_no_pool_moves_no_pool_bucket() {
-    let (g, cm, k, now) = q64_two_pools("vk_q64_unscoped", "q64u");
-    q64_adjust(&g, &cm, "vk_q64_unscoped", now, None);
+#[tokio::test]
+async fn an_adjust_naming_no_pool_moves_no_pool_bucket() {
+    let (g, cm, k, now) = q64_two_pools("vk_q64_unscoped", "q64u").await;
+    q64_adjust(&g, &cm, "vk_q64_unscoped", now, None).await;
     assert_eq!(
-        q64_read(&g, &cm, &k, "q64u", now),
+        q64_read(&g, &cm, &k, "q64u", now).await,
         [
             (450, 1_800_000),
             (450, 1_800_000),
@@ -1581,9 +1662,9 @@ fn expected_input(n: u64) -> BTreeMap<String, u64> {
     BTreeMap::from([(busbar_contract::records::UNIT_INPUT.to_string(), n)])
 }
 
-#[test]
-fn an_estimate_budget_refuses_at_the_dearest_destination_and_charges_nothing() {
-    let g = gov();
+#[tokio::test]
+async fn an_estimate_budget_refuses_at_the_dearest_destination_and_charges_nothing() {
+    let g = gov().await;
     let cm = estimate_card(vec![estimate_budget(Some(
         crate::config::groups::AdmissionMode::Estimate,
     ))]);
@@ -1612,9 +1693,9 @@ fn an_estimate_budget_refuses_at_the_dearest_destination_and_charges_nothing() {
     );
 }
 
-#[test]
-fn an_exact_budget_ignores_the_estimate() {
-    let g = gov();
+#[tokio::test]
+async fn an_exact_budget_ignores_the_estimate() {
+    let g = gov().await;
     let cm = estimate_card(vec![estimate_budget(None)]);
     let k = key("vk_exact", Some("team"));
     g.try_admit_estimated(
@@ -1628,9 +1709,9 @@ fn an_exact_budget_ignores_the_estimate() {
     .expect("exact refuses only a budget already exhausted");
 }
 
-#[test]
-fn an_estimate_miss_downgrades_where_the_limit_declares_it() {
-    let g = gov();
+#[tokio::test]
+async fn an_estimate_miss_downgrades_where_the_limit_declares_it() {
+    let g = gov().await;
     let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
     l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
     l.downgrade_to = Some(ScopeRef::pool("value"));
@@ -1656,9 +1737,9 @@ fn an_estimate_miss_downgrades_where_the_limit_declares_it() {
     }
 }
 
-#[test]
-fn an_unpriceable_estimate_blocks_and_never_downgrades() {
-    let g = gov();
+#[tokio::test]
+async fn an_unpriceable_estimate_blocks_and_never_downgrades() {
+    let g = gov().await;
     let mut l = estimate_budget(Some(crate::config::groups::AdmissionMode::Estimate));
     l.on_exhaust = Some(crate::config::groups::OnExhaust::Downgrade);
     l.downgrade_to = Some(ScopeRef::pool("value"));
@@ -1684,9 +1765,9 @@ fn an_unpriceable_estimate_blocks_and_never_downgrades() {
     }
 }
 
-#[test]
-fn the_estimate_is_never_billed_or_held() {
-    let g = gov();
+#[tokio::test]
+async fn the_estimate_is_never_billed_or_held() {
+    let g = gov().await;
     let cm = estimate_card(vec![estimate_budget(Some(
         crate::config::groups::AdmissionMode::Estimate,
     ))]);
@@ -1712,103 +1793,6 @@ fn the_estimate_is_never_billed_or_held() {
         vec![10 * busbar_kernel_ledger::cost::MICROS_PER_CENT],
         "the fee alone, never the estimate"
     );
-}
-
-struct FlakyStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    down: std::sync::atomic::AtomicBool,
-    meter_down: std::sync::atomic::AtomicBool,
-    era_down: std::sync::atomic::AtomicBool,
-    before_add: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    lose_correction_reply: std::sync::atomic::AtomicBool,
-    correction_calls: std::sync::Mutex<Vec<busbar_contract::records::correction::Request>>,
-}
-
-impl FlakyStore {
-    fn new() -> Self {
-        Self {
-            inner: crate::real_store::store(),
-            down: std::sync::atomic::AtomicBool::new(false),
-            meter_down: std::sync::atomic::AtomicBool::new(false),
-            era_down: std::sync::atomic::AtomicBool::new(false),
-            before_add: std::sync::Mutex::new(None),
-            lose_correction_reply: std::sync::atomic::AtomicBool::new(false),
-            correction_calls: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-    fn set_down(&self, down: bool) {
-        self.down.store(down, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-impl RecordStore for FlakyStore {
-    fn supports_usage_correction(&self) -> bool {
-        true
-    }
-    fn apply_usage_correction(
-        &self,
-        request: &busbar_contract::records::correction::Request,
-    ) -> RecordStoreResult<busbar_contract::records::correction::Decision> {
-        self.correction_calls.lock().unwrap().push(request.clone());
-        let hook = self.before_add.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("planted correction write failure".into()));
-        }
-        let result = self.inner.apply_usage_correction(request);
-        if self
-            .lose_correction_reply
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(RecordStoreError("planted lost correction reply".into()));
-        }
-        result
-    }
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(&self, bucket_id: &str, window: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window, l)
-    }
-    fn add_usage(&self, bucket_id: &str, window: u64, d: &UsageDelta) -> RecordStoreResult<()> {
-        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("the store is down".to_string()));
-        }
-        let hook = self.before_add.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-        if self.down.load(std::sync::atomic::Ordering::SeqCst)
-            || (bucket_id.starts_with(super::ERA_BUCKET_PREFIX)
-                && self.era_down.load(std::sync::atomic::Ordering::SeqCst))
-        {
-            return Err(RecordStoreError("planted usage write failure".to_string()));
-        }
-        self.inner.add_usage(bucket_id, window, d)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        if self.meter_down.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("the metering store is down".to_string()));
-        }
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
 }
 
 #[path = "ledger_ownership_cases.rs"]
@@ -1839,9 +1823,11 @@ fn minute_fee_model() -> CostModel {
     )
 }
 
-fn minute_row(store: &dyn RecordStore, bucket: &str, at: u64) -> (u64, u64, u64, u64) {
+async fn minute_row(store: &CoreStore, bucket: &str, at: u64) -> (u64, u64, u64, u64) {
     let row = store
+        .ledger()
         .get_usage(bucket, crate::governance::budget_window("minute", at))
+        .await
         .expect("the store reads");
     let m = row.models.iter().find(|m| m.model == "m");
     let unit = |u: &str| {
@@ -1860,10 +1846,12 @@ fn minute_row(store: &dyn RecordStore, bucket: &str, at: u64) -> (u64, u64, u64,
     )
 }
 
-#[test]
-fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
-    let store = crate::real_store::store();
-    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+#[tokio::test]
+async fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
+    let store = crate::real_store::core().await;
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_roll_delta", Some("g"));
     let w = 1_700_000_040;
@@ -1874,30 +1862,32 @@ fn a_window_roll_before_the_flush_keeps_the_old_windows_counts() {
     g.record_usage(&cm, &k, "", "m", &toks(1_000, 200), w);
     g.try_admit(&cm, &k, "", w1)
         .expect("W+1 admits and rolls the cell");
-    g.flush_budgets();
+    g.flush_budgets().await;
 
     assert_eq!(
-        minute_row(store.as_ref(), bucket, w),
+        minute_row(store.core().as_ref(), bucket, w).await,
         (1, 1, 1_000, 200),
         "W's request, fee and tokens reach W's durable row"
     );
     assert_eq!(
-        minute_row(store.as_ref(), bucket, w1),
+        minute_row(store.core().as_ref(), bucket, w1).await,
         (1, 1, 0, 0),
         "W+1 holds only its own request"
     );
-    g.flush_budgets();
+    g.flush_budgets().await;
     assert_eq!(
-        minute_row(store.as_ref(), bucket, w),
+        minute_row(store.core().as_ref(), bucket, w).await,
         (1, 1, 1_000, 200),
         "a second flush writes nothing twice"
     );
 }
 
-#[test]
-fn a_store_outage_across_a_window_roll_retries_the_old_windows_delta() {
-    let store = Arc::new(FlakyStore::new());
-    let g = GovState::new(store.clone(), None).expect("store constructs");
+#[tokio::test]
+async fn a_store_outage_across_a_window_roll_retries_the_old_windows_delta() {
+    let store = Arc::new(FlakyStore::new().await);
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("store constructs");
     let cm = minute_fee_model();
     let k = key("vk_roll_outage", Some("g"));
     let w = 1_700_000_040;
@@ -1907,21 +1897,29 @@ fn a_store_outage_across_a_window_roll_retries_the_old_windows_delta() {
     store.set_down(true);
     g.try_admit(&cm, &k, "", w).expect("W admits");
     g.record_usage(&cm, &k, "", "m", &toks(500, 50), w);
-    g.flush_budgets();
+    g.flush_budgets().await;
     g.try_admit(&cm, &k, "", w1)
         .expect("W+1 admits and rolls the cell");
-    g.flush_budgets();
+    g.flush_budgets().await;
     store.set_down(false);
-    g.flush_budgets();
+    g.flush_budgets().await;
 
-    assert_eq!(minute_row(store.as_ref(), bucket, w), (1, 1, 500, 50));
-    assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
+    assert_eq!(
+        minute_row(store.core().as_ref(), bucket, w).await,
+        (1, 1, 500, 50)
+    );
+    assert_eq!(
+        minute_row(store.core().as_ref(), bucket, w1).await,
+        (1, 1, 0, 0)
+    );
 }
 
-#[test]
-fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
-    let store = Arc::new(FlakyStore::new());
-    let g = GovState::new(store.clone(), None).expect("store constructs");
+#[tokio::test]
+async fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
+    let store = Arc::new(FlakyStore::new().await);
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("store constructs");
     let w = 1_700_000_040;
     let now = w + 32 * super::SECS_PER_DAY;
     let window = crate::governance::budget_window("minute", w);
@@ -1948,19 +1946,23 @@ fn a_stale_cell_still_owing_the_store_survives_the_sweep_and_is_written() {
     );
     g.try_admit(&minute_fee_model(), &key("vk_sweep_owed", None), "", now)
         .expect("the key admits");
-    g.flush_budgets();
+    g.flush_budgets().await;
 
     assert_eq!(
-        minute_row(store.as_ref(), owed, w),
+        minute_row(store.core().as_ref(), owed, w).await,
         (1, 1, 0, 0),
         "the old window's parked counts reach its durable row"
     );
 }
 
-#[test]
-fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
-    let store = Arc::new(FlakyStore::new());
-    let g = Arc::new(GovState::new(store.clone(), None).expect("store constructs"));
+#[tokio::test]
+async fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
+    let store = Arc::new(FlakyStore::new().await);
+    let g = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .expect("store constructs"),
+    );
     let cm = minute_fee_model();
     let k = key("vk_roll_inflight", Some("g"));
     let w = 1_700_000_040;
@@ -1971,22 +1973,32 @@ fn a_window_roll_during_an_in_flight_flush_writes_the_old_window_once() {
     g.record_usage(&cm, &k, "", "m", &toks(300, 30), w);
     let (roller, cm2, k2) = (g.clone(), minute_fee_model(), k.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        roller
-            .try_admit(&cm2, &k2, "", w1)
-            .expect("W+1 admits mid-flush");
+        Box::pin(async move {
+            roller
+                .try_admit(&cm2, &k2, "", w1)
+                .expect("W+1 admits mid-flush");
+        })
     }));
-    g.flush_budgets();
-    g.flush_budgets();
-    g.flush_budgets();
+    g.flush_budgets().await;
+    g.flush_budgets().await;
+    g.flush_budgets().await;
 
-    assert_eq!(minute_row(store.as_ref(), bucket, w), (1, 1, 300, 30));
-    assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
+    assert_eq!(
+        minute_row(store.core().as_ref(), bucket, w).await,
+        (1, 1, 300, 30)
+    );
+    assert_eq!(
+        minute_row(store.core().as_ref(), bucket, w1).await,
+        (1, 1, 0, 0)
+    );
 }
 
-#[test]
-fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
-    let store = crate::real_store::store();
-    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+#[tokio::test]
+async fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
+    let store = crate::real_store::core().await;
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_refund_charged", Some("g"));
     let w = 1_700_000_040;
@@ -1998,18 +2010,24 @@ fn a_refund_after_a_roll_returns_the_fee_from_the_window_it_was_charged_in() {
         .expect("B admits in W+1 and rolls the cell");
     g.refund_charge(a.charge());
 
-    let live = (g.derived_bucket_usage(&cm, bucket, "minute", true, w1)).expect("W+1 reads");
+    let live = (g
+        .derived_bucket_usage_async(&cm, bucket, "minute", true, w1)
+        .await)
+        .expect("W+1 reads");
     assert_eq!(live.spend_cents, 10, "B's fee stays on W+1");
-    g.flush_budgets();
+    g.flush_budgets().await;
     assert_eq!(
-        minute_row(store.as_ref(), bucket, w),
+        minute_row(store.core().as_ref(), bucket, w).await,
         (1, 0, 0, 0),
         "W keeps A's request slot; A's fee came back from W"
     );
-    assert_eq!(minute_row(store.as_ref(), bucket, w1), (1, 1, 0, 0));
+    assert_eq!(
+        minute_row(store.core().as_ref(), bucket, w1).await,
+        (1, 1, 0, 0)
+    );
 }
 
-fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
+async fn captured<R>(f: impl std::future::Future<Output = R>) -> (R, Vec<String>) {
     use std::io::Write;
     #[derive(Clone, Default)]
     struct MeteringLog(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -2030,16 +2048,16 @@ fn captured<R>(f: impl FnOnce() -> R) -> (R, Vec<String>) {
         .with_ansi(false)
         .without_time()
         .finish();
-    let result = tracing::subscriber::with_default(subscriber, f);
+    let result = tracing::instrument::WithSubscriber::with_subscriber(f, subscriber).await;
     let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
     (result, text.lines().map(str::to_string).collect())
 }
 
-#[test]
-fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
+#[tokio::test]
+async fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let pending = PendingMetering::new();
-    let ((), lines) = captured(|| {
+    let ((), lines) = captured(async {
         for i in 0..(MAX_PENDING_METERING_PER_SHARD + 3) {
             let key: MeterKey = (
                 "vk_over".into(),
@@ -2052,7 +2070,8 @@ fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
             );
             pending.accrue(key, MeterCounts::default());
         }
-    });
+    })
+    .await;
     let warns: Vec<_> = lines
         .iter()
         .filter(|l| l.contains("metering accumulator at cap"))
@@ -2073,10 +2092,12 @@ fn metering_overflow_coalescing_warns_once_per_window_naming_the_count() {
     );
 }
 
-#[test]
-fn deleting_a_group_keeps_its_unflushed_spend_until_the_flush() {
-    let store = crate::real_store::store();
-    let g = GovState::new(store.clone(), None).expect("memory store constructs");
+#[tokio::test]
+async fn deleting_a_group_keeps_its_unflushed_spend_until_the_flush() {
+    let store = crate::real_store::core().await;
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("memory store constructs");
     let cm = minute_fee_model();
     let k = key("vk_reclaim", Some("g"));
     let w = 1_700_000_040;
@@ -2084,19 +2105,21 @@ fn deleting_a_group_keeps_its_unflushed_spend_until_the_flush() {
     g.record_usage(&cm, &k, "", "m", &toks(1_000, 200), w);
 
     g.reclaim_group_cells("g");
-    g.flush_budgets();
+    g.flush_budgets().await;
 
     assert_eq!(
-        minute_row(store.as_ref(), "group:g@minute", w),
+        minute_row(store.core().as_ref(), "group:g@minute", w).await,
         (1, 1, 1_000, 200),
         "the deleted group's usage row is complete"
     );
 }
 
-#[test]
-fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
-    let store = Arc::new(FlakyStore::new());
-    let g = GovState::new(store.clone(), None).expect("store constructs");
+#[tokio::test]
+async fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
+    let store = Arc::new(FlakyStore::new().await);
+    let g = GovState::new_with_core(store.core(), None, None)
+        .await
+        .expect("store constructs");
     let cm = minute_fee_model();
     let k = key("vk_shutdown", Some("g"));
     let w = 1_700_000_040;
@@ -2107,10 +2130,12 @@ fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
         .meter_down
         .store(true, std::sync::atomic::Ordering::SeqCst);
 
-    let (_, lines) = captured(|| {
-        g.flush_budgets_final();
-        g.flush_metering_final();
-    });
+    assert!(g.has_unsettled_persistence());
+    let (_, lines) = captured(async {
+        g.flush_budgets_final().await;
+        g.flush_metering_final().await;
+    })
+    .await;
     let errs: Vec<_> = lines
         .iter()
         .filter(|l| l.contains("shutdown") && l.contains("group:g@minute"))
@@ -2121,22 +2146,38 @@ fn a_shutdown_flush_against_a_down_store_names_what_is_unrecorded() {
         "one shutdown error naming the bucket: {lines:?}"
     );
     assert!(
-        !lines.iter().any(|l| l.contains("will retry next tick")),
+        !lines
+            .iter()
+            .any(|l| l.contains("retains exact operations for retry")),
         "the shutdown path never promises a retry: {lines:?}"
     );
-
-    let (_, lines) = captured(|| {
-        g.flush_budgets();
-    });
     assert!(
-        lines.iter().any(|l| l.contains("will retry next tick")),
+        g.has_unsettled_persistence(),
+        "failed flush retains its actual owner queues"
+    );
+
+    let (_, lines) = captured(async {
+        g.flush_budgets().await;
+    })
+    .await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("retains exact operations for retry")),
         "{lines:?}"
     );
+    store.set_down(false);
+    store
+        .meter_down
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    g.flush_budgets_final().await;
+    g.flush_metering_final().await;
+    assert!(!g.has_unsettled_persistence());
 }
 
-#[test]
-fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
-    let g = gov();
+#[tokio::test]
+async fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
+    let g = gov().await;
     let cm = model(&[(
         "fractions",
         group_cfg(
@@ -2174,9 +2215,9 @@ fn fractional_token_cap_uses_real_quantity_and_checked_accumulation() {
     assert!(g.try_admit(&cm, &k, "", now).is_err());
 }
 
-#[test]
-fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() {
-    let g = gov();
+#[tokio::test]
+async fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() {
+    let g = gov().await;
     let cm = model(&[(
         "full",
         group_cfg(

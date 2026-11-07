@@ -24,9 +24,9 @@ fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic(
                 )
             })
             .collect();
-        busbar_kernel::config::migration_table::install(Box::leak(rows.into_boxed_slice()));
+        busbar_kernel::config::declared_vocabulary::install(Box::leak(rows.into_boxed_slice()));
     });
-    let row = busbar_kernel::config::migration_table::text("login_brands");
+    let row = busbar_kernel::config::declared_vocabulary::text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
         .split(" | ")
         .map(|b| {

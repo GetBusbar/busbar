@@ -32,16 +32,12 @@
 //!    `handle.load()`. The body receives a [`Txn`] and nothing else — no `AppHandle`, no extractor
 //!    `Arc<App>`. `txn.app()` IS the post-lock snapshot, so a pre-lock read cannot be performed
 //!    inside the section: there is no other snapshot in scope.
-//! 2. **The body is SYNCHRONOUS.** `F: FnOnce(&Txn) -> Result<Outcome<T, E>, E>` has no
-//!    `async`, so it cannot `.await`. The "never hold the lock across a network await" contract is
-//!    now a type, not a comment — a configure-ack push physically cannot move inside the section.
-//!    Fresh authority verification is the sole bounded async admission step under the lock;
-//!    it runs before the body and again on the worker before effects, never after commit.
-//! 3. **Blocking work is structurally deferred.** The body never gets a `&dyn Store`, a
-//!    `&GovState`, or a filesystem step it can run inline. Store/disk work is handed to
-//!    [`Txn::read_store`] / [`Txn::store_write`] as a `FnOnce` that is *stored*, not called;
-//!    `config_transaction` is the only caller and it invokes it inside `tokio::task::spawn_blocking`.
-//!    A blocking round-trip therefore cannot stall the reactor from inside the critical section.
+//! 2. **Planning is synchronous.** The body returns a deferred effect. Native persistence
+//!    futures are awaited during application, under the configuration mutation guard.
+//!    Authority is checked before effects; committed work finishes custody after revocation.
+//! 3. **Blocking work is deferred.** Legacy callbacks execute on blocking workers, with a
+//!    fresh authority check after queue admission. Native persistence uses [`Txn::store_write_async`]
+//!    and never occupies a blocking worker for a Store round trip.
 //! 4. **Atomic mutate → persist → swap, fail-closed.** The body returns a *plan*
 //!    ([`Outcome`]), never a `Response`. The single application site is `config_transaction`, which
 //!    routes the plan through [`crate::state::AppHandle::commit_and_swap`] (persist first; swap only
@@ -50,23 +46,12 @@
 //!    publication. If prices refuse after config persistence, durable desired config remains in
 //!    its Store and the old carrier requires explicit reload; there is no cross-Store rollback.
 //!
-//! **Lock order.** `CONFIG_MUTATION_LOCK` is private to this file and is acquired ONLY by
-//! `config_transaction`; it is always released last (it is the outermost lock). `EXISTENCE_GATE`
-//! (the per-key-id claim serializing key-row check-then-write in the admin crate) is only ever
-//! claimed INSIDE a `spawn_blocking` closure and is never held across an await. There is thus a
-//! single global acquisition order (config lock, then existence claim) and no cycle.
+//! **Lock order.** Configuration mutation holds the outer async config guard before acquiring
+//! governance's async identity guard. Store-only identity effects never acquire the config guard.
 //!
-//! **Lock hold time.** The apply phase (persist, swap, and every deferred store/disk step) runs on a
-//! blocking thread that OWNS the guard, so the lock is held for as long as that work takes. It never
-//! parks the reactor (the entire point), but it does extend how long other mutations queue behind a
-//! slow store. That is the correct trade: before, the same read held the lock AND parked a worker
-//! thread, stalling every request the runtime was serving, not just the other mutations. Config
-//! mutations are rare admin operations.
-//!
-//! **Cancellation.** The guard is moved into that blocking task rather than held by the caller's
-//! future, because admin handler futures are DROPPED on a client reset or timeout. See
-//! [`config_transaction`] for why a borrowed guard let an abandoned section keep mutating the
-//! plugins directory with its lock already released.
+//! **Cancellation.** An owned task retains the configuration guard through deferred effects and
+//! publication even when the request future is dropped. Native persistence retains uncertain
+//! attempts in CoreStore; a failed persistence result never authorizes pointer publication.
 
 use std::sync::Arc;
 
@@ -113,8 +98,13 @@ impl TxnError {
 }
 
 pub type Persist = Box<dyn FnOnce() -> Result<(), String> + Send>;
+pub type AsyncPersist =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 pub type Deferred<T, E> = Box<dyn FnOnce() -> Result<Outcome<T, E>, E> + Send>;
+
+pub type AsyncDeferred<T, E> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Outcome<T, E>, E>> + Send>>;
 
 pub enum Outcome<T, E> {
     Value(T),
@@ -127,11 +117,19 @@ pub enum Outcome<T, E> {
     },
 
     Blocking(Deferred<T, E>),
+    Async(AsyncDeferred<T, E>),
+    CommitAsync {
+        next: Arc<App>,
+        persist: AsyncPersist,
+        rates: Option<Box<(crate::appbuild::InstalledLimits, String)>>,
+        then: AsyncDeferred<T, E>,
+    },
 }
 
 pub enum Then<T, E> {
     Value(T),
     Blocking(Deferred<T, E>),
+    Async(AsyncDeferred<T, E>),
 }
 
 impl<T, E> Outcome<T, E> {
@@ -157,6 +155,71 @@ impl<T, E> Outcome<T, E> {
             persist: Box::new(persist),
             rates: None,
             then: Then::Blocking(Box::new(then)),
+        }
+    }
+
+    pub fn commit_then_async<P, F>(next: Arc<App>, persist: P, then: F) -> Self
+    where
+        P: FnOnce() -> Result<(), String> + Send + 'static,
+        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
+    {
+        Outcome::Commit {
+            next,
+            persist: Box::new(persist),
+            rates: None,
+            then: Then::Async(Box::pin(then)),
+        }
+    }
+
+    pub fn asynchronous<F>(future: F) -> Self
+    where
+        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
+    {
+        Outcome::Async(Box::pin(future))
+    }
+
+    /// Persist natively before publishing the new configuration. A failed or uncertain
+    /// persistence answer leaves publication unchanged and remains in Store custody.
+    pub fn commit_async_then<P, F>(next: Arc<App>, persist: P, then: F) -> Self
+    where
+        P: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
+    {
+        Outcome::CommitAsync {
+            next,
+            persist: Box::pin(persist),
+            rates: None,
+            then: Box::pin(then),
+        }
+    }
+
+    pub fn commit_async<P>(next: Arc<App>, persist: P, value: T) -> Self
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        P: std::future::Future<Output = Result<(), String>> + Send + 'static,
+    {
+        Self::commit_async_then(next, persist, async move { Ok(Self::Value(value)) })
+    }
+
+    pub fn commit_rates_async_then<P, F>(
+        next: Arc<App>,
+        persist: P,
+        limits: crate::appbuild::InstalledLimits,
+        origin: String,
+        then: F,
+    ) -> Self
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        P: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
+    {
+        Self::CommitAsync {
+            next,
+            persist: Box::pin(persist),
+            rates: Some(Box::new((limits, origin))),
+            then: Box::pin(then),
         }
     }
 
@@ -214,11 +277,27 @@ impl<'a> Txn<'a> {
         Outcome::blocking(f)
     }
 
+    pub fn store_write_async<T, E, F>(&self, future: F) -> Outcome<T, E>
+    where
+        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
+    {
+        Outcome::asynchronous(future)
+    }
+
     pub fn commit<T, E, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T, E>
     where
         P: FnOnce() -> Result<(), String> + Send + 'static,
     {
         Outcome::commit(next, persist, value)
+    }
+
+    pub fn commit_async<T, E, P>(&self, next: Arc<App>, persist: P, value: T) -> Outcome<T, E>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+        P: std::future::Future<Output = Result<(), String>> + Send + 'static,
+    {
+        Outcome::commit_async(next, persist, value)
     }
 
     pub fn live_swap<T, E>(&self, next: Arc<App>, value: T) -> Outcome<T, E> {
@@ -275,19 +354,17 @@ where
         super::security_policy::scoped(guard.authority, || body(&Txn { app: &snapshot }))?;
     let handle = Arc::clone(handle);
 
-    tokio::task::spawn_blocking(move || {
-        let result = super::security_policy::scoped(guard.authority, || {
-            apply(&handle, outcome, mode, context.as_ref(), guard.authority)
-        });
+    tokio::spawn(crate::auth::effect::scope(context.clone(), async move {
+        let result = apply(&handle, outcome, mode, context.as_ref(), guard.authority).await;
         drop(guard);
         crate::export::plugin::refresh_pending();
         result
-    })
+    }))
     .await
     .map_err(|_| E::from(TxnError::Internal))?
 }
 
-fn apply<T, E>(
+async fn apply<T, E>(
     handle: &Arc<AppHandle>,
     mut outcome: Outcome<T, E>,
     mode: TransactionMode,
@@ -295,7 +372,8 @@ fn apply<T, E>(
     mut authority: Option<crate::auth::effect::Authority>,
 ) -> Result<T, E>
 where
-    E: From<TxnError>,
+    T: Send + 'static,
+    E: From<TxnError> + Send + 'static,
 {
     let mut committed = false;
     loop {
@@ -304,11 +382,7 @@ where
         // and preserve the receipt even if a provider revokes this credential during completion.
         if !committed && !matches!(outcome, Outcome::Value(_)) {
             if let Some(context) = context {
-                authority = Some(
-                    tokio::runtime::Handle::current()
-                        .block_on(context.revalidate(&handle.load()))
-                        .map_err(E::from)?,
-                );
+                authority = Some(context.revalidate(&handle.load()).await.map_err(E::from)?);
             }
         }
         match outcome {
@@ -319,31 +393,144 @@ where
                 rates,
                 then,
             } => {
-                super::security_policy::admit(&handle.load(), &next, context, authority)
+                let expected = handle.load();
+                let worker_handle = Arc::clone(handle);
+                let worker_next = next.clone();
+                let worker_context = context.cloned();
+                authority = tokio::task::spawn_blocking(move || {
+                    let authority = if !committed {
+                        match &worker_context {
+                            Some(context) => Some(
+                                tokio::runtime::Handle::current()
+                                    .block_on(context.revalidate(&worker_handle.load()))
+                                    .map_err(E::from)?,
+                            ),
+                            None => authority,
+                        }
+                    } else {
+                        authority
+                    };
+                    super::security_policy::admit(
+                        &worker_handle.load(),
+                        &worker_next,
+                        worker_context.as_ref(),
+                        authority,
+                    )
                     .map_err(E::from)?;
+                    super::security_policy::scoped(authority, || {
+                        persist().map_err(|message| E::from(TxnError::Validation(message)))
+                    })?;
+                    Ok::<_, E>(authority)
+                })
+                .await
+                .map_err(|_| E::from(TxnError::Internal))??;
+                if !Arc::ptr_eq(&expected, &handle.load()) {
+                    if let Some(overlay) = &expected.overlay_path {
+                        overlay.require_reload();
+                    }
+                    return Err(E::from(TxnError::Conflict(
+                        "App generation changed during persistence; reload before retrying".into(),
+                    )));
+                }
                 match rates {
                     Some(rates) => {
                         let (limits, origin) = *rates;
                         match mode {
                             TransactionMode::Mutation => {
-                                handle.commit_rates_and_swap(next, persist, limits, &origin)
+                                handle
+                                    .commit_rates_and_swap(next, || Ok(()), limits, &origin)
+                                    .await
                             }
                             TransactionMode::Reload => {
-                                handle.reload_rates_and_swap(next, persist, limits, &origin)
+                                handle
+                                    .reload_rates_and_swap(next, || Ok(()), limits, &origin)
+                                    .await
                             }
                         }
+                        .map_err(|message| E::from(TxnError::Validation(message)))?;
                     }
-                    None => handle.commit_and_swap(next, persist),
+                    None => handle
+                        .commit_and_swap(next, || Ok(()))
+                        .await
+                        .map_err(|message| E::from(TxnError::Validation(message)))?,
                 }
-                .map_err(|msg| E::from(TxnError::Validation(msg)))?;
                 committed = true;
                 match then {
                     Then::Value(value) => return Ok(value),
 
                     Then::Blocking(f) => outcome = Outcome::Blocking(f),
+                    Then::Async(future) => outcome = Outcome::Async(future),
                 }
             }
-            Outcome::Blocking(f) => outcome = f()?,
+            Outcome::CommitAsync {
+                next,
+                persist,
+                rates,
+                then,
+            } => {
+                super::security_policy::admit(&handle.load(), &next, context, authority)
+                    .map_err(E::from)?;
+                let expected = handle.load();
+                persist
+                    .await
+                    .map_err(|message| E::from(TxnError::Validation(message)))?;
+                if !Arc::ptr_eq(&expected, &handle.load()) {
+                    if let Some(overlay) = &expected.overlay_path {
+                        overlay.require_reload();
+                    }
+                    return Err(E::from(TxnError::Conflict(
+                        "App generation changed during persistence; reload before retrying".into(),
+                    )));
+                }
+                match rates {
+                    Some(rates) => {
+                        let (limits, origin) = *rates;
+                        match mode {
+                            TransactionMode::Mutation => {
+                                handle
+                                    .commit_rates_and_swap(next, || Ok(()), limits, &origin)
+                                    .await
+                            }
+                            TransactionMode::Reload => {
+                                handle
+                                    .reload_rates_and_swap(next, || Ok(()), limits, &origin)
+                                    .await
+                            }
+                        }
+                        .map_err(|message| E::from(TxnError::Validation(message)))?;
+                    }
+                    None => handle
+                        .commit_and_swap(next, || Ok(()))
+                        .await
+                        .map_err(|message| E::from(TxnError::Validation(message)))?,
+                }
+                committed = true;
+                outcome = Outcome::Async(then);
+            }
+            Outcome::Blocking(f) => {
+                let context = context.cloned();
+                let handle = Arc::clone(handle);
+                outcome = tokio::task::spawn_blocking(move || {
+                    let authority = if !committed {
+                        match context {
+                            Some(context) => Some(
+                                tokio::runtime::Handle::current()
+                                    .block_on(context.revalidate(&handle.load()))
+                                    .map_err(E::from)?,
+                            ),
+                            None => authority,
+                        }
+                    } else {
+                        authority
+                    };
+                    super::security_policy::scoped(authority, f)
+                })
+                .await
+                .map_err(|_| E::from(TxnError::Internal))??;
+            }
+            Outcome::Async(future) => {
+                outcome = super::security_policy::scoped_async(authority, future).await?
+            }
         }
     }
 }
@@ -358,7 +545,7 @@ mod txn_loom;
 
 /// Serializes effect admission with config-policy publication. Holding this guard means the
 /// effect has started; revocation can deny queued callers, never undo an admitted Store write.
-/// The only network await under this lock is the bounded fresh authentication check.
+/// Native persistence and fresh authentication may await while this async guard is held.
 pub struct EffectGuard {
     // Advance before releasing the config guard, including Store-only authority changes.
     _completion: crate::auth::effect::Completion,

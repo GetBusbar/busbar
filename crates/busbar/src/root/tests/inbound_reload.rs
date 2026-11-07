@@ -131,10 +131,22 @@ async fn settle(framing: &mut Framing) {
     .expect("the actual OIDC admission is bounded");
 }
 
-fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
+async fn app(
+    provider: &Arc<Provider>,
+    prior: Option<&busbar_kernel::state::App>,
+) -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     crate::root::linked::register_stores(&crate::LINKED);
-    let store = crate::root::real_store::store();
+    let store = if let Some(prior) = prior {
+        prior
+            .governance
+            .as_ref()
+            .expect("retained governance")
+            .core_store_handle()
+            .unwrap()
+    } else {
+        crate::root::real_store::core().await
+    };
     let library_path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
             .expect("the actual Store artifact is required"),
@@ -142,13 +154,20 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
         .expect("the actual Store statement reads")
         .expect("the actual Store carries its statement");
-    let mut manifest = common::plugins::manifest("store", store.name(), "third-party");
+    let store_name = busbar_contract::abi::mechanism::rendering::read(&statement)
+        .expect("actual native Store statement")
+        .name;
+    let mut manifest = common::plugins::manifest("store", &store_name, "third-party");
     manifest.statement = Some(hex::encode(statement));
     let directory = common::plugins::scratch(&format!("{}-store", provider.name));
     let library = std::fs::read(&library_path).expect("the actual Store image reads");
     let archive = common::plugins::signed(&common::plugins::key(0x33), manifest, &library);
 
-    if !crate::LINKED.stores.iter().any(|row| row.0 == store.name()) {
+    if !crate::LINKED
+        .stores
+        .iter()
+        .any(|row| row.0 == store_name.as_str())
+    {
         std::fs::write(directory.join("store.tar.gz"), archive)
             .expect("the actual signed Store is staged");
     }
@@ -171,7 +190,7 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
     let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
         "providers": {},
         "models": {},
-        "store": {"module": store.name(), "settings": settings},
+        "store": {"module": store_name.as_str(), "settings": settings},
     }))
     .expect("the ordinary reload deployment parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
@@ -185,14 +204,12 @@ fn app(provider: &Arc<Provider>) -> Arc<busbar_kernel::state::App> {
         Default::default(),
         Default::default(),
         (None, None),
-        None,
+        prior,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store),
         false,
     )
+    .await
     .expect("the production builder owns the supplied actual Store");
     let artifact =
         common::plugins::token_verifier_cdylib_path().expect("the actual OIDC product is required");
@@ -346,11 +363,10 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         Arc::new(move |scheme| (scheme == DATA_SCHEME).then(|| Arc::clone(&door)));
     let listener = listener_framed::data_framer(resolver).expect("a real nonzero transport owner");
     let before = provider("before-reload", &units);
-    let old_app = app(&before);
+    let old_app = app(&before, None).await;
     let old_app_weak = Arc::downgrade(&old_app);
     stage(&before);
     assert!(inbound::publish(&old_app).is_some());
-    drop(old_app);
 
     let (mut framing, _) = Framing::begin_lent(
         Arc::clone(listener.door()),
@@ -376,7 +392,8 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     );
 
     let after = provider("after-reload", &units);
-    let new_app = app(&after);
+    let new_app = app(&after, Some(&old_app)).await;
+    drop(old_app);
     stage(&after);
     for _ in 0..3 {
         assert!(inbound::publish(&new_app).is_some());
@@ -459,12 +476,12 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     )
     .unwrap();
     let before = provider("need-before", &units);
-    let old_app = app(&before);
+    let old_app = app(&before, None).await;
     let old = Arc::downgrade(&old_app);
     stage_at(&before, "/data-only/");
     inbound::publish(&old_app).unwrap();
     selected.validate_policy().unwrap();
-    drop(old_app);
+
     let (mut framing, _) = Framing::begin_lent(
         Arc::clone(selected.door()),
         SIDE_ACCEPT,
@@ -495,7 +512,8 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
     );
     let after = provider("need-after", &units);
     stage_at(&after, "/data-only/");
-    let next = app(&after);
+    let next = app(&after, Some(&old_app)).await;
+    drop(old_app);
     for _ in 0..3 {
         inbound::publish(&next).unwrap();
     }

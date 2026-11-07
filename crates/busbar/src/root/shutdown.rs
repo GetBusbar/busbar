@@ -1,135 +1,222 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE ONE SHUTDOWN TAIL. Every way the process stops serving ends here, once, before it exits:
-//! the listener path after its graceful drain, and the line-serve mode (busbar as a child process
-//! speaking on stdin/stdout) at stdin EOF. What the caller was already answered for has to reach
-//! the store before the process is gone, whichever transport the answer went out on (ruling H2
-//! U10; BUSBAR-1.6.0.md THE DESIGN, §7):
-//!
-//! 1. dropped plane callers are settled under the shared record-drain deadline, before their
-//!    cancellation bills reach the budget and metering write-behind final flushes;
-//! 2. the plane record write-behind, drained ([`crate::root::serve::drain_records`]);
-//! 3. the journal's lane to the configured store, drained under the same deadline
-//!    ([`crate::root::serve::RECORD_DRAIN`]): on a node with no data directory the store is where
-//!    the chain is kept, so a record still queued at exit is a settled unit the store never saw —
-//!    and so is one the journal still holds back after a full lane turned it away, which is
-//!    re-offered each time the lane empties;
-//! 4. the node's lease on its host name, released, so the host's next boot resumes its chain.
-//!
-//! Two tails were two lists, and the line-serve one had lost steps 2 and 3 (audit busbar-src #1).
-//! One function is one list.
+//! One shutdown tail for listener and line-serving modes. Request and audit
+//! producers stop before this tail; every retained semantic owner drains before
+//! journal staging closes and the native writer can retire.
 
 use std::sync::{Arc, Mutex};
 
 use busbar_kernel::governance::GovState;
+use busbar_kernel::persistence::journal::runtime::RuntimeJournal;
 
 use crate::root::durability::Durability;
 use crate::root::serve::{drain_records, LateServices, RECORD_DRAIN};
 
-/// Join the periodic writer before the final drain can retire its journal. The writer may
-/// already own dirty accounting cells, which the final flush cannot claim a second time.
-/// Sending shutdown here also covers line-serving EOF without an external shutdown signal.
+/// Obtained only by a successful semantic drain and consumed by retirement.
+/// Retaining the actual owners binds the final check to the drained generation.
+pub struct Drained {
+    governance: Option<Arc<GovState>>,
+    runtime: Option<Arc<RuntimeJournal>>,
+}
+
 pub async fn tail_after_flusher(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
     shutdown: &tokio::sync::broadcast::Sender<()>,
     flusher: Option<tokio::task::JoinHandle<()>>,
-) {
+) -> Result<Drained, String> {
     let _ = shutdown.send(());
-    if let Some(flusher) = flusher {
-        if let Err(error) = flusher.await {
-            tracing::error!(
-                panicked = error.is_panic(),
-                cancelled = error.is_cancelled(),
-                "background accounting flusher failed before final shutdown drain"
-            );
-        }
+    let flusher_failure = match flusher {
+        Some(flusher) => flusher
+            .await
+            .err()
+            .map(|error| format!("background accounting flusher did not complete: {error}")),
+        None => None,
+    };
+    // Still drive all remaining owners after a failed periodic task. Their exact
+    // candidates survive that task's cancellation or panic.
+    let drained = tail(governance, late, journal).await;
+    match (flusher_failure, drained) {
+        (None, result) => result,
+        (Some(error), Ok(_)) => Err(error),
+        (Some(error), Err(drain)) => Err(format!("{error}; {drain}")),
     }
-    tail(governance, late, journal).await;
 }
 
 pub async fn tail(
     governance: Option<Arc<GovState>>,
     late: &LateServices,
     journal: Option<&Arc<Mutex<Durability>>>,
-) {
+) -> Result<Drained, String> {
+    let mut failures = Vec::new();
+    if let Some(cards) = crate::root::kernel::ROOT_CARD.card_store() {
+        if let Err(error) = cards.stop_background().await {
+            failures.push(format!("price publisher did not stop: {error}"));
+        }
+    }
     let cleanup_started = std::time::Instant::now();
     if let Some(kernel) = late.kernel() {
         if !kernel.drain_plane_cleanup(RECORD_DRAIN).await {
-            tracing::warn!("plane cancellations were still pending at shutdown");
+            failures.push("plane cancellations remain pending".to_string());
         }
     }
+
+    if let Some(gov) = &governance {
+        // A failed driver must release its retained ownership and let independent
+        // owners drain. Tokio task failure remains an explicit shutdown failure.
+        let checkpoint_owner = gov.clone();
+        match tokio::spawn(async move { checkpoint_owner.flush_unit_checkpoints().await }).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(format!("unit checkpoints remain unresolved: {error}")),
+            Err(error) => failures.push(format!("unit checkpoint driver failed: {error}")),
+        }
+        let budget_owner = gov.clone();
+        match tokio::spawn(async move { budget_owner.flush_budgets_final().await }).await {
+            Ok(flushed) => tracing::info!(flushed, "final budget driver completed"),
+            Err(error) => failures.push(format!("budget final driver failed: {error}")),
+        }
+        let metering_owner = gov.clone();
+        match tokio::spawn(async move { metering_owner.flush_metering_final().await }).await {
+            Ok(flushed) => tracing::info!(flushed, "final metering driver completed"),
+            Err(error) => failures.push(format!("metering final driver failed: {error}")),
+        }
+    }
+
     let record_remaining = RECORD_DRAIN.saturating_sub(cleanup_started.elapsed());
-
-    if let Some(gov) = governance {
-        let budgets = gov.clone();
-        let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        match tokio::task::spawn_blocking(move || {
-            tracing::dispatcher::with_default(&dispatch, || budgets.flush_budgets_final())
-        })
-        .await
-        {
-            Ok(n) => tracing::info!(flushed = n, "budget shutdown flush completed"),
-            Err(error) => tracing::error!(
-                panicked = error.is_panic(),
-                cancelled = error.is_cancelled(),
-                "budget shutdown flush task failed"
-            ),
-        }
-
-        let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        match tokio::task::spawn_blocking(move || {
-            tracing::dispatcher::with_default(&dispatch, || gov.flush_metering_final())
-        })
-        .await
-        {
-            Ok(n) => tracing::info!(flushed = n, "metering shutdown flush completed"),
-            Err(error) => tracing::error!(
-                panicked = error.is_panic(),
-                cancelled = error.is_cancelled(),
-                "metering shutdown flush task failed"
-            ),
-        }
-    }
-
     if !drain_records(late, record_remaining).await {
-        tracing::warn!("plane record writes were still queued at shutdown");
+        failures.push("plane record writes remain queued".into());
+    }
+    if let Err(error) = drain_audit_queue().await {
+        failures.push(error);
     }
 
-    let Some(book) = journal else {
-        return;
-    };
-    let Some(lane) = book
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .lane()
-        .cloned()
-    else {
-        return;
-    };
-    let until = std::time::Instant::now() + RECORD_DRAIN;
-    let drained = loop {
-        let held = book
-            .lock()
+    let runtime = journal.map(|book| {
+        book.lock()
             .unwrap_or_else(|p| p.into_inner())
-            .offer_held_back();
-        let draining = lane.clone();
-        let left = until.saturating_duration_since(std::time::Instant::now());
-        let drained = tokio::task::spawn_blocking(move || draining.drain(left))
-            .await
-            .unwrap_or(false);
-        if held == 0 || !drained || std::time::Instant::now() >= until {
-            break drained && held == 0;
+            .runtime_journal()
+    });
+    if let Some(runtime) = &runtime {
+        // Close the reservation lane atomically only after producers and their
+        // audit queues drain. Existing originals remain confirmable and replayable.
+        if let Err(error) = runtime.stop_staging() {
+            failures.push(format!("journal staging did not close: {error:?}"));
         }
-    };
-    if !drained {
-        tracing::warn!("journal records were still queued for the store at shutdown");
-        return;
+        let journal_owner = runtime.clone();
+        let mut flush = tokio::spawn(async move { journal_owner.flush().await });
+        match tokio::time::timeout(RECORD_DRAIN, &mut flush).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => {
+                failures.push(format!("journal originals remain unresolved: {error:?}"))
+            }
+            Ok(Err(error)) => failures.push(format!("journal final driver failed: {error}")),
+            Err(_) => {
+                flush.abort();
+                let _ = flush.await;
+                failures
+                    .push("journal flush deadline reached; exact originals remain retained".into());
+            }
+        }
+        if runtime.pending_records() != 0 {
+            failures.push("native journal still owns unpublished originals".into());
+        }
     }
+    // A late audit producer must leave a visible failure after journal closure,
+    // rather than turning a successful earlier queue snapshot into a clean exit.
+    if let Err(error) = drain_audit_queue().await {
+        failures.push(format!("final audit drain: {error}"));
+    }
+    if busbar_kernel::audit::auditlog::has_unsettled_audit() {
+        failures.push("administrative audit still owns queued or active originals".into());
+    }
+    if governance
+        .as_ref()
+        .is_some_and(|gov| gov.has_unsettled_persistence())
+    {
+        failures.push("governance still owns unsettled persistence".into());
+    }
+    if failures.is_empty() {
+        Ok(Drained {
+            governance,
+            runtime,
+        })
+    } else {
+        Err(failures.join("; "))
+    }
+}
 
-    let _released = tokio::task::spawn_blocking(move || lane.release_held_lease()).await;
+async fn drain_audit_queue() -> Result<(), String> {
+    if !busbar_kernel::audit::auditlog::has_unsettled_audit() {
+        return Ok(());
+    }
+    match tokio::spawn(busbar_kernel::audit::auditlog::flush_pending()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!(
+            "administrative audit originals remain unresolved: {error}"
+        )),
+        Err(error) => Err(format!("administrative audit driver failed: {error}")),
+    }
+}
+
+/// Native retirement requires the successful drain result from this same book.
+/// The startup owner additionally refuses retirement while CoreStore retains any
+/// uncertain physical attempt, including attempts owned outside governance.
+pub async fn retire_storage(
+    startup: &mut busbar_kernel::persistence::startup::Startup,
+    book: Option<&crate::root::durability::NodeBook>,
+    drained: Drained,
+) -> Result<(), String> {
+    use busbar_kernel::persistence::startup::Progress;
+    let core = startup
+        .store()
+        .ok_or("Store was not admitted for retirement")?;
+    if let Some(gov) = &drained.governance {
+        if !Arc::ptr_eq(
+            &core,
+            &gov.core_store_handle().map_err(|error| error.to_string())?,
+        ) {
+            return Err("shutdown drain belongs to another governance Store".into());
+        }
+        if gov.has_unsettled_persistence() {
+            return Err("governance acquired unsettled persistence after its final drain".into());
+        }
+    }
+    match (book, &drained.runtime) {
+        (Some(book), Some(runtime)) if Arc::ptr_eq(&book.runtime_journal, runtime) => {
+            if !runtime.is_bound_to(&core) {
+                return Err("shutdown journal belongs to another Store".into());
+            }
+            if runtime.pending_records() != 0 {
+                return Err(
+                    "native journal still owns unpublished originals; writer was not retired"
+                        .into(),
+                );
+            }
+            if let Some(lease) = &book.node_lease {
+                lease.release().await?;
+            }
+        }
+        (None, None) => {}
+        _ => return Err("shutdown drain belongs to another journal generation".into()),
+    }
+    if busbar_kernel::audit::auditlog::has_unsettled_audit() {
+        return Err("administrative audit acquired originals after its final drain".into());
+    }
+    startup
+        .begin_retirement()
+        .map_err(|error| format!("Store writer retirement refused: {error:?}"))?;
+    loop {
+        match startup
+            .advance()
+            .await
+            .map_err(|error| format!("Store writer retirement: {error:?}"))?
+        {
+            Progress::Advanced => {}
+            Progress::Retired => return Ok(()),
+            _ => return Err("Store writer retirement remains unconfirmed".into()),
+        }
+    }
 }
 
 #[cfg(test)]

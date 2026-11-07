@@ -395,28 +395,11 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     ("AuthCfg", SecretBearing::Walked),
-
     ("AtRestCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     ("CheckedAsBlock", SecretBearing::Walked),
-
-
     (
         "DoorSection",
         SecretBearing::DoorDeclared(

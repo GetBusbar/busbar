@@ -185,18 +185,10 @@ fn run(command: &Command, input: &Path, action: &str, directory: &Path) -> serde
     serde_json::from_slice(&output.stdout).expect("actual principal CLI report is JSON")
 }
 
-fn mint() -> busbar_contract::abi::store::OpId {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    busbar_contract::abi::store::OpId::from_parts(
-        u64::from(std::process::id()),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
-    )
-}
-
 /// Initialize only the namespace this fixture just created, then prove the actual durable head.
 /// No provider identity, grants or baseline bytes are fabricated by the fixture.
 pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Value, String> {
-    use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
+    use busbar_contract::persistence::axis::{PersistenceAxis as _, StoreDoor};
     let before = run(command, Path::new("-"), "inspect", directory);
     if !before["principal_receipt_head_sha256"].is_null() {
         return Err("a retained namespace cannot be presented as freshly created".into());
@@ -227,7 +219,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
     let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
         busbar_plugin_loader::dispatch::DispatchConfig::default(),
     ));
-    let axis = busbar_plugin_loader::store_v3::DoorStoreAxis {
+    let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {
         dispatcher,
         logs: busbar_plugin_loader::dispatch::PluginLogConfig::from_words(
             None,
@@ -238,39 +230,82 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
         )
         .expect("ordinary Store log defaults"),
         conns: busbar_plugin_loader::dispatch::ConnTable::NoNeeds,
-        mint,
+        limits: busbar_plugin_loader::store_v4::Limits {
+            descriptor_bytes: 32 * 1024 * 1024,
+            output_items: 4096,
+            output_bytes: 32 * 1024 * 1024,
+            decode_bytes: 32 * 1024 * 1024,
+        },
     };
-    let opened = axis
-        .open(
-            StoreDoor::Dropped {
-                file: library.display().to_string(),
-                bytes: Arc::new(image),
-                stated: statement,
-            },
-            "stdio-fixture-creation-witness",
-            &serde_json::to_vec(&super::plugins::application_store_settings(directory)).unwrap(),
-        )
-        .expect("the actual durable Store opens through its ordinary typed door");
-    let calls = opened
-        .calls
-        .as_ref()
-        .expect("actual Store exposes typed calls");
-    assert_eq!(calls.ephemeral(), Some(false));
     let witness = super::plugins::sha256(&creation).into_bytes();
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("the isolated witness writer runtime")
-        .block_on(calls.record_put(
-            SCHEMA,
-            WITNESS_KEY,
-            &busbar_contract::kinds::RecordBytes::new(witness.clone()).unwrap(),
-        ))
-        .expect("commit the public creation witness through actual Store calls");
-    drop(opened);
+        .block_on(async {
+            let backend = axis
+                .open(
+                    StoreDoor::Dropped {
+                        file: library.display().to_string(),
+                        bytes: Arc::new(image),
+                        stated: statement,
+                    },
+                    "stdio-fixture-creation-witness",
+                    &serde_json::to_vec(&super::plugins::application_store_settings(directory))
+                        .unwrap(),
+                )
+                .await
+                .expect("the actual durable Store opens through its native door");
+            assert_ne!(
+                backend.info().durability,
+                busbar_contract::persistence::Durability::Ephemeral
+            );
+            let mut startup = busbar_kernel::persistence::startup::Startup::new(
+                backend,
+                busbar_kernel::persistence::facade::Limits {
+                    pending_operations: 1024,
+                    conflict_retries: 8,
+                    scan_items: 128,
+                    scan_bytes: 1024 * 1024,
+                },
+                true,
+            )
+            .expect("native witness storage authority");
+            loop {
+                use busbar_kernel::persistence::startup::Progress;
+                match startup
+                    .advance()
+                    .await
+                    .expect("admit native witness writer")
+                {
+                    Progress::Advanced => {}
+                    Progress::Admitted => break,
+                    other => panic!("witness writer not admitted: {other:?}"),
+                }
+            }
+            let owner = busbar_kernel::persistence::scoped::ScopedStore::host_private(
+                startup.store().expect("admitted witness Store"),
+                "busbar.fixture.principal-creation",
+                [SCHEMA.into()],
+            )
+            .expect("private creation-witness owner");
+            assert_eq!(
+                owner
+                    .put(
+                        SCHEMA,
+                        WITNESS_KEY,
+                        busbar_contract::Secret::new(witness.clone())
+                    )
+                    .await
+                    .expect("native creation-witness commit"),
+                busbar_kernel::persistence::scoped::Outcome::Applied
+            );
+        });
     drop(axis);
     let receipt = serde_json::json!({
-        "version": 1,
+        "version": 2,
+        "witness_binding": {"instance": "busbar.fixture.principal-creation", "private": true,
+                            "source_scope": "unscoped"},
         "store_config_sha256": before["store_config_sha256"],
         "requirements": before["requirements"],
         "witness": {"schema": SCHEMA, "key_hex": hex::encode(WITNESS_KEY),

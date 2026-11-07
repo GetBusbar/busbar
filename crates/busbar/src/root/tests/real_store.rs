@@ -4,13 +4,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::root::loader::dispatch::kinds::store::Store;
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
 };
-use crate::root::loader::store_v3::LoadedStore;
 
-pub(crate) fn store() -> Arc<LoadedStore> {
+pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::PersistenceBackend> {
     let path = PathBuf::from(
         std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN").expect(
             "BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN must name the freshly built product store",
@@ -20,7 +18,7 @@ pub(crate) fn store() -> Arc<LoadedStore> {
         .expect("the product store library's statement is readable")
         .expect("the product store library carries its statement");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let plugin = load_dropped::<Store>(
+    let plugin = load_dropped::<crate::root::loader::dispatch::kinds::store_v4::StoreV4>(
         &path,
         &stated,
         Bind {
@@ -36,17 +34,101 @@ pub(crate) fn store() -> Arc<LoadedStore> {
         std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
     let _: serde_json::Value =
         serde_json::from_str(&settings).expect("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS is JSON");
+    let backend = crate::root::loader::store_v4::LoadedPersistence::open(
+        plugin,
+        dispatcher,
+        settings.as_bytes(),
+        crate::root::loader::store_v4::Limits {
+            descriptor_bytes: 32 * 1024 * 1024,
+            output_items: 4096,
+            output_bytes: 32 * 1024 * 1024,
+            decode_bytes: 32 * 1024 * 1024,
+        },
+    )
+    .await
+    .expect("the primitive product store opens with supplied settings");
+    Arc::new(backend)
+}
+
+pub(crate) async fn core() -> Arc<busbar_kernel::persistence::facade::CoreStore> {
+    core_over(native_backend().await).await
+}
+
+pub(crate) async fn core_over(
+    backend: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+) -> Arc<busbar_kernel::persistence::facade::CoreStore> {
+    let mut startup = busbar_kernel::persistence::startup::Startup::new(
+        backend,
+        busbar_kernel::persistence::facade::Limits {
+            pending_operations: 1024,
+            conflict_retries: 8,
+            scan_items: 128,
+            scan_bytes: 1024 * 1024,
+        },
+        true,
+    )
+    .expect("valid native test storage authority");
+    loop {
+        use busbar_kernel::persistence::startup::Progress;
+        match startup.advance().await.expect("native storage startup") {
+            Progress::Advanced => {}
+            Progress::Admitted => break,
+            other => panic!("test startup did not admit: {other:?}"),
+        }
+    }
+    startup.store().expect("admitted core store")
+}
+
+pub(crate) async fn admin_scoped() -> Arc<busbar_kernel::persistence::scoped::ScopedStore> {
     Arc::new(
-        LoadedStore::open(
-            plugin,
-            dispatcher,
-            settings.as_bytes(),
-            busbar_kernel::door::op_id,
-        )
-        .expect("the product store opens with its supplied settings"),
+        busbar_core_admin::idempotency::durable::scoped_store(core().await)
+            .expect("private admin scope"),
     )
 }
 
-pub(crate) fn records() -> Arc<dyn busbar_contract::records::RecordStore> {
-    store()
+/// Build a test App through the actual native Store admission used at boot. Reloads
+/// reuse their carrier's admitted CoreStore, including its writer and pending custody.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn build_app(
+    cfg: busbar_kernel::config::RootCfg,
+    plugins: busbar_kernel::config::PluginsCfg,
+    overlay: Option<Arc<busbar_kernel::config::overlay::OverlayStore>>,
+    base_hooks: std::collections::HashSet<String>,
+    base_groups: std::collections::HashSet<String>,
+    paths: (Option<PathBuf>, Option<PathBuf>),
+    prior: Option<&busbar_kernel::state::App>,
+    rules: &Arc<dyn busbar_kernel::appbuild::RootRules>,
+) -> Result<
+    (
+        busbar_kernel::state::App,
+        Option<busbar_kernel::GovCredentialRotation>,
+        busbar_kernel::InstalledLimits,
+    ),
+    String,
+> {
+    let core = if let Some(prior) = prior {
+        prior
+            .governance
+            .as_ref()
+            .ok_or("test reload has no admitted governance")?
+            .core_store_handle()
+            .map_err(|error| error.to_string())?
+    } else if let Some(overlay) = &overlay {
+        overlay.core_store_handle()?
+    } else {
+        core_over(busbar_kernel::appbuild::bootstrap_config_store(&cfg, &plugins).await?).await
+    };
+    busbar_kernel::appbuild::build_app_from_config_with_store(
+        cfg,
+        plugins,
+        overlay,
+        base_hooks,
+        base_groups,
+        paths,
+        prior,
+        rules,
+        Some(core),
+        false,
+    )
+    .await
 }

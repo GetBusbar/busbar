@@ -3,33 +3,30 @@
 
 //! Actual product Store and canonical transaction queue; no timing sleeps or substitute Store.
 use crate::root::test_plugins as plugins;
-use busbar_contract::records::{PlaneDisposition, PlaneRecord, RecordStore};
+use busbar_contract::Secret;
 use busbar_kernel::auth::{effect, AdminDoor};
 use busbar_kernel::config::transaction::{config_transaction, effect_lock, Outcome, TxnError};
+use busbar_kernel::persistence::scoped::{Outcome as StoreOutcome, ScopedStore};
 use busbar_kernel::state::AppHandle;
 use std::sync::Arc;
 
-fn record(id: &str) -> PlaneRecord {
-    PlaneRecord {
-        kind: "admin_effect_test".into(),
-        id: id.into(),
-        parent: None,
-        seq: 0,
-        ts: 1,
-        disposition: PlaneDisposition::Terminal,
-        body: b"committed".to_vec(),
+const SCHEMA: &str = "busbar.admin-effect-test.v1";
+
+async fn persist(store: Arc<ScopedStore>, id: &'static str) -> Result<(), String> {
+    match store
+        .put(SCHEMA, id.as_bytes(), Secret::new(b"committed".to_vec()))
+        .await
+    {
+        Ok(StoreOutcome::Applied) => Ok(()),
+        other => Err(format!("effect persistence was not confirmed: {other:?}")),
     }
 }
-
-fn persist(
-    store: Arc<dyn RecordStore>,
-    id: &'static str,
-) -> impl FnOnce() -> Result<(), String> + Send {
-    move || {
-        store
-            .upsert_plane_record(record(id).view())
-            .map_err(|e| e.to_string())
-    }
+async fn recorded(store: &ScopedStore, id: &str) -> Option<Vec<u8>> {
+    store
+        .get(SCHEMA, id.as_bytes())
+        .await
+        .expect("actual native effect read")
+        .map(|bytes| bytes.expose(&busbar_kernel::seal::lend()).clone())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -85,7 +82,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -95,24 +92,40 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
 
     let handle = Arc::new(AppHandle::new(Arc::new(app)));
     let original = handle.load();
-    let store = original.governance.as_ref().unwrap().store();
+    let store = Arc::new(
+        ScopedStore::host_private(
+            original
+                .governance
+                .as_ref()
+                .unwrap()
+                .core_store_handle()
+                .unwrap(),
+            "busbar.admin-effect-test",
+            [SCHEMA.to_string()],
+        )
+        .unwrap(),
+    );
     let headers = axum::http::HeaderMap::from_iter([(
         axum::http::HeaderName::from_static("x-admin-token"),
         "admintok".parse().unwrap(),
     )]);
     let target = "/api/v1/admin/config/settings";
-    let door = busbar_kernel::auth::admin_verdict(&original, "PUT", target, &headers).door;
+    let door = busbar_kernel::auth::admin_verdict_async(&original, "PUT", target, &headers)
+        .await
+        .door;
     assert!(effect::full_operator(&door));
     let context = effect::Context::new("PUT", target, headers, &door);
 
@@ -135,7 +148,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         let result: Result<(), TxnError> = effect::scope(
             Some(context.clone()),
             config_transaction(&handle, |_| {
-                Ok(Outcome::commit(
+                Ok(Outcome::commit_async(
                     next,
                     persist(store.clone(), "denied-security"),
                     (),
@@ -147,10 +160,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
             matches!(result, Err(TxnError::Conflict(_))),
             "{sensitive}: {result:?}"
         );
-        assert!(store
-            .get_plane_record("admin_effect_test", "denied-security")
-            .unwrap()
-            .is_none());
+        assert!(recorded(&store, "denied-security").await.is_none());
         assert!(Arc::ptr_eq(&original, &handle.load()));
     }
 
@@ -184,12 +194,13 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         .collect(),
     );
     let delegated_handle = Arc::new(AppHandle::new(Arc::new(delegated)));
-    let delegated_door = busbar_kernel::auth::admin_verdict(
+    let delegated_door = busbar_kernel::auth::admin_verdict_async(
         &delegated_handle.load(),
         "PUT",
         target,
         &Default::default(),
     )
+    .await
     .door;
     assert!(busbar_kernel::auth::admin_door_admits(
         &delegated_door,
@@ -228,7 +239,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
                         next.identity_providers.shift_remove(operator);
                     }
                 }
-                Ok(Outcome::commit(
+                Ok(Outcome::commit_async(
                     Arc::new(next),
                     persist(store.clone(), "delegated-security"),
                     (),
@@ -237,10 +248,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         )
         .await;
         assert_eq!(result, Err(TxnError::Forbidden), "{change}");
-        assert!(store
-            .get_plane_record("admin_effect_test", "delegated-security")
-            .unwrap()
-            .is_none());
+        assert!(recorded(&store, "delegated-security").await.is_none());
     }
     // Denied plugin-trust candidates must be refused before the builder can open their code,
     // not merely at the final pointer swap. This exercises the existing String builder error
@@ -260,9 +268,9 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         Some(delegated_context.clone()),
         config_transaction(&delegated_handle, |txn| {
             let snapshot = txn.app().clone();
-            Ok(txn.read_store(move || {
+            Ok(txn.store_write_async(async move {
                 let (_unexpected_app, _unexpected_rotate, _uncommitted_limits) =
-                    busbar_kernel::build_app_from_config(
+                    crate::root::real_store::build_app(
                         cfg,
                         unsafe_plugins,
                         None,
@@ -272,6 +280,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
                         Some(&snapshot),
                         &snapshot.root_rules,
                     )
+                    .await
                     .map_err(TxnError::Validation)?;
                 Ok(Outcome::Value(()))
             }))
@@ -287,7 +296,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         let revoke_role = config_transaction(&delegated_handle, |txn| {
             let mut next = (**txn.app()).clone();
             next.role_bindings.clear();
-            Ok::<_, TxnError>(Outcome::commit(
+            Ok::<_, TxnError>(Outcome::commit_async(
                 Arc::new(next),
                 persist(store.clone(), "role-revoked"),
                 (),
@@ -298,7 +307,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         let role_queued = effect::scope(
             Some(delegated_context),
             config_transaction(&delegated_handle, |txn| {
-                Ok::<_, TxnError>(Outcome::commit(
+                Ok::<_, TxnError>(Outcome::commit_async(
                     txn.app().clone(),
                     persist(store.clone(), "role-queued"),
                     (),
@@ -311,10 +320,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         let (revocation, result) = tokio::join!(revoke_role, role_queued);
         revocation.unwrap();
         assert_eq!(result, Err(TxnError::Forbidden));
-        assert!(store
-            .get_plane_record("admin_effect_test", "role-queued")
-            .unwrap()
-            .is_none());
+        assert!(recorded(&store, "role-queued").await.is_none());
     }
 
     // A completed receipt remains true after later revocation.
@@ -323,7 +329,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         config_transaction(&handle, |txn| {
             let mut next = (**txn.app()).clone();
             next.config_version += 1;
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 Arc::new(next),
                 persist(store.clone(), "completed"),
                 (),
@@ -344,7 +350,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
                 operator: busbar_kernel::auth::Operator::new(operator),
                 modules: Default::default(),
             });
-            Ok::<_, TxnError>(Outcome::commit(
+            Ok::<_, TxnError>(Outcome::commit_async(
                 Arc::new(next),
                 persist(store.clone(), "revoked"),
                 (),
@@ -357,7 +363,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
             config_transaction(&handle, |txn| {
                 let mut next = (**txn.app()).clone();
                 next.config_version += 1;
-                Ok::<_, TxnError>(Outcome::commit(
+                Ok::<_, TxnError>(Outcome::commit_async(
                     Arc::new(next),
                     persist(store.clone(), "queued"),
                     (),
@@ -370,20 +376,13 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         let (revoked, refused) = tokio::join!(revoke, queued);
         revoked.unwrap();
         assert_eq!(refused, Err(TxnError::Forbidden));
-        assert!(store
-            .get_plane_record("admin_effect_test", "queued")
-            .unwrap()
-            .is_none());
+        assert!(recorded(&store, "queued").await.is_none());
         assert_eq!(
-            store
-                .get_plane_record("admin_effect_test", "completed")
-                .unwrap(),
+            recorded(&store, "completed").await,
             Some(b"committed".to_vec())
         );
         assert_eq!(
-            store
-                .get_plane_record("admin_effect_test", "revoked")
-                .unwrap(),
+            recorded(&store, "revoked").await,
             Some(b"committed".to_vec())
         );
         assert!(
@@ -402,7 +401,7 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         config_transaction(&open_handle, |txn| {
             let mut next = (**txn.app()).clone();
             next.config_version += 1;
-            Ok(Outcome::commit(
+            Ok(Outcome::commit_async(
                 Arc::new(next),
                 persist(store.clone(), "open-development"),
                 (),
@@ -499,7 +498,7 @@ impl busbar_contract::auth_calls::Verifying for Ready {
 // on blocking workers. No Store substitute or timing sleep supplies the ordering assertions.
 async fn independent_store_effects(
     original: &Arc<busbar_kernel::state::App>,
-    store: &Arc<dyn RecordStore>,
+    store: &Arc<ScopedStore>,
     operator: &str,
 ) {
     use busbar_contract::auth_calls::AuthCalls;
@@ -550,9 +549,14 @@ async fn independent_store_effects(
         let handle = Arc::new(AppHandle::new(Arc::new(app)));
         let snapshot = handle.load();
         let target = "/api/v1/admin/keys/example";
-        let door =
-            busbar_kernel::auth::admin_verdict(&snapshot, "DELETE", target, &Default::default())
-                .door;
+        let door = busbar_kernel::auth::admin_verdict_async(
+            &snapshot,
+            "DELETE",
+            target,
+            &Default::default(),
+        )
+        .await
+        .door;
         assert!(busbar_kernel::auth::admin_door_admits(
             &door, "DELETE", target
         ));
@@ -577,21 +581,23 @@ async fn independent_store_effects(
             let task_store = store.clone();
             let task = tokio::spawn(async move {
                 let _completion = admitted.start(&task_handle).await?;
-                persist(task_store, written)().map_err(TxnError::Validation)
+                persist(task_store, written)
+                    .await
+                    .map_err(TxnError::Validation)
             });
             entered_rx.await.unwrap();
             if case == "during-store-auth" {
                 let revoke = busbar_kernel::config::transaction::admit_effect(&handle, None)
                     .await
                     .unwrap();
-                persist(store.clone(), revoked)().unwrap();
+                persist(store.clone(), revoked).await.unwrap();
                 drop(revoke);
                 assert!(Arc::ptr_eq(&snapshot, &handle.load()));
             } else {
                 let mut next = (*snapshot).clone();
                 next.auth_scope_caps
                     .insert(issuer.name().into(), "read-only".into());
-                handle.swap(Arc::new(next));
+                handle.swap(Arc::new(next)).await;
             }
             release_tx.send(()).unwrap();
             assert_eq!(task.await.unwrap(), Err(TxnError::Forbidden));
@@ -613,7 +619,9 @@ async fn independent_store_effects(
                     admitted_tx.send(()).unwrap();
                     finish_rx.recv().unwrap();
                 }
-                persist(task_store, written)().map_err(TxnError::Validation)
+                tokio::runtime::Handle::current()
+                    .block_on(persist(task_store, written))
+                    .map_err(TxnError::Validation)
             });
             entered_rx.await.unwrap();
             if case == "after-both" {
@@ -627,7 +635,7 @@ async fn independent_store_effects(
                 let revoke = busbar_kernel::config::transaction::admit_effect(&handle, None)
                     .await
                     .unwrap();
-                persist(store.clone(), revoked)().unwrap();
+                persist(store.clone(), revoked).await.unwrap();
                 drop(revoke);
                 assert!(
                     Arc::ptr_eq(&snapshot, &handle.load()),
@@ -638,7 +646,7 @@ async fn independent_store_effects(
                 let mut next = (*snapshot).clone();
                 next.auth_scope_caps
                     .insert(issuer.name().into(), "read-only".into());
-                handle.swap(Arc::new(next));
+                handle.swap(Arc::new(next)).await;
             }
             if case == "after-both" {
                 finish_tx.send(()).unwrap();
@@ -653,9 +661,7 @@ async fn independent_store_effects(
             }
         }
         assert_eq!(
-            store
-                .get_plane_record("admin_effect_test", written)
-                .unwrap(),
+            recorded(&store, written).await,
             (case == "after-both").then(|| b"committed".to_vec()),
             "{case}: denied work writes nothing; admitted work retains its receipt",
         );
@@ -668,7 +674,7 @@ type VerificationGate = (
     tokio::sync::oneshot::Receiver<()>,
 );
 struct StoreAuthority {
-    store: Arc<dyn RecordStore>,
+    store: Arc<ScopedStore>,
     revoked: &'static str,
     gate: std::sync::Mutex<Option<VerificationGate>>,
 }
@@ -681,24 +687,23 @@ impl busbar_contract::auth_calls::AuthCalls for StoreAuthority {
     }
     fn verify_now(
         &self,
-        request: &busbar_contract::auth_calls::VerifyRequest,
+        _: &busbar_contract::auth_calls::VerifyRequest,
     ) -> Option<busbar_contract::auth_calls::VerifyAnswer> {
-        match self
-            .store
-            .get_plane_record("admin_effect_test", self.revoked)
-        {
-            Ok(None) => RoleProvider.verify_now(request),
-            Ok(Some(_)) => Some(busbar_contract::auth_calls::Verified::Reject.into()),
-            Err(_) => Some(busbar_contract::auth_calls::Verified::Failed.into()),
-        }
+        None // The authoritative revocation read is an asynchronous native Store call.
     }
     fn verify(
         &self,
         request: busbar_contract::auth_calls::VerifyRequest,
     ) -> Box<dyn busbar_contract::auth_calls::Verifying> {
-        let answer = self.verify_now(&request).unwrap();
+        let store = self.store.clone();
+        let revoked = self.revoked;
         let gate = self.gate.lock().unwrap().take();
         Box::new(PendingVerification(Box::pin(async move {
+            let answer = match store.get(SCHEMA, revoked.as_bytes()).await {
+                Ok(None) => RoleProvider.verify_now(&request).unwrap(),
+                Ok(Some(_)) => busbar_contract::auth_calls::Verified::Reject.into(),
+                Err(_) => busbar_contract::auth_calls::Verified::Failed.into(),
+            };
             if let Some((entered, release)) = gate {
                 entered.send(()).unwrap();
                 release.await.unwrap();

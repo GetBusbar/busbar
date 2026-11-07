@@ -493,12 +493,41 @@ fn deliver_one(
         return;
     };
     let payload = f(s.projection, s.span_record);
-    let line = serde_json::to_vec(&*payload).unwrap_or_default();
-    match s.sink.deliver(stream as u8, line, Box::new(permit)) {
-        Delivered::Queued => {
-            if let Some(amendments) = s.reads.get() {
-                crate::audit::amend::export_read(amendments, &s.module, op, &payload);
+    let amendments = s.reads.get().cloned();
+    let runtime = if amendments.is_some() {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => Some(runtime),
+            Err(_) => {
+                s.sink.shed();
+                return;
             }
+        }
+    } else {
+        None
+    };
+    let line = serde_json::to_vec(&*payload).unwrap_or_default();
+    // Retain admission through both actual delivery and its durable access
+    // amendment, even if the sink releases its delivery permit immediately.
+    let permit = Arc::new(permit);
+    match s.sink.deliver(stream as u8, line, Box::new(permit.clone())) {
+        Delivered::Queued => {
+            let (Some(amendments), Some(runtime)) = (amendments, runtime) else {
+                return;
+            };
+            let op = op.to_owned();
+            let module = s.module.clone();
+            let sink = s.sink.clone();
+            runtime.spawn(async move {
+                let _permit = permit;
+                if crate::audit::amend::export_read(&amendments, &module, &op, &payload)
+                    .await
+                    .is_err()
+                {
+                    // The original access fact remains in the shared native
+                    // owner's queue; do not report a durable audit success.
+                    sink.shed();
+                }
+            });
         }
         Delivered::Shed => s.sink.shed(),
     }

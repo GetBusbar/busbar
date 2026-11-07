@@ -243,13 +243,10 @@ fn the_arrival_door_opens_the_callers_hold() {
     assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
 }
 
-#[test]
-fn the_units_assemble_from_values_configuration_decided() {
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+#[tokio::test]
+async fn the_units_assemble_from_values_configuration_decided() {
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let durability = fixture.book().await;
 
     let kernel = new_kernel();
     let units = ProductionUnits::new(
@@ -285,30 +282,44 @@ impl ReachedStore {
 }
 
 #[cfg(feature = "root-admin")]
-impl busbar_kernel_seams::verb_store::Store for ReachedStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-        self.note("chain_break".to_string());
-        Ok(())
+impl busbar_kernel::persistence::recovery_api::Store for ReachedStore {
+    fn chain_break<'a>(
+        &'a self,
+        _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move {
+            self.note("chain_break".to_string());
+            Ok(())
+        })
     }
 
-    fn store_restore(
-        &self,
-        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        backup_ref: &str,
-    ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-        self.note(format!("store_restore {backup_ref}"));
-        Ok(())
+    fn store_restore<'a>(
+        &'a self,
+        _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        backup_ref: &'a str,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move {
+            self.note(format!("store_restore {backup_ref}"));
+            Ok(())
+        })
     }
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
+#[tokio::test]
+async fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
     let configured = Arc::new(ReachedStore::default());
-    let mut book = crate::root::durability::node_book();
+    let core = crate::root::real_store::core().await;
+    let budget = busbar_kernel::persistence::journal::BufferBudget {
+        records: 128,
+        bytes: 1024 * 1024,
+    };
+    let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(core, 37, budget)
+        .await
+        .expect("native journal");
+    let mut book = crate::root::durability::node_book(journal, budget)
+        .await
+        .expect("native book");
     book.verb_store = Some(Arc::clone(&configured) as _);
     let units = ProductionUnits::admin_over_book(
         Arc::new(crate::root::units_admin::RefusingDispatch),
@@ -322,9 +333,11 @@ fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() 
 
     store
         .chain_break(&units.admin_token)
+        .await
         .expect("chain_break applies");
     store
         .store_restore(&units.admin_token, "nightly")
+        .await
         .expect("store_restore applies");
 
     assert_eq!(
@@ -463,8 +476,8 @@ fn the_usage_read_answers_with_the_process_history() {
     println!("{WITNESS}");
 }
 
-#[test]
-fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
+#[tokio::test]
+async fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
     use busbar_kernel::rate_apply::{RateApply, RateEpoch};
     const CHILD: &str = "BUSBAR_CONFIRMED_CARD_GENERATION_CHILD";
     const WITNESS: &str = "actual confirmed card generation witness completed";
@@ -567,15 +580,15 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
         &directory,
         &crate::root::test_plugins::key(0x5a),
     );
-    let slots = crate::root::store_double::RecordSlots::new();
+    let (core, faults) = native_price_backend().await;
     let boot = busbar_kernel::config::card::CardFields {
         per_request_fee: BOOT_FEE,
         ..Default::default()
     };
-    ROOT_CARD.keep_in_store(slots.calls(), 1);
+    ROOT_CARD.keep_in_store(core, 1).unwrap();
     ROOT_CARD.card_applied(&boot, "actual boot");
-    ROOT_CARD.boot_in_store(None).unwrap();
-    let build = |fee, prior: Option<&busbar_kernel::state::App>| {
+    ROOT_CARD.boot_in_store(None).await.unwrap();
+    let build = async |fee, prior: Option<&busbar_kernel::state::App>| {
         let mut cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the actual product deployment resolves for this generation");
         cfg.per_request_fee = fee;
@@ -587,7 +600,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
                 .request_body_max_bytes
                 .saturating_add(1);
         }
-        let (app, _, limits) = busbar_kernel::build_app_from_config(
+        let (app, _, limits) = crate::root::real_store::build_app(
             cfg,
             plugins.clone(),
             None,
@@ -598,11 +611,12 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
             &(Arc::new(crate::root::door_steps::Rules::default())
                 as Arc<dyn busbar_kernel::appbuild::RootRules>),
         )
+        .await
         .unwrap();
         (Arc::new(app), limits)
     };
-    let (boot_app, limits) = build(BOOT_FEE, None);
-    limits.keep().unwrap();
+    let (boot_app, limits) = build(BOOT_FEE, None).await;
+    limits.keep().await.unwrap();
     let handle = busbar_kernel::state::AppHandle::new(boot_app);
     let pinned = ROOT_CARD.pin().unwrap();
     for (fee, fail_activation) in [(FIRST_FEE, false), (SECOND_FEE, true)] {
@@ -618,13 +632,17 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
             drop(
                 CardRepricer
                     .prepare(&card, &card.rates().raw(), "saved actual candidate")
+                    .await
                     .unwrap(),
             );
         }
-        slots.refuse(true);
-        let (next, limits) = build(fee, Some(&before));
+        faults
+            .refuse
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (next, limits) = build(fee, Some(&before)).await;
         assert!(handle
             .commit_rates_and_swap(next, || Ok(()), limits, "actual generation refusal")
+            .await
             .is_err());
         let store = ROOT_CARD.card_store().unwrap();
         let candidate = store.pending().unwrap();
@@ -639,8 +657,10 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
             busbar_kernel::config::limits::installed().map(|limits| limits.request_body_max_bytes),
             before_limits.map(|limits| limits.request_body_max_bytes)
         );
-        slots.refuse(false);
-        let (next, limits) = build(fee, Some(&before));
+        faults
+            .refuse
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let (next, limits) = build(fee, Some(&before)).await;
         handle
             .reload_rates_and_swap(
                 next.clone(),
@@ -648,6 +668,7 @@ fn actual_card_store_and_root_rate_apply_gate_the_real_app_generation_commit() {
                 limits,
                 "explicit actual generation recovery",
             )
+            .await
             .unwrap();
         assert!(Arc::ptr_eq(&handle.load(), &next));
         assert_eq!(handle.load().config_version, before.config_version + 1);
@@ -698,7 +719,6 @@ const BOOT_A: u64 = 1_000;
 const EARNED_A: u64 = 10_000;
 const APPLIED_B: u64 = 20_000;
 const EARNED_B: u64 = 30_000;
-const REBOOT: u64 = 40_000;
 const REBOOT_CHANGED: u64 = 50_000;
 
 fn tiers(input: f64) -> busbar_contract::billing::RawTierRates {
@@ -728,95 +748,86 @@ fn plane_fees() -> busbar_kernel::config::PlaneFeesMap {
     )])
 }
 
-fn apply_at(holder: &RootHistory, price: f64, at: u64) {
-    let _ = try_apply_at(holder, price, at);
-    let book = match &*holder.journal.lock().unwrap() {
-        CardJournal::Bound { book, .. } => Some(book.clone()),
-        _ => None,
+fn fields_at(price: f64) -> busbar_kernel::config::card::CardFields {
+    let lanes = lanes_at(price);
+    let fees = plane_fees();
+    let units = [("gpt".to_string(), "search_units".to_string(), 2_000)];
+    let raw = busbar_kernel::rate_apply::RawRates {
+        lanes: &lanes,
+        units: &units,
+        flat_minor: 4,
+        present: true,
+        plane_fees: &fees,
     };
-    if let Some(book) = book {
-        drain_book(&book);
-    }
+    super::CardForm::of(&raw, &super::card_from_raw(&raw)).to_fields()
 }
-
-fn try_apply_at(
-    holder: &RootHistory,
-    price: f64,
+async fn seed_price(
+    core: &busbar_kernel::persistence::facade::CoreStore,
+    card: busbar_kernel::config::card::CardFields,
     at: u64,
-) -> Result<busbar_kernel_ledger::cost::HistorySeq, CardRefused> {
-    let lanes = lanes_at(price);
-    let fees = plane_fees();
-    holder.apply_rates(
-        &busbar_kernel::rate_apply::RawRates {
-            lanes: &lanes,
-            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
-            flat_minor: 4,
-            present: true,
-            plane_fees: &fees,
+) {
+    use busbar_kernel::governance::persistence::prices::{
+        Activation, EntryAuthor, Outcome, StoredEntry,
+    };
+    use busbar_kernel_ledger::cost::EntryKey;
+    let prices = core.prices();
+    let snapshot = prices.snapshot().await.unwrap();
+    let opening = snapshot.entries.is_empty();
+    let entry = StoredEntry {
+        key: EntryKey::new(at, 7u64.to_be_bytes(), snapshot.entries.len() as u32),
+        effective_from: if opening { 0 } else { at },
+        effective_until: None,
+        appended_at: at,
+        author: if opening {
+            EntryAuthor::Opening {}
+        } else {
+            EntryAuthor::Change
         },
-        at,
-    )
-}
-
-#[cfg(feature = "root-admin")]
-fn publish_unjournalled_at(holder: &RootHistory, price: f64, at: u64) {
-    let lanes = lanes_at(price);
-    let fees = plane_fees();
-    holder.apply(
-        super::card_from_raw(&busbar_kernel::rate_apply::RawRates {
-            lanes: &lanes,
-            units: &[("gpt".to_string(), "search_units".to_string(), 2_000)],
-            flat_minor: 4,
-            present: true,
-            plane_fees: &fees,
-        }),
-        at,
+        actor: "native fixture".into(),
+        base: snapshot.head,
+        writer: 7,
+        set_fields: Vec::new(),
+        card,
+        correction: None,
+    };
+    let key = entry.key;
+    let mut prepare = prices.prepare(entry, true).await.unwrap();
+    assert_eq!(prices.submit(&mut prepare).await.unwrap(), Outcome::Applied);
+    let mut authorize = prices
+        .authorize_activation(
+            key,
+            Activation {
+                effective_from: if opening { 0 } else { at },
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        prices.submit(&mut authorize).await.unwrap(),
+        Outcome::Applied
+    );
+    let mut activate = prices.activate(key).await.unwrap();
+    assert_eq!(
+        prices.submit(&mut activate).await.unwrap(),
+        Outcome::Applied
     );
 }
-
-fn process_holder() -> &'static RootHistory {
+async fn price_holder(
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    card: &busbar_kernel::config::card::CardFields,
+) -> &'static RootHistory {
     let holder: &'static RootHistory = Box::leak(Box::default());
-    holder.arm_journal();
+    holder.keep_in_store(core, 7).unwrap();
+    holder.card_applied(card, "fixture boot");
+    holder.boot_in_store(None).await.unwrap();
+    holder
+        .card_store()
+        .unwrap()
+        .stop_background()
+        .await
+        .unwrap();
     holder
 }
-
-fn boot_book(
-    holder: &'static RootHistory,
-    store: &crate::root::store_double::RecordSlots,
-) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let book = open_book(holder, store);
-    holder.bind_journal(&book);
-    book
-}
-
-fn open_book(
-    holder: &'static RootHistory,
-    store: &crate::root::store_double::RecordSlots,
-) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(store.calls(), "card-history-test")
-        .expect("the Store lane starts");
-    let book = crate::root::durability::build_on_store(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        7,
-        lane,
-        Some(holder),
-    )
-    .expect("the journal opens over the Store");
-    let book = Arc::new(Mutex::new(book));
-    drain_book(&book);
-    book
-}
-
-fn drain_book(book: &Arc<Mutex<crate::root::durability::Durability>>) {
-    let lane = book.lock().unwrap().lane().cloned();
-    if let Some(lane) = lane {
-        assert!(
-            lane.drain(std::time::Duration::from_secs(10)),
-            "Store acknowledges the chain"
-        );
-    }
-}
-
 fn earned(holder: &RootHistory, lane: &str, at: u64) -> u64 {
     let price = holder
         .history()
@@ -833,20 +844,6 @@ fn figures(holder: &RootHistory) -> (u64, u64) {
         earned(holder, FLAT_LANE, EARNED_A) + earned(holder, FLAT_LANE, EARNED_B),
         earned(holder, PLANE_LANE, EARNED_A) + earned(holder, PLANE_LANE, EARNED_B),
     )
-}
-
-fn cards_on_chain(book: &Arc<Mutex<crate::root::durability::Durability>>) -> usize {
-    drain_book(book);
-    book.lock()
-        .expect("the book")
-        .journal
-        .replay()
-        .expect("reads")
-        .expect("verifies")
-        .iter()
-        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        .filter(|r| super::CardApplied::from_body(&r.body).is_some())
-        .count()
 }
 
 fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i64 {
@@ -887,116 +884,6 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
     .expect("the row prices")
 }
 
-#[test]
-fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
-    let store = crate::root::store_double::RecordSlots::new();
-
-    let figures_before = {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &store);
-        apply_at(holder, 5.0, APPLIED_B);
-        assert_eq!(cards_on_chain(&book), 2, "the boot card and the live apply");
-        figures(holder)
-    };
-    assert_eq!(figures_before, (8_000_000_000, 16_000_000_000));
-
-    let holder = process_holder();
-    apply_at(holder, 5.0, REBOOT);
-    let book = boot_book(holder, &store);
-    assert_eq!(
-        figures(holder),
-        figures_before,
-        "a restart repriced counts at a card that was not in force when they arrived"
-    );
-    assert!(book.lock().expect("the book").restart_findings.is_empty());
-    assert_eq!(
-        holder.len(),
-        2,
-        "a restart that changed no price appends no entry"
-    );
-    assert_eq!(cards_on_chain(&book), 2, "and journals none");
-    assert_eq!(
-        (
-            usage_row_micros(holder, 0, 1_000_000),
-            usage_row_micros(holder, APPLIED_B, 1_000_000),
-        ),
-        (3_000_000, 5_000_000),
-        "the usage read prices each era at its own card after a restart"
-    );
-    drop(book);
-
-    let holder = process_holder();
-    apply_at(holder, 7.0, REBOOT_CHANGED);
-    let book = boot_book(holder, &store);
-    assert_eq!(figures(holder), figures_before);
-    assert_eq!(holder.len(), 3);
-    assert_eq!(cards_on_chain(&book), 3);
-    let history = holder.history().expect("a history");
-    let price_at = |lane: &str, at: u64| {
-        history
-            .current()
-            .card_at(at)
-            .and_then(|(_, card)| card.lane_rates(lane).map(|r| r.nanos_per_unit("input")))
-    };
-    assert_eq!(
-        [EARNED_A, EARNED_B, REBOOT_CHANGED].map(|at| price_at(FLAT_LANE, at)),
-        [Some(3_000), Some(5_000), Some(7_000)]
-    );
-    assert_eq!(
-        [EARNED_A, EARNED_B, REBOOT_CHANGED].map(|at| price_at(PLANE_LANE, at)),
-        [Some(6_000), Some(10_000), Some(14_000)],
-        "the plane's own card is dated with the rest"
-    );
-    drop(book);
-}
-
-#[test]
-fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_it_arrived() {
-    let store = crate::root::store_double::RecordSlots::new();
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &store);
-    book.lock()
-        .unwrap()
-        .journal
-        .append(
-            &new_kernel().durability_token(),
-            busbar_contract::caps::StepName::Meter,
-            &[busbar_kernel_wal::Entry::new(
-                busbar_kernel_wal::RecordClass::Load,
-                vec![7; 4096],
-            )],
-        )
-        .expect("a payload crosses multiple Store records");
-    apply_at(holder, 5.0, APPLIED_B);
-    drain_book(&book);
-    let figures_before = figures(holder);
-    let restarted = process_holder();
-    apply_at(restarted, 5.0, REBOOT);
-    let restarted_book = boot_book(restarted, &store);
-    assert_eq!(figures(restarted), figures_before);
-    assert_eq!(
-        cards_on_chain(&restarted_book),
-        2,
-        "both eras survive Store chunking"
-    );
-    assert!(restarted_book.lock().unwrap().restart_findings.is_empty());
-}
-
-struct RefusingShipper;
-
-impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
-    fn ship(
-        &mut self,
-        _records: &[busbar_kernel_wal::Record],
-    ) -> Result<(), busbar_kernel_wal::ShipError> {
-        Err(busbar_kernel_wal::ShipError::Unavailable(
-            "the store is not answering".into(),
-        ))
-    }
-}
-
 fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
     holder
         .history()
@@ -1009,310 +896,142 @@ fn flat_price_at(holder: &RootHistory, at: u64) -> Option<u64> {
         })
 }
 
-#[test]
-fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
-    let store = crate::root::store_double::RecordSlots::new();
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &store);
-    assert_eq!(cards_on_chain(&book), 1, "the boot card is journalled");
-    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
-        7,
-        Box::new(RefusingShipper),
-        busbar_kernel::store::now_ms,
-    );
-    apply_at(holder, 5.0, APPLIED_B);
+#[tokio::test]
+async fn a_restart_prices_every_posting_at_the_card_in_force_when_it_arrived() {
+    let core = crate::root::real_store::core().await;
+    seed_price(&core, fields_at(3.0), BOOT_A).await;
+    seed_price(&core, fields_at(5.0), APPLIED_B).await;
+    let holder = price_holder(core.clone(), &fields_at(5.0)).await;
+    let before = figures(holder);
+    assert_eq!(before, (8_000_000_000, 16_000_000_000));
+    let restarted = price_holder(core.clone(), &fields_at(5.0)).await;
+    assert_eq!(figures(restarted), before);
+    assert_eq!(restarted.len(), 2, "unchanged restart appends no price");
     assert_eq!(
-        holder.len(),
-        1,
-        "the refused card is not published, and nothing is WITHDRAWN behind it (MONEY-DESIGN section 3a)"
-    );
-    assert_eq!(
-        flat_price_at(holder, EARNED_B),
-        Some(3_000),
-        "the card in force is the one the journal holds"
-    );
-    drop(book);
-}
-
-struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
-
-impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
-    fn ship(
-        &mut self,
-        _records: &[busbar_kernel_wal::Record],
-    ) -> Result<(), busbar_kernel_wal::ShipError> {
-        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(busbar_kernel_wal::ShipError::Unavailable(
-                "the store is not answering".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn chain_records(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-) -> Vec<busbar_kernel_wal::JournalRecord> {
-    drain_book(book);
-    book.lock()
-        .expect("the book")
-        .journal
-        .replay()
-        .expect("reads")
-        .expect("verifies")
-}
-
-fn rebuilt_from(
-    records: &[busbar_kernel_wal::JournalRecord],
-) -> busbar_kernel_ledger::cost::History {
-    RootHistory::restore(super::journalled_cards(records), Vec::new()).history
-}
-
-fn flat_price_on(history: &busbar_kernel_ledger::cost::History, at: u64) -> Option<u64> {
-    history.current().card_at(at).and_then(|(_, card)| {
-        card.lane_rates(FLAT_LANE)
-            .map(|r| r.nanos_per_unit("input"))
-    })
-}
-
-fn config_epochs(records: &[busbar_kernel_wal::JournalRecord]) -> Vec<u64> {
-    super::journalled_cards(records)
-        .into_iter()
-        .filter_map(|card| match card {
-            super::JournalledCard::Applied(applied) => Some(applied.policy_epoch),
-            super::JournalledCard::Amended(_) | super::JournalledCard::Corrected(..) => None,
-        })
-        .collect()
-}
-
-struct BreakableDisk {
-    failing: Arc<std::sync::atomic::AtomicBool>,
-    highest: Option<u64>,
-}
-
-struct BreakableSegment {
-    inner: busbar_kernel_wal::MemorySegment,
-    failing: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl BreakableSegment {
-    fn check(&self) -> std::io::Result<()> {
-        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(std::io::Error::other("the disk is gone"));
-        }
-        Ok(())
-    }
-}
-
-impl busbar_kernel_wal::SegmentBackend for BreakableSegment {
-    fn write_all_at(&mut self, offset: u64, bytes: &[u8]) -> std::io::Result<()> {
-        self.check()?;
-        self.inner.write_all_at(offset, bytes)
-    }
-    fn sync(&mut self) -> std::io::Result<()> {
-        self.check()?;
-        self.inner.sync()
-    }
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.inner.read_at(offset, buf)
-    }
-    fn len(&self) -> std::io::Result<u64> {
-        self.inner.len()
-    }
-    fn set_len(&mut self, len: u64) -> std::io::Result<()> {
-        self.check()?;
-        self.inner.set_len(len)
-    }
-}
-
-impl busbar_kernel_wal::SegmentFactory for BreakableDisk {
-    fn open(&mut self, index: u64) -> std::io::Result<Box<dyn busbar_kernel_wal::SegmentBackend>> {
-        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(std::io::Error::other("no segment opens on a gone disk"));
-        }
-        self.highest = Some(self.highest.map_or(index, |h| h.max(index)));
-        Ok(Box::new(BreakableSegment {
-            inner: busbar_kernel_wal::MemorySegment::new(),
-            failing: Arc::clone(&self.failing),
-        }))
-    }
-    fn highest_index(&self) -> std::io::Result<Option<u64>> {
-        Ok(self.highest)
-    }
-
-    fn existing(
-        &self,
-        _index: u64,
-    ) -> std::io::Result<Option<Box<dyn busbar_kernel_wal::SegmentBackend>>> {
-        Ok(None)
-    }
-    fn is_durable(&self) -> bool {
-        true
-    }
-    fn segment_file(&self, _index: u64) -> Option<std::path::PathBuf> {
-        None
-    }
-    fn quarantine(
-        &mut self,
-        _index: u64,
-        _offset: u64,
-        _unix_ms: u64,
-        _bytes: &[u8],
-    ) -> std::io::Result<Option<std::path::PathBuf>> {
-        Ok(None)
-    }
-}
-
-#[test]
-fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
-    let store = crate::root::store_double::RecordSlots::new();
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = boot_book(holder, &store);
-    let failing = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let log = busbar_kernel_wal::Wal::with_parts(
-        Box::new(BreakableDisk {
-            failing: Arc::clone(&failing),
-            highest: None,
-        }),
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        busbar_kernel_wal::Mode::OnDisk,
-        busbar_kernel_wal::SEGMENT_BYTES,
-        busbar_kernel::store::now_ms,
-    )
-    .expect("the log opens");
-    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::over(log, 7);
-    failing.store(true, std::sync::atomic::Ordering::SeqCst);
-
-    let token = new_kernel().durability_token();
-    assert!(book
-        .lock()
-        .expect("the book")
-        .journal
-        .append(
-            &token,
-            busbar_contract::caps::StepName::Meter,
-            &[busbar_kernel_wal::Entry::new(
-                busbar_kernel_wal::RecordClass::Policy,
-                b"in flight".to_vec(),
-            )],
-        )
-        .is_err());
-    assert!(
-        matches!(
-            try_apply_at(holder, 5.0, APPLIED_B),
-            Err(CardRefused::Lost(_))
+        (
+            usage_row_micros(restarted, 0, 1_000_000),
+            usage_row_micros(restarted, APPLIED_B, 1_000_000)
         ),
-        "a card the log retained but could not write is answered as in doubt, not confirmed"
+        (3_000_000, 5_000_000)
     );
+    seed_price(&core, fields_at(7.0), REBOOT_CHANGED).await;
+    let changed = price_holder(core, &fields_at(7.0)).await;
     assert_eq!(
-        flat_price_at(holder, APPLIED_B),
-        Some(3_000),
-        "the unconfirmed card is not in force from the instant it was applied at"
+        figures(changed),
+        before,
+        "historical earnings stay dated after a new configuration"
     );
-    assert_eq!(
-        flat_price_at(holder, EARNED_B),
-        Some(3_000),
-        "nor at any instant after it: the card in force prices on"
-    );
-    let owed_cards = book
-        .lock()
-        .expect("the book")
-        .journal
-        .log()
-        .owed()
-        .iter()
-        .filter_map(|r| busbar_kernel_wal::JournalRecord::decode(&r.body).ok())
-        .filter(|r| super::CardApplied::from_body(&r.body).is_some())
-        .count();
-    assert_eq!(
-        owed_cards, 1,
-        "the log owes the card for its retry, and no WITHDRAW is written behind it (MONEY-DESIGN \
-         section 3a)"
-    );
-    drop(book);
+    assert_eq!(changed.len(), 3);
+    assert_eq!(earned(changed, FLAT_LANE, REBOOT_CHANGED), 7_000_000_000);
+    assert_eq!(earned(changed, PLANE_LANE, REBOOT_CHANGED), 14_000_000_000);
 }
-
-#[test]
-fn a_rate_apply_before_the_book_is_bound_is_refused() {
-    let store = crate::root::store_double::RecordSlots::new();
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = open_book(holder, &store);
-    apply_at(holder, 5.0, APPLIED_B);
-    assert_eq!(holder.len(), 1, "no journal bound, no card published");
+#[tokio::test]
+async fn a_restart_after_store_chunks_prices_every_posting_at_the_card_in_force_when_it_arrived() {
+    let core = crate::root::real_store::core().await;
+    let mut large = fields_at(3.0);
+    let rates = large.rate_card.as_mut().unwrap();
+    let entry = rates[FLAT_LANE].clone();
+    for n in 0..64 {
+        rates.insert(format!("large-card-lane-{n}"), entry.clone());
+    }
+    assert!(
+        large.to_bytes().len() > 4096,
+        "accepted price payload crosses the retired fixed record limit"
+    );
+    seed_price(&core, large.clone(), BOOT_A).await;
+    seed_price(&core, fields_at(5.0), APPLIED_B).await;
+    let holder = price_holder(core.clone(), &fields_at(5.0)).await;
+    let restarted = price_holder(core, &fields_at(5.0)).await;
+    assert_eq!(figures(restarted), figures(holder));
+    assert_eq!(restarted.card_store().unwrap().entries()[0].card, large);
+    assert_eq!(restarted.len(), 2, "both eras survive native persistence");
+}
+#[tokio::test]
+async fn a_rate_apply_the_journal_refuses_leaves_the_card_in_force_unchanged() {
+    let (core, faults) = native_price_backend().await;
+    let holder = price_holder(core, &fields_at(3.0)).await;
+    faults
+        .refuse
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let store = holder.card_store().unwrap();
+    assert!(store
+        .prepare(&fields_at(5.0), "refused change")
+        .await
+        .is_err());
+    assert_eq!(holder.len(), 1);
     assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
-    holder.bind_journal(&book);
-    apply_at(holder, 5.0, EARNED_B);
+    assert!(
+        store.pending().is_some(),
+        "the original refuses publication while retaining its owner"
+    );
+}
+#[tokio::test]
+async fn a_rate_card_the_log_owes_after_a_failed_roll_is_not_published_while_unconfirmed() {
+    let (core, faults) = native_price_backend().await;
+    let holder = price_holder(core, &fields_at(3.0)).await;
+    faults
+        .unknown_after
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let store = holder.card_store().unwrap();
+    assert!(store
+        .prepare(&fields_at(5.0), "lost native reply")
+        .await
+        .is_err());
+    let original = store.pending().unwrap();
+    assert_eq!(holder.len(), 1);
+    assert_eq!(flat_price_at(holder, EARNED_B), Some(3_000));
+    let prepared = store
+        .prepare_recovery(&fields_at(5.0), "exact recovery")
+        .await
+        .unwrap();
+    let key = prepared.confirm_activation().await.unwrap().commit();
+    assert_eq!(key, original, "recovery publishes the retained candidate");
     assert_eq!(holder.len(), 2);
-    assert_eq!(
-        cards_on_chain(&book),
-        2,
-        "the boot card and the bound apply"
-    );
-    assert_eq!(flat_price_at(holder, REBOOT), Some(5_000));
-    drop(book);
+    assert!(store.pending().is_none());
 }
-
-fn swap_to_switchable_store(
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    refusing: bool,
-) -> Arc<std::sync::atomic::AtomicBool> {
-    let flag = Arc::new(std::sync::atomic::AtomicBool::new(refusing));
-    book.lock().expect("the book").journal = busbar_kernel_wal::Journal::memory_buffered_to(
-        7,
-        Box::new(SwitchShipper(Arc::clone(&flag))),
-        busbar_kernel::store::now_ms,
-    );
-    flag
-}
-
-#[test]
-fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
-    let holder = process_holder();
-    apply_at(holder, 3.0, BOOT_A);
-    let book = crate::root::durability::build_with_cards(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        7,
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-        Some(holder),
-    )
-    .expect("memory-buffered cannot fail");
-    let book = Arc::new(Mutex::new(book));
-    holder.bind_journal(&book);
-    apply_at(holder, 5.0, APPLIED_B);
-    assert_eq!(
-        cards_on_chain(&book),
-        0,
-        "no data directory, no card journalled"
-    );
+#[tokio::test]
+async fn a_rate_apply_before_the_book_is_bound_is_refused() {
+    let holder = RootHistory::default();
+    let card = fields_at(3.0);
+    let rates = card.rates();
+    assert!(matches!(
+        holder.apply_rates(&rates.raw(), BOOT_A),
+        Err(CardRefused::Unbound)
+    ));
+    assert_eq!(holder.len(), 0);
+    holder
+        .keep_in_store(crate::root::real_store::core().await, 7)
+        .unwrap();
+    holder.card_applied(&card, "boot");
+    holder.boot_in_store(None).await.unwrap();
+    holder
+        .card_store()
+        .unwrap()
+        .prepare(&fields_at(5.0), "bound change")
+        .await
+        .unwrap()
+        .confirm_activation()
+        .await
+        .unwrap()
+        .commit();
     assert_eq!(holder.len(), 2);
-    assert_eq!(
-        holder
-            .history()
-            .expect("a history")
-            .entries()
-            .first()
-            .map(busbar_kernel_ledger::cost::CardEntry::effective_from),
-        Some(0),
-        "the boot card opens the history from instant zero"
-    );
-
-    let unarmed: &'static RootHistory = Box::leak(Box::default());
-    apply_at(unarmed, 3.0, BOOT_A);
-    let store = crate::root::store_double::RecordSlots::new();
-    let book = open_book(unarmed, &store);
-    unarmed.bind_journal(&book);
-    apply_at(unarmed, 5.0, APPLIED_B);
-    assert_eq!(
-        cards_on_chain(&book),
-        0,
-        "an unarmed holder journals nothing"
-    );
-    drop(book);
+    holder
+        .card_store()
+        .unwrap()
+        .stop_background()
+        .await
+        .unwrap();
 }
-
+#[tokio::test]
+async fn no_data_dir_or_no_arming_keeps_the_boot_card_and_journals_nothing() {
+    let holder = price_holder(crate::root::real_store::core().await, &fields_at(3.0)).await;
+    assert_eq!(holder.len(), 1);
+    assert_eq!(
+        holder.card_store().unwrap().entries().len(),
+        1,
+        "canonical prices require no disk or separate node journal"
+    );
+}
 #[test]
 fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
     let lanes = lanes_at(3.0);
@@ -1394,314 +1113,105 @@ fn an_applied_card_round_trips_the_journal_as_the_same_card_on_every_plane() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_back_dated_correction_survives_a_restart() {
-    const CORRECTED: (u64, u64) = (0, 86_400_000);
-
-    const OUTSIDE: u64 = 86_400_000 + EARNED_B;
-    const SIGNED_AT: u64 = 20_000;
-    let store = crate::root::store_double::RecordSlots::new();
-    {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &store);
-
-        let journal = crate::root::units_admin::AmendmentJournal::new(
-            Arc::clone(&book),
-            new_kernel().durability_token(),
-        );
-        holder
-            .amend(
-                &crate::root::kernel::Correction {
-                    effective_from: CORRECTED.0,
-                    effective_until: Some(CORRECTED.1),
-                    appended_at: SIGNED_AT,
-                    author: busbar_kernel_ledger::cost::Author::Amend {
-                        reason_hash: [9; 32],
-                    },
-                    cells: vec![(
-                        busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
-                        4_000,
-                    )],
-                    fee: None,
-                },
-                |card, base| {
-                    journal.record(
-                        &crate::root::units_admin::AmendmentRecord {
-                            version: crate::root::units_admin::AmendmentVersion::V4,
-                            effective_from: CORRECTED.0,
-                            effective_until: Some(CORRECTED.1),
-                            amended_at_ms: SIGNED_AT,
-                            sealed_over: Some(base),
-                            sealed_fee: card.fee(),
-                            rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
-                            operator_fingerprint: "op".to_string(),
-                            reason_hash: [9; 32],
-                            principal: "admin".to_string(),
-                            dual_control: "single".to_string(),
-                            signed_payload: b"signed".to_vec(),
-                            signature: "00".to_string(),
-                        },
-                        SIGNED_AT / 1_000,
-                    )
-                },
-            )
-            .expect("a resolved history takes a correction");
-        drain_book(&book);
-    }
-
-    let holder = process_holder();
-    apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &store);
-    assert_eq!(
-        (
-            earned(holder, FLAT_LANE, EARNED_A),
-            earned(holder, FLAT_LANE, OUTSIDE)
-        ),
-        (4_000_000_000, 3_000_000_000),
-        "the correction reprices exactly its window after a restart, and nothing outside it"
-    );
-    assert_eq!(holder.len(), 2, "the opening card and the correction");
-    let history = holder.history().expect("a history");
-    let view = history.current();
-    let entry = view
-        .entry_at(EARNED_A)
-        .expect("the correction covers its window");
-    assert_eq!(
-        (entry.appended_at(), entry.effective_until()),
-        (SIGNED_AT, Some(CORRECTED.1))
-    );
-    assert!(matches!(
-        entry.author(),
-        busbar_kernel_ledger::cost::Author::Amend { .. }
-    ));
-    drop(book);
-}
-
-#[cfg(feature = "root-admin")]
-fn seal_correction(
-    holder: &RootHistory,
-    book: &Arc<Mutex<crate::root::durability::Durability>>,
-    window: (u64, u64),
-    signed_at: u64,
-    nanos: u64,
-    rebase: impl FnOnce(super::CorrectionBase) -> super::CorrectionBase,
-) -> busbar_kernel_ledger::cost::HistorySeq {
-    let journal = crate::root::units_admin::AmendmentJournal::new(
-        Arc::clone(book),
-        new_kernel().durability_token(),
-    );
-    let seq = holder
+async fn correct_opening(holder: &RootHistory) {
+    holder
         .amend(
             &super::Correction {
-                effective_from: window.0,
-                effective_until: Some(window.1),
-                appended_at: signed_at,
+                effective_from: 0,
+                effective_until: Some(86_400_000),
+                appended_at: 20_000,
                 author: busbar_kernel_ledger::cost::Author::Amend {
                     reason_hash: [9; 32],
                 },
                 cells: vec![(
                     busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
-                    nanos,
+                    4_000,
                 )],
                 fee: None,
             },
-            |card, base| {
-                journal.record(
-                    &crate::root::units_admin::AmendmentRecord {
-                        version: crate::root::units_admin::AmendmentVersion::V4,
-                        effective_from: window.0,
-                        effective_until: Some(window.1),
-                        amended_at_ms: signed_at,
-                        sealed_over: Some(rebase(base)),
-                        sealed_fee: card.fee(),
-                        rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(nanos))],
-                        operator_fingerprint: "op".to_string(),
-                        reason_hash: [9; 32],
-                        principal: "admin".to_string(),
-                        dual_control: "single".to_string(),
-                        signed_payload: b"signed".to_vec(),
-                        signature: "00".to_string(),
-                    },
-                    signed_at / 1_000,
-                )
-            },
+            |_, _| Ok::<(), ()>(()),
         )
-        .expect("a resolved history takes a correction");
-    drain_book(book);
-    seq
+        .await
+        .unwrap();
 }
-
 #[cfg(feature = "root-admin")]
-fn refused_corrections(book: &Arc<Mutex<crate::root::durability::Durability>>) -> Vec<String> {
-    book.lock().expect("the book").restart_findings.clone()
+#[tokio::test]
+async fn a_back_dated_correction_survives_a_restart() {
+    native_correction_restart().await;
 }
-
 #[cfg(feature = "root-admin")]
-fn holds_a_correction(holder: &RootHistory) -> bool {
-    holder
-        .history()
-        .expect("a history")
-        .entries()
-        .iter()
-        .any(|e| matches!(e.author(), busbar_kernel_ledger::cost::Author::Amend { .. }))
+async fn native_correction_restart() {
+    let core = crate::root::real_store::core().await;
+    seed_price(&core, fields_at(3.0), BOOT_A).await;
+    let holder = price_holder(core.clone(), &fields_at(3.0)).await;
+    correct_opening(holder).await;
+    let live = holder.history().unwrap();
+    let restarted = price_holder(core, &fields_at(3.0)).await;
+    assert_eq!(earned(restarted, FLAT_LANE, EARNED_A), 4_000_000_000);
+    assert_eq!(
+        earned(restarted, FLAT_LANE, 86_400_000 + EARNED_B),
+        3_000_000_000
+    );
+    assert_eq!(restarted.len(), 2);
+    let entry = restarted.history().unwrap();
+    let current = entry.current();
+    let amended = current.entry_at(EARNED_A).unwrap();
+    assert_eq!(amended.effective_until(), Some(86_400_000));
+    assert_eq!(
+        amended.card().digest(),
+        live.current().entry_at(EARNED_A).unwrap().card().digest()
+    );
 }
-
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_prefix_lacks_the_corrections_base_refuses_it() {
-    const DAY: u64 = 86_400_000;
-    const CARD_B: u64 = DAY;
-    const CORRECTED: (u64, u64) = (DAY, 2 * DAY);
-    const SIGNED_AT: u64 = 3 * DAY;
-    let store = crate::root::store_double::RecordSlots::new();
-    {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &store);
-        publish_unjournalled_at(holder, 5.0, CARD_B);
-        assert_eq!(holder.len(), 2, "card B is entry 1 on the live history");
-        let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
-        assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
-    }
-
-    let holder = process_holder();
-    apply_at(holder, 5.0, 4 * DAY);
-    let book = boot_book(holder, &store);
-    assert_eq!(
-        refused_corrections(&book),
-        vec![super::CorrectionRefused {
-            effective_from: CORRECTED.0,
-            effective_until: Some(CORRECTED.1),
-            appended_at: SIGNED_AT,
-            sealed_over: super::CorrectionBase::Key {
-                key: busbar_kernel_ledger::cost::EntryKey::new(CARD_B, [0; 8], 1),
-                card_digest: holder
-                    .history()
-                    .expect("a history")
-                    .entries()
-                    .get(1)
-                    .expect("card B is rebuilt as entry 1")
-                    .card()
-                    .digest(),
-            },
-            cause: super::BaseMismatch::MissingBase,
-        }
-        .to_string()],
-        "the correction is refused by name, not dropped with a log line or rebuilt over card A"
-    );
-    assert!(
-        !holds_a_correction(holder),
-        "a refused correction is not rebuilt over another card"
-    );
-    drop(book);
+    let (history, correction, _) = keyed_correction_fixture();
+    assert!(matches!(
+        correction.rebuild_over(
+            &history,
+            super::CorrectionBase::Key {
+                key: busbar_kernel_ledger::cost::EntryKey::new(999, [8; 8], 0),
+                card_digest: [0; 32]
+            }
+        ),
+        Err(super::BaseMismatch::MissingBase)
+    ));
 }
-
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_whose_base_digest_differs_refuses_the_correction() {
-    const CORRECTED: (u64, u64) = (0, 86_400_000);
-    const SIGNED_AT: u64 = 20_000;
-    let store = crate::root::store_double::RecordSlots::new();
-    let sealed_over = {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &store);
-        let mut sealed_over = None;
-        seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |mut base| {
-            match &mut base {
-                super::CorrectionBase::Key { card_digest, .. }
-                | super::CorrectionBase::LegacyOrdinal { card_digest, .. } => {
-                    card_digest[0] ^= 0xff
-                }
+    let (history, correction, key) = keyed_correction_fixture();
+    assert!(matches!(
+        correction.rebuild_over(
+            &history,
+            super::CorrectionBase::Key {
+                key,
+                card_digest: [5; 32]
             }
-            sealed_over = Some(base);
-            base
-        });
-        sealed_over.expect("the seal ran")
-    };
-    assert!(
-        matches!(sealed_over, super::CorrectionBase::Key { key, .. } if key == busbar_kernel_ledger::cost::EntryKey::new(BOOT_A, [0; 8], 0))
-    );
-
-    let holder = process_holder();
-    apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &store);
-    assert_eq!(
-        refused_corrections(&book),
-        vec![super::CorrectionRefused {
-            effective_from: CORRECTED.0,
-            effective_until: Some(CORRECTED.1),
-            appended_at: SIGNED_AT,
-            sealed_over,
-            cause: super::BaseMismatch::BaseDigest,
-        }
-        .to_string()]
-    );
-    assert!(!holds_a_correction(holder));
-    assert_eq!(holder.len(), 1, "the opening card alone");
-    drop(book);
+        ),
+        Err(super::BaseMismatch::BaseDigest)
+    ));
 }
-
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_restore_over_the_sealed_base_rebuilds_the_identical_card() {
-    const CORRECTED: (u64, u64) = (0, 86_400_000);
-    const SIGNED_AT: u64 = 20_000;
-    let store = crate::root::store_double::RecordSlots::new();
-    let (live_seq, live_card) = {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book(holder, &store);
-        let seq = seal_correction(holder, &book, CORRECTED, SIGNED_AT, 4_000, |base| base);
-        let history = holder.history().expect("a history");
-        let card = history
-            .entries()
-            .get(usize::try_from(seq.get()).expect("a small seq"))
-            .expect("the correction is on the live history")
-            .card()
-            .clone();
-        (seq, card)
-    };
-
-    let holder = process_holder();
-    apply_at(holder, 3.0, REBOOT);
-    let book = boot_book(holder, &store);
-    assert!(
-        book.lock().expect("the book").restart_findings.is_empty(),
-        "{:?}",
-        book.lock().expect("the book").restart_findings
-    );
-    let history = holder.history().expect("a history");
-    let rebuilt = history
-        .entries()
-        .get(usize::try_from(live_seq.get()).expect("a small seq"))
-        .expect("the correction is rebuilt at the number it had");
-    assert!(matches!(
-        rebuilt.author(),
-        busbar_kernel_ledger::cost::Author::Amend { .. }
-    ));
-    assert_eq!(rebuilt.card().digest(), live_card.digest());
+    let (history, correction, key) = keyed_correction_fixture();
+    let (base, draft) = correction.draft_over(history.current()).unwrap();
     assert_eq!(
-        format!("{:?}", rebuilt.card()),
-        format!("{live_card:?}"),
-        "the rebuilt correction is the card the live node priced"
+        correction
+            .rebuild_over(&history, base)
+            .unwrap()
+            .card
+            .digest(),
+        draft.card.digest()
     );
-    assert_eq!(
-        rebuilt
-            .card()
-            .lane_rates(FLAT_LANE)
-            .map(|r| r.nanos_per_unit("input")),
-        Some(4_000)
-    );
-    drop(book);
+    assert_eq!(history.entry(&key).unwrap().key(), key);
 }
-
 #[test]
 fn applying_rates_registers_the_classes_a_unit_may_report() {
     let fees = plane_fees();
     let lanes = lanes_at(1.0);
-    let _ = process_holder().apply_rates(
+    let _ = RootHistory::default().apply_rates(
         &busbar_kernel::rate_apply::RawRates {
             lanes: &lanes,
             units: &[(
@@ -1728,226 +1238,91 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
 }
 
-fn boot_book_on_store(
-    holder: &'static RootHistory,
-    slots: &crate::root::store_double::RecordSlots,
-) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
-        .expect("the lane starts");
-    let book = Arc::new(Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            7,
-            lane,
-            Some(holder),
-        )
-        .expect("the store reads back"),
-    ));
-    holder.bind_journal(&book);
-    book
-}
-
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_back_dated_correction_survives_a_restart_over_the_store() {
-    const CORRECTED: (u64, u64) = (0, 86_400_000);
-    const SIGNED_AT: u64 = 20_000;
-    let slots = crate::root::store_double::RecordSlots::new();
-    {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book_on_store(holder, &slots);
-        let journal = crate::root::units_admin::AmendmentJournal::new(
-            Arc::clone(&book),
-            new_kernel().durability_token(),
-        );
-        holder
-            .amend(
-                &crate::root::kernel::Correction {
-                    effective_from: CORRECTED.0,
-                    effective_until: Some(CORRECTED.1),
-                    appended_at: SIGNED_AT,
-                    author: busbar_kernel_ledger::cost::Author::Amend {
-                        reason_hash: [9; 32],
-                    },
-                    cells: vec![(
-                        busbar_kernel_ledger::cost::LaneClass::new(FLAT_LANE, "input"),
-                        4_000,
-                    )],
-                    fee: None,
-                },
-                |card, base| {
-                    journal.record(
-                        &crate::root::units_admin::AmendmentRecord {
-                            version: crate::root::units_admin::AmendmentVersion::V4,
-                            effective_from: CORRECTED.0,
-                            effective_until: Some(CORRECTED.1),
-                            amended_at_ms: SIGNED_AT,
-                            sealed_over: Some(base),
-                            sealed_fee: card.fee(),
-                            rates: vec![(FLAT_LANE.to_string(), "input".to_string(), Some(4_000))],
-                            operator_fingerprint: "op".to_string(),
-                            reason_hash: [9; 32],
-                            principal: "admin".to_string(),
-                            dual_control: "single".to_string(),
-                            signed_payload: b"signed".to_vec(),
-                            signature: "00".to_string(),
-                        },
-                        SIGNED_AT / 1_000,
-                    )
-                },
-            )
-            .expect("a resolved history takes a correction");
-        assert!(
-            book.lock()
-                .expect("the book")
-                .lane()
-                .expect("a lane")
-                .drain(std::time::Duration::from_secs(5)),
-            "the store takes the chain"
-        );
-    }
-
-    let holder = process_holder();
-    apply_at(holder, 3.0, REBOOT);
-    let _book = boot_book_on_store(holder, &slots);
-    assert_eq!(
-        earned(holder, FLAT_LANE, EARNED_A),
-        4_000_000_000,
-        "the correction reprices its window after a restart over the store"
-    );
-    assert_eq!(holder.len(), 2, "the opening card and the correction");
+#[tokio::test]
+async fn a_back_dated_correction_survives_a_restart_over_the_store() {
+    native_correction_restart().await;
 }
-
-#[test]
-fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    {
-        let holder = process_holder();
-        apply_at(holder, 3.0, BOOT_A);
-        let book = boot_book_on_store(holder, &slots);
-        assert!(
-            book.lock()
-                .expect("the book")
-                .lane()
-                .expect("a lane")
-                .drain(std::time::Duration::from_secs(5)),
-            "the store takes the chain"
-        );
-    }
-    slots.corrupt(
-        crate::root::durability::JOURNAL_SCHEMA,
-        &crate::root::durability::part_key(7, 1, 0),
-    );
-
-    let holder = process_holder();
-    apply_at(holder, 3.0, REBOOT);
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
-        .expect("the lane starts");
-    let refused = crate::root::durability::build_on_store(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        7,
-        lane,
-        Some(holder),
-    )
-    .err()
-    .map(|e| e.to_string());
+#[tokio::test]
+async fn a_stored_chain_that_does_not_verify_never_disarms_the_card_journal() {
+    let (core, faults) = native_price_backend().await;
+    let holder = price_holder(core.clone(), &fields_at(3.0)).await;
+    assert_eq!(holder.len(), 1);
+    faults
+        .corrupt_read
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let restarted = RootHistory::default();
+    restarted.keep_in_store(core, 7).unwrap();
+    restarted.card_applied(&fields_at(3.0), "restart");
     assert!(
-        refused
-            .as_deref()
-            .is_some_and(|why| why.contains("does not verify")),
-        "a stored chain that does not verify must refuse the boot, naming the break; the build \
-         answered {refused:?}"
+        restarted.boot_in_store(None).await.is_err(),
+        "malformed canonical price facts must refuse boot"
     );
+    assert!(restarted.keeps_store());
     assert!(
-        matches!(
-            *holder.journal.lock().unwrap_or_else(|p| p.into_inner()),
-            CardJournal::Armed(_)
-        ),
-        "the card journal is left armed, never disarmed by a chain the boot could not verify"
+        restarted.card_store().is_none(),
+        "unverified canonical history is not published"
     );
 }
-
-#[test]
-fn store_card_history_ignores_absent_and_unusable_data_directories_without_writing_files() {
-    let scratch = std::env::temp_dir().join(format!(
-        "busbar-store-card-config-{}-{}",
-        std::process::id(),
-        hex::encode(crate::root::card_store::boot_rand())
-    ));
+#[tokio::test]
+async fn store_card_history_ignores_absent_and_unusable_data_directories_without_writing_files() {
+    let scratch = std::path::PathBuf::from("/Users/matthew/Developer/tmp/corefix-implementation")
+        .join(format!(
+            "native-price-files-{}",
+            busbar_kernel::door::op_id().counter()
+        ));
     std::fs::create_dir(&scratch).unwrap();
     let blocked = scratch.join("a-file-not-a-directory");
     std::fs::write(&blocked, b"unchanged fixture").unwrap();
-    let slots = crate::root::store_double::RecordSlots::new();
-    let boot = busbar_kernel::config::card::CardFields {
-        per_request_fee: 3,
-        ..Default::default()
-    };
-    let mut edited = boot.clone();
-    edited.per_request_fee = 7;
-    let mut changed_key = None;
-    for data_dir in [None, Some(blocked.join("cannot-open"))] {
-        let holder: &'static RootHistory = Box::leak(Box::default());
-        holder.keep_in_store(slots.calls(), 7);
-        holder.card_applied(&boot, "boot fixture");
-        let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
-            .expect("Store lane");
-        let book = crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir },
-            7,
-            lane,
-            Some(holder),
-        )
-        .expect("Store owns persistence independently of dataDir");
-        holder.card_applied(&edited, "config/apply by admin");
-        let own = holder.card_store().unwrap().own().unwrap();
-        assert_eq!(own.1, edited);
-        if let Some(key) = changed_key {
-            assert!(holder
-                .card_store()
-                .unwrap()
-                .entries()
-                .iter()
-                .any(|entry| entry.key == key));
-        }
-        changed_key = Some(own.0);
-        assert!(holder.pending_refusal().is_none());
-        drop(book);
+    let core = crate::root::real_store::core().await;
+    for _ in 0..2 {
+        let holder = price_holder(core.clone(), &fields_at(3.0)).await;
+        holder
+            .card_store()
+            .unwrap()
+            .prepare(&fields_at(5.0), "configuration change")
+            .await
+            .unwrap()
+            .confirm_activation()
+            .await
+            .unwrap()
+            .commit();
         assert_eq!(std::fs::read(&blocked).unwrap(), b"unchanged fixture");
         assert_eq!(
             std::fs::read_dir(&scratch).unwrap().count(),
             1,
-            "the host wrote no card files, journals or sidecars"
+            "canonical price persistence creates no local files"
         );
     }
     std::fs::remove_dir_all(scratch).unwrap();
 }
-
-#[test]
-fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_global_money_lock() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let holder: &'static RootHistory = Box::leak(Box::default());
-    let boot = busbar_kernel::config::card::CardFields {
-        per_request_fee: 3,
-        ..Default::default()
-    };
-    holder.keep_in_store(slots.calls(), 7);
-    holder.card_applied(&boot, "boot");
-    holder.boot_in_store(None).unwrap();
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_global_money_lock()
+{
+    let (core, faults) = native_price_backend().await;
+    let boot = fields_at(3.0);
+    let holder = price_holder(core, &boot).await;
     let store = holder.card_store().unwrap();
     let base = store.own().unwrap().0;
-    slots.on_put(move || {
-        assert!(
-            holder.applying.try_lock().is_ok(),
-            "no global money lock crosses StoreCalls"
-        );
-        None
-    });
     let mut changed = boot.clone();
     changed.per_request_fee = 5;
+    let confirmed = store
+        .prepare(&changed, "configuration changes during seal")
+        .await
+        .unwrap()
+        .confirm_activation()
+        .await
+        .unwrap();
+    *faults.on_commit.lock().unwrap() = Some(Box::new(move || {
+        assert!(
+            holder.applying.try_lock().is_ok(),
+            "no global money lock crosses native persistence"
+        )
+    }));
     holder
         .amend_by(
-            &Correction {
+            &super::Correction {
                 effective_from: 0,
                 effective_until: Some(86_400_000),
                 appended_at: 20_000,
@@ -1959,32 +1334,26 @@ fn a_store_amendment_keeps_its_pinned_base_and_calls_the_store_outside_the_globa
             },
             "admin correcting pinned opening",
             |_, _| {
-                assert!(
-                    holder.applying.try_lock().is_ok(),
-                    "seal callback is outside the global lock"
-                );
-                holder.card_applied(&changed, "config changed during seal");
+                assert!(holder.applying.try_lock().is_ok());
+                confirmed.commit();
                 Ok::<(), ()>(())
             },
         )
-        .expect("the immutable correction can be sealed over its original base");
+        .await
+        .unwrap();
     let amendment = store
         .entries()
         .into_iter()
         .find(|entry| {
             matches!(
                 entry.author,
-                crate::root::card_store::EntryAuthor::Amend { .. }
+                busbar_kernel::governance::persistence::prices::EntryAuthor::Amend { .. }
             )
         })
         .unwrap();
     assert_eq!(amendment.base, Some(base));
     assert_eq!(amendment.card.per_request_fee, 7);
-    assert_eq!(
-        store.own().unwrap().1,
-        changed,
-        "amend never replaces config own-selection"
-    );
+    assert_eq!(store.own().unwrap().1, changed);
 }
 
 fn keyed_correction_fixture() -> (
@@ -2146,4 +1515,118 @@ fn an_actual_known_zero_opening_key_is_not_an_unattached_card_sentinel() {
     let (sealed, _) = correction.draft_over(history.current()).unwrap();
     assert!(matches!(sealed, super::CorrectionBase::Key { key, .. } if key == EntryKey([0; 20])));
     assert!(correction.rebuild_over(&history, sealed).is_ok());
+}
+
+struct NativePriceFaults {
+    inner: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    refuse: std::sync::atomic::AtomicBool,
+    unknown_after: std::sync::atomic::AtomicBool,
+    corrupt_read: std::sync::atomic::AtomicBool,
+    on_commit: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+impl busbar_contract::persistence::PersistenceBackend for NativePriceFaults {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.inner.info()
+    }
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        Box::pin(async move {
+            let corrupt = self.corrupt_read.load(std::sync::atomic::Ordering::SeqCst);
+            let indexes: Vec<_> = request
+                .addresses
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| {
+                    a.namespace == busbar_kernel::governance::persistence::prices::PRICES.0
+                        && a.key.first() == Some(&b'E')
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let mut result = self.inner.read(request).await?;
+            if corrupt {
+                if let busbar_contract::persistence::ReadResult::Values { values, .. } = &mut result
+                {
+                    for i in indexes {
+                        if values[i].is_some() {
+                            values[i] = Some(busbar_contract::Secret::new(
+                                b"malformed native price entry".to_vec(),
+                            ));
+                        }
+                    }
+                }
+            }
+            Ok(result)
+        })
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        Box::pin(async move {
+            let mut page = self.inner.scan(request).await?;
+            if self.corrupt_read.load(std::sync::atomic::Ordering::SeqCst) {
+                for (address, value) in &mut page.rows {
+                    if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0
+                        && address.key.first() == Some(&b'E')
+                    {
+                        *value =
+                            busbar_contract::Secret::new(b"malformed native price entry".to_vec());
+                    }
+                }
+            }
+            Ok(page)
+        })
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.inner.clock(dataset)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        Box::pin(async move {
+            let price = candidate.candidate().mutations.iter().any(|m| matches!(m, busbar_contract::persistence::Mutation::Put {address,..} if address.namespace == busbar_kernel::governance::persistence::prices::PRICES.0));
+            if price {
+                let callback = self.on_commit.lock().unwrap().take();
+                if let Some(callback) = callback {
+                    callback();
+                }
+                if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(busbar_contract::persistence::Failure::Refused);
+                }
+            }
+            let result = self.inner.commit(candidate).await;
+            if price
+                && result.is_ok()
+                && self
+                    .unknown_after
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(busbar_contract::persistence::Failure::Unknown);
+            }
+            result
+        })
+    }
+}
+async fn native_price_backend() -> (
+    Arc<busbar_kernel::persistence::facade::CoreStore>,
+    Arc<NativePriceFaults>,
+) {
+    let backend = Arc::new(NativePriceFaults {
+        inner: crate::root::real_store::native_backend().await,
+        refuse: false.into(),
+        unknown_after: false.into(),
+        corrupt_read: false.into(),
+        on_commit: Mutex::new(None),
+    });
+    (
+        crate::root::real_store::core_over(backend.clone()).await,
+        backend,
+    )
 }

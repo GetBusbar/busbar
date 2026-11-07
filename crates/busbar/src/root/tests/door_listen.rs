@@ -147,7 +147,7 @@ async fn a_subscription_over_http_is_held_as_a_session_until_its_bound() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-held";
     let server = TlsToolServer::new().await;
-    let rig = server.rig(instance, server.section(), &|app| app);
+    let rig = server.rig(instance, server.section(), &|app| app).await;
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let head = |name: &str| {
@@ -235,14 +235,17 @@ async fn a_subscription_over_http_ends_when_its_principal_stops_standing() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-lapsed";
     let server = TlsToolServer::new().await;
-    let rig = server.rig(instance, server.section(), &|app| app);
+    let rig = server.rig(instance, server.section(), &|app| app).await;
     let response = listen(&rig, &serde_json::json!({ "toolsListChanged": true })).await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
     let mut heard = Heard::default();
     assert!(read_until(&mut body, &mut heard, |h| !h.events().is_empty()).await);
 
-    rig.gov.delete_key(&rig.key.id).expect("the key is deleted");
+    rig.gov
+        .delete_key(&rig.key.id)
+        .await
+        .expect("the key is deleted");
     assert!(
         read_until(&mut body, &mut heard, |h| h.ended).await,
         "the stream ends on the frame after its principal stopped standing: {:?}",
@@ -277,7 +280,7 @@ async fn a_subscription_over_http_that_could_deliver_nothing_is_refused() {
     let _one = PUBLISHING.lock().await;
     let instance = "serve-door-listen-refused";
     let server = TlsToolServer::new().await;
-    let rig = server.rig(instance, server.section(), &|app| app);
+    let rig = server.rig(instance, server.section(), &|app| app).await;
     let response = listen(&rig, &serde_json::json!({})).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(

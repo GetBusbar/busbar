@@ -49,13 +49,13 @@ impl Governed {
     }
 }
 
-pub(super) fn governed(instance: &'static str, keys_chain: bool) -> Governed {
-    governed_with(instance, keys_chain, None)
+pub(super) async fn governed(instance: &'static str, keys_chain: bool) -> Governed {
+    governed_with(instance, keys_chain, None).await
 }
 
 const TEST_PLANE: &str = "plane-driver-test-plane";
 
-fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
+async fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) -> Governed {
     governed_full(
         instance,
         keys_chain,
@@ -65,6 +65,7 @@ fn governed_with(instance: &'static str, keys_chain: bool, budget: Option<u64>) 
         None,
         false,
     )
+    .await
 }
 
 /// What a governed deployment's `hooks:` screen.
@@ -92,13 +93,13 @@ fn screen_cfg(module: &str, endpoint: &str) -> busbar_kernel::config::HookCfg {
     .expect("an operator's gate definition")
 }
 
-fn governed_hooked(
+async fn governed_hooked(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
     screen: Screen<'_>,
 ) -> Governed {
-    governed_full(instance, keys_chain, budget, screen, None, None, false)
+    governed_full(instance, keys_chain, budget, screen, None, None, false).await
 }
 
 type BoundNode = (
@@ -106,7 +107,7 @@ type BoundNode = (
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 );
 
-fn governed_over(
+async fn governed_over(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
@@ -121,9 +122,10 @@ fn governed_over(
         None,
         false,
     )
+    .await
 }
 
-fn governed_full(
+async fn governed_full(
     instance: &'static str,
     keys_chain: bool,
     budget: Option<u64>,
@@ -286,7 +288,8 @@ fn governed_full(
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
+        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+            .await
             .expect("governance"),
     );
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
@@ -332,22 +335,35 @@ fn governed_full(
         ..Default::default()
     };
     let (key, token) = gov
-        .mint_signed(spec, 4_000_000_000, 1_700_000_000)
+        .mint_signed_async(spec, 4_000_000_000, 1_700_000_000)
+        .await
         .expect("mint");
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
 
-    let (node, book) = on.unwrap_or_else(|| {
-        let book = Arc::new(std::sync::Mutex::new(
-            crate::root::durability::build(
-                &crate::root::durability::DurabilityConfig { data_dir: None },
-                Box::new(busbar_kernel_wal::NullShipper::new()),
+    let (node, book) = match on {
+        Some(bound) => bound,
+        None => {
+            let core = gov.core_store_handle().expect("admitted native core");
+            let budget = busbar_kernel::persistence::journal::BufferBudget {
+                records: 4096,
+                bytes: 4 * 1024 * 1024,
+            };
+            let journal = busbar_kernel::persistence::journal::RuntimeJournal::open(
+                core,
+                busbar_kernel::door::op_id().counter(),
+                budget,
             )
-            .expect("a memory-buffered journal opens"),
-        ));
-        let node = Arc::new(Node::new());
-        node.bind_book(Arc::clone(&book));
-        (node, book)
-    });
+            .await
+            .expect("native journal opens");
+            let book = crate::root::durability::node_book(journal, budget)
+                .await
+                .expect("native node book opens")
+                .durability;
+            let node = Arc::new(Node::new());
+            node.bind_book(book.clone());
+            (node, book)
+        }
+    };
     let post = Arc::new(NodeEndPost::new(node));
     let money = Arc::new(PlaneMoney::new(
         Arc::clone(&gov),
@@ -372,7 +388,7 @@ fn governed_full(
     } else {
         config.per_request_fee = flat_fee.unwrap_or(1);
     }
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config_with_key(
             &directory,
@@ -386,14 +402,16 @@ fn governed_full(
         &(Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
+    .await
     .expect("the actual root builds the money deployment");
     limits.stage_boot();
     let _boot_book = crate::root::boot::book(&app, &store_module)
+        .await
         .expect("the actual configured Store binds its boot rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
@@ -429,6 +447,7 @@ fn governed_full(
         Some(&hooks),
         &app.serve_tables,
     )
+    .await
     .expect("the door plane composes");
     served.post = Some(Arc::clone(&post));
     if pools_arrival {
@@ -487,9 +506,10 @@ impl Governed {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    fn requests(&self) -> u64 {
+    async fn requests(&self) -> u64 {
         self.gov
-            .usage_for(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+            .usage_for_async(&self.app.cost, &self.key.id, busbar_kernel::store::now())
+            .await
             .expect("a read")
             .expect("the key exists")
             .requests
@@ -499,8 +519,8 @@ impl Governed {
 #[tokio::test]
 async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-keyed", true);
-    assert_eq!(g.requests(), 0, "nothing admitted yet");
+    let g = governed("serve-money-keyed", true).await;
+    assert_eq!(g.requests().await, 0, "nothing admitted yet");
     let (status, body) = g.post("/call/direct:m", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -510,7 +530,11 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
         ),
         "admitted, then the walk is exhausted (the shed in 1.5.5's words)"
     );
-    assert_eq!(g.requests(), 1, "its request was charged at admission");
+    assert_eq!(
+        g.requests().await,
+        1,
+        "its request was charged at admission"
+    );
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
 }
@@ -518,12 +542,12 @@ async fn a_keyed_unit_is_admitted_and_its_money_settles_at_its_end() {
 #[tokio::test]
 async fn an_unknown_route_is_refused_before_admission_and_opens_no_hold() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-unknown", true);
+    let g = governed("serve-money-unknown", true).await;
     let (status, body) = g.post("/call/direct:nowhere", true).await;
 
     assert_eq!((status, body.as_str()), (404, "refused:404:no_destination"));
     assert_eq!(
-        g.requests(),
+        g.requests().await,
         0,
         "no destination can acquire a paid admission"
     );
@@ -543,20 +567,20 @@ async fn an_unknown_route_is_refused_before_admission_and_opens_no_hold() {
 #[tokio::test]
 async fn an_unkeyed_unit_on_a_credential_claim_is_refused() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-unkeyed", false);
+    let g = governed("serve-money-unkeyed", false).await;
     let (status, body) = g.post("/call/direct:m", false).await;
     assert_eq!(
         (status, body.as_str()),
         (401, "refused:401:unauthenticated")
     );
-    assert_eq!(g.requests(), 0, "nothing charged");
+    assert_eq!(g.requests().await, 0, "nothing charged");
     assert_eq!(g.money.open_units(), 0);
 }
 
 #[tokio::test]
 async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-open", false);
+    let g = governed("serve-money-open", false).await;
     let (status, body) = g.post("/open", false).await;
     assert_eq!(
         (status, body.as_str()),
@@ -566,21 +590,25 @@ async fn an_anonymous_unit_on_an_open_claim_routes_and_opens_no_money() {
         ),
         "admitted, then the walk is exhausted"
     );
-    assert_eq!(g.requests(), 0, "nothing charged");
+    assert_eq!(g.requests().await, 0, "nothing charged");
     assert_eq!(g.money.open_units(), 0);
 }
 
 #[tokio::test]
 async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-local-counted", true);
+    let g = governed("serve-money-local-counted", true).await;
     let (status, body) = g.post("/call/local-counted", true).await;
     assert_eq!(
         (status, body.as_str()),
         (200, "ping"),
         "answered by the plane"
     );
-    assert_eq!(g.requests(), 1, "its request was counted at admission");
+    assert_eq!(
+        g.requests().await,
+        1,
+        "its request was counted at admission"
+    );
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
     assert_eq!(g.post.open_units(), 0, "its node facts closed at its end");
 }
@@ -588,14 +616,14 @@ async fn a_counted_local_unit_is_charged_as_an_admitted_call() {
 #[tokio::test]
 async fn an_uncounted_local_unit_is_charged_nothing() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-local-quiet", true);
+    let g = governed("serve-money-local-quiet", true).await;
     let (status, body) = g.post("/call/local-quiet", true).await;
     assert_eq!(
         (status, body.as_str()),
         (200, "ping"),
         "answered by the plane"
     );
-    assert_eq!(g.requests(), 0, "nothing charged");
+    assert_eq!(g.requests().await, 0, "nothing charged");
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
 }
@@ -603,25 +631,29 @@ async fn an_uncounted_local_unit_is_charged_nothing() {
 #[tokio::test]
 async fn an_estimated_local_unit_is_still_charged() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-local-estimated", true);
+    let g = governed("serve-money-local-estimated", true).await;
     let (status, body) = g.post("/call/local-estimated", true).await;
     assert_eq!(
         (status, body.as_str()),
         (200, "ping"),
         "answered by the plane"
     );
-    assert_eq!(g.requests(), 1, "its request was charged at admission");
+    assert_eq!(
+        g.requests().await,
+        1,
+        "its request was charged at admission"
+    );
     assert_eq!(g.money.open_units(), 0, "its money facts closed at its end");
 }
 
 #[tokio::test]
 async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-nest", true);
+    let g = governed("serve-money-nest", true).await;
     let (status, body) = g.post("/call/nest:/call/local", true).await;
     assert_eq!((status, body.as_str()), (200, "nested:200:ping"));
     assert_eq!(
-        g.requests(),
+        g.requests().await,
         2,
         "the parent and its child, both on the parent's key"
     );
@@ -651,13 +683,13 @@ async fn a_nested_unit_runs_under_its_parents_key_and_answers_it_whole() {
         (status, body.as_str()),
         (200, "nest-refused:no plane serves the nested unit's claim")
     );
-    assert_eq!(g.requests(), 3, "only the parent");
+    assert_eq!(g.requests().await, 3, "only the parent");
 }
 
 #[tokio::test]
 async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-services", true);
+    let g = governed("serve-money-services", true).await;
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -669,7 +701,7 @@ async fn a_planes_unit_is_served_content_scan_hook_call_and_verify() {
 #[tokio::test]
 async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane() {
     let _one = PUBLISHING.lock().await;
-    let g = governed_hooked("serve-money-gated", true, None, Screen::Global("ping"));
+    let g = governed_hooked("serve-money-gated", true, None, Screen::Global("ping")).await;
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -682,7 +714,7 @@ async fn a_configured_gate_blocks_in_session_content_through_a_dropped_in_plane(
 #[tokio::test]
 async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restart() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-live", true);
+    let g = governed("serve-money-live", true).await;
     let (status, body) = g.post("/call/services", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -716,7 +748,7 @@ async fn a_gate_a_config_apply_adds_blocks_the_next_units_content_with_no_restar
 #[tokio::test]
 async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
     let _one = PUBLISHING.lock().await;
-    let g = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping"));
+    let g = governed_hooked("serve-money-pool-gate", true, None, Screen::Pool("ping")).await;
     let (status, body) = g.post("/call/services-pool:p", true).await;
     assert_eq!(
         (status, body.as_str()),
@@ -734,14 +766,14 @@ async fn a_pool_gate_blocks_the_content_of_a_unit_routed_over_its_pool() {
 #[tokio::test]
 async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing() {
     let _one = PUBLISHING.lock().await;
-    let g = governed_with("serve-money-nest-budget", true, Some(1));
+    let g = governed_with("serve-money-nest-budget", true, Some(1)).await;
     let (status, body) = g.post("/call/nest:/call/local", true).await;
     assert_eq!(
         (status, body.as_str()),
         (200, "nested:429:refused:429:over_budget"),
         "the parent ran; its child was refused on the parent's budget"
     );
-    assert_eq!(g.requests(), 1, "the refused child charged nothing");
+    assert_eq!(g.requests().await, 1, "the refused child charged nothing");
     assert_eq!(g.money.open_units(), 0);
     assert_eq!(g.post.open_units(), 0);
 }
@@ -749,7 +781,7 @@ async fn a_child_nested_after_the_budget_is_spent_is_refused_and_charged_nothing
 #[tokio::test]
 async fn a_nest_past_the_depth_cap_is_refused() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-money-nest-deep", true);
+    let g = governed("serve-money-nest-deep", true).await;
     let deep = busbar_kernel::host_services::NEST_DEPTH_MAX as usize;
     let path = format!("{}/call/local", "/call/nest:".repeat(deep + 1));
     let (status, body) = g.post(&path, true).await;
@@ -763,7 +795,7 @@ async fn a_nest_past_the_depth_cap_is_refused() {
         )
     );
     assert_eq!(
-        g.requests(),
+        g.requests().await,
         deep as u64 + 1,
         "every unit but the refused one"
     );
@@ -820,12 +852,13 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
-        GovState::new_with_signer(crate::root::real_store::records(), None, Some(signer))
+        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+            .await
             .expect("governance"),
     );
     let cost = CostModel::flat(1);
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "door".to_string(),
                 ..Default::default()
@@ -833,8 +866,9 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
         .expect("mint");
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
     let providers = BTreeMap::new();
     let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
@@ -867,11 +901,12 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         None,
         &busbar_kernel::plane_driver::serve::ServeTables::default(),
     )
+    .await
     .expect("every build composes a configured door plane");
     assert_eq!(served.planes.len(), 1, "the dropped-in door plane composed");
     let post = Arc::clone(served.post.as_ref().expect("its units post on the node"));
     let routes = data_routes(served, &[], &[]).expect("its claims mount on the data listener");
-    let deployment = governed("serve-money-boot-composition-app", true);
+    let deployment = governed("serve-money-boot-composition-app", true).await;
     let mut app = (*deployment.app).clone();
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
@@ -905,7 +940,8 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         "the dropped-in plane served the unit: admitted, then its walk exhausted; got {status} {body}"
     );
     let requests = gov
-        .usage_for(&app.cost, &key.id, busbar_kernel::store::now())
+        .usage_for_async(&app.cost, &key.id, busbar_kernel::store::now())
+        .await
         .expect("a read")
         .expect("the key exists")
         .requests;
@@ -926,7 +962,8 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
         None,
         Some(FEE_CENTS),
         false,
-    );
+    )
+    .await;
     assert!(
         deployment.key.group.is_none(),
         "precondition: the key under test carries no group"
@@ -943,16 +980,17 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
                 )
             });
     }
-    let spend = || {
+    let spend = async || {
         deployment
             .gov
-            .usage_for(&deployment.app.cost, &deployment.key.id, at)
+            .usage_for_async(&deployment.app.cost, &deployment.key.id, at)
+            .await
             .expect("a read")
             .expect("the key exists")
             .spend_cents
     };
     assert_eq!(
-        spend(),
+        spend().await,
         i64::try_from(ADMITS).expect("fits") * FEE_CENTS,
         "an ungrouped key accrues spend without any cap ever blocking its admission"
     );
@@ -964,7 +1002,7 @@ async fn an_ungrouped_key_is_authed_but_unlimited_and_admission_never_blocks() {
         "the door admits an ungrouped key whatever it has spent"
     );
     assert_eq!(
-        deployment.requests(),
+        deployment.requests().await,
         ADMITS + 1,
         "the door's admission was counted"
     );
@@ -1030,7 +1068,7 @@ where
 async fn an_arrival_opens_its_claims_span_with_the_units_forward_span_beneath_it() {
     use tracing_subscriber::layer::SubscriberExt as _;
     let _one = PUBLISHING.lock().await;
-    let g = governed("serve-arrival-span", true);
+    let g = governed("serve-arrival-span", true).await;
     let log = SpanLog::default();
     let _subscribed =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
@@ -1171,7 +1209,7 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
     const ATTACH_FAILURE: &str = "the session book refused the unit: collision\nsecond line";
     let _one = PUBLISHING.lock().await;
     for fails in [true, false] {
-        let mut g = governed("session-attach-outcome", false);
+        let mut g = governed("session-attach-outcome", false).await;
         let routes = session_custody_routes(&mut g, false);
         let admitted = Arc::new(std::sync::Mutex::new(Vec::new()));
         let ended = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1242,7 +1280,7 @@ async fn a_failed_session_attachment_records_its_fault_and_cleans_up_once() {
 #[tokio::test]
 async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusing() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("nested-unread-outcome", true);
+    let g = governed("nested-unread-outcome", true).await;
     let target = format!(
         "/call/nest:/call/local-repeat:{}",
         super::NEST_REPLY_MAX + 1
@@ -1250,7 +1288,11 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
     let (status, body) = g.post(&target, true).await;
     assert_eq!(status, axum::http::StatusCode::OK.as_u16());
     assert_eq!(body, format!("nest-failed:{}", super::NEST_UNREAD));
-    assert_eq!(g.requests(), 2, "the parent and exactly one admitted child");
+    assert_eq!(
+        g.requests().await,
+        2,
+        "the parent and exactly one admitted child"
+    );
     assert_eq!(g.post.open_units(), 0);
     assert_eq!(g.money.open_units(), 0);
     {
@@ -1268,13 +1310,13 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
     let (status, body) = g.post("/call/nest:/nowhere", true).await;
     assert_eq!(status, axum::http::StatusCode::OK.as_u16());
     assert_eq!(body, format!("nest-refused:{}", super::NEST_UNSERVED));
-    assert_eq!(g.requests(), 3, "an unserved claim starts no child");
+    assert_eq!(g.requests().await, 3, "an unserved claim starts no child");
 }
 
 #[tokio::test]
 async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("nested-declared-length-bound", true);
+    let g = governed("nested-declared-length-bound", true).await;
     let declared = super::NEST_REPLY_MAX * 4;
     let (status, body) = g
         .post(
@@ -1299,7 +1341,7 @@ async fn a_nested_declared_length_reply_stops_its_producer_at_the_existing_bound
     })
     .await
     .expect("the actual child retires");
-    assert_eq!(g.requests(), 2, "the parent and one child admission");
+    assert_eq!(g.requests().await, 2, "the parent and one child admission");
     let (status, produced) = g.post("/call/local-produced", true).await;
     assert_eq!(status, axum::http::StatusCode::OK.as_u16());
     let produced: usize = produced
@@ -1382,7 +1424,7 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
     const PERMITTED_FIELD: &str = "x-catalog-fixture";
     const PERMITTED_VALUE: &[u8] = b"  permitted\tbytes  ";
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("catalog-head-custody", false);
+    let mut g = governed("catalog-head-custody", false).await;
     let routes = session_custody_routes(&mut g, false);
     let mut request = session_custody_request(&g, "/catalog");
     for field in busbar_contract::abi::host::conn::connector::NEVER_KEPT {
@@ -1414,7 +1456,7 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
         .collect();
     assert_eq!(values, [PERMITTED_VALUE, b"second value".as_slice()]);
     assert!(g.book.lock().expect("unpoisoned").audit_records.is_empty());
-    assert_eq!(g.requests(), 0);
+    assert_eq!(g.requests().await, 0);
     assert_eq!(g.post.open_units(), 0);
     assert_eq!(g.money.open_units(), 0);
 }
@@ -1422,11 +1464,11 @@ async fn a_catalog_never_lends_never_kept_fields_and_preserves_permitted_field_b
 #[tokio::test]
 async fn a_session_decode_refusal_uses_the_bound_live_facts() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("session-live-facts", false);
+    let mut g = governed("session-live-facts", false).await;
     let routes = session_custody_routes(&mut g, false);
     let live_kind = busbar_contract::OpClassId::new("session_live_generation");
     let before_generation = routes.live[0].generation;
-    routes.served.planes[0].live.apply(&g.app);
+    routes.served.planes[0].live.apply(&g.app).await;
     assert_eq!(
         routes.served.planes[0].live.current().generation,
         before_generation + 1,
@@ -1481,7 +1523,7 @@ async fn a_session_decode_refusal_uses_the_bound_live_facts() {
 #[tokio::test]
 async fn an_admitted_session_exposes_its_parent_frame_until_cleanup() {
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("session-parent-frame", false);
+    let mut g = governed("session-parent-frame", false).await;
     let routes = session_custody_routes(&mut g, false);
     let observed = Arc::new(std::sync::Mutex::new(None));
     let capture = Arc::clone(&observed);
@@ -1541,7 +1583,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
         ("nested-other-plane", false, false, "/call/local", 401),
         ("nested-explicit-open", false, true, "/open", 503),
     ] {
-        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, pools);
+        let mut g = governed_full(instance, keys, None, Screen::Nothing, None, None, pools).await;
         let routes = session_custody_routes(&mut g, pools);
         let bound = Arc::new(std::sync::Mutex::new(None));
         let capture = Arc::clone(&bound);
@@ -1583,7 +1625,7 @@ async fn nested_anonymous_admission_matches_the_arrival_rule() {
             assert_eq!(body, b"ping");
         }
         assert_eq!(
-            g.requests(),
+            g.requests().await,
             0,
             "no anonymous unit charges the governance book"
         );
@@ -1606,7 +1648,7 @@ struct ReservedSource {
     now: u64,
 }
 
-fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
+async fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     use busbar_contract::caps::{Hold, OriginKind, PrincipalId};
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
     use busbar_kernel::plane_driver::{FeeRefund, UnitMoney};
@@ -1635,7 +1677,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     let now = busbar_kernel::store::now();
     let (key, _) = g
         .gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: group.to_owned(),
                 group: Some(group.to_owned()),
@@ -1644,6 +1686,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
             4_000_000_000,
             now,
         )
+        .await
         .expect("the actual governor mints a source key");
 
     let key = g
@@ -1734,7 +1777,7 @@ fn reserved_source(g: &Governed, group: &str) -> ReservedSource {
     }
 }
 
-fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (String, u64) {
+async fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (String, u64) {
     g.gov
         .mint_ticket_bound(
             &source.key.id,
@@ -1745,10 +1788,11 @@ fn mint_reserved_source(g: &Governed, source: &ReservedSource, at: u64) -> (Stri
             at,
             |identity| source.owner.custody.bind(&source.owner.source, identity),
         )
+        .await
         .expect("the admitted source binds its sole ticket")
 }
 
-fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
+async fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric};
     let groups = BTreeMap::from([(
         group.to_owned(),
@@ -1770,7 +1814,7 @@ fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     let cost = CostModel::resolve_parts(None, 0, &groups);
     let (probe, _) = g
         .gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "actual-concurrent-probe".to_owned(),
                 group: Some(group.to_owned()),
@@ -1779,6 +1823,7 @@ fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
             4_000_000_000,
             now,
         )
+        .await
         .unwrap();
     let attempt = g.gov.try_admit(&cost, &probe, "", now);
     if held {
@@ -1808,10 +1853,11 @@ fn assert_concurrent_custody(g: &Governed, group: &str, held: bool, now: u64) {
     }
 }
 
-fn assert_source_request_retained(g: &Governed, source: &ReservedSource) {
+async fn assert_source_request_retained(g: &Governed, source: &ReservedSource) {
     assert_eq!(
         g.gov
-            .usage_for(&source.cost, &source.key.id, source.now)
+            .usage_for_async(&source.cost, &source.key.id, source.now)
+            .await
             .unwrap()
             .unwrap()
             .requests,
@@ -1823,27 +1869,26 @@ fn assert_source_request_retained(g: &Governed, source: &ReservedSource) {
 #[tokio::test]
 async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_real_reservation() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("root-ticket-pending", true);
-    let source = reserved_source(&g, "root-ticket-pending-cap");
-    let (credential, expiry) = mint_reserved_source(&g, &source, source.now);
+    let g = governed("root-ticket-pending", true).await;
+    let source = reserved_source(&g, "root-ticket-pending-cap").await;
+    let (credential, expiry) = mint_reserved_source(&g, &source, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     assert!(
         source.owner.custody.claim(&identity).is_none(),
         "Pending cannot be claimed"
     );
     assert!(
-        g.gov
-            .store()
-            .plane_token_live(
-                busbar_kernel::governance::TICKET_RECORD_KIND,
-                identity.id(),
-                expiry,
-                source.now
-            )
-            .unwrap(),
+        busbar_kernel::governance::ticket_record_live(
+            g.gov.core_store_handle().unwrap(),
+            identity.id(),
+            expiry
+        )
+        .await
+        .unwrap(),
         "an early claim did not spend the Store token"
     );
     assert!(
@@ -1857,15 +1902,17 @@ async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_re
                 source.now,
                 |id| source.owner.custody.bind(&source.owner.source, id)
             )
+            .await
             .is_err(),
         "one actual mint source cannot reserve twice"
     );
     source.money.settle_end(source.unit, 200);
-    assert_concurrent_custody(&g, &source.group, true, source.now);
+    assert_concurrent_custody(&g, &source.group, true, source.now).await;
     source.owner.custody.terminal(source.unit, true);
     let second = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     let (a, b) = std::thread::scope(|scope| {
         let a = scope.spawn(|| source.owner.custody.claim(&identity));
@@ -1874,29 +1921,30 @@ async fn a_root_ticket_stays_pending_until_ack_and_concurrent_claims_move_one_re
     });
     assert_eq!(usize::from(a.is_some()) + usize::from(b.is_some()), 1);
     drop((a, b));
-    assert_concurrent_custody(&g, &source.group, false, source.now);
-    assert_source_request_retained(&g, &source);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
+    assert_source_request_retained(&g, &source).await;
 }
 
 #[tokio::test]
 async fn failed_mint_completion_burns_pending_custody_without_refunding_its_request() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("root-ticket-failed-seal", true);
-    let source = reserved_source(&g, "root-ticket-failed-seal-cap");
-    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let g = governed("root-ticket-failed-seal", true).await;
+    let source = reserved_source(&g, "root-ticket-failed-seal-cap").await;
+    let (credential, _) = mint_reserved_source(&g, &source, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     source.money.settle_end(source.unit, 200);
-    assert_concurrent_custody(&g, &source.group, true, source.now);
+    assert_concurrent_custody(&g, &source.group, true, source.now).await;
     source.owner.custody.terminal(source.unit, false);
     source.owner.custody.terminal(source.unit, true);
     assert!(
         source.owner.custody.claim(&identity).is_none(),
         "a later terminal callback cannot resurrect burned custody"
     );
-    assert_concurrent_custody(&g, &source.group, false, source.now);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
     assert!(
         matches!(
             super::claim_ticket_custody(&identity),
@@ -1904,18 +1952,19 @@ async fn failed_mint_completion_burns_pending_custody_without_refunding_its_requ
         ),
         "an otherwise Store-live ticket cannot fall through without local custody"
     );
-    assert_source_request_retained(&g, &source);
+    assert_source_request_retained(&g, &source).await;
 }
 
 #[tokio::test]
 async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("root-ticket-source-exit", true);
-    let source = reserved_source(&g, "root-ticket-source-exit-cap");
-    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let g = governed("root-ticket-source-exit", true).await;
+    let source = reserved_source(&g, "root-ticket-source-exit-cap").await;
+    let (credential, _) = mint_reserved_source(&g, &source, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     source.money.settle_end(source.unit, 200);
     let ReservedSource {
@@ -1932,51 +1981,55 @@ async fn source_unregister_and_shutdown_burn_owned_custody_outside_the_maps() {
     let stale = Arc::clone(&owner.source);
     drop(owner);
     assert!(custody.claim(&identity).is_none());
-    assert_concurrent_custody(&g, &group, false, now);
+    assert_concurrent_custody(&g, &group, false, now).await;
     assert!(
         g.gov
             .mint_ticket_bound(&key.id, "custody_test", 60, None, b"late", now, |id| {
                 custody.bind(&stale, id)
             })
+            .await
             .is_err(),
         "a captured binder cannot outlive source unregister"
     );
     assert_eq!(
         g.gov
-            .usage_for(&cost, &key.id, now)
+            .usage_for_async(&cost, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .requests,
         1
     );
 
-    let source = reserved_source(&g, "root-ticket-shutdown-cap");
-    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let source = reserved_source(&g, "root-ticket-shutdown-cap").await;
+    let (credential, _) = mint_reserved_source(&g, &source, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.shutdown();
     assert!(source.owner.custody.claim(&identity).is_none());
-    assert_concurrent_custody(&g, &source.group, false, source.now);
-    assert_source_request_retained(&g, &source);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
+    assert_source_request_retained(&g, &source).await;
 }
 
 #[tokio::test]
 async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("root-ticket-expiry", true);
-    let source = reserved_source(&g, "root-ticket-live-cap");
-    let (credential, _) = mint_reserved_source(&g, &source, source.now);
+    let g = governed("root-ticket-expiry", true).await;
+    let source = reserved_source(&g, "root-ticket-live-cap").await;
+    let (credential, _) = mint_reserved_source(&g, &source, source.now).await;
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
-    assert_concurrent_custody(&g, &source.group, true, source.now);
+    assert_concurrent_custody(&g, &source.group, true, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     drop(
         source
@@ -1985,15 +2038,15 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
             .claim(&identity)
             .expect("Store-live ticket survives sweep"),
     );
-    assert_concurrent_custody(&g, &source.group, false, source.now);
-    assert_source_request_retained(&g, &source);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
+    assert_source_request_retained(&g, &source).await;
 
-    let source = reserved_source(&g, "root-ticket-expired-cap");
-    let _expired = mint_reserved_source(&g, &source, source.now - 120);
+    let source = reserved_source(&g, "root-ticket-expired-cap").await;
+    let _expired = mint_reserved_source(&g, &source, source.now - 120).await;
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     source.owner.custody.sweep().await;
-    assert_concurrent_custody(&g, &source.group, false, source.now);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
     assert!(source
         .owner
         .custody
@@ -2002,7 +2055,7 @@ async fn root_custody_expiry_obeys_store_liveness_and_preserves_the_paid_request
         .unwrap()
         .tickets
         .is_empty());
-    assert_source_request_retained(&g, &source);
+    assert_source_request_retained(&g, &source).await;
 }
 
 #[tokio::test]
@@ -2010,7 +2063,7 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
     use busbar_contract::caps::{Abort, Outcome, ReasonCode};
     let _one = PUBLISHING.lock().await;
     for unregister_source in [false, true] {
-        let mut g = governed("root-owned-session-cancel", true);
+        let mut g = governed("root-owned-session-cancel", true).await;
         let routes = session_custody_routes(&mut g, false);
         let mut request = session_custody_request(&g, "/open");
         request.gov.key = Some(Arc::new(g.key.clone()));
@@ -2053,7 +2106,7 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
             "the actual governor admission registered money"
         );
         assert_eq!(g.post.open_units(), 1);
-        assert_eq!(g.requests(), 1);
+        assert_eq!(g.requests().await, 1);
         drop(running);
         assert_eq!(
             g.money.open_units(),
@@ -2068,7 +2121,7 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
             "the real Own terminal already retired its slot"
         );
         assert_eq!(
-            g.requests(),
+            g.requests().await,
             1,
             "cancellation never refunds the incurred request"
         );
@@ -2090,8 +2143,8 @@ async fn cancelling_an_actual_owned_session_retires_money_even_without_source_re
 #[tokio::test]
 async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_generation() {
     let _one = PUBLISHING.lock().await;
-    let g = governed("root-ticket-provenance", true);
-    let source = reserved_source(&g, "root-ticket-wrong-key-cap");
+    let g = governed("root-ticket-provenance", true).await;
+    let source = reserved_source(&g, "root-ticket-wrong-key-cap").await;
     assert!(g
         .gov
         .mint_ticket_bound(
@@ -2103,6 +2156,7 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
             source.now,
             |identity| source.owner.custody.bind(&source.owner.source, identity)
         )
+        .await
         .is_err());
     assert!(source
         .owner
@@ -2113,19 +2167,20 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         .tickets
         .is_empty());
     source.money.settle_end(source.unit, 200);
-    assert_concurrent_custody(&g, &source.group, false, source.now);
-    assert_source_request_retained(&g, &source);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
+    assert_source_request_retained(&g, &source).await;
 
-    let source = reserved_source(&g, "root-ticket-wrong-generation-cap");
-    let (credential, expiry) = mint_reserved_source(&g, &source, source.now);
+    let source = reserved_source(&g, "root-ticket-wrong-generation-cap").await;
+    let (credential, expiry) = mint_reserved_source(&g, &source, source.now).await;
     let identity = g
         .gov
-        .prepare_ticket_redemption("custody_test", &credential, source.now)
+        .prepare_ticket_redemption_async("custody_test", &credential, source.now)
+        .await
         .unwrap();
     source.money.settle_end(source.unit, 200);
     source.owner.custody.terminal(source.unit, true);
     let before = g.served.planes[0].live.current();
-    g.served.planes[0].live.apply(&g.app);
+    g.served.planes[0].live.apply(&g.app).await;
     let current = g.served.planes[0].live.current();
     assert_eq!(
         current.generation,
@@ -2140,19 +2195,16 @@ async fn a_root_reservation_rejects_a_different_full_key_and_an_exited_loaded_ge
         source.owner.custody.claim(&identity).is_none(),
         "old loaded generation refuses before durable spend"
     );
-    assert!(g
-        .gov
-        .store()
-        .plane_token_live(
-            busbar_kernel::governance::TICKET_RECORD_KIND,
-            identity.id(),
-            expiry,
-            source.now
-        )
-        .unwrap());
+    assert!(busbar_kernel::governance::ticket_record_live(
+        g.gov.core_store_handle().unwrap(),
+        identity.id(),
+        expiry
+    )
+    .await
+    .unwrap());
     source.owner.custody.shutdown();
-    assert_concurrent_custody(&g, &source.group, false, source.now);
-    assert_source_request_retained(&g, &source);
+    assert_concurrent_custody(&g, &source.group, false, source.now).await;
+    assert_source_request_retained(&g, &source).await;
 }
 
 #[path = "serve_neutral_tests.rs"]
@@ -2169,7 +2221,7 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     use axum::http::HeaderValue;
     use busbar_contract::abi::host::service::CARRIER_SESSION_FIELD;
     let _one = PUBLISHING.lock().await;
-    let mut g = governed("line-session-custody", false);
+    let mut g = governed("line-session-custody", false).await;
     let routes = session_custody_routes(&mut g, false);
     let kernel = busbar_kernel::host_services::KernelServices::new();
     let session = std::num::NonZeroU64::new(kernel.open_carrier_session(

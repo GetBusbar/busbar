@@ -3,7 +3,11 @@
 
 use super::*;
 use crate::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
-use crate::governance::{LimitBlocked, RecordStore, WINDOW_TOTAL};
+use crate::governance::{LimitBlocked, WINDOW_TOTAL};
+use crate::persistence::facade::CoreStore;
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    futures::executor::block_on(future)
+}
 use crate::registry::Generation;
 use busbar_contract::abi::plane::{CANCEL_OK_PARTIAL, UNITS_REPORTED};
 use busbar_contract::caps::OriginKind;
@@ -21,7 +25,7 @@ impl EndPost for Posted {
 }
 
 struct Rig {
-    store: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    store: Arc<CoreStore>,
     gov: Arc<GovState>,
     cost: Arc<CostModel>,
     key: Arc<VirtualKey>,
@@ -75,8 +79,8 @@ fn rig() -> Rig {
             },
         )])),
     );
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let store = ready(crate::real_store::core());
+    let gov = Arc::new(ready(GovState::new_with_core(store.clone(), None, None)).unwrap());
     let key = Arc::new(VirtualKey {
         id: "k".into(),
         enabled: true,
@@ -98,8 +102,8 @@ fn units(input: u64, bytes: u64) -> BTreeMap<String, u64> {
 }
 
 fn counts(r: &Rig, bucket: &str, lane: &str) -> BTreeMap<String, u64> {
-    r.gov
-        .bucket_model_tokens(bucket, WINDOW_TOTAL, NOW)
+    ready(r.gov.bucket_model_tokens_async(bucket, WINDOW_TOTAL, NOW))
+        .unwrap()
         .into_iter()
         .find(|(model, _)| model == lane)
         .map(|(_, units)| {
@@ -114,10 +118,11 @@ fn counts(r: &Rig, bucket: &str, lane: &str) -> BTreeMap<String, u64> {
 }
 
 fn usage(r: &Rig, bucket: &str) -> (u64, i64) {
-    let u = r
-        .gov
-        .derived_bucket_usage(&r.cost, bucket, WINDOW_TOTAL, true, NOW)
-        .unwrap();
+    let u = ready(
+        r.gov
+            .derived_bucket_usage_async(&r.cost, bucket, WINDOW_TOTAL, true, NOW),
+    )
+    .unwrap();
     (u.requests, u.spend_cents)
 }
 
@@ -154,15 +159,21 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
                 .unwrap();
             assert_eq!(state.spend_micros_at_current_rate, 30_006);
             assert_eq!(
-                r.gov
-                    .derived_bucket_usage(&r.cost, bucket, WINDOW_TOTAL, true, NOW)
-                    .unwrap()
-                    .tokens,
+                ready(
+                    r.gov
+                        .derived_bucket_usage_async(&r.cost, bucket, WINDOW_TOTAL, true, NOW)
+                )
+                .unwrap()
+                .tokens,
                 10_000
             );
         }
         assert_eq!(usage(&r, B), (0, 0), "another pool's bucket is untouched");
-        assert!(r.gov.bucket_model_tokens(B, WINDOW_TOTAL, NOW).is_empty());
+        assert!(
+            ready(r.gov.bucket_model_tokens_async(B, WINDOW_TOTAL, NOW))
+                .unwrap()
+                .is_empty()
+        );
         r.gov.refund_charge(grant.charge());
         for bucket in ["k", A, ROOT] {
             assert_eq!(
@@ -183,9 +194,9 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
                 0
             );
         }
-        r.gov.flush_budgets();
+        ready(r.gov.flush_budgets());
         for bucket in ["k", A, ROOT] {
-            let row = r.store.get_usage(bucket, 0).unwrap();
+            let row = ready(r.store.ledger().get_usage(bucket, 0)).unwrap();
             assert_eq!((row.requests, row.billable_requests), (1, 0));
             let model = row
                 .models
@@ -355,11 +366,12 @@ fn scoped_headroom(session: bool, pool: &str, lane: &str, other: &str) {
     if pool.contains('\u{1f}') {
         assert_eq!(counts(&r, A, "tp\u{1f}")["per_request"], 2);
         assert_eq!(counts(&r, B, "tp\u{1f}")["per_request"], 1);
-        r.gov.flush_metering();
-        let rows = r
-            .gov
-            .metering_for(crate::governance::metering_bucket(NOW))
-            .unwrap();
+        ready(r.gov.flush_metering());
+        let rows = ready(
+            r.gov
+                .metering_for_async(crate::governance::metering_bucket(NOW)),
+        )
+        .unwrap();
         let row = rows
             .iter()
             .find(|row| row.model == "fallback")

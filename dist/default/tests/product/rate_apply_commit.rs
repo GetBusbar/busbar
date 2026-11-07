@@ -15,8 +15,10 @@ struct PendingRate {
 }
 
 impl PreparedRates for PendingRate {
-    fn confirm_activation(self: Box<Self>) -> Result<Box<dyn RateCommit>, String> {
-        Ok(self)
+    fn confirm_activation(
+        self: Box<Self>,
+    ) -> busbar_kernel::rate_apply::RateFuture<'static, Result<Box<dyn RateCommit>, String>> {
+        Box::pin(async move { Ok(self as Box<dyn RateCommit>) })
     }
 }
 
@@ -27,16 +29,17 @@ impl RateCommit for PendingRate {
 }
 
 impl RateApply for Recorder {
-    fn prepare(
-        &self,
-        _: &busbar_kernel::config::card::CardFields,
-        rates: &RawRates<'_>,
-        _: &str,
-    ) -> Result<Box<dyn PreparedRates>, String> {
-        Ok(Box::new(PendingRate {
-            seen: Arc::clone(&self.0),
+    fn prepare<'a>(
+        &'a self,
+        _: &'a busbar_kernel::config::card::CardFields,
+        rates: &'a RawRates<'_>,
+        _: &'a str,
+    ) -> busbar_kernel::rate_apply::RateFuture<'a, Result<Box<dyn PreparedRates>, String>> {
+        let pending = PendingRate {
+            seen: self.0.clone(),
             flat_minor: rates.flat_minor,
-        }))
+        };
+        Box::pin(async move { Ok(Box::new(pending) as Box<dyn PreparedRates>) })
     }
 
     fn rates_applied(&self, rates: &RawRates<'_>) {
@@ -44,7 +47,7 @@ impl RateApply for Recorder {
     }
 }
 
-fn build(
+async fn build(
     per_request_fee: i64,
 ) -> (
     busbar_kernel::state::App,
@@ -89,7 +92,7 @@ fn build(
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
 
-    busbar_kernel::build_app_from_config(
+    crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -99,11 +102,12 @@ fn build(
         None,
         &rules,
     )
+    .await
     .expect("the app builds")
 }
 
-#[test]
-fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
+#[tokio::test]
+async fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_once() {
     const CHILD: &str = "BUSBAR_RATE_APPLY_COMMIT_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let module = module_path!()
@@ -134,7 +138,7 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
         ..busbar_kernel::preflight::root_rows()
     });
 
-    let (_app, _rotate, limits) = build(424_242);
+    let (_app, _rotate, limits) = build(424_242).await;
     drop(limits);
     assert_eq!(
         *recorder.0.lock().unwrap(),
@@ -142,7 +146,7 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
         "an apply that never committed entered the dated history and the journal"
     );
 
-    let (_app, _rotate, limits) = build(515_151);
+    let (_app, _rotate, limits) = build(515_151).await;
     assert_eq!(
         *recorder.0.lock().unwrap(),
         Vec::<i64>::new(),
@@ -150,6 +154,7 @@ fn an_apply_that_never_commits_raises_no_rates_and_one_that_commits_raises_them_
     );
     limits
         .keep()
+        .await
         .expect("the committed apply activates its rates");
     assert_eq!(
         *recorder.0.lock().unwrap(),

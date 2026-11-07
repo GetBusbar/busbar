@@ -53,7 +53,8 @@ impl StoreRow<LinkedStoreDoor> {
     }
 }
 
-pub type StoreAxisOf = fn() -> std::sync::Arc<dyn busbar_contract::store_calls::StoreAxis>;
+pub type StoreAxisOf =
+    fn() -> std::sync::Arc<dyn busbar_contract::persistence::axis::PersistenceAxis>;
 use busbar_contract::plugin_rows::PluginRows;
 pub use busbar_kernel_identity::operator::LinkedAuth;
 
@@ -102,7 +103,12 @@ pub enum BuildNote<'r> {
 pub type EndpointLocate =
     fn(&Arc<dyn PluginRows>, &str) -> Result<crate::config_validate::ProviderDestination, String>;
 
-pub type SecretAdmit = fn(&Arc<dyn PluginRows>, &config::PluginsCfg) -> Result<(), String>;
+pub type SecretAdmit = for<'a> fn(
+    &'a Arc<dyn PluginRows>,
+    &'a config::PluginsCfg,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>,
+>;
 
 pub struct RegistryIn<'a> {
     pub linked: Vec<LinkedRow>,

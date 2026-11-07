@@ -49,7 +49,7 @@ pub(super) async fn serve(
             "module":operator,"token":{"file":credential},
         });
     }
-    let app = application_with_document(document);
+    let app = application_with_document(document).await;
     let router = busbar_kernel::build_router(Arc::clone(&app));
     tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve");

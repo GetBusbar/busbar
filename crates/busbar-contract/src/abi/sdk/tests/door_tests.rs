@@ -1126,191 +1126,76 @@ fn a_hook_plugin_wires_every_kind_op() {
 }
 
 mod store_plugin {
-    //! A REAL kind table: every store kind op wired to the structs `abi::store` states for
-
+    //! Every primitive Store operation is wired to its actual request and response.
     use super::*;
-    use crate::abi::store::{AddUsageBatchIn, AppendPlaneRecordIn, BlobIn, CountOut};
-    use crate::abi::store::{GetPlaneRecordIn, HostBytesOut, HostListOut, IdIn, IdReasonIn};
-    use crate::abi::store::{KeyWithCredentialIn, KindBeforeIn, KindIdIn, LeasedBlobOut};
-    use crate::abi::store::{LeasedListOut, LeasedStrListOut, ListPlaneRecordsIn, OpBlobsIn};
-    use crate::abi::store::{PutUsageIn, RecordGetIn, RecordPutIn, RecordScanIn, TokenIn, U64In};
-    use crate::abi::store::{UpsertPlaneRecordIn, VerdictOut, WindowIn};
-
+    use crate::abi::store::v4::{
+        ClockIn, ClockOut, CommitIn, CommitOut, ReadIn, ReadOut, ScanIn, ScanOut,
+    };
     macro_rules! answers {
-        ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
+        ($name:ident, $input:ty, $output:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
-                type In = $in;
-                type Out = $out;
-                unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
+                type In = $input;
+                type Out = $output;
+                unsafe fn call(_: *mut c_void, _: &$input, _: &mut $output) -> Outcome {
                     $outcome
                 }
             }
         };
     }
-    answers!(PutKey, BlobIn, OutHead, Outcome::Ready);
-    answers!(GetKey, IdIn, LeasedBlobOut, Outcome::Refused);
-    answers!(ListKeys, InHead, LeasedListOut, Outcome::Failed);
-    answers!(DeleteKey, IdIn, OutHead, Outcome::Ready);
-    answers!(ListKeysSince, U64In, LeasedListOut, Outcome::Failed);
-    answers!(GetUsage, WindowIn, LeasedBlobOut, Outcome::Ready);
-    answers!(PutUsage, PutUsageIn, OutHead, Outcome::Refused);
-    answers!(ListMetering, U64In, LeasedListOut, Outcome::Refused);
-    answers!(PutCredential, BlobIn, OutHead, Outcome::Refused);
+    answers!(Read, ReadIn, ReadOut, Outcome::Ready);
+    answers!(Scan, ScanIn, ScanOut, Outcome::Pending);
+    answers!(Commit, CommitIn, CommitOut, Outcome::Refused);
+    answers!(Clock, ClockIn, ClockOut, Outcome::Failed);
     answers!(
-        PutKeyWithCredential,
-        KeyWithCredentialIn,
-        OutHead,
-        Outcome::Failed
-    );
-    answers!(ListCredentials, IdIn, LeasedListOut, Outcome::Ready);
-    answers!(RevokeCredential, IdReasonIn, OutHead, Outcome::Failed);
-    answers!(ListCredentialsSince, U64In, LeasedListOut, Outcome::Ready);
-    answers!(ListAudit, InHead, LeasedListOut, Outcome::Failed);
-    answers!(AddDenylist, IdReasonIn, OutHead, Outcome::Ready);
-    answers!(ListDenylist, InHead, LeasedStrListOut, Outcome::Refused);
-    answers!(ListAuditTail, U64In, LeasedListOut, Outcome::Failed);
-    answers!(
-        UpsertPlaneRecord,
-        UpsertPlaneRecordIn,
-        OutHead,
-        Outcome::Ready
-    );
-    answers!(
-        GetPlaneRecord,
-        GetPlaneRecordIn,
-        HostBytesOut,
+        Bootstrap,
+        crate::abi::store::v4::BootstrapIn,
+        crate::abi::store::v4::BootstrapOut,
         Outcome::Refused
     );
-    answers!(
-        AppendPlaneRecord,
-        AppendPlaneRecordIn,
-        OutHead,
-        Outcome::Failed
-    );
-    answers!(
-        ListPlaneRecords,
-        ListPlaneRecordsIn,
-        HostListOut,
-        Outcome::Ready
-    );
-    answers!(
-        ListPlaneRecordParents,
-        IdIn,
-        LeasedStrListOut,
-        Outcome::Refused
-    );
-    answers!(
-        PurgePlaneRecordsBefore,
-        KindBeforeIn,
-        CountOut,
-        Outcome::Failed
-    );
-    answers!(DeletePlaneRecord, KindIdIn, OutHead, Outcome::Ready);
-    answers!(RedeemPlaneToken, TokenIn, VerdictOut, Outcome::Refused);
-    answers!(PlaneTokenLive, TokenIn, VerdictOut, Outcome::Failed);
-    answers!(RecordPut, RecordPutIn, OutHead, Outcome::Refused);
-    answers!(RecordGet, RecordGetIn, HostBytesOut, Outcome::Failed);
-    answers!(RecordScan, RecordScanIn, HostListOut, Outcome::Ready);
-    answers!(AddUsageBatch, AddUsageBatchIn, OutHead, Outcome::Refused);
-    answers!(AddMeteringBatch, OpBlobsIn, OutHead, Outcome::Failed);
-
     crate::plugin_door! {
-        ops: crate::abi::store::Ops,
+        ops: crate::abi::store::v4::Ops,
         statement: crate::abi::sdk::door::statement("sdk-door-store", "0.0.1", 1),
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
         },
-        kind_ops: {
-            put_key: PutKey, get_key: GetKey, list_keys: ListKeys, delete_key: DeleteKey,
-            list_keys_since: ListKeysSince, get_usage: GetUsage, put_usage: PutUsage,
-            list_metering: ListMetering, put_credential: PutCredential,
-            put_key_with_credential: PutKeyWithCredential, list_credentials: ListCredentials,
-            revoke_credential: RevokeCredential, list_credentials_since: ListCredentialsSince,
-            list_audit: ListAudit, add_denylist: AddDenylist, list_denylist: ListDenylist,
-            list_audit_tail: ListAuditTail, upsert_plane_record: UpsertPlaneRecord,
-            get_plane_record: GetPlaneRecord, append_plane_record: AppendPlaneRecord,
-            list_plane_records: ListPlaneRecords,
-            list_plane_record_parents: ListPlaneRecordParents,
-            purge_plane_records_before: PurgePlaneRecordsBefore,
-            delete_plane_record: DeletePlaneRecord, redeem_plane_token: RedeemPlaneToken,
-            plane_token_live: PlaneTokenLive, record_put: RecordPut, record_get: RecordGet,
-            record_scan: RecordScan, add_usage_batch: AddUsageBatch,
-            add_metering_batch: AddMeteringBatch
-        },
+        kind_ops: { read: Read, scan: Scan, commit: Commit, clock: Clock, bootstrap: Bootstrap },
     }
 }
 
 #[test]
 fn a_store_plugin_wires_every_kind_op() {
-    use crate::abi::store::{slot as store_slot, AddUsageBatchIn, BlobIn, Ops};
+    use crate::abi::store::v4::{
+        self, slot as store_slot, ClockIn, ClockOut, Ops, ReadIn, ReadOut,
+    };
     let d = store_plugin::door();
-    // SAFETY: the macro's `'static` door and its store table.
+    // SAFETY: the macro's static primitive Store table.
     let t = unsafe { &*d.ops.cast::<Ops>() };
     assert_eq!(d.kind, KindCode::Store as u32);
-    assert_eq!(d.kind_abi, crate::abi::store::ABI_VERSION);
-    assert_eq!(t.head.slots, crate::abi::store::TABLE_SLOTS);
+    assert_eq!(d.kind_abi, v4::ABI_VERSION);
+    assert_eq!(d.layout, v4::LAYOUT_FINGERPRINT);
+    assert_eq!(t.head.slots, v4::TABLE_SLOTS);
     assert_eq!(t.head.size as usize, size_of::<Ops>());
-
-    // `put_key`, the first kind slot, answers only its own index, reading a whole `BlobIn`.
-    // SAFETY: `BlobIn` is plain data; all-zero is valid.
-    let mut input: BlobIn = unsafe { std::mem::zeroed() };
-    input.head = in_head::<BlobIn>(store_slot::PUT_KEY, Ticket::NONE);
-    // SAFETY: as above.
-    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
-    assert_eq!(call(t.put_key, &input, &mut out), Outcome::Ready);
-    assert_eq!(out.outcome.outcome(), Outcome::Ready);
-    input.head.op = store_slot::GET_KEY;
-    out = prefilled_head(size_of::<OutHead>());
-    assert_eq!(call(t.put_key, &input, &mut out), Outcome::Fault);
-
-    // `add_usage_batch`, near the end of the table, likewise.
-    // SAFETY: plain data; all-zero is valid.
-    let mut input: AddUsageBatchIn = unsafe { std::mem::zeroed() };
-    input.head = in_head::<AddUsageBatchIn>(store_slot::ADD_USAGE_BATCH, Ticket::NONE);
-    // SAFETY: as above.
-    let mut out: OutHead = prefilled_head(size_of::<OutHead>());
-    assert_eq!(call(t.add_usage_batch, &input, &mut out), Outcome::Refused);
-    assert_eq!(out.outcome.outcome(), Outcome::Refused);
-
-    for (i, s) in [
-        t.put_key,
-        t.get_key,
-        t.list_keys,
-        t.delete_key,
-        t.list_keys_since,
-        t.get_usage,
-        t.put_usage,
-        t.list_metering,
-        t.put_credential,
-        t.put_key_with_credential,
-        t.list_credentials,
-        t.revoke_credential,
-        t.list_credentials_since,
-        t.list_audit,
-        t.add_denylist,
-        t.list_denylist,
-        t.list_audit_tail,
-        t.upsert_plane_record,
-        t.get_plane_record,
-        t.append_plane_record,
-        t.list_plane_records,
-        t.list_plane_record_parents,
-        t.purge_plane_records_before,
-        t.delete_plane_record,
-        t.redeem_plane_token,
-        t.plane_token_live,
-        t.record_put,
-        t.record_get,
-        t.record_scan,
-        t.add_usage_batch,
-        t.add_metering_batch,
-    ]
-    .iter()
-    .enumerate()
+    let mut input: ReadIn = crate::abi::sdk::door::blank_in();
+    input.head = in_head::<ReadIn>(store_slot::READ, Ticket::NONE);
+    let mut out: ReadOut = crate::abi::sdk::door::blank_out();
+    out.head = prefilled_head(size_of::<ReadOut>());
+    assert_eq!(call(t.read, &input, &mut out), Outcome::Ready);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Ready);
+    input.head.op = store_slot::SCAN;
+    assert_eq!(call(t.read, &input, &mut out), Outcome::Fault);
+    let mut input: ClockIn = crate::abi::sdk::door::blank_in();
+    input.head = in_head::<ClockIn>(store_slot::CLOCK, Ticket::NONE);
+    let mut out: ClockOut = crate::abi::sdk::door::blank_out();
+    out.head = prefilled_head(size_of::<ClockOut>());
+    assert_eq!(call(t.clock, &input, &mut out), Outcome::Failed);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Failed);
+    for (i, slot) in [t.read, t.scan, t.commit, t.clock, t.bootstrap]
+        .iter()
+        .enumerate()
     {
-        assert!(s.is_some(), "store kind op {i} is NULL");
+        assert!(slot.is_some(), "Store primitive {i} is NULL");
     }
 }
 

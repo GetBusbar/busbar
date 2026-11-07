@@ -73,7 +73,7 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (app, rotate, limits) = crate::root::real_store::build_app(
             config,
             plugin_config,
             None,
@@ -83,13 +83,15 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
             None,
             &rules,
         )
+        .await
         .expect("the actual product builds the door deployment");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
 

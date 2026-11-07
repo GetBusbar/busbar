@@ -1,0 +1,1339 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! Compiled native startup routes. Inspection selects a closed source reader;
+//! only the enforced immutable snapshot supplies import catalogue facts.
+use crate::{
+    legacy::{
+        self,
+        archive::Provenance,
+        projection::ProjectionSource,
+        transform::{
+            HistoryBinding, NativeProofs, RecordBinding, SqlTransform, TableLayout, TokenBinding,
+        },
+        valkey_transform::ValkeyTransform,
+    },
+    *,
+};
+use busbar_contract::{
+    persistence::{archive::Table, lifecycle, Address},
+    Secret,
+};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+mod parents;
+pub use parents::with_parent_graph_from_frozen;
+
+enum Profile {
+    Sql(legacy::Profile),
+    Valkey,
+}
+#[derive(Clone, Default)]
+pub struct Bindings {
+    pub records: Vec<RecordBinding>,
+    pub histories: Vec<HistoryBinding>,
+    pub tokens: Vec<TokenBinding>,
+}
+#[derive(Clone)]
+pub struct AdmittedStatement {
+    pub owner: String,
+    /// Digest of the complete admitted signed statement, including identity,
+    /// kind, ABI and exact declaration/framing facts. Not an output-map hash.
+    pub statement_sha256: Digest32,
+    pub kind: u32,
+    pub kind_abi: u32,
+    pub layout_fingerprint: u64,
+}
+#[derive(Clone, Default)]
+pub struct DeclarationInventory {
+    pub bindings: Bindings,
+    pub statements: Vec<AdmittedStatement>,
+}
+/// Preserve dormant scopes using the complete admitted inventory. Historical
+/// history/token keys identify only a kind, so current configuration cannot
+/// choose between competing owners. Leave those kinds unbound; an actual row
+/// then refuses through the ordinary MissingCapability path.
+pub fn dormant_safe_bindings(
+    inventory: &DeclarationInventory,
+    budget: usize,
+) -> Result<Bindings, Error> {
+    use legacy::archive::Scope;
+    let mut admitted = inventory.bindings.clone();
+    canonical_inventory(&mut admitted, budget)?;
+    let records = admitted
+        .records
+        .iter()
+        .filter(|record| {
+            !admitted.records.iter().any(|other| {
+                record.schema == other.schema
+                    && !same_record(record, other)
+                    && (matches!(record.source_scope, Scope::Unscoped)
+                        || matches!(other.source_scope, Scope::Unscoped)
+                        || record.instance == other.instance)
+            })
+        })
+        .cloned()
+        .collect();
+    let mut histories = Vec::new();
+    for history in &admitted.histories {
+        let collections = history
+            .collections
+            .iter()
+            .filter(|collection| {
+                !admitted.histories.iter().any(|other| {
+                    other.collections.iter().any(|candidate| {
+                        candidate.kind == collection.kind
+                            && (other.owner != history.owner
+                                || !same_collection(collection, candidate))
+                    })
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !collections.is_empty() {
+            histories.push(HistoryBinding {
+                owner: history.owner.clone(),
+                collections,
+            });
+        }
+    }
+    // Separate signed statements can repeat the same collection. Merge exact
+    // copies before canonical_bindings applies its unique-kind invariant.
+    let mut merged =
+        std::collections::BTreeMap::<String, Vec<legacy::transform::Collection>>::new();
+    for history in histories {
+        let collections = merged.entry(history.owner).or_default();
+        for collection in history.collections {
+            if !collections
+                .iter()
+                .any(|old| same_collection(old, &collection))
+            {
+                collections.push(collection);
+            }
+        }
+    }
+    for collections in merged.values_mut() {
+        loop {
+            let retained = collections
+                .iter()
+                .filter(|collection| {
+                    collection.parent.as_ref().is_none_or(|parent| {
+                        collections.iter().any(|candidate| {
+                            candidate.kind == *parent
+                                && candidate.mode
+                                    == busbar_kernel::persistence::import_target::records::history::HistoryMode::Upsert
+                        })
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if retained.len() == collections.len() {
+                break;
+            }
+            *collections = retained;
+        }
+    }
+    let tokens = admitted
+        .tokens
+        .iter()
+        .filter(|token| {
+            !admitted.tokens.iter().any(|other| {
+                token.source_kind == other.source_kind
+                    && (token.instance != other.instance || token.kind != other.kind)
+            })
+        })
+        .cloned()
+        .collect();
+    let mut bindings = Bindings {
+        records,
+        histories: merged
+            .into_iter()
+            .filter(|(_, collections)| !collections.is_empty())
+            .map(|(owner, collections)| HistoryBinding { owner, collections })
+            .collect(),
+        tokens,
+    };
+    canonical_bindings(&mut bindings, budget)?;
+    Ok(bindings)
+}
+#[derive(Default)]
+pub struct FrozenCapabilities {
+    pub journal: Option<Arc<dyn legacy::journal_binding::JournalMigration>>,
+    pub overlay: Option<Arc<legacy::overlay::PreparedOverlay>>,
+    pub recovery: Option<Arc<legacy::recovery::FencedReceiptProofs>>,
+}
+pub struct PreparedRoute {
+    profile: Profile,
+    source: lifecycle::SourceIdentity,
+    target_format: Format,
+    bounds: Bounds,
+    digest: Digest32,
+    inspection_digest: Digest32,
+    bindings: Bindings,
+    inventory: Bindings,
+    bindings_resolved: bool,
+}
+impl PreparedRoute {
+    pub fn inspect(
+        source: &lifecycle::SourceIdentity,
+        catalogue: &[Table],
+        bounds: Bounds,
+        target_format: Format,
+    ) -> Result<Self, Error> {
+        bounds.validate()?;
+        if source.dataset.0 == [0; 16]
+            || source.native_anchor == [0; 32]
+            || source.catalogue_digest == [0; 32]
+            || source.layout_digest == [0; 32]
+            || target_format != CORE_FORMAT
+            || catalogue.is_empty()
+        {
+            return Err(Error::IdentityMismatch);
+        }
+        let format = importer_format(source.format.ok_or(Error::UnsupportedPath)?)?;
+        let profile = if format.owner == legacy::valkey::IMPORTER_OWNER {
+            if format.logical != 1
+                || format.codec != 1
+                || !(6..=9).contains(&format.physical)
+                || catalogue.len() != 1
+                || catalogue[0].name != "valkey"
+                || !catalogue[0]
+                    .columns
+                    .iter()
+                    .map(String::as_str)
+                    .eq(legacy::valkey::NATIVE_COLUMNS.iter().copied())
+            {
+                return Err(Error::UnsupportedPath);
+            }
+            Profile::Valkey
+        } else {
+            Profile::Sql(
+                legacy::Profile::from_importer_format(format)
+                    .map_err(|_| Error::UnsupportedPath)?,
+            )
+        };
+        let mut hash = Sha256::new();
+        field(&mut hash, b"busbar.native.prepared-route/1");
+        field(&mut hash, &legacy::transform::code_digest());
+        field(&mut hash, &source.native_anchor);
+        field(&mut hash, &source.dataset.0);
+        field(&mut hash, &source.catalogue_digest);
+        field(&mut hash, &source.layout_digest);
+        field(&mut hash, &format.owner);
+        field(&mut hash, &format.physical.to_le_bytes());
+        field(&mut hash, &bounds.items.to_le_bytes());
+        field(&mut hash, &bounds.bytes.to_le_bytes());
+        field(&mut hash, &target_format.owner);
+        field(&mut hash, &target_format.physical.to_le_bytes());
+        field(&mut hash, &target_format.logical.to_le_bytes());
+        field(&mut hash, &target_format.codec.to_le_bytes());
+        for table in catalogue {
+            field(&mut hash, table.name.as_bytes());
+            for column in &table.columns {
+                field(&mut hash, column.as_bytes());
+            }
+            field(&mut hash, &table.native_layout);
+        }
+        let digest = hash.finalize().into();
+        Ok(Self {
+            profile,
+            source: source.clone(),
+            target_format,
+            bounds,
+            digest,
+            inspection_digest: digest,
+            bindings: Bindings::default(),
+            inventory: Bindings::default(),
+            bindings_resolved: true,
+        })
+    }
+    pub fn with_bindings(mut self, mut bindings: Bindings) -> Result<Self, Error> {
+        canonical_bindings(&mut bindings, self.bounds.bytes as usize)?;
+        let mut hash = Sha256::new();
+        field(&mut hash, &self.inspection_digest);
+        legacy::transform::bind_config(
+            &mut hash,
+            &bindings.records,
+            &bindings.histories,
+            &bindings.tokens,
+        );
+        self.digest = hash.finalize().into();
+        self.bindings = bindings;
+        self.inventory = self.bindings.clone();
+        self.bindings_resolved = true;
+        Ok(self)
+    }
+    pub fn with_binding_inventory(
+        mut self,
+        mut admitted: DeclarationInventory,
+    ) -> Result<Self, Error> {
+        let mut normalized = admitted.bindings.clone();
+        let resolved = canonical_bindings(&mut normalized, self.bounds.bytes as usize).is_ok();
+        if !resolved {
+            canonical_inventory(&mut admitted.bindings, self.bounds.bytes as usize)?;
+        } else {
+            admitted.bindings = normalized.clone();
+        }
+        admitted.statements.sort_by(|a, b| {
+            (
+                &a.owner,
+                a.kind,
+                a.kind_abi,
+                a.layout_fingerprint,
+                a.statement_sha256,
+            )
+                .cmp(&(
+                    &b.owner,
+                    b.kind,
+                    b.kind_abi,
+                    b.layout_fingerprint,
+                    b.statement_sha256,
+                ))
+        });
+        if admitted
+            .statements
+            .iter()
+            .any(|s| s.owner.is_empty() || s.statement_sha256 == [0; 32])
+            || (admitted.statements.is_empty()
+                && (!admitted.bindings.records.is_empty()
+                    || !admitted.bindings.histories.is_empty()
+                    || !admitted.bindings.tokens.is_empty()))
+        {
+            return Err(Error::InvalidManifest);
+        }
+        let mut hash = Sha256::new();
+        field(&mut hash, &self.inspection_digest);
+        field(&mut hash, b"admitted-signed-declarations/1");
+        for statement in &admitted.statements {
+            field(&mut hash, statement.owner.as_bytes());
+            field(&mut hash, &statement.statement_sha256);
+            field(&mut hash, &statement.kind.to_le_bytes());
+            field(&mut hash, &statement.kind_abi.to_le_bytes());
+            field(&mut hash, &statement.layout_fingerprint.to_le_bytes());
+        }
+        legacy::transform::bind_config(
+            &mut hash,
+            &admitted.bindings.records,
+            &admitted.bindings.histories,
+            &admitted.bindings.tokens,
+        );
+        self.digest = hash.finalize().into();
+        self.inventory = admitted.bindings;
+        // Admission proves which declarations may be selected, not which
+        // instances were enabled by the source configuration. Even a unique
+        // declaration inventory must be resolved against that frozen overlay.
+        self.bindings = Bindings::default();
+        self.bindings_resolved = false;
+        Ok(self)
+    }
+    pub fn resolve_frozen_bindings(mut self, mut effective: Bindings) -> Result<Self, Error> {
+        canonical_bindings(&mut effective, self.bounds.bytes as usize)?;
+        if !binding_subset(&effective, &self.inventory) {
+            return Err(Error::IdentityMismatch);
+        }
+        self.bindings = effective;
+        self.bindings_resolved = true;
+        Ok(self)
+    }
+    pub fn resolved_bindings(&self) -> Result<&Bindings, Error> {
+        if !self.bindings_resolved {
+            return Err(Error::MissingCapability);
+        }
+        Ok(&self.bindings)
+    }
+    /// Pins compiled code and actual inspection facts for native Begin. Frozen
+    /// snapshot preconditions are separately bound by the final edge below.
+    pub fn descriptor_digest(&self) -> Digest32 {
+        self.digest
+    }
+    pub fn target_format(&self) -> Format {
+        self.target_format
+    }
+    pub fn source(&self) -> &lifecycle::SourceIdentity {
+        &self.source
+    }
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+    pub fn bind_frozen(
+        self,
+        source: &Identity,
+        target: &Identity,
+        catalogue: &[Table],
+        projection: Arc<dyn ProjectionSource>,
+        proofs: Arc<dyn NativeProofs>,
+        capabilities: FrozenCapabilities,
+    ) -> Result<BoundRoute, Error> {
+        self.resolved_bindings()?;
+        let actual = importer_format(self.source.format.ok_or(Error::UnsupportedPath)?)?;
+        if source.dataset != self.source.dataset.0
+            || source.format != actual
+            || source.artifact_digest == [0; 32]
+            || source.schema_digest == [0; 32]
+            || target.format != self.target_format
+            || target.dataset == [0; 16]
+        {
+            return Err(Error::IdentityMismatch);
+        }
+        let provenance = Provenance {
+            dataset: source.dataset,
+            catalogue: source.schema_digest,
+        };
+        let Bindings {
+            records,
+            histories,
+            tokens,
+        } = self.bindings;
+        let FrozenCapabilities {
+            journal,
+            overlay,
+            recovery,
+        } = capabilities;
+        let compiled = match self.profile {
+            Profile::Sql(profile) => {
+                let layouts = catalogue
+                    .iter()
+                    .map(|table| TableLayout {
+                        table: table.name.clone(),
+                        columns: table.columns.clone(),
+                    })
+                    .collect();
+                let mut transform = SqlTransform::registered(
+                    profile,
+                    provenance,
+                    layouts,
+                    records,
+                    histories,
+                    tokens,
+                    self.bounds,
+                )?;
+                if let Some(journal) = journal {
+                    transform = transform.with_journal(journal)?;
+                }
+                if let Some(overlay) = overlay {
+                    transform = transform.with_overlay(overlay)?;
+                }
+                if let Some(recovery) = recovery {
+                    transform = transform.with_recovery(recovery)?;
+                }
+                Compiled::Sql(transform.with_projection(projection)?)
+            }
+            Profile::Valkey => {
+                if catalogue.len() != 1
+                    || catalogue[0].name != "valkey"
+                    || !catalogue[0]
+                        .columns
+                        .iter()
+                        .map(String::as_str)
+                        .eq(legacy::valkey::NATIVE_COLUMNS.iter().copied())
+                {
+                    return Err(Error::IdentityMismatch);
+                }
+                let facts = legacy::valkey::NativeLayout::decode(&catalogue[0].native_layout)
+                    .map_err(|_| Error::Corrupt)?;
+                if !matches!(facts.evidence, legacy::valkey::NativeEvidence::Snapshot { native_anchor, .. } if native_anchor == self.source.native_anchor)
+                {
+                    return Err(Error::IdentityMismatch);
+                }
+                let mut transform = ValkeyTransform::registered(
+                    provenance,
+                    &catalogue[0].native_layout,
+                    records,
+                    histories,
+                    tokens,
+                    self.bounds,
+                )?;
+                if transform.descriptor().source != source.format {
+                    return Err(Error::IdentityMismatch);
+                }
+                if let Some(journal) = journal {
+                    transform = transform.with_journal(journal)?;
+                }
+                if let Some(overlay) = overlay {
+                    transform = transform.with_overlay(overlay)?;
+                }
+                if let Some(recovery) = recovery {
+                    transform = transform.with_recovery(recovery)?;
+                }
+                Compiled::Valkey(transform.with_projection(projection)?)
+            }
+        };
+        let compiled = Arc::new(compiled);
+        let registry = Registry::new(vec![compiled.edge().clone()])?;
+        Ok(BoundRoute {
+            registry,
+            transform: compiled.clone(),
+            readback: Arc::new(Readback { compiled, proofs }),
+            prepared_digest: self.digest,
+            target: target.clone(),
+        })
+    }
+}
+fn importer_format(actual: lifecycle::Format) -> Result<Format, Error> {
+    if !matches!(actual.logical, 0 | 1) || actual.codec != 1 {
+        return Err(Error::UnsupportedPath);
+    }
+    // Zero records absence of a historical logical envelope. The registered
+    // importer discriminator starts at one and is never a source-data claim.
+    Ok(Format {
+        owner: actual.owner,
+        physical: actual.physical,
+        logical: 1,
+        codec: 1,
+    })
+}
+fn field(hash: &mut Sha256, bytes: &[u8]) {
+    hash.update((bytes.len() as u64).to_le_bytes());
+    hash.update(bytes);
+}
+fn canonical_bindings(bindings: &mut Bindings, budget: usize) -> Result<(), Error> {
+    use busbar_contract::records::{PlaneDisposition, PlaneRecordRef};
+    use busbar_kernel::persistence::import_target::records::{history, scoped};
+    use legacy::archive::Scope;
+    let mut charge = 0usize;
+    let mut admit = |parts: &[&str]| -> Result<(), Error> {
+        charge = charge.checked_add(256).ok_or(Error::Bounds)?;
+        for part in parts {
+            charge = charge.checked_add(part.len()).ok_or(Error::Bounds)?;
+        }
+        if charge > budget {
+            return Err(Error::Bounds);
+        }
+        Ok(())
+    };
+    for record in &bindings.records {
+        admit(&[&record.schema, &record.instance])?;
+        if record.schema.is_empty() || record.instance.is_empty() {
+            return Err(Error::InvalidManifest);
+        }
+        scoped::migration_address(record.private, &record.instance, &record.schema, b"")
+            .map_err(|_| Error::InvalidManifest)?;
+    }
+    bindings.records.sort_by(|a, b| {
+        (
+            &a.schema,
+            &a.instance,
+            a.private,
+            matches!(a.source_scope, Scope::Instance),
+        )
+            .cmp(&(
+                &b.schema,
+                &b.instance,
+                b.private,
+                matches!(b.source_scope, Scope::Instance),
+            ))
+    });
+    for (i, record) in bindings.records.iter().enumerate() {
+        if bindings.records[..i].iter().any(|old| {
+            old.schema == record.schema
+                && (matches!(old.source_scope, Scope::Unscoped)
+                    || matches!(record.source_scope, Scope::Unscoped)
+                    || old.instance == record.instance)
+        }) {
+            return Err(Error::InvalidManifest);
+        }
+    }
+    let mut owners =
+        std::collections::BTreeMap::<String, Vec<legacy::transform::Collection>>::new();
+    for binding in std::mem::take(&mut bindings.histories) {
+        admit(&[&binding.owner])?;
+        if binding.owner.is_empty() || binding.collections.is_empty() {
+            return Err(Error::InvalidManifest);
+        }
+        for collection in &binding.collections {
+            admit(&[&collection.kind, collection.parent.as_deref().unwrap_or("")])?;
+        }
+        owners
+            .entry(binding.owner)
+            .or_default()
+            .extend(binding.collections);
+    }
+    let mut kinds = std::collections::BTreeSet::new();
+    for (owner, mut collections) in owners {
+        collections.sort_by(|a, b| a.kind.cmp(&b.kind));
+        for collection in &collections {
+            if collection.kind.is_empty() || !kinds.insert(collection.kind.clone()) {
+                return Err(Error::InvalidManifest);
+            }
+        }
+        let binding = HistoryBinding { owner, collections };
+        for collection in &binding.collections {
+            history::migration_rows(
+                &binding.owner,
+                binding.declarations(),
+                PlaneRecordRef {
+                    kind: &collection.kind,
+                    id: "binding-validation",
+                    parent: collection.parent.as_ref().map(|_| "binding-parent"),
+                    seq: if collection.mode == history::HistoryMode::Append {
+                        1
+                    } else {
+                        0
+                    },
+                    ts: 0,
+                    disposition: PlaneDisposition::Active,
+                    body: b"",
+                },
+                collection.parent.as_ref().map(|_| 1),
+            )
+            .map_err(|_| Error::InvalidManifest)?;
+        }
+        bindings.histories.push(binding);
+    }
+    bindings.tokens.sort_by(|a, b| {
+        (&a.source_kind, &a.instance, &a.kind).cmp(&(&b.source_kind, &b.instance, &b.kind))
+    });
+    for (i, token) in bindings.tokens.iter().enumerate() {
+        admit(&[&token.source_kind, &token.instance, &token.kind])?;
+        if token.source_kind.is_empty()
+            || token.instance.is_empty()
+            || token.kind.is_empty()
+            || bindings.tokens[..i]
+                .iter()
+                .any(|old| old.source_kind == token.source_kind)
+        {
+            return Err(Error::InvalidManifest);
+        }
+        if token.source_kind == "auth-replay"
+            && (token.instance != "busbar.auth-replay" || token.kind != "auth-replay")
+        {
+            return Err(Error::InvalidManifest);
+        }
+        if token.source_kind == "busbar.admin-idempotency"
+            && (token.instance != "busbar.admin" || token.kind != "busbar.admin-idempotency")
+        {
+            return Err(Error::InvalidManifest);
+        }
+        scoped::migration_claim_rows(&token.instance, &token.kind, "binding-validation", 1)
+            .map_err(|_| Error::InvalidManifest)?;
+    }
+    Ok(())
+}
+fn same_record(a: &RecordBinding, b: &RecordBinding) -> bool {
+    a.schema == b.schema
+        && a.instance == b.instance
+        && a.private == b.private
+        && matches!(a.source_scope, legacy::archive::Scope::Instance)
+            == matches!(b.source_scope, legacy::archive::Scope::Instance)
+}
+fn same_collection(a: &legacy::transform::Collection, b: &legacy::transform::Collection) -> bool {
+    a.kind == b.kind
+        && a.mode == b.mode
+        && a.retention.code() == b.retention.code()
+        && a.parent == b.parent
+}
+fn canonical_inventory(bindings: &mut Bindings, budget: usize) -> Result<(), Error> {
+    let mut charge = 0usize;
+    for record in &bindings.records {
+        charge = charge
+            .checked_add(record.schema.len())
+            .and_then(|v| v.checked_add(record.instance.len() + 256))
+            .ok_or(Error::Bounds)?;
+        canonical_bindings(
+            &mut Bindings {
+                records: vec![record.clone()],
+                ..Bindings::default()
+            },
+            budget,
+        )?;
+    }
+    for history in &bindings.histories {
+        charge = charge
+            .checked_add(history.owner.len() + 256)
+            .ok_or(Error::Bounds)?;
+        for c in &history.collections {
+            charge = charge
+                .checked_add(c.kind.len())
+                .and_then(|v| v.checked_add(c.parent.as_ref().map_or(0, String::len) + 256))
+                .ok_or(Error::Bounds)?;
+        }
+        canonical_bindings(
+            &mut Bindings {
+                histories: vec![history.clone()],
+                ..Bindings::default()
+            },
+            budget,
+        )?;
+    }
+    for token in &bindings.tokens {
+        charge = charge
+            .checked_add(token.source_kind.len())
+            .and_then(|v| v.checked_add(token.instance.len()))
+            .and_then(|v| v.checked_add(token.kind.len() + 256))
+            .ok_or(Error::Bounds)?;
+        canonical_bindings(
+            &mut Bindings {
+                tokens: vec![token.clone()],
+                ..Bindings::default()
+            },
+            budget,
+        )?;
+    }
+    if charge > budget {
+        return Err(Error::Bounds);
+    }
+    bindings.records.sort_by(|a, b| {
+        (
+            &a.schema,
+            &a.instance,
+            a.private,
+            matches!(a.source_scope, legacy::archive::Scope::Instance),
+        )
+            .cmp(&(
+                &b.schema,
+                &b.instance,
+                b.private,
+                matches!(b.source_scope, legacy::archive::Scope::Instance),
+            ))
+    });
+    bindings.records.dedup_by(|a, b| same_record(a, b));
+    for history in &mut bindings.histories {
+        history.collections.sort_by(|a,b|(&a.kind,a.mode==busbar_kernel::persistence::import_target::records::history::HistoryMode::Append,a.retention.code(),&a.parent).cmp(&(&b.kind,b.mode==busbar_kernel::persistence::import_target::records::history::HistoryMode::Append,b.retention.code(),&b.parent)));
+    }
+    bindings.histories.sort_by(|a, b| {
+        let owner = a.owner.cmp(&b.owner);
+        if owner != std::cmp::Ordering::Equal {
+            return owner;
+        }
+        let digest = |h: &HistoryBinding| {
+            let mut hash = Sha256::new();
+            legacy::transform::bind_config(&mut hash, &[], std::slice::from_ref(h), &[]);
+            <[u8; 32]>::from(hash.finalize())
+        };
+        digest(a).cmp(&digest(b))
+    });
+    bindings.histories.dedup_by(|a, b| {
+        a.owner == b.owner
+            && a.collections.len() == b.collections.len()
+            && a.collections
+                .iter()
+                .zip(&b.collections)
+                .all(|(a, b)| same_collection(a, b))
+    });
+    bindings.tokens.sort_by(|a, b| {
+        (&a.source_kind, &a.instance, &a.kind).cmp(&(&b.source_kind, &b.instance, &b.kind))
+    });
+    bindings.tokens.dedup_by(|a, b| {
+        a.source_kind == b.source_kind && a.instance == b.instance && a.kind == b.kind
+    });
+    Ok(())
+}
+fn binding_subset(effective: &Bindings, inventory: &Bindings) -> bool {
+    effective
+        .records
+        .iter()
+        .all(|record| inventory.records.iter().any(|old| same_record(record, old)))
+        && effective.tokens.iter().all(|token| {
+            inventory.tokens.iter().any(|old| {
+                old.source_kind == token.source_kind
+                    && old.instance == token.instance
+                    && old.kind == token.kind
+            })
+        })
+        && effective.histories.iter().all(|history| {
+            history.collections.iter().all(|collection| {
+                inventory.histories.iter().any(|old| {
+                    old.owner == history.owner
+                        && old
+                            .collections
+                            .iter()
+                            .any(|c| same_collection(collection, c))
+                })
+            })
+        })
+}
+enum Compiled {
+    Sql(SqlTransform),
+    Valkey(ValkeyTransform),
+}
+impl Transform for Compiled {
+    fn edge(&self) -> &Edge {
+        match self {
+            Self::Sql(t) => t.edge(),
+            Self::Valkey(t) => t.edge(),
+        }
+    }
+    fn authorize(&self, family: &Family, address: &Address) -> bool {
+        match self {
+            Self::Sql(t) => t.authorize(family, address),
+            Self::Valkey(t) => t.authorize(family, address),
+        }
+    }
+    fn transform(
+        &self,
+        family: &Family,
+        records: &[Record],
+        bounds: Bounds,
+    ) -> Result<Vec<TargetRow>, Error> {
+        match self {
+            Self::Sql(t) => t.transform(family, records, bounds),
+            Self::Valkey(t) => t.transform(family, records, bounds),
+        }
+    }
+}
+struct Readback {
+    compiled: Arc<Compiled>,
+    proofs: Arc<dyn NativeProofs>,
+}
+impl NativeReadback for Readback {
+    fn edge(&self) -> &Edge {
+        self.compiled.edge()
+    }
+    fn verify(
+        &self,
+        source: &Identity,
+        family: &Family,
+        records: &[Record],
+        bounds: Bounds,
+        native: &[(Address, Secret<Vec<u8>>)],
+    ) -> Result<Digest32, Error> {
+        let proof = match self.compiled.as_ref() {
+            Compiled::Sql(t) => t.verify_page(
+                source,
+                family,
+                records,
+                bounds,
+                native,
+                self.proofs.as_ref(),
+            )?,
+            Compiled::Valkey(t) => t.verify_page(
+                source,
+                family,
+                records,
+                bounds,
+                native,
+                self.proofs.as_ref(),
+            )?,
+        };
+        Ok(proof.semantics_digest)
+    }
+}
+pub struct BoundRoute {
+    pub target: Identity,
+    pub registry: Registry,
+    pub transform: Arc<dyn Transform>,
+    pub readback: Arc<dyn NativeReadback>,
+    pub prepared_digest: Digest32,
+}
+
+/// Read the actual entire frozen physical inventory, selecting original legacy
+/// audit rows by the compiled profile. Zero is established by that complete
+/// scan; it is never a fabricated empty proof. Optional native ancestry owns
+/// parent and historical receipt resolution, independently of audit validity.
+pub fn proofs_from_frozen(
+    format: Format,
+    provenance: Provenance,
+    source: &mut dyn crate::archive_source::ArchiveRows,
+    semantic_bytes: usize,
+    ancestry: Option<Arc<dyn NativeProofs>>,
+) -> Result<Arc<dyn NativeProofs>, Error> {
+    use busbar_contract::persistence::legacy_row::Row;
+    use legacy::transform::CompleteAuditProofs;
+    if source.header().owner != format.owner
+        || source.header().physical != format.physical
+        || semantic_bytes == 0
+    {
+        return Err(Error::IdentityMismatch);
+    }
+    let sql = if format.owner == legacy::valkey::IMPORTER_OWNER {
+        None
+    } else {
+        Some(legacy::Profile::from_importer_format(format).map_err(|_| Error::UnsupportedPath)?)
+    };
+    let valkey = if sql.is_none() {
+        let table = source.header().tables.first().ok_or(Error::Corrupt)?;
+        if source.header().tables.len() != 1 || table.name != "valkey" {
+            return Err(Error::Corrupt);
+        }
+        let layout = legacy::valkey::NativeLayout::decode(&table.native_layout)
+            .map_err(|_| Error::Corrupt)?;
+        if layout.importer_format() != format {
+            return Err(Error::IdentityMismatch);
+        }
+        Some(layout)
+    } else {
+        None
+    };
+    let mut audit = Vec::new();
+    let mut actual_count = 0usize;
+    let mut charge = 0usize;
+    let seal = crate::seal::lend();
+    for ordinal in 0..source.row_count() {
+        let original = source.read_row(ordinal)?;
+        let table = source
+            .header()
+            .tables
+            .get(original.table as usize)
+            .ok_or(Error::Corrupt)?;
+        if sql.is_some() && table.name != "audit_log" {
+            continue;
+        }
+        let row = Row::decode(original.value.expose(&seal)).map_err(|_| Error::Corrupt)?;
+        let selected = if let Some(profile) = sql {
+            let upper = original
+                .value
+                .expose(&seal)
+                .len()
+                .checked_mul(32)
+                .and_then(|v| v.checked_add(1024))
+                .ok_or(Error::Bounds)?;
+            charge = charge.checked_add(upper).ok_or(Error::Bounds)?;
+            if charge > semantic_bytes {
+                return Err(Error::Bounds);
+            }
+            let columns = table.columns.iter().map(String::as_str).collect::<Vec<_>>();
+            let legacy::HistoricalRow::Audit(record) =
+                legacy::decode(profile, &table.name, &columns, row).map_err(|_| Error::Corrupt)?
+            else {
+                return Err(Error::Corrupt);
+            };
+            Some(record)
+        } else {
+            let layout = valkey.as_ref().ok_or(Error::Corrupt)?;
+            let cell = legacy::valkey::physical(row).map_err(|_| Error::Corrupt)?;
+            if cell.database == layout.source_db
+                && cell.key == b"busbar:audit"
+                && cell.kind == legacy::valkey::PhysicalKind::SortedSet
+            {
+                let upper = original
+                    .value
+                    .expose(&seal)
+                    .len()
+                    .checked_mul(32)
+                    .and_then(|v| v.checked_add(1024))
+                    .ok_or(Error::Bounds)?;
+                charge = charge.checked_add(upper).ok_or(Error::Bounds)?;
+                if charge > semantic_bytes {
+                    return Err(Error::Bounds);
+                }
+                Some(legacy::valkey::audit(cell.position).map_err(|_| Error::Corrupt)?)
+            } else {
+                None
+            }
+        };
+        if let Some(record) = selected {
+            audit.try_reserve(1).map_err(|_| Error::Bounds)?;
+            actual_count = actual_count.checked_add(1).ok_or(Error::Bounds)?;
+            audit.push(record);
+        }
+    }
+    let audit = CompleteAuditProofs::from_complete_source(
+        format,
+        provenance,
+        audit,
+        u64::try_from(actual_count).map_err(|_| Error::Bounds)?,
+    )?;
+    Ok(Arc::new(FrozenProofs {
+        audit: Arc::new(audit),
+        ancestry,
+    }))
+}
+pub fn with_ancestry(
+    audit: Arc<dyn NativeProofs>,
+    ancestry: Arc<dyn NativeProofs>,
+) -> Arc<dyn NativeProofs> {
+    Arc::new(FrozenProofs {
+        audit,
+        ancestry: Some(ancestry),
+    })
+}
+struct FrozenProofs {
+    audit: Arc<dyn NativeProofs>,
+    ancestry: Option<Arc<dyn NativeProofs>>,
+}
+impl legacy::archive::HistoricalReceiptResolution for FrozenProofs {
+    fn resolve_original(
+        &self,
+        provenance: Provenance,
+        address: &Address,
+        receipt: &legacy::archive::Receipt<'_>,
+    ) -> Result<Digest32, Error> {
+        self.ancestry
+            .as_deref()
+            .ok_or(Error::ReconciliationRequired)?
+            .resolve_original(provenance, address, receipt)
+    }
+}
+impl NativeProofs for FrozenProofs {
+    fn parent_present(
+        &self,
+        provenance: Provenance,
+        owner: &str,
+        kind: &str,
+        id: &str,
+    ) -> Result<Digest32, Error> {
+        match self.audit.parent_present(provenance, owner, kind, id) {
+            Err(Error::MissingCapability) => self
+                .ancestry
+                .as_deref()
+                .ok_or(Error::MissingCapability)?
+                .parent_present(provenance, owner, kind, id),
+            result => result,
+        }
+    }
+    fn historical_audit(
+        &self,
+        provenance: Provenance,
+        record: &busbar_contract::records::AuditRecord,
+    ) -> Result<Digest32, Error> {
+        self.audit.historical_audit(provenance, record)
+    }
+}
+
+#[cfg(test)]
+mod binding_tests {
+    use super::*;
+    use busbar_contract::persistence::legacy_row::{self, Cell};
+    busbar_contract::own_seal!(Own);
+
+    fn collection(kind: &str) -> legacy::transform::Collection {
+        legacy::transform::Collection {
+            kind: kind.into(),
+            mode: busbar_kernel::persistence::import_target::records::history::HistoryMode::Upsert,
+            retention: busbar_contract::records::Retention::default(),
+            parent: None,
+        }
+    }
+
+    fn competing_inventory() -> DeclarationInventory {
+        let mut inventory = inventory();
+        inventory.bindings.tokens = ["dormant", "enabled"]
+            .into_iter()
+            .map(|owner| TokenBinding {
+                source_kind: "shared".into(),
+                instance: owner.into(),
+                kind: "shared".into(),
+            })
+            .collect();
+        inventory.bindings.histories = ["dormant", "enabled"]
+            .into_iter()
+            .map(|owner| HistoryBinding {
+                owner: owner.into(),
+                collections: vec![collection("shared")],
+            })
+            .collect();
+        inventory
+    }
+
+    fn route() -> PreparedRoute {
+        PreparedRoute::inspect(
+            &lifecycle::SourceIdentity {
+                native_anchor: [1; 32],
+                dataset: busbar_contract::persistence::DatasetId([2; 16]),
+                format: Some(lifecycle::Format {
+                    owner: lifecycle::SQLITE_SOURCE_OWNER,
+                    physical: 6,
+                    logical: 1,
+                    codec: 1,
+                }),
+                catalogue_digest: [3; 32],
+                layout_digest: [4; 32],
+            },
+            &[Table {
+                name: "records".into(),
+                columns: vec!["value".into()],
+                native_layout: vec![1],
+            }],
+            Bounds {
+                items: 16,
+                bytes: 65536,
+            },
+            CORE_FORMAT,
+        )
+        .unwrap()
+    }
+
+    fn inventory() -> DeclarationInventory {
+        DeclarationInventory {
+            bindings: Bindings {
+                tokens: vec![TokenBinding {
+                    source_kind: "example-token".into(),
+                    instance: "example".into(),
+                    kind: "token".into(),
+                }],
+                ..Bindings::default()
+            },
+            statements: vec![AdmittedStatement {
+                owner: "example".into(),
+                statement_sha256: [5; 32],
+                kind: 1,
+                kind_abi: 1,
+                layout_fingerprint: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn unique_inventory_still_requires_explicit_resolution() {
+        let route = route().with_binding_inventory(inventory()).unwrap();
+        assert!(matches!(
+            route.resolved_bindings(),
+            Err(Error::MissingCapability)
+        ));
+        // Inventory admission alone cannot select a scope. The trusted
+        // resolver must explicitly provide even an otherwise unique mapping.
+        let route = route.resolve_frozen_bindings(Bindings::default()).unwrap();
+        assert!(route.resolved_bindings().unwrap().tokens.is_empty());
+    }
+
+    #[test]
+    fn frozen_configuration_cannot_select_an_unadmitted_declaration() {
+        let mut effective = inventory().bindings;
+        effective.tokens[0].instance = "unadmitted".into();
+        assert!(matches!(
+            route()
+                .with_binding_inventory(inventory())
+                .unwrap()
+                .resolve_frozen_bindings(effective),
+            Err(Error::IdentityMismatch)
+        ));
+    }
+
+    #[test]
+    fn dormant_owner_records_and_unique_claims_survive_without_configuration_selection() {
+        let mut inventory = inventory();
+        inventory.bindings.tokens[0].instance = "dormant".into();
+        inventory.bindings.histories.push(HistoryBinding {
+            owner: "dormant".into(),
+            collections: vec![collection("history")],
+        });
+        inventory.bindings.records = ["dormant", "enabled"]
+            .into_iter()
+            .map(|instance| RecordBinding {
+                schema: "shared".into(),
+                instance: instance.into(),
+                private: false,
+                source_scope: legacy::archive::Scope::Instance,
+            })
+            .collect();
+        let bindings = dormant_safe_bindings(&inventory, 65536).unwrap();
+        assert_eq!(bindings.tokens[0].instance, "dormant");
+        assert_eq!(bindings.histories[0].owner, "dormant");
+        let mapped = bindings
+            .records
+            .iter()
+            .map(|r| legacy::archive::Binding {
+                schema: &r.schema,
+                instance: &r.instance,
+                private: r.private,
+                source_scope: r.source_scope,
+            })
+            .collect::<Vec<_>>();
+        let mut key = ("dormant".len() as u16).to_be_bytes().to_vec();
+        key.extend_from_slice(b"dormant");
+        key.extend_from_slice(b"id");
+        let legacy::archive::Route::Record { address, .. } =
+            legacy::archive::route_record("shared", &key, b"body", &mapped).unwrap()
+        else {
+            panic!("dormant record lost its source binding")
+        };
+        assert_eq!(
+            address,
+            busbar_kernel::persistence::import_target::records::scoped::migration_address(
+                false, "dormant", "shared", b"id"
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn unused_competing_declarations_do_not_block_route_and_exact_duplicates_collapse() {
+        let admitted = competing_inventory();
+        let bindings = dormant_safe_bindings(&admitted, 65536).unwrap();
+        assert!(bindings.histories.is_empty());
+        assert!(bindings.tokens.is_empty());
+        route()
+            .with_binding_inventory(admitted)
+            .unwrap()
+            .resolve_frozen_bindings(bindings)
+            .unwrap();
+        let mut inventory = inventory();
+        inventory.bindings.histories = vec![
+            HistoryBinding {
+                owner: "example".into(),
+                collections: vec![collection("history")]
+            };
+            2
+        ];
+        inventory
+            .bindings
+            .tokens
+            .push(inventory.bindings.tokens[0].clone());
+        let bindings = dormant_safe_bindings(&inventory, 65536).unwrap();
+        assert_eq!(bindings.histories.len(), 1);
+        assert_eq!(bindings.histories[0].collections.len(), 1);
+        assert_eq!(bindings.tokens.len(), 1);
+        let mut different = collection("history");
+        different.mode =
+            busbar_kernel::persistence::import_target::records::history::HistoryMode::Append;
+        inventory.bindings.histories.push(HistoryBinding {
+            owner: "example".into(),
+            collections: vec![different],
+        });
+        assert!(dormant_safe_bindings(&inventory, 65536)
+            .unwrap()
+            .histories
+            .is_empty());
+    }
+
+    #[test]
+    fn actual_sql_token_with_ambiguous_historical_owner_refuses() {
+        let bindings = dormant_safe_bindings(&competing_inventory(), 65536).unwrap();
+        let tables = [
+            "audit_log",
+            "credentials",
+            "denylist",
+            "keys",
+            "plane_records",
+            "plane_tokens",
+            "schema_records",
+            "store_meta",
+            "store_ops",
+            "store_revision",
+            "usage_metering",
+            "usage_metering_exact",
+            "usage_metering_units",
+            "usage_window_exact",
+            "usage_window_units",
+            "usage_windows",
+        ];
+        let layouts = tables
+            .into_iter()
+            .map(|table| TableLayout {
+                table: table.into(),
+                columns: if table == "plane_tokens" {
+                    vec!["kind".into(), "token".into(), "expires_at".into()]
+                } else {
+                    vec!["unused".into()]
+                },
+            })
+            .collect();
+        let bounds = Bounds {
+            items: 16,
+            bytes: 65536,
+        };
+        let transform = SqlTransform::registered(
+            legacy::Profile::SqliteDev9,
+            Provenance {
+                dataset: [8; 16],
+                catalogue: [9; 32],
+            },
+            layouts,
+            bindings.records,
+            bindings.histories,
+            bindings.tokens,
+            bounds,
+        )
+        .unwrap();
+        let value = legacy_row::encode::<Own>(
+            &[
+                Cell::Text(b"shared"),
+                Cell::Text(b"spent"),
+                Cell::Integer(6000),
+            ],
+            65536,
+        )
+        .unwrap();
+        let row = Record {
+            key: legacy::transform::source_key("plane_tokens", b"native-token").unwrap(),
+            value: Secret::new(value.expose_own(&Own::here()).clone()),
+            preserve_exact: true,
+        };
+        let family = transform
+            .edge()
+            .families
+            .iter()
+            .find(|f| f.id == legacy::transform::ARCHIVAL)
+            .unwrap();
+        assert!(matches!(
+            transform.transform(family, &[row], bounds),
+            Err(Error::MissingCapability)
+        ));
+    }
+
+    #[test]
+    fn actual_valkey_token_with_ambiguous_historical_owner_refuses() {
+        let bindings = dormant_safe_bindings(&competing_inventory(), 65536).unwrap();
+        let counts = 1u64.to_le_bytes();
+        let layout = legacy_row::encode::<Own>(
+            &[
+                Cell::Text(b"busbar.valkey.native-inventory/1"),
+                Cell::Integer(0),
+                Cell::Integer(9),
+                Cell::Integer(0x90103),
+                Cell::Blob(&[1; 32]),
+                Cell::Blob(&[2; 32]),
+                Cell::Blob(&[3; 32]),
+                Cell::Blob(&[4; 32]),
+                Cell::Integer(1),
+                Cell::Blob(&counts),
+            ],
+            65536,
+        )
+        .unwrap();
+        let bounds = Bounds {
+            items: 16,
+            bytes: 65536,
+        };
+        let transform = ValkeyTransform::registered(
+            Provenance {
+                dataset: [8; 16],
+                catalogue: [9; 32],
+            },
+            layout.expose_own(&Own::here()),
+            bindings.records,
+            bindings.histories,
+            bindings.tokens,
+            bounds,
+        )
+        .unwrap();
+        let key = format!(
+            "busbar:plane:{}:tok:{}",
+            hex::encode(b"shared"),
+            hex::encode(b"spent")
+        );
+        let rows = [(0, b"string".as_slice()), (1, b"6000".as_slice())]
+            .into_iter()
+            .map(|(kind, value)| {
+                let native = legacy_row::encode::<Own>(
+                    &[
+                        Cell::Integer(0),
+                        Cell::Integer(kind),
+                        Cell::Blob(key.as_bytes()),
+                        Cell::Blob(b""),
+                    ],
+                    65536,
+                )
+                .unwrap();
+                let value = legacy_row::encode::<Own>(
+                    &[
+                        Cell::Integer(0),
+                        Cell::Integer(kind),
+                        Cell::Integer(-1),
+                        Cell::Blob(key.as_bytes()),
+                        Cell::Blob(b""),
+                        Cell::Blob(value),
+                    ],
+                    65536,
+                )
+                .unwrap();
+                Record {
+                    key: legacy::transform::source_key("valkey", native.expose_own(&Own::here()))
+                        .unwrap(),
+                    value: Secret::new(value.expose_own(&Own::here()).clone()),
+                    preserve_exact: true,
+                }
+            })
+            .collect::<Vec<_>>();
+        let family = transform
+            .edge()
+            .families
+            .iter()
+            .find(|f| f.id == legacy::transform::ARCHIVAL)
+            .unwrap();
+        assert!(matches!(
+            transform.transform(family, &rows, bounds),
+            Err(Error::MissingCapability)
+        ));
+    }
+}

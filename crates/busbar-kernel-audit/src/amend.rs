@@ -453,10 +453,18 @@ impl AmendJournal {
     }
 }
 
-/// WHERE A NODE JOURNAL'S AMENDMENTS ARE MADE DURABLE: handed every amendment the journal seals, in
+/// An amendment lacks native durable confirmation. Its exact original remains
+/// owned by the sink; callers must not publish a durable success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AmendPersistError;
+/// Owned asynchronous confirmation of an already staged original amendment.
+pub type AmendCommit =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), AmendPersistError>> + Send>>;
+/// Reserves original amendments in order and confirms their native durability.
 pub trait AmendSink: Send + Sync {
-    /// `amendment` was just sealed onto the journal.
-    fn sealed(&self, amendment: &Amendment);
+    /// Stage the exact original synchronously, preserving amendment order, then
+    /// return an owned confirmation future. Only Ok means native Applied.
+    fn sealed(&self, amendment: &Amendment) -> Result<AmendCommit, AmendPersistError>;
 }
 
 /// What the journal's one lock guards: the journal, and the sink its amendments go to.
@@ -498,15 +506,6 @@ impl NodeAmendments {
         self.held.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Seal `body` onto the journal and hand it to the bound sink, under the journal's lock.
-    fn seal(held: &mut Held, body: AmendBody, token: &Pass<Audit>) -> Amendment {
-        let amendment = held.journal.append(body, token);
-        if let Some(sink) = &held.sink {
-            sink.sealed(&amendment);
-        }
-        amendment
-    }
-
     /// VERIFY THE JOURNAL AS IT IS HELD NOW — the on-demand check `GET /admin/verify` runs. The boot
     pub fn verify(&self) -> Result<(), crate::record::AuditBreak> {
         self.held().journal.verify()
@@ -535,33 +534,45 @@ impl NodeAmendments {
     }
 
     /// BIND the journal's sink (`None` unbinds). Every amendment it still holds above position
-    pub fn bind(
+    pub async fn bind(
         &self,
         sink: Option<std::sync::Arc<dyn AmendSink>>,
         journalled_through: u64,
         _token: &Grant<DurableWrite>,
-    ) {
-        let mut held = self.held();
-        if let Some(sink) = &sink {
-            for amendment in held.journal.recent().filter(|a| a.seq > journalled_through) {
-                sink.sealed(amendment);
+    ) -> Result<(), AmendPersistError> {
+        let pending = {
+            let mut held = self.held();
+            let mut pending = Vec::new();
+            if let Some(sink) = &sink {
+                for amendment in held
+                    .journal
+                    .recent()
+                    .filter(|amendment| amendment.seq > journalled_through)
+                {
+                    pending.push(sink.sealed(amendment)?);
+                }
             }
+            held.sink = sink;
+            pending
+        };
+        for confirmation in pending {
+            confirmation.await?;
         }
-        held.sink = sink;
+        Ok(())
     }
 
     /// Record that `reader` `name` was handed `fields` of a unit's content at `wall` (unix seconds,
     #[allow(clippy::too_many_arguments)]
-    pub fn record_read(
+    pub async fn record_read(
         &self,
-        token: &Pass<Audit>,
+        _token: &Pass<Audit>,
         reader: Reader,
         name: &str,
         principal: Option<&str>,
         op_class: &str,
         fields: Vec<String>,
         wall: u64,
-    ) -> Amendment {
+    ) -> Result<Amendment, AmendPersistError> {
         let body = content_access(
             reader,
             name,
@@ -570,7 +581,36 @@ impl NodeAmendments {
             fields,
             wall,
         );
-        Self::seal(&mut self.held(), body, token)
+        let (amendment, confirmation) = {
+            let mut held = self.held();
+            let next = held
+                .journal
+                .chain
+                .next_seq
+                .checked_add(1)
+                .ok_or(AmendPersistError)?;
+            let mut amendment = Amendment {
+                seq: held.journal.chain.next_seq,
+                body,
+                prev_hash: held.journal.chain.tail_hash.clone(),
+                hash: String::new(),
+            };
+            amendment.hash = AmendChain::digest_of(&amendment);
+            let sink = held.sink.as_ref().ok_or(AmendPersistError)?;
+            let confirmation = sink.sealed(&amendment)?;
+            // Commit only after exact original custody is retained; refused
+            // memory admission must not create an amendment-chain hole.
+            held.journal.chain.tail_hash = amendment.hash.clone();
+            held.journal.chain.next_seq = next;
+            if held.journal.recent.len() == AMENDMENTS_RETAINED {
+                held.journal.recent.pop_front();
+                held.journal.released = held.journal.released.saturating_add(1);
+            }
+            held.journal.recent.push_back(amendment.clone());
+            (amendment, confirmation)
+        };
+        confirmation.await?;
+        Ok(amendment)
     }
 
     /// The amendments the journal holds, oldest first.

@@ -509,7 +509,7 @@ impl SegmentedUsage {
 /// unwinding, caller cancellation and a later flusher invocation.
 #[derive(Clone)]
 struct Chunk {
-    op: busbar_contract::abi::store::OpId,
+    op: busbar_contract::records::OpId,
     plain: UsageDelta,
     dated: UsageDelta,
     started: std::time::Instant,
@@ -530,46 +530,66 @@ pub(super) struct BudgetFlushFlight {
     durable: Option<super::raw_recovery::DurableUsageFlight>,
 }
 
-/// A runner's ownership marker, never a mutex held across a store call. Both a whole flush and
-/// each retained flight use this handoff so the final caller can join existing work.
+/// Serializes flush futures without blocking an executor thread. The guard also releases
+/// ownership when a driver future is cancelled; retained debt stays in its flight.
 #[derive(Default)]
 pub(super) struct BudgetFlushRunner {
-    owner: std::sync::Mutex<Option<std::thread::ThreadId>>,
-    released: std::sync::Condvar,
+    owner: tokio::sync::Mutex<()>,
 }
 
-pub(super) struct BudgetFlushRun<'a>(&'a BudgetFlushRunner);
-impl Drop for BudgetFlushRun<'_> {
-    fn drop(&mut self) {
-        *self.0.owner.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        self.0.released.notify_all();
+tokio::task_local! {
+    static ACTIVE_FLUSH_RUNNERS: Vec<usize>;
+}
+
+pub(super) struct BudgetFlushRun<'a> {
+    _owner: tokio::sync::MutexGuard<'a, ()>,
+    identity: usize,
+}
+impl BudgetFlushRun<'_> {
+    /// Task-local scope is installed only while this future is polled. Another
+    /// future on the same executor/task can still join the active owner normally.
+    pub(super) async fn scope<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        let mut owners = ACTIVE_FLUSH_RUNNERS
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        owners.push(self.identity);
+        ACTIVE_FLUSH_RUNNERS.scope(owners, future).await
     }
 }
 
 impl BudgetFlushRunner {
-    pub(super) fn enter(&self, final_flush: bool) -> Result<BudgetFlushRun<'_>, &'static str> {
-        let current = std::thread::current().id();
-        let mut owner = self.owner.lock().unwrap_or_else(|p| p.into_inner());
-        loop {
-            match *owner {
-                None => {
-                    *owner = Some(current);
-                    drop(owner);
-                    return Ok(BudgetFlushRun(self));
-                }
-                Some(active) if final_flush && active != current => {
-                    owner = self.released.wait(owner).unwrap_or_else(|p| p.into_inner());
-                }
-                Some(active) => {
-                    let reentrant_final = final_flush && active == current;
-                    drop(owner);
-                    return Err(if reentrant_final {
-                        "final budget flush reentered its own active store call"
-                    } else {
-                        "budget flush already in flight"
-                    });
-                }
+    pub(super) fn is_running(&self) -> bool {
+        self.owner.try_lock().is_err()
+    }
+
+    pub(super) fn try_enter(&self) -> Result<BudgetFlushRun<'_>, &'static str> {
+        self.owner
+            .try_lock()
+            .map(|owner| BudgetFlushRun {
+                _owner: owner,
+                identity: self as *const Self as usize,
+            })
+            .map_err(|_| "budget flush already in flight")
+    }
+
+    pub(super) async fn enter(
+        &self,
+        final_flush: bool,
+    ) -> Result<BudgetFlushRun<'_>, &'static str> {
+        if final_flush {
+            let identity = self as *const Self as usize;
+            if ACTIVE_FLUSH_RUNNERS
+                .try_with(|owners| owners.contains(&identity))
+                .unwrap_or(false)
+            {
+                return Err("final flush reentered its own active Store call");
             }
+            Ok(BudgetFlushRun {
+                _owner: self.owner.lock().await,
+                identity,
+            })
+        } else {
+            self.try_enter()
         }
     }
 }
@@ -642,32 +662,27 @@ impl GovState {
             };
             let mut plain = ExactUsageDelta::default();
             let mut dated = ExactUsageDelta::default();
-            let mut requires_chunks = false;
+
             if let Some((correction_plain, correction_dated)) = correction_debt {
                 plain = correction_plain;
                 dated = correction_dated;
             } else {
                 for (_, debt) in cell.rolled.iter().filter(|(at, _)| *at == window) {
-                    requires_chunks |= debt.signed().is_none();
                     plain.merge(debt);
                 }
                 for (_, debt) in cell.rolled_eras.iter().filter(|(at, _)| *at == window) {
-                    requires_chunks |= debt.signed().is_none();
                     dated.merge(debt);
                 }
                 if cell.window_start == window {
                     let current = ExactUsageDelta::of(cell, false);
                     let current_dated = ExactUsageDelta::of(cell, true);
-                    requires_chunks |=
-                        current.signed().is_none() || current_dated.signed().is_none();
+
                     plain.merge(&current);
                     dated.merge(&current_dated);
                 }
             }
-            requires_chunks |= plain.signed().is_none() || dated.signed().is_none();
-            if (plain.is_zero() && dated.is_zero())
-                || (!requires_chunks && !self.store.supports_usage_batch_deduped())
-            {
+
+            if plain.is_zero() && dated.is_zero() {
                 if let Some(original) = original {
                     *cell = original;
                 }
@@ -760,18 +775,22 @@ impl GovState {
         captured
     }
 
-    fn drive_budget_flush_flight(
+    async fn drive_budget_flush_flight(
         &self,
         flight: &Arc<BudgetFlushFlight>,
         final_flush: bool,
     ) -> (usize, Option<RecordStoreError>) {
-        let _running = match flight.runner.enter(final_flush) {
+        let _running = match flight.runner.enter(final_flush).await {
             Ok(running) => running,
             Err(message) => return (0, Some(RecordStoreError(message.into()))),
         };
+        let core = match self.core_store() {
+            Ok(core) => core,
+            Err(error) => return (0, Some(error)),
+        };
         let mut confirmed = 0;
         if let Some(durable) = &flight.durable {
-            if let Err(error) = self.drive_durable_usage_flight(durable) {
+            if let Err(error) = self.drive_durable_usage_flight(durable).await {
                 return (0, Some(error));
             }
             let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
@@ -869,7 +888,11 @@ impl GovState {
                 cells.push((era_bucket.as_str(), flight.window, chunk.dated.clone()));
             }
 
-            if let Err(error) = self.store.add_usage_batch_deduped(chunk.op, &cells) {
+            if let Err(error) = core
+                .ledger()
+                .add_usage_batch_deduped(chunk.op, &cells)
+                .await
+            {
                 return (confirmed, Some(error));
             }
             let mut debt = flight.debt.lock().unwrap_or_else(|p| p.into_inner());
@@ -880,7 +903,7 @@ impl GovState {
         }
     }
 
-    pub(super) fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
+    pub(super) async fn resume_budget_flushes(&self, final_flush: bool) -> (usize, Vec<String>) {
         let flights: Vec<_> = self
             .budget_flushes
             .lock()
@@ -888,10 +911,10 @@ impl GovState {
             .values()
             .cloned()
             .collect();
-        self.resume_budget_flush_list(flights, final_flush)
+        self.resume_budget_flush_list(flights, final_flush).await
     }
 
-    pub(super) fn resume_budget_flush_list(
+    pub(super) async fn resume_budget_flush_list(
         &self,
         flights: Vec<Arc<BudgetFlushFlight>>,
         final_flush: bool,
@@ -899,7 +922,7 @@ impl GovState {
         let mut confirmed = 0;
         let mut errors = Vec::new();
         for flight in flights {
-            let (done, error) = self.drive_budget_flush_flight(&flight, final_flush);
+            let (done, error) = self.drive_budget_flush_flight(&flight, final_flush).await;
             confirmed += done;
             if let Some(error) = error {
                 errors.push(format!("{}@{}: {error}", flight.bucket, flight.window));
@@ -908,7 +931,10 @@ impl GovState {
         (confirmed, errors)
     }
 
-    pub(super) fn settle_budget_flush_for_delete(&self, bucket: &str) -> RecordStoreResult<()> {
+    pub(super) async fn settle_budget_flush_for_delete_async(
+        &self,
+        bucket: &str,
+    ) -> RecordStoreResult<()> {
         let flights: Vec<_> = self
             .budget_flushes
             .lock()
@@ -918,9 +944,14 @@ impl GovState {
             .map(|(_, flight)| flight.clone())
             .collect();
         for flight in flights {
-            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight, false) {
+            if let (_, Some(error)) = self.drive_budget_flush_flight(&flight, false).await {
                 return Err(error);
             }
+        }
+        if self.has_unsettled_raw_bucket(bucket)? {
+            return Err(RecordStoreError(
+                "deletion requires confirmed raw usage custody".into(),
+            ));
         }
         Ok(())
     }
@@ -1032,5 +1063,40 @@ mod recovery_math_tests {
         assert_eq!(value["billable_requests"], i128::MIN.to_string());
         let decoded: ExactUsageDelta = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, delta);
+    }
+}
+
+#[cfg(test)]
+mod async_flush_ownership_tests {
+    use super::BudgetFlushRunner;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn final_flush_yields_until_the_active_future_releases_custody() {
+        let runner = BudgetFlushRunner::default();
+        let active = runner.try_enter().unwrap();
+        let final_flush = runner.enter(true);
+        tokio::pin!(final_flush);
+        assert!(futures::poll!(&mut final_flush).is_pending());
+        assert!(runner.try_enter().is_err());
+        drop(active);
+        let _joined = final_flush.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelled_driver_releases_ownership_for_exact_retained_retry() {
+        let runner = Arc::new(BudgetFlushRunner::default());
+        let retained = runner.clone();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let driver = tokio::spawn(async move {
+            let _owner = retained.enter(true).await.unwrap();
+            entered.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        ready.await.unwrap();
+        assert!(runner.try_enter().is_err());
+        driver.abort();
+        assert!(driver.await.unwrap_err().is_cancelled());
+        assert!(runner.try_enter().is_ok());
     }
 }

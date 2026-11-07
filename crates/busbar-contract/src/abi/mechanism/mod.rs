@@ -111,7 +111,7 @@ impl KindCode {
     #[must_use]
     pub const fn abi_version(self) -> u32 {
         match self {
-            KindCode::Store => super::store::ABI_VERSION,
+            KindCode::Store => super::store::v4::ABI_VERSION,
             KindCode::Secret => super::secret::ABI_VERSION,
             KindCode::Auth => super::auth::ABI_VERSION,
             KindCode::Hook => super::hook::ABI_VERSION,
@@ -125,7 +125,7 @@ impl KindCode {
     #[must_use]
     pub const fn layout_fingerprint(self) -> u64 {
         match self {
-            KindCode::Store => super::store::LAYOUT_FINGERPRINT,
+            KindCode::Store => super::store::v4::LAYOUT_FINGERPRINT,
             KindCode::Secret => super::secret::LAYOUT_FINGERPRINT,
             KindCode::Auth => super::auth::LAYOUT_FINGERPRINT,
             KindCode::Hook => super::hook::LAYOUT_FINGERPRINT,

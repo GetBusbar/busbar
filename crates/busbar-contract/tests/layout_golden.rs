@@ -28,8 +28,7 @@ use busbar_contract::abi::mechanism::ticket::{
     Ticket as MechTicket,
 };
 use busbar_contract::abi::{
-    auth::Ops as AuthOps, plane::Ops as PlaneOps, store::Ops as StoreOps,
-    transport::Ops as TransportOps,
+    auth::Ops as AuthOps, plane::Ops as PlaneOps, transport::Ops as TransportOps,
 };
 
 use busbar_contract::abi::export::{
@@ -71,24 +70,11 @@ use busbar_contract::abi::host::conn::connector as hconn;
 use busbar_contract::abi::host::io as hio;
 use busbar_contract::abi::host::service as hsvc;
 use busbar_contract::abi::plane as pkind;
+use busbar_contract::abi::store::v4 as pstore;
 use busbar_contract::abi::transport as tkind;
 
-use busbar_contract::abi::store::{
-    AddUsageBatchIn as StoreAddUsageBatchIn, AppendPlaneRecordIn as StoreAppendPlaneRecordIn,
-    BlobIn as StoreBlobIn, CountOut as StoreCountOut, GetPlaneRecordIn as StoreGetPlaneRecordIn,
-    HostBlobs as StoreHostBlobs, HostBuf as StoreHostBuf, HostBytesOut as StoreHostBytesOut,
-    HostListOut as StoreHostListOut, HostRecords as StoreHostRecords, IdIn as StoreIdIn,
-    IdReasonIn as StoreIdReasonIn, KeyWithCredentialIn as StoreKeyWithCredentialIn,
-    KindBeforeIn as StoreKindBeforeIn, KindIdIn as StoreKindIdIn,
-    LeasedBlobOut as StoreLeasedBlobOut, LeasedListOut as StoreLeasedListOut,
-    LeasedStrListOut as StoreLeasedStrListOut, ListPlaneRecordsIn as StoreListPlaneRecordsIn,
-    OpBlobsIn as StoreOpBlobsIn, OpId as StoreOpId, PlaneRecordRow as StorePlaneRecordRow,
-    PutUsageIn as StorePutUsageIn, RecordEntry as StoreRecordEntry,
-    RecordGetIn as StoreRecordGetIn, RecordPutIn as StoreRecordPutIn,
-    RecordScanIn as StoreRecordScanIn, StoreTail as StoreStoreTail, TokenIn as StoreTokenIn,
-    U64In as StoreU64In, UpsertPlaneRecordIn as StoreUpsertPlaneRecordIn,
-    UsageCell as StoreUsageCell, VerdictOut as StoreVerdictOut, WindowIn as StoreWindowIn,
-};
+use busbar_contract::abi::store::HostBuf as StoreHostBuf;
+use busbar_contract::records::OpId as StoreOpId;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
@@ -113,6 +99,115 @@ fn compute_layout() -> String {
     let mut s = String::new();
 
     record!(s, AbiPreamble, [magic, abi_major, abi_minor]);
+
+    record!(s, pstore::Bytes, [ptr, len]);
+    record!(s, pstore::Address, [namespace, key]);
+    record!(s, pstore::TimeGuard, [flags, _reserved, not_before, before]);
+    record!(
+        s,
+        pstore::AttemptId,
+        [dataset, writer, operation, writer_epoch, execution_epoch]
+    );
+    record!(s, pstore::Predicate, [address, tag, _reserved, expected]);
+    record!(
+        s,
+        pstore::Mutation,
+        [address, tag, _reserved, exact_length, value]
+    );
+    record!(
+        s,
+        pstore::Candidate,
+        [
+            id,
+            codec,
+            _reserved,
+            time,
+            predicates,
+            predicates_len,
+            mutations,
+            mutations_len,
+            result
+        ]
+    );
+    record!(s, pstore::ReadValue, [found, _reserved, value]);
+    record!(s, pstore::HostValues, [items, items_cap, bytes]);
+    record!(
+        s,
+        pstore::ReadIn,
+        [head, dataset, addresses, addresses_len, time, values]
+    );
+    record!(
+        s,
+        pstore::ReadOut,
+        [
+            head,
+            code,
+            _reserved,
+            observed_at,
+            authority,
+            items_written,
+            bytes_written,
+            needed_items,
+            needed_bytes
+        ]
+    );
+    record!(s, pstore::ScanRow, [key, value]);
+    record!(s, pstore::HostRows, [items, items_cap, bytes]);
+    record!(
+        s,
+        pstore::ScanIn,
+        [
+            head, dataset, namespace, prefix, after, generation, flags, _reserved, max_items,
+            max_bytes, rows
+        ]
+    );
+    record!(
+        s,
+        pstore::ScanOut,
+        [
+            head,
+            code,
+            continuation,
+            generation,
+            next,
+            items_written,
+            bytes_written,
+            needed_items,
+            needed_bytes
+        ]
+    );
+    record!(s, pstore::CommitIn, [head, candidate, result]);
+    record!(
+        s,
+        pstore::CommitOut,
+        [
+            head,
+            code,
+            _reserved,
+            observed_at,
+            authority,
+            written,
+            needed
+        ]
+    );
+    record!(s, pstore::ClockIn, [head, dataset]);
+    record!(s, pstore::ClockOut, [head, observed_at, authority]);
+    record!(
+        s,
+        pstore::BootstrapIn,
+        [
+            head,
+            host,
+            settings,
+            secrets,
+            secrets_len,
+            generation,
+            request,
+            result
+        ]
+    );
+    record!(s, pstore::BootstrapOut, [head, instance, written, needed]);
+    record!(s, pstore::Ops, [head, read, scan, commit, clock, bootstrap]);
 
     record!(s, DeclStr, [ptr, len]);
     record!(
@@ -317,113 +412,8 @@ fn compute_layout() -> String {
     record!(s, MechReleaseIn, [head, lease]);
     record!(s, MechReadyIn, [head, host]);
     record!(s, StoreHostBuf, [ptr, cap]);
-    record!(s, StoreHostBlobs, [items, items_cap, bytes]);
-    record!(
-        s,
-        StoreHostBytesOut,
-        [head, found, _reserved, written, needed]
-    );
-    record!(
-        s,
-        StoreHostListOut,
-        [
-            head,
-            items_written,
-            bytes_written,
-            needed_items,
-            needed_bytes
-        ]
-    );
-    record!(s, StoreLeasedBlobOut, [head, found, _reserved, record]);
-    record!(s, StoreLeasedListOut, [head, items, items_len]);
-    record!(s, StoreLeasedStrListOut, [head, items, items_len]);
-    record!(s, StoreCountOut, [head, count]);
-    record!(s, StoreVerdictOut, [head, verdict, _reserved]);
-    record!(
-        s,
-        StoreStoreTail,
-        [head, durable_plane, fork_refusal, _reserved]
-    );
-
     writeln!(s, "StoreOpId.f0={}", std::mem::offset_of!(StoreOpId, 0)).unwrap();
     record!(s, StoreOpId, []);
-    record!(s, StoreUsageCell, [bucket, window_start, delta]);
-    record!(s, StoreAddUsageBatchIn, [head, op_id, cells, cells_len]);
-    record!(s, StoreOpBlobsIn, [head, op_id, records, records_len]);
-    record!(s, StoreIdIn, [head, id]);
-    record!(s, StoreU64In, [head, value]);
-    record!(s, StoreWindowIn, [head, bucket, window_start]);
-    record!(s, StorePutUsageIn, [head, bucket, window_start, ledger]);
-    record!(s, StoreBlobIn, [head, record]);
-    record!(s, StoreKeyWithCredentialIn, [head, key, credential]);
-    record!(s, StoreKindIdIn, [head, kind, id]);
-    record!(s, StoreIdReasonIn, [head, id, reason]);
-    record!(
-        s,
-        StorePlaneRecordRow,
-        [kind, id, parent, seq, ts, disposition, _reserved, body]
-    );
-    record!(s, StoreUpsertPlaneRecordIn, [head, record]);
-    record!(s, StoreAppendPlaneRecordIn, [head, op_id, record]);
-    record!(s, StoreGetPlaneRecordIn, [head, kind, id, body]);
-    record!(
-        s,
-        StoreListPlaneRecordsIn,
-        [head, kind, selector, _reserved, parent, out]
-    );
-    record!(
-        s,
-        StoreKindBeforeIn,
-        [head, kind, before, retention, _reserved]
-    );
-    record!(s, StoreTokenIn, [head, kind, token, expires_at, now]);
-    record!(s, StoreRecordPutIn, [head, schema, key, value]);
-    record!(s, StoreRecordGetIn, [head, schema, key, value]);
-    record!(s, StoreRecordEntry, [key, value]);
-    record!(s, StoreHostRecords, [items, items_cap, bytes]);
-    record!(
-        s,
-        StoreRecordScanIn,
-        [head, schema, prefix, limit, _reserved, out]
-    );
-    record!(
-        s,
-        StoreOps,
-        [
-            head,
-            put_key,
-            get_key,
-            list_keys,
-            delete_key,
-            list_keys_since,
-            get_usage,
-            put_usage,
-            list_metering,
-            put_credential,
-            put_key_with_credential,
-            list_credentials,
-            revoke_credential,
-            list_credentials_since,
-            list_audit,
-            add_denylist,
-            list_denylist,
-            list_audit_tail,
-            upsert_plane_record,
-            get_plane_record,
-            append_plane_record,
-            list_plane_records,
-            list_plane_record_parents,
-            purge_plane_records_before,
-            delete_plane_record,
-            redeem_plane_token,
-            plane_token_live,
-            record_put,
-            record_get,
-            record_scan,
-            add_usage_batch,
-            add_metering_batch
-        ]
-    );
     record!(
         s,
         AuthOps,
@@ -2086,13 +2076,13 @@ fn a_perturbed_hook_golden_line_fails_the_comparator() {
     assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
 }
 
-/// RED ARM, store kind: one perturbed store golden line (a `UsageCell`'s `window_start` offset)
+/// RED ARM, store kind: one perturbed primitive Store golden line
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "StoreUsageCell.window_start=16";
+    let line = "pstore::ReadIn.addresses=104";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "StoreUsageCell.window_start=24", 1);
+    let perturbed = actual.replacen(line, "pstore::ReadIn.addresses=112", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed store line must fail");
-    assert!(err.contains("StoreUsageCell.window_start=24"), "{err}");
+    assert!(err.contains("pstore::ReadIn.addresses=112"), "{err}");
 }

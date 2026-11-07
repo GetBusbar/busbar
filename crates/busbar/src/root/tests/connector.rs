@@ -178,8 +178,8 @@ fn operator_infrastructure_refuses_metadata_even_when_carved_out() {
     }
 }
 
-#[test]
-fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
+#[tokio::test]
+async fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
     let boot = deployment(
@@ -197,7 +197,7 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         None,
         "the boot config carves it out"
     );
-    let store = crate::root::real_store::store();
+    let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         deployment(&[], ""),
         Default::default(),
@@ -207,28 +207,29 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store.clone()),
         false,
     )
+    .await
     .expect("the reload builds");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the actual configured Store exposes its rate-history slots"),
-        122,
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .core_store_handle()
+                .expect("the actual configured Store exposes its rate-history slots"),
+            122,
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual configured Store boots its rate history");
-    limits.keep().expect("the reload commits its limits");
+    limits.keep().await.expect("the reload commits its limits");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(
         metadata_verdict(judge.as_ref(), "imds-proxy.test", EGRESS_PROVIDER),
@@ -237,8 +238,8 @@ fn a_reload_that_removes_a_carve_out_refuses_the_next_dial() {
     );
 }
 
-#[test]
-fn a_reload_that_changes_the_allowlist_changes_nothing() {
+#[tokio::test]
+async fn a_reload_that_changes_the_allowlist_changes_nothing() {
     use busbar_contract::abi::host::service::DEST_INTERNAL;
     crate::dist_root_install::install();
     crate::root::test_plane_registry::register();
@@ -266,7 +267,7 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
         "the host the boot did not name is refused"
     );
     let reloaded = deployment(&[], "advanced:\n  allow_destinations: [model-b.internal]\n");
-    let store = crate::root::real_store::store();
+    let store = crate::root::real_store::core().await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         reloaded,
         Default::default(),
@@ -276,28 +277,29 @@ fn a_reload_that_changes_the_allowlist_changes_nothing() {
         (None, None),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store.clone()),
         false,
     )
+    .await
     .expect("the reload builds");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the actual configured Store exposes its rate-history slots"),
-        122,
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .core_store_handle()
+                .expect("the actual configured Store exposes its rate-history slots"),
+            122,
+        )
+        .expect("native rate history attaches");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual configured Store boots its rate history");
-    limits.keep().expect("the reload commits its limits");
+    limits.keep().await.expect("the reload commits its limits");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(
         verdict(judge.as_ref(), "model-a.internal", &private_a),

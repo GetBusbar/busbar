@@ -53,6 +53,7 @@ async fn actual_mcp_member_ca_and_spki_reach_private_tls_without_base_ca_injecti
     let _one = PUBLISHING.lock().await;
     let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let rig = try_rig_tools("member-tls-private-ca", server.port, tools(&server))
+        .await
         .expect("normal Root composition");
     assert_actual_member_selector(&rig);
     succeeds(&rig).await;
@@ -82,6 +83,7 @@ async fn actual_mcp_member_ca_and_sibling_client_identity_complete_mutual_tls() 
     }))
     .unwrap();
     let rig = try_rig_tools("member-tls-mutual", server.port, tools)
+        .await
         .expect("normal member identity composition");
     assert_actual_member_selector(&rig);
     succeeds(&rig).await;
@@ -104,6 +106,7 @@ async fn actual_mcp_member_ca_rotation_and_rejected_apply_preserve_serving_gener
     let mut first = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let mut second = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let rig = try_rig_tools("member-tls-rotation", first.port, tools(&first))
+        .await
         .expect("initial member CA composition");
     assert_actual_member_selector(&rig);
     succeeds(&rig).await;
@@ -112,7 +115,7 @@ async fn actual_mcp_member_ca_rotation_and_rejected_apply_preserve_serving_gener
     let first_bytes = first.http_bytes.load(Ordering::SeqCst);
     let before = rig.live.current().generation;
     let rotated = tools(&second);
-    rig.live.apply(&applied(&rig, rotated.clone()));
+    rig.live.apply(&applied(&rig, rotated.clone())).await;
     assert_eq!(
         rig.live.current().generation,
         before + 1,
@@ -127,7 +130,7 @@ async fn actual_mcp_member_ca_rotation_and_rejected_apply_preserve_serving_gener
     let second_bytes = second.http_bytes.load(Ordering::SeqCst);
     let mut obsolete = rotated.clone();
     obsolete["fs"]["tls"]["ca_cert_pem"] = first.ca_pem.clone().into();
-    rig.live.apply(&applied(&rig, obsolete));
+    rig.live.apply(&applied(&rig, obsolete)).await;
     let (status, body) = tokio::time::timeout(
         Duration::from_secs(15),
         send(&rig.router, Some(&rig.bound_token()), CALL),
@@ -152,13 +155,13 @@ async fn actual_mcp_member_ca_rotation_and_rejected_apply_preserve_serving_gener
         second_bytes,
         "obsolete CA cannot send any HTTP bytes to the new peer"
     );
-    rig.live.apply(&applied(&rig, rotated.clone()));
+    rig.live.apply(&applied(&rig, rotated.clone())).await;
     succeeds(&rig).await;
     while second.heard.try_recv().is_ok() {}
     let good = rig.live.current().generation;
     let mut malformed = rotated;
     malformed["fs"]["tls"]["ca_cert_pem"] = "not a certificate".into();
-    rig.live.apply(&applied(&rig, malformed));
+    rig.live.apply(&applied(&rig, malformed)).await;
     assert_eq!(
         rig.live.current().generation,
         good,
@@ -189,6 +192,7 @@ async fn actual_mcp_inflight_request_retains_old_tls_generation_across_ca_rotati
     let mut first = TlsToolServer::member_ca_gated(held).await;
     let mut second = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let rig = try_rig_tools("member-tls-retained-request", first.port, tools(&first))
+        .await
         .expect("initial private CA member");
     assert_actual_member_selector(&rig);
     let router = rig.router.clone();
@@ -218,7 +222,7 @@ async fn actual_mcp_inflight_request_retains_old_tls_generation_across_ca_rotati
     );
     let first_bytes = first.http_bytes.load(Ordering::SeqCst);
     let generation = rig.live.current().generation;
-    rig.live.apply(&applied(&rig, tools(&second)));
+    rig.live.apply(&applied(&rig, tools(&second))).await;
     assert_eq!(rig.live.current().generation, generation + 1);
     succeeds(&rig).await;
     assert!(

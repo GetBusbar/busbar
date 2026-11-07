@@ -189,10 +189,10 @@ fn read_json(path: std::path::PathBuf) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
-fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
+async fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState> {
     std::sync::Arc::new(
-        busbar_kernel::governance::GovState::new_with_signer(
-            crate::root::real_store::store(),
+        busbar_kernel::governance::GovState::new_with_core(
+            crate::root::real_store::core().await,
             Some(admin_token.to_string()),
             Some(
                 busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
@@ -201,6 +201,7 @@ fn gov(admin_token: &str) -> std::sync::Arc<busbar_kernel::governance::GovState>
                 ),
             ),
         )
+        .await
         .expect("governance"),
     )
 }
@@ -252,7 +253,7 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -262,25 +263,27 @@ async fn admin_corpus_reconciles_with_the_served_router() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
         );
-        app.governance = Some(gov(TOKEN));
+        app.governance = Some(gov(TOKEN).await);
 
         std::sync::Arc::new(app)
     };
@@ -620,7 +623,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -630,25 +633,27 @@ async fn served_openapi_lists_only_the_configured_planes() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
         );
-        app.governance = Some(gov("served-openapi-token"));
+        app.governance = Some(gov("served-openapi-token").await);
         app.plane_sections = Some(sections.iter().copied().collect());
 
         std::sync::Arc::new(app)
@@ -716,7 +721,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -726,25 +731,27 @@ async fn served_openapi_lists_only_the_configured_planes() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
         );
-        app.governance = Some(gov("served-openapi-token"));
+        app.governance = Some(gov("served-openapi-token").await);
         app.plane_sections = Some([].iter().copied().collect());
 
         std::sync::Arc::new(app)
@@ -832,7 +839,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -842,25 +849,27 @@ async fn served_openapi_lists_only_the_configured_planes() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
         );
-        app.governance = Some(gov("served-openapi-token"));
+        app.governance = Some(gov("served-openapi-token").await);
         app.plane_sections = Some(["tools"].iter().copied().collect());
 
         std::sync::Arc::new(app)
@@ -921,7 +930,7 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -931,25 +940,27 @@ async fn named_map_section_routes_answer_wrong_method_unknown_name_and_bad_body(
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
         );
-        app.governance = Some(gov(TOKEN));
+        app.governance = Some(gov(TOKEN).await);
 
         std::sync::Arc::new(app)
     };

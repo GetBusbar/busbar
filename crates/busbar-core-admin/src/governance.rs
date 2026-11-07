@@ -33,31 +33,31 @@ impl GovernanceError {
     }
 }
 
-pub trait Governance {
-    type Answer;
+pub trait Governance: Sync {
+    type Answer: Send;
 
     fn execute_legacy(
         &self,
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Self::Answer, GovernanceError>;
+    ) -> impl std::future::Future<Output = Result<Self::Answer, GovernanceError>> + Send;
 
     fn execute_new_verb(
         &self,
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Self::Answer, GovernanceError>;
+    ) -> impl std::future::Future<Output = Result<Self::Answer, GovernanceError>> + Send;
 
     fn execute_ledger_read(
         &self,
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Self::Answer, GovernanceError> {
+    ) -> impl std::future::Future<Output = Result<Self::Answer, GovernanceError>> + Send {
         let (_, _, _) = (verb, admin, request);
-        Err(GovernanceError::NotFound)
+        std::future::ready(Err(GovernanceError::NotFound))
     }
 
     fn execute_audit_read(
@@ -65,8 +65,8 @@ pub trait Governance {
         verb: KernelVerb,
         admin: &Grant<AdminVerb>,
         request: &[u8],
-    ) -> Result<Self::Answer, GovernanceError> {
+    ) -> impl std::future::Future<Output = Result<Self::Answer, GovernanceError>> + Send {
         let (_, _, _) = (verb, admin, request);
-        Err(GovernanceError::NotFound)
+        std::future::ready(Err(GovernanceError::NotFound))
     }
 }

@@ -105,25 +105,36 @@ async fn a_panicking_handler_fails_only_its_own_request() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
+    let native_config = config;
+    let native_plugins = plugin_config;
+    let native_core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&native_config, &native_plugins)
+            .await
+            .expect("actual Store opens for native startup"),
+    )
+    .await;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
-        config,
-        plugin_config,
+        native_config,
+        native_plugins,
         None,
         Default::default(),
         Default::default(),
         (None, None),
         None,
         &rules,
-        None,
+        Some(native_core),
         true,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    let book = crate::root::boot::book(&app, &module).expect("the actual Store boots rate history");
+    let book = crate::root::boot::book(&app, &module)
+        .await
+        .expect("the actual Store boots rate history");
     let _book = book;
-    limits.keep().expect("actual rates and limits commit");
+    limits.keep().await.expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     async fn boom() -> &'static str {
         panic!("deliberate handler panic (request-panic boundary test)")
@@ -228,10 +239,12 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         .await
         .expect("the administrative panic answers");
     assert_eq!(response.status().as_u16(), 500);
-    assert!(response.headers()["content-type"]
-        .to_str()
-        .unwrap()
-        .starts_with("application/json"));
+    assert!(
+        response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
     let envelope: serde_json::Value = response.json().await.unwrap();
     assert_eq!(envelope["error"]["code"], "internal");
     let next = client

@@ -130,7 +130,7 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -140,22 +140,28 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         None,
         &rules,
     )
+    .await
     .expect("the actual root opens the signed products and builds the pool chains");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the configured Store exposes its rate-history slots"),
-        131,
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .expect("the actual deployment configured governance")
+                    .core_store_handle()
+                    .expect("the configured Store exposes its rate-history slots"),
+                131,
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the configured Store boots its initial rate history");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.pool_gates("rewrite").is_empty(),

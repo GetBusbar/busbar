@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::{application, application_with_document};
 
-fn keys_application() -> Arc<busbar_kernel::state::App> {
+async fn keys_application() -> Arc<busbar_kernel::state::App> {
     crate::dist_root_install::install();
     let directory = super::plugins::scratch(&format!(
         "oauth-hosted-secrets-{}",
@@ -30,7 +30,7 @@ fn keys_application() -> Arc<busbar_kernel::state::App> {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": {"file": operator_token},
     });
-    application_with_document(document)
+    application_with_document(document).await
 }
 
 async fn serve(app: Arc<busbar_kernel::state::App>) -> (String, tokio::task::JoinHandle<()>) {
@@ -45,7 +45,7 @@ async fn serve(app: Arc<busbar_kernel::state::App>) -> (String, tokio::task::Joi
 async fn auth_token_bypasses_middleware_exact_match() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
-    let app = keys_application();
+    let app = keys_application().await;
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
 
@@ -91,7 +91,7 @@ async fn auth_token_bypasses_middleware_exact_match() {
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = application(None, None);
+    let app = application(None, None).await;
     let (data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
@@ -129,7 +129,7 @@ async fn auth_token_absent_from_admin_router() {
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = keys_application();
+    let app = keys_application().await;
     let (_data, admin, _handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
@@ -167,7 +167,7 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = keys_application();
+    let app = keys_application().await;
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
 
@@ -245,7 +245,7 @@ fn golden_cell(name: &str) -> serde_json::Value {
 async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
     let golden = golden_cell("http.crosscut__auth-token__GET-none.json");
-    let app = application(None, None);
+    let app = application(None, None).await;
     let (base, handle) = serve(app).await;
     let client = reqwest::Client::new();
     let got = client

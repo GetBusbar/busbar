@@ -6,14 +6,14 @@
 use busbar_contract::plugin::Kind;
 use busbar_contract::records::PlaneSelector;
 use busbar_kernel::audit::auditlog::{
-    emit_admin_hostless_now, plugin_refusal_resource, record_plugin_refusal, PluginRefusal,
-    AUDIT_LOG,
+    AUDIT_LOG, PluginRefusal, emit_admin_hostless_now, plugin_refusal_resource,
+    record_plugin_refusal,
 };
 use busbar_kernel::audit_ring::OUTCOME_APPLIED;
 use std::io::{BufRead, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::root::test_plugins as plugins;
@@ -56,16 +56,18 @@ impl Drop for WriterLock {
                 .write_all(b"release\n")
                 .expect("release the actual SQLite writer lock");
         }
-        assert!(self
-            .0
-            .wait()
-            .expect("wait for SQLite lock control")
-            .success());
+        assert!(
+            self.0
+                .wait()
+                .expect("wait for SQLite lock control")
+                .success()
+        );
     }
 }
 
-#[test]
-fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_accept_them_again() {
+#[tokio::test]
+async fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_accept_them_again()
+ {
     const CHILD: &str = "BUSBAR_ACTUAL_ACCEPTED_EVENTS_CHILD";
     const WITNESS: &str = "actual SQLite accepted-event controls completed";
     if std::env::var_os(CHILD).is_none() {
@@ -150,15 +152,11 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         .expect("actual deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("actual Store config authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("actual typed Store calls"),
-    )
-    .expect("actual conditional config records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("actual conditional config records");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
@@ -173,26 +171,34 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         Some(anchor),
         true,
     )
+    .await
     .expect("normal actual SQLite root builds");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("same SQLite Store books the root before activation");
-    limits.keep().expect("actual root limits activate");
+    limits.keep().await.expect("actual root limits activate");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = Arc::new(app);
-    busbar_kernel::boot::hydrate_all(&app).expect("actual root audit hydration");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("actual root audit hydration");
     busbar_kernel::audit::auditlog::install_accepted_entry_test_hook(accepted);
     let store = app
         .governance
         .as_ref()
         .expect("normal root has governance")
-        .store();
-    let emit =
-        |resource| emit_admin_hostless_now("config.mutate", resource, OUTCOME_APPLIED, "admin");
+        .core_store_handle()
+        .expect("actual native Store");
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
+    let emit = |resource| async move {
+        emit_admin_hostless_now("config.mutate", resource, OUTCOME_APPLIED, "admin");
+        let _ = busbar_kernel::audit::auditlog::flush_pending().await;
+    };
     let rows = |resource| AUDIT_LOG.list_filtered(0, 10, None, Some(resource));
-    emit("actual-accepted:first");
+    emit("actual-accepted:first").await;
     assert_eq!(
         rows("actual-accepted:first").len(),
         1,
@@ -221,27 +227,45 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         .join()
         .expect("asynchronous host export-refusal record completes");
         assert!(
+            busbar_kernel::audit::auditlog::flush_pending()
+                .await
+                .is_err(),
+            "the locked Store refuses the actual native append"
+        );
+        assert!(
             rows(&failure_resource).is_empty(),
             "failed append has not entered the accepted ring"
         );
     }
-    emit("actual-accepted:failure-recovery");
+    emit("actual-accepted:failure-recovery").await;
     let failure = rows(&failure_resource);
     assert_eq!(
         failure.len(),
         1,
         "asynchronous refusal is recovered into the audit chain once"
     );
-    let durable = store
-        .list_plane_records(
-            busbar_kernel::store::plane_view::KIND_AUDIT,
-            &PlaneSelector::All,
-        )
-        .expect("read actual durable audit records");
+    let durable = busbar_kernel::host_records_async::AsyncHistory::authorized(
+        store,
+        busbar_kernel::audit::auditlog::PERSISTENCE_OWNER,
+        [busbar_kernel::host_records_async::HistoryCollection {
+            kind: busbar_kernel::store::plane_view::KIND_AUDIT,
+            mode: busbar_kernel::host_records_async::HistoryMode::Append,
+            retention: busbar_contract::records::Retention::Age,
+            parent: None,
+        }],
+    )
+    .expect("actual core audit collection")
+    .list(
+        busbar_kernel::store::plane_view::KIND_AUDIT,
+        &PlaneSelector::All,
+    )
+    .await
+    .expect("read actual durable audit records");
     assert!(
         durable.iter().any(|body| {
             let stored: busbar_kernel::audit::journal::NeutralBody =
-                serde_json::from_slice(body).expect("the actual persisted audit record decodes");
+                serde_json::from_slice(&body.body)
+                    .expect("the actual persisted audit record decodes");
             stored.seq == failure[0].seq
                 && stored.hash == failure[0].hash
                 && String::from_utf8_lossy(&stored.content).contains(&failure_resource)
@@ -254,6 +278,9 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         OUTCOME_APPLIED,
         "admin",
     );
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .unwrap();
     assert_eq!(
         rows(&failure_resource).len(),
         2,
@@ -270,6 +297,9 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         "actual-accepted-failure",
         "delivery-failed",
     );
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .unwrap();
     assert_eq!(
         rows(&auth_resource).len(),
         1,
@@ -277,13 +307,13 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
     );
     {
         let _lock = WriterLock::acquire(&database);
-        emit("actual-accepted:queued");
+        emit("actual-accepted:queued").await;
         assert!(
             rows("actual-accepted:queued").is_empty(),
             "Store outage has not accepted the pending record"
         );
     }
-    emit("actual-accepted:recovered");
+    emit("actual-accepted:recovered").await;
     let queued = rows("actual-accepted:queued");
     let recovered = rows("actual-accepted:recovered");
     assert_eq!(queued.len(), 1, "recovered queued record is accepted once");
@@ -294,7 +324,9 @@ fn accepted_audit_records_recover_once_on_actual_sqlite_and_hydration_does_not_a
         "recovery preserves contiguous order"
     );
     let before = ACCEPTED.load(Ordering::SeqCst);
-    busbar_kernel::boot::hydrate_all(&app).expect("rehydrate actual accepted records");
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("rehydrate actual accepted records");
     assert_eq!(
         ACCEPTED.load(Ordering::SeqCst),
         before,

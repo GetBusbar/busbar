@@ -3,11 +3,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{AdminVerb, DurableWrite, Grant, StepName};
-use busbar_kernel_seams::verb_store::StoreError as VerbStoreError;
+use busbar_contract::caps::{AdminVerb, DurableWrite, Grant};
+use busbar_kernel::persistence::recovery_api::StoreError as VerbStoreError;
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, RecordClass};
 
-use super::store_chain::ACK_DEADLINE;
 use super::Durability;
 
 pub const OPERATOR_BREAK_TAG: &str = "operator-chain-break";
@@ -36,17 +35,18 @@ fn operator_break_of(record: &JournalRecord) -> Option<OperatorBreak> {
 }
 
 impl Durability {
-    pub fn operator_breaks(
+    pub async fn operator_breaks(
         &self,
     ) -> std::io::Result<Result<Vec<OperatorBreak>, busbar_kernel_wal::JournalBreak>> {
         Ok(self
-            .chain()?
+            .chain()
+            .await?
             .map(|records| records.iter().filter_map(operator_break_of).collect()))
     }
 }
 
-pub fn report_operator_breaks(book: &Durability) {
-    match book.operator_breaks() {
+pub async fn report_operator_breaks(book: &Durability) {
+    match book.operator_breaks().await {
         Ok(Ok(breaks)) => {
             if let Some(latest) = breaks.last() {
                 tracing::warn!(
@@ -76,7 +76,7 @@ fn now_secs() -> u64 {
 struct NodeRecovery {
     book: Arc<Mutex<Durability>>,
 
-    token: Grant<DurableWrite>,
+    pending: Mutex<Option<Arc<busbar_kernel::persistence::journal::runtime::StagedRun>>>,
 
     store: String,
 }
@@ -86,69 +86,81 @@ fn refused(verb: &'static str, why: &str) -> VerbStoreError {
     VerbStoreError::Failed
 }
 
-impl busbar_kernel_seams::verb_store::Store for NodeRecovery {
-    fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
-        let wall = now_secs();
-        let mut body = BodyWriter::new();
-        body.text(OPERATOR_BREAK_TAG).num(wall);
-        let entry = Entry::new(RecordClass::ChainBreak, body.finish()).at(wall, 0);
-        let (lane, node, node_seq) = {
-            let mut durability = self.book.lock().unwrap_or_else(|p| p.into_inner());
-
-            let lane = if durability.durable_in_store() {
-                durability.lane().cloned()
-            } else {
-                None
-            };
-            if let Some(lane) = &lane {
-                lane.healthy().map_err(|why| refused("chain_break", &why))?;
-            }
-            let ack = durability
+impl busbar_kernel::persistence::recovery_api::Store for NodeRecovery {
+    fn chain_break<'a>(
+        &'a self,
+        _admin: &'a Grant<AdminVerb>,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move {
+            let wall = now_secs();
+            let mut body = BodyWriter::new();
+            body.text(OPERATOR_BREAK_TAG).num(wall);
+            let entry = Entry::new(RecordClass::ChainBreak, body.finish()).at(wall, 0);
+            let journal = self
+                .book
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
                 .journal
-                .append(&self.token, StepName::Route, &[entry])
-                .map_err(|e| refused("chain_break", &format!("{e:?}")))?;
-            let sealed = ack
-                .sealed
+                .clone();
+            let run = {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                match pending.as_ref() {
+                    Some(run) => run.clone(),
+                    None => {
+                        let run = journal
+                            .stage_run(&[entry])
+                            .map_err(|error| refused("chain_break", &format!("{error:?}")))?;
+                        *pending = Some(run.clone());
+                        run
+                    }
+                }
+            };
+            journal
+                .confirm(&run)
+                .await
+                .map_err(|error| refused("chain_break", &format!("{error:?}")))?;
+            self.pending
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+            let node_seq = run
+                .records()
                 .last()
-                .ok_or_else(|| refused("chain_break", "the journal sealed nothing"))?;
-            (lane, durability.journal.node(), sealed.node_seq)
-        };
-        if let Some(lane) = lane {
-            lane.wait_acked(node, node_seq, ACK_DEADLINE)
-                .map_err(|why| refused("chain_break", &why))?;
-        }
-        tracing::warn!(
-            node_seq,
-            "the journal chain was deliberately broken by an operator (chain_break)"
-        );
-        Ok(())
+                .ok_or_else(|| refused("chain_break", "journal sealed no original"))?
+                .node_seq;
+            tracing::warn!(node_seq, "journal carries an explicit operator chain break");
+            Ok(())
+        })
     }
-
-    fn store_restore(
-        &self,
-        _admin: &Grant<AdminVerb>,
-        _backup_ref: &str,
-    ) -> Result<(), VerbStoreError> {
-        Err(refused(
-            "store_restore",
-            &format!(
-                "the configured store `{}` has no restore operation, so nothing was restored; \
-                 restores happen off-node, with the store's own tooling",
-                self.store
-            ),
-        ))
+    fn store_restore<'a>(
+        &'a self,
+        _admin: &'a Grant<AdminVerb>,
+        _backup_ref: &'a str,
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+        Box::pin(async move {
+            Err(refused(
+                "store_restore",
+                &format!(
+                    "the configured store `{}` has no restore operation; restore through its own off-node tooling",
+                    self.store
+                ),
+            ))
+        })
     }
 }
 
 #[must_use]
 pub fn node_verb_store(
     book: Arc<Mutex<Durability>>,
-    token: Grant<DurableWrite>,
+    _token: Grant<DurableWrite>,
     store: &str,
 ) -> crate::root::kernel::VerbStoreHandle {
     Some(Arc::new(NodeRecovery {
         book,
-        token,
+        pending: Mutex::new(None),
         store: store.to_string(),
     }))
 }

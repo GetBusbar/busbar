@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel_seams::verb_store::StoreError;
+use busbar_kernel::persistence::recovery_api::StoreError;
 
 /// A refused verb call. `step` mirrors the ten-step names `busbar-caps` seals (this crate only ever
 /// refuses at `Admit` or `Verify` — the others belong to units this crate is not); `reason` is the

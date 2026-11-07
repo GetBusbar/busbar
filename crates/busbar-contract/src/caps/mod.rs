@@ -11,6 +11,7 @@
 pub mod capability;
 pub mod egress;
 pub mod hold;
+pub mod migration;
 pub mod seat_verdict;
 pub mod step;
 pub mod token;
@@ -26,6 +27,7 @@ pub use hold::{
     AccrualPrepareError, AccrualRefused, Admission, AdmitRejected, AdmittedPrepareError, CellError,
     DurabilityLost, Hold, HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags,
 };
+pub use migration::{MigrationGrant, MigrationSeal};
 pub use seat_verdict::{ReasonCode, Refusal, SeatVerdict};
 pub use step::{
     Admit, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Authenticated,

@@ -2,9 +2,8 @@
 
 Developer-facing guide to building, testing, and extending busbar. For the
 operator/runtime view see [operations.md](operations.md) and
-[configuration.md](configuration.md); for the public request-lifecycle overview
-see [architecture.md](architecture.md); for the design deep-dive see
-[internals.md](internals.md) and the [ADRs](adr/).
+[configuration.md](configuration.md). Current dev source is the architecture;
+[CoreFix.md](../CoreFix.md) describes the proposed changes and crate ownership.
 
 Contribution mechanics (PR checklist, formatting, the exhaustive-match invariant)
 live in [CONTRIBUTING.md](../CONTRIBUTING.md), this doc covers the codebase map
@@ -20,36 +19,6 @@ shared types and the memory ABI, `busbar-core-connector` owns connections, and `
 owns native loading. Protocol intelligence belongs to plane, transport and connector plugins,
 not a new registry or protocol handler inside core. Add a protocol in its owning plugin using
 [the SDK migration guide](plugin-sdk-migration-1.6.md) and [the plugin guide](plugins.md).
-
-## Historical 1.5.5 `src/` module map
-
-The following map describes the old monolith. Its paths and extension recipes are historical,
-not instructions to move protocol logic back into the 1.6.0 kernel.
-
-| Module | Owns |
-|---|---|
-| `main.rs` | Startup. Loads `providers.yaml` + `config.yaml` (with `${ENV}` interpolation), `resolve()`s them, validates, builds lanes/pools/`App`, wires governance + observability + plugins, spawns health probers, and builds both listeners (the data-plane axum router and the separate admin router). |
-| `config/mod.rs` | The deploy/provider/pool schema (`DeployCfg`, `ProviderDef`, `ProviderDeploy`, `ModelCfg`, `PoolCfg`, `PoolMember`, `FailoverCfg`, `AffinityCfg`, `BreakerCfg`, `HealthCfg`, `GovernanceCfg`, `ObservabilityCfg`, `PluginsCfg`, `OnExhausted`), `${ENV}` interpolation, and `resolve()` (merge catalog def + deployment override). `config/overlay.rs` handles the live config-apply overlay. |
-| `config_validate/` | Post-resolve config validation (fail-loud diagnostics before lanes are built), including the SSRF host guard shared with the webhook path. |
-| `state.rs` | Runtime types: `Lane`, `WeightedLane`, `PoolRuntime`, and the `App` shared state. Re-exports `StateStore` from `store/`. |
-| `ingress/mod.rs` | `named` (`POST /{name}/v1/messages`) and `adhoc` (`POST /{provider}/{model}/v1/messages`) are the only two protocol-specific axum handlers still registered directly; every other protocol (openai chat, cohere, responses, gemini, bedrock converse) is served by the single fallback route `ingress::protocol_dispatch`, which identifies the protocol (`proto::detect::protocol_id`, mostly path-based with a small header-first exception, see `docs/protocols.md`) and hands off to `ingress::dispatch::operation_ingress` for the actual body/path-model resolution, governance pre-checks, and affinity-header resolution. `ingress/dispatch.rs` carries both `protocol_dispatch` and `operation_ingress`. |
-| `auth/mod.rs` | `AuthMiddleware` and the `auth_middleware` layer: it runs the data-plane `auth.chain` (an ordered list of `AuthModule`s; an empty chain is the open front door), opens `/healthz`, gates `/metrics` like any other route, resolves virtual keys, and threads the caller token. `UpstreamCreds` (`Own` / `Passthrough`) is the separate egress-credential mode. The old `AuthMode` enum is gone. Constant-time token compare lives in the `busbar-api` auth contract. |
-| `proxy/engine/mod.rs` | The forwarding engine: `forward` / `forward_with_pool` (selection → translate → sign → POST → classify → stream/failover), `RequestCtx` (deadline + exclusions + visited-pools), the before-first-byte failover boundary + cross-protocol stream wiring, `lane_auth_headers` (the `api-key` auth-adapter seam), and the `on_exhausted` handlers (`Status503`/`FallbackPool`/`LeastBad`/`Queue`). `proxy/select.rs`, `proxy/egress.rs`, `proxy/hooks.rs`, and `proxy/usage.rs` split out selection, egress, the hook seam, and usage metering. |
-| `breaker.rs` | The protocol-agnostic Stage 1b/2 classifier: `StatusClass`, `Disposition`, `RawUpstreamError`, `CanonicalSignal`, `normalize_raw_error`, `classify` (exhaustive). |
-| `store/mod.rs` | The breaker FSM + lane state: `StateStore` trait, `LaneState`, `BreakerCell` / `BreakerCellAccess`, `OutcomeWindow`, SWRR `select_weighted`, the lane-default vs `_in(pool, …)` method split, `BreakerCfg`/`TripConfig`, test time injection. The concrete `InMemoryStore` is in `store/in_memory.rs`. (This is the runtime breaker store, distinct from the governance `Store` trait below.) |
-| `ir/mod.rs` | The superset IR (ADR-0005): `IrRequest`, `IrResponse`, `IrMessage`, `IrBlock`, `IrTool`, `IrUsage`, `IrStreamEvent`, `IrDelta`, `StreamDecodeState`. Modality-specific IR (audio, image, embeddings, moderation, rerank) sits in sibling files under `ir/`. |
-| `proto/mod.rs` | The protocol seam: `ProtocolReader` / `ProtocolWriter` traits, `Protocol`, `ProtocolRegistry`, `SigningContext`, `probe_body` default. `proto/detect.rs` sniffs the ingress protocol; `proto/openai_family.rs` holds the shared OpenAI-family bits; `proto/stream.rs` is the cross-protocol stream translator and SSE reframing. |
-| `proto/{anthropic,openai_chat,openai_responses,gemini,bedrock,cohere}/` | One folder-module per protocol: each holds the Reader (wire→IR + error extraction) and Writer (IR→wire + auth + paths). Bedrock's writer overrides `sign_request` for SigV4. |
-| `sigv4.rs` | Hand-rolled AWS SigV4 (RustCrypto sha2 + hmac, no AWS SDK): `sign_v4`, `signing_key`, `uri_encode_path`, `format_amz_time`, `sha256_hex`. |
-| `governance/mod.rs` | Signed virtual keys + the generic group limit engine: `GovState`, `VirtualKey`, `try_admit` over the per-(group, window) buckets, the revocation denylist, and the token-ledger cost model. The governance `Store` trait itself lives in the `busbar-api` crate (`crates/api/src/store.rs`); concrete backends are separate crates (`busbar-store-memory` compiled in by default, `busbar-store-sqlite` / `-postgres` / `-valkey` as static or dynamically-loaded plugins chosen by `store.module`). |
-| `admin/` | The admin API: `admin/mod.rs` mounts the `/api/v1/admin/*` handlers (keys, usage, config, hooks, plugins) on the separate admin listener, `admin/v1/` is the frozen JSON contract, and `admin/rate.rs` / `admin/audit.rs` carry admin rate-limiting and the hash-chained audit log. |
-| `health.rs` | Active health probing (`spawn_probers`, `probe_lane` using each protocol's `probe_body`) and the `/stats` + `/healthz` handlers. |
-| `metrics.rs` | Prometheus recorder init + the `busbar_*` metric name constants. |
-| `observability.rs` | Optional OTLP tracer init + the fire-and-forget request-log webhook (with its own SSRF guard). |
-| `eventstream.rs` | Codec for Bedrock's binary `application/vnd.amazon.eventstream` frames: `drain_frames` decodes ConverseStream responses; `encode_frame`/`encode_exception_frame` re-encode CRC32-valid frames for Bedrock-ingress streaming. |
-| `test_support/` | `#[cfg(test)]` in-crate mock-upstream harness (`MockServer`, `MockServerState`, `MockResponse`). Each module also carries its own `#[cfg(test)] mod tests`. See [testing.md](testing.md). |
-
----
 
 ## Build / test / lint
 
@@ -210,108 +179,14 @@ Full field reference: [configuration.md](configuration.md).
 
 ---
 
-## Adding a new protocol
+## Extending behavior
 
-For 1.6.0, implement a protocol in its owning plane/transport plugin; core stays protocol-neutral.
-The monolithic recipe below is historical 1.5.5 guidance, retained to explain the old source map.
-Use the [plugin SDK guide](plugin-sdk-migration-1.6.md) for current plugin boundaries.
-
-A protocol is the unit of Busbar's scope (the count to grow is **6**, not the
-provider count). To add one:
-
-1. **Implement `ProtocolReader`** (`crates/busbar/src/proto/mod.rs` defines the trait):
-   - `read_request(body) -> IrRequest`: wire JSON → IR (ADR-0005 contract: model
-     every field you can; stash adjacent fields in `IrRequest.extra`; hold
-     `temperature` as the f64 it already is).
-   - `read_response(body) -> IrResponse` and `read_response_event(s)`, wire → IR.
-     For a flat stream, use the `&mut StreamDecodeState` to synthesize the IR's
-     block boundaries (one chunk → `0..n` events); for a 1:1 stream, ignore it.
-   - `extract_error(status, body) -> RawUpstreamError`, Stage 1a: pull out the
-     HTTP status and any in-body `provider_code`.
-   - `classify`, the simple two-stage convenience wrapper.
-   - `clone_box`.
-2. **Implement `ProtocolWriter`**:
-   - `write_request(ir) -> Value`, `write_response(ir)`, `write_response_event(ir)`
-    : IR → wire.
-   - `rewrite_model(body, model)`, set the selected lane's model on the body.
-   - `upstream_path` (+ optionally `upstream_path_for` / `upstream_path_for_stream`
-     if the path embeds the model or differs for streaming, as Gemini's does).
-   - `auth_headers(key)` for static headers; override `sign_request(key, ctx)` only
-     if the protocol signs the whole request (as Bedrock does for SigV4).
-   - You get `probe_body` **for free** from the default impl: it serializes a
-     one-token IR request through your own `write_request`, so active health
-     probing works with no extra code.
-   - `clone_box`.
-3. **Register it** in `crates/busbar/src/proto/mod.rs`: add a `Protocol::<name>()` constructor,
-   a `protocol_for` arm, and an entry in `ProtocolRegistry::with_builtins`. Add the
-   `StreamTranslate::new` flags if it has a non-SSE wire (like Bedrock's binary
-   eventstream) or a special terminator.
-4. **IR contract:** the IR is a superset. If your protocol introduces a content
-   kind the IR can't represent, extend the `IrBlock` / event enums: and then every
-   other writer must handle the new variant (the exhaustive matches will tell you).
-5. **Test it** through the `MockServer` harness and the cross-protocol round-trip
-   tests in `crates/busbar/src/proto/tests/tests.rs` (`test_probe_body_valid_for_all_protocols` already
-   asserts every protocol produces a valid probe body).
-
-The `Reader`/`Writer` files (`crates/busbar/src/proto/<name>/`) are the only per-protocol code;
-the registry + IR + forward path are protocol-agnostic.
-
----
-
-## Adding a new provider
-
-A provider is **just a catalog entry**: no code. Add it to `providers.yaml`:
-
-```yaml
-my-provider:
-  protocol: openai            # one of the 6 implemented protocols
-  base_url: https://api.example.com
-  error_map:                  # optional: map vendor codes -> StatusClass (Stage 1b)
-    "insufficient_quota": billing
-  path: /chat/completions     # optional: override the protocol's default path
-  auth: api-key               # optional: 'bearer' (default) | 'api-key'
-  health:                     # optional: active probing
-    mode: dead                # none | dead | active
-    interval_secs: 30
-    timeout_secs: 5
-```
-
-Then reference it from `config.yaml` (supplying only the env var that holds the
-key) and point a model at it:
-
-```yaml
-providers:
-  my-provider:
-    api_key: { env: MY_PROVIDER_KEY }
-models:
-  my-model:
-    provider: my-provider
-    max_concurrent: 20
-```
-
-Notes on the seams:
-
-- **`error_map`** is the data-driven Stage 1b override (see
-  [internals.md](internals.md#3-the-two-stage-disposition-pipeline-adr-0002)). Keys
-  are the provider's in-body codes; values are `StatusClass` strings
-  (`billing`, `rate_limit`, `auth`, `server_error`, `timeout`, `network`,
-  `overloaded`, `context_length`, `client_error`). The deployment's `error_map`
-  in `config.yaml` merges over the catalog's.
-- **`path`** overrides the protocol's default upstream path verbatim: used by
-  OpenAI-compatible providers that embed the API version in `base_url` and serve
-  `/chat/completions` (no `/v1`), and by Azure (which carries `?api-version=` and
-  the deployment in the path).
-- **`auth: api-key`** is the **auth-adapter seam** (`lane_auth_headers` in
-  `proxy/engine/mod.rs`): it sends an `api-key: <key>` header instead of the protocol's
-  native auth (used by Azure OpenAI). For genuinely new auth shapes (e.g. an OAuth2
-  token mint), the seam to extend is `ProtocolWriter::sign_request`, the same hook
-  Bedrock uses for SigV4: see the roadmap in [roadmap.md](roadmap.md).
-
-`resolve()` (`crates/busbar/src/config/mod.rs`) merges the deployment over the catalog def; a
-`config.yaml` provider name not present in `providers.yaml` is a fail-loud startup
-error.
-
----
+Implement protocol behavior in its owning plane/transport plugin and authentication
+or provider lookup in the appropriate auth/secret plugin. Use the current
+[plugin contract and SDK guide](plugin-sdk-migration-1.6.md). Core mediates calls
+between kinds; an implementation must not import or select another plugin.
+For configuration and upstream examples, use [configuration.md](configuration.md).
+The old monolith's `ProtocolWriter` and in-core protocol-directory recipes are retired.
 
 ## Coding conventions observed
 

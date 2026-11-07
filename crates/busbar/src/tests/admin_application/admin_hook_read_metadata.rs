@@ -135,15 +135,11 @@ async fn test_admin_v1_hooks_read_surface() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -156,13 +152,15 @@ async fn test_admin_v1_hooks_read_surface() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -349,15 +347,11 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -370,13 +364,15 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -425,9 +421,11 @@ async fn test_admin_v1_plugins_catalog_by_type() {
 
     let hooks: serde_json::Value = get("hooks").await.json().await.unwrap();
     let h_items = hooks["items"].as_array().unwrap();
-    assert!(h_items
-        .iter()
-        .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
+    assert!(
+        h_items
+            .iter()
+            .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in")
+    );
     for linked in busbar_kernel::preflight::root_rows().hook_names {
         assert!(
             h_items
@@ -601,15 +599,11 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -622,13 +616,15 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -652,31 +648,41 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
 
     assert_eq!(body["version"], 0, "fresh config is version 0");
     assert!(body["auth"]["chain"].is_array());
-    assert!(body["pools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p["name"] == "p"));
-    assert!(body["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|m| m["model"] == "m"));
-    assert!(body["providers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p["provider"] == "prov"));
-    assert!(body["hooks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|h| h["name"] == "g"));
-    assert!(body["global_hooks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|n| n == "g"));
+    assert!(
+        body["pools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "p")
+    );
+    assert!(
+        body["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["model"] == "m")
+    );
+    assert!(
+        body["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["provider"] == "prov")
+    );
+    assert!(
+        body["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["name"] == "g")
+    );
+    assert!(
+        body["global_hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n == "g")
+    );
 
     for needle in ["admintok", "client_tokens", "api_key", "secret"] {
         assert!(

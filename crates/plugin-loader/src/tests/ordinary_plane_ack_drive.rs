@@ -504,8 +504,11 @@ impl busbar_contract::services::HostServices for Provider {
         _counterparty: &str,
         _item: &str,
         _digest: &str,
-    ) -> Stored {
-        Stored::refused("not served by this completion-ACK boundary control")
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
     }
     fn trust_decide(
         &self,
@@ -513,8 +516,11 @@ impl busbar_contract::services::HostServices for Provider {
         _key: TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,
-    ) -> Stored {
-        Stored::refused("not served by this completion-ACK boundary control")
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
     }
     fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
@@ -557,8 +563,11 @@ impl busbar_contract::services::HostServices for Provider {
         _unit: Option<u64>,
         _ttl_secs: u64,
         _record: &[u8],
-    ) -> Stored {
-        Stored::refused("not served by this completion-ACK boundary control")
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(Stored::refused(
+            "not served by this completion-ACK boundary control",
+        ))
     }
     fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
         Stored::refused("not served by this completion-ACK boundary control")
@@ -651,8 +660,15 @@ impl busbar_contract::services::HostServices for Provider {
             "not served by this completion-ACK boundary control",
         ))
     }
-    fn snapshot_read(&self, _caller: &Caller, _scope: u32) -> Snapshot {
-        Snapshot::Refused("not served by this completion-ACK boundary control")
+    fn snapshot_read(
+        &self,
+        _caller: &Caller,
+        _scope: u32,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
+        busbar_contract::services::Ran::Now(
+            (Snapshot::Refused("not served by this completion-ACK boundary control")).stored(),
+        )
     }
 
     fn records_get(

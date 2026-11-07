@@ -10,20 +10,25 @@ use super::super::self_keys::{
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::{GovState, RecordStore as _};
+use crate::governance::GovState;
+use busbar_contract::persistence::{
+    BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Page, PersistenceBackend,
+    PreparedCandidate, Read, ReadResult, Scan,
+};
 
 const SEED: [u8; 32] = [7u8; 32];
 
-fn gov() -> Arc<GovState> {
+async fn gov() -> Arc<GovState> {
     Arc::new(
-        GovState::new_with_signer(
-            crate::real_store::store(),
+        GovState::new_with_core(
+            crate::real_store::core().await,
             None,
             Some(crate::governance::signing::TokenSigner::from_secret_bytes(
                 &SEED,
                 crate::governance::signing::DEFAULT_KID,
             )),
         )
+        .await
         .expect("gov constructs"),
     )
 }
@@ -62,27 +67,34 @@ fn identified(module: &str, p: Principal) -> ChainVerdict {
     }
 }
 
-fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
+async fn self_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
     let group = format!("user:{sub}");
-    gov.all_keys()
+    gov.all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(&group))
         .collect()
 }
 
-#[test]
-fn first_call_provisions_second_call_reuses_one_row() {
-    let gov = gov();
-    let (b1, t1) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
-    let (b2, t2) = gov.issue_self("sam", "corp", None, 6000, 2000).unwrap();
+#[tokio::test]
+async fn first_call_provisions_second_call_reuses_one_row() {
+    let gov = gov().await;
+    let (b1, t1) = gov
+        .issue_self("sam", "corp", None, 5000, 1000)
+        .await
+        .unwrap();
+    let (b2, t2) = gov
+        .issue_self("sam", "corp", None, 6000, 2000)
+        .await
+        .unwrap();
 
     assert_eq!(
         b1.id, b2.id,
         "deterministic id: re-login reuses the same subject"
     );
     assert_eq!(
-        self_rows(&gov, "sam").len(),
+        self_rows(&gov, "sam").await.len(),
         1,
         "exactly one binding row after two logins"
     );
@@ -91,24 +103,28 @@ fn first_call_provisions_second_call_reuses_one_row() {
     assert!(gov.verify_token(&t2, 2000, None).is_some());
 }
 
-#[test]
-fn cap_not_tripped_n_logins_one_row() {
-    let gov = gov();
+#[tokio::test]
+async fn cap_not_tripped_n_logins_one_row() {
+    let gov = gov().await;
     for i in 0..25u64 {
         gov.issue_self("sam", "corp", None, 100_000, 1000 + i)
+            .await
             .unwrap();
     }
     assert_eq!(
-        self_rows(&gov, "sam").len(),
+        self_rows(&gov, "sam").await.len(),
         1,
         "N logins must never sprawl past the one idempotent binding row"
     );
 }
 
-#[test]
-fn refresh_invalidates_old_token() {
-    let gov = gov();
-    let (_b, old) = gov.issue_self("sam", "corp", None, 100_000, 1000).unwrap();
+#[tokio::test]
+async fn refresh_invalidates_old_token() {
+    let gov = gov().await;
+    let (_b, old) = gov
+        .issue_self("sam", "corp", None, 100_000, 1000)
+        .await
+        .unwrap();
     assert!(
         gov.verify_token(&old, 1000, None).is_some(),
         "old token valid before refresh"
@@ -116,6 +132,7 @@ fn refresh_invalidates_old_token() {
 
     let (_b2, fresh) = gov
         .refresh_self("sam", "corp", None, 100_000, 2000)
+        .await
         .unwrap();
 
     assert!(
@@ -128,7 +145,7 @@ fn refresh_invalidates_old_token() {
         "fresh token valid"
     );
     assert_eq!(
-        self_rows(&gov, "sam").len(),
+        self_rows(&gov, "sam").await.len(),
         1,
         "still one live self key after refresh"
     );
@@ -165,10 +182,13 @@ fn hmac_sig_token_rejected_bad_signature() {
     );
 }
 
-#[test]
-fn issued_token_verifies_through_the_unchanged_path() {
-    let gov = gov();
-    let (binding, token) = gov.issue_self("sam", "corp", None, 5000, 1000).unwrap();
+#[tokio::test]
+async fn issued_token_verifies_through_the_unchanged_path() {
+    let gov = gov().await;
+    let (binding, token) = gov
+        .issue_self("sam", "corp", None, 5000, 1000)
+        .await
+        .unwrap();
     let resolved = gov
         .verify_token(&token, 1000, None)
         .expect("standard token verifies");
@@ -176,17 +196,19 @@ fn issued_token_verifies_through_the_unchanged_path() {
     assert_eq!(resolved.group.as_deref(), Some("user:sam"));
 }
 
-#[test]
-fn re_login_updates_allowed_pools_when_they_change() {
+#[tokio::test]
+async fn re_login_updates_allowed_pools_when_they_change() {
     use busbar_contract::records::ScopeRef;
-    let gov = gov();
+    let gov = gov().await;
     let (b1, _t1) = gov
         .issue_self("sam", "corp", Some(vec!["poolA".into()]), 5000, 1000)
+        .await
         .unwrap();
     assert_eq!(b1.allowed_scopes, Some(vec![ScopeRef::pool("poolA")]));
 
     let (b2, _t2) = gov
         .issue_self("sam", "corp", Some(vec!["poolB".into()]), 6000, 2000)
+        .await
         .unwrap();
     assert_eq!(
         b2.id, b1.id,
@@ -199,319 +221,77 @@ fn re_login_updates_allowed_pools_when_they_change() {
     );
 }
 
-#[test]
-fn concurrent_issue_self_yields_one_binding() {
-    let gov = gov();
+#[tokio::test]
+async fn concurrent_issue_self_yields_one_binding() {
+    let gov = gov().await;
     let mut handles = vec![];
     for i in 0..8u64 {
         let g = gov.clone();
-        handles.push(std::thread::spawn(move || {
+        handles.push(tokio::spawn(async move {
             g.issue_self("sam", "corp", Some(vec!["p".into()]), 5000, 1000 + i)
+                .await
                 .unwrap();
         }));
     }
     for h in handles {
-        h.join().unwrap();
+        h.await.unwrap();
     }
     assert_eq!(
-        self_rows(&gov, "sam").len(),
+        self_rows(&gov, "sam").await.len(),
         1,
         "concurrent self-logins for one sub must leave exactly one binding"
     );
 }
 
 struct RefreshOverlapStore {
-    inner: std::sync::Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+    inner: Arc<dyn PersistenceBackend>,
     next_put: std::sync::Mutex<
         Option<(
             tokio::sync::oneshot::Sender<()>,
-            std::sync::mpsc::Receiver<()>,
+            tokio::sync::oneshot::Receiver<()>,
         )>,
     >,
 }
-
-impl crate::governance::RecordStore for RefreshOverlapStore {
-    fn put_key(
-        &self,
-        key: &crate::governance::VirtualKey,
-    ) -> crate::governance::RecordStoreResult<()> {
-        let pause = self.next_put.lock().unwrap().take();
-        if let Some((entered, release)) = pause {
-            let _ = entered.send(());
-            release.recv_timeout(Duration::from_secs(10)).map_err(|_| {
-                crate::governance::RecordStoreError("test write was not released".into())
-            })?;
-        }
-        self.inner.put_key(key)
+impl PersistenceBackend for RefreshOverlapStore {
+    fn info(&self) -> BackendInfo {
+        self.inner.info()
     }
-
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.get_key(id)
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        self.inner.read(request)
     }
-
-    fn list_keys(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys()
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.inner.scan(request)
     }
-
-    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.delete_key(id)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.inner.clock(dataset)
     }
-
-    fn list_keys_since(
-        &self,
-        since: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys_since(since)
-    }
-
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-
-    fn apply_usage_correction(
-        &self,
-        request: &busbar_contract::records::correction::Request,
-    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::correction::Decision>
-    {
-        self.inner.apply_usage_correction(request)
-    }
-
-    fn supports_usage_correction(&self) -> bool {
-        self.inner.supports_usage_correction()
-    }
-
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &busbar_contract::records::UsageDelta,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_usage(bucket_id, window_start, delta)
-    }
-
-    fn add_usage_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        cells: &[(&str, u64, busbar_contract::records::UsageDelta)],
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_usage_batch_deduped(op, cells)
-    }
-
-    fn supports_usage_batch_deduped(&self) -> bool {
-        self.inner.supports_usage_batch_deduped()
-    }
-
-    fn supports_metering_batch_deduped(&self) -> bool {
-        self.inner.supports_metering_batch_deduped()
-    }
-
-    fn add_metering_batch_deduped(
-        &self,
-        op: busbar_contract::abi::store::OpId,
-        deltas: &[busbar_contract::records::MeteringDelta],
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_metering_batch_deduped(op, deltas)
-    }
-
-    fn add_metering(
-        &self,
-        delta: &busbar_contract::records::MeteringDelta,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-
-    fn put_credential(
-        &self,
-        _secret: &busbar_contract::records::CredentialSecret,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_credential(_secret)
-    }
-
-    fn rewrap_credential(
-        &self,
-        _expected: &busbar_contract::records::CredentialSecret,
-        _replacement: &str,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        self.inner.rewrap_credential(_expected, _replacement)
-    }
-
-    fn put_key_with_credential(
-        &self,
-        key: &busbar_contract::records::VirtualKey,
-        secret: &busbar_contract::records::CredentialSecret,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-
-    fn list_credentials(
-        &self,
-        _key_id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialMeta>>
-    {
-        self.inner.list_credentials(_key_id)
-    }
-
-    fn revoke_credential(
-        &self,
-        _id: &str,
-        _reason: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.revoke_credential(_id, _reason)
-    }
-
-    fn list_credentials_since(
-        &self,
-        _since: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::CredentialSecret>>
-    {
-        self.inner.list_credentials_since(_since)
-    }
-
-    fn append_audit(
-        &self,
-        _entry: &busbar_contract::records::AuditRecord,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.append_audit(_entry)
-    }
-
-    fn list_audit(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
-    {
-        self.inner.list_audit()
-    }
-
-    fn add_denylist(
-        &self,
-        _sub: &str,
-        _reason: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.add_denylist(_sub, _reason)
-    }
-
-    fn list_denylist(&self) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
-    {
-        self.inner.list_audit_tail(limit)
-    }
-
-    fn upsert_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.upsert_plane_record(_record)
-    }
-
-    fn get_plane_record(
-        &self,
-        _kind: &str,
-        _id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<Vec<u8>>> {
-        self.inner.get_plane_record(_kind, _id)
-    }
-
-    fn append_plane_record(
-        &self,
-        _record: busbar_contract::records::PlaneRecordRef<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.append_plane_record(_record)
-    }
-
-    fn list_plane_records(
-        &self,
-        _kind: &str,
-        _selector: &busbar_contract::records::PlaneSelector<'_>,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        self.inner.list_plane_records(_kind, _selector)
-    }
-
-    fn list_plane_record_parents(
-        &self,
-        _kind: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<String>> {
-        self.inner.list_plane_record_parents(_kind)
-    }
-
-    fn purge_plane_records_before(
-        &self,
-        _kind: &str,
-        _before: u64,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        self.inner.purge_plane_records_before(_kind, _before)
-    }
-
-    fn purge_plane_records(
-        &self,
-        kind: &str,
-        before: u64,
-        retention: busbar_contract::records::Retention,
-    ) -> busbar_contract::records::RecordStoreResult<u64> {
-        self.inner.purge_plane_records(kind, before, retention)
-    }
-
-    fn delete_plane_record(
-        &self,
-        _kind: &str,
-        _id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.delete_plane_record(_kind, _id)
-    }
-
-    fn redeem_plane_token(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        self.inner
-            .redeem_plane_token(_kind, _token, _expires_at, _now)
-    }
-
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> busbar_contract::records::RecordStoreResult<bool> {
-        self.inner
-            .plane_token_live(_kind, _token, _expires_at, _now)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        Box::pin(async move {
+            let key_write = candidate
+                .candidate()
+                .mutations
+                .iter()
+                .any(|mutation| match mutation {
+                    busbar_contract::persistence::Mutation::Put { address, .. } => {
+                        address.namespace == crate::governance::persistence::identity::NAMESPACE.0
+                            && address.key.first() == Some(&b'K')
+                    }
+                    _ => false,
+                });
+            let pause = if key_write {
+                self.next_put.lock().unwrap().take()
+            } else {
+                None
+            };
+            if let Some((entered, release)) = pause {
+                let _ = entered.send(());
+                tokio::time::timeout(Duration::from_secs(10), release)
+                    .await
+                    .map_err(|_| Failure::Refused)?
+                    .map_err(|_| Failure::Refused)?;
+            }
+            self.inner.commit(candidate).await
+        })
     }
 }
 
@@ -527,18 +307,20 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
 
     for contender_refresh in [false, true] {
         let store = Arc::new(RefreshOverlapStore {
-            inner: crate::real_store::store(),
+            inner: crate::real_store::native_backend().await,
             next_put: std::sync::Mutex::new(None),
         });
+        let core = crate::real_store::core_over(store.clone()).await;
         let gov = Arc::new(
-            GovState::new_with_signer(
-                store.clone(),
+            GovState::new_with_core(
+                core.clone(),
                 None,
                 Some(crate::governance::signing::TokenSigner::from_secret_bytes(
                     &SEED,
                     crate::governance::signing::DEFAULT_KID,
                 )),
             )
+            .await
             .unwrap(),
         );
 
@@ -563,7 +345,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             .clone();
 
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         *store.next_put.lock().unwrap() = Some((entered_tx, release_rx));
         let first_gov = gov.clone();
         let first = tokio::spawn(async move {
@@ -587,7 +369,7 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
             panic!("refresh did not reach the real store write");
         }
 
-        let waiting = gov.observe_self_mint_wait("sam");
+        let waiting = gov.observe_identity_mutation_wait();
         let next_gov = gov.clone();
         let contender = tokio::spawn(async move {
             mint_provisioned_self_key(
@@ -682,10 +464,15 @@ async fn a_login_or_refresh_overlapping_refresh_uses_the_surviving_binding() {
         assert!(gov
             .verify_token(other.expose(&crate::seal::lend()), now, None)
             .is_some());
-        let live = self_rows(&gov, "sam");
+        let live = self_rows(&gov, "sam").await;
         assert_eq!(live.len(), 1, "overlap leaves one live self binding");
         assert_eq!(live[0].id, surviving.id);
-        let old = store.get_key(&original_id).unwrap().unwrap();
+        let old = core
+            .identity()
+            .get_key(&original_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             !old.enabled && old.deleted_at.is_some(),
             "the original binding stays tombstoned"
@@ -1052,7 +839,7 @@ fn sub_sanitization_refused() {
 
 #[tokio::test]
 async fn resolve_then_issue_via_real_seam() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -1084,7 +871,7 @@ async fn resolve_then_issue_via_real_seam() {
 
 #[tokio::test]
 async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
     let rb = bindings("test-idp-double", "eng", Some("team"));
@@ -1119,13 +906,19 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         .is_some());
 }
 
-fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
-    gov.store().get_key(id).unwrap().expect("the row exists")
+async fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .get_key(id)
+        .await
+        .unwrap()
+        .expect("the row exists")
 }
 
 #[tokio::test]
 async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
 
@@ -1149,7 +942,8 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 
-    gov.update_key(&t0.key_id, Some(false), None)
+    gov.update_key_outcome_async(&t0.key_id, Some(false), None)
+        .await
         .unwrap()
         .expect("the key exists");
 
@@ -1184,7 +978,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         "a refresh while the key is disabled is refused too"
     );
     assert!(
-        !row(&gov, &t0.key_id).enabled,
+        !row(&gov, &t0.key_id).await.enabled,
         "the admin's disable still stands"
     );
     assert!(
@@ -1193,14 +987,14 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         "the pre-disable token must NOT come back to life"
     );
     assert!(
-        self_rows(&gov, "oidc:alice").is_empty(),
+        self_rows(&gov, "oidc:alice").await.is_empty(),
         "no fresh key was minted beside the disabled one"
     );
 }
 
 #[tokio::test]
 async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
@@ -1217,7 +1011,8 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     )
     .await
     .expect("first login issues");
-    gov.update_key(&t0.key_id, Some(false), None)
+    gov.update_key_outcome_async(&t0.key_id, Some(false), None)
+        .await
         .unwrap()
         .expect("the key exists");
 
@@ -1233,7 +1028,7 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
     .await
     .expect("1.5.5 minted a key on the next login");
     assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
-    assert!(row(&gov, &t0.key_id).enabled, "and wrote it enabled");
+    assert!(row(&gov, &t0.key_id).await.enabled, "and wrote it enabled");
     mint_provisioned_self_key(
         gov.clone(),
         crate::governance::SelfMintOp::Refresh,
@@ -1249,7 +1044,7 @@ async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
 
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
@@ -1285,7 +1080,7 @@ async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5
 
 #[tokio::test]
 async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
@@ -1302,7 +1097,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     )
     .await
     .expect("issues");
-    let first = row(&gov, &issued.key_id);
+    let first = row(&gov, &issued.key_id).await;
     assert!(first.labels.is_empty(), "issue: {:?}", first.labels);
     assert_eq!(first.idp_provider.as_deref(), Some("corp"));
 
@@ -1317,7 +1112,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     )
     .await
     .expect("re-issues");
-    assert!(row(&gov, &again.key_id).labels.is_empty(), "re-issue");
+    assert!(row(&gov, &again.key_id).await.labels.is_empty(), "re-issue");
 
     let rotated = mint_provisioned_self_key(
         gov.clone(),
@@ -1330,7 +1125,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
     )
     .await
     .expect("refreshes");
-    let rotated_row = row(&gov, &rotated.key_id);
+    let rotated_row = row(&gov, &rotated.key_id).await;
     assert!(
         rotated_row.labels.is_empty(),
         "refresh: {:?}",
@@ -1341,7 +1136,7 @@ async fn a_self_serve_key_carries_empty_labels_as_1_5_5_wrote_it() {
 
 #[tokio::test]
 async fn a_second_provider_asserting_the_same_subject_is_refused() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
 
@@ -1360,7 +1155,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     )
     .await
     .expect("corp issues");
-    let before = row(&gov, &issued.key_id);
+    let before = row(&gov, &issued.key_id).await;
     assert_eq!(
         before.idp_provider.as_deref(),
         Some("corp"),
@@ -1398,7 +1193,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         "and cannot refresh corp's key away"
     );
 
-    let after = row(&gov, &issued.key_id);
+    let after = row(&gov, &issued.key_id).await;
     assert!(after.enabled && after.deleted_at.is_none());
     assert_eq!(
         after.generation_hash, before.generation_hash,
@@ -1424,7 +1219,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
 
 #[tokio::test]
 async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
-    let gov = gov();
+    let gov = gov().await;
 
     let mint_now = busbar_kernel::store::now();
 
@@ -1443,10 +1238,15 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     )
     .await
     .expect("issues");
-    let mut legacy = row(&gov, &issued.key_id);
+    let mut legacy = row(&gov, &issued.key_id).await;
     legacy.idp_provider = None;
-    gov.store().put_key(&legacy).unwrap();
-    gov.refresh().unwrap();
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&legacy)
+        .await
+        .unwrap();
+    gov.refresh_async().await.unwrap();
 
     let adopted = mint_provisioned_self_key(
         gov.clone(),
@@ -1460,7 +1260,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
     .await
     .expect("the first provider to log in adopts the legacy binding");
     assert_eq!(adopted.key_id, issued.key_id, "the same key, not a new one");
-    let adopted_row = row(&gov, &issued.key_id);
+    let adopted_row = row(&gov, &issued.key_id).await;
     assert_eq!(
         adopted_row.idp_provider.as_deref(),
         Some("partner"),
@@ -1494,7 +1294,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let (p, _team, _pools) = resolve_exchange(&v, &rb, None).unwrap();
     let now = busbar_kernel::store::now();
     let issued = mint_provisioned_self_key(
-        gov(),
+        gov().await,
         crate::governance::SelfMintOp::Issue,
         p,
         "corp",

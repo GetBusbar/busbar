@@ -7,13 +7,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
 use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
+    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO, diag_warn,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
 use busbar_kernel_ledger::cost::{
-    flat_card_present, split_plane_lane, PER_REQUEST, PER_SESSION, PLANE_LANE_SEP,
+    PER_REQUEST, PER_SESSION, PLANE_LANE_SEP, flat_card_present, split_plane_lane,
 };
 
 const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
@@ -1066,7 +1066,14 @@ fn validate_limits_with(
 }
 
 fn validate_limit_ceilings(limits: &crate::config::LimitsResolved, errors: &mut Vec<String>) {
+    if limits.migration_index_bytes == 0 || limits.migration_value_bytes == 0 {
+        errors.push(
+            "limits.migration_index_bytes and limits.migration_value_bytes must be positive".into(),
+        );
+    }
     let crate::config::LimitsResolved {
+        migration_index_bytes: _,
+        migration_value_bytes: _,
         upstream_request_timeout_secs,
         pool_idle_timeout_secs,
         hard_down_cooldown_secs,
@@ -1388,12 +1395,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     match &cfg.store {
         None => errors.push(crate::config::store_required()),
         Some(store) if store.module.trim().is_empty() => {
-            errors.push(format!(
-                "store.module must be non-empty; use `{}` (the compiled-in RAM store) or a \
-                 store plugin name/alias ({} | <third-party>)",
-                crate::config::migrated_store_module(),
-                crate::config::migrate::legacy_store_text("module_examples")
-            ));
+            errors.push("store.module must be non-empty; name the configured Store plugin".into());
         }
         Some(_) => {}
     }
@@ -1550,7 +1552,7 @@ fn unmappable_metadata_entry(entry: &str) -> Option<(&'static str, &'static str)
     })
 }
 
-pub(crate) fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
+pub fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
     if entry.contains('/') {
         return None;
     }
@@ -1669,7 +1671,7 @@ pub fn metadata_enforced_entries() -> Vec<String> {
 
 pub mod deal;
 mod destinations;
-pub use destinations::{validate_provider_destinations, ProviderDestination};
+pub use destinations::{ProviderDestination, validate_provider_destinations};
 
 pub(crate) mod secret_refs;
 mod undeclared_secret_refs;
@@ -1677,7 +1679,7 @@ pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_r
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 
 mod check;
-pub use check::{check, no_root_rules, Check, Refusal};
+pub use check::{Check, Refusal, check, no_root_rules};
 
 fn validate_token_endpoint_fields(
     provider_name: &str,

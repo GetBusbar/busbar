@@ -234,7 +234,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
     ];
     for (instance, secret) in cases {
         refused_naming_its_source(&secret);
-        let rig = try_rig_tools(instance, 0, program_section(&secret)).unwrap_or_else(|e| {
+        let rig = try_rig_tools(instance, 0, program_section(&secret)).await.unwrap_or_else(|e| {
             panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
         });
         let (status, headers, body) = call(&rig).await;
@@ -268,7 +268,9 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
     let var = unset("TOOLS_PROGRAM_APPLY");
     std::env::set_var(&var, "busbar-own-program-token");
     let secret = SecretRef::env(&var);
-    let rig = try_rig_tools(instance, 0, program_section(&secret)).expect("the door composes");
+    let rig = try_rig_tools(instance, 0, program_section(&secret))
+        .await
+        .expect("the door composes");
     let (status, _, body) = call(&rig).await;
     assert_eq!(
         status,
@@ -301,7 +303,7 @@ async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_wit
     assert_eq!(before["calls"], "1");
     std::env::remove_var(&var);
     refused_naming_its_source(&secret);
-    rig.live.apply(&rig.app);
+    rig.live.apply(&rig.app).await;
     let (status, headers, body) = call(&rig).await;
     assert_clean(instance, status, &headers, &body, &secret);
     assert_eq!(status, StatusCode::OK, "the spawned program keeps serving");
@@ -330,7 +332,9 @@ async fn tool_door_an_unresolved_subject_token_refuses_the_boot_naming_its_sourc
     let secret = SecretRef::env(unset("TOOLS_EXCHANGE_COMPOSE"));
     refused_naming_its_source(&secret);
     let mut server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
-    let Err(refusal) = server.try_rig(instance, exchange_section(&server, &secret), &|app| app)
+    let Err(refusal) = server
+        .try_rig(instance, exchange_section(&server, &secret), &|app| app)
+        .await
     else {
         panic!("a subject token that does not resolve refuses the composition");
     };
@@ -354,7 +358,9 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     std::env::set_var(&var, "busbar-own-subject-token");
     let secret = SecretRef::env(&var);
     let server = TlsToolServer::listing(Arc::new(Mutex::new(three_tools()))).await;
-    let rig = server.rig(instance, exchange_section(&server, &secret), &|app| app);
+    let rig = server
+        .rig(instance, exchange_section(&server, &secret), &|app| app)
+        .await;
     let (status, _, body) = call(&rig).await;
     assert_eq!(
         status,
@@ -368,7 +374,7 @@ async fn tool_door_a_subject_token_gone_by_an_apply_reaches_the_caller_without_i
     let before = rig.live.current().generation;
     std::env::remove_var(&var);
     refused_naming_its_source(&secret);
-    rig.live.apply(&rig.app);
+    rig.live.apply(&rig.app).await;
     assert_eq!(
         rig.live.current().generation,
         before,
@@ -433,7 +439,7 @@ async fn decisions_a_provider_key_gone_by_an_apply_reaches_the_caller_without_it
     std::fs::remove_file(&path).expect("the credential file goes");
     refused_naming_its_source(&secret);
     let before = serving.live.current().generation;
-    serving.live.apply(&serving.handle.load());
+    serving.live.apply(&serving.handle.load()).await;
     assert_eq!(
         serving.live.current().generation,
         before,
@@ -502,7 +508,7 @@ mod session_door_cells {
         std::fs::remove_file(&path).expect("the credential file goes");
         refused_naming_its_source(&secret);
         let before = serving.live.current().generation;
-        serving.live.apply(&serving.app);
+        serving.live.apply(&serving.app).await;
         assert_eq!(
             serving.live.current().generation,
             before,

@@ -7,32 +7,46 @@ pub use busbar_kernel_audit::{
     Access, Subject,
 };
 
+pub type ReadConfirmation<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<(), busbar_kernel_audit::amend::AmendPersistError>>
+            + Send
+            + 'a,
+    >,
+>;
+
 fn pass() -> Pass<Audit> {
     Pass::<Audit>::mint(&crate::seal::acquire())
 }
 
-pub(crate) fn hook_read(
+pub(crate) async fn hook_read(
     amendments: &NodeAmendments,
     name: &str,
     principal: Option<&str>,
     op: &str,
     identity: bool,
-) {
+) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
     let mut fields = vec!["content".to_string()];
     fields.extend(identity.then(|| "identity".to_string()));
     let now = busbar_kernel::store::now();
-    amendments.record_read(&pass(), Reader::Hook, name, principal, op, fields, now);
+    amendments
+        .record_read(&pass(), Reader::Hook, name, principal, op, fields, now)
+        .await
+        .map(|_| ())
 }
 
-pub(crate) fn export_read(
+pub(crate) async fn export_read(
     amendments: &NodeAmendments,
     module: &str,
     op: &str,
     payload: &serde_json::Value,
-) {
+) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
     let fields = payload.as_object().map(|o| o.keys().cloned().collect());
     let (fields, now) = (fields.unwrap_or_default(), busbar_kernel::store::now());
-    amendments.record_read(&pass(), Reader::Export, module, None, op, fields, now);
+    amendments
+        .record_read(&pass(), Reader::Export, module, None, op, fields, now)
+        .await
+        .map(|_| ())
 }
 
 #[cfg(test)]
@@ -40,12 +54,12 @@ pub(crate) fn export_read(
 mod tests;
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn record_test_hook_read(
+pub async fn record_test_hook_read(
     amendments: &NodeAmendments,
     name: &str,
     principal: Option<&str>,
     op: &str,
     identity: bool,
-) {
-    hook_read(amendments, name, principal, op, identity);
+) -> Result<(), busbar_kernel_audit::amend::AmendPersistError> {
+    hook_read(amendments, name, principal, op, identity).await
 }

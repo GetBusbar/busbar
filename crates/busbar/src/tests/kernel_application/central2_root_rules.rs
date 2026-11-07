@@ -3,8 +3,8 @@
 use crate::root::test_plugins as plugins;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-#[test]
-fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
+#[tokio::test]
+async fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     const CHILD: &str = "BUSBAR_CENTRAL2_UNBOUNDED_CHILD";
     const WITNESS: &str = "actual root nine unbounded lanes completed";
     if std::env::var_os(CHILD).is_none() {
@@ -116,7 +116,7 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         cfg,
         plugin_config,
         None,
@@ -126,23 +126,30 @@ fn boot_builds_a_pool_of_nine_unbounded_lanes_without_overflowing_its_banner() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let calls = app
         .governance
         .as_ref()
         .expect("actual governance")
-        .store_calls()
+        .core_store_handle()
         .expect("actual Store calls");
-    crate::root::kernel::ROOT_CARD.keep_in_store(calls, 107);
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(calls, 107)
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual card history boots");
     limits
         .keep()
+        .await
         .expect("the booted actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(app.engine_tables_view().lane_count(), 9);
     assert_eq!(app.engine_tables_view().pool_members("wide").len(), 9);

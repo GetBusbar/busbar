@@ -151,9 +151,18 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let wrapped = mount(inner, busbar_kernel::teller::Kernel::new(), 4, |dispatch| {
-        crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door())
-    });
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
+            .await;
+    let wrapped = mount(
+        inner,
+        busbar_kernel::teller::Kernel::new(),
+        4,
+        move |dispatch| {
+            units.admin.dispatch = dispatch;
+            units
+        },
+    );
 
     let request = axum::http::Request::builder()
         .method("POST")
@@ -182,8 +191,8 @@ async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
+#[tokio::test]
+async fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
     let refused = Outcome::Refused(
         busbar_contract::caps::StepName::Route,
         ReasonCode::DecodeFailed,
@@ -274,12 +283,12 @@ fn the_audit_doors_carry_no_credential_into_the_sealed_facts() {
     }
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "root-admin")]
-fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
+async fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
     let admin = crate::root::kernel::new_kernel().admin_token();
 
-    let under = |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
+    let under = async |path: &str, granted: VerbScope| -> Result<(), ReasonCode> {
         let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
         let mut request = a_request();
         request.method = "POST".to_string();
@@ -289,7 +298,7 @@ fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         let mut walk = AdminWalk::new(request);
         decode(&mut walk).expect("the plane's table declares this operation");
         walk.granted = Some(granted);
-        route(&binding, None, &admin, &mut walk)
+        route(&binding, None, &admin, &mut walk).await
     };
 
     for path in [
@@ -300,12 +309,12 @@ fn the_formerly_irreducible_verbs_are_authorized_by_the_grant_alone() {
         "/api/v1/admin/ledger/amend-rate-history",
     ] {
         assert_ne!(
-            under(path, VerbScope::Full),
+            under(path, VerbScope::Full).await,
             Err(ReasonCode::ScopeDenied),
             "{path}: a grant that covers the verb was refused with no operator key configured"
         );
         assert_eq!(
-            under(path, VerbScope::ReadOnly),
+            under(path, VerbScope::ReadOnly).await,
             Err(ReasonCode::ScopeDenied),
             "{path}: a grant that does not cover the verb was not refused"
         );
@@ -347,17 +356,23 @@ fn approved_under(
 }
 
 #[cfg(feature = "root-admin")]
-fn answered_under(door: busbar_kernel::auth::AdminDoor, request: AdminRequest) -> AdminAnswer {
+async fn answered_under(
+    door: busbar_kernel::auth::AdminDoor,
+    request: AdminRequest,
+) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
         a_door_answering(door),
-    );
-    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+    )
+    .await;
+    AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_verb_the_allow_list_names_is_admitted() {
+#[tokio::test]
+async fn a_verb_the_allow_list_names_is_admitted() {
     let door = || listed_door(&["post_keys", "get_audit"], Scope::Full);
     assert_eq!(
         approved_under(door(), "POST", "/api/v1/admin/keys"),
@@ -370,15 +385,15 @@ fn a_verb_the_allow_list_names_is_admitted() {
         "a read the list names is admitted"
     );
     assert_eq!(
-        answered_under(door(), a_request()).status,
+        answered_under(door(), a_request()).await.status,
         200,
         "and the named read reaches its operation"
     );
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
+#[tokio::test]
+async fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
     let door = || listed_door(&["post_keys"], Scope::Full);
     assert_eq!(
         approved_under(door(), "POST", "/api/v1/admin/hooks"),
@@ -391,7 +406,7 @@ fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
         "a read the list does not name is refused at approve"
     );
     let read = a_request();
-    let refused = answered_under(door(), read.clone());
+    let refused = answered_under(door(), read.clone()).await;
     assert_eq!(refused, scope_answer(&read), "the existing scope refusal");
     assert_eq!(refused.status, 403);
     assert_eq!(
@@ -403,7 +418,7 @@ fn a_verb_the_allow_list_does_not_name_is_refused_with_the_scope_answer() {
     mutation.method = "POST".to_string();
     mutation.path = "/api/v1/admin/hooks".to_string();
     assert_eq!(
-        answered_under(door(), mutation.clone()),
+        answered_under(door(), mutation.clone()).await,
         scope_answer(&mutation),
         "a mutation the list does not name is answered with the scope it needed"
     );
@@ -447,8 +462,8 @@ fn a_rung_held_whole_beside_a_list_admits_exactly_as_full() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
+#[tokio::test]
+async fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
     let rung = |scope: Scope| {
         busbar_kernel::auth::AdminDoor::Identified(
             busbar_contract::auth::Principal::from_id("acct:verb-listed"),
@@ -468,7 +483,7 @@ fn a_grant_with_no_verbs_key_is_decided_by_its_rung_as_before() {
     refused.method = "POST".to_string();
     refused.path = mutation.to_string();
     assert_eq!(
-        answered_under(rung(Scope::ReadOnly), refused.clone()),
+        answered_under(rung(Scope::ReadOnly), refused.clone()).await,
         scope_answer(&refused)
     );
 }
@@ -530,9 +545,9 @@ fn the_two_spellings_of_the_scope_split_agree() {
     assert!(!VerbScope::ReadOnly.allows(VerbScope::Full));
 }
 
-#[test]
-fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
-    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
+#[tokio::test]
+async fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
+    let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {
@@ -546,7 +561,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
     };
     let minted = std::sync::atomic::AtomicUsize::new(0);
 
-    let mint = || {
+    let mint = || async {
         let n = minted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(bound::EffectAnswer::applied(AdminAnswer {
             status: 201,
@@ -569,7 +584,7 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
         body: br#"{"id":"vk_0","secret":"once-0"}"#.to_vec(),
     };
     let node = bound::ReplayCache::new();
-    let ask = |cache: &bound::ReplayCache| {
+    let ask = async |cache: &bound::ReplayCache| {
         bound::replayable(
             cache,
             Some(&replay_store),
@@ -582,14 +597,15 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
             None,
             mint,
         )
+        .await
         .expect("the write answers")
     };
 
-    let first = ask(&node);
+    let first = ask(&node).await;
     assert_eq!(first, first_answer, "the first call runs and answers");
-    let again = ask(&node);
-    let restarted = ask(&bound::ReplayCache::new());
-    let sibling = ask(&bound::ReplayCache::new());
+    let again = ask(&node).await;
+    let restarted = ask(&bound::ReplayCache::new()).await;
+    let sibling = ask(&bound::ReplayCache::new()).await;
     for (who, replayed) in [
         ("the same node", &again),
         ("a restarted node", &restarted),
@@ -610,8 +626,9 @@ fn a_replayed_idempotency_key_answers_the_first_answers_bytes() {
 struct AnsweringDispatch;
 
 #[cfg(feature = "root-admin")]
+#[async_trait::async_trait]
 impl AdminDispatch for AnsweringDispatch {
-    fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+    async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
         AdminAnswer {
             status: 200,
             headers: vec![("content-type".to_string(), "application/json".to_string())],
@@ -674,26 +691,29 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
 }
 
 #[cfg(feature = "root-admin")]
-fn answer_under_denylist(revoked: bool) -> AdminAnswer {
+async fn answer_under_denylist(revoked: bool) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
         door_of_chain(a_door_that_identifies_the_operator()),
     )
+    .await
     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
         Denylist(revoked),
     )));
-    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request())
+    AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_request())
+        .await
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_revoked_credential_is_refused_before_the_operation_runs() {
+#[tokio::test]
+async fn a_revoked_credential_is_refused_before_the_operation_runs() {
     assert_eq!(
-        answer_under_denylist(false).status,
+        answer_under_denylist(false).await.status,
         200,
         "a credential on nobody's denylist reaches the operation"
     );
-    let refused = answer_under_denylist(true);
+    let refused = answer_under_denylist(true).await;
     assert_eq!(
         refused,
         door_answer(),
@@ -702,14 +722,17 @@ fn a_revoked_credential_is_refused_before_the_operation_runs() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
+#[tokio::test]
+async fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
     let units =
         crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 Denylist(true),
             )));
-    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request());
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_request())
+        .await;
     assert_eq!(
         answer.status, 200,
         "the open door admits, and the denylist is not a probe"
@@ -735,7 +758,7 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesSomebodyElse {
 }
 
 #[cfg(feature = "root-admin")]
-fn answer_at_the_closed_door(
+async fn answer_at_the_closed_door(
     door: busbar_kernel_identity::AuthChain,
     credential: Option<&str>,
 ) -> AdminAnswer {
@@ -743,19 +766,23 @@ fn answer_at_the_closed_door(
         Arc::new(AnsweringDispatch),
         door_of_chain(door),
     )
+    .await
     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
         Denylist(false),
     )));
     let mut request = a_request();
     request.credential = credential.map(str::to_string);
-    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+    AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_wrong_or_absent_credential_is_refused_at_the_door() {
+#[tokio::test]
+async fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     assert_eq!(
         answer_at_the_closed_door(a_door_that_identifies_the_operator(), Some("admin-token"))
+            .await
             .status,
         200,
         "the control must actually be admitted, or the refusals below prove only that the fixture \
@@ -765,7 +792,8 @@ fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     let wrong = answer_at_the_closed_door(
         a_door_that_identifies_the_operator(),
         Some("not-the-admin-token"),
-    );
+    )
+    .await;
     assert_eq!(
         wrong,
         door_answer(),
@@ -773,7 +801,7 @@ fn a_wrong_or_absent_credential_is_refused_at_the_door() {
     );
     assert_eq!(wrong.status, 401, "and that answer's status is the door's");
 
-    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None);
+    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None).await;
     assert_eq!(
         absent,
         door_answer(),
@@ -784,9 +812,9 @@ fn a_wrong_or_absent_credential_is_refused_at_the_door() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
-    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None);
+#[tokio::test]
+async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
+    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None).await;
     assert_eq!(absent.status, 401);
     assert_eq!(
         String::from_utf8(absent.body).expect("the envelope is text"),
@@ -803,8 +831,8 @@ fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
+#[tokio::test]
+async fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
     let door = busbar_kernel_identity::AuthChain::new(
         vec![busbar_kernel_identity::chain::ChainEntry {
             provider: "identifies-somebody-else".to_string(),
@@ -812,7 +840,7 @@ fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_n
         }],
         false,
     );
-    let refused = answer_at_the_closed_door(door, Some("a-tenants-token"));
+    let refused = answer_at_the_closed_door(door, Some("a-tenants-token")).await;
     assert_eq!(
         refused.status, 403,
         "an identified caller with no grant is the authorization ending, not the door's"
@@ -843,9 +871,10 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
     use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
 
     let units = crate::root::kernel::ProductionUnits::admin_only(
-        Arc::new(real_admin_dispatch()),
+        Arc::new(real_admin_dispatch().await),
         open_door(),
-    );
+    )
+    .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     let full = InFlight::new(0);
     assert_eq!(full.cap(), 0, "a table with no room");
@@ -897,9 +926,7 @@ async fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_
         .expect("the administrative request is exempt on the same zero-cap table");
     assert_eq!(admitted.key(), key);
     assert_eq!(full.len(), 1, "the admitted unit is actually retained");
-    let answer = tokio::task::spawn_blocking(move || node.answer(request))
-        .await
-        .expect("the administrative operation completes");
+    let answer = node.answer(request).await;
     assert_eq!(
         answer.status, 200,
         "the admin listener answers while shedding"
@@ -1009,8 +1036,8 @@ fn the_one_rings_rows_by(principal: &str) -> Vec<busbar_kernel::audit_ring::Audi
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
+#[tokio::test]
+async fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none() {
     const WHO: &str = "operator-cifollow-one-entry";
 
     crate::dist_root_install::install();
@@ -1054,7 +1081,7 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -1064,28 +1091,35 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes canonical persistence"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the canonical rate history binds");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let _app = std::sync::Arc::new(built);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&_app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&_app).await;
     let linked = |entry: &busbar_kernel::audit_ring::AuditEntry| {
         let ring =
             busbar_kernel::audit::auditlog::AUDIT_LOG.list_filtered(0, usize::MAX, None, None);
@@ -1121,6 +1155,9 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     });
     let before = the_one_rings_rows_by(WHO).len();
     let _ = audit(&walk, &Outcome::Completed);
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .expect("native audit publication");
     let rows = the_one_rings_rows_by(WHO);
     assert_eq!(rows.len(), before + 1, "one unit, one entry");
     assert_eq!(rows[0].action, resolved.verb);
@@ -1141,6 +1178,9 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     walk.principal = Some(PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
     let _ = audit(&walk, &Outcome::Completed);
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .expect("native audit publication");
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
@@ -1158,6 +1198,9 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
     walk.principal = Some(PrincipalId::new(WHO));
     let before = the_one_rings_rows_by(WHO).len();
     let _ = audit(&walk, &Outcome::Completed);
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .expect("native audit publication");
     assert_eq!(
         the_one_rings_rows_by(WHO).len(),
         before,
@@ -1174,6 +1217,9 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
             ReasonCode::OverBudget,
         ),
     );
+    busbar_kernel::audit::auditlog::flush_pending()
+        .await
+        .expect("native audit publication");
     let rows = the_one_rings_rows_by(WHO);
     assert_eq!(rows.len(), before + 1, "the attempt is on the chain");
     assert_eq!(rows[0].action, resolved.verb);
@@ -1184,37 +1230,41 @@ fn one_admin_unit_seals_exactly_one_entry_on_the_one_ring_and_a_read_seals_none(
 const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
+#[tokio::test]
+async fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     /// A store that records what reached it and refuses it.
     #[derive(Debug, Default)]
     struct RecordingStore(Mutex<Vec<String>>);
 
-    impl busbar_kernel_seams::verb_store::Store for RecordingStore {
-        fn chain_break(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-            self.0.lock().unwrap().push("chain_break".to_string());
-            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
+    impl busbar_kernel::persistence::recovery_api::Store for RecordingStore {
+        fn chain_break<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push("chain_break".to_string());
+                Err(busbar_kernel::persistence::recovery_api::StoreError::Failed)
+            })
         }
-
-        fn store_restore(
-            &self,
-            _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
-            backup_ref: &str,
-        ) -> Result<(), busbar_kernel_seams::verb_store::StoreError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(format!("store_restore:{backup_ref}"));
-            Err(busbar_kernel_seams::verb_store::StoreError::Failed)
+        fn store_restore<'a>(
+            &'a self,
+            _admin: &'a busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+            backup_ref: &'a str,
+        ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("store_restore:{backup_ref}"));
+                Err(busbar_kernel::persistence::recovery_api::StoreError::Failed)
+            })
         }
     }
 
     struct NeverDispatched;
+    #[async_trait::async_trait]
     impl AdminDispatch for NeverDispatched {
-        fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+        async fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
             panic!("a recovery verb reached the governance seam: {verb:?}");
         }
     }
@@ -1243,11 +1293,12 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
             &binding,
             Some(Arc::clone(&store)
                 as Arc<
-                    dyn busbar_kernel_seams::verb_store::Store + Send + Sync,
+                    dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync,
                 >),
             &admin,
             &mut walk,
-        );
+        )
+        .await;
 
         assert_eq!(
             store.0.lock().unwrap().as_slice(),
@@ -1440,8 +1491,9 @@ const A_DAY: u64 = 1_767_225_600;
 
 struct SeededLedger;
 
+#[async_trait::async_trait]
 impl LedgerView for SeededLedger {
-    fn priced(&self) -> Result<crate::root::units_admin::PricedLedger, String> {
+    async fn priced(&self) -> Result<crate::root::units_admin::PricedLedger, String> {
         use crate::root::units_admin::{LedgerRow, PricedLedger, RefusedRow};
         Ok(PricedLedger {
             rows: vec![
@@ -1488,12 +1540,15 @@ fn a_ledger_request(path: &str) -> AdminRequest {
 }
 
 #[cfg(feature = "root-admin")]
-fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
+async fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
     let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_ledger_view(Arc::new(SeededLedger));
-    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+    AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await
 }
 
 #[cfg(feature = "root-admin")]
@@ -1528,7 +1583,7 @@ fn one_lane_card() -> busbar_kernel::cost::CostModel {
 }
 
 #[cfg(feature = "root-admin")]
-fn answer_over_counts(
+async fn answer_over_counts(
     gov: Arc<busbar_kernel::governance::GovState>,
     path: &str,
 ) -> serde_json::Value {
@@ -1587,7 +1642,7 @@ fn answer_over_counts(
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -1597,46 +1652,55 @@ fn answer_over_counts(
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes canonical persistence"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the canonical rate history binds");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     built.governance = Some(gov);
     built.cost = std::sync::Arc::new(one_lane_card());
     let app = std::sync::Arc::new(built);
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(app));
     let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door()).with_ledger_view(
         Arc::new(crate::root::units_admin::CountsLedger::new(handle)),
     );
-    let answer =
-        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_ledger_request(path));
+    let answer = AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(a_ledger_request(path))
+        .await;
     assert_eq!(answer.status, 200, "{path} did not answer");
     serde_json::from_slice(&answer.body).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
+#[tokio::test]
+async fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     use busbar_kernel::governance::{GovState, VirtualKey};
-    let store = crate::root::real_store::records();
+    let core = crate::root::real_store::core().await;
     let key = VirtualKey {
         id: "vk_one_ledger".to_string(),
         generation_hash: "h:vk_one_ledger".to_string(),
@@ -1645,17 +1709,28 @@ fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
         revision: 1,
         ..Default::default()
     };
-    store.put_key(&key).expect("the key persists");
-    let gov = Arc::new(GovState::new(store.clone(), None).expect("governance builds"));
+    core.identity()
+        .put_key(&key)
+        .await
+        .expect("the key persists");
+    let gov = Arc::new(
+        GovState::new_with_core(Arc::clone(&core), None, None)
+            .await
+            .expect("governance builds"),
+    );
     let now = busbar_kernel::store::now();
     let input = std::collections::BTreeMap::from([(
         busbar_contract::records::UNIT_INPUT.to_string(),
         1_000u64,
     )]);
     gov.record_usage(&one_lane_card(), &key, "", "m", &input, now);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
 
-    let stored = store.get_usage(&key.id, 0).expect("the row reads");
+    let stored = core
+        .ledger()
+        .get_usage(&key.id, 0)
+        .await
+        .expect("the row reads");
     assert_eq!(
         stored.models.len(),
         1,
@@ -1678,7 +1753,7 @@ fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
         "the stored envelope retains the original whole-unit quantity, never spend"
     );
 
-    let totals = answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/totals");
+    let totals = answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/totals").await;
     let rows = totals["rows"].as_array().expect("rows");
     let row = rows
         .iter()
@@ -1687,27 +1762,32 @@ fn the_ledger_paths_answer_counts_times_card_and_survive_a_restart() {
     assert_eq!(row["priced_micros"], "2500", "1,000 tokens x 2.5: {totals}");
     assert_eq!(row["priced_nanos"], "2500000");
     assert_eq!(
-        answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/reconciliation")["holds"],
+        answer_over_counts(Arc::clone(&gov), "/api/v1/admin/ledger/reconciliation").await["holds"],
         true
     );
 
-    let restarted = Arc::new(GovState::new(store, None).expect("governance builds"));
+    let restarted = Arc::new(
+        GovState::new_with_core(Arc::clone(&core), None, None)
+            .await
+            .expect("governance builds"),
+    );
     restarted
-        .hydrate_budgets(&one_lane_card(), now)
+        .hydrate_budgets_async(&one_lane_card(), now)
+        .await
         .expect("the boot hydrates");
     assert_eq!(
-        answer_over_counts(restarted, "/api/v1/admin/ledger/totals"),
+        answer_over_counts(restarted, "/api/v1/admin/ledger/totals").await,
         totals,
         "a restart serves the same money from the same counts"
     );
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
+#[tokio::test]
+async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
     let mut bodies = Vec::new();
     for path in LEDGER_PATHS {
-        let answer = answer_over_seeded_ledger(a_ledger_request(path));
+        let answer = answer_over_seeded_ledger(a_ledger_request(path)).await;
         assert_eq!(answer.status, 200, "{path} did not answer");
         assert_eq!(
             answer.headers,
@@ -1734,14 +1814,14 @@ fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn each_view_serves_the_figures_the_ledger_holds() {
-    let body = |path: &str| -> serde_json::Value {
-        serde_json::from_slice(&answer_over_seeded_ledger(a_ledger_request(path)).body)
+#[tokio::test]
+async fn each_view_serves_the_figures_the_ledger_holds() {
+    let body = async |path: &str| -> serde_json::Value {
+        serde_json::from_slice(&answer_over_seeded_ledger(a_ledger_request(path)).await.body)
             .expect("valid JSON")
     };
 
-    let totals = body("/api/v1/admin/ledger/totals");
+    let totals = body("/api/v1/admin/ledger/totals").await;
     let rows = totals["rows"].as_array().expect("rows");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["bucket"], "key-1");
@@ -1758,27 +1838,29 @@ fn each_view_serves_the_figures_the_ledger_holds() {
     assert_eq!(refused[0]["refusal"], "ClassUnpriced(cache_read)");
 
     assert_eq!(
-        body("/api/v1/admin/ledger/checkpoints"),
+        body("/api/v1/admin/ledger/checkpoints").await,
         serde_json::json!({"checkpoints": []})
     );
     assert_eq!(
-        body("/api/v1/admin/ledger/migration"),
+        body("/api/v1/admin/ledger/migration").await,
         serde_json::json!({"migrated": false, "marker": null})
     );
 
-    let document = body("/api/v1/admin/ledger/openapi.json");
+    let document = body("/api/v1/admin/ledger/openapi.json").await;
     assert_eq!(document["info"]["version"], "1.6.0");
 }
 
 #[cfg(feature = "root-admin")]
-fn real_admin_dispatch() -> RouterDispatch {
+async fn real_admin_dispatch() -> RouterDispatch {
     crate::dist_root_install::install();
     busbar_core_admin::install();
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(
-            crate::root::real_store::records(),
+        busbar_kernel::governance::GovState::new_with_core(
+            crate::root::real_store::core().await,
             Some("admin-token".into()),
+            None,
         )
+        .await
         .expect("governance"),
     );
     crate::dist_root_install::install();
@@ -1822,7 +1904,7 @@ fn real_admin_dispatch() -> RouterDispatch {
         .expect("the real admin deployment resolves");
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut built, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (mut built, rotate, limits) = crate::root::real_store::build_app(
         config,
         crate::root::test_plugins::trusted_config(&directory),
         None,
@@ -1832,25 +1914,32 @@ fn real_admin_dispatch() -> RouterDispatch {
         None,
         &rules,
     )
+    .await
     .expect("the product builds the actual admin application");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            built
-                .governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .store_calls()
-                .expect("the configured Store exposes its actual rate-history calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                built
+                    .governance
+                    .as_ref()
+                    .expect("the application has its configured governance Store")
+                    .core_store_handle()
+                    .expect("the configured Store exposes canonical persistence"),
+                busbar_kernel::door::op_id().counter(),
+            )
+            .expect("the canonical rate history binds");
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the actual configured Store boots its initial rate history");
     }
-    limits.keep().expect("the real application limits commit");
+    limits
+        .keep()
+        .await
+        .expect("the real application limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let digest = gov.admin_token_hash();
     built.governance = Some(gov);
@@ -1888,12 +1977,13 @@ struct PanickingDispatch {
 }
 
 #[cfg(feature = "root-admin")]
+#[async_trait::async_trait]
 impl AdminDispatch for PanickingDispatch {
-    fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+    async fn execute(&self, verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
         if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
             panic!("the operation's body panicked");
         }
-        self.next.execute(verb, request)
+        self.next.execute(verb, request).await
     }
 }
 
@@ -1902,19 +1992,19 @@ impl AdminDispatch for PanickingDispatch {
 async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
     let dispatch = Arc::new(PanickingDispatch {
         calls: std::sync::atomic::AtomicUsize::new(0),
-        next: real_admin_dispatch(),
+        next: real_admin_dispatch().await,
     });
-    let units = crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), open_door());
+    let units =
+        crate::root::kernel::ProductionUnits::admin_only(dispatch.clone(), open_door()).await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let answer = tokio::task::spawn_blocking(move || {
-        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            node.answer(authenticated_admin_request())
-        }));
-        assert!(ended.is_err(), "the fixture's first dispatch panics");
-        node.answer(authenticated_admin_request())
-    })
-    .await
-    .expect("the second administrative walk completes");
+    let node = Arc::new(node);
+    let first = Arc::clone(&node);
+    let ended =
+        tokio::spawn(async move { first.answer(authenticated_admin_request()).await }).await;
+    assert!(ended
+        .expect_err("the fixture's first dispatch panics")
+        .is_panic());
+    let answer = node.answer(authenticated_admin_request()).await;
     assert_eq!(answer.status, 200);
     let document: serde_json::Value = serde_json::from_slice(&answer.body).expect("audit JSON");
     assert!(
@@ -1925,38 +2015,47 @@ async fn a_panicking_step_leaves_the_node_serving_valid_operations() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn an_unopened_ledger_answers_empty_rather_than_absent() {
+#[tokio::test]
+async fn an_unopened_ledger_answers_empty_rather_than_absent() {
     let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
-    let body = |path: &str| -> serde_json::Value {
-        let answer = node.answer(a_ledger_request(path));
+    let body = async |path: &str| -> serde_json::Value {
+        let answer = node.answer(a_ledger_request(path)).await;
         assert_eq!(answer.status, 200, "{path}");
         serde_json::from_slice(&answer.body).expect("valid JSON")
     };
     assert_eq!(
-        body("/api/v1/admin/ledger/totals")["rows"],
+        body("/api/v1/admin/ledger/totals").await["rows"],
         serde_json::json!([])
     );
     assert_eq!(
-        body("/api/v1/admin/ledger/checkpoints")["checkpoints"],
+        body("/api/v1/admin/ledger/checkpoints").await["checkpoints"],
         serde_json::json!([])
     );
-    assert_eq!(body("/api/v1/admin/ledger/migration")["migrated"], false);
     assert_eq!(
-        body("/api/v1/admin/ledger/migration")["marker"],
+        body("/api/v1/admin/ledger/migration").await["migrated"],
+        false
+    );
+    assert_eq!(
+        body("/api/v1/admin/ledger/migration").await["marker"],
         serde_json::Value::Null
     );
 
-    assert_eq!(body("/api/v1/admin/ledger/reconciliation")["holds"], true);
+    assert_eq!(
+        body("/api/v1/admin/ledger/reconciliation").await["holds"],
+        true
+    );
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
+#[tokio::test]
+async fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
     let served: serde_json::Value = serde_json::from_slice(
-        &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
+        &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
+            .await
+            .body,
     )
     .expect("valid JSON");
     assert_eq!(
@@ -1970,9 +2069,15 @@ fn the_reconciliation_holds_unless_a_row_is_refused_and_names_it() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn verify_names_a_refused_row_and_every_other_finding() {
-    let node_book = crate::root::durability::node_book();
+#[tokio::test]
+async fn verify_names_a_refused_row_and_every_other_finding() {
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let node_book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node_book
         .durability
         .lock()
@@ -1982,6 +2087,7 @@ fn verify_names_a_refused_row_and_every_other_finding() {
     let audit =
         crate::root::units_admin::NodeAudit::new(std::sync::Arc::clone(&node_book.durability));
     let answer = crate::root::units_admin::bound::verify_effect(&SeededLedger, Some(&audit), None)
+        .await
         .expect("a refused row must not take /admin/verify down");
     let body: serde_json::Value = serde_json::from_slice(&answer.body).expect("valid JSON");
     let findings: Vec<&str> = body["findings"]
@@ -2008,9 +2114,9 @@ fn verify_names_a_refused_row_and_every_other_finding() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
-    let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
+#[tokio::test]
+async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
+    let under = async |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
         let mut request = a_ledger_request(path);
         request.credential = credential.map(ToString::to_string);
 
@@ -2021,30 +2127,33 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
         };
         let units =
             crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), door)
+                .await
                 .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                     Denylist(revoked),
                 )));
-        AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+        AdminNode::new(crate::root::kernel::new_kernel(), units)
+            .answer(request)
+            .await
     };
 
-    let refused = under("/api/v1/admin/usage", Some("admin-token"), true);
+    let refused = under("/api/v1/admin/usage", Some("admin-token"), true).await;
     assert_ne!(
         refused.status, 200,
         "the control must actually be a refusal, or this test compares two successes"
     );
     for path in LEDGER_PATHS {
         assert_eq!(
-            under(path, Some("admin-token"), true),
+            under(path, Some("admin-token"), true).await,
             refused,
             "{path} does not refuse a revoked credential the way /usage does"
         );
     }
 
-    let admitted = under("/api/v1/admin/usage", None, false);
+    let admitted = under("/api/v1/admin/usage", None, false).await;
     assert_eq!(admitted.status, 200, "the open chain admits the control");
     for path in LEDGER_PATHS {
         assert_eq!(
-            under(path, None, false).status,
+            under(path, None, false).await.status,
             admitted.status,
             "{path} does not admit a credential-less caller the way /usage does"
         );
@@ -2110,13 +2219,14 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
     }
 }
 
-#[test]
-fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
+#[tokio::test]
+async fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingDispatch(Arc<AtomicUsize>);
+    #[async_trait::async_trait]
     impl AdminDispatch for CountingDispatch {
-        fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+        async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
             self.0.fetch_add(1, Ordering::Relaxed);
 
             AdminAnswer {
@@ -2139,7 +2249,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
-            None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
+            None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
             CONFIG_CLASS_RULES,
             Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
         );
@@ -2152,6 +2262,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
                 1_700_000_000,
                 b"",
             )
+            .await
             .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
         assert_eq!(answer.status, 200);
     }
@@ -2169,7 +2280,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
-        None::<Arc<dyn busbar_kernel_seams::verb_store::Store + Send + Sync>>,
+        None::<Arc<dyn busbar_kernel::persistence::recovery_api::Store + Send + Sync>>,
         CONFIG_CLASS_RULES,
         Arc::new(busbar_core_admin::rate::MutationLimiter::new()),
     );
@@ -2182,6 +2293,7 @@ fn a_view_never_reaches_the_dispatch_and_answers_a_read_only_grant() {
             1_700_000_000,
             b"",
         )
+        .await
         .is_err());
 }
 
@@ -2200,6 +2312,7 @@ struct SealedChain {
 }
 
 #[cfg(feature = "root-admin")]
+#[async_trait::async_trait]
 impl AuditView for SealedChain {
     fn read(
         &self,
@@ -2288,18 +2401,21 @@ fn a_sealed_chain() -> SealedChain {
 }
 
 #[cfg(feature = "root-admin")]
-fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
+async fn answer_over_a_sealed_chain(request: AdminRequest) -> AdminAnswer {
     let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door())
         .with_audit_view(Arc::new(a_sealed_chain()) as Arc<dyn AuditView>);
-    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+    AdminNode::new(crate::root::kernel::new_kernel(), units)
+        .answer(request)
+        .await
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "root-admin")]
-fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
-    let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head"));
+async fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
+    let head = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/head")).await;
     assert_eq!(head.status, 200, "the head read did not answer");
     let head_body = String::from_utf8(head.body).expect("the head read answers UTF-8");
     assert!(
@@ -2317,7 +2433,7 @@ fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     );
 
     let range =
-        answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/range?from=2&to=3"));
+        answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/range?from=2&to=3")).await;
     assert_eq!(range.status, 200, "the range read did not answer");
     let range_body = String::from_utf8(range.body).expect("the range read answers UTF-8");
     assert!(
@@ -2334,7 +2450,7 @@ fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
         "the range read returned a record outside its window: {range_body}"
     );
 
-    let keys = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/keys"));
+    let keys = answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/keys")).await;
     assert_eq!(keys.status, 200, "the key read did not answer");
     let keys_body = String::from_utf8(keys.body).expect("the key read answers UTF-8");
     let signer = busbar_kernel_audit::AuditSigningKey::from_seed(&[7u8; 32]);
@@ -2353,16 +2469,17 @@ fn the_three_chain_reads_answer_with_the_chains_own_bytes() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "root-admin")]
-fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
+async fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
     let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
 
     units.admin = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
     let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
     for path in AUDIT_PATHS {
-        let answer = node.answer(a_ledger_request(path));
+        let answer = node.answer(a_ledger_request(path)).await;
         assert_eq!(answer.status, 404, "{path} answered over an unbound chain");
         assert!(
             !String::from_utf8_lossy(&answer.body).contains("entries"),
@@ -2371,9 +2488,9 @@ fn an_unbound_chain_refuses_rather_than_answering_an_empty_head() {
     }
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "root-admin")]
-fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
+async fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
     for target in [
         "/api/v1/admin/audit/range",
         "/api/v1/admin/audit/range?from=2",
@@ -2381,12 +2498,13 @@ fn a_range_read_that_names_no_window_is_refused_rather_than_widened() {
         "/api/v1/admin/audit/range?from=3&to=2",
         "/api/v1/admin/audit/range?from=two&to=three",
     ] {
-        let answer = answer_over_a_sealed_chain(a_ledger_request(target));
+        let answer = answer_over_a_sealed_chain(a_ledger_request(target)).await;
         assert_eq!(answer.status, 400, "{target} was not refused as malformed");
     }
 
     assert_eq!(
         answer_over_a_sealed_chain(a_ledger_request("/api/v1/admin/audit/range?from=1&to=3"))
+            .await
             .status,
         200
     );
@@ -2459,9 +2577,10 @@ fn every_1_6_0_row_names_a_kernel_verb_and_no_name_is_empty() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
-    let answer = answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json"));
+#[tokio::test]
+async fn the_ledger_document_path_serves_the_one_document_and_it_describes_the_views() {
+    let answer =
+        answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/openapi.json")).await;
     assert_eq!(answer.status, 200);
     let served = String::from_utf8(answer.body).expect("the document is text");
     assert_eq!(
@@ -2578,14 +2697,125 @@ fn a_body(body: serde_json::Value) -> Vec<u8> {
 }
 
 #[cfg(test)]
-fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
-    Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
-    ))
+struct JournalFaults {
+    inner: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    refusing: Arc<std::sync::atomic::AtomicBool>,
+    paused: std::sync::atomic::AtomicBool,
+    uncertain: std::sync::atomic::AtomicUsize,
+}
+#[cfg(test)]
+impl busbar_contract::persistence::PersistenceBackend for JournalFaults {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.inner.info()
+    }
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.inner.read(request)
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.inner.scan(request)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.inner.clock(dataset)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        Box::pin(async move {
+            use busbar_contract::persistence::{Decision, Failure};
+            use std::sync::atomic::Ordering;
+            if self.refusing.load(Ordering::SeqCst) {
+                return Err(Failure::Unavailable);
+            }
+            let decision = self.inner.commit(candidate).await?;
+            if self.paused.load(Ordering::SeqCst) && matches!(decision, Decision::Applied(_)) {
+                self.uncertain.fetch_add(1, Ordering::SeqCst);
+                return Err(Failure::Unknown);
+            }
+            Ok(decision)
+        })
+    }
+}
+#[cfg(test)]
+struct NativeJournalStore {
+    core: Arc<busbar_kernel::persistence::facade::CoreStore>,
+    faults: Arc<JournalFaults>,
+    node: u64,
+}
+#[cfg(test)]
+impl NativeJournalStore {
+    async fn new() -> Self {
+        Self::switching(Arc::new(std::sync::atomic::AtomicBool::new(false))).await
+    }
+    async fn switching(refusing: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        assert!(
+            !refusing.load(std::sync::atomic::Ordering::SeqCst),
+            "enable faults after startup"
+        );
+        let faults = Arc::new(JournalFaults {
+            inner: crate::root::real_store::native_backend().await,
+            refusing,
+            paused: std::sync::atomic::AtomicBool::new(false),
+            uncertain: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let core = crate::root::real_store::core_over(faults.clone()).await;
+        Self {
+            core,
+            faults,
+            node: busbar_kernel::door::op_id().counter(),
+        }
+    }
+    fn refuse(&self, value: bool) {
+        self.faults
+            .refusing
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn pause(&self, value: bool) {
+        self.faults
+            .paused
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn waiting(&self) -> usize {
+        self.faults
+            .uncertain
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+    async fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
+        use busbar_kernel::persistence::journal::runtime::{BufferBudget, RuntimeJournal};
+        let budget = BufferBudget {
+            records: 16_384,
+            bytes: 32 * 1024 * 1024,
+        };
+        let journal = RuntimeJournal::open(Arc::clone(&self.core), self.node, budget)
+            .await
+            .expect("native journal opens");
+        Arc::new(Mutex::new(
+            crate::root::durability::build_on_store(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                self.node,
+                journal,
+                None,
+                budget,
+            )
+            .await
+            .expect("native journal recovery"),
+        ))
+    }
+}
+
+#[cfg(test)]
+async fn a_memory_book() -> Arc<Mutex<crate::root::durability::Durability>> {
+    NativeJournalStore::new().await.book().await
 }
 
 #[cfg(test)]
@@ -2604,12 +2834,12 @@ fn an_attribution() -> AmendAttribution {
 }
 
 #[cfg(test)]
-fn amend_through_a_journal(
+async fn amend_through_a_journal(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_secs: u64,
 ) -> Result<AdminAnswer, busbar_core_admin::GovernanceError> {
-    let book = a_memory_book();
+    let book = a_memory_book().await;
     amend_rate_history_effect(
         history,
         Some(&a_journal_over(&book)),
@@ -2617,12 +2847,17 @@ fn amend_through_a_journal(
         arrival_secs,
         &an_attribution(),
     )
+    .await
 }
 
 #[cfg(test)]
-fn replayed_amendments(durability: &crate::root::durability::Durability) -> Vec<AmendmentRecord> {
-    durability
-        .chain()
+async fn replayed_amendments(
+    book: &Arc<Mutex<crate::root::durability::Durability>>,
+) -> Vec<AmendmentRecord> {
+    let chain = { book.lock().unwrap().chain_at() };
+    chain
+        .read()
+        .await
         .expect("the journal reads back")
         .expect("the journal verifies")
         .iter()
@@ -2644,8 +2879,8 @@ fn a_correction_body() -> Vec<u8> {
     }))
 }
 
-#[test]
-fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothing() {
+#[tokio::test]
+async fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothing() {
     let history = a_seeded_history();
     let instant = 5_000u64;
 
@@ -2657,6 +2892,7 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(before_seq, before.seq());
 
     let answer = amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
+        .await
         .expect("the correction applies");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("the answer is JSON");
@@ -2708,8 +2944,8 @@ fn amend_rate_history_appends_a_signed_back_dated_correction_and_rewrites_nothin
     assert_eq!(old_seq, before.seq());
 }
 
-#[test]
-fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
+#[tokio::test]
+async fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
     for named in [
         serde_json::json!("JPY"),
         serde_json::json!("USD"),
@@ -2725,6 +2961,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
             "reason": "vendor corrected the March price sheet",
         }));
         let err = amend_through_a_journal(&history, &body, ARRIVED)
+            .await
             .expect_err("a correction naming a currency must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -2739,6 +2976,7 @@ fn amend_rate_history_refuses_a_correction_that_names_a_currency() {
 
     let history = a_seeded_history();
     amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
+        .await
         .expect("the same correction with no `currency` key applies");
     assert_eq!(history.len(), 2);
 }
@@ -2770,8 +3008,8 @@ fn the_canonical_amend_payload_names_no_currency() {
     }
 }
 
-#[test]
-fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
+#[tokio::test]
+async fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
     for fee in [-1_i64, -5, i64::MIN] {
         let history = a_seeded_history();
         let body = a_body(serde_json::json!({
@@ -2782,6 +3020,7 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "reason": "vendor corrected the March price sheet",
         }));
         let err = amend_through_a_journal(&history, &body, ARRIVED)
+            .await
             .expect_err("a correction carrying a negative fee must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -2799,7 +3038,9 @@ fn amend_rate_history_refuses_a_negative_fee_and_appends_nothing() {
             "rates": [ { "lane": "gpt", "class": "input", "micro_per_unit": 1.0 } ],
             "reason": "vendor corrected the March price sheet",
         }));
-        amend_through_a_journal(&history, &body, ARRIVED).expect("a non-negative fee applies");
+        amend_through_a_journal(&history, &body, ARRIVED)
+            .await
+            .expect("a non-negative fee applies");
         assert_eq!(history.len(), 2);
         let pinned = history.pin().expect("pinned");
         let view = pinned.view();
@@ -2872,8 +3113,8 @@ fn priced_at(
     nanos_of_exact(tally.exact()?)
 }
 
-#[test]
-fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
+#[tokio::test]
+async fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     let history = a_full_card_history();
     let inside = 5_000;
     let outside = 100_000_000;
@@ -2886,6 +3127,7 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     let plane_b_input = configured(&history, "plane-b\u{1f}search", "input");
 
     amend_through_a_journal(&history, &a_correction_body(), ARRIVED)
+        .await
         .expect("the correction applies");
 
     assert_eq!(
@@ -2912,8 +3154,8 @@ fn a_correction_of_one_cell_keeps_every_other_price_and_the_fee() {
     );
 }
 
-#[test]
-fn a_fee_or_plane_correction_moves_only_what_it_names() {
+#[tokio::test]
+async fn a_fee_or_plane_correction_moves_only_what_it_names() {
     let history = a_full_card_history();
     let body = a_body(serde_json::json!({
         "effective_from": 0,
@@ -2922,7 +3164,9 @@ fn a_fee_or_plane_correction_moves_only_what_it_names() {
         "rates": [ { "lane": "plane-b\u{1f}search", "class": "input", "micro_per_unit": 9.0 } ],
         "reason": "vendor corrected the March price sheet",
     }));
-    amend_through_a_journal(&history, &body, ARRIVED).expect("the correction applies");
+    amend_through_a_journal(&history, &body, ARRIVED)
+        .await
+        .expect("the correction applies");
     assert_eq!(
         priced_at(&history, "gpt", "output", 1_000, 1, 5_000),
         Ok(8_000_000 + 70_000_000),
@@ -2953,12 +3197,12 @@ fn a_card_at(micro_per_unit: f64, fee_minor: i64) -> busbar_kernel_ledger::cost:
     )
 }
 
-#[test]
-fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
+#[tokio::test]
+async fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
     let history = a_full_card_history();
     history.apply(a_card_at(4.0, 0), 6_000);
     let before = history.len();
-    let refused = amend_through_a_journal(&history, &a_correction_body(), ARRIVED + 1);
+    let refused = amend_through_a_journal(&history, &a_correction_body(), ARRIVED + 1).await;
     assert!(
         matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
         "{refused:?}"
@@ -2976,7 +3220,7 @@ fn a_correction_across_a_card_boundary_or_onto_an_absent_plane_is_refused() {
         "rates": [ { "lane": "plane-c\u{1f}hop", "class": "bytes", "micro_per_unit": 1.0 } ],
         "reason": "vendor corrected the March price sheet",
     }));
-    let refused = amend_through_a_journal(&history, &body, ARRIVED);
+    let refused = amend_through_a_journal(&history, &body, ARRIVED).await;
     assert!(
         matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
         "{refused:?}"
@@ -3000,7 +3244,7 @@ fn a_window_correction(from: u64, until: Option<u64>) -> Vec<u8> {
 }
 
 #[cfg(test)]
-fn amend_at(
+async fn amend_at(
     history: &crate::root::kernel::RootHistory,
     body: &[u8],
     arrival_ms: u64,
@@ -3008,20 +3252,21 @@ fn amend_at(
     Result<AdminAnswer, busbar_core_admin::GovernanceError>,
     usize,
 ) {
-    let book = a_memory_book();
+    let book = a_memory_book().await;
     let result = amend_rate_history_effect(
         history,
         Some(&a_journal_over(&book)),
         body,
         arrival_ms / 1_000,
         &an_attribution(),
-    );
-    let records = replayed_amendments(&book.lock().unwrap()).len();
+    )
+    .await;
+    let records = replayed_amendments(&book).await.len();
     (result, records)
 }
 
-#[test]
-fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
+#[tokio::test]
+async fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
     for (from, until) in [
         (DAY_MS + 12 * HOUR_MS, Some(DAY_MS + 18 * HOUR_MS)),
@@ -3030,7 +3275,8 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
         (2 * DAY_MS + 12 * HOUR_MS, Some(3 * DAY_MS + 6 * HOUR_MS)),
     ] {
         let history = a_seeded_history();
-        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        let (result, records) =
+            amend_at(&history, &a_window_correction(from, until), arrival).await;
         assert!(
             matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
             "[{from}, {until:?}) cuts inside a row and must be refused: {result:?}"
@@ -3040,12 +3286,13 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
     }
 }
 
-#[test]
-fn a_correction_on_row_boundaries_applies() {
+#[tokio::test]
+async fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
     for (from, until) in [(DAY_MS, Some(2 * DAY_MS)), (0, Some(2 * DAY_MS))] {
         let history = a_seeded_history();
-        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        let (result, records) =
+            amend_at(&history, &a_window_correction(from, until), arrival).await;
         assert!(
             result.is_ok(),
             "[{from}, {until:?}) cuts no row: {result:?}"
@@ -3060,7 +3307,8 @@ fn a_correction_on_row_boundaries_applies() {
         &history,
         &a_window_correction(era, Some(2 * DAY_MS)),
         arrival,
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "a config apply at a Store bucket boundary permits the complete bucket: {result:?}"
@@ -3068,8 +3316,8 @@ fn a_correction_on_row_boundaries_applies() {
     assert_eq!((history.len(), records), (3, 1));
 }
 
-#[test]
-fn a_config_apply_inside_a_bucket_does_not_permit_a_partial_bucket_correction() {
+#[tokio::test]
+async fn a_config_apply_inside_a_bucket_does_not_permit_a_partial_bucket_correction() {
     let era = DAY_MS + 12 * HOUR_MS;
     let history = a_seeded_history();
     history.apply(a_card_at(4.0, 0), era);
@@ -3077,7 +3325,8 @@ fn a_config_apply_inside_a_bucket_does_not_permit_a_partial_bucket_correction() 
         &history,
         &a_window_correction(era, Some(2 * DAY_MS)),
         2 * DAY_MS + 10 * HOUR_MS,
-    );
+    )
+    .await;
     assert!(matches!(
         result,
         Err(busbar_core_admin::GovernanceError::Validation)
@@ -3085,8 +3334,8 @@ fn a_config_apply_inside_a_bucket_does_not_permit_a_partial_bucket_correction() 
     assert_eq!((history.len(), records), (2, 0));
 }
 
-#[test]
-fn an_open_ended_amend_or_one_ending_after_its_arrival_is_refused() {
+#[tokio::test]
+async fn an_open_ended_amend_or_one_ending_after_its_arrival_is_refused() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
     for (from, until) in [
         (DAY_MS, None),
@@ -3094,7 +3343,8 @@ fn an_open_ended_amend_or_one_ending_after_its_arrival_is_refused() {
         (DAY_MS, Some(arrival + 1)),
     ] {
         let history = a_seeded_history();
-        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        let (result, records) =
+            amend_at(&history, &a_window_correction(from, until), arrival).await;
         assert!(
             matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
             "[{from}, {until:?}) arriving at {arrival} must be refused: {result:?}"
@@ -3107,8 +3357,8 @@ fn an_open_ended_amend_or_one_ending_after_its_arrival_is_refused() {
     }
 }
 
-#[test]
-fn a_future_dated_correction_is_refused_and_appends_nothing() {
+#[tokio::test]
+async fn a_future_dated_correction_is_refused_and_appends_nothing() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
     let future = (3 * DAY_MS, Some(4 * DAY_MS));
     for (from, until) in [
@@ -3117,7 +3367,8 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
         (2 * DAY_MS + 10 * HOUR_MS + 1_000, None),
     ] {
         let history = a_seeded_history();
-        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        let (result, records) =
+            amend_at(&history, &a_window_correction(from, until), arrival).await;
         assert!(
             matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
             "[{from}, {until:?}) opens after the arrival at {arrival} and must be refused: {result:?}"
@@ -3131,7 +3382,8 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
         &history,
         &a_window_correction(future.0, future.1),
         4 * DAY_MS + HOUR_MS,
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "the same window, once past, applies: {result:?}"
@@ -3139,13 +3391,13 @@ fn a_future_dated_correction_is_refused_and_appends_nothing() {
     assert_eq!((history.len(), records), (2, 1));
 }
 
-#[test]
-fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
-    let book = a_memory_book();
+#[tokio::test]
+async fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
+    let book = a_memory_book().await;
     let journal = a_journal_over(&book);
     let history = a_seeded_history();
     let first = a_priced_correction(5, serde_json::json!(1.5));
-    let apply = |body: &[u8], arrival_secs: u64| {
+    let apply = async |body: &[u8], arrival_secs: u64| {
         amend_rate_history_effect(
             &history,
             Some(&journal),
@@ -3153,20 +3405,24 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
             arrival_secs,
             &an_attribution(),
         )
+        .await
     };
-    apply(&first, ARRIVED).expect("the first correction applies");
+    apply(&first, ARRIVED)
+        .await
+        .expect("the first correction applies");
     apply(&a_priced_correction(9, serde_json::json!(3.0)), ARRIVED + 1)
+        .await
         .expect("a later correction of the same window applies");
     assert_eq!(history.len(), 3);
 
-    let replayed = apply(&first, ARRIVED + 2);
+    let replayed = apply(&first, ARRIVED + 2).await;
     assert!(
         matches!(replayed, Err(busbar_core_admin::GovernanceError::Conflict)),
         "the first correction's signed bytes, sent again, must be refused: {replayed:?}"
     );
     assert_eq!(history.len(), 3, "a replay appends nothing");
     assert_eq!(
-        replayed_amendments(&book.lock().unwrap()).len(),
+        replayed_amendments(&book).await.len(),
         2,
         "a replay records nothing"
     );
@@ -3182,11 +3438,11 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
 }
 
 #[cfg(test)]
-struct AmendScratch(std::path::PathBuf, crate::root::store_double::RecordSlots);
+struct AmendScratch(std::path::PathBuf, NativeJournalStore);
 
 #[cfg(test)]
 impl AmendScratch {
-    fn new(tag: &str) -> Self {
+    async fn new(tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "busbar-amend-journal-{tag}-{}-{:?}",
             std::process::id(),
@@ -3194,23 +3450,11 @@ impl AmendScratch {
         ));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("scratch directory");
-        AmendScratch(path, crate::root::store_double::RecordSlots::new())
+        AmendScratch(path, NativeJournalStore::new().await)
     }
 
-    fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
-        let lane =
-            crate::root::durability::JournalLane::start(self.1.calls(), "test-store").unwrap();
-        Arc::new(Mutex::new(
-            crate::root::durability::build_on_store(
-                &crate::root::durability::DurabilityConfig {
-                    data_dir: Some(self.0.clone()),
-                },
-                0,
-                lane,
-                None,
-            )
-            .expect("the Store reads back"),
-        ))
+    async fn book(&self) -> Arc<Mutex<crate::root::durability::Durability>> {
+        self.1.book().await
     }
 }
 
@@ -3232,11 +3476,11 @@ fn a_priced_correction(fee: i64, micro: serde_json::Value) -> Vec<u8> {
     }))
 }
 
-#[test]
-fn a_sealed_amendment_survives_a_restart_with_its_figures() {
-    let scratch = AmendScratch::new("restart");
+#[tokio::test]
+async fn a_sealed_amendment_survives_a_restart_with_its_figures() {
+    let scratch = AmendScratch::new("restart").await;
     {
-        let book = scratch.book();
+        let book = scratch.book().await;
         let history = a_seeded_history();
         amend_rate_history_effect(
             &history,
@@ -3245,13 +3489,14 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
             ARRIVED,
             &an_attribution(),
         )
+        .await
         .expect("the correction applies");
     }
 
-    let restarted = scratch.book();
+    let restarted = scratch.book().await;
     assert!(restarted.lock().unwrap().durable_in_store());
     assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
-    let records = replayed_amendments(&restarted.lock().unwrap());
+    let records = replayed_amendments(&restarted).await;
     assert_eq!(records.len(), 1, "the amendment survived the restart");
     let record = &records[0];
     assert_eq!(record.effective_from, 0);
@@ -3275,8 +3520,8 @@ fn a_sealed_amendment_survives_a_restart_with_its_figures() {
     );
 }
 
-#[test]
-fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
+#[tokio::test]
+async fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
     for (micro, nanos) in [
         (serde_json::json!(1.5), 1_500),
         (serde_json::json!(0.001), 1),
@@ -3284,8 +3529,8 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
         (serde_json::json!(7), 7_000),
         (serde_json::json!(0.0), 0),
     ] {
-        let scratch = AmendScratch::new("exact-rate");
-        let book = scratch.book();
+        let scratch = AmendScratch::new("exact-rate").await;
+        let book = scratch.book().await;
         amend_rate_history_effect(
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
@@ -3293,8 +3538,9 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
             ARRIVED,
             &an_attribution(),
         )
+        .await
         .unwrap_or_else(|e| panic!("{micro} is exactly {nanos} nano-units: {e:?}"));
-        let records = replayed_amendments(&book.lock().unwrap());
+        let records = replayed_amendments(&book).await;
         assert_eq!(
             records[0].rates,
             vec![("gpt".to_string(), "input".to_string(), Some(nanos))],
@@ -3308,8 +3554,8 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
         serde_json::json!(1e30),
         serde_json::json!("1.5"),
     ] {
-        let scratch = AmendScratch::new("inexact-rate");
-        let book = scratch.book();
+        let scratch = AmendScratch::new("inexact-rate").await;
+        let book = scratch.book().await;
         let history = a_seeded_history();
         let before = history.history().expect("a history").len();
         let refused = amend_rate_history_effect(
@@ -3318,7 +3564,8 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
             &a_priced_correction(0, micro.clone()),
             ARRIVED,
             &an_attribution(),
-        );
+        )
+        .await;
         assert!(
             matches!(refused, Err(busbar_core_admin::GovernanceError::Validation)),
             "{micro} is not an exact integer of nano-units and must be refused: {refused:?}"
@@ -3329,17 +3576,17 @@ fn a_correction_rate_is_sealed_as_an_exact_integer_or_refused() {
             "{micro}: a refused correction appends nothing to the history"
         );
         assert!(
-            replayed_amendments(&book.lock().unwrap()).is_empty(),
+            replayed_amendments(&book).await.is_empty(),
             "{micro}: a refused correction journals nothing"
         );
     }
 }
 
-#[test]
-fn a_thousand_later_amendments_do_not_erase_the_first() {
-    let scratch = AmendScratch::new("volume");
+#[tokio::test]
+async fn a_thousand_later_amendments_do_not_erase_the_first() {
+    let scratch = AmendScratch::new("volume").await;
     {
-        let book = scratch.book();
+        let book = scratch.book().await;
         let journal = a_journal_over(&book);
         let history = a_seeded_history();
         amend_rate_history_effect(
@@ -3349,6 +3596,7 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             ARRIVED,
             &an_attribution(),
         )
+        .await
         .expect("the first correction applies");
 
         for fee in 8..1_008 {
@@ -3359,13 +3607,14 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
                 ARRIVED + 1,
                 &an_attribution(),
             )
+            .await
             .expect("a later correction applies");
         }
     }
-    let restarted = scratch.book();
+    let restarted = scratch.book().await;
     assert!(restarted.lock().unwrap().durable_in_store());
     assert_eq!(std::fs::read_dir(&scratch.0).unwrap().count(), 0);
-    let records = replayed_amendments(&restarted.lock().unwrap());
+    let records = replayed_amendments(&restarted).await;
     assert_eq!(records.len(), 1_001, "every amendment is on the journal");
     assert_eq!(
         records[0].sealed_fee, 7,
@@ -3378,8 +3627,8 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
     assert_eq!(records[0].amended_at_ms, ARRIVED * 1_000);
 }
 
-#[test]
-fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
+#[tokio::test]
+async fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
     let history = a_seeded_history();
     let err = amend_rate_history_effect(
         &history,
@@ -3388,11 +3637,12 @@ fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
         ARRIVED,
         &an_attribution(),
     )
+    .await
     .expect_err("no journal, no amendment");
     assert!(matches!(err, busbar_core_admin::GovernanceError::Store));
     assert_eq!(history.len(), 1);
 
-    let book = a_memory_book();
+    let book = a_memory_book().await;
     amend_rate_history_effect(
         &history,
         Some(&a_journal_over(&book)),
@@ -3400,14 +3650,15 @@ fn an_amendment_with_no_journal_bound_is_refused_and_appends_nothing() {
         ARRIVED,
         &an_attribution(),
     )
+    .await
     .expect("with a journal the correction applies");
     assert_eq!(history.len(), 2);
-    assert_eq!(replayed_amendments(&book.lock().unwrap()).len(), 1);
+    assert_eq!(replayed_amendments(&book).await.len(), 1);
 }
 
-#[test]
-fn a_refused_amendment_leaves_no_record() {
-    let book = a_memory_book();
+#[tokio::test]
+async fn a_refused_amendment_leaves_no_record() {
+    let book = a_memory_book().await;
     let history = a_seeded_history();
     amend_rate_history_effect(
         &history,
@@ -3416,13 +3667,14 @@ fn a_refused_amendment_leaves_no_record() {
         ARRIVED,
         &an_attribution(),
     )
+    .await
     .expect_err("refused");
     assert_eq!(history.len(), 1);
-    assert!(replayed_amendments(&book.lock().unwrap()).is_empty());
+    assert!(replayed_amendments(&book).await.is_empty());
 }
 
-#[test]
-fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price() {
+#[tokio::test]
+async fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price() {
     let cases: &[serde_json::Value] = &[
         serde_json::json!({ "effective_from": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}] }),
         serde_json::json!({ "effective_from": 9, "effective_until": 1, "rates": [{"lane":"gpt","class":"input","micro_per_unit":1.0}], "reason": "r" }),
@@ -3433,6 +3685,7 @@ fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price(
         let history = a_seeded_history();
         let body = serde_json::to_vec(case).expect("serialises");
         let err = amend_through_a_journal(&history, &body, ARRIVED)
+            .await
             .expect_err("a malformed correction must be refused");
         assert!(
             matches!(err, busbar_core_admin::GovernanceError::Validation),
@@ -3447,29 +3700,31 @@ fn amend_rate_history_refuses_a_correction_that_names_no_reason_window_or_price(
 
     let history = a_seeded_history();
     assert!(matches!(
-        amend_through_a_journal(&history, b"not json", ARRIVED),
+        amend_through_a_journal(&history, b"not json", ARRIVED).await,
         Err(busbar_core_admin::GovernanceError::Validation)
     ));
     assert_eq!(history.len(), 1);
 }
 
-#[test]
-fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
+#[tokio::test]
+async fn amend_rate_history_refuses_when_there_is_no_history_to_amend() {
     let empty = crate::root::kernel::RootHistory::default();
     let err = amend_through_a_journal(&empty, &a_correction_body(), ARRIVED)
+        .await
         .expect_err("an empty history cannot be amended");
     assert!(matches!(err, busbar_core_admin::GovernanceError::NotFound));
     assert_eq!(empty.len(), 0);
 }
 
-#[test]
-fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
+#[tokio::test]
+async fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     let history = a_seeded_history();
     let body = a_correction_body();
     let doc: serde_json::Value = serde_json::from_slice(&body).expect("the body is JSON");
     assert!(doc.get("signature").is_none() && doc.get("operator_fingerprint").is_none());
-    let answer =
-        amend_through_a_journal(&history, &body, ARRIVED).expect("an unsigned correction applies");
+    let answer = amend_through_a_journal(&history, &body, ARRIVED)
+        .await
+        .expect("an unsigned correction applies");
     assert_eq!(answer.status, 200);
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
@@ -3479,14 +3734,15 @@ fn amend_rate_history_applies_a_correction_that_carries_no_signature() {
     assert_eq!(history.len(), 2, "the correction appended one entry");
 }
 
-#[test]
-fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
+#[tokio::test]
+async fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
     let history = a_seeded_history();
     let mut doc: serde_json::Value =
         serde_json::from_slice(&a_correction_body()).expect("the body is JSON");
     doc["operator_fingerprint"] = serde_json::json!("a-fingerprint-nothing-checks");
     doc["signature"] = serde_json::json!("00".repeat(64));
     let answer = amend_through_a_journal(&history, &a_body(doc), ARRIVED)
+        .await
         .expect("a body carrying a stale signature still applies");
     let doc: serde_json::Value = serde_json::from_slice(&answer.body).expect("JSON");
     assert!(
@@ -3496,8 +3752,8 @@ fn amend_rate_history_ignores_a_signature_a_body_still_carries() {
 }
 
 #[cfg(feature = "root-admin")]
-#[test]
-fn a_signed_record_verifies_against_the_served_audit_keys() {
+#[tokio::test]
+async fn a_signed_record_verifies_against_the_served_audit_keys() {
     use busbar_contract::caps::{OriginKind, Outcome as UnitOutcome, UnitKey};
     use busbar_kernel_audit::{
         Audit as _, AuditChain, AuditInputs, AuditVerifyingKey, Controls, FinishClass, OpClassId,
@@ -3537,11 +3793,12 @@ fn a_signed_record_verifies_against_the_served_audit_keys() {
         correlation_label: None,
     };
     let audit_token = an_audit_pass();
-    let served_keys = |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
+    let served_keys = async |units: crate::root::kernel::ProductionUnits| -> Vec<String> {
         let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
         let served: serde_json::Value = serde_json::from_slice(
             &node
                 .answer(a_ledger_request("/api/v1/admin/audit/keys"))
+                .await
                 .body,
         )
         .expect("valid JSON");
@@ -3554,25 +3811,27 @@ fn a_signed_record_verifies_against_the_served_audit_keys() {
     };
 
     let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         durability.record.seal(inputs(), &audit_token)
     };
     assert!(
-        served_keys(units).is_empty(),
+        served_keys(units).await.is_empty(),
         "a keyless node publishes no key"
     );
     assert!(record.signature.is_none());
 
     let units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door());
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch), open_door())
+            .await;
     let record = {
         let mut durability = units.durability.lock().expect("durability lock");
         crate::root::keyset::bind_ephemeral(&mut durability).expect("the keyset binds");
         durability.record.seal(inputs(), &audit_token)
     };
-    let published = served_keys(units);
+    let published = served_keys(units).await;
     assert_eq!(published.len(), 1, "the one deployment key is published");
     let key = AuditVerifyingKey::from_hex(&published[0]).expect("a published public key");
     assert_eq!(record.key_id.as_deref(), Some(key.key_id()));
@@ -3581,20 +3840,10 @@ fn a_signed_record_verifies_against_the_served_audit_keys() {
 }
 
 #[cfg(test)]
-fn a_book_over_the_store(
-    slots: &crate::root::store_double::RecordSlots,
+async fn a_book_over_the_store(
+    slots: &NativeJournalStore,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store")
-        .expect("the lane starts");
-    Arc::new(Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            0,
-            lane,
-            None,
-        )
-        .expect("the store reads back"),
-    ))
+    slots.book().await
 }
 
 #[cfg(test)]
@@ -3605,11 +3854,11 @@ fn status_and_body(answer: &AdminAnswer) -> (u16, String) {
     )
 }
 
-#[test]
-fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_restart() {
-    let slots = crate::root::store_double::RecordSlots::new();
+#[tokio::test]
+async fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_restart() {
+    let slots = NativeJournalStore::new().await;
     {
-        let book = a_book_over_the_store(&slots);
+        let book = a_book_over_the_store(&slots).await;
         let answered = amend_rate_history_effect(
             &a_seeded_history(),
             Some(&a_journal_over(&book)),
@@ -3617,12 +3866,13 @@ fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_r
             ARRIVED,
             &an_attribution(),
         )
+        .await
         .expect("the correction applies");
         let (status, body) = status_and_body(&answered);
         assert_eq!(status, 200, "{body}");
     }
-    let restarted = a_book_over_the_store(&slots);
-    let records = replayed_amendments(&restarted.lock().unwrap());
+    let restarted = a_book_over_the_store(&slots).await;
+    let records = replayed_amendments(&restarted).await;
     assert_eq!(
         records.len(),
         1,
@@ -3631,11 +3881,11 @@ fn a_correction_on_a_node_with_no_data_dir_is_kept_by_the_store_and_survives_a_r
     assert_eq!(records[0].sealed_fee, 5);
 }
 
-#[test]
-fn a_correction_the_store_refuses_answers_503_with_the_reason() {
-    let slots = crate::root::store_double::RecordSlots::new();
+#[tokio::test]
+async fn a_correction_the_store_refuses_answers_503_with_the_reason() {
+    let slots = NativeJournalStore::new().await;
     slots.refuse(true);
-    let book = a_book_over_the_store(&slots);
+    let book = a_book_over_the_store(&slots).await;
     let answered = amend_rate_history_effect(
         &a_seeded_history(),
         Some(&a_journal_over(&book)),
@@ -3643,11 +3893,12 @@ fn a_correction_the_store_refuses_answers_503_with_the_reason() {
         ARRIVED,
         &an_attribution(),
     )
+    .await
     .expect("an answer, not an error");
     let (status, body) = status_and_body(&answered);
     assert_eq!(status, 503, "{body}");
     assert!(
-        body.contains("the test store refuses writes"),
+        body.contains("Unavailable"),
         "the store's reason is stated: {body}"
     );
 
@@ -3659,6 +3910,7 @@ fn a_correction_the_store_refuses_answers_503_with_the_reason() {
         ARRIVED + 1,
         &an_attribution(),
     )
+    .await
     .expect("an answer");
     assert_eq!(status_and_body(&again).0, 503);
     assert_eq!(
@@ -3668,16 +3920,17 @@ fn a_correction_the_store_refuses_answers_503_with_the_reason() {
     );
 }
 
-#[test]
-fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
+#[tokio::test]
+async fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
     let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
         .expect("json");
 
-    let refusing = crate::root::store_double::RecordSlots::new();
+    let refusing = NativeJournalStore::new().await;
     refusing.refuse(true);
-    let book = a_book_over_the_store(&refusing);
+    let book = a_book_over_the_store(&refusing).await;
     let answer =
         bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .await
             .expect("an answer");
     assert_eq!(
         answer.status,
@@ -3685,12 +3938,13 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
         "{}",
         String::from_utf8_lossy(&answer.body)
     );
-    assert!(String::from_utf8_lossy(&answer.body).contains("the test store refuses writes"));
+    assert!(String::from_utf8_lossy(&answer.body).contains("Unavailable"));
 
-    let taking = crate::root::store_double::RecordSlots::new();
-    let book = a_book_over_the_store(&taking);
+    let taking = NativeJournalStore::new().await;
+    let book = a_book_over_the_store(&taking).await;
     let answer =
         bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .await
             .expect("an answer");
     assert_eq!(
         answer.status,
@@ -3698,60 +3952,37 @@ fn commit_upgrade_answers_only_once_the_store_kept_its_record() {
         "{}",
         String::from_utf8_lossy(&answer.body)
     );
-    assert!(taking.rows_under(crate::root::durability::JOURNAL_SCHEMA) >= 1);
+    assert!(book.lock().unwrap().journal.next_seq() > 1);
 }
 
 #[cfg(test)]
-struct SwitchShipper(Arc<std::sync::atomic::AtomicBool>);
-
-#[cfg(test)]
-impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for SwitchShipper {
-    fn ship(
-        &mut self,
-        _records: &[busbar_kernel_wal::Record],
-    ) -> Result<(), busbar_kernel_wal::ShipError> {
-        if self.0.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(busbar_kernel_wal::ShipError::Unavailable(
-                "the store is not answering".into(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-fn a_book_whose_store_switches(
+async fn a_book_whose_store_switches(
     refusing: &Arc<std::sync::atomic::AtomicBool>,
 ) -> Arc<Mutex<crate::root::durability::Durability>> {
-    Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(SwitchShipper(Arc::clone(refusing))),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
-    ))
+    NativeJournalStore::switching(Arc::clone(refusing))
+        .await
+        .book()
+        .await
 }
 
 #[cfg(test)]
-fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>) {
-    book.lock()
-        .unwrap()
-        .journal
-        .append(
-            &crate::root::kernel::new_kernel().durability_token(),
-            busbar_contract::caps::StepName::Meter,
-            &[
-                busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1])
-                    .at(7, 0),
-            ],
-        )
-        .expect("the store answers again and the next record lands");
+async fn append_the_next_record(book: &Arc<Mutex<crate::root::durability::Durability>>) {
+    let journal = Arc::clone(&book.lock().unwrap().journal);
+    let run = journal
+        .stage_run(&[
+            busbar_kernel_wal::Entry::new(busbar_kernel_wal::RecordClass::Load, vec![1]).at(7, 0),
+        ])
+        .expect("stage exact next record");
+    journal
+        .confirm(&run)
+        .await
+        .expect("native Store confirms original runs before the next record");
 }
 
-#[test]
-fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
+#[tokio::test]
+async fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
     let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let book = a_book_whose_store_switches(&refusing);
+    let book = a_book_whose_store_switches(&refusing).await;
     refusing.store(true, std::sync::atomic::Ordering::SeqCst);
     let history = a_seeded_history();
     let answered = amend_rate_history_effect(
@@ -3761,6 +3992,7 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
         ARRIVED,
         &an_attribution(),
     )
+    .await
     .expect("a correction the journal chained is answered, never refused as unrecorded");
     let (status, body) = status_and_body(&answered);
     assert_eq!(status, 503, "{body}");
@@ -3772,9 +4004,9 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
     );
 
     refusing.store(false, std::sync::atomic::Ordering::SeqCst);
-    append_the_next_record(&book);
+    append_the_next_record(&book).await;
     assert_eq!(
-        replayed_amendments(&book.lock().unwrap()).len(),
+        replayed_amendments(&book).await.len(),
         1,
         "the retained record landed on the chain a restart rebuilds the history from"
     );
@@ -3786,7 +4018,8 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
                 &a_priced_correction(5, serde_json::json!(1.5)),
                 ARRIVED + 1,
                 &an_attribution(),
-            ),
+            )
+            .await,
             Err(busbar_core_admin::GovernanceError::Conflict)
         ),
         "a re-submission is refused: the correction is already applied"
@@ -3794,46 +4027,42 @@ fn a_correction_the_journal_retained_is_in_force_and_answered_not_yet_kept() {
     assert_eq!(history.len(), 2);
 }
 
-#[test]
-fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
+#[tokio::test]
+async fn a_commit_the_journal_retained_is_answered_not_yet_kept_and_lands() {
     let refusing = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let book = a_book_whose_store_switches(&refusing);
+    let book = a_book_whose_store_switches(&refusing).await;
     refusing.store(true, std::sync::atomic::Ordering::SeqCst);
     let body = serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE }))
         .expect("json");
     let answer =
         bound::commit_upgrade_effect(&body, 1_700_000_000, "admin", Some(&a_journal_over(&book)))
+            .await
             .expect("a commit the journal chained is answered, never refused as unrecorded");
     let text = String::from_utf8_lossy(&answer.body).into_owned();
     assert_eq!(answer.status, 503, "{text}");
     assert!(text.contains("do not re-submit"), "{text}");
 
     refusing.store(false, std::sync::atomic::Ordering::SeqCst);
-    append_the_next_record(&book);
-    let commits = book
-        .lock()
-        .unwrap()
-        .journal
-        .replay()
-        .expect("the journal reads back")
-        .expect("the journal verifies")
-        .iter()
-        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        .count();
+    append_the_next_record(&book).await;
+    let commits = replayed_amendments(&book).await.len();
     assert_eq!(commits, 1, "the retained commit landed on the chain");
 }
 
-#[test]
-fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
-    let slots = crate::root::store_double::RecordSlots::new();
-    let book = a_book_over_the_store(&slots);
+#[tokio::test]
+async fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
+    let slots = NativeJournalStore::new().await;
+    let book = a_book_over_the_store(&slots).await;
     let journal = Arc::new(a_journal_over(&book));
-    append_the_next_record(&book);
+    append_the_next_record(&book).await;
     journal
         .acked(journal.sealed_through())
+        .await
         .expect("healthy journal");
-    journal.admit().expect("admitted before the store pends");
-    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
+    journal
+        .admit()
+        .await
+        .expect("admitted before the store pends");
+    let store = crate::root::real_store::admin_scoped().await;
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let mut request = a_request();
     request.method = "POST".into();
@@ -3843,9 +4072,9 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
     let cache = Arc::new(bound::ReplayCache::new());
     let admin = crate::root::kernel::new_kernel().admin_token();
-    let ask = |cache: Arc<bound::ReplayCache>,
-               request: &AdminRequest,
-               journal: Option<Arc<AmendmentJournal>>| {
+    let ask = async |cache: Arc<bound::ReplayCache>,
+                     request: &AdminRequest,
+                     journal: Option<Arc<AmendmentJournal>>| {
         let governance = CoreGovernance::new(
             Arc::new(RefusingDispatch),
             Arc::new(UnopenedLedger),
@@ -3866,9 +4095,10 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
             &admin,
             &request.body,
         )
+        .await
         .expect("the production caller answers")
     };
-    struct Unpause<'a>(&'a crate::root::store_double::RecordSlots);
+    struct Unpause<'a>(&'a NativeJournalStore);
     impl Drop for Unpause<'_> {
         fn drop(&mut self) {
             self.0.pause(false);
@@ -3876,7 +4106,7 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     }
     slots.pause(true);
     let release = Unpause(&slots);
-    let first = ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal)));
+    let first = ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await;
     assert_eq!(
         first.status,
         503,
@@ -3889,14 +4119,15 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     drop(release);
     journal
         .acked(sealed)
+        .await
         .expect("the first receipt is now acknowledged");
     assert_eq!(
-        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))),
+        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first
     );
     request.at += busbar_core_admin::idempotency::IDEMPOTENCY_TTL_SECS + 1;
     assert_eq!(
-        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))),
+        ask(Arc::clone(&cache), &request, Some(Arc::clone(&journal))).await,
         first,
         "TTL cannot release the retained receipt"
     );
@@ -3905,12 +4136,13 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
             Arc::new(bound::ReplayCache::new()),
             &request,
             Some(Arc::clone(&journal))
-        ),
+        )
+        .await,
         first,
         "restart keeps the receipt"
     );
     assert_eq!(
-        ask(Arc::new(bound::ReplayCache::new()), &request, None),
+        ask(Arc::new(bound::ReplayCache::new()), &request, None).await,
         first,
         "a sibling cannot replace the originating receipt"
     );
@@ -3919,7 +4151,11 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
         sealed,
         "reconciliation seals nothing"
     );
-    let chain = { book.lock().unwrap().chain_at() }.read().unwrap().unwrap();
+    let chain = { book.lock().unwrap().chain_at() }
+        .read()
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         chain
             .iter()
@@ -3929,17 +4165,17 @@ fn a_keyed_commit_with_a_late_store_ack_seals_one_policy() {
     );
 }
 
-#[test]
-fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
-    let book = a_memory_book();
+#[tokio::test]
+async fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
+    let book = a_memory_book().await;
     let journal = a_journal_over(&book);
-    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
+    let store = crate::root::real_store::admin_scoped().await;
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&store)));
     let cache = bound::ReplayCache::new();
     let mut request = a_request();
     request.headers = vec![("idempotency-key".into(), "corrected-commit".into())];
     request.body = br#"{"version":"not-this-binary"}"#.to_vec();
-    let ask = |request: &AdminRequest| {
+    let ask = async |request: &AdminRequest| {
         bound::replayable(
             &cache,
             Some(&replay_store),
@@ -3950,12 +4186,16 @@ fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
             request,
             &request.body,
             Some(&journal),
-            || bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal)),
+            || async {
+                bound::commit_upgrade_effect(&request.body, request.at, "admin", Some(&journal))
+                    .await
+            },
         )
+        .await
         .expect("the write answers")
     };
     let before = journal.sealed_through();
-    assert_eq!(ask(&request).status, 409);
+    assert_eq!(ask(&request).await.status, 409);
     assert_eq!(
         journal.sealed_through(),
         before,
@@ -3963,15 +4203,15 @@ fn a_keyed_commit_refused_before_sealing_accepts_corrected_input() {
     );
     request.body =
         serde_json::to_vec(&serde_json::json!({ "version": bound::RUNNING_RELEASE })).unwrap();
-    let accepted = ask(&request);
+    let accepted = ask(&request).await;
     assert_eq!(accepted.status, 200);
-    assert_eq!(ask(&request), accepted);
+    assert_eq!(ask(&request).await, accepted);
     assert_eq!(journal.sealed_through(), before + 1);
 }
 
-#[test]
+#[tokio::test]
 #[cfg(feature = "root-admin")]
-fn route_refuses_a_unit_whose_grant_was_never_recorded() {
+async fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let admin = crate::root::kernel::new_kernel().admin_token();
     let binding = AdminBinding::new(Arc::new(AnsweringDispatch), open_door());
     let mut request = a_request();
@@ -3980,7 +4220,7 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     let mut walk = AdminWalk::new(request);
     decode(&mut walk).expect("the plane's table declares this operation");
 
-    let outcome = route(&binding, None, &admin, &mut walk);
+    let outcome = route(&binding, None, &admin, &mut walk).await;
     assert_eq!(
         outcome,
         Err(ReasonCode::ScopeDenied),
@@ -3988,9 +4228,9 @@ fn route_refuses_a_unit_whose_grant_was_never_recorded() {
     );
 }
 
-#[test]
-fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
-    let store: Arc<dyn busbar_contract::records::RecordStore> = crate::root::real_store::records();
+#[tokio::test]
+async fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
+    let store = crate::root::real_store::admin_scoped().await;
     let held = Arc::clone(&store);
     let replay_store: bound::ReplayStore = Arc::new(move || Some(Arc::clone(&held)));
     let request = AdminRequest {
@@ -4003,7 +4243,7 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
         unit: a_fresh_unit(),
     };
     let ran = std::sync::atomic::AtomicUsize::new(0);
-    let effect = || {
+    let effect = || async {
         let n = ran.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(bound::EffectAnswer::applied(AdminAnswer {
             status: 201,
@@ -4023,6 +4263,7 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
         None,
         effect,
     )
+    .await
     .expect("the first write answers");
 
     let retried = bound::replayable(
@@ -4037,6 +4278,7 @@ fn a_keyed_write_retried_after_a_restart_replays_and_runs_nothing_again() {
         None,
         effect,
     )
+    .await
     .expect("the retry answers");
     assert_eq!(retried, first, "the retry answers the first answer's bytes");
     assert_eq!(
@@ -4055,12 +4297,15 @@ async fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     let book: Arc<std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>> =
         Arc::new(std::sync::OnceLock::new());
     let kept = Arc::clone(&book);
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
+            .await;
     let wrapped = mount(
         inner,
         busbar_kernel::teller::Kernel::new(),
         1024,
         move |dispatch| {
-            let units = crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door());
+            units.admin.dispatch = dispatch;
             let _ = kept.set(Arc::clone(&units.durability));
             units
         },
@@ -4120,9 +4365,18 @@ async fn a_claimed_length_is_checked_against_the_bytes_not_trusted() {
     use tower::ServiceExt;
 
     let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-    let wrapped = mount(inner, busbar_kernel::teller::Kernel::new(), 4, |dispatch| {
-        crate::root::kernel::ProductionUnits::admin_only(dispatch, open_door())
-    });
+    let mut units =
+        crate::root::kernel::ProductionUnits::admin_only(Arc::new(RefusingDispatch), open_door())
+            .await;
+    let wrapped = mount(
+        inner,
+        busbar_kernel::teller::Kernel::new(),
+        4,
+        move |dispatch| {
+            units.admin.dispatch = dispatch;
+            units
+        },
+    );
     let request = axum::http::Request::builder()
         .method("POST")
         .uri("/api/v1/admin/keys")

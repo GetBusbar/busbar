@@ -142,15 +142,11 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -163,13 +159,15 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -178,6 +176,7 @@ async fn test_admin_v1_config_versions_rollback_and_diff() {
     let app = Arc::new(app);
     busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("the actual root hydrates audit storage before admin mutations");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -408,15 +407,11 @@ async fn test_admin_v1_config_plane_golden_path() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -429,13 +424,15 @@ async fn test_admin_v1_config_plane_golden_path() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -444,6 +441,7 @@ async fn test_admin_v1_config_plane_golden_path() {
     let app = Arc::new(app);
     busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("the actual root hydrates the audit stream before admin mutations");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -499,7 +497,8 @@ async fn test_admin_v1_config_plane_golden_path() {
         .any(|h| h["name"] == name));
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 1);
     assert_eq!(get("/api/v1/admin/config".into()).await["version"], 1);
-    assert!(busbar_kernel::config::overlay::read(&overlay)
+    assert!(busbar_kernel::config::overlay::read_async(&overlay)
+        .await
         .unwrap()
         .hooks
         .contains_key(name));
@@ -528,7 +527,8 @@ async fn test_admin_v1_config_plane_golden_path() {
         0
     );
     assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 2);
-    assert!(!busbar_kernel::config::overlay::read(&overlay)
+    assert!(!busbar_kernel::config::overlay::read_async(&overlay)
+        .await
         .unwrap()
         .hooks
         .contains_key(name));
@@ -675,15 +675,11 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -696,13 +692,15 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds rate-card history and usage recovery before activation");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(
         app.hook_env.registry.resolve("test-hook").is_some(),
@@ -711,6 +709,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
     let app = Arc::new(app);
     busbar_kernel::admin::seam::record_boot(&app);
     busbar_kernel::boot::hydrate_all(&app)
+        .await
         .expect("the actual root hydrates audit storage before admin mutations");
     let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -765,7 +764,9 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
     );
 
     assert_eq!(create_group("second_team").await, 201);
-    let doc = busbar_kernel::config::overlay::read(&overlay).expect("overlay still readable");
+    let doc = busbar_kernel::config::overlay::read_async(&overlay)
+        .await
+        .expect("overlay still readable");
     assert!(
         doc.groups.contains_key("api_team"),
         "the next group write must not erase the earlier one from the overlay"

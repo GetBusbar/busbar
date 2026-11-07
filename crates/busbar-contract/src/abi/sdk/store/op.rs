@@ -62,7 +62,7 @@ impl Drop for Parked {
     }
 }
 
-/// ONE STORE OP'S CONTEXT, handed to every [`StoreSlots`](super::StoreSlots) method.
+/// One native persistence operation's connection and continuation context.
 pub struct Op<'a> {
     ticket: Ticket,
     resuming: bool,

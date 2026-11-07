@@ -52,12 +52,12 @@ const fn c(
     }
 }
 
-fn gov_with_signer(
-    store: Arc<dyn busbar_kernel::governance::RecordStore>,
+async fn gov_with_signer(
+    store: Arc<busbar_kernel::persistence::facade::CoreStore>,
     admin_token: Option<String>,
 ) -> Arc<GovState> {
     Arc::new(
-        GovState::new_with_signer(
+        GovState::new_with_core(
             store,
             admin_token,
             Some(
@@ -67,6 +67,7 @@ fn gov_with_signer(
                 ),
             ),
         )
+        .await
         .unwrap(),
     )
 }
@@ -86,8 +87,8 @@ async fn spin_up(
 
 async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     crate::distribution::admin_cross_plane::ensure_seam();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let card: std::collections::BTreeMap<String, busbar_kernel::config::RateEntryCfg> =
         std::collections::BTreeMap::from([(
             "m".to_string(),
@@ -117,7 +118,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
     let cost = busbar_kernel::cost::CostModel::resolve_parts(Some(&card), 0, &groups);
     let now = busbar_kernel::store::now();
     let (minted, _secret) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 ..Default::default()
@@ -125,6 +126,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             now + 3600,
             now,
         )
+        .await
         .unwrap();
 
     let app = {
@@ -170,7 +172,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -180,20 +182,22 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -204,11 +208,15 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             ..Default::default()
         };
         let rates = historical.rates();
-        busbar_kernel::rate_apply::with_origin("historical unpriced usage fixture", || {
-            busbar_kernel::rate_apply::prepare(&historical, &rates.raw())
-        })
+        busbar_kernel::rate_apply::prepare_with_origin(
+            &historical,
+            &rates.raw(),
+            "historical unpriced usage fixture",
+        )
+        .await
         .expect("the actual Store prepares the historical unpriced card")
         .confirm_activation()
+        .await
         .expect("the actual Store confirms the historical card's activation")
         .commit();
         let now = busbar_kernel::store::now();
@@ -225,7 +233,7 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
             ..Default::default()
         };
         gov.record_metering(&minted.id, "m", "vendor", Some(&usage), now);
-        gov.flush_metering();
+        gov.flush_metering().await;
         app.governance = Some(gov);
         app.cost = std::sync::Arc::new(cost);
 
@@ -276,11 +284,12 @@ async fn assert_unpriced_usage_read_is_named(prefix: &str) {
 async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
     use http_body_util::BodyExt;
     crate::distribution::admin_cross_plane::ensure_seam();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
-            .expect("the actual Store opens the overlay");
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
+        crate::root::real_store::core().await,
+    )
+    .expect("the actual Store opens the overlay");
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -324,7 +333,7 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -334,20 +343,22 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -423,8 +434,8 @@ async fn config_apply_accepts_a_plane_section_and_moves_that_planes_own_fee() {
 #[tokio::test]
 async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
     crate::distribution::admin_cross_plane::ensure_seam();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -468,7 +479,7 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -478,20 +489,22 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -601,8 +614,8 @@ fn budget_limit(cents: u64) -> busbar_kernel::config::groups::LimitCfg {
 /// a refused mint is an attempt to issue a credential, and it must leave a trace.
 async fn drive_key_cap_and_delegation_errors() {
     crate::distribution::admin_cross_plane::ensure_seam();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let groups = std::collections::BTreeMap::from([
         (
             "capped".to_string(),
@@ -662,7 +675,7 @@ async fn drive_key_cap_and_delegation_errors() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -672,20 +685,22 @@ async fn drive_key_cap_and_delegation_errors() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -698,7 +713,7 @@ async fn drive_key_cap_and_delegation_errors() {
         let inner = Arc::get_mut(&mut app).expect("sole owner");
         inner.max_keys_per_principal = 2;
     }
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
@@ -839,8 +854,8 @@ async fn key_cap_and_delegation_refusals_are_reachable_declared_and_audited() {
 #[tokio::test]
 async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape() {
     crate::distribution::admin_cross_plane::ensure_seam();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -897,7 +912,7 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
         );
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -907,20 +922,22 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -975,7 +992,8 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200, "{:?}", r.text().await);
     assert!(
-        busbar_kernel::config::overlay::read(&overlay.clone())
+        busbar_kernel::config::overlay::read_async(&overlay.clone())
+            .await
             .expect("overlay written")
             .named_maps
             .get("export")
@@ -1012,7 +1030,8 @@ async fn test_admin_v1_overlay_reset_named_map_section_reverts_to_base() {
     );
 
     assert!(
-        busbar_kernel::config::overlay::read(&overlay.clone())
+        busbar_kernel::config::overlay::read_async(&overlay.clone())
+            .await
             .is_none_or(|d| !d.named_maps.contains_key("export")),
         "the overlay `export` section is cleared in the configured Store"
     );
@@ -1091,10 +1110,11 @@ async fn test_admin_v1_overlay_reset_named_map_refuses_a_dangling_reference() {
 async fn serve_keys_fixture(
     fixture: KeysFixture,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    let store: Arc<dyn busbar_kernel::governance::RecordStore> = crate::root::real_store::store();
+    let store: Arc<busbar_kernel::persistence::facade::CoreStore> =
+        crate::root::real_store::core().await;
     let app = match fixture {
         KeysFixture::Signing => {
-            let gov = gov_with_signer(store, Some("admintok".to_string()));
+            let gov = gov_with_signer(store, Some("admintok".to_string())).await;
             {
                 crate::distribution::admin_cross_plane::ensure_seam();
                 let directory = super::plugins::scratch(&format!(
@@ -1141,7 +1161,7 @@ async fn serve_keys_fixture(
                     .expect("the actual admin deployment resolves");
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-                let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+                let (mut app, rotate, limits) = crate::root::real_store::build_app(
                     cfg,
                     super::plugins::trusted_config(&directory),
                     None,
@@ -1151,21 +1171,24 @@ async fn serve_keys_fixture(
                     None,
                     &rules,
                 )
+                .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, "configured-store").expect(
-                    "the actual configured Store binds boot rate history before activation",
-                );
-                limits.keep().expect("the product limits commit");
+                let _book = crate::root::boot::book(&app, "configured-store")
+                    .await
+                    .expect(
+                        "the actual configured Store binds boot rate history before activation",
+                    );
+                limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
-                    rotate();
+                    rotate.await;
                 }
                 app.overlay_path = Some(
-                    busbar_kernel::config::overlay::OverlayStore::new(
+                    busbar_kernel::config::overlay::OverlayStore::from_core(
                         app.governance
                             .as_ref()
                             .expect("the actual root opened governance")
-                            .store_calls()
+                            .core_store_handle()
                             .expect("the actual Store exposes its calls"),
                     )
                     .expect("the actual Store opens its overlay"),
@@ -1177,7 +1200,9 @@ async fn serve_keys_fixture(
         }
         KeysFixture::NoSigner => {
             let gov = Arc::new(
-                GovState::new_with_signer(store, Some("admintok".to_string()), None).unwrap(),
+                GovState::new_with_core(store, Some("admintok".to_string()), None)
+                    .await
+                    .unwrap(),
             );
             {
                 crate::distribution::admin_cross_plane::ensure_seam();
@@ -1225,7 +1250,7 @@ async fn serve_keys_fixture(
                     .expect("the actual admin deployment resolves");
                 let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                     as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-                let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+                let (mut app, rotate, limits) = crate::root::real_store::build_app(
                     cfg,
                     super::plugins::trusted_config(&directory),
                     None,
@@ -1235,21 +1260,24 @@ async fn serve_keys_fixture(
                     None,
                     &rules,
                 )
+                .await
                 .expect("the product root builds the actual admin application");
                 limits.stage_boot();
-                let _book = crate::root::boot::book(&app, "configured-store").expect(
-                    "the actual configured Store binds boot rate history before activation",
-                );
-                limits.keep().expect("the product limits commit");
+                let _book = crate::root::boot::book(&app, "configured-store")
+                    .await
+                    .expect(
+                        "the actual configured Store binds boot rate history before activation",
+                    );
+                limits.keep().await.expect("the product limits commit");
                 if let Some(rotate) = rotate {
-                    rotate();
+                    rotate.await;
                 }
                 app.overlay_path = Some(
-                    busbar_kernel::config::overlay::OverlayStore::new(
+                    busbar_kernel::config::overlay::OverlayStore::from_core(
                         app.governance
                             .as_ref()
                             .expect("the actual root opened governance")
-                            .store_calls()
+                            .core_store_handle()
                             .expect("the actual Store exposes its calls"),
                     )
                     .expect("the actual Store opens its overlay"),
@@ -1303,7 +1331,7 @@ async fn serve_keys_fixture(
                 .expect("the actual admin deployment resolves");
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-            let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            let (mut app, rotate, limits) = crate::root::real_store::build_app(
                 cfg,
                 super::plugins::trusted_config(&directory),
                 None,
@@ -1313,20 +1341,22 @@ async fn serve_keys_fixture(
                 None,
                 &rules,
             )
+            .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
             let _book = crate::root::boot::book(&app, "configured-store")
+                .await
                 .expect("the actual configured Store binds boot rate history before activation");
-            limits.keep().expect("the product limits commit");
+            limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
-                rotate();
+                rotate.await;
             }
             app.overlay_path = Some(
-                busbar_kernel::config::overlay::OverlayStore::new(
+                busbar_kernel::config::overlay::OverlayStore::from_core(
                     app.governance
                         .as_ref()
                         .expect("the actual root opened governance")
-                        .store_calls()
+                        .core_store_handle()
                         .expect("the actual Store exposes its calls"),
                 )
                 .expect("the actual Store opens its overlay"),
@@ -1344,7 +1374,7 @@ async fn serve_keys_fixture(
             .governance
             .as_ref()
             .unwrap()
-            .mint_signed(
+            .mint_signed_async(
                 NewKeySpec {
                     name: "live".into(),
                     allowed_pools: None,
@@ -1355,6 +1385,7 @@ async fn serve_keys_fixture(
                 busbar_kernel::store::now() + 3600,
                 busbar_kernel::store::now(),
             )
+            .await
             .unwrap();
         key.id
     } else {
@@ -1803,8 +1834,8 @@ async fn admin_error_surface_witnesses_every_declared_response() {
 }
 
 async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -1899,6 +1930,7 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             &plugin_config,
             &directory,
         )
+        .await
         .expect("the new fixture Store initializes the admitted OIDC principal namespace");
         let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             cfg,
@@ -1912,17 +1944,23 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
             Some(anchor),
             true,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
-                app.governance.as_ref().unwrap().store_calls().unwrap(),
+            busbar_kernel::config::overlay::OverlayStore::from_core(
+                app.governance
+                    .as_ref()
+                    .unwrap()
+                    .core_store_handle()
+                    .unwrap(),
             )
             .unwrap(),
         );
@@ -2410,12 +2448,22 @@ async fn drive_admin_error_surface() {
             "not_found",
         ),
         (
-            "plugin_schema_unknown_source", "GET", "/plugins/ghost/schema?source=unknown",
-            None, None, 400, "invalid_request",
+            "plugin_schema_unknown_source",
+            "GET",
+            "/plugins/ghost/schema?source=unknown",
+            None,
+            None,
+            400,
+            "invalid_request",
         ),
         (
-            "plugin_schema_guarded_missing", "GET", "/plugins/ghost.tar.gz/schema?source=installed_archive&expected_archive_sha256=0000000000000000000000000000000000000000000000000000000000000000",
-            None, None, 409, "conflict",
+            "plugin_schema_guarded_missing",
+            "GET",
+            "/plugins/ghost.tar.gz/schema?source=installed_archive&expected_archive_sha256=0000000000000000000000000000000000000000000000000000000000000000",
+            None,
+            None,
+            409,
+            "conflict",
         ),
         (
             "plugins_missing_type",
@@ -2741,8 +2789,8 @@ async fn drive_plugin_reload_errors() {
     let providers = dir.join("providers.yaml");
     std::fs::write(&config, "this: [is not: valid: yaml\n").unwrap();
     std::fs::write(&providers, "providers: {}\n").unwrap();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -2786,7 +2834,7 @@ async fn drive_plugin_reload_errors() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -2796,20 +2844,22 @@ async fn drive_plugin_reload_errors() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -2850,16 +2900,17 @@ async fn drive_plugin_rollback_errors() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
-            .expect("the actual Store opens the overlay");
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
+        crate::root::real_store::core().await,
+    )
+    .expect("the actual Store opens the overlay");
 
     std::fs::write(dir.join("invalid-schema.tar.gz"), b"not an archive").unwrap();
     let tarball = admin_test_tarball("rollme", "rollme");
     let file = "rollme-1.0.0.tar.gz";
     std::fs::write(dir.join(file), &tarball).unwrap();
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -2903,7 +2954,7 @@ async fn drive_plugin_rollback_errors() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -2913,20 +2964,22 @@ async fn drive_plugin_rollback_errors() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -3021,20 +3074,36 @@ async fn drive_plugin_rollback_errors() {
             "invalid_request",
         ),
         (
-            "schema_invalid_archive", "/plugins/invalid-schema.tar.gz/schema?source=installed_archive", "GET", None, 400, "invalid_request",
+            "schema_invalid_archive",
+            "/plugins/invalid-schema.tar.gz/schema?source=installed_archive",
+            "GET",
+            None,
+            400,
+            "invalid_request",
         ),
         (
-            "schema_invalid_filename", "/plugins/not-an-archive/schema?source=installed_archive", "GET", None, 400, "invalid_request",
+            "schema_invalid_filename",
+            "/plugins/not-an-archive/schema?source=installed_archive",
+            "GET",
+            None,
+            400,
+            "invalid_request",
         ),
         (
             "remove_bad_archive_digest",
             "/plugins/ghost-1.0.0.tar.gz?expected_archive_sha256=bad",
-            "DELETE", None, 400, "invalid_request",
+            "DELETE",
+            None,
+            400,
+            "invalid_request",
         ),
         (
             "remove_guarded_missing",
             "/plugins/ghost-1.0.0.tar.gz?expected_archive_sha256=0000000000000000000000000000000000000000000000000000000000000000",
-            "DELETE", None, 409, "conflict",
+            "DELETE",
+            None,
+            409,
+            "conflict",
         ),
         (
             "remove_unknown",
@@ -3074,11 +3143,12 @@ async fn drive_plugin_inspect_errors() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let overlay =
-        busbar_kernel::config::overlay::OverlayStore::new(crate::root::real_store::store())
-            .expect("the actual Store opens the overlay");
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(
+        crate::root::real_store::core().await,
+    )
+    .expect("the actual Store opens the overlay");
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store, Some("admintok".to_string())).await;
     let app = {
         crate::distribution::admin_cross_plane::ensure_seam();
         let directory = super::plugins::scratch(&format!(
@@ -3122,7 +3192,7 @@ async fn drive_plugin_inspect_errors() {
             .expect("the actual admin deployment resolves");
         let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
             as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let (mut app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             super::plugins::trusted_config(&directory),
             None,
@@ -3132,20 +3202,22 @@ async fn drive_plugin_inspect_errors() {
             None,
             &rules,
         )
+        .await
         .expect("the product root builds the actual admin application");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
+            .await
             .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::new(
+            busbar_kernel::config::overlay::OverlayStore::from_core(
                 app.governance
                     .as_ref()
                     .expect("the actual root opened governance")
-                    .store_calls()
+                    .core_store_handle()
                     .expect("the actual Store exposes its calls"),
             )
             .expect("the actual Store opens its overlay"),
@@ -3546,8 +3618,8 @@ async fn named_map_app_opts(
     .expect("the provider catalog parses");
     let cfg = busbar_kernel::config::resolve(&deploy, &defs)
         .expect("the actual admin deployment resolves");
-    let store = crate::root::real_store::store();
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(store.clone())
+    let store = crate::root::real_store::core().await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(store.clone())
         .expect("the configured Store opens its overlay");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -3560,23 +3632,22 @@ async fn named_map_app_opts(
         (Some(config_path), Some(providers_path)),
         None,
         &rules,
-        Some(busbar_contract::store_calls::OpenedStore {
-            records: store.clone(),
-            calls: Some(store),
-        }),
+        Some(store),
         false,
     )
+    .await
     .expect("the actual product builds the named-map application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, "configured-store")
+        .await
         .expect("the actual configured Store binds boot rate history before activation");
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.serve_tables = tables;
     let app = Arc::new(app);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app);
+    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
     let router = crate::distribution::admin_cross_plane::build_router(app);
     let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
@@ -3681,7 +3752,9 @@ async fn test_admin_v1_named_maps_list_get_and_put_round_trip() {
         );
         assert_eq!(after["module"], def["module"]);
 
-        let doc = busbar_kernel::config::overlay::read(&overlay.clone()).expect("overlay written");
+        let doc = busbar_kernel::config::overlay::read_async(&overlay.clone())
+            .await
+            .expect("overlay written");
         assert_eq!(
             doc.named_maps[*section][&name], *def,
             "the overlay stores the definition VERBATIM"
@@ -4229,7 +4302,7 @@ async fn test_admin_v1_identity_provider_delete_rejects_a_dangling_reference() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn try_publish_door(
+async fn try_publish_door(
     section: &str,
     settings: &str,
 ) -> Result<(ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>), String> {
@@ -4242,9 +4315,8 @@ fn try_publish_door(
     let owner = busbar_kernel::plane_driver::registry::plane_decl_for_config_section(section)
         .unwrap_or_else(|| panic!("a test-linked plane owns `{section}:`"));
 
-    let store = crate::root::real_store::store();
-    let gov = gov_with_signer(store.clone(), None);
-    assert!(gov.attach_store_calls(store.clone()));
+    let store = crate::root::real_store::core().await;
+    let gov = gov_with_signer(store.clone(), None).await;
     let services = crate::root::serve::LateServices::new();
     let kernel = Arc::new(
         busbar_kernel::host_services::KernelServices::new()
@@ -4252,9 +4324,9 @@ fn try_publish_door(
             .with_pool(Arc::new(busbar_kernel::host_services::BlockingPool::new(
                 tokio::runtime::Handle::current(),
                 busbar_kernel::host_records::QUEUE_CAP,
-            )))
-            .with_records(Arc::new(busbar_kernel::host_records::StoreRows(store))),
+            ))),
     );
+    assert!(kernel.attach_persistence(store));
     services
         .install_kernel(kernel.clone(), kernel.clone())
         .unwrap();
@@ -4316,19 +4388,22 @@ fn try_publish_door(
     let settings = serde_yaml::from_str(settings)
         .expect("the exact opened section also supplies the normal host admission");
 
-    let admission = Arc::new(busbar_kernel::plane_driver::PlaneDriver::new(
-        calls.clone(),
-        busbar_kernel::plane_driver::DriverConfig {
-            caps: busbar_kernel::plane_driver::BufferCaps::default(),
-            op_classes,
-            status_of: busbar_kernel::plane_driver::refusal_status,
-            refusal_statuses,
-            caller_refs: money.caller_refs(),
-        },
-        money,
-        kernel,
-        (section, &settings),
-    )?);
+    let admission = Arc::new(
+        busbar_kernel::plane_driver::PlaneDriver::new(
+            calls.clone(),
+            busbar_kernel::plane_driver::DriverConfig {
+                caps: busbar_kernel::plane_driver::BufferCaps::default(),
+                op_classes,
+                status_of: busbar_kernel::plane_driver::refusal_status,
+                refusal_statuses,
+                caller_refs: money.caller_refs(),
+            },
+            money,
+            kernel,
+            (section, &settings),
+        )
+        .await?,
+    );
     let tables = ServeTables::default();
     tables
         .publish(
@@ -4346,18 +4421,20 @@ fn try_publish_door(
     Ok((tables, admission))
 }
 
-fn publish_door(
+async fn publish_door(
     section: &str,
     settings: &str,
 ) -> (ServeTables, Arc<busbar_kernel::plane_driver::PlaneDriver>) {
-    try_publish_door(section, settings).expect("the door opens")
+    try_publish_door(section, settings)
+        .await
+        .expect("the door opens")
 }
 
-fn assert_passthrough_is_refused_before_publication() {
+async fn assert_passthrough_is_refused_before_publication() {
     let error = match try_publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "passthrough", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
-    ) {
+    ).await {
         Err(error) => error,
         Ok(_) => panic!("a passthrough registration must not publish an admin route"),
     };
@@ -4370,11 +4447,11 @@ fn assert_passthrough_is_refused_before_publication() {
 }
 
 async fn drive_door_verb_errors() {
-    assert_passthrough_is_refused_before_publication();
+    assert_passthrough_is_refused_before_publication().await;
     let (tables, _admission) = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
-    );
+    ).await;
     let (_dir, _overlay, addr, handle) = named_map_app_serving("door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |method: reqwest::Method, path: &str| {
@@ -4405,11 +4482,11 @@ async fn drive_door_verb_errors() {
 
 #[tokio::test]
 async fn a_door_admin_route_is_served_only_by_the_generation_lent_its_table() {
-    assert_passthrough_is_refused_before_publication();
+    assert_passthrough_is_refused_before_publication().await;
     let (tables, _admission) = publish_door(
         "tools",
         r#"{"base-tools": {"url": "https://pass.example/rpc", "pin": {"mechanism": "cert_spki", "key": "sha256/l5WGzHWyALvI/qjcwI1ctxb3Jp8+8Ztd0NTYTcL0Q4s="}, "upstream_credentials": "own", "tools_allow": {"read": {"schema_hash": "sha256:aa"}}}}"#,
-    );
+    ).await;
     let (lent_dir, _lent_overlay, lent, lent_handle) =
         named_map_app_serving("door-table-lent", tables).await;
     let (unlent_dir, _unlent_overlay, unlent, unlent_handle) =
@@ -4462,7 +4539,7 @@ async fn drive_agent_door_verb_errors() {
             "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
         }
     });
-    let (tables, _admission) = publish_door("agents", &section.to_string());
+    let (tables, _admission) = publish_door("agents", &section.to_string()).await;
     let (_dir, _overlay, addr, handle) = named_map_app_serving("agent-door-verbs", tables).await;
     let client = reqwest::Client::new();
     let send = |path: &str, body: &str| {
@@ -4762,8 +4839,8 @@ async fn drive_named_map_errors() {
 
     for section in ["identity-providers", "export", "tools", "agents"] {
         crate::distribution::admin_cross_plane::ensure_seam();
-        let store = crate::root::real_store::store();
-        let gov = gov_with_signer(store, Some("admintok".to_string()));
+        let store = crate::root::real_store::core().await;
+        let gov = gov_with_signer(store, Some("admintok".to_string())).await;
         let app = {
             crate::distribution::admin_cross_plane::ensure_seam();
             let directory = super::plugins::scratch(&format!(
@@ -4820,7 +4897,7 @@ async fn drive_named_map_errors() {
             );
             let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
                 as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-            let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+            let (mut app, rotate, limits) = crate::root::real_store::build_app(
                 cfg,
                 super::plugins::trusted_config(&directory),
                 None,
@@ -4830,20 +4907,22 @@ async fn drive_named_map_errors() {
                 None,
                 &rules,
             )
+            .await
             .expect("the product root builds the actual admin application");
             limits.stage_boot();
             let _book = crate::root::boot::book(&app, "configured-store")
+                .await
                 .expect("the actual configured Store binds boot rate history before activation");
-            limits.keep().expect("the product limits commit");
+            limits.keep().await.expect("the product limits commit");
             if let Some(rotate) = rotate {
-                rotate();
+                rotate.await;
             }
             app.overlay_path = Some(
-                busbar_kernel::config::overlay::OverlayStore::new(
+                busbar_kernel::config::overlay::OverlayStore::from_core(
                     app.governance
                         .as_ref()
                         .expect("the actual root opened governance")
-                        .store_calls()
+                        .core_store_handle()
                         .expect("the actual Store exposes its calls"),
                 )
                 .expect("the actual Store opens its overlay"),
@@ -4984,7 +5063,8 @@ async fn test_admin_v1_named_map_put_rejects_what_the_file_parser_rejects() {
         "the rejected definition was never stored"
     );
     if let Some(bytes) = overlay
-        .read_bytes()
+        .read_bytes_async()
+        .await
         .expect("the actual Store overlay reads")
     {
         let doc: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -5030,7 +5110,7 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    busbar_kernel::config::overlay::write(
+    busbar_kernel::config::overlay::write_async(
         &overlay,
         &serde_json::from_value(serde_json::json!({
             "version": 1,
@@ -5043,6 +5123,7 @@ async fn test_admin_v1_named_map_read_flags_an_unparseable_overlay_entry() {
         }))
         .expect("the raw overlay document parses"),
     )
+    .await
     .expect("the actual Store commits the overlay");
 
     let body: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/export")))

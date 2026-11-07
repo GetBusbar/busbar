@@ -211,7 +211,13 @@ fn assert_sealed_with_destination_and_controls(book: &crate::root::durability::N
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handed_unit_seals_its_verified_destination() {
     let node = Node::new();
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let _answer = node.answer(handed()).await;
     assert_sealed_with_destination_and_controls(&book);
@@ -220,7 +226,13 @@ async fn a_handed_unit_seals_its_verified_destination() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_borrowed_unit_seals_its_verified_destination() {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let outcome = node
@@ -373,14 +385,22 @@ async fn open_and_finish<U: Units + RouteAwait>(
         .await
         .expect("the table took the session");
     let admitted = matches!(opened, busbar_kernel::teller::SessionOpen::Admitted { .. });
-    slot.finish(post);
+    slot.finish(post)
+        .await
+        .expect("the native session finish is confirmed");
     (key, admitted)
 }
 
 #[tokio::test]
 async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_for_sweep() {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let key = node.mint();
@@ -435,7 +455,13 @@ async fn an_unfinished_session_retires_its_facts_and_preserves_its_destination_f
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_admitted_session_seals_one_record_when_it_ends() {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let (key, admitted) = open_and_finish(&node, &post, &ToDestination).await;
@@ -462,7 +488,13 @@ async fn an_admitted_session_seals_one_record_when_it_ends() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_refused_at_its_open_seals_a_refused_record() {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let (key, admitted) = open_and_finish(&node, &post, &RefusedAtApprove).await;
@@ -627,7 +659,13 @@ async fn sealed_after(
     hooks: Option<Vec<busbar_kernel_audit::HookApplied>>,
 ) -> busbar_kernel_audit::AuditRecord {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let hooked = Hooked { post: &post, hooks };
@@ -731,7 +769,13 @@ async fn sealed_under(
     history: impl FnOnce(u64) -> Option<crate::root::kernel::PinnedHistory>,
 ) -> busbar_kernel_audit::AuditRecord {
     let node = Arc::new(Node::new());
-    let book = crate::root::durability::node_book();
+    let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+    let book = crate::root::durability::node_book(
+        fixture.journal.clone(),
+        crate::root::durability::tests::BUDGET,
+    )
+    .await
+    .unwrap();
     node.bind_book(Arc::clone(&book.durability));
     let post = NodeEndPost::new(Arc::clone(&node));
     let arrived = node.arrived();
@@ -850,29 +894,14 @@ fn audit_rate_card_provenance_keeps_the_actual_key_across_peer_insertion() {
 
 #[tokio::test]
 async fn a_completed_terminal_receipt_requires_actual_seal_success_even_when_the_chain_advances() {
-    struct RefusingShipper;
-    impl busbar_kernel_wal::Shipper<busbar_kernel_wal::Record> for RefusingShipper {
-        fn ship(
-            &mut self,
-            _: &[busbar_kernel_wal::Record],
-        ) -> Result<(), busbar_kernel_wal::ShipError> {
-            Err(busbar_kernel_wal::ShipError::Unavailable(
-                "deliberate seal refusal".to_owned(),
-            ))
-        }
-    }
     for refuses in [false, true] {
         let node = Arc::new(Node::new());
-        let shipper: Box<dyn busbar_kernel_wal::Shipper<busbar_kernel_wal::Record>> = if refuses {
-            Box::new(RefusingShipper)
-        } else {
-            Box::new(busbar_kernel_wal::NullShipper::new())
-        };
-        let durability = crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            shipper,
-        )
-        .expect("the journal opens before its deliberate write refusal");
+        let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
+        let durability = fixture.book().await;
+        fixture
+            .faults
+            .refusing
+            .store(refuses, std::sync::atomic::Ordering::Release);
         let book = Arc::new(Mutex::new(durability));
         node.bind_book(Arc::clone(&book));
         let post = NodeEndPost::new(Arc::clone(&node));
@@ -922,10 +951,16 @@ async fn a_completed_terminal_receipt_requires_actual_seal_success_even_when_the
             .into_seal(key, node.kernel.origin(OriginKind::Client), None)
             .unwrap();
         let before = book.lock().unwrap().journal.next_seq();
-        let acknowledgment = node.seal_end_ack(&who, arrived, None, ended, seal, Vec::new());
+        let acknowledgment = node
+            .seal_end_ack(&who, arrived, None, ended, seal, Vec::new())
+            .expect("sealing retains the original before the native write");
+        let confirmed = acknowledgment
+            .journal
+            .confirm(&acknowledgment.run)
+            .await
+            .is_ok();
         assert_eq!(
-            acknowledgment.is_some(),
-            !refuses,
+            confirmed, !refuses,
             "only actual successful durable sealing acknowledges completion"
         );
         let book = book.lock().unwrap();

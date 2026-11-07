@@ -3,20 +3,13 @@
 
 const LOCKED_CONFIG_MUTATION_MESSAGE: &str = "config mutation refused: this busbar has no writable Store-backed config overlay; edit config.yaml and reload a locked deployment";
 
-#[test]
-fn test_existence_gate_is_claimable_without_runtime() {
-    let first = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
-    drop(first);
-    let again = super::EXISTENCE_GATE.claim("vk_gate_probe".to_string());
-    drop(again);
-}
-
-#[test]
-fn test_persist_root_without_an_overlay_errs() {
-    let result = busbar_kernel::config::overlay::persist_root(
+#[tokio::test]
+async fn test_persist_root_without_an_overlay_errs() {
+    let result = busbar_kernel::config::overlay::persist_root_async(
         None,
         &busbar_kernel::config::overlay::RootSettings::default(),
-    );
+    )
+    .await;
     assert!(
         result.is_err(),
         "persist_root(None, ..) must NOT silently succeed — a None backend means a locked config, so \

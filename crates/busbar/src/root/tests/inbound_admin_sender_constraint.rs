@@ -17,7 +17,7 @@ const FRAMING: u64 = 92;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_admin_doors_refuse_sender_downgrade_and_preserve_service_and_scoped_credentials() {
-    let (app, _config, _book) = app_with_admin_reader(false, true);
+    let (app, _config, _book) = app_with_admin_reader(false, true).await;
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(Arc::clone(&app)));
     let router = busbar_kernel::router::build_admin_router_on(&handle, 32 * 1024 * 1024, false);
     // Seal a neutral line over the same actual opened auth products. The admin HTTP adapter

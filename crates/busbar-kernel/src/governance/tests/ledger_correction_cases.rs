@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::governance::recovery::{
-    tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
+    RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict, tests::Journal,
 };
 
 const MODEL: &str = "m";
@@ -50,8 +50,9 @@ fn delta() -> BTreeMap<String, i64> {
     BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), SUBTRACT_INPUT)])
 }
 
-fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now: u64) {
+async fn metered_entry(store: &CoreStore, key: &VirtualKey, era: RawRateEra, now: u64) {
     store
+        .ledger()
         .add_metering(&MeteringDelta {
             scale: 0,
             key_id: key.id.clone(),
@@ -69,15 +70,18 @@ fn metered_entry(store: &dyn RecordStore, key: &VirtualKey, era: RawRateEra, now
             priced_from_ms: era.effective_from,
             usage_units: Default::default(),
         })
+        .await
         .unwrap();
 }
 
-#[test]
-fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_exact_entry", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let first = RawRateEra::entry(0, EntryId([3; 12]));
@@ -92,33 +96,35 @@ fn exact_entry_correction_cannot_take_counts_from_a_same_timestamp_sibling() {
         now,
         first,
     );
-    metered_entry(store.as_ref(), &key, first, now);
-    metered_entry(store.as_ref(), &key, second, now);
+    metered_entry(store.core().as_ref(), &key, first, now).await;
+    metered_entry(store.core().as_ref(), &key, second, now).await;
     let delta = delta();
     let mut adj = correction(&key, &delta, now);
     adj.entry_era = 0;
     adj.entry_id = second.entry_id;
     assert!(
         matches!(
-            gov.adjust_usage(&cm, &adj).unwrap(),
+            gov.adjust_usage_async(&cm, &adj).await.unwrap(),
             Err(super::super::AdjustRefused::Unplaced { .. })
         ),
         "matching timestamp and metering do not give the sibling ownership of raw counts"
     );
     adj.entry_id = first.entry_id;
-    gov.adjust_usage(&cm, &adj).unwrap().unwrap();
+    gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT
     );
 }
 
-#[test]
-fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_intent() {
-    let store = Arc::new(FlakyStore::new());
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_intent() {
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_exact_intent", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let first = RawRateEra::entry(0, EntryId([5; 12]));
@@ -133,8 +139,8 @@ fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_int
         now,
         first,
     );
-    metered_entry(store.as_ref(), &key, first, now);
-    metered_entry(store.as_ref(), &key, second, now);
+    metered_entry(store.core().as_ref(), &key, first, now).await;
+    metered_entry(store.core().as_ref(), &key, second, now).await;
     store
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -142,173 +148,196 @@ fn resumed_correction_does_not_treat_a_different_exact_entry_as_the_original_int
     let mut adj = correction(&key, &delta, now);
     adj.entry_era = 0;
     adj.entry_id = first.entry_id;
-    assert!(gov.adjust_usage(&cm, &adj).is_err());
+    assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
     adj.entry_id = second.entry_id;
     assert!(
         matches!(
-            gov.adjust_usage(&cm, &adj).unwrap(),
+            gov.adjust_usage_async(&cm, &adj).await.unwrap(),
             Err(super::super::AdjustRefused::Unplaced { .. })
         ),
         "receipt for the first exact entry does not accept a second entry's intent"
     );
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT
     );
 }
 
-#[test]
-fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn correction_acceptance_durably_captures_unflushed_raw_counts_and_fee_epochs() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_capture", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
-    gov.adjust_usage(&cm, &correction(&key, &delta(), now))
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
+    gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
         .unwrap()
         .unwrap();
-    let row = store.get_usage(&key.id, 0).unwrap();
+    let row = store.ledger().get_usage(&key.id, 0).await.unwrap();
     assert_eq!(
         (row.requests, row.billable_requests, input(&row)),
         (1, 1, CORRECTED_INPUT)
     );
-    let restarted = GovState::new(store.clone(), None).unwrap();
-    restarted.hydrate_budgets(&cm, now).unwrap();
+    let restarted = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    restarted.hydrate_budgets_async(&cm, now).await.unwrap();
     assert_eq!(
         restarted
-            .usage_for(&cm, &key.id, now)
+            .usage_for_async(&cm, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .tokens
             .whole_for_test(),
         CORRECTED_INPUT
     );
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap(),
+        store.ledger().get_usage(&key.id, 0).await.unwrap(),
         row,
         "captured facts are already acknowledged"
     );
     let era_row = store
+        .ledger()
         .get_usage(&super::super::era_bucket(&key.id), 0)
+        .await
         .unwrap();
     if era_now() != 0 {
-        assert!(era_row
-            .models
-            .iter()
-            .any(|model| model.model == era_now().to_string()
+        assert!(era_row.models.iter().any(|model| {
+            model.model == era_now().to_string()
                 && model
                     .usage_units
                     .get(super::super::ERA_FEE_UNIT)
-                    .is_some_and(|n| Count::from_stored(*n, model.scale).unwrap() == Count::ONE)));
+                    .is_some_and(|n| Count::from_stored(*n, model.scale).unwrap() == Count::ONE)
+        }));
     }
 }
 
-#[test]
-fn correction_captures_u64_local_facts_without_signed_saturation() {
+#[tokio::test]
+async fn correction_captures_u64_local_facts_without_signed_saturation() {
     const ABOVE_SIGNED_COUNT: u64 = i64::MAX as u64 + 17;
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_unsigned_capture", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     gov.record_usage(&cm, &key, "", MODEL, &toks(ABOVE_SIGNED_COUNT, 0), now);
-    metered(&gov, &key.id, MODEL, ABOVE_SIGNED_COUNT, now);
+    metered(&gov, &key.id, MODEL, ABOVE_SIGNED_COUNT, now).await;
     let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), -1)]);
-    gov.adjust_usage(&cm, &correction(&key, &delta, now))
+    gov.adjust_usage_async(&cm, &correction(&key, &delta, now))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         ABOVE_SIGNED_COUNT - 1
     );
     gov.record_usage(&cm, &key, "", MODEL, &toks(CONCURRENT_INPUT, 0), now);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         ABOVE_SIGNED_COUNT - 1 + CONCURRENT_INPUT
     );
 }
 
-#[test]
-fn rolled_large_raw_debt_survives_legacy_flush_and_is_captured_by_correction() {
+#[tokio::test]
+async fn rolled_large_raw_debt_survives_legacy_flush_and_is_captured_by_correction() {
     const LARGE_INPUT: u64 = i64::MAX as u64 + INITIAL_INPUT;
     const GROUP_BUCKET: &str = "group:g@minute";
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_large_roll", Some("g"));
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = minute_fee_model();
     let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
     let next = super::super::window_end(super::super::WINDOW_MINUTE, now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(LARGE_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, LARGE_INPUT, now);
+    metered(&gov, &key.id, MODEL, LARGE_INPUT, now).await;
     gov.try_admit(&cm, &key, "", next).unwrap();
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        input(&store.get_usage(GROUP_BUCKET, now).unwrap()),
+        input(&store.ledger().get_usage(GROUP_BUCKET, now).await.unwrap()),
         LARGE_INPUT,
         "ordinary chunks persist the entire raw debt before correction"
     );
-    gov.adjust_usage(&cm, &correction(&key, &delta(), now))
+    gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        input(&store.get_usage(GROUP_BUCKET, now).unwrap()),
+        input(&store.ledger().get_usage(GROUP_BUCKET, now).await.unwrap()),
         LARGE_INPUT - SUBTRACT_INPUT.unsigned_abs()
     );
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         LARGE_INPUT - SUBTRACT_INPUT.unsigned_abs()
     );
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        input(&store.get_usage(GROUP_BUCKET, now).unwrap()),
+        input(&store.ledger().get_usage(GROUP_BUCKET, now).await.unwrap()),
         LARGE_INPUT - SUBTRACT_INPUT.unsigned_abs()
     );
-    assert_eq!(store.get_usage(GROUP_BUCKET, next).unwrap().requests, 1);
+    assert_eq!(
+        store
+            .ledger()
+            .get_usage(GROUP_BUCKET, next)
+            .await
+            .unwrap()
+            .requests,
+        1
+    );
 }
 
-#[test]
-fn unknown_correction_retains_exact_identity_through_another_error_and_background_recovery() {
-    let store = Arc::new(FlakyStore::new());
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn unknown_correction_retains_exact_identity_through_another_error_and_background_recovery() {
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_unknown", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
     store
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let delta = delta();
     let adj = correction(&key, &delta, now);
-    assert!(gov.adjust_usage(&cm, &adj).is_err());
-    assert!(gov.usage_for(&cm, &key.id, now).is_err());
+    assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
+    assert!(gov.usage_for_async(&cm, &key.id, now).await.is_err());
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT
     );
     gov.record_usage(&cm, &key, "", MODEL, &toks(CONCURRENT_INPUT, 0), now);
     store.set_down(true);
-    assert!(gov.adjust_usage(&cm, &adj).is_err());
+    assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
     assert!(
-        gov.hydrate_budgets(&cm, now).is_err(),
+        gov.hydrate_budgets_async(&cm, now).await.is_err(),
         "hydration cannot replace unresolved facts"
     );
     store.set_down(false);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
 
-    gov.adjust_usage(&cm, &adj).unwrap().unwrap();
-    gov.flush_budgets();
+    gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
+    gov.flush_budgets().await;
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT + CONCURRENT_INPUT
     );
     let calls = store.correction_calls.lock().unwrap();
@@ -319,131 +348,161 @@ fn unknown_correction_retains_exact_identity_through_another_error_and_backgroun
     );
 }
 
-#[test]
-fn accrual_refund_and_roll_update_both_reserved_raw_branches() {
-    let store = Arc::new(FlakyStore::new());
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+#[tokio::test]
+async fn accrual_refund_and_roll_update_both_reserved_raw_branches() {
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
     let key = key("vk_correction_concurrent", Some("g"));
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = minute_fee_model();
     let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
     let next = super::super::window_end(super::super::WINDOW_MINUTE, now).unwrap();
     let charged = gov.try_admit(&cm, &key, "", now).unwrap();
     gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
     let (mutator, mutated_key) = (gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        let cm = minute_fee_model();
-        mutator.record_usage(
-            &cm,
-            &mutated_key,
-            "",
-            MODEL,
-            &toks(CONCURRENT_INPUT, 0),
-            now,
-        );
-        mutator.refund_charge(charged.charge());
-        mutator.try_admit(&cm, &mutated_key, "", next).unwrap();
-        mutator.record_usage(
-            &cm,
-            &mutated_key,
-            "",
-            MODEL,
-            &toks(NEXT_WINDOW_INPUT, 0),
-            next,
-        );
+        Box::pin(async move {
+            let cm = minute_fee_model();
+            mutator.record_usage(
+                &cm,
+                &mutated_key,
+                "",
+                MODEL,
+                &toks(CONCURRENT_INPUT, 0),
+                now,
+            );
+            mutator.refund_charge(charged.charge());
+            mutator.try_admit(&cm, &mutated_key, "", next).unwrap();
+            mutator.record_usage(
+                &cm,
+                &mutated_key,
+                "",
+                MODEL,
+                &toks(NEXT_WINDOW_INPUT, 0),
+                next,
+            );
+        })
     }));
-    gov.adjust_usage(&cm, &correction(&key, &delta(), now))
+    gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
         .unwrap()
         .unwrap();
-    gov.flush_budgets();
-    gov.flush_budgets();
+    gov.flush_budgets().await;
+    gov.flush_budgets().await;
     const GROUP_BUCKET: &str = "group:g@minute";
     assert_eq!(
-        minute_row(store.as_ref(), GROUP_BUCKET, now),
+        minute_row(store.core().as_ref(), GROUP_BUCKET, now).await,
         (2, 1, CORRECTED_INPUT + CONCURRENT_INPUT, 0)
     );
     assert_eq!(
-        minute_row(store.as_ref(), GROUP_BUCKET, next),
+        minute_row(store.core().as_ref(), GROUP_BUCKET, next).await,
         (1, 1, NEXT_WINDOW_INPUT, 0)
     );
-    let row = store.get_usage(&key.id, 0).unwrap();
+    let row = store.ledger().get_usage(&key.id, 0).await.unwrap();
     assert_eq!(
         (row.requests, row.billable_requests, input(&row)),
         (3, 2, CORRECTED_INPUT + CONCURRENT_INPUT + NEXT_WINDOW_INPUT)
     );
 }
 
-#[test]
-fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_facts() {
-    let store = Arc::new(FlakyStore::new());
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+#[tokio::test]
+async fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_facts() {
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
     let key = key("vk_correction_flush_collision", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
     let (corrector, corrected_key) = (gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        assert!(corrector
-            .adjust_usage(&model(&[]), &correction(&corrected_key, &delta(), now))
-            .is_err());
+        Box::pin(async move {
+            assert!(
+                corrector
+                    .adjust_usage_async(&model(&[]), &correction(&corrected_key, &delta(), now))
+                    .await
+                    .is_err()
+            );
+        })
     }));
-    gov.flush_budgets();
-    assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), INITIAL_INPUT);
-    assert!(gov
-        .usage_adjustments(crate::governance::metering_bucket(now))
-        .unwrap()
-        .is_empty());
-    gov.adjust_usage(&cm, &correction(&key, &delta(), now))
+    gov.flush_budgets().await;
+    assert_eq!(
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
+        INITIAL_INPUT
+    );
+    assert!(
+        gov.usage_adjustments_async(crate::governance::metering_bucket(now))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT
     );
 }
 
-#[test]
-fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
+#[tokio::test]
+async fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
     for change in [-1, 1] {
-        let store = crate::real_store::store();
-        let gov = GovState::new(store.clone(), None).unwrap();
+        let store = crate::real_store::core().await;
+        let gov = GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap();
         let key = key("vk_correction_future", None);
-        store.put_key(&key).unwrap();
+        store.identity().put_key(&key).await.unwrap();
         let cm = model(&[]);
         let now = crate::store::now();
         let future = crate::store::now_ms() + 60_000;
         gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-        metered(&gov, &key.id, MODEL, INITIAL_INPUT, future / 1_000);
-        gov.flush_budgets();
+        metered(&gov, &key.id, MODEL, INITIAL_INPUT, future / 1_000).await;
+        gov.flush_budgets().await;
         let day = super::super::metering_bucket(future / 1_000);
-        let facts = || {
+        let facts = async || {
             (
-                store.get_usage(&key.id, 0).unwrap(),
+                store.ledger().get_usage(&key.id, 0).await.unwrap(),
                 store
+                    .ledger()
                     .get_usage(&super::super::era_bucket(&key.id), 0)
+                    .await
                     .unwrap(),
                 store
+                    .ledger()
                     .get_usage(super::super::ADJUST_UP_BUCKET, day)
+                    .await
                     .unwrap(),
                 store
+                    .ledger()
                     .get_usage(super::super::ADJUST_DOWN_BUCKET, day)
+                    .await
                     .unwrap(),
-                store.list_metering(day).unwrap(),
-                gov.usage_adjustments(day).unwrap(),
-                gov.usage_for(&cm, &key.id, now).unwrap(),
+                store.ledger().list_metering(day).await.unwrap(),
+                gov.usage_adjustments_async(day).await.unwrap(),
+                gov.usage_for_async(&cm, &key.id, now).await.unwrap(),
             )
         };
-        let before = facts();
+        let before = facts().await;
         let delta = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), change)]);
         let adj = super::super::Adjustment {
             card_epoch_ms: future,
             ..correction(&key, &delta, now)
         };
-        let result = gov.adjust_usage(&cm, &adj).unwrap();
+        let result = gov.adjust_usage_async(&cm, &adj).await.unwrap();
         assert!(
             result.is_err(),
             "a future epoch must be refused: {result:?}"
@@ -453,52 +512,65 @@ fn a_future_usage_epoch_refuses_both_signs_without_changing_recorded_facts() {
             Err(super::super::AdjustRefused::FutureEpoch { at, now })
                 if at == future && now < future
         ));
-        assert_eq!(facts(), before, "no ledger or metering fact may change");
+        assert_eq!(
+            facts().await,
+            before,
+            "no ledger or metering fact may change"
+        );
     }
 }
 
-#[test]
-fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_usage() {
+#[tokio::test]
+async fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_usage() {
     const GROUP_BUCKET: &str = "group:g@minute";
     const FOREIGN_REQUESTS: i64 = 5;
-    let store = Arc::new(FlakyStore::new());
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let store = Arc::new(FlakyStore::new().await);
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
     let key = key("vk_correction_revalidation", Some("g"));
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = minute_fee_model();
     let now = crate::governance::budget_window(super::super::WINDOW_MINUTE, crate::store::now());
     let grant = gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
     let (writer, mutator, mutated_key) = (store.clone(), gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        writer
-            .inner
-            .add_usage(
-                GROUP_BUCKET,
+        Box::pin(async move {
+            writer
+                .inner
+                .ledger()
+                .add_usage(
+                    GROUP_BUCKET,
+                    now,
+                    &UsageDelta {
+                        requests: FOREIGN_REQUESTS,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            mutator.record_usage(
+                &minute_fee_model(),
+                &mutated_key,
+                "",
+                MODEL,
+                &toks(CONCURRENT_INPUT, 0),
                 now,
-                &UsageDelta {
-                    requests: FOREIGN_REQUESTS,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        mutator.record_usage(
-            &minute_fee_model(),
-            &mutated_key,
-            "",
-            MODEL,
-            &toks(CONCURRENT_INPUT, 0),
-            now,
-        );
-        mutator.refund_charge(grant.charge());
+            );
+            mutator.refund_charge(grant.charge());
+        })
     }));
-    gov.adjust_usage(&cm, &correction(&key, &delta(), now))
+    gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
         .unwrap()
         .unwrap();
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        minute_row(store.as_ref(), GROUP_BUCKET, now),
+        minute_row(store.core().as_ref(), GROUP_BUCKET, now).await,
         (
             1 + FOREIGN_REQUESTS as u64,
             0,
@@ -513,7 +585,7 @@ fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_
         "a changed conditional basis is rebuilt once"
     );
     assert_ne!(calls[0].op_id, calls[1].op_id);
-    let group_row = |request: &busbar_contract::records::correction::Request| {
+    let group_row = |request: &ObservedCorrection| {
         request
             .usage
             .iter()
@@ -533,8 +605,8 @@ fn conditional_conflict_revalidates_shared_rows_and_preserves_common_refund_and_
     assert_eq!(group_row(&calls[1]).replacement.billable_requests, 0);
 }
 
-#[test]
-fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branches() {
+#[tokio::test]
+async fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branches() {
     let old = RawRateEra::entry(0, EntryId([1; 12]));
     let new = RawRateEra::entry(0, EntryId([2; 12]));
     for roll in [false, true] {
@@ -627,28 +699,33 @@ fn correction_common_positives_keep_same_timestamp_fee_refunds_in_both_raw_branc
     }
 }
 
-#[test]
-fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_refunding() {
+#[tokio::test]
+async fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_refunding() {
     const FOREIGN_INPUT: u64 = 13;
-    let store = crate::real_store::store();
+    let store = crate::real_store::core().await;
     let journal = Arc::new(Journal::default());
-    let first = GovState::new(store.clone(), None).unwrap();
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     let key = key("vk_correction_quarantined_not_landed", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let grant = first.try_admit(&cm, &key, "", now).unwrap();
     first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now).await;
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(first
-        .adjust_usage(&cm, &correction(&key, &delta(), now))
-        .is_err());
+    assert!(
+        first
+            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+            .await
+            .is_err()
+    );
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         0,
         "Intent acknowledgement failed before backend submission"
     );
@@ -667,7 +744,8 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     assert!(held.is_some());
     assert!(
         first
-            .adjust_usage(&cm, &correction(&key, &delta(), now))
+            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+            .await
             .is_err(),
         "the retained adoption guard prevents the real correction sender from restarting"
     );
@@ -692,10 +770,12 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
             RecoveryState::VerdictNotLanded
         )
     );
-    assert!(staged
-        .iter()
-        .all(|event| event.body_fingerprint == original.body_fingerprint
-            && event.first_sent_at_ms == original.first_sent_at_ms));
+    assert!(
+        staged
+            .iter()
+            .all(|event| event.body_fingerprint == original.body_fingerprint
+                && event.first_sent_at_ms == original.first_sent_at_ms)
+    );
     let repeated = GovState::stage_foreign_correction_verdict(
         &staged[1],
         &RecoveryResolution {
@@ -714,13 +794,17 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         count,
         "foreign staging performs no Store I/O"
     );
-    assert_eq!(input(&store.get_usage(&key.id, 0).unwrap()), 0);
+    assert_eq!(
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
+        0
+    );
     drop(grant);
     drop(first);
     journal
         .fail_after_write
         .store(false, std::sync::atomic::Ordering::SeqCst);
     store
+        .ledger()
         .add_usage(
             &key.id,
             0,
@@ -737,12 +821,16 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
                 }],
             },
         )
+        .await
         .unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
-    gov.attach_recovery_sink(journal.clone()).unwrap();
-    gov.hydrate_budgets(&cm, now).unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
+    gov.hydrate_budgets_async(&cm, now).await.unwrap();
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now)
+        gov.usage_for_async(&cm, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .tokens
@@ -750,22 +838,27 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         FOREIGN_INPUT,
         "fresh Store counts remain authoritative while old branches are quarantined separately"
     );
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
         gov.recovery_event(original.operation_id).unwrap().state,
         RecoveryState::LandedUnknown
     );
     let fresh_grant = gov.try_admit(&cm, &key, "", now).unwrap();
     gov.record_usage(&cm, &key, "", MODEL, &toks(CONCURRENT_INPUT, 0), now);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().billable_requests,
+        store
+            .ledger()
+            .get_usage(&key.id, 0)
+            .await
+            .unwrap()
+            .billable_requests,
         2,
         "the new runtime records its own positive fee while the old correction is quarantined"
     );
     gov.refund_charge(fresh_grant.charge());
-    gov.flush_budgets();
-    let fresh = store.get_usage(&key.id, 0).unwrap();
+    gov.flush_budgets().await;
+    let fresh = store.ledger().get_usage(&key.id, 0).await.unwrap();
     assert_eq!(
         (input(&fresh), fresh.billable_requests),
         (FOREIGN_INPUT + CONCURRENT_INPUT, 2),
@@ -783,7 +876,12 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         reason: "all senders retired; backend confirms no original write".into(),
     };
     let count = journal.selected.lock().unwrap().len();
-    assert!(gov.recovery().resolve(&cm, resolution.clone()).is_err());
+    assert!(
+        gov.recovery()
+            .resolve(&cm, resolution.clone())
+            .await
+            .is_err()
+    );
     assert_eq!(
         journal.selected.lock().unwrap().len(),
         count,
@@ -793,14 +891,18 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         sender_quiesced: true,
         ..resolution
     };
-    gov.recovery().resolve(&cm, resolution.clone()).unwrap();
-    let after = store.get_usage(&key.id, 0).unwrap();
+    gov.recovery()
+        .resolve(&cm, resolution.clone())
+        .await
+        .unwrap();
+    let after = store.ledger().get_usage(&key.id, 0).await.unwrap();
     assert_eq!(
         (input(&after), after.requests, after.billable_requests),
         (CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT, 3, 2)
     );
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now)
+        gov.usage_for_async(&cm, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .tokens
@@ -808,10 +910,12 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
         CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT
     );
     let events = journal.selected.lock().unwrap().clone();
-    assert!(events
-        .iter()
-        .filter(|event| event.operation_id == original.operation_id)
-        .all(|event| event.body_fingerprint == original.body_fingerprint));
+    assert!(
+        events
+            .iter()
+            .filter(|event| event.operation_id == original.operation_id)
+            .all(|event| event.body_fingerprint == original.body_fingerprint)
+    );
     let successor = events
         .iter()
         .find(|event| {
@@ -840,8 +944,8 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     );
     assert_ne!(request.op_id.0, original.operation_id);
     let count = events.len();
-    gov.recovery().resolve(&cm, resolution).unwrap();
-    assert_eq!(store.get_usage(&key.id, 0).unwrap(), after);
+    gov.recovery().resolve(&cm, resolution).await.unwrap();
+    assert_eq!(store.ledger().get_usage(&key.id, 0).await.unwrap(), after);
     assert_eq!(
         journal.selected.lock().unwrap().len(),
         count,
@@ -849,24 +953,29 @@ fn restarted_unlanded_correction_revalidates_foreign_usage_before_reposting_and_
     );
 }
 
-#[test]
-fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_request() {
-    let store = Arc::new(FlakyStore::new());
+#[tokio::test]
+async fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_request() {
+    let store = Arc::new(FlakyStore::new().await);
     let journal = Arc::new(Journal::default());
-    let first = GovState::new(store.clone(), None).unwrap();
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     let key = key("vk_correction_quarantined_landed", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now).await;
     store
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(first
-        .adjust_usage(&cm, &correction(&key, &delta(), now))
-        .is_err());
+    assert!(
+        first
+            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+            .await
+            .is_err()
+    );
     let original = journal
         .selected
         .lock()
@@ -878,6 +987,7 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
     drop(first);
     store
         .inner
+        .ledger()
         .add_usage(
             &key.id,
             0,
@@ -893,11 +1003,14 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
                 ..Default::default()
             },
         )
+        .await
         .unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
-    gov.attach_recovery_sink(journal).unwrap();
-    gov.hydrate_budgets(&cm, now).unwrap();
-    gov.flush_budgets();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal).await.unwrap();
+    gov.hydrate_budgets_async(&cm, now).await.unwrap();
+    gov.flush_budgets().await;
     gov.record_usage(&cm, &key, "", MODEL, &toks(NEXT_WINDOW_INPUT, 0), now);
     let selected = gov.recovery_event(original.operation_id).unwrap();
     gov.recovery()
@@ -914,6 +1027,7 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
                 reason: "all senders retired; original backend receipt checked".into(),
             },
         )
+        .await
         .unwrap();
     assert_eq!(
         store.correction_calls.lock().unwrap().len(),
@@ -921,11 +1035,12 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
         "reboot and landed verdict never resubmit the expired/age-unknown conditional request"
     );
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT + CONCURRENT_INPUT
     );
     assert_eq!(
-        gov.usage_for(&cm, &key.id, now)
+        gov.usage_for_async(&cm, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .tokens
@@ -934,29 +1049,33 @@ fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_the_old_
     );
 }
 
-#[test]
-fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_replay() {
-    let store = Arc::new(FlakyStore::new());
+#[tokio::test]
+async fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_replay() {
+    let store = Arc::new(FlakyStore::new().await);
     let journal = Arc::new(Journal::default());
-    let gov = GovState::new(store.clone(), None).unwrap();
-    gov.attach_recovery_sink(journal.clone()).unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
     let key = key("vk_correction_known_receipt", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     gov.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&gov, &key.id, MODEL, INITIAL_INPUT, now).await;
     let fail_receipt_ack = journal.clone();
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
-        fail_receipt_ack
-            .fail_after_write
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            fail_receipt_ack
+                .fail_after_write
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        })
     }));
     let delta = delta();
     let adj = correction(&key, &delta, now);
-    assert!(gov.adjust_usage(&cm, &adj).is_err());
+    assert!(gov.adjust_usage_async(&cm, &adj).await.is_err());
     assert_eq!(
-        input(&store.get_usage(&key.id, 0).unwrap()),
+        input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         CORRECTED_INPUT
     );
     assert_eq!(store.correction_calls.lock().unwrap().len(), 1);
@@ -989,7 +1108,7 @@ fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_repla
     journal
         .fail_after_write
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    gov.adjust_usage(&cm, &adj).unwrap().unwrap();
+    gov.adjust_usage_async(&cm, &adj).await.unwrap().unwrap();
     assert_eq!(
         store.correction_calls.lock().unwrap().len(),
         1,
@@ -1001,38 +1120,47 @@ fn a_known_correction_receipt_survives_a_lost_recovery_ack_without_backend_repla
     );
 }
 
-#[test]
-fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_verdict() {
+#[tokio::test]
+async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_verdict() {
     const FOREIGN_INPUT: u64 = 13;
-    let faulting = Arc::new(FlakyStore::new());
+    let faulting = Arc::new(FlakyStore::new().await);
     let journal = Arc::new(Journal::default());
-    let first = Arc::new(GovState::new(faulting.clone(), None).unwrap());
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = Arc::new(
+        GovState::new_with_core(faulting.core(), None, None)
+            .await
+            .unwrap(),
+    );
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     let key = key("vk_correction_checkpointed_common", None);
-    faulting.put_key(&key).unwrap();
+    faulting.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let grant = first.try_admit(&cm, &key, "", now).unwrap();
     first.record_usage(&cm, &key, "", MODEL, &toks(INITIAL_INPUT, 0), now);
-    metered(&first, &key.id, MODEL, INITIAL_INPUT, now);
+    metered(&first, &key.id, MODEL, INITIAL_INPUT, now).await;
     let (mutator, mutated_key, refund) = (first.clone(), key.clone(), grant.charge().clone());
     *faulting.before_add.lock().unwrap() = Some(Box::new(move || {
-        mutator.record_usage(
-            &model(&[]),
-            &mutated_key,
-            "",
-            MODEL,
-            &toks(CONCURRENT_INPUT, 0),
-            now,
-        );
-        mutator.refund_charge(&refund);
+        Box::pin(async move {
+            mutator.record_usage(
+                &model(&[]),
+                &mutated_key,
+                "",
+                MODEL,
+                &toks(CONCURRENT_INPUT, 0),
+                now,
+            );
+            mutator.refund_charge(&refund);
+        })
     }));
     faulting
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(first
-        .adjust_usage(&cm, &correction(&key, &delta(), now))
-        .is_err());
+    assert!(
+        first
+            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+            .await
+            .is_err()
+    );
     assert_eq!(faulting.correction_calls.lock().unwrap().len(), 1);
     let original = journal
         .selected
@@ -1048,6 +1176,7 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
     let backend = faulting.inner.clone();
     drop(faulting);
     backend
+        .ledger()
         .add_usage(
             &key.id,
             0,
@@ -1063,27 +1192,31 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
                 ..Default::default()
             },
         )
+        .await
         .unwrap();
-    let second = GovState::new(backend.clone(), None).unwrap();
-    second.attach_recovery_sink(journal.clone()).unwrap();
-    second.hydrate_budgets(&cm, now).unwrap();
+    let second = GovState::new_with_core(backend.core(), None, None)
+        .await
+        .unwrap();
+    second.attach_recovery_sink(journal.clone()).await.unwrap();
+    second.hydrate_budgets_async(&cm, now).await.unwrap();
     let hydrated = CORRECTED_INPUT + FOREIGN_INPUT;
     assert_eq!(
         second
-            .usage_for(&cm, &key.id, now)
+            .usage_for_async(&cm, &key.id, now)
+            .await
             .unwrap()
             .unwrap()
             .tokens
             .whole_for_test(),
         hydrated
     );
-    second.flush_budgets();
+    second.flush_budgets().await;
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(second.resume_correction_verdicts(&cm).is_err());
+    assert!(second.resume_correction_verdicts(&cm).await.is_err());
     assert_eq!(
-        input(&backend.get_usage(&key.id, 0).unwrap()),
+        input(&backend.ledger().get_usage(&key.id, 0).await.unwrap()),
         hydrated,
         "the common child cannot send before its exact parent checkpoint is confirmed"
     );
@@ -1096,27 +1229,37 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         payload["targets"][0]["accepted"]["flushed_billable_requests"], 1,
         "dependent negative fee custody is not released with the common positive"
     );
-    assert!(!journal
-        .selected
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|event| event.operation_id == child_id));
+    assert!(
+        !journal
+            .selected
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.operation_id == child_id)
+    );
     drop(second);
     journal
         .fail_after_write
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    let third = GovState::new(backend.clone(), None).unwrap();
-    third.attach_recovery_sink(journal.clone()).unwrap();
-    third.hydrate_budgets(&cm, now).unwrap();
-    third.resume_correction_verdicts(&cm).unwrap();
-    let row = backend.get_usage(&key.id, 0).unwrap();
+    let third = GovState::new_with_core(backend.core(), None, None)
+        .await
+        .unwrap();
+    third.attach_recovery_sink(journal.clone()).await.unwrap();
+    third.hydrate_budgets_async(&cm, now).await.unwrap();
+    third.resume_correction_verdicts(&cm).await.unwrap();
+    let row = backend.ledger().get_usage(&key.id, 0).await.unwrap();
     assert_eq!(
         (input(&row), row.billable_requests),
         (hydrated + CONCURRENT_INPUT, 1)
     );
     assert_eq!(
-        third.usage_for(&cm, &key.id, now).unwrap().unwrap().tokens.whole_for_test(),
+        third
+            .usage_for_async(&cm, &key.id, now)
+            .await
+            .unwrap()
+            .unwrap()
+            .tokens
+            .whole_for_test(),
         hydrated,
         "posting common raw work never installs the old whole before/accepted aggregates into hydrated RAM"
     );
@@ -1137,8 +1280,8 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
         0,
         "the fee negative already selected in the accepted branch consumes its original positive exposure"
     );
-    third.resume_correction_verdicts(&cm).unwrap();
-    assert_eq!(backend.get_usage(&key.id, 0).unwrap(), row);
+    third.resume_correction_verdicts(&cm).await.unwrap();
+    assert_eq!(backend.ledger().get_usage(&key.id, 0).await.unwrap(), row);
     assert_eq!(
         journal
             .selected
@@ -1152,15 +1295,17 @@ fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_before_
     );
 }
 
-#[test]
-fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quarantined() {
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quarantined() {
+    use busbar_kernel_ledger::cost::{PER_SESSION, plane_fee_lane};
+    let store = crate::real_store::core().await;
     let journal = Arc::new(Journal::default());
-    let first = GovState::new(store.clone(), None).unwrap();
-    first.attach_recovery_sink(journal.clone()).unwrap();
+    let first = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    first.attach_recovery_sink(journal.clone()).await.unwrap();
     let key = key("vk_correction_per_entry_negative_capacity", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let lane = plane_fee_lane("tcp");
@@ -1169,6 +1314,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     first.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_b);
     store
+        .ledger()
         .add_metering(&MeteringDelta {
             scale: 0,
             key_id: key.id.clone(),
@@ -1189,26 +1335,30 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
                 .map(|(unit, count)| (unit.clone(), i128::from(*count)))
                 .collect(),
         })
+        .await
         .unwrap();
     let increase = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(first
-        .adjust_usage(
-            &cm,
-            &super::super::Adjustment {
-                key_id: &key.id,
-                pool: "",
-                model: &lane,
-                entry_era: 0,
-                entry_id: entry_b.entry_id,
-                card_epoch_ms: now * 1_000,
-                delta: &increase,
-                now,
-            }
-        )
-        .is_err());
+    assert!(
+        first
+            .adjust_usage_async(
+                &cm,
+                &super::super::Adjustment {
+                    key_id: &key.id,
+                    pool: "",
+                    model: &lane,
+                    entry_era: 0,
+                    entry_id: entry_b.entry_id,
+                    card_epoch_ms: now * 1_000,
+                    delta: &increase,
+                    now,
+                }
+            )
+            .await
+            .is_err()
+    );
     let original = journal
         .selected
         .lock()
@@ -1221,10 +1371,12 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     journal
         .fail_after_write
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    let gov = GovState::new(store.clone(), None).unwrap();
-    gov.attach_recovery_sink(journal.clone()).unwrap();
-    gov.hydrate_budgets(&cm, now).unwrap();
-    gov.resume_correction_verdicts(&cm).unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.attach_recovery_sink(journal.clone()).await.unwrap();
+    gov.hydrate_budgets_async(&cm, now).await.unwrap();
+    gov.resume_correction_verdicts(&cm).await.unwrap();
     let count = |row: &UsageLedger, model: &str| {
         row.models
             .iter()
@@ -1261,21 +1413,32 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     );
 
     gov.record_usage_served_in_era(&cm, &key, "", &lane, None, &one, now, entry_a);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
         count(
-            &store.get_usage(&era_bucket(&key.id), 0).unwrap(),
+            &store
+                .ledger()
+                .get_usage(&era_bucket(&key.id), 0)
+                .await
+                .unwrap(),
             &era_model(entry_a, &lane)
         ),
         1
     );
     gov.refund_fee_unit_in_era(&cm, &key, &lane, now, PER_SESSION, Some(entry_a));
-    gov.flush_budgets();
-    gov.flush_budgets();
-    assert_eq!(count(&store.get_usage(&key.id, 0).unwrap(), &lane), 0);
+    gov.flush_budgets().await;
+    gov.flush_budgets().await;
+    assert_eq!(
+        count(&store.ledger().get_usage(&key.id, 0).await.unwrap(), &lane),
+        0
+    );
     assert_eq!(
         count(
-            &store.get_usage(&era_bucket(&key.id), 0).unwrap(),
+            &store
+                .ledger()
+                .get_usage(&era_bucket(&key.id), 0)
+                .await
+                .unwrap(),
             &era_model(entry_a, &lane)
         ),
         0,
@@ -1311,7 +1474,7 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
         "an unconfirmed immutable take cannot spend the same selected capacity twice"
     );
     assert_eq!(journal.selected.lock().unwrap().len(), journal_len);
-    gov.drive_durable_usage_flight(&held).unwrap();
+    gov.drive_durable_usage_flight(&held).await.unwrap();
     let (_, capacity) = gov
         .quarantined_correction_negative_capacity(&key.id, 0)
         .unwrap();
@@ -1325,11 +1488,13 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
         RecoveryState::LandedUnknown
     );
     drop(gov);
-    let restarted = GovState::new(store.clone(), None).unwrap();
-    restarted.attach_recovery_sink(journal).unwrap();
-    restarted.hydrate_budgets(&cm, now).unwrap();
+    let restarted = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    restarted.attach_recovery_sink(journal).await.unwrap();
+    restarted.hydrate_budgets_async(&cm, now).await.unwrap();
     assert_eq!(
-        count(&store.get_usage(&key.id, 0).unwrap(), &lane),
+        count(&store.ledger().get_usage(&key.id, 0).await.unwrap(), &lane),
         0,
         "the independent refund was durable before restart, not left in a RAM-only parked fold"
     );
@@ -1339,12 +1504,14 @@ fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quar
     assert_eq!(exact_count(&capacity, &era_model(entry_b, &lane)), 1);
 }
 
-#[test]
-fn exact_scale_six_adjustment_survives_store_readback() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn exact_scale_six_adjustment_survives_store_readback() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let key = key("vk_correction_micro", None);
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let cm = model(&[]);
     let now = crate::store::now();
     let era = RawRateEra::entry(0, EntryId([61; 12]));
@@ -1358,7 +1525,7 @@ fn exact_scale_six_adjustment_survives_store_readback() {
         now,
         era,
     );
-    metered_entry(store.as_ref(), &key, era, now);
+    metered_entry(store.core().as_ref(), &key, era, now).await;
     let delta = BTreeMap::from([(
         busbar_contract::records::UNIT_INPUT.into(),
         Count::parse("-0.000001").unwrap(),
@@ -1373,17 +1540,23 @@ fn exact_scale_six_adjustment_survives_store_readback() {
         delta: &delta,
         now,
     };
-    gov.adjust_usage_exact(&cm, &adj).unwrap().unwrap();
-    let rows = store.get_usage(&key.id, 0).unwrap();
+    gov.adjust_usage_exact_async(&cm, &adj)
+        .await
+        .unwrap()
+        .unwrap();
+    let rows = store.ledger().get_usage(&key.id, 0).await.unwrap();
     let raw = rows.models.iter().find(|row| row.model == MODEL).unwrap();
     assert_eq!(raw.scale, 6);
     assert_eq!(
         raw.usage_units[busbar_contract::records::UNIT_INPUT],
         i128::from(INITIAL_INPUT) * 1_000_000 - 1
     );
-    let restarted = GovState::new(store, None).unwrap();
+    let restarted = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let adjustments = restarted
-        .usage_adjustments_exact(super::super::metering_bucket(now))
+        .usage_adjustments_exact_async(super::super::metering_bucket(now))
+        .await
         .unwrap();
     assert_eq!(
         adjustments[0].delta[busbar_contract::records::UNIT_INPUT],

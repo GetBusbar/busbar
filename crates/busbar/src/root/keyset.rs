@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::path::Path;
+use busbar_kernel::persistence::boot_identity::BootIdentity;
+use zeroize::Zeroizing;
 
 use busbar_contract::caps::{DurableWrite, Grant, StepName};
 use busbar_kernel::registry::{bootstrap, BootstrapVerdict};
@@ -42,6 +43,8 @@ pub enum KeysetError {
         /// The journal step that lost the write.
         step: &'static str,
     },
+    /// An exact staged Bootstrap remains owned by this journal and may be retried.
+    PendingOriginal { step: &'static str },
     /// The OS CSPRNG gave no bytes, so no key could be minted.
     NoEntropy,
     /// A `Bootstrap` is on the chain the Store kept, and the Store does not yield
@@ -61,6 +64,10 @@ impl std::fmt::Display for KeysetError {
                 f,
                 "the journal could not make the deployment keyset's Bootstrap record durable at \
                  step {step}"
+            ),
+            KeysetError::PendingOriginal { step } => write!(
+                f,
+                "the original deployment-keyset Bootstrap remains pending at step {step}"
             ),
             KeysetError::NoEntropy => f.write_str(
                 "the operating system's random source gave no bytes, so the deployment keyset \
@@ -90,69 +97,80 @@ pub fn bootstrap_fingerprint(body: &[u8]) -> Option<[u8; 32]> {
     BodyReader::new(body).bytes()?.try_into().ok()
 }
 
-fn mint_seed_hex() -> Result<String, KeysetError> {
-    let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed).map_err(|_| KeysetError::NoEntropy)?;
-    let text = hex::encode(seed);
-    seed.fill(0);
-    std::hint::black_box(&seed);
-    Ok(text)
+fn mint_seed_hex() -> Result<Zeroizing<String>, KeysetError> {
+    let mut seed = Zeroizing::new([0u8; 32]);
+    getrandom::fill(seed.as_mut()).map_err(|_| KeysetError::NoEntropy)?;
+    Ok(Zeroizing::new(hex::encode(*seed)))
 }
 
-fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>, KeysetError> {
-    let records = match durability.chain() {
+async fn sealed_fingerprint(durability: &Durability) -> Result<Option<[u8; 32]>, KeysetError> {
+    let records = match durability.chain().await {
         Ok(Ok(records)) => records,
         Ok(Err(broken)) => {
             return Err(KeysetError::Store(format!(
                 "the journal does not verify: {broken}"
-            )))
+            )));
         }
         Err(e) => return Err(KeysetError::Store(durability.unreadable(&e))),
     };
-    Ok(records
+    match records
         .iter()
-        .filter(|r| r.class == RecordClass::Bootstrap)
-        .max_by_key(|r| r.node_seq)
-        .and_then(|r| bootstrap_fingerprint(&r.body)))
+        .filter(|record| record.class == RecordClass::Bootstrap)
+        .max_by_key(|record| record.node_seq)
+    {
+        None => Ok(None),
+        Some(record) => bootstrap_fingerprint(&record.body)
+            .map(Some)
+            .ok_or_else(|| {
+                KeysetError::Store("the persisted Bootstrap has no valid keyset fingerprint".into())
+            }),
+    }
 }
 
 fn sign_with(durability: &mut Durability, key: AuditSigningKey) {
     durability.record = std::mem::take(&mut durability.record).signing_with(key);
 }
 
-pub fn bind(
-    durability: &mut Durability,
-    _data_dir: Option<&Path>,
-    token: &Grant<DurableWrite>,
+fn journal_failure(
+    error: busbar_kernel::persistence::journal::runtime::RuntimeError,
     at: StepName,
-    now: u64,
-) -> Result<KeysetSource, KeysetError> {
-    if let Some(calls) = durability
-        .lane()
-        .map(crate::root::durability::JournalLane::calls)
-    {
-        return bind_in_store(durability, calls.as_ref(), token, at, now);
+) -> KeysetError {
+    use busbar_contract::persistence::Failure;
+    use busbar_kernel::persistence::journal::runtime::RuntimeError;
+    match error {
+        RuntimeError::Pending
+        | RuntimeError::Backend(Failure::Unavailable | Failure::Overloaded) => {
+            KeysetError::PendingOriginal { step: at.as_str() }
+        }
+        _ => KeysetError::Unsealed { step: at.as_str() },
     }
-    let key = AuditSigningKey::from_hex_seed(&mint_seed_hex()?)
-        .expect("a freshly minted seed is 64 hex characters");
-    sign_with(durability, key);
-    Ok(KeysetSource::Ephemeral)
 }
 
-fn bind_in_store(
+/// Bind only to the configured native identity owner. Pending original journal
+/// runs are resolved before reading Bootstrap, so a cancelled or unknown first
+/// bind never stages a replacement Bootstrap on retry.
+pub async fn bind(
     durability: &mut Durability,
-    calls: &dyn busbar_contract::store_calls::StoreCalls,
-    token: &Grant<DurableWrite>,
+    identity: &BootIdentity,
+    _token: &Grant<DurableWrite>,
     at: StepName,
     now: u64,
 ) -> Result<KeysetSource, KeysetError> {
-    let prior = sealed_fingerprint(durability)?;
-    let held = crate::root::durability::stored_keyset(calls).map_err(KeysetError::Store)?;
+    durability
+        .journal
+        .flush()
+        .await
+        .map_err(|error| journal_failure(error, at))?;
+    let prior = sealed_fingerprint(durability).await?;
+    let held = identity
+        .stored_keyset()
+        .await
+        .map_err(KeysetError::Store)?
+        .map(Zeroizing::new);
     let held = held
         .map(|seed| {
-            AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
-                KeysetError::Store(format!("the store's deployment keyset is not one: {e}"))
-            })
+            AuditSigningKey::from_hex_seed(&seed)
+                .map_err(|_| KeysetError::Store("the stored deployment keyset is invalid".into()))
         })
         .transpose()?;
     let ours = held.as_ref().map(fingerprint_of_signer);
@@ -171,10 +189,15 @@ fn bind_in_store(
             let key = match held {
                 Some(key) => key,
                 None => {
-                    let seed = crate::root::durability::keep_keyset(calls, &mint_seed_hex()?)
-                        .map_err(KeysetError::Store)?;
-                    AuditSigningKey::from_hex_seed(&seed).map_err(|e| {
-                        KeysetError::Store(format!("the store's deployment keyset is not one: {e}"))
+                    let offered = mint_seed_hex()?;
+                    let seed = Zeroizing::new(
+                        identity
+                            .keep_keyset(&offered)
+                            .await
+                            .map_err(KeysetError::Store)?,
+                    );
+                    AuditSigningKey::from_hex_seed(&seed).map_err(|_| {
+                        KeysetError::Store("the stored deployment keyset is invalid".into())
                     })?
                 }
             };
@@ -183,12 +206,15 @@ fn bind_in_store(
                 bootstrap_body(&fingerprint_of_signer(&key), key.key_id()),
             )
             .at(now, 0);
+            let original = durability
+                .journal
+                .stage_run(&[entry])
+                .map_err(|_| KeysetError::Unsealed { step: at.as_str() })?;
             durability
                 .journal
-                .append(token, at, &[entry])
-                .map_err(|lost| KeysetError::Unsealed {
-                    step: lost.step().as_str(),
-                })?;
+                .confirm(&original)
+                .await
+                .map_err(|error| journal_failure(error, at))?;
             sign_with(durability, key);
             Ok(KeysetSource::Stored)
         }
@@ -197,8 +223,10 @@ fn bind_in_store(
 
 #[cfg(test)]
 pub fn bind_ephemeral(durability: &mut Durability) -> Result<KeysetSource, KeysetError> {
-    let token = crate::root::kernel::new_kernel().durability_token();
-    bind(durability, None, &token, StepName::Meter, 0)
+    let seed = mint_seed_hex()?;
+    let key = AuditSigningKey::from_hex_seed(&seed).expect("a freshly minted seed is valid");
+    sign_with(durability, key);
+    Ok(KeysetSource::Ephemeral)
 }
 
 #[cfg(test)]

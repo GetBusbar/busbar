@@ -271,7 +271,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         .expect("the actual deployment resolves");
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         Default::default(),
         None,
@@ -281,22 +281,26 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         None,
         &rules,
     )
+    .await
     .expect("the actual root builds the far-end generation");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the actual configured Store exposes its rate-history slots"),
-        124,
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .core_store_handle()
+                .expect("the actual configured Store exposes its native history owner"),
+            124,
+        )
+        .expect("native rate history binds");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual configured Store boots its rate history");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
     let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");

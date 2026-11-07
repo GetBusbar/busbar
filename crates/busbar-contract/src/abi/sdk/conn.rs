@@ -315,6 +315,11 @@ impl Host {
         )
     }
 
+    /// Whether the retained host can schedule a cooperative continuation.
+    pub(crate) const fn can_wake(&self) -> bool {
+        self.wake.is_some()
+    }
+
     /// WAKE `ticket` (the host's `wake`, `abi::mechanism::ticket`): from any thread, never blocks,
     pub fn wake(&self, ticket: Ticket) {
         if let Some(wake) = self.wake {

@@ -43,10 +43,7 @@ impl ExportCalls for ListenerSentinel {
         None
     }
     fn serve(&self, _: &ServeRequest<'_>) -> Result<busbar_contract::export_calls::Served, String> {
-        let granted = !matches!(
-            crate::export::scrape::read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
-            busbar_contract::services::Snapshot::Refused(_)
-        );
+        let granted = crate::export::scrape::crossing_is_granted();
         self.called.lock().unwrap().push((self.label, granted));
         Ok(busbar_contract::export_calls::Served {
             status: 200,
@@ -488,17 +485,49 @@ impl ExportCalls for AnsweringSink {
     }
 }
 
-fn opened(module: &str, double: Arc<AnsweringSink>) -> PluginSink {
-    PluginSink {
-        name: module.to_string(),
-        module: module.to_string(),
-        sink: double,
-        scrape: false,
-        projection: Projection::for_test(&[ExportStream::Logs], &[]),
-        span_record: false,
-        admission: OnceLock::new(),
-        reads: OnceLock::from(Arc::new(crate::audit::amend::NodeAmendments::new())),
+struct ConfirmRead(Arc<tokio::sync::Notify>);
+impl busbar_kernel_audit::amend::AmendSink for ConfirmRead {
+    fn sealed(
+        &self,
+        _: &busbar_kernel_audit::amend::Amendment,
+    ) -> Result<
+        busbar_kernel_audit::amend::AmendCommit,
+        busbar_kernel_audit::amend::AmendPersistError,
+    > {
+        let confirmed = self.0.clone();
+        Ok(Box::pin(async move {
+            confirmed.notify_one();
+            Ok(())
+        }))
     }
+}
+async fn opened(
+    module: &str,
+    double: Arc<AnsweringSink>,
+) -> (PluginSink, Arc<tokio::sync::Notify>) {
+    let confirmed = Arc::new(tokio::sync::Notify::new());
+    let reads = Arc::new(crate::audit::amend::NodeAmendments::new());
+    reads
+        .bind(
+            Some(Arc::new(ConfirmRead(confirmed.clone()))),
+            0,
+            &crate::teller::Kernel::new().durability_token(),
+        )
+        .await
+        .unwrap();
+    (
+        PluginSink {
+            name: module.to_string(),
+            module: module.to_string(),
+            sink: double,
+            scrape: false,
+            projection: Projection::for_test(&[ExportStream::Logs], &[]),
+            span_record: false,
+            admission: OnceLock::new(),
+            reads: OnceLock::from(reads),
+        },
+        confirmed,
+    )
 }
 
 fn double(answer: Delivered, stated: Option<(bool, u64, String)>) -> Arc<AnsweringSink> {
@@ -525,10 +554,10 @@ fn payload(_: Projection, _: bool) -> Arc<Value> {
     Arc::new(serde_json::json!({ "path": "/v1/x" }))
 }
 
-#[test]
-fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
+#[tokio::test]
+async fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     let shedding = double(Delivered::Shed, None);
-    let s = opened("q128b-u31-36-shed", Arc::clone(&shedding));
+    let (s, _) = opened("q128b-u31-36-shed", Arc::clone(&shedding)).await;
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-shed", &mut payload);
     assert_eq!(
@@ -539,9 +568,12 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     assert_eq!(shedding.sheds.load(std::sync::atomic::Ordering::Relaxed), 1);
 
     let queueing = double(Delivered::Queued, None);
-    let s = opened("q128b-u31-36-queued", Arc::clone(&queueing));
+    let (s, confirmed) = opened("q128b-u31-36-queued", Arc::clone(&queueing)).await;
     start_one(&s);
     deliver_one(&s, ExportStream::Logs, "q128b-u31-36-queued", &mut payload);
+    tokio::time::timeout(std::time::Duration::from_secs(1), confirmed.notified())
+        .await
+        .unwrap();
     assert_eq!(
         reads_under(&s, "q128b-u31-36-queued"),
         1,
@@ -550,10 +582,10 @@ fn a_shed_line_is_not_audited_as_read_and_a_queued_one_is() {
     assert_eq!(queueing.sheds.load(std::sync::atomic::Ordering::Relaxed), 0);
 }
 
-#[test]
-fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
+#[tokio::test]
+async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
     let paused = double(Delivered::Queued, Some((false, 1, String::new())));
-    let s = opened("q128b-u31-37", Arc::clone(&paused));
+    let (s, _) = opened("q128b-u31-37", Arc::clone(&paused)).await;
     deliver_one(&s, ExportStream::Logs, "q128b-u31-37-early", &mut payload);
     assert_eq!(
         reads_under(&s, "q128b-u31-37-early"),

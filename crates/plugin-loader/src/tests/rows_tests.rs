@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
+use busbar_contract::persistence::axis::StoreDoor;
 use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Trust};
-use busbar_contract::store_calls::StoreDoor;
 
 use crate::{LinkedPlugin, PluginRegistry};
 

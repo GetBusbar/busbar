@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel::config::migrate::migrate_config_with;
-use busbar_kernel::config::migrate_plugins::MigrateHost;
+use busbar_migrations::config::migrate::migrate_config_with;
+use busbar_migrations::config::migrate_plugins::MigrateHost;
 
 use super::{Index, IndexPlugin};
 
@@ -315,4 +315,34 @@ fn legacy_jwt_source_resolution_converts_nested_file_once_and_keeps_json_referen
     );
     let error = host.legacy_jwt_credential_file(&absent).unwrap_err();
     assert!(!error.contains("secret-absent"));
+}
+
+#[test]
+fn frozen_overlay_host_keeps_coincident_authored_templates_as_literal_data() {
+    let raw = "store: {module: memory, settings: {password: '${COINCIDENT}'}}\n";
+    let detection = "store: {module: memory, settings: {password: 'environment-value'}}\n";
+    let documents =
+        std::sync::Arc::new(crate::root::startup_upgrade::documents::Documents::default());
+    let authored = super::RootHost::for_startup_document(
+        raw,
+        detection,
+        std::path::Path::new("config.yaml"),
+        documents.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        authored.resolved_authored_scalar("${COINCIDENT}").unwrap(),
+        Some(serde_json::Value::String("environment-value".into()))
+    );
+    let frozen = super::RootHost::for_frozen_overlay(
+        raw,
+        detection,
+        std::path::Path::new("config.yaml"),
+        documents,
+    )
+    .unwrap();
+    assert_eq!(
+        frozen.resolved_authored_scalar("${COINCIDENT}").unwrap(),
+        None
+    );
 }

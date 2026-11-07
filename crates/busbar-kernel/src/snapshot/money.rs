@@ -28,22 +28,23 @@ fn metric_labels(
     key.labels.iter()
 }
 
-pub(super) fn refresh_money_gauges(app: &App, now: u64) {
+pub(super) async fn refresh_money_gauges(app: &App, now: u64) -> Result<(), &'static str> {
     if let Some(gov) = &app.governance {
-        refresh_governance_gauges(gov, &app.cost, now);
+        refresh_governance_gauges(gov, &app.cost, now).await?;
     }
+    Ok(())
 }
 
-pub(super) fn refresh_governance_gauges(
+pub(super) async fn refresh_governance_gauges(
     gov: &crate::governance::GovState,
     cost: &crate::cost::CostModel,
     now: u64,
-) {
-    let keys = match gov.all_keys() {
+) -> Result<(), &'static str> {
+    let keys = match gov.all_keys_async().await {
         Ok(ks) => ks,
         Err(e) => {
             diag_debug!(METRICS_SCRAPE_LIST_KEYS_FAILED, error = %e, "metrics scrape: failed to list virtual keys; skipping per-key spend/token gauges");
-            Vec::new()
+            return Err("the current key snapshot is unavailable");
         }
     };
 
@@ -74,12 +75,12 @@ pub(super) fn refresh_governance_gauges(
         KEY_GAUGE_LIMIT_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
     }
     for key in keys.iter().take(key_gauge_limit) {
-        let usage = match gov.viewed_usage_for(cost, &key.id, now) {
+        let usage = match gov.viewed_usage_for_async(cost, &key.id, now).await {
             Ok(Some(u)) => u,
             Ok(None) => continue,
             Err(e) => {
                 diag_debug!(METRICS_SCRAPE_KEY_USAGE_READ_FAILED, key = %key.id, error = %e, "metrics scrape: usage read failed; skipping key");
-                continue;
+                return Err("the current key usage snapshot is unavailable");
             }
         };
 
@@ -102,8 +103,10 @@ pub(super) fn refresh_governance_gauges(
             usage.tokens,
         );
 
-        for (model, tokens) in
-            gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
+        for (model, tokens) in gov
+            .bucket_model_tokens_async(&key.id, crate::governance::WINDOW_TOTAL, now)
+            .await
+            .map_err(|_| "the current key token snapshot is unavailable")?
         {
             for (tier, v) in crate::governance::token_series(&model, &tokens) {
                 let mut labels: Vec<metrics::Label> =
@@ -120,17 +123,14 @@ pub(super) fn refresh_governance_gauges(
 
     for group in cost.groups() {
         for bucket in &group.buckets {
-            let derived = match gov.viewed_bucket_usage(
-                cost,
-                &bucket.bucket_id,
-                bucket.window,
-                true,
-                now,
-            ) {
+            let derived = match gov
+                .viewed_bucket_usage_async(cost, &bucket.bucket_id, bucket.window, true, now)
+                .await
+            {
                 Ok(u) => u,
                 Err(e) => {
                     diag_debug!(METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, bucket = %bucket.bucket_id, error = %e, "metrics scrape: group ledger read failed; skipping");
-                    continue;
+                    return Err("the current group usage snapshot is unavailable");
                 }
             };
             let dims = |extra: &[(&'static str, String)]| -> Vec<metrics::Label> {
@@ -156,7 +156,11 @@ pub(super) fn refresh_governance_gauges(
                     remaining,
                 );
             }
-            for (model, tokens) in gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now) {
+            for (model, tokens) in gov
+                .bucket_model_tokens_async(&bucket.bucket_id, bucket.window, now)
+                .await
+                .map_err(|_| "the current group token snapshot is unavailable")?
+            {
                 for (tier, v) in crate::governance::token_series(&model, &tokens) {
                     set_count_gauge(
                         metrics::gauge!(
@@ -169,4 +173,5 @@ pub(super) fn refresh_governance_gauges(
             }
         }
     }
+    Ok(())
 }

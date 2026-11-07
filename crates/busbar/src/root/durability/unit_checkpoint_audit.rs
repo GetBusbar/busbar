@@ -4,9 +4,10 @@
 //! Restart settlement uses captured host facts and the privileged recovery lane. It never
 //! recreates a request admission, reservation, or fee, and never reuses an unverified audit pass.
 
-use busbar_contract::caps::{Abort, OriginKind, Outcome, ReasonCode, StepName, UnitKey};
+use busbar_contract::caps::{Abort, OriginKind, Outcome, ReasonCode, UnitKey};
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
 use busbar_kernel::governance::unit_checkpoint::UnitCheckpoint;
+use busbar_kernel::governance::unit_checkpoint_store::UnitCheckpointEvidence;
 use busbar_kernel_audit::{
     Audit as _, AuditInputs, Controls, FinishClass, HookApplied, HookHead, OpClassId, OutcomeFacts,
     Subject, Usage, UsageLine, What,
@@ -38,56 +39,11 @@ fn error(message: impl ToString) -> RecordStoreError {
     RecordStoreError(message.to_string())
 }
 
-fn find_record(
-    book: &Arc<Mutex<Durability>>,
-    unit: u64,
-    incarnation: u64,
-) -> RecordStoreResult<
-    Option<(
-        busbar_kernel_wal::JournalRecord,
-        busbar_kernel_audit::AuditRecord,
-    )>,
-> {
-    fn find(
-        records: Vec<busbar_kernel_wal::JournalRecord>,
-        unit: u64,
-        incarnation: u64,
-    ) -> RecordStoreResult<
-        Option<(
-            busbar_kernel_wal::JournalRecord,
-            busbar_kernel_audit::AuditRecord,
-        )>,
-    > {
-        for record in records {
-            if let Some(audit) = super::decode_audit(&record).map_err(error)? {
-                if audit.what.unit_key.get() == unit && audit.what.incarnation == incarnation {
-                    return Ok(Some((record, audit)));
-                }
-            }
-        }
-        Ok(None)
-    }
-    // The bounded live journal tail handles the usual terminal ACK without scanning history.
-    let recent = book
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .journal
-        .replay()
-        .map_err(error)?
-        .map_err(error)?;
-    if let Some(found) = find(recent, unit, incarnation)? {
-        return Ok(Some(found));
-    }
-    // Crash recovery and old pending terminals prove identity against retained Store records.
-    let chain = book.lock().unwrap_or_else(|p| p.into_inner()).chain_at();
-    let chain = chain.read().map_err(error)?.map_err(error)?;
-    find(chain, unit, incarnation)
-}
-
 /// A live terminal cannot retire its money head ahead of the root's one fixed audit line.
 /// Returning an error keeps the exact terminal raw operation IDs for the next flush or restart.
-pub(super) fn confirm(
+pub(super) async fn confirm(
     book: &Arc<Mutex<Durability>>,
+    evidence: &UnitCheckpointEvidence,
     snapshot: &UnitCheckpoint,
 ) -> RecordStoreResult<()> {
     let facts: RunningAudit = serde_json::from_slice(
@@ -97,7 +53,10 @@ pub(super) fn confirm(
             .ok_or_else(|| error("terminal unit lacks captured admission audit facts"))?,
     )
     .map_err(error)?;
-    if let Some((record, audit)) = find_record(book, snapshot.unit, facts.incarnation)? {
+    if let Some(audit) = evidence
+        .find_audit(snapshot.unit, facts.incarnation)
+        .await?
+    {
         if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
             || audit.what.op_class.as_str() != facts.op_class
         {
@@ -110,26 +69,14 @@ pub(super) fn confirm(
             .and_then(|id| keys.get(id))
             .ok_or_else(|| error("terminal unit audit is unsigned"))?;
         busbar_kernel_audit::AuditChain::verify_signature(&audit, key).map_err(error)?;
-        let lane = book
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .cloned()
-            .ok_or_else(|| error("terminal audit has no Store lane"))?;
-        if !lane.drain(super::store_chain::ACK_DEADLINE) {
-            return Err(error("terminal unit audit awaits Store custody"));
-        }
-        return super::store_chain::confirm_record_bytes(
-            lane.calls().as_ref(),
-            &busbar_kernel_wal::Record::new(record.node, record.node_seq, record.encode()),
-        )
-        .map_err(error);
+        return Ok(());
     }
     Err(error("terminal unit awaits its sealed audit line"))
 }
 
-pub(super) fn recover(
+pub(super) async fn recover(
     book: &Arc<Mutex<Durability>>,
+    evidence: &UnitCheckpointEvidence,
     snapshot: &UnitCheckpoint,
 ) -> RecordStoreResult<()> {
     let Some(encoded) = &snapshot.audit else {
@@ -143,7 +90,10 @@ pub(super) fn recover(
             "running money audit identity differs from its admitted principal",
         ));
     }
-    if let Some((record, audit)) = find_record(book, snapshot.unit, facts.incarnation)? {
+    if let Some(audit) = evidence
+        .find_audit(snapshot.unit, facts.incarnation)
+        .await?
+    {
         if audit.subject != Subject::PrincipalId(snapshot.principal.clone())
             || audit.what.op_class.as_str() != facts.op_class
         {
@@ -158,22 +108,17 @@ pub(super) fn recover(
             .and_then(|id| keys.get(id))
             .ok_or_else(|| error("recovered unit audit is unsigned"))?;
         busbar_kernel_audit::AuditChain::verify_signature(&audit, key).map_err(error)?;
-        let lane = book
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .cloned()
-            .ok_or_else(|| error("recovered audit has no Store lane"))?;
-        if !lane.drain(super::store_chain::ACK_DEADLINE) {
-            return Err(error(
-                "recovered unit audit is still awaiting Store custody",
-            ));
+
+        return Ok(());
+    }
+    if let Some(pending) = evidence.pending_audit(snapshot.unit, facts.incarnation) {
+        if pending.subject != Subject::PrincipalId(snapshot.principal.clone())
+            || pending.what.op_class.as_str() != facts.op_class
+        {
+            return Err(error("pending recovered audit identity differs"));
         }
-        super::store_chain::confirm_record_bytes(
-            lane.calls().as_ref(),
-            &busbar_kernel_wal::Record::new(record.node, record.node_seq, record.encode()),
-        )
-        .map_err(error)?;
+        evidence.append_audit(pending.clone()).await?;
+        publish(book, pending);
         return Ok(());
     }
     let parent = facts.parent.map(UnitKey::new);
@@ -258,28 +203,29 @@ pub(super) fn recover(
         },
         correlation_label: None,
     };
-    let lane = {
+    let record = {
         let mut book = book.lock().unwrap_or_else(|p| p.into_inner());
-        let record = book
-            .record
-            .seal(inputs, &busbar_kernel::teller::verb_audit_pass(&kernel));
-        let entry = super::audit_entry(&record).map_err(error)?;
-        book.journal
-            .append(&kernel.durability_token(), StepName::Audit, &[entry])
-            .map_err(|_| error("recovered unit audit awaits Store custody"))?;
-        if record.key_id.is_some() && book.audit_signed_from.is_none() {
-            book.audit_signed_from = Some(record.seq);
-        }
+        book.record
+            .seal(inputs, &busbar_kernel::teller::verb_audit_pass(&kernel))
+    };
+    evidence.append_audit(record.clone()).await?;
+    publish(book, record);
+    Ok(())
+}
+
+fn publish(book: &Arc<Mutex<Durability>>, record: busbar_kernel_audit::AuditRecord) {
+    let mut book = book.lock().unwrap_or_else(|p| p.into_inner());
+    if record.key_id.is_some() && book.audit_signed_from.is_none() {
+        book.audit_signed_from = Some(record.seq);
+    }
+    if !book
+        .audit_records
+        .iter()
+        .any(|existing| existing == &record)
+    {
         book.audit_records.push(record);
         if book.audit_records.len() > AUDIT_RING {
             book.audit_records.remove(0);
         }
-        book.lane()
-            .cloned()
-            .ok_or_else(|| error("recovered audit has no Store lane"))?
-    };
-    if !lane.drain(super::store_chain::ACK_DEADLINE) {
-        return Err(error("recovered unit audit has not reached Store custody"));
     }
-    Ok(())
 }

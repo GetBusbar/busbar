@@ -110,7 +110,7 @@ fn served_paths(app: &busbar_kernel::state::App) -> std::collections::BTreeSet<S
 #[tokio::test]
 async fn without_the_config_block_the_plane_serves_nothing() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = application(None, None);
+    let app = application(None, None).await;
     assert!(
         app.oauth_as_any().is_none(),
         "the unconfigured product must not be an authorization server"
@@ -138,10 +138,10 @@ async fn without_the_config_block_the_plane_serves_nothing() {
 #[tokio::test]
 async fn the_inventory_is_exactly_what_the_mount_registers() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let without = served_paths(&application(None, None));
+    let without = served_paths(application(None, None).await.as_ref());
 
     let block = cfg();
-    let app = application(Some(&block), None);
+    let app = application(Some(&block), None).await;
     assert!(
         app.oauth_as_any().is_some(),
         "the config block was given, so the plane must exist"
@@ -180,12 +180,12 @@ async fn the_inventory_is_exactly_what_the_mount_registers() {
 #[tokio::test]
 async fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let without = served_paths(&application(None, None));
-    let plain = served_paths(&application(Some(&cfg()), None));
+    let without = served_paths(application(None, None).await.as_ref());
+    let plain = served_paths(application(Some(&cfg()), None).await.as_ref());
 
     let mut block = cfg();
     block.fapi2 = true;
-    let fapi2 = served_paths(&application(Some(&block), None));
+    let fapi2 = served_paths(application(Some(&block), None).await.as_ref());
 
     let added: std::collections::BTreeSet<String> = fapi2.difference(&without).cloned().collect();
     let expected: std::collections::BTreeSet<String> =
@@ -210,7 +210,7 @@ async fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
 #[tokio::test]
 async fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let app = application(Some(&cfg()), None);
+    let app = application(Some(&cfg()), None).await;
     assert!(app.oauth_as_any().is_some(), "configured, so present");
     let served = served_paths(&app);
     for path in inventory(&AsIdentity::from_cfg(&cfg()).expect("valid configured identity")) {

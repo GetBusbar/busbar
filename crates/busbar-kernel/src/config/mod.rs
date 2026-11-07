@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod card;
 pub mod overlay;
-mod overlay_legacy;
+mod overlay_native;
 mod overlay_store;
 
 pub mod filled;
@@ -15,14 +15,9 @@ pub mod filled;
 pub mod groups;
 
 pub mod bootstrap;
-pub mod migrate;
-pub mod migrate_catalog;
-mod migrate_credentials;
-pub mod migrate_export;
-pub mod migrate_overlay;
-pub mod migrate_plugins;
-
-pub mod migration_table;
+pub mod current_format;
+pub mod declared_vocabulary;
+mod grammar_fields;
 
 mod authored_routing;
 pub mod document_patch;
@@ -112,6 +107,17 @@ pub fn interpolate_env_with(
     mode: EnvSubst,
     unset: &mut Vec<String>,
 ) -> Result<String, String> {
+    interpolate_env_lookup(s, mode, unset, |name| std::env::var(name).ok())
+}
+
+/// Interpolate through a caller-owned captured environment, retaining the same
+/// scalar and document-shape injection checks as ordinary configuration reads.
+pub fn interpolate_env_lookup(
+    s: &str,
+    mode: EnvSubst,
+    unset: &mut Vec<String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<String, String> {
     let mut result = String::with_capacity(s.len());
     let mut occurrences: Vec<Occurrence> = Vec::new();
     let mut chars = s.chars().peekable();
@@ -137,9 +143,9 @@ pub fn interpolate_env_with(
             if var_name.is_empty() {
                 return Err("empty variable name in ${}".into());
             }
-            let value = match std::env::var(&var_name) {
-                Ok(v) => v,
-                Err(_) => match mode {
+            let value = match lookup(&var_name) {
+                Some(v) => v,
+                None => match mode {
                     EnvSubst::Strict => {
                         return Err(format!("unset environment variable: {}", var_name));
                     }
@@ -589,89 +595,9 @@ pub fn resolve_auth(
     }
 }
 
+/// Preserve the current reader's error; historical guidance belongs to normalization.
 pub fn augment_config_error(err: impl std::fmt::Display) -> String {
-    let msg = err.to_string();
-    if msg.contains("unknown field `mode`") {
-        format!(
-            "{msg}\n  hint: the `auth.mode:` key was removed in favor of `auth.chain:` — `mode: none` \
-             maps to an empty/omitted chain, `mode: token` or `mode: apikey` to `chain: [tokens]`, and \
-             `mode: passthrough` to `auth.upstream_credentials: passthrough`"
-        )
-    } else if let Some((old, new)) = RENAMED_HOOK_STAGES
-        .iter()
-        .copied()
-        .find(|(old, _)| msg.contains(&format!("unknown variant `{old}`")))
-    {
-        format!(
-            "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
-             `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
-        )
-    } else if let Some((old, new)) = retired_observability_keys()
-        .into_iter()
-        .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
-    {
-        format!(
-            "{msg}\n  hint: `{old}` was retired in 1.5.3 — the observability sink moved to the \
-             built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
-             field yourself"
-        )
-    } else if let Some((old, new)) = retired_config_keys_1_5_3()
-        .into_iter()
-        .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
-    {
-        format!(
-            "{msg}\n  hint: `{old}` was retired in 1.5.3 — it is now `{new}`. Run \
-             `busbar --migrate-config <config.yaml>` to rewrite it in place"
-        )
-    } else {
-        msg
-    }
-}
-
-pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
-    let trace_home = format!(
-        "an `export:` instance with `module: {}` and `settings.url`",
-        migration_table::text("export_trace_module")
-    );
-    [
-
-
-        ("observability", migration_table::text("observability_home").to_string()),
-
-        ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
-
-        ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override".to_string()),
-
-        ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
-
-        (migration_table::text("observability_trace_key"), trace_home.clone()),
-        (migration_table::text("observability_trace_key_1_4"), trace_home),
-    ]
-    .into_iter()
-    .filter(|(old, _)| !old.is_empty())
-    .collect()
-}
-
-pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
-    ("route", "candidate"),
-    ("attempt", "routing"),
-    ("completion", "response"),
-];
-
-pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
-    let log = migration_table::text("observability_log_type_key");
-    let mut out: Vec<(&'static str, String)> = migration_table::pairs("observability_log_keys")
-        .into_iter()
-        .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
-        .collect();
-    out.push((
-        "metrics",
-        format!(
-            "export.{}.settings (buffer_seconds / key_gauge_limit)",
-            migration_table::text("metrics_type_key")
-        ),
-    ));
-    out
+    err.to_string()
 }
 
 pub use busbar_kernel::config::providers::{
@@ -1102,7 +1028,7 @@ pub use busbar_kernel::config::sections::{Destinations, SecurityCfg};
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
 )]
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsCfg {
     /// MASTER SWITCH, default FALSE. When false (or the whole `plugins:` block is absent), NO
@@ -1160,7 +1086,7 @@ pub struct PluginsCfg {
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
 )]
-#[derive(Deserialize, Clone, Default, Debug)]
+#[derive(Deserialize, Clone, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields, default)]
 pub struct PluginLogsCfg {
     pub dir: Option<String>,
@@ -1341,7 +1267,7 @@ impl Default for PluginsCfg {
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
 )]
-#[derive(Deserialize, Clone, Default, Debug)]
+#[derive(Deserialize, Clone, Default, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginsTrustCfg {
     /// THIRD-PARTY allowlist: publishers whose signatures mark a plugin TRUSTED. Each maps a
@@ -1365,7 +1291,7 @@ pub struct PluginsTrustCfg {
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
 )]
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PluginPublisher {
     pub name: String,
@@ -1414,9 +1340,7 @@ impl PluginsCfg {
     }
 }
 
-pub use busbar_kernel::config::sections::{
-    migrated_store_module, store_required, SecretModuleCfg, StoreCfg,
-};
+pub use busbar_kernel::config::sections::{store_required, SecretModuleCfg, StoreCfg};
 
 pub use busbar_kernel::config::sections::{
     default_response_headers_route_policy, default_response_headers_server_timing, AdvancedCfg,

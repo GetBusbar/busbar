@@ -714,7 +714,7 @@ fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
     use crate::abi::{auth, export, hook, plane, secret, store, transport};
     use std::any::TypeId;
     for count in [
-        slot_count::<store::Ops>(),
+        slot_count::<store::v4::Ops>(),
         slot_count::<secret::Ops>(),
         slot_count::<auth::Ops>(),
         slot_count::<hook::Ops>(),
@@ -761,8 +761,16 @@ fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
         TypeId::of::<export::ScrapeIn>()
     );
     assert_eq!(
-        TypeId::of::<<store::Ops as KindSlot<{ store::slot::GET_KEY }>>::In>(),
-        TypeId::of::<store::IdIn>()
+        TypeId::of::<<store::v4::Ops as KindSlot<{ store::v4::slot::READ }>>::In>(),
+        TypeId::of::<store::v4::ReadIn>()
+    );
+    assert_eq!(
+        TypeId::of::<<store::v4::Ops as KindSlot<{ store::v4::slot::BOOTSTRAP }>>::In>(),
+        TypeId::of::<store::v4::BootstrapIn>()
+    );
+    assert_eq!(
+        TypeId::of::<<store::v4::Ops as KindSlot<{ store::v4::slot::BOOTSTRAP }>>::Out>(),
+        TypeId::of::<store::v4::BootstrapOut>()
     );
     assert_eq!(
         TypeId::of::<<Lifecycle as KindSlot<{ slot::OPEN }>>::Out>(),

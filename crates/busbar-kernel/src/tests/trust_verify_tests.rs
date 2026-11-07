@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ed25519_dalek::{Signer as _, SigningKey};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::*;
 use crate::trust::reverify::Policy;
@@ -51,7 +51,7 @@ fn caller(instance: &str) -> Caller {
 
 fn host() -> KernelServices {
     let s = KernelServices::new();
-    s.admit(
+    ready(s.admit(
         "inst",
         InstanceFacts {
             trust: vec![
@@ -61,7 +61,7 @@ fn host() -> KernelServices {
             ],
             ..InstanceFacts::default()
         },
-    )
+    ))
     .unwrap();
     s
 }
@@ -353,15 +353,17 @@ const CARD_DOMAIN: &str = "example-plane/card-signing/v1";
 
 fn pinned(roots: &[(&str, String)]) -> KernelServices {
     let s = KernelServices::new();
-    s.admit(
-        "inst",
-        InstanceFacts {
-            trust: roots
-                .iter()
-                .map(|(name, root)| ((*name).into(), entry(Some(root.clone()), true)))
-                .collect(),
-            ..InstanceFacts::default()
-        },
+    ready(
+        s.admit(
+            "inst",
+            InstanceFacts {
+                trust: roots
+                    .iter()
+                    .map(|(name, root)| ((*name).into(), entry(Some(root.clone()), true)))
+                    .collect(),
+                ..InstanceFacts::default()
+            },
+        ),
     )
     .unwrap();
     s
@@ -374,13 +376,14 @@ fn token_signer(seed: u8) -> crate::governance::signing::TokenSigner {
     )
 }
 
-fn deployment(seed: u8) -> crate::governance::GovState {
-    crate::governance::GovState::new_with_signer(
-        crate::real_store::store(),
+async fn deployment(seed: u8) -> crate::governance::GovState {
+    crate::governance::GovState::new_with_core(
+        crate::real_store::core().await,
         None,
         Some(token_signer(seed)),
     )
-    .expect("a governance book with a signing key")
+    .await
+    .expect("a native governance book with a signing key")
 }
 
 fn card_key(seed: u8) -> String {
@@ -395,23 +398,23 @@ fn busbar_signed(deployment: &crate::governance::GovState, payload: &[u8]) -> Va
     json!({ "protected": protected, "signature": URL_SAFE_NO_PAD.encode(sig) })
 }
 
-#[test]
-fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
+#[tokio::test]
+async fn a_card_signed_by_a_different_busbar_deployment_does_not_verify_here() {
     let s = pinned(&[("ours", card_key(7))]);
-    let ours = json!([busbar_signed(&deployment(7), PAYLOAD)]);
+    let ours = json!([busbar_signed(&deployment(7).await, PAYLOAD)]);
     assert_eq!(
         verdict(&verify(&s, "ours", PAYLOAD, &ours)),
         (Outcome::Ready, svc::SIGNED_VERIFIED, &b""[..])
     );
-    let theirs = json!([busbar_signed(&deployment(9), PAYLOAD)]);
+    let theirs = json!([busbar_signed(&deployment(9).await, PAYLOAD)]);
     assert_eq!(
         verify(&s, "ours", PAYLOAD, &theirs).value,
         svc::SIGNED_NOT_BY_ROOT
     );
 }
 
-#[test]
-fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
+#[tokio::test]
+async fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let token = token_signer(7);
     let card_key_pin = STANDARD.decode(card_key(7)).expect("public-key info");
     assert_eq!(&card_key_pin[..12], &KEY_INFO_HEAD[..], "an Ed25519 SPKI");
@@ -428,7 +431,7 @@ fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     let token_key =
         STANDARD.encode([&KEY_INFO_HEAD[..], token.verifying_key().as_bytes()].concat());
     let s = pinned(&[("token-key", token_key)]);
-    let card = json!([busbar_signed(&deployment(7), PAYLOAD)]);
+    let card = json!([busbar_signed(&deployment(7).await, PAYLOAD)]);
     assert_eq!(
         verify(&s, "token-key", PAYLOAD, &card).value,
         svc::SIGNED_NOT_BY_ROOT,
@@ -436,13 +439,20 @@ fn the_card_key_is_not_the_token_key_and_cannot_be_walked_back_to_it() {
     );
 }
 
-#[test]
-fn rotating_the_token_key_rotates_the_card_key_with_it() {
+#[tokio::test]
+async fn rotating_the_token_key_rotates_the_card_key_with_it() {
     assert_ne!(card_key(7), card_key(8));
     let s = pinned(&[("before", card_key(7))]);
-    let after = json!([busbar_signed(&deployment(8), PAYLOAD)]);
+    let after = json!([busbar_signed(&deployment(8).await, PAYLOAD)]);
     assert_eq!(
         verify(&s, "before", PAYLOAD, &after).value,
         svc::SIGNED_NOT_BY_ROOT
     );
+}
+
+fn ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    use futures::FutureExt;
+    future
+        .now_or_never()
+        .expect("the pure trust fixture completes in one poll")
 }

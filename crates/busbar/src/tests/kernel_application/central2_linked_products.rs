@@ -283,9 +283,12 @@ fn a_linked_rows_refusals_print_its_key() {
                 other => panic!("the genuine registry policy must refuse the kind: {other:?}"),
             };
         cfg.secrets.insert(word.to_string(), Default::default());
-        assert_eq!(refusal(&cfg), format!(
-            "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: secret plugin can back a `secrets:` block entry"
-        ));
+        assert_eq!(
+            refusal(&cfg),
+            format!(
+                "secrets.{word}: plugin '{key}' has kind 'store', not 'secret'; only a kind: secret plugin can back a `secrets:` block entry"
+            )
+        );
         cfg.secrets.clear();
         cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef {
             module: word.to_string(),

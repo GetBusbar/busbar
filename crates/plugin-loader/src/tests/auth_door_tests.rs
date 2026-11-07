@@ -1064,7 +1064,7 @@ mod ticketed {
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
     use busbar_contract::services::{
-        Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Snapshot, Stored,
+        Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Stored,
         TrustKeyRef,
     };
     use busbar_contract::Secret;
@@ -1201,7 +1201,8 @@ mod ticketed {
             counterparty: &str,
             item: &str,
             digest: &str,
-        ) -> Stored {
+            _later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_sight_item"
             )
@@ -1212,7 +1213,8 @@ mod ticketed {
             key: TrustKeyRef<'_>,
             expected: Option<&str>,
             approve: bool,
-        ) -> Stored {
+            _later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: trust_decide"
             )
@@ -1261,7 +1263,8 @@ mod ticketed {
             unit: Option<u64>,
             ttl_secs: u64,
             record: &[u8],
-        ) -> Stored {
+            _later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: ticket_mint")
         }
         fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
@@ -1338,7 +1341,12 @@ mod ticketed {
         fn hook_call(&self, caller: &Caller, unit: Option<u64>, ask: HookAsk, later: Later) -> Ran {
             panic!("unexpected host service in the records-secret scheduling boundary: hook_call")
         }
-        fn snapshot_read(&self, caller: &Caller, scope: u32) -> Snapshot {
+        fn snapshot_read(
+            &self,
+            caller: &Caller,
+            scope: u32,
+            _later: busbar_contract::services::Later,
+        ) -> busbar_contract::services::Ran {
             panic!(
                 "unexpected host service in the records-secret scheduling boundary: snapshot_read"
             )

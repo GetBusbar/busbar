@@ -5,9 +5,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use crate::host_services::VerifiedTicketIdentity;
+use crate::persistence::facade::CoreStore;
 use busbar_contract::abi::plane::{units_bill, UnitCount};
 use busbar_contract::caps::{Admittance, CallId, Grant, PrincipalId, ReasonCode};
-use busbar_contract::records::{RecordStore, VirtualKey};
+use busbar_contract::records::VirtualKey;
 use busbar_contract::{Count, UnitKey};
 
 use super::cancel::{CancelBill, Checkpoint, MoneySeam};
@@ -129,7 +130,7 @@ pub struct TicketReservation {
     id: String,
     expires_at: u64,
     key: Arc<VirtualKey>,
-    store: Arc<dyn RecordStore>,
+    store: Arc<CoreStore>,
     source_call: CallId,
     source_unit: UnitKey,
     node_nonce: Arc<()>,
@@ -203,7 +204,7 @@ impl SpentTicketReservation {
         fee: FeeRefund,
         node_nonce: &Arc<()>,
         instance_nonce: &Arc<()>,
-        store: &Arc<dyn RecordStore>,
+        store: &Arc<CoreStore>,
     ) -> Result<ReservedRequestLineage, ReturnedTicketReservation> {
         let reservation = self.0;
         if !admit.bound_to(ctx.call)

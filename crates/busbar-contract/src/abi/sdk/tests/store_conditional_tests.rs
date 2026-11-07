@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::abi::sdk::store::dedupe::{Dedupe, Seen};
+use crate::host_records::dedupe::{Dedupe, Seen};
 
 fn candidate() -> Request {
     Request {
@@ -22,6 +22,7 @@ fn candidate() -> Request {
 }
 
 #[test]
+#[allow(unsafe_code)] // Existing SDK allocation-probe test moved with its codec.
 fn raw_record_encoder_growth_and_partial_decodes_retire_every_owned_copy_wiped() {
     use crate::alloc_counter::InitializedPayloadProbe;
     use zeroize::Zeroizing;
@@ -336,43 +337,234 @@ fn digest_covers_domain_version_addresses_predicates_mutations_and_order() {
     );
 }
 
-struct OldHost;
-macro_rules! old_host_calls {
-    ($life:lifetime; $($name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {$(
-        fn $name<$life>(&$life self, $($arg: $ty),*) -> crate::store_calls::StoreCall<$life, $out> {
-            let _ = ($($arg,)*);
-            unreachable!("the unsupported conditional call must not dispatch an older operation")
+mod unsupported_host {
+    use crate::services::*;
+    pub(super) struct OldHost;
+    impl HostServices for OldHost {
+        fn now(&self) -> Reading {
+            unreachable!("unsupported conditional host must not dispatch another service")
         }
-    )*};
-}
-impl crate::store_calls::StoreCalls for OldHost {
-    old_host_calls! {
-        'a;
-        add_usage_batch(op: OpId, cells: &'a [(&'a str, u64, crate::records::UsageDelta)]) -> ();
-        add_metering_batch(op: OpId, deltas: &'a [crate::records::MeteringDelta]) -> ();
-        record_put(schema: &'a str, key: &'a [u8], value: &'a crate::kinds::RecordBytes) -> ();
-        record_get(schema: &'a str, key: &'a [u8]) -> Option<crate::kinds::RecordBytes>;
-        record_scan(schema: &'a str, prefix: &'a [u8], limit: u32) -> Vec<(Vec<u8>, crate::kinds::RecordBytes)>;
-        upsert_plane_record(record: crate::records::PlaneRecordRef<'a>) -> ();
-        get_plane_record(kind: &'a str, id: &'a str) -> Option<Vec<u8>>;
-        append_plane_record(op: OpId, record: crate::records::PlaneRecordRef<'a>) -> ();
-        list_plane_records(kind: &'a str, selector: &'a crate::records::PlaneSelector<'a>) -> Vec<Vec<u8>>;
-        delete_plane_record(kind: &'a str, id: &'a str) -> ();
-        redeem_plane_token(kind: &'a str, token: &'a str, expires_at: u64, now: u64) -> bool;
-        plane_token_live(kind: &'a str, token: &'a str, expires_at: u64, now: u64) -> bool;
+        fn dest_judge(&self, _dest: &str, _class: u32, _flags: u32, _later: Option<Later>) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn records_get(&self, _caller: &Caller, _kind: &str, _key: &[u8], _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn records_list(&self, _caller: &Caller, _list: RecordsList, _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn records_claim(
+            &self,
+            _caller: &Caller,
+            _kind: &str,
+            _key: &[u8],
+            _ttl_ms: u64,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn sign(&self, _caller: &Caller, _data: &[u8]) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_sight(
+            &self,
+            _caller: &Caller,
+            _counterparty: &str,
+            _hash: &str,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_unreached(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_sight_item(
+            &self,
+            _caller: &Caller,
+            _counterparty: &str,
+            _item: &str,
+            _digest: &str,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_decide(
+            &self,
+            _caller: &Caller,
+            _key: TrustKeyRef<'_>,
+            _expected: Option<&str>,
+            _approve: bool,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_state(&self, _caller: &Caller, _counterparty: &str) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_serves(
+            &self,
+            _caller: &Caller,
+            _counterparty: &str,
+            _item: Option<&str>,
+            _digest: Option<&str>,
+        ) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_due(&self, _caller: &Caller) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn trust_verify(
+            &self,
+            _caller: &Caller,
+            _counterparty: &str,
+            _payload: &[u8],
+            _signatures: &[u8],
+        ) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn entitlement_check(&self, _caller: &Caller, _unit: Option<u64>, _target: &str) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn session_emit(&self, _caller: &Caller, _session: u64, _bytes: &[u8]) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn ticket_mint(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _ttl_secs: u64,
+            _record: &[u8],
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn random_fill(&self, _len: u64) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn records_secret(&self, _kind: &str, _id: &str, _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn unit_nest(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _ask: NestAsk,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn work_open(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _kind: &str,
+            _record: &[u8],
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn work_find(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _reference: &[u8],
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn work_settle(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _handle: u64,
+            _record: &[u8],
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn work_resume(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _handle: u64,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn disk_append(&self, _dest: &DiskDest, _bytes: Vec<u8>, _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn verify_lookup(&self, _caller: &Caller, _key: &[u8], _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn verify_store(
+            &self,
+            _caller: &Caller,
+            _key: &[u8],
+            _entry: &[u8],
+            _ttl_ms: u64,
+        ) -> Stored {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn content_scan(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _content: &[u8],
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn hook_call(
+            &self,
+            _caller: &Caller,
+            _unit: Option<u64>,
+            _ask: HookAsk,
+            _later: Later,
+        ) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
+        fn snapshot_read(&self, _caller: &Caller, _scope: u32, _later: Later) -> Ran {
+            unreachable!("unsupported conditional host must not dispatch another service")
+        }
     }
 }
+use unsupported_host::OldHost;
 
 #[test]
-fn old_host_defaults_refuse_without_any_legacy_operation() {
-    use crate::store_calls::{StoreCalls, StoreFailure};
+fn unsupported_host_refuses_without_a_callback_or_legacy_operation() {
+    use crate::abi::sdk::plane::conditional::ConditionalCandidate;
+    use crate::services::{Caller, HostServices};
     let host = OldHost;
-    assert!(!host.supports_record_transaction());
-    let request = candidate();
-    assert!(matches!(
-        futures::executor::block_on(host.record_transaction(&request)),
-        Err(StoreFailure::Refused(_))
-    ));
+    assert!(!host.supports_record_transactions());
+    let caller = Caller {
+        instance: "instance".into(),
+        plugin: "plugin".into(),
+        kind: crate::abi::mechanism::KindCode::Plane,
+    };
+    let candidate = ConditionalCandidate {
+        correlation: 1,
+        predicates: vec![],
+        mutations: vec![],
+        chains: vec![],
+    };
+    let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = called.clone();
+    assert_eq!(
+        host.conditional_record_transaction(
+            &caller,
+            None,
+            candidate,
+            Box::new(move |_| {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        ),
+        Err("conditional record transactions unsupported")
+    );
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[test]

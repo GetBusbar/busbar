@@ -1,0 +1,11 @@
+# what	value
+busbar	v1.5.5 busbar-aarch64-apple-darwin 48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48
+plugin	v1.0.6 busbar-store-postgres-1.0.6-aarch64-apple-darwin.tar.gz 151ca14c68a6c7873a7ad0f1814ed99d24885b09548142e5998fd207409f4fe6
+backend	postgres
+recorder	c353cf689d06222191b3f876b3e2520ca340d1c4
+requests	200 200 200 503 200 200 
+file	dump.sql 21306114805d51d315290c1c3acfbe46f4372332aa8e59dc53f07eb9be3f7d8d
+file	readback/key-fixture-grouped.json f142f31ab2c1b6933f9921d542908ac2d5c81d05c09a45d9cc4ac2fc4fdf586f
+file	readback/key-fixture-ungrouped.json 4817e8941c304b945d2db99e7a414513afb709b8390b56f9cef8faed43c05600
+file	readback/usage.json 860df2a45c988dcc7fe94b8b633a3efdd90b9e5da3d9b345ef03c31cf12c89de
+file	rows.json fd4b138084b650cf731d71a3ba79030ec9bd8e87ee6b1123f13f9b21930b8eda

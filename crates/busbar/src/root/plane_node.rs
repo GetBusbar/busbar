@@ -120,9 +120,7 @@ pub struct Node {
 
     book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
 
-    lane: std::sync::OnceLock<crate::root::durability::JournalLane>,
-
-    lease_lane: std::sync::OnceLock<crate::root::durability::JournalLane>,
+    lane: std::sync::OnceLock<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>>,
 
     durability_token: busbar_contract::caps::Grant<busbar_contract::caps::DurableWrite>,
 
@@ -154,7 +152,6 @@ impl Node {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
-            lease_lane: std::sync::OnceLock::new(),
             lane: std::sync::OnceLock::new(),
             kernel: Arc::new(kernel),
 
@@ -226,37 +223,31 @@ impl Node {
     }
 
     pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
-        let (lane, in_store) = {
-            let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-            (durability.lane().cloned(), durability.durable_in_store())
-        };
-        if let Some(lane) = lane {
-            if in_store {
-                let _ = self.lane.set(lane.clone());
-            }
-            let _ = self.lease_lane.set(lane);
-        }
+        let journal = book
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .journal
+            .clone();
+        let _ = self.lane.set(journal);
         let _ = self.book.set(book);
     }
-
-    #[must_use]
-    pub fn journal_lane(&self) -> Option<crate::root::durability::JournalLane> {
-        self.lease_lane.get().cloned()
+    pub fn journal_lane(
+        &self,
+    ) -> Option<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>> {
+        self.lane.get().cloned()
     }
-
-    pub(crate) fn retry_held_journal(&self) {
-        if let Some(book) = self.book.get() {
-            book.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .offer_held_back();
+    pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
+        if let Some(journal) = self.lane.get() {
+            journal
+                .flush()
+                .await
+                .map_err(|error| format!("native journal: {error:?}"))?;
         }
+        Ok(())
     }
-
     #[must_use]
     pub fn journal_refusal(&self) -> Option<String> {
-        self.lane
-            .get()
-            .and_then(crate::root::durability::JournalLane::refuses_money)
+        self.lane.get().and_then(|journal| journal.refuses_money())
     }
 
     fn seal_end(
@@ -275,8 +266,10 @@ impl Node {
         let completed =
             matches!(&ended, Ended::Settled { end, .. } if end.outcome().is_completed());
         let receipt = self.seal_end_ack(principal, arrived, card, ended, seal, lines);
-        self.ticket_custody
-            .terminal(key, completed && receipt.is_some());
+        match receipt {
+            Some(receipt) => receipt.confirm_terminal(self.ticket_custody.clone(), key, completed),
+            None => self.ticket_custody.terminal(key, false),
+        }
     }
 
     fn seal_end_ack(
@@ -287,7 +280,7 @@ impl Node {
         ended: busbar_kernel::teller::Ended,
         seal: Sealing,
         lines: Vec<RecordLine>,
-    ) -> Option<busbar_kernel_audit::AuditRecord> {
+    ) -> Option<StagedAudit> {
         let book = self.book.get()?;
         let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
             return None;
@@ -583,6 +576,10 @@ impl Node {
             ),
         }
         occupied.reached_end = true;
+        if let Err(error) = self.retry_held_journal().await {
+            tracing::error!(reason = error, "unit audit remains unconfirmed");
+            return None;
+        }
         outcome
     }
 
@@ -755,8 +752,12 @@ impl Node {
             fee_count,
             report.as_ref().map(|r| r.lane.as_str()),
         );
-        self.ticket_custody
-            .terminal(key, outcome.is_completed() && acknowledged.is_ok());
+        match acknowledged {
+            Ok(receipt) => {
+                receipt.confirm_terminal(self.ticket_custody.clone(), key, outcome.is_completed())
+            }
+            Err(_) => self.ticket_custody.terminal(key, false),
+        }
     }
 
     #[must_use]
@@ -859,15 +860,17 @@ impl Node {
                 let response =
                     answer.map_or_else(|| unavailable(proto), PlaneAnswer::into_response);
                 let seal = driven.take_seal(key);
-                let response = self.tail(
-                    ended,
-                    response,
-                    late,
-                    &principal,
-                    arrived,
-                    history.as_ref(),
-                    seal,
-                );
+                let response = self
+                    .tail(
+                        ended,
+                        response,
+                        late,
+                        &principal,
+                        arrived,
+                        history.as_ref(),
+                        seal,
+                    )
+                    .await;
 
                 occupied.reached_end = true;
                 response
@@ -876,7 +879,7 @@ impl Node {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn tail(
+    async fn tail(
         &self,
         ended: Ended,
         response: Response,
@@ -896,7 +899,10 @@ impl Node {
             }
             None => {
                 self.seal_end(principal, arrived, history, ended, seal, Vec::new());
-                response
+                match self.retry_held_journal().await {
+                    Ok(()) => response,
+                    Err(error) => journal_unavailable("", &error),
+                }
             }
         }
     }
@@ -1038,21 +1044,37 @@ impl LateAccrual {
                 return;
             }
         };
-        custody.terminal(key, posted && completed && acknowledged.is_ok());
+        match acknowledged {
+            Ok(receipt) => receipt.confirm_terminal(custody, key, posted && completed),
+            Err(_) => custody.terminal(key, false),
+        }
     }
 }
+
+type JournalConfirmation =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 
 struct LateBody {
     inner: Option<axum::body::Body>,
 
     arm: Option<LateAccrual>,
+    confirmation: Option<JournalConfirmation>,
+    journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
 }
 
 impl LateBody {
     fn new(inner: axum::body::Body, arm: LateAccrual) -> Self {
+        let journal = arm
+            .book
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .journal
+            .clone();
         LateBody {
             inner: Some(inner),
             arm: Some(arm),
+            confirmation: None,
+            journal,
         }
     }
 
@@ -1072,21 +1094,46 @@ impl http_body::Body for LateBody {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         let this = self.get_mut();
-        let Some(inner) = this.inner.as_mut() else {
-            return std::task::Poll::Ready(None);
+        let polled = match this.inner.as_mut() {
+            Some(inner) => std::pin::Pin::new(inner).poll_frame(cx),
+            None if this.confirmation.is_some() => std::task::Poll::Pending,
+            None => return std::task::Poll::Ready(None),
         };
-        let polled = std::pin::Pin::new(inner).poll_frame(cx);
 
         if matches!(polled, std::task::Poll::Ready(None)) {
             this.fire();
+            this.inner = None;
+            let journal = this.journal.clone();
+            this.confirmation = Some(Box::pin(async move {
+                journal
+                    .flush()
+                    .await
+                    .map_err(|error| format!("terminal audit is unconfirmed: {error:?}"))
+            }));
+        }
+        if let Some(confirmation) = &mut this.confirmation {
+            match confirmation.as_mut().poll(cx) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(result) => {
+                    this.confirmation = None;
+                    return std::task::Poll::Ready(
+                        result
+                            .err()
+                            .map(|error| Err(axum::Error::new(std::io::Error::other(error)))),
+                    );
+                }
+            }
         }
         polled
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner
-            .as_ref()
-            .is_none_or(http_body::Body::is_end_stream)
+        self.arm.is_none()
+            && self.confirmation.is_none()
+            && self
+                .inner
+                .as_ref()
+                .is_none_or(http_body::Body::is_end_stream)
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -1162,13 +1209,19 @@ impl SessionSlot<'_> {
         crate::root::serve::report_of(money.as_ref(), self.key, facts)
     }
 
-    pub fn finish(mut self, post: &NodeEndPost) {
+    pub async fn finish(mut self, post: &NodeEndPost) -> Result<(), String> {
         self.finish_inner(post, None, Evidence::default());
+        self.occupied.node.retry_held_journal().await
     }
 
-    pub fn finish_with<U: Units>(mut self, post: &NodeEndPost, units: &U) {
+    pub async fn finish_with<U: Units>(
+        mut self,
+        post: &NodeEndPost,
+        units: &U,
+    ) -> Result<(), String> {
         let evidence = units.evidence(&self.ctx);
         self.finish_inner(post, None, evidence);
+        self.occupied.node.retry_held_journal().await
     }
 
     fn finish_inner(
@@ -1692,6 +1745,28 @@ impl Accruing {
     }
 }
 
+struct StagedAudit {
+    journal: Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+    run: Arc<busbar_kernel::persistence::journal::runtime::StagedRun>,
+}
+impl StagedAudit {
+    fn confirm_terminal(
+        self,
+        custody: Arc<crate::root::serve::TicketCustody>,
+        key: UnitKey,
+        completed: bool,
+    ) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            custody.terminal(key, false);
+            return;
+        };
+        runtime.spawn(async move {
+            let confirmed = self.journal.confirm(&self.run).await.is_ok();
+            custody.terminal(key, completed && confirmed);
+        });
+    }
+}
+
 struct Sealing {
     seal: UnitSeal,
     ran: Ran,
@@ -1766,7 +1841,7 @@ impl Sealing {
         lines: Vec<RecordLine>,
         fee_count: u32,
         served: Option<&str>,
-    ) -> Result<busbar_kernel_audit::AuditRecord, busbar_contract::caps::DurabilityLost> {
+    ) -> Result<StagedAudit, busbar_contract::caps::DurabilityLost> {
         let Sealing { seal, ran } = self;
         let refused = matches!(outcome, Outcome::Refused(..));
 
@@ -1809,34 +1884,10 @@ impl Sealing {
             controls,
             correlation_label: None,
         };
-        let (sealed, journalled) = {
-            let mut book = book
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let before = book.journal.next_seq();
-            let sealed = book.seal_unit(inputs, seal.pass, token);
-
-            let journalled = book.journal.next_seq() > before;
-            (sealed, journalled)
-        };
-        if let Err(lost) = &sealed {
-            if journalled {
-                tracing::warn!(
-                    step = lost.step().as_str(),
-                    unit = seal.key.get(),
-                    "the journal retains a unit's audit record awaiting Store custody; \
-                     the background flush tick will re-offer it"
-                );
-            } else {
-                tracing::error!(
-                    step = lost.step().as_str(),
-                    unit = seal.key.get(),
-                    "the journal lost a unit's audit record: it is sealed on the audit chain \
-                     and cached, but its body could not enter the journal"
-                );
-            }
-        }
-        sealed
+        let mut book = book.lock().unwrap_or_else(|poison| poison.into_inner());
+        let journal = book.journal.clone();
+        let (_, run) = book.stage_unit(inputs, seal.pass, token)?;
+        Ok(StagedAudit { journal, run })
     }
 }
 
@@ -1929,7 +1980,7 @@ fn bind_node_book(
     cards: &crate::root::kernel::RootHistory,
     book: Arc<Mutex<crate::root::durability::Durability>>,
 ) {
-    cards.bind_journal(&book);
+    let _ = cards;
     node.bind_book(book);
 }
 

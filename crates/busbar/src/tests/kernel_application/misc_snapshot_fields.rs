@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_kernel as kernel;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::root::test_plugins as plugins;
 
-#[test]
-fn the_actual_builder_wires_the_snapshot_ownership_fields() {
+#[tokio::test]
+async fn the_actual_builder_wires_the_snapshot_ownership_fields() {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -51,7 +51,7 @@ fn the_actual_builder_wires_the_snapshot_ownership_fields() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -61,24 +61,30 @@ fn the_actual_builder_wires_the_snapshot_ownership_fields() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the host deployment");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            141,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    141,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert!(Arc::ptr_eq(&app.root_rules, &rules));
     assert_eq!(app.public_url.as_deref(), Some("https://assembly.example"));

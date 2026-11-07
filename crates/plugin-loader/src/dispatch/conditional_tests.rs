@@ -3,9 +3,8 @@
 
 use super::super::{in_head, out_head, Answer};
 use super::*;
-use busbar_contract::abi::sdk::{
-    plane::conditional::{ConditionalCandidate, RecordMutation, RecordPredicate, Request},
-    store::conditional::{Decision, Expected},
+use busbar_contract::abi::sdk::plane::conditional::{
+    ConditionalCandidate, RecordMutation, RecordPredicate, Request,
 };
 use busbar_contract::abi::{
     mechanism::{
@@ -14,6 +13,7 @@ use busbar_contract::abi::{
     },
     plane::{OnPieceIn, OnPieceOut, ServeIn, ServeOut},
 };
+use busbar_contract::host_records::{Decision, Expected};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Mutex,
@@ -93,7 +93,8 @@ impl busbar_contract::services::HostServices for Provider {
         _counterparty: &str,
         _item: &str,
         _digest: &str,
-    ) -> busbar_contract::services::Stored {
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         panic!(
             "unexpected host service trust_sight_item in inspection/conditional boundary control"
         )
@@ -104,7 +105,8 @@ impl busbar_contract::services::HostServices for Provider {
         _key: busbar_contract::services::TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,
-    ) -> busbar_contract::services::Stored {
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         panic!("unexpected host service trust_decide in inspection/conditional boundary control")
     }
     fn trust_state(
@@ -162,7 +164,8 @@ impl busbar_contract::services::HostServices for Provider {
         _unit: Option<u64>,
         _ttl_secs: u64,
         _record: &[u8],
-    ) -> busbar_contract::services::Stored {
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         panic!("unexpected host service ticket_mint in inspection/conditional boundary control")
     }
     fn ticket_take(
@@ -277,7 +280,8 @@ impl busbar_contract::services::HostServices for Provider {
         &self,
         _caller: &busbar_contract::services::Caller,
         _scope: u32,
-    ) -> busbar_contract::services::Snapshot {
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         panic!("unexpected host service snapshot_read in inspection/conditional boundary control")
     }
 

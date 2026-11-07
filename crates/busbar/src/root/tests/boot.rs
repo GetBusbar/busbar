@@ -3,6 +3,31 @@
 
 use super::*;
 
+async fn isolated_card_case(name: &str) -> bool {
+    const CHILD: &str = "BUSBAR_NATIVE_CARD_FIXTURE_CHILD";
+    let module = module_path!().split_once("::").unwrap().1;
+    let test = format!("{module}::{name}");
+    let witness = format!("native card fixture entered: {test}");
+    if std::env::var(CHILD).ok().as_deref() == Some(test.as_str()) {
+        println!("{witness}");
+        return true;
+    }
+    let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &test, "--nocapture"])
+        .env(CHILD, &test)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .expect("the isolated native fixture starts");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains(&witness),
+        "{stdout}\n{stderr}"
+    );
+    false
+}
+
 fn scratch(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!(
         "busbar-root-fetch-{tag}-{}-{}",
@@ -675,7 +700,16 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let core = crate::root::real_store::core_over(
+        busbar_kernel::appbuild::bootstrap_config_store(&config, &Default::default())
+            .await
+            .expect("the configured native target opens"),
+    )
+    .await;
+    crate::root::boot::bind_plugin_floor(core.clone())
+        .await
+        .expect("the catalog uses the configured native plugin-floor owner");
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         Default::default(),
         None,
@@ -684,23 +718,29 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
         (None, None),
         None,
         &rules,
+        Some(core),
+        false,
     )
+    .await
     .expect("the product builds the admin trust deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .expect("the actual deployment configured governance")
-            .store_calls()
-            .expect("the actual configured Store exposes its rate-history slots"),
-        121,
-    );
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(
+            app.governance
+                .as_ref()
+                .expect("the actual deployment configured governance")
+                .core_store_handle()
+                .expect("the actual configured Store exposes its admitted core"),
+            121,
+        )
+        .expect("the fixture binds its actual admitted Store once");
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("the actual configured Store boots its rate history");
-    limits.keep().unwrap();
+    limits.keep().await.unwrap();
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app.plugins_dir = dir.clone();
     app.plugin_admission = Some(&crate::root::admission::ADMISSION);
@@ -737,6 +777,11 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
 #[cfg(feature = "test-harness")]
 #[tokio::test]
 async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
+    if !isolated_card_case("a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid")
+        .await
+    {
+        return;
+    }
     let (valid, trust) =
         the_admin_catalog_row_for_a_harness_signed_plugin("admin-trust-green").await;
     assert_eq!(valid, serde_json::json!(true), "trust: {trust}");
@@ -746,6 +791,11 @@ async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
 #[cfg(not(feature = "test-harness"))]
 #[tokio::test]
 async fn an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin() {
+    if !isolated_card_case("an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin")
+        .await
+    {
+        return;
+    }
     let (valid, trust) = the_admin_catalog_row_for_a_harness_signed_plugin("admin-trust-red").await;
     assert_eq!(valid, serde_json::json!(false), "trust: {trust}");
     assert_eq!(trust, serde_json::json!("rejected"));
@@ -930,12 +980,12 @@ fn red_a_dry_runs_registry_build_leaves_the_live_dropped_secret_rows_alone() {
     );
 }
 
-#[test]
-fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
+#[tokio::test]
+async fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
+    if !isolated_card_case("a_committing_builds_admission_replaces_the_dropped_secret_rows").await {
+        return;
+    }
     use busbar_contract::secret::SecretAxis as _;
-    let _held = SECRET_ROWS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let rows = crate::root::linked::secret_rows();
     rows.set_dropped([dropped_secret("row159-stale-vault")]);
 
@@ -944,7 +994,9 @@ fn a_committing_builds_admission_replaces_the_dropped_secret_rows() {
         .expect("a build with the plugins directory off is the linked rows alone");
 
     let plugin_rows: Arc<dyn busbar_contract::plugin_rows::PluginRows> = Arc::new(registry);
-    admit_secrets(&plugin_rows, &off).expect("no dropped-in secret contests a word");
+    admit_secrets(&plugin_rows, &off)
+        .await
+        .expect("no dropped-in secret contests a word");
     let answers = rows.answers("row159-stale-vault");
     rows.set_dropped(std::iter::empty());
     assert!(

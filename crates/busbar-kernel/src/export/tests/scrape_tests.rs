@@ -60,47 +60,43 @@ fn no_scrape_instance_declares_no_route() {
     assert!(crate::export::route_decls(&ExportCfg::default()).is_empty());
 }
 
-#[test]
-fn an_ungranted_crossing_reads_no_snapshot() {
-    assert_eq!(read(0), Snapshot::Refused(NOT_GRANTED));
+#[tokio::test]
+async fn an_ungranted_crossing_reads_no_snapshot() {
+    assert_eq!(read(0).await, Snapshot::Refused(NOT_GRANTED));
     assert_eq!(
-        read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
+        read(SNAPSHOT_SCOPE_HOOKS).await,
         Snapshot::Refused(NOT_GRANTED)
     );
 }
 
-#[test]
-fn the_lend_lasts_exactly_the_crossing() {
+#[tokio::test]
+async fn the_snapshot_lend_is_captured_inside_the_crossing() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    lend(None, || {
-        assert!(matches!(
-            read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_WHOLE),
-            Snapshot::Families(_)
-        ));
-        assert_eq!(
-            read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
-            Snapshot::Families(Vec::new()),
-            "read again in the same crossing: the lend was restored"
-        );
-        assert_eq!(read(7), Snapshot::Refused(UNKNOWN_SCOPE));
+    let outside = read(SNAPSHOT_SCOPE_HOOKS);
+    let (whole, hooks, unknown) = lend(None, || {
+        (
+            read(SNAPSHOT_SCOPE_WHOLE),
+            read(SNAPSHOT_SCOPE_HOOKS),
+            read(7),
+        )
     });
-    assert_eq!(read(0), Snapshot::Refused(NOT_GRANTED));
+    assert!(matches!(whole.await, Snapshot::Families(_)));
+    assert_eq!(hooks.await, Snapshot::Families(Vec::new()));
+    assert_eq!(unknown.await, Snapshot::Refused(UNKNOWN_SCOPE));
+    assert_eq!(outside.await, Snapshot::Refused(NOT_GRANTED));
+    assert_eq!(read(0).await, Snapshot::Refused(NOT_GRANTED));
 }
 
-#[test]
-fn nested_and_panicking_crossings_restore_the_prior_lend() {
-    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    lend(None, || {
+#[tokio::test]
+async fn nested_and_panicking_crossings_restore_the_prior_lend() {
+    let (unknown, hooks) = lend(None, || {
         let panic = std::panic::catch_unwind(|| {
             lend(None, || panic!("a crossing unwinds"));
         });
         assert!(panic.is_err());
-        assert_eq!(read(7), Snapshot::Refused(UNKNOWN_SCOPE));
-        assert_eq!(
-            read(busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS),
-            Snapshot::Families(Vec::new()),
-            "the outer crossing remains granted after the inner crossing unwinds"
-        );
+        (read(7), read(SNAPSHOT_SCOPE_HOOKS))
     });
-    assert_eq!(read(0), Snapshot::Refused(NOT_GRANTED));
+    assert_eq!(unknown.await, Snapshot::Refused(UNKNOWN_SCOPE));
+    assert_eq!(hooks.await, Snapshot::Families(Vec::new()));
+    assert_eq!(read(0).await, Snapshot::Refused(NOT_GRANTED));
 }

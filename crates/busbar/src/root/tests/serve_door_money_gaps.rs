@@ -50,10 +50,11 @@ async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
     status
 }
 
-fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
-    rig.gov.flush_metering();
+async fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
+    rig.gov.flush_metering().await;
     rig.gov
-        .metering_for(busbar_kernel::governance::metering_bucket(at))
+        .metering_for_async(busbar_kernel::governance::metering_bucket(at))
+        .await
         .expect("metering read")
         .into_iter()
         .filter(|row| row.key_id == rig.key_id)
@@ -73,9 +74,10 @@ fn metering_rows(rig: &DoorRig, at: u64) -> Vec<String> {
         .collect()
 }
 
-fn key_spend(rig: &DoorRig) -> Result<i64, String> {
+async fn key_spend(rig: &DoorRig) -> Result<i64, String> {
     rig.gov
-        .usage_for(&rig.app.cost, &rig.key_id, now())
+        .usage_for_async(&rig.app.cost, &rig.key_id, now())
+        .await
         .map(|usage| usage.expect("the key exists").spend_cents)
         .map_err(|refusal| format!("{refusal:?}"))
 }
@@ -99,8 +101,11 @@ async fn the_pools_door_keeps_a_prior_charge_through_a_pre_routing_refusal() {
     .await;
     let key = rig
         .gov
-        .store()
+        .core_store_handle()
+        .unwrap()
+        .identity()
         .get_key(&rig.key_id)
+        .await
         .expect("the key reads")
         .expect("the key exists");
     rig.gov
@@ -183,13 +188,14 @@ async fn the_pools_door_prices_an_aliased_lane_at_its_config_names_card() {
     assert_eq!(rig.tokens_after().await, 1000, "the key's tokens");
     let derived = rig
         .gov
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &rig.app.cost,
             &format!("group:{instance}-group@day"),
             "day",
             true,
             now(),
         )
+        .await
         .expect("usage read");
     assert_eq!(derived.tokens, 1000, "the tokens are ledgered either way");
     assert_eq!(
@@ -266,7 +272,7 @@ async fn the_pools_doors_report_carries_the_end_a_status_line_cannot() {
             "{label}: the request unit still counts (oracle cell \
              `route.failover|fo|primary-cut-stream`, golden usage {{\"requests\":1}})"
         );
-        let rows = metering_rows(&rig, charged_at);
+        let rows = metering_rows(&rig, charged_at).await;
         assert_eq!(rows.len(), 1, "{label}: one metering row: {rows:?}");
         assert!(
             rows[0].starts_with("m0/") && rows[0].contains(" in=0 out=0 cr=0 cw=0 "),
@@ -316,20 +322,21 @@ async fn the_pools_door_bills_what_its_plane_ledgered_for_a_stream_cut_after_its
     );
     let derived = rig
         .gov
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &rig.app.cost,
             &format!("group:{instance}-group@day"),
             "day",
             true,
             now(),
         )
+        .await
         .expect("usage read");
     assert_eq!(derived.tokens, 1000, "the group's bucket holds them");
     assert_eq!(
         derived.spend_cents, 100,
         "and they are charged: 1,000 tokens at 1,000 micro-units each"
     );
-    let rows = metering_rows(&rig, charged_at);
+    let rows = metering_rows(&rig, charged_at).await;
     assert_eq!(rows.len(), 1, "one metering row: {rows:?}");
     assert!(
         rows[0].starts_with("m0/") && rows[0].contains(" in=600 out=400 "),
@@ -413,11 +420,20 @@ async fn the_pools_door_prices_a_reranks_search_units() {
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                rig.gov.flush_metering();
+                rig.gov.flush_metering().await;
                 let after = busbar_kernel::governance::metering_bucket(now());
-                let mut rows = rig.gov.metering_for(before).expect("metering reads");
+                let mut rows = rig
+                    .gov
+                    .metering_for_async(before)
+                    .await
+                    .expect("metering reads");
                 if after != before {
-                    rows.extend(rig.gov.metering_for(after).expect("metering reads"));
+                    rows.extend(
+                        rig.gov
+                            .metering_for_async(after)
+                            .await
+                            .expect("metering reads"),
+                    );
                 }
                 let requests: u64 = rows
                     .iter()
@@ -434,7 +450,7 @@ async fn the_pools_door_prices_a_reranks_search_units() {
         .await
         .expect("the delivered rerank records its metered request after its usage");
         assert_eq!(
-            key_spend(&rig),
+            key_spend(&rig).await,
             Ok(cents),
             "{units:?} search units at 0.2 cents each"
         );
@@ -541,7 +557,7 @@ async fn served_streamed(
         18,
         "{instance}: the stream's tokens"
     );
-    (status, spend, metering_rows(&rig, charged_at))
+    (status, spend, metering_rows(&rig, charged_at).await)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -588,7 +604,7 @@ async fn the_pools_door_serves_free_with_billing_off_writes_its_row_and_still_go
         requests, 0,
         "billing off still runs admission governance: the guard refused before any charge"
     );
-    assert_eq!(metering_rows(&rig, charged_at), Vec::<String>::new());
+    assert_eq!(metering_rows(&rig, charged_at).await, Vec::<String>::new());
     assert_eq!(far.served(), 0);
 }
 
@@ -625,7 +641,7 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
 
     let (expired_key, expired_token) = rig
         .gov
-        .mint_signed(
+        .mint_signed_async(
             busbar_kernel::governance::NewKeySpec {
                 name: "expired".to_string(),
                 ..Default::default()
@@ -633,6 +649,7 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
             1_700_000_100,
             1_700_000_000,
         )
+        .await
         .expect("mint");
     let expired_bearer = format!(
         "Bearer {}",
@@ -664,7 +681,8 @@ async fn the_pools_door_attributes_the_identity_its_auth_resolved_and_invents_no
     );
     let expired_usage = rig
         .gov
-        .usage_for(&rig.app.cost, &expired_key.id, now())
+        .usage_for_async(&rig.app.cost, &expired_key.id, now())
+        .await
         .expect("usage read")
         .map_or(0, |usage| usage.requests);
     assert_eq!(
@@ -710,7 +728,7 @@ async fn the_pools_doors_gate_stops_a_unit_and_a_passing_gate_changes_nothing() 
                 "the admission is kept and the fee is refunded"
             );
             assert_eq!(
-                metering_rows(&rig, charged_at),
+                metering_rows(&rig, charged_at).await,
                 Vec::<String>::new(),
                 "a veto is metered nowhere"
             );
@@ -821,10 +839,17 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
             String::from_utf8_lossy(&body)
         );
         let _ = rig.ledger_after(1).await;
-        rig.gov.flush_budgets();
-        rig.gov.flush_metering();
+        rig.gov.flush_budgets().await;
+        rig.gov.flush_metering().await;
         let expected = Count::parse(decimal).unwrap();
-        let row = rig.gov.store().get_usage(&rig.key_id, 0).unwrap();
+        let row = rig
+            .gov
+            .core_store_handle()
+            .unwrap()
+            .ledger()
+            .get_usage(&rig.key_id, 0)
+            .await
+            .unwrap();
         let model = row
             .models
             .iter()
@@ -838,7 +863,8 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
         assert_eq!(nanos, u128::try_from(expected.micros()).unwrap());
         let usage = rig
             .gov
-            .usage_for(&rig.app.cost, &rig.key_id, at)
+            .usage_for_async(&rig.app.cost, &rig.key_id, at)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(usage.tokens, expected);
@@ -848,7 +874,8 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
         );
         let metering = rig
             .gov
-            .metering_for(busbar_kernel::governance::metering_bucket(at))
+            .metering_for_async(busbar_kernel::governance::metering_bucket(at))
+            .await
             .unwrap();
         let measured = metering
             .iter()
@@ -859,10 +886,16 @@ async fn exact_provider_counts_reach_real_store_and_the_same_priced_view() {
             Count::from_stored(measured.tokens_input, measured.scale).unwrap(),
             expected
         );
-        let reopened =
-            busbar_kernel::governance::GovState::new(rig.gov.store().clone(), None).unwrap();
+        let reopened = busbar_kernel::governance::GovState::new_with_core(
+            rig.gov.core_store_handle().unwrap(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let reread = reopened
-            .usage_for(&rig.app.cost, &rig.key_id, at)
+            .usage_for_async(&rig.app.cost, &rig.key_id, at)
+            .await
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -896,11 +929,12 @@ async fn unrepresentable_provider_count_refuses_before_success_or_usage_commit()
         "an unpriced measurement cannot return success: {status}"
     );
     assert!(!String::from_utf8_lossy(&body).contains("must not escape"));
-    rig.gov.flush_budgets();
-    rig.gov.flush_metering();
+    rig.gov.flush_budgets().await;
+    rig.gov.flush_metering().await;
     let usage = rig
         .gov
-        .usage_for(&rig.app.cost, &rig.key_id, now())
+        .usage_for_async(&rig.app.cost, &rig.key_id, now())
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(usage.tokens, busbar_contract::Count::ZERO);
@@ -944,11 +978,12 @@ async fn unrepresentable_stream_count_cuts_at_the_last_exact_report() {
         "the committed stream gets its protocol refusal: {body}"
     );
     let _ = rig.ledger_after(1).await;
-    rig.gov.flush_budgets();
-    rig.gov.flush_metering();
+    rig.gov.flush_budgets().await;
+    rig.gov.flush_metering().await;
     let usage = rig
         .gov
-        .usage_for(&rig.app.cost, &rig.key_id, now())
+        .usage_for_async(&rig.app.cost, &rig.key_id, now())
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(usage.tokens, busbar_contract::Count::parse("27.5").unwrap());

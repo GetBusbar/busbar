@@ -20,14 +20,15 @@ fn block() -> serde_yaml::Value {
     .expect("the block serializes")
 }
 
-fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
-    seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new(), None, None)
+async fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
+    seam_build::<crate::NoConnections>(block(), Vec::new(), Vec::new(), None, None)
+        .await
         .expect("builds")
 }
 
 #[tokio::test]
 async fn a_reload_leaves_exactly_one_sweeper() {
-    let old = generation();
+    let old = generation().await;
     let (old_sweeper, old_server) = {
         let plane = Arc::clone(&old)
             .downcast::<AsPlane>()
@@ -40,7 +41,7 @@ async fn a_reload_leaves_exactly_one_sweeper() {
         "the first generation sweeps"
     );
 
-    let new = generation();
+    let new = generation().await;
     drop(old);
 
     for _ in 0..100 {
@@ -71,7 +72,7 @@ async fn a_generation_starts_no_task_of_its_own() {
             .num_alive_tasks()
     };
     let before = tasks();
-    let g = generation();
+    let g = generation().await;
     tokio::task::yield_now().await;
     assert_eq!(
         tasks(),

@@ -8,8 +8,8 @@ static ISSUED_SHAPE: std::sync::LazyLock<busbar_contract::auth_calls::IssuedShap
             .to_string(),
     });
 
-#[test]
-fn synthesize_principal_key_union_semantics() {
+#[tokio::test]
+async fn synthesize_principal_key_union_semantics() {
     use crate::config::RoleBindingCfg;
     let mut table = std::collections::BTreeMap::new();
     table.insert(
@@ -83,8 +83,8 @@ fn synthesize_principal_key_union_semantics() {
     assert!(synthesize_principal_key(&p, None).is_none());
 }
 
-#[test]
-fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
+#[tokio::test]
+async fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
     use crate::config::RoleBindingCfg;
     let mut table = std::collections::BTreeMap::new();
 
@@ -107,8 +107,8 @@ fn group_prefixed_principal_id_cannot_alias_a_budget_group_bucket() {
     assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
 }
 
-#[test]
-fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
+#[tokio::test]
+async fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
     use crate::config::RoleBindingCfg;
     let mut table = std::collections::BTreeMap::new();
     table.insert("eng".to_string(), RoleBindingCfg::default());
@@ -124,6 +124,7 @@ fn vk_prefixed_principal_id_cannot_alias_a_virtual_key_bucket() {
     bare.roles = vec!["eng".to_string()];
     assert!(synthesize_principal_key(&bare, Some(&table)).is_none());
 }
+use super::native_ledger_fixture::*;
 use super::*;
 
 #[path = "ordinary_flush_unknown_cases.rs"]
@@ -232,25 +233,31 @@ fn tt(n: u64) -> std::collections::BTreeMap<String, u64> {
     m
 }
 
-fn ledger_tokens(
-    store: &busbar_plugin_loader::store_v3::LoadedStore,
+async fn ledger_tokens(
+    store: &crate::persistence::facade::CoreStore,
     bucket: &str,
     window: u64,
 ) -> u64 {
     store
+        .ledger()
         .get_usage(bucket, window)
+        .await
         .unwrap()
         .total_whole_tokens_for_test()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_govstate_admission_respects_cap() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap(),
+    );
     let cost = Arc::new(group_cost(1, &[("team", 5, "total", None)]));
     let (key, _s) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+        gov.mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -261,6 +268,7 @@ async fn test_concurrent_govstate_admission_respects_cap() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
     }
     .unwrap();
     let at = 1_700_000_000u64;
@@ -284,19 +292,25 @@ async fn test_concurrent_govstate_admission_respects_cap() {
         "exactly 5 of 20 concurrent GovState admissions fit under a 5c group cap at 1c/request"
     );
 
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        store.get_usage(&key.id, 0).unwrap().requests,
+        store.ledger().get_usage(&key.id, 0).await.unwrap().requests,
         5,
         "exactly 5 requests ledgered on the key bucket - no overshoot"
     );
     assert_eq!(
-        store.get_usage("group:team@total", 0).unwrap().requests,
+        store
+            .ledger()
+            .get_usage("group:team@total", 0)
+            .await
+            .unwrap()
+            .requests,
         5,
         "and 5 on the group's total-window bucket (the capped one)"
     );
     assert_eq!(
-        gov.usage_for(&cost, &key.id, at)
+        gov.usage_for_async(&cost, &key.id, at)
+            .await
             .unwrap()
             .unwrap()
             .spend_cents,
@@ -307,12 +321,16 @@ async fn test_concurrent_govstate_admission_respects_cap() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_charge_refund_readmit_cycle() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap(),
+    );
     let cost = group_cost(1, &[("solo", 1, "total", None)]);
     let (key, _s) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+        gov.mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -323,6 +341,7 @@ async fn test_charge_refund_readmit_cycle() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
     }
     .unwrap();
     let at = 1_700_000_000u64;
@@ -341,7 +360,8 @@ async fn test_charge_refund_readmit_cycle() {
 
     gov.refund_charge(first.charge());
     assert_eq!(
-        gov.usage_for(&cost, &key.id, at)
+        gov.usage_for_async(&cost, &key.id, at)
+            .await
             .unwrap()
             .unwrap()
             .spend_cents,
@@ -357,12 +377,14 @@ async fn test_charge_refund_readmit_cycle() {
 
 #[tokio::test]
 async fn test_try_admit_rejects_at_group_cap() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let cost = group_cost(1, &[("g", 2, "total", None)]);
     let (key, _s) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+        gov.mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -373,6 +395,7 @@ async fn test_try_admit_rejects_at_group_cap() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
     }
     .unwrap();
     let at = 1_700_000_000u64;
@@ -398,9 +421,9 @@ async fn test_try_admit_rejects_at_group_cap() {
     );
 }
 
-#[test]
-fn test_metering_accumulates_split_per_key_model_and_bucket() {
-    let s = crate::real_store::store();
+#[tokio::test]
+async fn test_metering_accumulates_split_per_key_model_and_bucket() {
+    let s = crate::real_store::core().await;
     let day = metering_bucket(1_700_000_123);
     assert_eq!(day % METERING_BUCKET_SECS, 0);
     let d = |model: &str, input: u64, output: u64| MeteringDelta {
@@ -421,18 +444,20 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
         priced_from_ms: 0,
     };
 
-    s.add_metering(&d("gpt-x", 100, 20)).unwrap();
-    s.add_metering(&d("gpt-x", 50, 10)).unwrap();
-    s.add_metering(&d("gpt-y", 1, 2)).unwrap();
+    s.ledger().add_metering(&d("gpt-x", 100, 20)).await.unwrap();
+    s.ledger().add_metering(&d("gpt-x", 50, 10)).await.unwrap();
+    s.ledger().add_metering(&d("gpt-y", 1, 2)).await.unwrap();
 
-    s.add_metering(&MeteringDelta {
-        scale: 0,
-        bucket: day + METERING_BUCKET_SECS,
-        ..d("gpt-x", 999, 999)
-    })
-    .unwrap();
+    s.ledger()
+        .add_metering(&MeteringDelta {
+            scale: 0,
+            bucket: day + METERING_BUCKET_SECS,
+            ..d("gpt-x", 999, 999)
+        })
+        .await
+        .unwrap();
 
-    let mut rows = s.list_metering(day).unwrap();
+    let mut rows = s.ledger().list_metering(day).await.unwrap();
     rows.sort_by(|a, b| a.model.cmp(&b.model));
     assert_eq!(rows.len(), 2, "two models in this bucket: {rows:?}");
     let x = &rows[0];
@@ -458,10 +483,12 @@ fn test_metering_accumulates_split_per_key_model_and_bucket() {
     assert_eq!(rows[1].requests, 1);
 }
 
-#[test]
-fn test_record_metering_from_ir_usage_and_flat() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_record_metering_from_ir_usage_and_flat() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_500;
     let usage = busbar_contract::billing::TokenUsage {
         input: 11,
@@ -472,8 +499,8 @@ fn test_record_metering_from_ir_usage_and_flat() {
     };
     gov.record_metering("vk_m", "model-z", "acme", Some(&usage), now);
     gov.record_metering("vk_m", "model-z", "acme", None, now);
-    gov.flush_metering();
-    let rows = gov.metering_for(metering_bucket(now)).unwrap();
+    gov.flush_metering().await;
+    let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
     assert_eq!(rows.len(), 1);
     let r = &rows[0];
     assert_eq!(
@@ -493,8 +520,8 @@ fn test_record_metering_from_ir_usage_and_flat() {
     );
 }
 
-#[test]
-fn test_virtualkey_debug_redacts_key_hash() {
+#[tokio::test]
+async fn test_virtualkey_debug_redacts_key_hash() {
     let mut k = sample_key("vk_dbg", "SECRET-key-hash-value-zzz");
     let dbg = format!("{k:?}");
     assert!(
@@ -526,16 +553,16 @@ fn test_virtualkey_debug_redacts_key_hash() {
     );
 }
 
-#[test]
-fn test_create_key_with_aws_issues_and_resolves_credential() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_create_key_with_aws_issues_and_resolves_credential() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
     let (key, _bearer, akid, secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3u8; 32], None,
         )));
-        gov.mint_signed_with_credential(
+        gov.mint_signed_with_credential_async(
             NewKeySpec {
                 name: "vendor-a-key".to_string(),
                 allowed_pools: Some(vec!["prod".to_string()]),
@@ -548,6 +575,7 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
             &signed_kind(),
             &ISSUED_SHAPE,
         )
+        .await
         .map(|(key, bearer, public_id, secret)| {
             (
                 key,
@@ -576,13 +604,14 @@ fn test_create_key_with_aws_issues_and_resolves_credential() {
     );
     assert!(resolved_key.enabled);
 
-    assert!(gov
-        .lookup_credential(&signed_kind(), "AKIAdoesnotexist0000")
-        .is_none());
+    assert!(
+        gov.lookup_credential(&signed_kind(), "AKIAdoesnotexist0000")
+            .is_none()
+    );
 }
 
-#[test]
-fn test_credential_generators_contract() {
+#[tokio::test]
+async fn test_credential_generators_contract() {
     let (_, shape) = (signed_kind(), ISSUED_SHAPE.clone());
     let (akid, sak) = issue_credential(&shape).expect("OS entropy available");
     assert_eq!(akid.len(), 20);
@@ -606,17 +635,19 @@ fn test_credential_generators_contract() {
     );
 }
 
-#[test]
-fn test_aws_credential_persists_across_reload() {
-    let store: Arc<dyn RecordStore> = crate::real_store::store();
+#[tokio::test]
+async fn test_aws_credential_persists_across_reload() {
+    let store = crate::real_store::core().await;
     let akid = {
-        let gov = GovState::new(store.clone(), None).unwrap();
+        let gov = GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap();
         let (_k, _b, akid, _s) = {
             gov.set_signing_key(Some(self_serve_signer()));
             gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
                 &[3u8; 32], None,
             )));
-            gov.mint_signed_with_credential(
+            gov.mint_signed_with_credential_async(
                 NewKeySpec {
                     name: "k".to_string(),
                     allowed_pools: None,
@@ -629,6 +660,7 @@ fn test_aws_credential_persists_across_reload() {
                 &signed_kind(),
                 &ISSUED_SHAPE,
             )
+            .await
             .map(|(key, bearer, public_id, secret)| {
                 (
                     key,
@@ -641,23 +673,23 @@ fn test_aws_credential_persists_across_reload() {
         .unwrap();
         akid
     };
-    let gov2 = GovState::new(store, None).unwrap();
+    let gov2 = GovState::new_with_core(store, None, None).await.unwrap();
     assert!(
         gov2.lookup_credential(&signed_kind(), &akid).is_some(),
         "credential must survive a reload"
     );
 }
 
-#[test]
-fn test_delete_key_removes_aws_credential() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_delete_key_removes_aws_credential() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
     let (key, _b, akid, _s) = {
         gov.set_signing_key(Some(self_serve_signer()));
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3u8; 32], None,
         )));
-        gov.mint_signed_with_credential(
+        gov.mint_signed_with_credential_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -670,6 +702,7 @@ fn test_delete_key_removes_aws_credential() {
             &signed_kind(),
             &ISSUED_SHAPE,
         )
+        .await
         .map(|(key, bearer, public_id, secret)| {
             (
                 key,
@@ -681,28 +714,38 @@ fn test_delete_key_removes_aws_credential() {
     }
     .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &akid).is_some());
-    gov.delete_key(&key.id).unwrap();
+    gov.delete_key(&key.id).await.unwrap();
     assert!(
         gov.lookup_credential(&signed_kind(), &akid).is_none(),
         "a revoked key's AWS credential must be gone"
     );
 
-    assert!(gov.store().list_credentials(&key.id).unwrap().is_empty());
+    assert!(
+        gov.core_store()
+            .unwrap()
+            .identity()
+            .list_credentials(&key.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
-#[test]
-fn test_refresh_updates_both_indices_atomically() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_refresh_updates_both_indices_atomically() {
+    let store = crate::real_store::core().await;
     let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         crate::governance::signing::DEFAULT_KID,
     );
-    let gov = GovState::new_with_signer(store, None, Some(signer)).unwrap();
+    let gov = GovState::new_with_core(store, None, Some(signer))
+        .await
+        .unwrap();
     gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
         &[3u8; 32], None,
     )));
     let (key, _token, akid, _secret) = gov
-        .mint_signed_with_credential(
+        .mint_signed_with_credential_async(
             NewKeySpec {
                 name: "dual-index-key".to_string(),
                 allowed_pools: None,
@@ -715,6 +758,7 @@ fn test_refresh_updates_both_indices_atomically() {
             &signed_kind(),
             &ISSUED_SHAPE,
         )
+        .await
         .unwrap();
 
     assert_eq!(
@@ -729,7 +773,7 @@ fn test_refresh_updates_both_indices_atomically() {
         "akid must resolve via by_access_key_id before delete"
     );
 
-    gov.delete_key(&key.id).unwrap();
+    gov.delete_key(&key.id).await.unwrap();
 
     assert!(
         gov.lookup_by_sub(&key.id).is_none(),
@@ -741,8 +785,8 @@ fn test_refresh_updates_both_indices_atomically() {
     );
 }
 
-#[test]
-fn test_aws_credential_debug_redacts_secret() {
+#[tokio::test]
+async fn test_aws_credential_debug_redacts_secret() {
     let cred = CredentialSecret {
         meta: CredentialMeta {
             id: "cred_x".to_string(),
@@ -769,17 +813,17 @@ fn test_aws_credential_debug_redacts_secret() {
     assert!(dbg.contains("AKIAPUBLIC1234567890"), "akid is not secret");
 }
 
-#[test]
-fn test_generated_aws_credentials_are_distinct() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
-    let mk = |gov: &GovState, n: &str| {
+#[tokio::test]
+async fn test_generated_aws_credentials_are_distinct() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
+    let mk = async |gov: &GovState, n: &str| {
         {
             gov.set_signing_key(Some(self_serve_signer()));
             gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
                 &[3u8; 32], None,
             )));
-            gov.mint_signed_with_credential(
+            gov.mint_signed_with_credential_async(
                 NewKeySpec {
                     name: n.to_string(),
                     allowed_pools: None,
@@ -792,6 +836,7 @@ fn test_generated_aws_credentials_are_distinct() {
                 &signed_kind(),
                 &ISSUED_SHAPE,
             )
+            .await
             .map(|(key, bearer, public_id, secret)| {
                 (
                     key,
@@ -803,20 +848,20 @@ fn test_generated_aws_credentials_are_distinct() {
         }
         .unwrap()
     };
-    let (_k1, _b1, akid1, s1) = mk(&gov, "a");
-    let (_k2, _b2, akid2, s2) = mk(&gov, "b");
+    let (_k1, _b1, akid1, s1) = mk(&gov, "a").await;
+    let (_k2, _b2, akid2, s2) = mk(&gov, "b").await;
     assert_ne!(akid1, akid2);
     assert_ne!(s1, s2);
 }
 
-#[test]
-fn test_govstate_lookup_pool_allowed_refresh() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_govstate_lookup_pool_allowed_refresh() {
+    let store = crate::real_store::core().await;
     let mut k = sample_key("k1", "binding:k1:gen1");
     k.allowed_scopes = Some(vec![ScopeRef::pool("prod")]);
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
 
-    let gov = GovState::new(store, None).unwrap();
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
 
     assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
     assert!(gov.lookup_by_sub("no-such-id").is_none());
@@ -827,9 +872,14 @@ fn test_govstate_lookup_pool_allowed_refresh() {
 
     let mut k2 = sample_key("k2", "binding:k2:gen1");
     k2.allowed_scopes = None;
-    gov.store().put_key(&k2).unwrap();
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&k2)
+        .await
+        .unwrap();
     assert!(gov.lookup_by_sub("k2").is_none(), "not cached pre-refresh");
-    gov.refresh().unwrap();
+    gov.refresh_async().await.unwrap();
     let r2 = gov.lookup_by_sub("k2").unwrap();
     assert!(pool_allowed(&r2, "anything"), "None allowed_pools = all");
 
@@ -841,8 +891,8 @@ fn test_govstate_lookup_pool_allowed_refresh() {
     );
 }
 
-#[test]
-fn test_civil_from_days_and_days_from_civil_known_dates() {
+#[tokio::test]
+async fn test_civil_from_days_and_days_from_civil_known_dates() {
     let cases: &[(i64, (i64, i64, i64))] = &[
         (0, (1970, 1, 1)),
         (-1, (1969, 12, 31)),
@@ -868,8 +918,8 @@ fn test_civil_from_days_and_days_from_civil_known_dates() {
     }
 }
 
-#[test]
-fn test_budget_window_periods() {
+#[tokio::test]
+async fn test_budget_window_periods() {
     assert_eq!(budget_window(WINDOW_TOTAL, 1_700_000_000), 0);
     assert_eq!(budget_window("unknown", 1_700_000_000), 0);
     assert_eq!(budget_window(WINDOW_DAY, 1_700_000_000), 1_699_920_000);
@@ -896,13 +946,15 @@ fn test_budget_window_periods() {
     assert_eq!(window_end(WINDOW_TOTAL, 1_700_000_000), None);
 }
 
-#[test]
-fn test_derived_spend_enforces_cap_from_request_ledger() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_derived_spend_enforces_cap_from_request_ledger() {
+    let store = crate::real_store::core().await;
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
-    store.put_key(&k).unwrap();
-    let gov = GovState::new(store, None).unwrap();
+    store.identity().put_key(&k).await.unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let cost = group_cost(30, &[("team", 100, "total", None)]);
 
     for i in 0..3 {
@@ -912,7 +964,8 @@ fn test_derived_spend_enforces_cap_from_request_ledger() {
         );
     }
     assert_eq!(
-        gov.usage_for(&cost, "k1", 1_700_000_000)
+        gov.usage_for_async(&cost, "k1", 1_700_000_000)
+            .await
             .unwrap()
             .unwrap()
             .spend_cents,
@@ -937,14 +990,18 @@ fn test_derived_spend_enforces_cap_from_request_ledger() {
     );
 }
 
-#[test]
-fn test_two_node_flush_is_additive_no_lost_update() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_two_node_flush_is_additive_no_lost_update() {
+    let store = crate::real_store::core().await;
     let k = sample_key("k_fleet", "h_fleet");
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
 
-    let node_a = GovState::new(store.clone(), None).unwrap();
-    let node_b = GovState::new(store.clone(), None).unwrap();
+    let node_a = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
+    let node_b = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = flat_cost(10);
 
     for _ in 0..3 {
@@ -956,10 +1013,10 @@ fn test_two_node_flush_is_additive_no_lost_update() {
     }
     node_b.record_usage(&cost, &k, "", "gpt-5", &tt(40), 1_700_000_000);
     node_b.record_usage(&cost, &k, "", "haiku", &tt(7), 1_700_000_000);
-    node_a.flush_budgets();
-    node_b.flush_budgets();
+    node_a.flush_budgets().await;
+    node_b.flush_budgets().await;
 
-    let u = store.get_usage("k_fleet", 0).unwrap();
+    let u = store.ledger().get_usage("k_fleet", 0).await.unwrap();
     assert_eq!(
         u.requests, 5,
         "the durable record is the FLEET SUM (3 + 2), not last-writer-wins"
@@ -975,35 +1032,45 @@ fn test_two_node_flush_is_additive_no_lost_update() {
         "a model only one node used still lands"
     );
 
-    node_a.flush_budgets();
-    node_b.flush_budgets();
-    let u = store.get_usage("k_fleet", 0).unwrap();
+    node_a.flush_budgets().await;
+    node_b.flush_budgets().await;
+    let u = store.ledger().get_usage("k_fleet", 0).await.unwrap();
     assert_eq!(u.requests, 5, "an idle re-flush adds nothing");
     assert_eq!(u.tokens_for_whole_test("gpt-5").unwrap(), 140);
 
     assert!(node_a.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    node_a.flush_budgets();
-    assert_eq!(store.get_usage("k_fleet", 0).unwrap().requests, 6);
+    node_a.flush_budgets().await;
+    assert_eq!(
+        store
+            .ledger()
+            .get_usage("k_fleet", 0)
+            .await
+            .unwrap()
+            .requests,
+        6
+    );
 }
 
-#[test]
-fn test_additive_flush_carries_refund_deltas() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_additive_flush_carries_refund_deltas() {
+    let store = crate::real_store::core().await;
     let k = sample_key("k_refund", "h_refund");
-    store.put_key(&k).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    store.identity().put_key(&k).await.unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = flat_cost(10);
 
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
     let second = gov.try_admit(&cost, &k, "", 1_700_000_000).expect("admits");
-    gov.flush_budgets();
-    let u = store.get_usage("k_refund", 0).unwrap();
+    gov.flush_budgets().await;
+    let u = store.ledger().get_usage("k_refund", 0).await.unwrap();
     assert_eq!(u.requests, 2);
     assert_eq!(u.billable_requests, 2);
 
     gov.refund_charge(second.charge());
-    gov.flush_budgets();
-    let u = store.get_usage("k_refund", 0).unwrap();
+    gov.flush_budgets().await;
+    let u = store.ledger().get_usage("k_refund", 0).await.unwrap();
     assert_eq!(
         u.requests, 2,
         "the ADMISSION count is never refunded (the requests-limit truth)"
@@ -1013,7 +1080,8 @@ fn test_additive_flush_carries_refund_deltas() {
         "the refund's negative BILLABLE delta lands durably"
     );
     assert_eq!(
-        gov.usage_for(&cost, "k_refund", 1_700_000_000)
+        gov.usage_for_async(&cost, "k_refund", 1_700_000_000)
+            .await
             .unwrap()
             .unwrap()
             .spend_cents,
@@ -1022,73 +1090,15 @@ fn test_additive_flush_carries_refund_deltas() {
     );
 }
 
-#[test]
-fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
+#[tokio::test]
+async fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
 
-    struct MeteringDownStore {
-        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    }
-    impl busbar_contract::records::RecordStore for MeteringDownStore {
-        fn put_key(
-            &self,
-            k: &busbar_contract::records::VirtualKey,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(
-            &self,
-            id: &str,
-        ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.get_key(id)
-        }
-        fn list_keys(
-            &self,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(
-            &self,
-            id: &str,
-            w: u64,
-        ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger>
-        {
-            self.inner.get_usage(id, w)
-        }
-        fn put_usage(
-            &self,
-            id: &str,
-            w: u64,
-            l: &busbar_contract::records::UsageLedger,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_usage(id, w, l)
-        }
-        fn add_metering(
-            &self,
-            _d: &busbar_contract::records::MeteringDelta,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            Err(busbar_contract::records::RecordStoreError(
-                "metering store down".into(),
-            ))
-        }
-        fn list_metering(
-            &self,
-            b: u64,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-        {
-            self.inner.list_metering(b)
-        }
-    }
-
-    let store = Arc::new(MeteringDownStore {
-        inner: crate::real_store::store(),
-    });
-    let gov = GovState::new(store, None).unwrap();
+    let store = Arc::new(FlakyStore::new().await);
+    store.meter_down.store(true, Ordering::SeqCst);
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_000;
     let per = busbar_contract::billing::TokenUsage {
         input: 3,
@@ -1134,7 +1144,7 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
         "no cache-write tokens lost to the cap"
     );
 
-    let flushed = gov.flush_metering();
+    let flushed = gov.flush_metering().await;
     assert_eq!(
         flushed, 0,
         "the store is down, so nothing persisted this tick"
@@ -1170,10 +1180,14 @@ fn test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outag
     );
 }
 
-#[test]
-fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+#[tokio::test]
+async fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap(),
+    );
 
     let now = busbar_kernel::store::now();
     let threads = 16u64;
@@ -1216,9 +1230,9 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
         "output tokens summed exactly once"
     );
 
-    let flushed = gov.flush_metering();
+    let flushed = gov.flush_metering().await;
     assert!(flushed > 0, "the flush wrote the drained cells");
-    let rows = gov.metering_for(metering_bucket(now)).unwrap();
+    let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
     let store_reqs: u64 = rows.iter().map(|r| r.requests).sum();
     assert_eq!(
         store_reqs, total,
@@ -1229,27 +1243,34 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
     assert_eq!(sum_after.requests, 0);
 }
 
-#[test]
-fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap(),
+    );
 
     let now = busbar_kernel::store::now();
     let threads = 8u64;
     let per_thread = 10_000u64;
 
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (started, ready) = tokio::sync::oneshot::channel();
     let flusher = {
         let gov = gov.clone();
         let stop = stop.clone();
-        std::thread::spawn(move || {
+        tokio::spawn(async move {
+            started.send(()).unwrap();
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
-                gov.flush_metering();
-                std::thread::yield_now();
+                gov.flush_metering().await;
+                tokio::task::yield_now().await;
             }
         })
     };
 
+    ready.await.unwrap();
     let mut handles = Vec::new();
     for t in 0..threads {
         let gov = gov.clone();
@@ -1268,11 +1289,11 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
         h.join().unwrap();
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    flusher.join().unwrap();
-    gov.flush_metering();
+    flusher.await.unwrap();
+    gov.flush_metering().await;
 
     let total = threads * per_thread;
-    let rows = gov.metering_for(metering_bucket(now)).unwrap();
+    let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
     let store_reqs: u64 = rows.iter().map(|r| r.requests).sum();
     let (_, pending) = gov.pending_metering_totals();
     assert_eq!(
@@ -1288,133 +1309,83 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
     );
 }
 
-#[test]
-fn test_failed_flush_retries_the_unacked_delta() {
-    struct FlakyStore {
-        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-        healthy: std::sync::atomic::AtomicBool,
-    }
-    impl busbar_contract::records::RecordStore for FlakyStore {
-        fn put_key(
-            &self,
-            k: &busbar_contract::records::VirtualKey,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(
-            &self,
-            id: &str,
-        ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.get_key(id)
-        }
-        fn list_keys(
-            &self,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-        {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(
-            &self,
-            id: &str,
-            w: u64,
-        ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger>
-        {
-            self.inner.get_usage(id, w)
-        }
-        fn put_usage(
-            &self,
-            id: &str,
-            w: u64,
-            l: &busbar_contract::records::UsageLedger,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.put_usage(id, w, l)
-        }
-        fn add_usage(
-            &self,
-            id: &str,
-            w: u64,
-            d: &busbar_contract::records::UsageDelta,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            if !self.healthy.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(busbar_contract::records::RecordStoreError(
-                    "store down".into(),
-                ));
-            }
-            self.inner.add_usage(id, w, d)
-        }
-        fn add_metering(
-            &self,
-            d: &busbar_contract::records::MeteringDelta,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.add_metering(d)
-        }
-        fn list_metering(
-            &self,
-            b: u64,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-        {
-            self.inner.list_metering(b)
-        }
-        fn append_audit(
-            &self,
-            e: &busbar_contract::records::AuditRecord,
-        ) -> busbar_contract::records::RecordStoreResult<()> {
-            self.inner.append_audit(e)
-        }
-        fn list_audit(
-            &self,
-        ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::AuditRecord>>
-        {
-            self.inner.list_audit()
-        }
-    }
-    let store = Arc::new(FlakyStore {
-        inner: crate::real_store::store(),
-        healthy: std::sync::atomic::AtomicBool::new(false),
-    });
+#[tokio::test]
+async fn test_failed_flush_retries_the_unacked_delta() {
+    let store = Arc::new(FlakyStore::new().await);
+    store.set_down(true);
     let k = sample_key("k_flaky", "h_flaky");
-    store.inner.put_key(&k).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    store.inner.identity().put_key(&k).await.unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = flat_cost(10);
 
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
-    gov.flush_budgets();
-    assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 0);
+    gov.flush_budgets().await;
+    assert_eq!(
+        store
+            .inner
+            .ledger()
+            .get_usage("k_flaky", 0)
+            .await
+            .unwrap()
+            .requests,
+        0
+    );
 
-    store
-        .healthy
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    gov.flush_budgets();
-    assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 1);
-    gov.flush_budgets();
-    assert_eq!(store.inner.get_usage("k_flaky", 0).unwrap().requests, 1);
+    store.set_down(false);
+    gov.flush_budgets().await;
+    assert_eq!(
+        store
+            .inner
+            .ledger()
+            .get_usage("k_flaky", 0)
+            .await
+            .unwrap()
+            .requests,
+        1
+    );
+    gov.flush_budgets().await;
+    assert_eq!(
+        store
+            .inner
+            .ledger()
+            .get_usage("k_flaky", 0)
+            .await
+            .unwrap()
+            .requests,
+        1
+    );
 }
 
-#[test]
-fn test_record_usage_derives_spend_and_reprices_on_read() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_record_usage_derives_spend_and_reprices_on_read() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let k = {
         let k = sample_key("k1", "h1");
-        store.put_key(&k).unwrap();
+        store.identity().put_key(&k).await.unwrap();
         k
     };
     let cost = card_cost("gpt-5", 500.0);
     gov.record_usage(&cost, &k, "", "gpt-5", &tt(2000), 1_700_000_000);
-    gov.flush_budgets();
-    let ledger = store.get_usage("k1", 0).unwrap();
+    gov.flush_budgets().await;
+    let ledger = store.ledger().get_usage("k1", 0).await.unwrap();
     assert_eq!(ledger.tokens_for_whole_test("gpt-5").unwrap(), 2000);
-    let u = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
+    let u = gov
+        .usage_for_async(&cost, "k1", 1_700_000_000)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(u.spend_cents, 100, "2000 x 500 micro = 100 cents derived");
     assert_eq!(u.tokens.whole_for_test(), 2000);
 
     let corrected = card_cost("gpt-5", 250.0);
     let u = gov
-        .usage_for(&corrected, "k1", 1_700_000_000)
+        .usage_for_async(&corrected, "k1", 1_700_000_000)
+        .await
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1428,19 +1399,25 @@ fn test_record_usage_derives_spend_and_reprices_on_read() {
     );
 }
 
-#[test]
-fn test_sub_cent_precision_via_ledger_no_carry() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_sub_cent_precision_via_ledger_no_carry() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let k = {
         let k = sample_key("k1", "h1");
-        store.put_key(&k).unwrap();
+        store.identity().put_key(&k).await.unwrap();
         k
     };
     let cost = card_cost("m", 10.0);
 
     gov.record_usage(&cost, &k, "", "m", &tt(500), 1_700_000_000);
-    let u1 = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
+    let u1 = gov
+        .usage_for_async(&cost, "k1", 1_700_000_000)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(u1.spend_cents, 0, "0.5 cents derives to 0 whole cents");
     assert_eq!(
         u1.tokens.whole_for_test(),
@@ -1449,7 +1426,11 @@ fn test_sub_cent_precision_via_ledger_no_carry() {
     );
 
     gov.record_usage(&cost, &k, "", "m", &tt(500), 1_700_000_000);
-    let u2 = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
+    let u2 = gov
+        .usage_for_async(&cost, "k1", 1_700_000_000)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         u2.spend_cents, 1,
         "two 0.5-cent requests derive a whole cent from the raw ledger - no carry needed"
@@ -1457,14 +1438,16 @@ fn test_sub_cent_precision_via_ledger_no_carry() {
     assert_eq!(u2.tokens.whole_for_test(), 1000);
 }
 
-#[test]
-fn test_ledger_windows_are_isolated_across_days() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_ledger_windows_are_isolated_across_days() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let k = {
         let mut k = sample_key("k1", "h1");
         k.group = Some("g".to_string());
-        store.put_key(&k).unwrap();
+        store.identity().put_key(&k).await.unwrap();
         k
     };
     let cost = card_and_group_cost("m", 10.0, &[("g", 1_000_000, "day", None)]);
@@ -1475,48 +1458,51 @@ fn test_ledger_windows_are_isolated_across_days() {
     assert_ne!(w1, w2);
 
     gov.record_usage(&cost, &k, "", "m", &tt(500), day1);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     gov.record_usage(&cost, &k, "", "m", &tt(500), day2);
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        ledger_tokens(&store, "group:g@day", w1),
+        ledger_tokens(&store, "group:g@day", w1).await,
         500,
         "day-1 tokens stay in day 1"
     );
     assert_eq!(
-        ledger_tokens(&store, "group:g@day", w2),
+        ledger_tokens(&store, "group:g@day", w2).await,
         500,
         "day-2 window holds only its own tokens (no cross-window leak)"
     );
 
-    assert_eq!(ledger_tokens(&store, "k1", 0), 1000);
+    assert_eq!(ledger_tokens(&store, "k1", 0).await, 1000);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_record_usage_write_behind_under_runtime() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let k = {
         let k = sample_key("k1", "h1");
-        store.put_key(&k).unwrap();
+        store.identity().put_key(&k).await.unwrap();
         k
     };
     let cost = card_cost("gpt-5", 500.0);
     gov.record_usage(&cost, &k, "", "gpt-5", &tt(2000), 1_700_000_000);
     assert_eq!(
-        store.get_usage("k1", 0).unwrap(),
+        store.ledger().get_usage("k1", 0).await.unwrap(),
         UsageLedger::default(),
         "write-behind: the durable ledger is untouched until a flush"
     );
-    assert_eq!(gov.flush_budgets(), 1, "one dirty cell flushed");
-    let u = store.get_usage("k1", 0).unwrap();
+    assert_eq!(gov.flush_budgets().await, 1, "one dirty cell flushed");
+    let u = store.ledger().get_usage("k1", 0).await.unwrap();
     assert_eq!(
         u.tokens_for_whole_test("gpt-5").unwrap(),
         2000,
         "the per-model tier split lands durably"
     );
     assert_eq!(
-        gov.usage_for(&cost, "k1", 1_700_000_000)
+        gov.usage_for_async(&cost, "k1", 1_700_000_000)
+            .await
             .unwrap()
             .unwrap()
             .spend_cents,
@@ -1525,11 +1511,13 @@ async fn test_record_usage_write_behind_under_runtime() {
     );
 }
 
-#[test]
-fn test_rate_headroom_reports_fraction_remaining() {
+#[tokio::test]
+async fn test_rate_headroom_reports_fraction_remaining() {
     use crate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040;
 
     let unl = sample_key("ku", "hu");
@@ -1619,10 +1607,12 @@ fn test_rate_headroom_reports_fraction_remaining() {
     );
 }
 
-#[test]
-fn test_budget_sweep_is_window_agnostic_across_cotenants() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_budget_sweep_is_window_agnostic_across_cotenants() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
 
     let survivor = sample_key("survivor", "hs");
@@ -1694,10 +1684,12 @@ fn test_budget_sweep_is_window_agnostic_across_cotenants() {
     );
 }
 
-#[test]
-fn test_budget_sweep_staleness_boundary_is_exact() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_budget_sweep_staleness_boundary_is_exact() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
     let survivor = sample_key("survivor2", "hs2");
@@ -1771,11 +1763,13 @@ fn test_budget_sweep_staleness_boundary_is_exact() {
     );
 }
 
-#[test]
-fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
+#[tokio::test]
+async fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
     const N: u32 = crate::config::DEFAULT_RATE_SWEEP_INTERVAL;
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let k = sample_key("k1", "h1");
     let now = 1_700_000_040u64;
     let stale = || BudgetCell {
@@ -1839,26 +1833,33 @@ fn test_budget_sweep_cadence_post_increment_no_off_by_one() {
 
 #[tokio::test]
 async fn test_admission_charge_write_behind_under_runtime() {
-    let store = crate::real_store::store();
+    let store = crate::real_store::core().await;
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
-    let gov = GovState::new(store.clone(), None).unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = group_cost(30, &[("team", 1000, "total", None)]);
 
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
     assert_eq!(
-        store.get_usage("k1", 0).unwrap().requests,
+        store.ledger().get_usage("k1", 0).await.unwrap().requests,
         0,
         "write-behind: durable ledger untouched until a flush"
     );
-    assert_eq!(gov.flush_budgets(), 2, "key + group cells flushed");
+    assert_eq!(gov.flush_budgets().await, 2, "key + group cells flushed");
     assert_eq!(
-        store.get_usage("k1", 0).unwrap().requests,
+        store.ledger().get_usage("k1", 0).await.unwrap().requests,
         1,
         "the request-count delta lands durably after the flush"
     );
     assert_eq!(
-        store.get_usage("group:team@total", 0).unwrap().requests,
+        store
+            .ledger()
+            .get_usage("group:team@total", 0)
+            .await
+            .unwrap()
+            .requests,
         1,
         "the group's window bucket flushed too"
     );
@@ -1866,13 +1867,15 @@ async fn test_admission_charge_write_behind_under_runtime() {
     assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
 }
 
-#[test]
-fn test_negative_fee_and_rate_clamp_to_zero() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_negative_fee_and_rate_clamp_to_zero() {
+    let store = crate::real_store::core().await;
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
-    store.put_key(&k).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    store.identity().put_key(&k).await.unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
 
     let cost = {
         let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
@@ -1886,13 +1889,17 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
     for _ in 0..5 {
         assert!(gov.try_admit(&cost, &k, "", 1_700_000_000).is_ok());
     }
-    let u = gov.usage_for(&cost, "k1", 1_700_000_000).unwrap().unwrap();
+    let u = gov
+        .usage_for_async(&cost, "k1", 1_700_000_000)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(u.spend_cents, 0, "negative fee clamps to 0 derived spend");
     assert_eq!(u.requests, 5, "requests are still counted");
 
     let neg_rate = card_cost("m", -100.0);
     gov.record_usage(&neg_rate, &k, "", "m", &tt(5000), 1_700_000_000);
-    let refused = gov.usage_for(&neg_rate, "k1", 1_700_000_000);
+    let refused = gov.usage_for_async(&neg_rate, "k1", 1_700_000_000).await;
     assert!(
         refused
             .as_ref()
@@ -1900,7 +1907,9 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
         "a negative token rate is an unpriced class, and the read refuses: {refused:?}"
     );
     let tokens: u64 = gov
-        .bucket_model_tokens("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
+        .bucket_model_tokens_async("k1", crate::governance::WINDOW_TOTAL, 1_700_000_000)
+        .await
+        .unwrap()
         .iter()
         .flat_map(|(_, units)| units.values())
         .map(|n| n.whole_for_test())
@@ -1908,10 +1917,12 @@ fn test_negative_fee_and_rate_clamp_to_zero() {
     assert_eq!(tokens, 5000, "tokens are still counted");
 }
 
-#[test]
-fn test_create_key_minted_id_is_free_so_mint_succeeds() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_create_key_minted_id_is_free_so_mint_succeeds() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let spec = NewKeySpec {
         name: "first".to_string(),
         allowed_pools: None,
@@ -1921,7 +1932,8 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
     };
     let (key, _secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(spec, 4_000_000_000, 1_700_000_000)
+        gov.mint_signed_async(spec, 4_000_000_000, 1_700_000_000)
+            .await
     }
     .unwrap();
     assert!(key.id.starts_with("vk_"));
@@ -1929,13 +1941,15 @@ fn test_create_key_minted_id_is_free_so_mint_succeeds() {
     assert_eq!(gov.lookup_by_sub(&key.id).unwrap().id, key.id);
 }
 
-#[test]
-fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let (key, _secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+        gov.mint_signed_async(
             NewKeySpec {
                 name: "k".to_string(),
                 allowed_pools: None,
@@ -1946,13 +1960,15 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
     }
     .unwrap();
     assert!(key.enabled, "new key starts enabled");
     let hash = key.generation_hash.clone();
 
     let updated = gov
-        .update_key(&key.id, Some(false), None)
+        .update_key_outcome_async(&key.id, Some(false), None)
+        .await
         .unwrap()
         .expect("key exists");
     assert!(!updated.enabled, "key is now disabled");
@@ -1967,60 +1983,79 @@ fn test_update_key_toggles_enabled_and_rebinds_group_in_place() {
     assert!(!looked.enabled, "lookup reflects the disabled key");
 
     let re = gov
-        .update_key(&key.id, Some(true), Some(Some("acme".to_string())))
+        .update_key_outcome_async(&key.id, Some(true), Some(Some("acme".to_string())))
+        .await
         .unwrap()
         .expect("key exists");
     assert!(re.enabled);
     assert_eq!(re.group.as_deref(), Some("acme"));
 
     let unbound = gov
-        .update_key(&key.id, None, Some(None))
+        .update_key_outcome_async(&key.id, None, Some(None))
+        .await
         .unwrap()
         .expect("key exists");
     assert_eq!(unbound.group, None, "inner None unbinds to no group");
 
-    assert_eq!(store.get_key(&key.id).unwrap().unwrap().group, None);
-
-    assert!(gov
-        .update_key("vk_does_not_exist", Some(false), None)
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn test_ensure_id_free_for_hash_guards_silent_overwrite() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
-
-    gov.ensure_id_free_for_hash("vk_freshid", "HASH_A")
-        .expect("a free id must be allowed");
-
-    let incumbent = sample_key("vk_freshid", "HASH_A");
-    store.put_key(&incumbent).unwrap();
-    gov.refresh().unwrap();
-
-    gov.ensure_id_free_for_hash("vk_freshid", "HASH_A")
-        .expect("same-hash re-mint must be allowed");
-
-    let err = gov
-        .ensure_id_free_for_hash("vk_freshid", "HASH_B_DIFFERENT")
-        .expect_err("colliding id with a different hash must be rejected");
-    assert!(
-        err.to_string().contains("id collision"),
-        "error must explain the id collision; got: {err}"
+    assert_eq!(
+        store
+            .identity()
+            .get_key(&key.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .group,
+        None
     );
 
-    let still = store.get_key("vk_freshid").unwrap().unwrap();
+    assert!(
+        gov.update_key_outcome_async("vk_does_not_exist", Some(false), None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_compare_key_guards_silent_overwrite() {
+    let store = crate::real_store::core().await;
+    let incumbent = sample_key("vk_freshid", "HASH_A");
+    store
+        .identity()
+        .compare_key(None, &incumbent)
+        .await
+        .expect("a free id must be allowed");
+    store
+        .identity()
+        .compare_key(Some(&incumbent), &incumbent)
+        .await
+        .expect("an exact incumbent can be reasserted");
+    let collision = sample_key("vk_freshid", "HASH_B_DIFFERENT");
+    store
+        .identity()
+        .compare_key(None, &collision)
+        .await
+        .expect_err("a colliding id must never silently overwrite its incumbent");
+    let still = store
+        .identity()
+        .get_key("vk_freshid")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         still.generation_hash, "HASH_A",
         "incumbent must not be clobbered"
     );
 }
 
-#[test]
-fn test_poisoned_budget_lock_recovers_not_panics() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+#[tokio::test]
+async fn test_poisoned_budget_lock_recovers_not_panics() {
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
     let cost = group_cost(1, &[("g", 2, "total", None)]);
     let mut k = sample_key("k1", "h1");
     k.group = Some("g".to_string());
@@ -2050,12 +2085,12 @@ fn test_poisoned_budget_lock_recovers_not_panics() {
     );
 }
 
-#[test]
-fn test_poisoned_by_hash_lock_recovers_not_panics() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_poisoned_by_hash_lock_recovers_not_panics() {
+    let store = crate::real_store::core().await;
     let k = sample_key("k1", "binding:k1:gen1");
-    store.put_key(&k).unwrap();
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    store.identity().put_key(&k).await.unwrap();
+    let gov = Arc::new(GovState::new_with_core(store, None, None).await.unwrap());
 
     let g = gov.clone();
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2065,82 +2100,29 @@ fn test_poisoned_by_hash_lock_recovers_not_panics() {
     assert!(gov.caches.is_poisoned(), "cache lock must be poisoned");
 
     assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
-    gov.refresh()
+    gov.refresh_async()
+        .await
         .expect("refresh recovers the poisoned cache lock");
     assert_eq!(gov.lookup_by_sub("k1").unwrap().id, "k1");
-}
-
-struct RecordingBarrierStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    block_first: std::sync::atomic::AtomicBool,
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    writes: std::sync::Mutex<Vec<i64>>,
-}
-
-impl RecordStore for RecordingBarrierStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        delta: &UsageDelta,
-    ) -> RecordStoreResult<()> {
-        if self
-            .block_first
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            let _ = self.entered.send(());
-            let _ = self.release.lock().unwrap().recv();
-        }
-        let r = self.inner.add_usage(bucket_id, window_start, delta);
-
-        self.writes.lock().unwrap().push(delta.requests);
-        r
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel::<()>(1);
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-    let store = Arc::new(RecordingBarrierStore {
-        inner: crate::real_store::store(),
-        block_first: std::sync::atomic::AtomicBool::new(true),
-        entered: entered_tx,
-        release: std::sync::Mutex::new(release_rx),
-        writes: std::sync::Mutex::new(Vec::new()),
-    });
-    let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let store = Arc::new(FlakyStore::new().await);
+    *store.before_add.lock().unwrap() = Some(Box::new(move || {
+        Box::pin(async move {
+            entered_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+        })
+    }));
+    let gov = Arc::new(
+        GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap(),
+    );
     let cost = flat_cost(1);
     let at = 1_700_000_000u64;
     let key = sample_key("k1", "h1");
@@ -2151,9 +2133,7 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
     let flusher = crate::governance::spawn_budget_flusher(gov.clone(), shutdown_rx, None);
 
-    tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
-        .await
-        .unwrap();
+    entered_rx.await.unwrap();
 
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
     assert!(gov.try_admit(&cost, &key, "", at).is_ok());
@@ -2165,318 +2145,126 @@ async fn test_write_behind_flush_serializes_and_counts_exactly_once() {
     shutdown_tx.send(()).unwrap();
     flusher.await.unwrap();
 
-    let durable = store.inner.get_usage("k1", 0).unwrap().requests;
+    let durable = store
+        .inner
+        .ledger()
+        .get_usage("k1", 0)
+        .await
+        .unwrap()
+        .requests;
     assert_eq!(
         durable, 5,
         "additive flushes must sum to exactly the accrued requests - no loss, no double count"
     );
-
-    let writes = store.writes.lock().unwrap().clone();
-    assert_eq!(
-        writes.iter().sum::<i64>(),
-        5,
-        "the sum of flushed deltas equals the accrued total: {writes:?}"
-    );
 }
 
-struct BlockingDenylistStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-impl RecordStore for BlockingDenylistStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        let _ = self.entered.send(());
-        let _ = self.release.lock().unwrap().recv();
-        self.inner.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-}
-
-struct WedgeStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    fail_list: std::sync::atomic::AtomicBool,
-    fail_denylist: std::sync::atomic::AtomicBool,
-    reenter: std::sync::Mutex<Option<Box<dyn FnOnce() -> bool + Send>>>,
-    reentry_refused: std::sync::atomic::AtomicBool,
-    wedge_put_group: std::sync::Mutex<Option<String>>,
-    wedge_list: std::sync::atomic::AtomicBool,
-    entered: std::sync::mpsc::SyncSender<()>,
-    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-}
-
-impl WedgeStore {
-    fn new() -> (
-        Arc<Self>,
-        std::sync::mpsc::Receiver<()>,
-        std::sync::mpsc::Sender<()>,
-    ) {
-        let (entered, entered_rx) = std::sync::mpsc::sync_channel(1);
-        let (release_tx, release) = std::sync::mpsc::channel();
-        let store = Arc::new(WedgeStore {
-            inner: crate::real_store::store(),
-            fail_list: std::sync::atomic::AtomicBool::new(false),
-            fail_denylist: std::sync::atomic::AtomicBool::new(false),
-            reenter: std::sync::Mutex::new(None),
-            reentry_refused: std::sync::atomic::AtomicBool::new(false),
-            wedge_put_group: std::sync::Mutex::new(None),
-            wedge_list: std::sync::atomic::AtomicBool::new(false),
-            entered,
-            release: std::sync::Mutex::new(release),
-        });
-        (store, entered_rx, release_tx)
-    }
-
-    fn park(&self) {
-        let _ = self.entered.send(());
-        let _ = self
-            .release
-            .lock()
-            .unwrap()
-            .recv_timeout(std::time::Duration::from_secs(30));
-    }
-}
-
-impl RecordStore for WedgeStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        let wedge = {
-            let mut want = self.wedge_put_group.lock().unwrap();
-            let hit = want.is_some() && want.as_deref() == key.group.as_deref();
-            if hit {
-                *want = None;
-            }
-            hit
-        };
-        if wedge {
-            self.park();
-        }
-        self.inner.put_key(key)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        let callback = self.reenter.lock().unwrap().take();
-        if let Some(callback) = callback {
-            self.reentry_refused.store(callback(), Ordering::SeqCst);
-        }
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        if self.fail_list.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("list unavailable".into()));
-        }
-        let snapshot = self.inner.list_keys();
-        if self
-            .wedge_list
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.park();
-        }
-        snapshot
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(&self, delta: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-    fn add_denylist(&self, sub: &str, reason: &str) -> RecordStoreResult<()> {
-        if self.fail_denylist.load(Ordering::SeqCst) {
-            return Err(RecordStoreError("denylist unavailable".into()));
-        }
-        self.inner.add_denylist(sub, reason)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials(&self, key: &str) -> RecordStoreResult<Vec<CredentialMeta>> {
-        self.inner.list_credentials(key)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn revoke_credential(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        self.inner.revoke_credential(id, reason)
-    }
-    fn list_denylist(&self) -> RecordStoreResult<Vec<String>> {
-        self.inner.list_denylist()
-    }
-}
-
-#[test]
-fn a_self_serve_mint_for_another_subject_is_not_held_behind_one_parked_in_the_store() {
-    let (store, entered, release) = WedgeStore::new();
-    *store.wedge_put_group.lock().unwrap() = Some(format!("{SELF_KEY_GROUP_PREFIX}oidc:alice"));
+#[tokio::test]
+async fn a_self_serve_mint_for_another_subject_is_not_held_behind_one_parked_in_the_store() {
+    let (store, faults) = native_identity_fixture().await;
     let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
     );
-    let now = 1_700_000_000u64;
-    let (done_tx, done) = std::sync::mpsc::channel();
-    std::thread::scope(|s| {
-        let parked = s.spawn(|| gov.issue_self("oidc:alice", "corp", None, now + 3600, now));
-        entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("alice's mint reached the store");
-        s.spawn(|| {
-            let _ = done_tx.send(gov.issue_self("oidc:bob", "corp", None, now + 3600, now));
-        });
-        let bob = done.recv_timeout(std::time::Duration::from_secs(5));
-        release.send(()).unwrap();
-        parked
-            .join()
-            .unwrap()
-            .expect("alice's mint lands once released");
-        bob.expect("bob's mint waited on alice's, which was parked in the store")
-            .expect("bob's mint");
+    let now = 1_700_000_000;
+    let (entered, release) = park_identity(&faults.park_commit);
+    let alice_gov = gov.clone();
+    let alice = tokio::spawn(async move {
+        alice_gov
+            .issue_self("oidc:alice", "corp", None, now + 3600, now)
+            .await
     });
-    assert!(self_binding_for(&gov, "oidc:alice").is_some());
-    assert!(self_binding_for(&gov, "oidc:bob").is_some());
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let bob = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        gov.issue_self("oidc:bob", "corp", None, now + 3600, now),
+    )
+    .await;
+    release.send(()).unwrap();
+    alice.await.unwrap().unwrap();
+    bob.expect("bob must not wait for alice's parked native commit")
+        .unwrap();
+    assert!(self_binding_for(&gov, "oidc:alice").await.is_some());
+    assert!(self_binding_for(&gov, "oidc:bob").await.is_some());
 }
 
-#[test]
-fn a_revoke_is_not_held_behind_a_reload_parked_in_the_store_and_the_reload_does_not_revert_it() {
-    let (store, entered, release) = WedgeStore::new();
+#[tokio::test]
+async fn a_revoke_is_not_held_behind_a_reload_parked_in_the_store_and_the_reload_does_not_revert_it()
+ {
+    let (store, faults) = native_identity_fixture().await;
     let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
     );
-    let (key, _) = {
-        gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
-            NewKeySpec {
-                name: "k".to_string(),
-                ..Default::default()
-            },
-            4_000_000_000,
-            0,
-        )
-    }
+    let now = 1_700_000_000;
+    let (key, token) = gov
+        .issue_self("reload-race", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let (entered, release) = park_identity(&faults.park_scan);
+    let reload_gov = gov.clone();
+    let reload = tokio::spawn(async move { reload_gov.refresh_async().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        gov.revoke_async(&key.id, "test"),
+    )
+    .await
+    .expect("mutation cannot wait on parked reload")
     .unwrap();
-    assert!(gov.lookup_by_sub(&key.id).unwrap().enabled);
-    store
-        .wedge_list
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let (done_tx, done) = std::sync::mpsc::channel();
-    std::thread::scope(|s| {
-        let parked = s.spawn(|| gov.refresh());
-        entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the reload reached the store");
-        s.spawn(|| {
-            let _ = done_tx.send(gov.revoke(&key.id, "test"));
-        });
-        let revoked = done.recv_timeout(std::time::Duration::from_secs(5));
-        release.send(()).unwrap();
-        parked.join().unwrap().expect("the reload completes");
-        revoked
-            .expect("the revoke waited on a reload parked in the store")
-            .expect("revoke");
-    });
-    assert!(gov.is_revoked(&key.id));
-    assert!(
-        !gov.lookup_by_sub(&key.id).unwrap().enabled,
-        "a reload whose snapshot predates the revoke must not swap the key back to enabled"
-    );
-}
-
-#[test]
-fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
-    let (entered_tx, entered) = std::sync::mpsc::sync_channel::<()>(1);
-    let (release, release_rx) = std::sync::mpsc::channel::<()>();
-    let store = Arc::new(BlockingDenylistStore {
-        inner: crate::real_store::store(),
-        entered: entered_tx,
-        release: std::sync::Mutex::new(release_rx),
-    });
-    let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
-    );
-    let (key, _) = {
-        gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
-            NewKeySpec {
-                name: "k".to_string(),
-                ..Default::default()
-            },
-            4_000_000_000,
-            0,
-        )
-    }
-    .unwrap();
-    let (done_tx, done) = std::sync::mpsc::channel();
-    std::thread::scope(|s| {
-        let parked = s.spawn(|| gov.revoke(&key.id, "test"));
-        entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("the revoke reached the store");
-        s.spawn(|| {
-            let _ = done_tx.send(gov.refresh());
-        });
-        let reloaded = done.recv_timeout(std::time::Duration::from_secs(5));
-        release.send(()).unwrap();
-        parked
-            .join()
-            .unwrap()
-            .expect("the revoke lands once released");
-        reloaded
-            .expect("the reload waited on a revoke parked in the store")
-            .expect("reload");
-    });
+    release.send(()).unwrap();
+    reload.await.unwrap().unwrap();
+    assert!(gov.verify_token(&token, now, None).is_none());
     assert!(gov.is_revoked(&key.id));
     assert!(!gov.lookup_by_sub(&key.id).unwrap().enabled);
 }
 
-#[test]
-fn test_chain_enforcement_rejects_naming_the_blocking_group() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn a_reload_is_not_held_behind_a_revoke_parked_in_the_store() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
+    );
+    let now = 1_700_000_000;
+    let (key, token) = gov
+        .issue_self("revoke-race", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let (entered, release) = park_identity(&faults.park_commit);
+    let revoke_gov = gov.clone();
+    let id = key.id.clone();
+    let revoke = tokio::spawn(async move { revoke_gov.revoke_async(&id, "test").await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let reloaded =
+        tokio::time::timeout(std::time::Duration::from_secs(5), gov.refresh_async()).await;
+    release.send(()).unwrap();
+    revoke.await.unwrap().unwrap();
+    reloaded
+        .expect("reload cannot wait on parked revoke")
+        .unwrap();
+    assert!(gov.is_revoked(&key.id));
+    assert!(!gov.lookup_by_sub(&key.id).unwrap().enabled);
+    assert!(gov.verify_token(&token, now, None).is_none());
+}
+
+#[tokio::test]
+async fn test_chain_enforcement_rejects_naming_the_blocking_group() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = group_cost(
         10,
         &[
@@ -2486,13 +2274,13 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
     );
     let mut k = sample_key("vk_bob", "h_bob");
     k.group = Some("bob".to_string());
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
 
     let zero = group_cost(10, &[("broke", 0, "month", None)]);
     let mut kb = sample_key("vk_broke", "h_broke");
     kb.group = Some("broke".to_string());
-    store.put_key(&kb).unwrap();
+    store.identity().put_key(&kb).await.unwrap();
     assert_eq!(
         gov.try_admit(&zero, &kb, "", at).unwrap_err(),
         LimitBlocked::Limit {
@@ -2508,7 +2296,8 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
     );
 
     assert_eq!(
-        gov.usage_for(&zero, "vk_broke", at)
+        gov.usage_for_async(&zero, "vk_broke", at)
+            .await
             .unwrap()
             .unwrap()
             .requests,
@@ -2527,16 +2316,23 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
         } => assert_eq!(group, "bob"),
         other => panic!("expected bob's month budget to block, got {other:?}"),
     }
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        store.get_usage("vk_bob", 0).unwrap().requests,
+        store
+            .ledger()
+            .get_usage("vk_bob", 0)
+            .await
+            .unwrap()
+            .requests,
         2,
         "key attribution bucket charged (and only for the ADMITTED requests)"
     );
     let month_window = budget_window(WINDOW_MONTH, at);
     assert_eq!(
         store
+            .ledger()
             .get_usage("group:bob@month", month_window)
+            .await
             .unwrap()
             .requests,
         2,
@@ -2544,7 +2340,9 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
     );
     assert_eq!(
         store
+            .ledger()
             .get_usage("group:growth@month", month_window)
+            .await
             .unwrap()
             .requests,
         2,
@@ -2552,16 +2350,18 @@ fn test_chain_enforcement_rejects_naming_the_blocking_group() {
     );
 }
 
-#[test]
-fn test_group_token_spend_blocks_chain_admission() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_group_token_spend_blocks_chain_admission() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
 
     let cost = card_and_group_cost("gpt-5", 100.0, &[("team", 100, "total", None)]);
 
     let mut k = sample_key("vk_t", "h_t");
     k.group = Some("team".to_string());
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
 
     assert!(gov.try_admit(&cost, &k, "", at).is_ok());
@@ -2580,10 +2380,12 @@ fn test_group_token_spend_blocks_chain_admission() {
     }
 }
 
-#[test]
-fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
 
     let cost = card_and_group_cost("m", 100.0, &[("g", 150, "day", None)]);
     let mut k = sample_key("vk_straddle", "h_s");
@@ -2596,7 +2398,8 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
         .expect("fresh window admits");
     gov.record_usage(&cost, &k, "", "m", &tt(10_000), w1_early);
     let before = gov
-        .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, w1_early)
+        .derived_bucket_usage_async(&cost, bucket, WINDOW_DAY, true, w1_early)
+        .await
         .unwrap();
     assert_eq!(
         (before.tokens.whole_for_test(), before.requests),
@@ -2606,7 +2409,8 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
     gov.try_admit(&cost, &k, "", w0_late)
         .expect("under-cap straddler admits");
     let after = gov
-        .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, w1_early)
+        .derived_bucket_usage_async(&cost, bucket, WINDOW_DAY, true, w1_early)
+        .await
         .unwrap();
     assert_eq!(
         (after.tokens.whole_for_test(), after.requests),
@@ -2629,10 +2433,12 @@ fn test_boundary_straddle_charge_never_rewinds_the_live_cell() {
     }
 }
 
-#[test]
-fn test_new_window_admission_rolls_the_stale_cell_fresh() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_new_window_admission_rolls_the_stale_cell_fresh() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let cost = card_and_group_cost("m", 100.0, &[("g", 150, "day", None)]);
     let mut k = sample_key("vk_roll", "h_r");
     k.group = Some("g".to_string());
@@ -2654,7 +2460,8 @@ fn test_new_window_admission_rolls_the_stale_cell_fresh() {
     gov.try_admit(&cost, &k, "", day5)
         .expect("a genuinely new window must not be blocked by a stale window's exhausted cap");
     let after = gov
-        .derived_bucket_usage(&cost, bucket, WINDOW_DAY, true, day5)
+        .derived_bucket_usage_async(&cost, bucket, WINDOW_DAY, true, day5)
+        .await
         .unwrap();
     assert_eq!(
         (after.tokens.whole_for_test(), after.requests),
@@ -2663,14 +2470,16 @@ fn test_new_window_admission_rolls_the_stale_cell_fresh() {
     );
 }
 
-#[test]
-fn test_missing_group_fails_closed() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_missing_group_fails_closed() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = flat_cost(1);
     let mut k = sample_key("vk_g", "h_g");
     k.group = Some("ghost".to_string());
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
 
     assert_eq!(
@@ -2680,28 +2489,38 @@ fn test_missing_group_fails_closed() {
     );
 
     gov.record_usage(&cost, &k, "", "m", &tt(7), at);
-    gov.flush_budgets();
-    assert_eq!(ledger_tokens(&store, "vk_g", 0), 7, "tokens are never lost");
+    gov.flush_budgets().await;
+    assert_eq!(
+        ledger_tokens(&store, "vk_g", 0).await,
+        7,
+        "tokens are never lost"
+    );
 }
 
-#[test]
-fn test_hydrate_budgets_restores_group_buckets() {
-    let store: Arc<dyn RecordStore> = crate::real_store::store();
+#[tokio::test]
+async fn test_hydrate_budgets_restores_group_buckets() {
+    let store: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
     let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
     let mut k = sample_key("vk_h", "h_h");
     k.group = Some("team".to_string());
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
 
     {
-        let gov = GovState::new(store.clone(), None).unwrap();
+        let gov = GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap();
 
         gov.record_usage(&card(), &k, "", "m", &tt(2_500), at);
-        gov.flush_budgets();
+        gov.flush_budgets().await;
     }
 
-    let gov2 = GovState::new(store.clone(), None).unwrap();
-    gov2.hydrate_budgets(&card(), at).expect("hydrate");
+    let gov2 = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
+    gov2.hydrate_budgets_async(&card(), at)
+        .await
+        .expect("hydrate");
     match gov2.try_admit(&card(), &k, "", at).unwrap_err() {
         LimitBlocked::Limit {
             group,
@@ -2715,53 +2534,14 @@ fn test_hydrate_budgets_restores_group_buckets() {
     }
 }
 
-#[test]
+#[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
-fn test_hydrate_budgets_propagates_store_error() {
-    use busbar_contract::records::{RecordStoreError, RecordStoreResult, UsageLedger, VirtualKey};
-
-    struct FailGetUsage {
-        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    }
-    impl RecordStore for FailGetUsage {
-        fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-            self.inner.get_key(id)
-        }
-        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(&self, _bucket_id: &str, _window: u64) -> RecordStoreResult<UsageLedger> {
-            Err(RecordStoreError("simulated store blip on get_usage".into()))
-        }
-        fn put_usage(&self, b: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-            self.inner.put_usage(b, w, l)
-        }
-        fn add_metering(
-            &self,
-            d: &busbar_contract::records::MeteringDelta,
-        ) -> RecordStoreResult<()> {
-            self.inner.add_metering(d)
-        }
-        fn list_metering(
-            &self,
-            bucket: u64,
-        ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
-            self.inner.list_metering(bucket)
-        }
-    }
-
-    let inner = crate::real_store::store();
+async fn test_hydrate_budgets_propagates_store_error() {
+    let store = Arc::new(FlakyStore::new().await);
     let k = sample_key("vk_m9", "m9_h");
-    inner.put_key(&k).unwrap();
-    let store: Arc<dyn RecordStore> = Arc::new(FailGetUsage { inner });
-
+    store.identity().put_key(&k).await.unwrap();
     store
+        .ledger()
         .put_usage(
             "vk_m9",
             budget_window(WINDOW_TOTAL, 0),
@@ -2771,72 +2551,48 @@ fn test_hydrate_budgets_propagates_store_error() {
                 models: vec![],
             },
         )
+        .await
         .ok();
-    let gov = GovState::new(store, None).unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
+    store.usage_read_down.store(true, Ordering::SeqCst);
     let err = gov
-        .hydrate_budgets(&crate::cost::CostModel::flat(1), 0)
+        .hydrate_budgets_async(&crate::cost::CostModel::flat(1), 0)
+        .await
         .expect_err(
             "a store get_usage error must PROPAGATE (fail boot), not reset budgets to zero",
         );
     assert!(
-        err.to_string().contains("simulated store blip"),
+        err.to_string().contains("Unavailable"),
         "the store error must surface verbatim; got: {err}"
     );
 }
 
-#[test]
-fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
-    use busbar_contract::records::{MeteringDelta, RecordStoreResult, UsageLedger, VirtualKey};
-
-    struct ReadOnlyStore {
-        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    }
-    impl RecordStore for ReadOnlyStore {
-        fn put_key(&self, _key: &VirtualKey) -> RecordStoreResult<()> {
-            panic!("boot hydration must never write a key row");
-        }
-        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-            self.inner.get_key(id)
-        }
-        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, _id: &str) -> RecordStoreResult<()> {
-            panic!("boot hydration must never delete a key row");
-        }
-        fn get_usage(&self, bucket_id: &str, window: u64) -> RecordStoreResult<UsageLedger> {
-            self.inner.get_usage(bucket_id, window)
-        }
-        fn put_usage(&self, _b: &str, _w: u64, _l: &UsageLedger) -> RecordStoreResult<()> {
-            panic!("boot hydration must never write a usage row (no write-read-back probe)");
-        }
-        fn add_metering(&self, _delta: &MeteringDelta) -> RecordStoreResult<()> {
-            panic!("boot hydration must never write a metering row");
-        }
-        fn list_metering(
-            &self,
-            bucket: u64,
-        ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
-            self.inner.list_metering(bucket)
-        }
-    }
-
+#[tokio::test]
+async fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     let card = || card_and_group_cost("m", 100.0, &[("team", 25, "total", None)]);
-    let mem = crate::real_store::store();
+    let mem = Arc::new(FlakyStore::new().await);
     let mut k = sample_key("vk_ro", "ro_h");
     k.group = Some("team".to_string());
-    let writable: Arc<dyn RecordStore> = mem.clone();
-    writable.put_key(&k).unwrap();
+    let writable = mem.clone();
+    writable.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
     {
-        let gov = GovState::new(writable, None).unwrap();
+        let gov = GovState::new_with_core(writable.core(), None, None)
+            .await
+            .unwrap();
         gov.record_usage(&card(), &k, "", "m", &tt(2_500), at);
-        gov.flush_budgets();
+        gov.flush_budgets().await;
     }
 
-    let ro: Arc<dyn RecordStore> = Arc::new(ReadOnlyStore { inner: mem });
-    let gov2 = GovState::new(ro, None).unwrap();
-    gov2.hydrate_budgets(&card(), at)
+    mem.readonly.store(true, Ordering::SeqCst);
+    let ro = mem;
+    let gov2 = GovState::new_with_core(ro.core(), None, None)
+        .await
+        .unwrap();
+    gov2.hydrate_budgets_async(&card(), at)
+        .await
         .expect("hydrate_budgets must succeed against a read-only store: it never writes");
     match gov2.try_admit(&card(), &k, "", at).unwrap_err() {
         LimitBlocked::Limit {
@@ -2852,13 +2608,14 @@ fn hydrate_budgets_never_writes_a_read_only_store_boots_like_a_writable_one() {
     }
 }
 
-#[test]
-fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refunded_window() {
-    let store: Arc<dyn RecordStore> = crate::real_store::store();
+#[tokio::test]
+async fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refunded_window() {
+    let store: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
     let k = sample_key("vk_refunded", "refunded_h");
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
 
     store
+        .ledger()
         .put_usage(
             "vk_refunded",
             budget_window(WINDOW_TOTAL, 0),
@@ -2868,9 +2625,14 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
                 models: vec![],
             },
         )
+        .await
         .unwrap();
-    let gov = GovState::new(store, None).unwrap();
-    gov.hydrate_budgets(&flat_cost(1), 0).expect("hydrate");
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    gov.hydrate_budgets_async(&flat_cost(1), 0)
+        .await
+        .expect("hydrate");
     let cell = gov.budget.read("vk_refunded");
     let cell = cell.get("vk_refunded").expect("hydrated cell exists");
     assert_eq!(
@@ -2884,10 +2646,11 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
          on every restart)"
     );
 
-    let store2: Arc<dyn RecordStore> = crate::real_store::store();
+    let store2: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
     let k2 = sample_key("vk_split", "split_h");
-    store2.put_key(&k2).unwrap();
+    store2.identity().put_key(&k2).await.unwrap();
     store2
+        .ledger()
         .put_usage(
             "vk_split",
             budget_window(WINDOW_TOTAL, 0),
@@ -2897,9 +2660,14 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
                 models: vec![],
             },
         )
+        .await
         .unwrap();
-    let gov2 = GovState::new(store2, None).unwrap();
-    gov2.hydrate_budgets(&flat_cost(1), 0).expect("hydrate");
+    let gov2 = GovState::new_with_core(store2.core(), None, None)
+        .await
+        .unwrap();
+    gov2.hydrate_budgets_async(&flat_cost(1), 0)
+        .await
+        .expect("hydrate");
     let cell2_billable = gov2
         .budget
         .read("vk_split")
@@ -2912,10 +2680,12 @@ fn test_hydrate_budgets_trusts_billable_requests_even_when_it_looks_like_a_refun
     );
 }
 
-#[test]
-fn test_budget_state_projects_the_whole_chain() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store.clone(), None).unwrap();
+#[tokio::test]
+async fn test_budget_state_projects_the_whole_chain() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     let cost = group_cost(
         10,
         &[
@@ -2925,7 +2695,7 @@ fn test_budget_state_projects_the_whole_chain() {
     );
     let mut k = sample_key("vk_s", "h_s");
     k.group = Some("growth".to_string());
-    store.put_key(&k).unwrap();
+    store.identity().put_key(&k).await.unwrap();
     let at = 1_700_000_000u64;
 
     assert!(gov.try_admit(&cost, &k, "", at).is_ok());
@@ -2960,16 +2730,17 @@ fn test_budget_state_projects_the_whole_chain() {
 }
 
 mod signed_token {
-    use super::{signed_kind, ISSUED_SHAPE};
-    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
+    use super::{ISSUED_SHAPE, signed_kind};
+    use crate::governance::signing::{DEFAULT_KID, TokenSigner};
     use crate::governance::{GovState, NewKeySpec, ScopeRef};
     use std::sync::Arc;
 
-    fn gov() -> Arc<GovState> {
-        let store = crate::real_store::store();
+    async fn gov() -> Arc<GovState> {
+        let store = crate::real_store::core().await;
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
-        let g =
-            GovState::new_with_signer(store, Some("admintok".into()), Some(signer)).expect("gov");
+        let g = GovState::new_with_core(store, Some("admintok".into()), Some(signer))
+            .await
+            .expect("gov");
 
         g.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3u8; 32], None,
@@ -2987,18 +2758,19 @@ mod signed_token {
         }
     }
 
-    #[test]
-    fn production_audience_mint_preserves_binding_and_refuses_wrong_unscoped_expired_and_revoked_use(
-    ) {
-        let g = gov();
+    #[tokio::test]
+    async fn production_audience_mint_preserves_binding_and_refuses_wrong_unscoped_expired_and_revoked_use()
+     {
+        let g = gov().await;
         let audience = "https://gateway.example/v1/realtime";
         let (binding, token) = g
-            .mint_signed_for_audience(
+            .mint_signed_for_audience_async(
                 spec("scoped", None, Some(vec!["fast"])),
                 2_000,
                 1_000,
                 audience,
             )
+            .await
             .expect("production scoped mint");
         let token = token.expose(&crate::seal::lend());
         let actual = g
@@ -3008,33 +2780,39 @@ mod signed_token {
         assert_eq!(actual.generation_hash, binding.generation_hash);
         assert_eq!(actual.allowed_scopes, binding.allowed_scopes);
         assert!(g.verify_token(token, 1_001, None).is_none());
-        assert!(g
-            .verify_token(token, 1_001, Some("https://other.example/v1/realtime"))
-            .is_none());
+        assert!(
+            g.verify_token(token, 1_001, Some("https://other.example/v1/realtime"))
+                .is_none()
+        );
         assert!(g.verify_token(token, 2_000, Some(audience)).is_none());
-        g.revoke(&binding.id, "test revocation")
+        g.revoke_async(&binding.id, "test revocation")
+            .await
             .expect("revoke real binding");
         assert!(g.verify_token(token, 1_001, Some(audience)).is_none());
 
         let (_, plain) = g
-            .mint_signed(spec("plain", None, None), 2_000, 1_000)
+            .mint_signed_async(spec("plain", None, None), 2_000, 1_000)
+            .await
             .expect("ordinary mint");
         let plain = plain.expose(&crate::seal::lend());
         assert!(g.verify_token(plain, 1_001, None).is_some());
         assert!(g.verify_token(plain, 1_001, Some(audience)).is_none());
-        assert!(g
-            .mint_signed_for_audience(spec("empty", None, None), 2_000, 1_000, " ")
-            .is_err());
+        assert!(
+            g.mint_signed_for_audience_async(spec("empty", None, None), 2_000, 1_000, " ")
+                .await
+                .is_err()
+        );
     }
 
-    #[test]
-    fn audience_bound_token_is_confined_to_its_plane_through_govstate() {
+    #[tokio::test]
+    async fn audience_bound_token_is_confined_to_its_plane_through_govstate() {
         use crate::governance::signing::TokenVerifier;
 
-        let g = gov();
+        let g = gov().await;
         let plane_x = "https://busbar.example.com/plane-x";
         let (binding, plain) = g
-            .mint_signed(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000)
+            .mint_signed_async(spec("agent", None, Some(vec!["fast"])), 2_000, 1_000)
+            .await
             .expect("mint");
 
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
@@ -3046,9 +2824,10 @@ mod signed_token {
         let bound =
             signer.mint_for_audience(&binding.id, 2_000, generation.as_deref(), plane_x, None);
 
-        assert!(g
-            .verify_token(plain.expose(&crate::seal::lend()), 1_000, None)
-            .is_some());
+        assert!(
+            g.verify_token(plain.expose(&crate::seal::lend()), 1_000, None)
+                .is_some()
+        );
         assert!(
             g.verify_token(&bound, 1_000, None).is_none(),
             "an audience-bound token must be rejected on the data plane even with a valid binding"
@@ -3062,15 +2841,16 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn mint_then_verify_resolves_the_binding() {
-        let g = gov();
+    #[tokio::test]
+    async fn mint_then_verify_resolves_the_binding() {
+        let g = gov().await;
         let (binding, token) = g
-            .mint_signed(
+            .mint_signed_async(
                 spec("bob", Some("growth"), Some(vec!["fast"])),
                 2_000,
                 1_000,
             )
+            .await
             .expect("mint");
         assert!(
             token.expose(&crate::seal::lend()).starts_with("bbk_"),
@@ -3087,11 +2867,12 @@ mod signed_token {
         assert_eq!(resolved.group.as_deref(), Some("growth"));
     }
 
-    #[test]
-    fn no_group_key_is_authed_unlimited() {
-        let g = gov();
+    #[tokio::test]
+    async fn no_group_key_is_authed_unlimited() {
+        let g = gov().await;
         let (_b, token) = g
-            .mint_signed(spec("free", None, None), 2_000, 1_000)
+            .mint_signed_async(spec("free", None, None), 2_000, 1_000)
+            .await
             .expect("mint");
         let resolved = g
             .verify_token(token.expose(&crate::seal::lend()), 1_500, None)
@@ -3101,11 +2882,12 @@ mod signed_token {
         assert!(resolved.allowed_scopes.is_none());
     }
 
-    #[test]
-    fn expired_token_is_rejected() {
-        let g = gov();
+    #[tokio::test]
+    async fn expired_token_is_rejected() {
+        let g = gov().await;
         let (_b, token) = g
-            .mint_signed(spec("bob", None, None), 1_000, 500)
+            .mint_signed_async(spec("bob", None, None), 1_000, 500)
+            .await
             .expect("mint");
         assert!(
             g.verify_token(token.expose(&crate::seal::lend()), 999, None)
@@ -3124,11 +2906,12 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn tampered_token_is_rejected() {
-        let g = gov();
+    #[tokio::test]
+    async fn tampered_token_is_rejected() {
+        let g = gov().await;
         let (_b, token) = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_async(spec("bob", None, None), 2_000, 1_000)
+            .await
             .expect("mint");
         let mut chars: Vec<char> = token.expose(&crate::seal::lend()).chars().collect();
 
@@ -3138,17 +2921,21 @@ mod signed_token {
         assert!(g.verify_token(&tampered, 1_500, None).is_none());
     }
 
-    #[test]
-    fn revoke_denylists_and_keeps_binding() {
-        let g = gov();
+    #[tokio::test]
+    async fn revoke_denylists_and_keeps_binding() {
+        let g = gov().await;
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_async(spec("bob", None, None), 2_000, 1_000)
+            .await
             .expect("mint");
-        assert!(g
-            .verify_token(token.expose(&crate::seal::lend()), 1_500, None)
-            .is_some());
-        g.revoke(&binding.id, "test").expect("revoke");
-        g.revoke(&binding.id, "again").expect("idempotent");
+        assert!(
+            g.verify_token(token.expose(&crate::seal::lend()), 1_500, None)
+                .is_some()
+        );
+        g.revoke_async(&binding.id, "test").await.expect("revoke");
+        g.revoke_async(&binding.id, "again")
+            .await
+            .expect("idempotent");
         assert!(g.is_revoked(&binding.id));
         assert!(
             g.verify_token(token.expose(&crate::seal::lend()), 1_500, None)
@@ -3156,24 +2943,36 @@ mod signed_token {
             "a revoked subject's token is rejected"
         );
 
-        assert!(g.all_keys().unwrap().iter().any(|k| k.id == binding.id));
+        assert!(
+            g.all_keys_async()
+                .await
+                .unwrap()
+                .iter()
+                .any(|k| k.id == binding.id)
+        );
     }
 
-    #[test]
-    fn revocation_survives_restart() {
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn revocation_survives_restart() {
+        let store = crate::real_store::core().await;
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g = Arc::new(
-            GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
+            GovState::new_with_core(store.clone(), Some("t".into()), Some(signer))
+                .await
+                .unwrap(),
         );
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), 5_000, 1_000)
+            .mint_signed_async(spec("bob", None, None), 5_000, 1_000)
+            .await
             .expect("mint");
-        g.revoke(&binding.id, "test").expect("revoke");
+        g.revoke_async(&binding.id, "test").await.expect("revoke");
 
         let signer2 = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
-        let g2 =
-            Arc::new(GovState::new_with_signer(store, Some("t".into()), Some(signer2)).unwrap());
+        let g2 = Arc::new(
+            GovState::new_with_core(store, Some("t".into()), Some(signer2))
+                .await
+                .unwrap(),
+        );
         assert!(g2.is_revoked(&binding.id), "denylist re-hydrated at boot");
         assert!(
             g2.verify_token(token.expose(&crate::seal::lend()), 1_500, None)
@@ -3182,25 +2981,29 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn token_verifies_across_shared_key_and_fails_after_rotation() {
-        let store_a = crate::real_store::store();
+    #[tokio::test]
+    async fn token_verifies_across_shared_key_and_fails_after_rotation() {
+        let store_a = crate::real_store::core().await;
         let key_a = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
         let node_a = Arc::new(
-            GovState::new_with_signer(store_a.clone(), Some("t".into()), Some(key_a)).unwrap(),
+            GovState::new_with_core(store_a.clone(), Some("t".into()), Some(key_a))
+                .await
+                .unwrap(),
         );
         let (binding, token) = node_a
-            .mint_signed(spec("bob", None, None), 5_000, 1_000)
+            .mint_signed_async(spec("bob", None, None), 5_000, 1_000)
+            .await
             .expect("mint");
 
-        let store_b = crate::real_store::store();
+        let store_b = crate::real_store::core().await;
         {
-            use busbar_contract::records::RecordStore;
-            store_b.put_key(&binding).unwrap();
+            store_b.identity().put_key(&binding).await.unwrap();
         }
         let key_b_same = TokenSigner::from_secret_bytes(&[1u8; 32], DEFAULT_KID);
         let node_b = Arc::new(
-            GovState::new_with_signer(store_b.clone(), Some("t".into()), Some(key_b_same)).unwrap(),
+            GovState::new_with_core(store_b.clone(), Some("t".into()), Some(key_b_same))
+                .await
+                .unwrap(),
         );
         assert!(
             node_b
@@ -3211,7 +3014,9 @@ mod signed_token {
 
         let key_b_rotated = TokenSigner::from_secret_bytes(&[2u8; 32], DEFAULT_KID);
         let node_b2 = Arc::new(
-            GovState::new_with_signer(store_b, Some("t".into()), Some(key_b_rotated)).unwrap(),
+            GovState::new_with_core(store_b, Some("t".into()), Some(key_b_rotated))
+                .await
+                .unwrap(),
         );
         assert!(
             node_b2
@@ -3221,17 +3026,18 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn mint_with_aws_issues_token_and_credential() {
-        let g = gov();
+    #[tokio::test]
+    async fn mint_with_aws_issues_token_and_credential() {
+        let g = gov().await;
         let (binding, token, akid, secret) = g
-            .mint_signed_with_credential(
+            .mint_signed_with_credential_async(
                 spec("bob", None, None),
                 2_000,
                 1_000,
                 &signed_kind(),
                 &ISSUED_SHAPE,
             )
+            .await
             .expect("mint+aws");
         assert!(token.expose(&crate::seal::lend()).starts_with("bbk_"));
         assert!(akid.starts_with("AKIA"));
@@ -3243,17 +3049,18 @@ mod signed_token {
         assert_eq!(resolved_key.id, binding.id);
     }
 
-    #[test]
-    fn mint_with_aws_secrets_never_print() {
-        let g = gov();
+    #[tokio::test]
+    async fn mint_with_aws_secrets_never_print() {
+        let g = gov().await;
         let minted = g
-            .mint_signed_with_credential(
+            .mint_signed_with_credential_async(
                 spec("bob", None, None),
                 2_000,
                 1_000,
                 &signed_kind(),
                 &ISSUED_SHAPE,
             )
+            .await
             .expect("mint+aws");
         let token = minted.1.expose(&crate::seal::lend()).clone();
         let aws_secret = minted.3.expose(&crate::seal::lend()).clone();
@@ -3285,23 +3092,29 @@ mod signed_token {
         assert_eq!(read.expose(&crate::seal::lend()), &aws_secret);
     }
 
-    #[test]
-    fn mint_without_signer_fails_closed() {
-        let store = crate::real_store::store();
-        let g = Arc::new(GovState::new(store, Some("t".into())).unwrap());
+    #[tokio::test]
+    async fn mint_without_signer_fails_closed() {
+        let store = crate::real_store::core().await;
+        let g = Arc::new(
+            GovState::new_with_core(store, Some("t".into()), None)
+                .await
+                .unwrap(),
+        );
         assert!(!g.signing_enabled());
         let err = g
-            .mint_signed(spec("bob", None, None), 2_000, 1_000)
+            .mint_signed_async(spec("bob", None, None), 2_000, 1_000)
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("no signing key"), "got {err}");
     }
 
-    #[test]
-    fn local_revoke_rejects_the_very_next_auth_attempt() {
-        let g = gov();
+    #[tokio::test]
+    async fn local_revoke_rejects_the_very_next_auth_attempt() {
+        let g = gov().await;
         let base = busbar_kernel::store::now();
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .mint_signed_async(spec("bob", None, None), base + 10_000, base)
+            .await
             .expect("mint");
         assert!(
             g.verify_token(token.expose(&crate::seal::lend()), base + 1, None)
@@ -3309,7 +3122,9 @@ mod signed_token {
             "admitted before the revoke"
         );
 
-        g.revoke(&binding.id, "compromised").expect("revoke");
+        g.revoke_async(&binding.id, "compromised")
+            .await
+            .expect("revoke");
 
         assert!(
             g.verify_token(token.expose(&crate::seal::lend()), base + 1, None)
@@ -3322,17 +3137,20 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
-        use crate::governance::{RecordStore, REVOCATION_SYNC_TTL_SECS};
-        let store = crate::real_store::store();
+    #[tokio::test]
+    async fn peer_revoke_written_to_the_store_is_honoured_within_the_window() {
+        use crate::governance::REVOCATION_SYNC_TTL_SECS;
+        let store = crate::real_store::core().await;
         let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
         let g = Arc::new(
-            GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
+            GovState::new_with_core(store.clone(), Some("t".into()), Some(signer))
+                .await
+                .unwrap(),
         );
         let base = busbar_kernel::store::now();
         let (binding, token) = g
-            .mint_signed(spec("bob", None, None), base + 10_000, base)
+            .mint_signed_async(spec("bob", None, None), base + 10_000, base)
+            .await
             .expect("mint");
         assert!(
             g.verify_token(token.expose(&crate::seal::lend()), base, None)
@@ -3341,7 +3159,9 @@ mod signed_token {
         );
 
         store
+            .identity()
             .add_denylist(&binding.id, "revoked by a peer node")
+            .await
             .expect("peer revoke persists");
 
         assert!(
@@ -3351,8 +3171,17 @@ mod signed_token {
         );
 
         let past = base + REVOCATION_SYNC_TTL_SECS + 2;
+        g.is_revoked_at(&binding.id, past);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while g.denylist.synced_at() < past {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("peer revocation refresh completes");
         assert!(
-            g.verify_token(token.expose(&crate::seal::lend()), past, None).is_none(),
+            g.verify_token(token.expose(&crate::seal::lend()), past, None)
+                .is_none(),
             "a peer's revoke must be honoured within REVOCATION_SYNC_TTL_SECS ({REVOCATION_SYNC_TTL_SECS}s)"
         );
         assert!(
@@ -3361,11 +3190,12 @@ mod signed_token {
         );
     }
 
-    #[test]
-    fn rotate_invalidates_the_outstanding_signed_token() {
-        let g = gov();
+    #[tokio::test]
+    async fn rotate_invalidates_the_outstanding_signed_token() {
+        let g = gov().await;
         let (binding, old_token) = g
-            .mint_signed(spec("bob", Some("growth"), None), 9_000, 1_000)
+            .mint_signed_async(spec("bob", Some("growth"), None), 9_000, 1_000)
+            .await
             .expect("mint");
         assert!(
             g.verify_token(old_token.expose(&crate::seal::lend()), 1_500, None)
@@ -3374,7 +3204,8 @@ mod signed_token {
         );
 
         let rotated = g
-            .rotate_key(&binding.id, 9_000)
+            .rotate_key_outcome_async(&binding.id, 9_000)
+            .await
             .expect("rotate")
             .expect("known id");
         let crate::governance::RotatedCredential { key, token, .. } = rotated;
@@ -3401,14 +3232,21 @@ mod signed_token {
     }
 }
 
-#[test]
-fn delete_key_drops_its_budget_cell() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn delete_key_drops_its_budget_cell() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let cost = flat_cost(7);
     let key = sample_key("vk_doomed", "hs-doomed");
-    gov.store.put_key(&key).expect("put");
-    gov.refresh().expect("refresh");
+    gov.core_store()
+        .unwrap()
+        .identity()
+        .put_key(&key)
+        .await
+        .expect("put");
+    gov.refresh_async().await.expect("refresh");
 
     gov.record_usage(&cost, &key, "prod", "m", &tt(10), 1_700_000_000);
     assert!(
@@ -3416,17 +3254,19 @@ fn delete_key_drops_its_budget_cell() {
         "precondition: use accrues an attribution cell"
     );
 
-    gov.delete_key(&key.id).expect("delete");
+    gov.delete_key(&key.id).await.expect("delete");
     assert!(
         !gov.budget.read(&key.id).contains_key(&key.id),
         "the deleted key's budget cell is reclaimed, not retained for the process lifetime"
     );
 }
 
-#[test]
-fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let idle_for = 40 * SECS_PER_DAY;
 
@@ -3513,12 +3353,13 @@ fn test_budget_sweep_evicts_idle_attribution_cells_but_never_group_caps() {
     );
 }
 
-#[test]
-fn test_hydrated_cells_survive_the_first_sweep() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn test_hydrated_cells_survive_the_first_sweep() {
+    let store = crate::real_store::core().await;
     let restored = sample_key("restored", "hr");
-    store.put_key(&restored).unwrap();
+    store.identity().put_key(&restored).await.unwrap();
     store
+        .ledger()
         .add_usage(
             "restored",
             0,
@@ -3528,11 +3369,14 @@ fn test_hydrated_cells_survive_the_first_sweep() {
                 models: Vec::new(),
             },
         )
+        .await
         .unwrap();
 
-    let gov = GovState::new(store, None).unwrap();
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
-    gov.hydrate_budgets(&flat_cost(1), now).unwrap();
+    gov.hydrate_budgets_async(&flat_cost(1), now).await.unwrap();
     assert_eq!(
         gov.budget
             .read("restored")
@@ -3561,80 +3405,14 @@ fn test_hydrated_cells_survive_the_first_sweep() {
 
 mod metering_fanout {
     use super::*;
-    use std::sync::atomic::{AtomicI64, AtomicUsize};
-
-    struct CountingStore {
-        inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-
-        in_flight: AtomicUsize,
-        high_water: AtomicUsize,
-        total_calls: AtomicUsize,
-
-        fail_n_times: AtomicI64,
-    }
-
-    impl CountingStore {
-        fn new(fail_n_times: i64) -> Self {
-            Self {
-                inner: crate::real_store::store(),
-                in_flight: AtomicUsize::new(0),
-                high_water: AtomicUsize::new(0),
-                total_calls: AtomicUsize::new(0),
-                fail_n_times: AtomicI64::new(fail_n_times),
-            }
-        }
-    }
-
-    impl RecordStore for CountingStore {
-        fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
-            self.inner.put_key(k)
-        }
-        fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-            self.inner.get_key(id)
-        }
-        fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-            self.inner.list_keys()
-        }
-        fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-            self.inner.delete_key(id)
-        }
-        fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
-            self.inner.get_usage(id, w)
-        }
-        fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-            self.inner.put_usage(id, w, l)
-        }
-        fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
-            self.total_calls.fetch_add(1, Ordering::SeqCst);
-            let now_in = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            self.high_water.fetch_max(now_in, Ordering::SeqCst);
-
-            std::thread::sleep(std::time::Duration::from_millis(2));
-            let result = loop {
-                let cur = self.fail_n_times.load(Ordering::SeqCst);
-                if cur <= 0 {
-                    break self.inner.add_metering(d);
-                }
-                if self
-                    .fail_n_times
-                    .compare_exchange(cur, cur - 1, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_ok()
-                {
-                    break Err(RecordStoreError("scripted failure".into()));
-                }
-            };
-            self.in_flight.fetch_sub(1, Ordering::SeqCst);
-            result
-        }
-        fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-            self.inner.list_metering(bucket)
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn metering_write_fanout_is_bounded_at_one() {
-        let store = std::sync::Arc::new(CountingStore::new(0));
-        let gov = std::sync::Arc::new(GovState::new(store.clone(), None).unwrap());
+        let store = std::sync::Arc::new(FlakyStore::new().await);
+        let gov = std::sync::Arc::new(
+            GovState::new_with_core(store.clone().core(), None, None)
+                .await
+                .unwrap(),
+        );
         let now = 1_700_100_000u64;
         let n = 8usize;
         let mut handles = Vec::new();
@@ -3652,27 +3430,30 @@ mod metering_fanout {
         for h in handles {
             h.await.unwrap();
         }
-        let flushed = gov.flush_metering();
+        let flushed = gov.flush_metering().await;
         assert_eq!(
             flushed, n,
             "every distinct key's delta was written on the one flush"
         );
         assert!(
-            store.high_water.load(Ordering::SeqCst) <= 1,
+            store.meter_high_water.load(Ordering::SeqCst) <= 1,
             "add_metering must never see more than one call in flight (observed {})",
-            store.high_water.load(Ordering::SeqCst)
+            store.meter_high_water.load(Ordering::SeqCst)
         );
         assert_eq!(
-            store.total_calls.load(Ordering::SeqCst),
+            store.meter_calls.load(Ordering::SeqCst),
             n,
             "one add_metering call per distinct key, all eventually accounted"
         );
     }
 
-    #[test]
-    fn a_store_error_requeues_without_double_counting() {
-        let store = std::sync::Arc::new(CountingStore::new(1));
-        let gov = GovState::new(store.clone(), None).unwrap();
+    #[tokio::test]
+    async fn a_store_error_requeues_without_double_counting() {
+        let store = std::sync::Arc::new(FlakyStore::new().await);
+        store.meter_fail_n.store(1, Ordering::SeqCst);
+        let gov = GovState::new_with_core(store.clone().core(), None, None)
+            .await
+            .unwrap();
         let now = 1_700_200_000u64;
         let usage = busbar_contract::billing::TokenUsage {
             input: 10,
@@ -3681,14 +3462,14 @@ mod metering_fanout {
         };
         gov.record_metering("vk_err", "m", "p", Some(&usage), now);
 
-        let n1 = gov.flush_metering();
+        let n1 = gov.flush_metering().await;
         assert_eq!(n1, 0, "the failed flush wrote nothing");
-        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
         assert!(rows.is_empty(), "a failed flush must not partially land");
 
-        let n2 = gov.flush_metering();
+        let n2 = gov.flush_metering().await;
         assert_eq!(n2, 1, "the requeued entry flushes on the next tick");
-        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(
             (
@@ -3699,17 +3480,19 @@ mod metering_fanout {
             "the full delta landed exactly once, not zero and not twice"
         );
 
-        let n3 = gov.flush_metering();
+        let n3 = gov.flush_metering().await;
         assert_eq!(
             n3, 0,
             "a third flush writes nothing — the entry is gone, not duplicated"
         );
     }
 
-    #[test]
-    fn flush_metering_skips_a_genuinely_all_zero_entry() {
-        let store = crate::real_store::store();
-        let gov = GovState::new(store, None).unwrap();
+    #[tokio::test]
+    async fn flush_metering_skips_a_genuinely_all_zero_entry() {
+        let store = crate::real_store::core().await;
+        let gov = GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap();
         let now = 1_700_300_000u64;
         let key = (
             "vk_zero".to_string(),
@@ -3723,34 +3506,38 @@ mod metering_fanout {
 
         gov.pending_metering.accrue(key, MeterCounts::default());
 
-        let flushed = gov.flush_metering();
+        let flushed = gov.flush_metering().await;
         assert_eq!(flushed, 0, "an all-zero entry must not count as flushed");
-        let rows = gov.metering_for(metering_bucket(now)).unwrap();
+        let rows = gov.metering_for_async(metering_bucket(now)).await.unwrap();
         assert!(
             rows.is_empty(),
             "an all-zero entry must never become a store row"
         );
     }
 
-    #[test]
-    fn a_failed_flush_keeps_each_pinned_groups_units_through_retry() {
-        let store = Arc::new(CountingStore::new(1));
-        let gov = GovState::new(store, None).unwrap();
+    #[tokio::test]
+    async fn a_failed_flush_keeps_each_pinned_groups_units_through_retry() {
+        let store = Arc::new(FlakyStore::new().await);
+        store.meter_fail_n.store(1, Ordering::SeqCst);
+        let gov = GovState::new_with_core(store.core(), None, None)
+            .await
+            .unwrap();
         let cost = plane_fee_cost(1_000);
         let mut key = sample_key("same-key", "h");
         let units = [("search_units".to_owned(), 3)].into();
         key.group = Some("first".into());
         gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
         assert_eq!(
-            gov.flush_metering(),
+            gov.flush_metering().await,
             0,
             "first write fails without committing"
         );
         key.group = Some("second".into());
         gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
-        assert_eq!(gov.flush_metering(), 2);
+        assert_eq!(gov.flush_metering().await, 2);
         let counts: std::collections::BTreeMap<_, _> = gov
-            .metering_for(metering_bucket(AT))
+            .metering_for_async(metering_bucket(AT))
+            .await
             .unwrap()
             .into_iter()
             .map(|row| {
@@ -3763,58 +3550,11 @@ mod metering_fanout {
             })
             .collect();
         assert_eq!(counts, [("first".into(), 3), ("second".into(), 3)].into());
-        assert_eq!(gov.flush_metering(), 0, "retry commits each count once");
-    }
-}
-
-struct FailDeleteStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    fail_next_delete: std::sync::atomic::AtomicBool,
-}
-
-impl FailDeleteStore {
-    fn new() -> Self {
-        Self {
-            inner: crate::real_store::store(),
-            fail_next_delete: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-    fn arm(&self) {
-        self.fail_next_delete.store(true, Ordering::SeqCst);
-    }
-}
-
-impl RecordStore for FailDeleteStore {
-    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(k)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        if self
-            .fail_next_delete
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Err(RecordStoreError("store down: delete_key".into()));
-        }
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, w)
-    }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, w, l)
-    }
-    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(d)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
+        assert_eq!(
+            gov.flush_metering().await,
+            0,
+            "retry commits each count once"
+        );
     }
 }
 
@@ -3825,73 +3565,51 @@ fn self_serve_signer() -> crate::governance::signing::TokenSigner {
     )
 }
 
-fn self_binding_for(gov: &GovState, user_sub: &str) -> Option<VirtualKey> {
+async fn self_binding_for(gov: &GovState, user_sub: &str) -> Option<VirtualKey> {
     let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
-    gov.all_keys()
+    gov.all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .find(|k| k.enabled && k.deleted_at.is_none() && k.group.as_deref() == Some(group.as_str()))
 }
 
-#[test]
-fn refresh_self_rolls_back_the_new_binding_when_the_old_tombstone_fails() {
-    let store = Arc::new(FailDeleteStore::new());
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn refresh_self_failed_atomic_commit_keeps_the_old_binding() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000;
     let sub = "oidc:alice";
-    let now = 1_700_000_000u64;
-
-    let (first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
-    assert!(gov.verify_token(&first_token, now, None).is_some());
-
-    store.arm();
-    let err = gov
-        .refresh_self(sub, "corp", None, now + 3600, now)
-        .expect_err("a failed tombstone must surface as an Err, not a silent partial success");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("rolled back"),
-        "the error must say the new binding was rolled back: {msg}"
-    );
-
-    let enabled: Vec<VirtualKey> = gov
-        .all_keys()
-        .unwrap()
-        .into_iter()
-        .filter(|k| {
-            k.enabled
-                && k.deleted_at.is_none()
-                && k.group.as_deref() == Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}").as_str())
-        })
-        .collect();
-    assert_eq!(
-        enabled.len(),
-        1,
-        "the failed refresh must leave exactly one ENABLED binding for the subject: {enabled:?}"
-    );
-    let surviving = self_binding_for(&gov, sub).expect("the original binding still exists");
-    assert_eq!(
-        surviving.id, first_binding.id,
-        "the surviving binding must be the ORIGINAL one, not a stranded new one"
-    );
-    assert!(
-        surviving.enabled,
-        "the original binding must still be enabled"
-    );
-
-    assert!(
-        gov.verify_token(&first_token, now, None).is_some(),
-        "the prior token must remain valid after a rolled-back refresh"
-    );
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    faults.fail_writes.store(true, Ordering::SeqCst);
+    gov.refresh_self(sub, "corp", None, now + 3600, now)
+        .await
+        .expect_err("native replacement and tombstone must commit atomically");
+    let rows = store.identity().list_keys().await.unwrap();
+    assert_eq!(rows.len(), 1, "no stranded replacement is written");
+    assert_eq!(rows[0], old);
+    assert_eq!(self_binding_for(&gov, sub).await.unwrap().id, old.id);
+    assert!(gov.verify_token(&old_token, now, None).is_some());
 }
 
-#[test]
-fn self_serve_key_records_idp_subject_and_user_bound_mode() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn self_serve_key_records_idp_subject_and_user_bound_mode() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
 
-    let (binding, token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (binding, token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     assert_eq!(
         binding.idp_subject.as_deref(),
         Some(sub),
@@ -3907,21 +3625,28 @@ fn self_serve_key_records_idp_subject_and_user_bound_mode() {
 
     let (rotated, _t) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
         .unwrap();
     assert_eq!(rotated.idp_subject.as_deref(), Some(sub));
     assert_eq!(rotated.binding_mode.as_deref(), Some("user-bound"));
 }
 
-#[test]
-fn refresh_self_tombstones_the_old_binding_on_success() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn refresh_self_tombstones_the_old_binding_on_success() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:bob";
     let now = 1_700_000_000u64;
 
-    let (_first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (_first_binding, first_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     let (second_binding, second_token) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
         .unwrap();
 
     assert!(
@@ -3929,196 +3654,209 @@ fn refresh_self_tombstones_the_old_binding_on_success() {
         "the prior token must stop verifying after a successful refresh"
     );
     assert!(gov.verify_token(&second_token, now, None).is_some());
-    let surviving = self_binding_for(&gov, sub).expect("the new binding exists");
+    let surviving = self_binding_for(&gov, sub)
+        .await
+        .expect("the new binding exists");
     assert_eq!(surviving.id, second_binding.id);
 }
 
-#[test]
-fn self_refresh_finishes_binding_transfer_before_cache_reconcile() {
-    let store = Arc::new(RefreshBlipStore::new());
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let now = 1_700_000_000;
-    let (old, token) = gov
-        .issue_self("transfer", "corp", None, now + 3600, now)
+#[tokio::test]
+async fn self_refresh_publishes_atomic_binding_transfer_without_postcommit_scan() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
         .unwrap();
-    store.arm();
-    assert!(gov
-        .refresh_self("transfer", "corp", None, now + 3600, now)
-        .is_err());
+    let now = 1_700_000_000;
+    let sub = "oidc:alice";
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    let (new, token) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    assert_ne!(old.id, new.id);
+    assert!(gov.verify_token(&old_token, now, None).is_none());
+    assert!(gov.verify_token(&token, now, None).is_some());
+    assert!(
+        store
+            .identity()
+            .get_key(&old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
+    faults.fail_scans.store(false, Ordering::SeqCst);
     let live: Vec<_> = store
-        .inner
+        .identity()
         .list_keys()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| k.enabled && k.deleted_at.is_none())
         .collect();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, new.id);
+}
+
+#[tokio::test]
+async fn default_self_refresh_publishes_when_the_derived_id_is_reused() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000;
+    let sub = "oidc:alice";
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let (epoch_one, _) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let mut rotated = gov
+        .rotate_key_outcome_async(&epoch_one.id, now + 3600)
+        .await
+        .unwrap()
+        .unwrap()
+        .key;
+    rotated.generation_hash = binding_marker(&rotated.id, "admin-rotation");
+    store.identity().put_key(&rotated).await.unwrap();
+    gov.refresh_async().await.unwrap();
+    let prior = self_serve_signer().mint(&rotated.id, now + 3600, Some("admin-rotation"));
+    assert!(gov.verify_token(&prior, now, None).is_some());
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    let (binding, token) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     assert_eq!(
-        live.len(),
-        1,
-        "a failed cache read must not strand two live bindings"
+        binding.id, epoch_one.id,
+        "retain the default same-id policy"
     );
-    assert_ne!(live[0].id, old.id);
-    assert!(gov.verify_token(&token, now, None).is_none());
+    assert!(gov.verify_token(&token, now, None).is_some());
+    assert!(gov.verify_token(&prior, now, None).is_none());
+    assert_ne!(old.id, binding.id);
+    assert!(gov.verify_token(&old_token, now, None).is_none());
 }
 
-#[test]
-fn default_self_refresh_reconciles_when_the_derived_id_is_reused() {
-    for fail_reconcile in [false, true] {
-        let store = Arc::new(RefreshBlipStore::new());
-        let gov =
-            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-        let now = 1_700_000_000;
-        gov.issue_self("same-id", "corp", None, now + 3600, now)
-            .unwrap();
-        let (epoch_one, _) = gov
-            .refresh_self("same-id", "corp", None, now + 3600, now)
-            .unwrap();
-        let mut rotated = gov
-            .rotate_key(&epoch_one.id, now + 3600)
-            .unwrap()
-            .unwrap()
-            .key;
-
-        rotated.generation_hash = binding_marker(&rotated.id, "admin-rotation");
-        store.inner.put_key(&rotated).unwrap();
-        gov.refresh().unwrap();
-        let prior_token = self_serve_signer().mint(&rotated.id, now + 3600, Some("admin-rotation"));
-        assert!(gov.verify_token(&prior_token, now, None).is_some());
-        if fail_reconcile {
-            store.arm();
-        }
-        let result = gov.refresh_self("same-id", "corp", None, now + 3600, now);
-        if fail_reconcile {
-            assert!(result.is_err());
-        } else {
-            let (binding, token) = result.unwrap();
-            assert_eq!(
-                binding.id, epoch_one.id,
-                "retain the default same-id policy"
-            );
-            assert!(gov.verify_token(&token, now, None).is_some());
-        }
-        assert!(gov.verify_token(&prior_token, now, None).is_none());
-    }
-}
-
-#[test]
-fn key_mutation_refuses_same_thread_same_key_callback_but_allows_another_key() {
-    for same_key in [true, false] {
-        let (store, _, _) = WedgeStore::new();
-        let gov = Arc::new(
-            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
-        );
-        let now = 1_700_000_000;
-        let (first, _) = gov
-            .issue_self("callback-a", "corp", None, now + 3600, now)
-            .unwrap();
-        let (second, _) = gov
-            .issue_self("callback-b", "corp", None, now + 3600, now)
-            .unwrap();
-        let target = if same_key {
-            first.id.clone()
-        } else {
-            second.id.clone()
-        };
-        let weak = Arc::downgrade(&gov);
-        *store.reenter.lock().unwrap() = Some(Box::new(move || {
-            weak.upgrade()
-                .unwrap()
-                .update_key(&target, Some(false), None)
-                .is_err()
-        }));
-        let changed = gov
-            .update_key(&first.id, None, Some(Some("outer".into())))
-            .unwrap()
-            .unwrap();
-        assert_eq!(store.reentry_refused.load(Ordering::SeqCst), same_key);
-        assert!(changed.enabled);
-        assert_eq!(changed.group.as_deref(), Some("outer"));
-        assert_eq!(
-            store.inner.get_key(&second.id).unwrap().unwrap().enabled,
-            same_key
-        );
-    }
-}
-
-#[test]
-fn self_subject_and_admin_key_callbacks_cannot_form_a_claim_cycle() {
-    let (store, _, _) = WedgeStore::new();
+#[tokio::test]
+async fn key_mutation_waits_for_the_same_key_claim_but_allows_another_key() {
+    let store = crate::real_store::core().await;
     let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+        GovState::new_with_core(store, None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
+    );
+    let now = 1_700_000_000;
+    let (first, _) = gov
+        .issue_self("claim-a", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let (second, _) = gov
+        .issue_self("claim-b", "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    let held = gov.identity_key_guard(&first.id).await;
+    let waiting = gov.observe_identity_mutation_wait();
+    let first_gov = gov.clone();
+    let id = first.id.clone();
+    let blocked = tokio::spawn(async move {
+        first_gov
+            .update_key_outcome_async(&id, None, Some(Some("outer".into())))
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !waiting.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!blocked.is_finished());
+    gov.update_key_outcome_async(&second.id, Some(false), None)
+        .await
+        .unwrap();
+    drop(held);
+    let changed = blocked.await.unwrap().unwrap().unwrap();
+    assert!(changed.enabled);
+    assert_eq!(changed.group.as_deref(), Some("outer"));
+    assert!(!gov.lookup_by_sub(&second.id).unwrap().enabled);
+}
+
+#[tokio::test]
+async fn self_subject_and_admin_key_mutations_complete_without_a_claim_cycle() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
     );
     let now = 1_700_000_000;
     let (key, _) = gov
-        .issue_self("callback-cycle", "corp", None, now + 3600, now)
+        .issue_self("claim-cycle", "corp", None, now + 3600, now)
+        .await
         .unwrap();
-    let (entered_tx, entered) = std::sync::mpsc::channel();
-    let (continue_tx, continue_rx) = std::sync::mpsc::channel::<bool>();
-    let weak = Arc::downgrade(&gov);
-    *store.reenter.lock().unwrap() = Some(Box::new(move || {
-        entered_tx.send(()).unwrap();
-
-        if !continue_rx.recv().unwrap() {
-            return false;
-        }
-        weak.upgrade()
-            .unwrap()
-            .issue_self("callback-cycle", "corp", None, now + 3600, now)
-            .is_err()
-    }));
-    std::thread::scope(|scope| {
-        let admin = scope.spawn(|| gov.update_key(&key.id, None, Some(Some("outer".into()))));
-        entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        let (done_tx, done) = std::sync::mpsc::channel();
-        let login_gov = gov.clone();
-        let login = scope.spawn(move || {
-            done_tx
-                .send(login_gov.issue_self(
-                    "callback-cycle",
-                    "corp",
-                    Some(vec!["narrow".into()]),
-                    now + 3600,
-                    now,
-                ))
-                .unwrap();
-        });
-        let attempt = done.recv_timeout(std::time::Duration::from_secs(5));
-        let completed = attempt.is_ok();
-        continue_tx.send(completed).unwrap();
-        admin.join().unwrap().unwrap();
-        login.join().unwrap();
-        let attempt = attempt.unwrap_or_else(|_| done.recv().unwrap());
-        assert!(
-            completed,
-            "nested contention must refuse instead of waiting on the outer callback"
-        );
-        assert!(attempt.is_err());
-        assert!(store.reentry_refused.load(Ordering::SeqCst));
+    let (entered, release) = park_identity(&faults.park_commit);
+    let admin_gov = gov.clone();
+    let id = key.id.clone();
+    let admin = tokio::spawn(async move {
+        admin_gov
+            .update_key_outcome_async(&id, None, Some(Some("outer".into())))
+            .await
     });
-    assert_eq!(
-        store
-            .inner
-            .get_key(&key.id)
-            .unwrap()
-            .unwrap()
-            .group
-            .as_deref(),
-        Some("outer")
-    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let login_gov = gov.clone();
+    let login = tokio::spawn(async move {
+        login_gov
+            .issue_self(
+                "claim-cycle",
+                "corp",
+                Some(vec!["narrow".into()]),
+                now + 3600,
+                now,
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    release.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        admin.await.unwrap().unwrap();
+        login.await.unwrap()
+    })
+    .await
+    .expect("native claims must not form a cycle")
+    .unwrap();
+    assert_eq!(store.identity().list_keys().await.unwrap().len(), 1);
 }
 
-#[test]
-fn self_scope_update_preserves_a_newer_durable_generation() {
-    let store = crate::real_store::store();
-    let first = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn self_scope_update_preserves_a_newer_durable_generation() {
+    let store = crate::real_store::core().await;
+    let first = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let now = 1_700_000_000;
     let (old, old_token) = first
         .issue_self("stale", "corp", None, now + 3600, now)
+        .await
         .unwrap();
-    let second = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let rotated = second.rotate_key(&old.id, now + 3600).unwrap().unwrap();
+    let second = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let rotated = second
+        .rotate_key_outcome_async(&old.id, now + 3600)
+        .await
+        .unwrap()
+        .unwrap();
     let (updated, _) = first
         .issue_self(
             "stale",
@@ -4127,10 +3865,17 @@ fn self_scope_update_preserves_a_newer_durable_generation() {
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     assert_eq!(updated.generation_hash, rotated.key.generation_hash);
     assert_eq!(
-        store.get_key(&old.id).unwrap().unwrap().generation_hash,
+        store
+            .identity()
+            .get_key(&old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .generation_hash,
         rotated.key.generation_hash
     );
     assert!(first.verify_token(&old_token, now, None).is_none());
@@ -4142,188 +3887,199 @@ fn self_scope_update_preserves_a_newer_durable_generation() {
             now + 3600,
             now,
         )
+        .await
         .unwrap();
     assert!(first.verify_token(&current_token, now, None).is_some());
-    second.update_key(&old.id, Some(false), None).unwrap();
-    assert!(first
-        .issue_self("stale", "corp", None, now + 3600, now)
-        .is_err());
-    assert!(!store.get_key(&old.id).unwrap().unwrap().enabled);
-}
-
-#[test]
-fn durable_disable_is_enforced_when_cache_reconcile_fails() {
-    let store = Arc::new(RefreshBlipStore::new());
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let now = 1_700_000_000;
-    let (key, token) = gov
-        .issue_self("disable", "corp", None, now + 3600, now)
+    second
+        .update_key_outcome_async(&old.id, Some(false), None)
+        .await
         .unwrap();
-    store.arm();
-    assert!(gov.update_key(&key.id, Some(false), None).is_err());
-    assert!(!store.inner.get_key(&key.id).unwrap().unwrap().enabled);
-    assert!(gov.verify_token(&token, now, None).is_none());
+    assert!(
+        first
+            .issue_self("stale", "corp", None, now + 3600, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        !store
+            .identity()
+            .get_key(&old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
 }
 
-#[test]
-fn deletion_eviction_cannot_be_reversed_by_an_older_reload() {
-    let (store, entered, release) = WedgeStore::new();
+#[tokio::test]
+async fn durable_disable_is_published_without_postcommit_scan() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000;
+    let sub = "oidc:alice";
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    gov.update_key_outcome_async(&old.id, Some(false), None)
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .identity()
+            .get_key(&old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
+    );
+    assert!(gov.verify_token(&old_token, now, None).is_none());
+}
+
+#[tokio::test]
+async fn deletion_eviction_cannot_be_reversed_by_an_older_reload() {
+    let (store, faults) = native_identity_fixture().await;
     let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap(),
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
     );
     let now = 1_700_000_000;
     let (key, token) = gov
-        .issue_self("delete-race", "corp", None, now + 3600, now)
+        .issue_self("reload-race", "corp", None, now + 3600, now)
+        .await
         .unwrap();
-    store.wedge_list.store(true, Ordering::SeqCst);
-    std::thread::scope(|s| {
-        let reload = s.spawn(|| gov.refresh());
-        entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("reload captured old row");
-        store.fail_list.store(true, Ordering::SeqCst);
-        let deleted = gov.delete_key(&key.id);
-        release.send(()).unwrap();
-        let _ = reload.join().unwrap();
-        assert!(
-            deleted.is_err(),
-            "cache reconcile was deliberately unavailable"
-        );
-    });
-    assert!(store
-        .inner
-        .get_key(&key.id)
+    let (entered, release) = park_identity(&faults.park_scan);
+    let reload_gov = gov.clone();
+    let reload = tokio::spawn(async move { reload_gov.refresh_async().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered)
+        .await
         .unwrap()
-        .unwrap()
-        .deleted_at
-        .is_some());
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        gov.delete_key_outcome_async(&key.id),
+    )
+    .await
+    .expect("mutation cannot wait on parked reload")
+    .unwrap();
+    release.send(()).unwrap();
+    reload.await.unwrap().unwrap();
     assert!(gov.verify_token(&token, now, None).is_none());
+    assert!(gov.lookup_by_sub(&key.id).is_none());
+    assert!(
+        store
+            .identity()
+            .get_key(&key.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
 }
 
-#[test]
-fn partial_revoke_immediately_retires_the_durable_credential() {
-    let (store, _, _) = WedgeStore::new();
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let (key, _, public_id, _) = {
-        gov.set_signing_key(Some(self_serve_signer()));
-        gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
-            &[3u8; 32], None,
-        )));
-        gov.mint_signed_with_credential(
+#[tokio::test]
+async fn partial_revoke_immediately_retires_the_durable_credential() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
+        &[3; 32], None,
+    )));
+    let (key, _, public_id, _) = gov
+        .mint_signed_with_credential_async(
             NewKeySpec::default(),
             4_000_000_000,
             1,
             &signed_kind(),
             &ISSUED_SHAPE,
         )
-        .map(|(key, bearer, public_id, secret)| {
-            (
-                key,
-                bearer,
-                public_id,
-                secret.expose(&crate::seal::lend()).clone(),
-            )
-        })
-    }
-    .unwrap();
+        .await
+        .unwrap();
     assert!(gov.lookup_credential(&signed_kind(), &public_id).is_some());
-    store.fail_denylist.store(true, Ordering::SeqCst);
-    assert!(gov.revoke(&key.id, "test").is_err());
-    assert!(store
-        .inner
-        .list_credentials(&key.id)
-        .unwrap()
-        .iter()
-        .all(|c| c.revoked_at.is_some()));
-    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
-    assert!(gov.revoke(&key.id, "retry").is_err());
-    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
-    store.fail_denylist.store(false, Ordering::SeqCst);
-    gov.revoke(&key.id, "retry").unwrap();
-    assert!(gov.is_revoked(&key.id));
-}
-
-struct FailListKeysAfterDeleteStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    fail_next_list_keys: std::sync::atomic::AtomicBool,
-}
-
-impl FailListKeysAfterDeleteStore {
-    fn new() -> Self {
-        Self {
-            inner: crate::real_store::store(),
-            fail_next_list_keys: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-}
-
-impl RecordStore for FailListKeysAfterDeleteStore {
-    fn put_key(&self, k: &VirtualKey) -> RecordStoreResult<()> {
-        self.inner.put_key(k)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        if self
-            .fail_next_list_keys
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Err(RecordStoreError("store down: list_keys".into()));
-        }
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        let r = self.inner.delete_key(id);
-        if r.is_ok() {
-            self.fail_next_list_keys.store(true, Ordering::SeqCst);
-        }
-        r
-    }
-    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, w)
-    }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, w, l)
-    }
-    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(d)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
-}
-
-#[test]
-fn refresh_self_evicts_old_binding_from_cache_when_post_delete_refresh_fails() {
-    let store = Arc::new(FailListKeysAfterDeleteStore::new());
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
-    let sub = "oidc:carol";
-    let now = 1_700_000_000u64;
-
-    let (_first_binding, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
-    assert!(gov.verify_token(&first_token, now, None).is_some());
-
-    let err = gov
-        .refresh_self(sub, "corp", None, now + 3600, now)
-        .expect_err("a failed post-delete cache refresh must surface as an Err");
-    let msg = err.to_string();
+    // Denylist and credential retirement apply, then the key patch is refused.
+    faults.refuse_after.store(3, Ordering::SeqCst);
+    assert!(gov.revoke_async(&key.id, "test").await.is_err());
     assert!(
-        msg.contains("evicted") || msg.contains("cache"),
-        "the error must describe the cache-reconcile failure and the eviction fallback: {msg}"
+        store
+            .identity()
+            .list_credentials(&key.id)
+            .await
+            .unwrap()
+            .iter()
+            .all(|c| c.revoked_at.is_some())
     );
-
+    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
+    assert!(gov.is_revoked(&key.id));
+    gov.revoke_async(&key.id, "retry").await.unwrap();
+    assert!(gov.lookup_credential(&signed_kind(), &public_id).is_none());
     assert!(
-        gov.verify_token(&first_token, now, None).is_none(),
-        "the prior token must stop verifying even when the post-delete cache refresh fails"
+        !store
+            .identity()
+            .get_key(&key.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .enabled
     );
 }
 
 #[tokio::test]
-async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
-    let store = crate::real_store::store();
-    let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
+async fn refresh_self_evicts_old_binding_without_postcommit_scan() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000;
+    let sub = "oidc:alice";
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    let (new, token) = gov
+        .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    assert_ne!(old.id, new.id);
+    assert!(gov.verify_token(&old_token, now, None).is_none());
+    assert!(gov.verify_token(&token, now, None).is_some());
+    assert!(
+        store
+            .identity()
+            .get_key(&old.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some()
+    );
+    faults.fail_scans.store(false, Ordering::SeqCst);
+    let live: Vec<_> = store
+        .identity()
+        .list_keys()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.enabled && k.deleted_at.is_none())
+        .collect();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, new.id);
+}
+
+#[tokio::test]
+async fn mint_self_offloaded_issues_and_refreshes_through_native_async_identity() {
+    let store = crate::real_store::core().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store, None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
+    );
     let sub = "oidc:offloaded";
     let now = 1_700_000_000u64;
 
@@ -4337,7 +4093,7 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         now,
     )
     .await
-    .expect("issue via the offloaded wrapper succeeds");
+    .expect("issue via the async wrapper succeeds");
     assert!(gov.verify_token(&issued_token, now, None).is_some());
     assert_eq!(
         issued.group.as_deref(),
@@ -4354,356 +4110,319 @@ async fn mint_self_offloaded_issues_and_refreshes_through_the_blocking_pool() {
         now,
     )
     .await
-    .expect("refresh via the offloaded wrapper succeeds");
+    .expect("refresh via the async wrapper succeeds");
     assert_ne!(
         issued.id, refreshed.id,
         "refresh rotates to a new binding id"
     );
     assert!(
         gov.verify_token(&issued_token, now, None).is_none(),
-        "the offloaded refresh still tombstones the prior token"
+        "the native refresh still tombstones the prior token"
     );
     assert!(gov.verify_token(&refreshed_token, now, None).is_some());
 }
 
-struct PanicOnPutKeyStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+#[tokio::test]
+async fn mint_self_async_preserves_a_native_commit_failure() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap(),
+    );
+    faults.fail_writes.store(true, Ordering::SeqCst);
+    let result = crate::governance::mint_self_offloaded(
+        gov.clone(),
+        crate::governance::SelfMintOp::Issue,
+        "refused".into(),
+        "corp".into(),
+        None,
+        2000,
+        1000,
+    )
+    .await;
+    assert!(matches!(result, Err(SelfMintError::Store(_))));
+    assert!(store.identity().list_keys().await.unwrap().is_empty());
+    assert!(gov.all_keys_async().await.unwrap().is_empty());
 }
 
-impl RecordStore for PanicOnPutKeyStore {
-    fn put_key(&self, _k: &VirtualKey) -> RecordStoreResult<()> {
-        panic!("intentional panic inside put_key, for the JoinError-mapping test");
+// Fault injection decorates the real primitive backend, never domain methods.
+type IdentityPark = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+);
+#[derive(Default)]
+struct NativeIdentityFaults {
+    park_commit: std::sync::Mutex<Option<IdentityPark>>,
+    park_scan: std::sync::Mutex<Option<IdentityPark>>,
+    refuse_after: std::sync::atomic::AtomicUsize,
+    fail_writes: std::sync::atomic::AtomicBool,
+    fail_scans: std::sync::atomic::AtomicBool,
+    fail_scans_after_commit: std::sync::atomic::AtomicBool,
+}
+struct NativeIdentityBackend {
+    inner: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    faults: Arc<NativeIdentityFaults>,
+}
+impl busbar_contract::persistence::PersistenceBackend for NativeIdentityBackend {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.inner.info()
     }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.inner.read(request)
     }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        self.inner.list_keys()
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        Box::pin(async move {
+            if self.faults.fail_scans.load(Ordering::SeqCst) {
+                return Err(busbar_contract::persistence::Failure::Refused);
+            }
+            let response = self.inner.scan(request).await;
+            let park = self.faults.park_scan.lock().unwrap().take();
+            if let Some((entered, release)) = park {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
+            response
+        })
     }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.inner.clock(dataset)
     }
-    fn get_usage(&self, id: &str, w: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(id, w)
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        Box::pin(async move {
+            if self.faults.fail_writes.load(Ordering::SeqCst) {
+                return Err(busbar_contract::persistence::Failure::Refused);
+            }
+            if self
+                .faults
+                .refuse_after
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok_and(|left| left == 1)
+            {
+                return Err(busbar_contract::persistence::Failure::Refused);
+            }
+            let park = self.faults.park_commit.lock().unwrap().take();
+            if let Some((entered, release)) = park {
+                let _ = entered.send(());
+                let _ = release.await;
+            }
+            let result = self.inner.commit(candidate).await;
+            if matches!(
+                result,
+                Ok(busbar_contract::persistence::Decision::Applied(_))
+            ) && self
+                .faults
+                .fail_scans_after_commit
+                .swap(false, Ordering::SeqCst)
+            {
+                self.faults.fail_scans.store(true, Ordering::SeqCst);
+            }
+            result
+        })
     }
-    fn put_usage(&self, id: &str, w: u64, l: &UsageLedger) -> RecordStoreResult<()> {
-        self.inner.put_usage(id, w, l)
-    }
-    fn add_metering(&self, d: &MeteringDelta) -> RecordStoreResult<()> {
-        self.inner.add_metering(d)
-    }
-    fn list_metering(&self, bucket: u64) -> RecordStoreResult<Vec<MeteringRow>> {
-        self.inner.list_metering(bucket)
-    }
+}
+fn park_identity(
+    slot: &std::sync::Mutex<Option<IdentityPark>>,
+) -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (entered_tx, entered) = tokio::sync::oneshot::channel();
+    let (release, release_rx) = tokio::sync::oneshot::channel();
+    *slot.lock().unwrap() = Some((entered_tx, release_rx));
+    (entered, release)
+}
+async fn native_identity_fixture() -> (
+    Arc<crate::persistence::facade::CoreStore>,
+    Arc<NativeIdentityFaults>,
+) {
+    let faults = Arc::new(NativeIdentityFaults::default());
+    let core = crate::real_store::core_over(Arc::new(NativeIdentityBackend {
+        inner: crate::real_store::native_backend().await,
+        faults: faults.clone(),
+    }))
+    .await;
+    (core, faults)
 }
 
 #[tokio::test]
-async fn mint_self_offloaded_maps_a_join_panic_to_a_store_error() {
-    let store = Arc::new(PanicOnPutKeyStore {
-        inner: crate::real_store::store(),
-    });
-    let gov = Arc::new(GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap());
-    let sub = "oidc:panics";
-    let now = 1_700_000_000u64;
-
-    let result = crate::governance::mint_self_offloaded(
-        gov,
-        crate::governance::SelfMintOp::Issue,
-        sub.to_string(),
-        "corp".to_string(),
-        None,
-        now + 3600,
-        now,
-    )
-    .await;
-
-    let err = result.expect_err(
-        "a panic inside the spawn_blocking closure must surface as an Err, never propagate",
-    );
-    assert!(
-        err.to_string().contains("join"),
-        "the mapped error should describe the join failure: {err}"
-    );
-}
-
-struct RefreshBlipStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-    fail_list: std::sync::atomic::AtomicBool,
-    fail_put: std::sync::atomic::AtomicBool,
-}
-
-impl RefreshBlipStore {
-    fn new() -> Self {
-        Self {
-            inner: crate::real_store::store(),
-            fail_list: std::sync::atomic::AtomicBool::new(false),
-            fail_put: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-    fn arm(&self) {
-        self.fail_list
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-}
-
-impl RecordStore for RefreshBlipStore {
-    fn put_key(&self, key: &VirtualKey) -> RecordStoreResult<()> {
-        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("write refused".into()));
-        }
-        self.inner.put_key(key)
-    }
-    fn put_key_with_credential(
-        &self,
-        key: &VirtualKey,
-        secret: &CredentialSecret,
-    ) -> RecordStoreResult<()> {
-        if self.fail_put.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("write refused".into()));
-        }
-        self.inner.put_key_with_credential(key, secret)
-    }
-    fn list_credentials_since(&self, since: u64) -> RecordStoreResult<Vec<CredentialSecret>> {
-        self.inner.list_credentials_since(since)
-    }
-    fn get_key(&self, id: &str) -> RecordStoreResult<Option<VirtualKey>> {
-        self.inner.get_key(id)
-    }
-    fn list_keys(&self) -> RecordStoreResult<Vec<VirtualKey>> {
-        if self.fail_list.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(RecordStoreError("transient store blip".to_string()));
-        }
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(&self, bucket_id: &str, window_start: u64) -> RecordStoreResult<UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &UsageLedger,
-    ) -> RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        delta: &busbar_contract::records::MeteringDelta,
-    ) -> RecordStoreResult<()> {
-        self.inner.add_metering(delta)
-    }
-    fn list_metering(
-        &self,
-        since: u64,
-    ) -> RecordStoreResult<Vec<busbar_contract::records::MeteringRow>> {
-        self.inner.list_metering(since)
-    }
-}
-
-#[test]
-fn signed_mints_report_committed_ids_without_returning_secrets_after_refresh_failure() {
-    use std::sync::atomic::Ordering;
+async fn signed_mints_publish_exact_applied_rows_without_postcommit_refresh() {
     for issued in [false, true] {
-        let store = Arc::new(RefreshBlipStore::new());
-        let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-            &[7; 32],
-            crate::governance::signing::DEFAULT_KID,
-        );
-        let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+        let (store, faults) = native_identity_fixture().await;
+        let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap();
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3; 32], None,
         )));
-        store.arm();
+        faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
         let spec = NewKeySpec {
             name: "applied-mint".into(),
             ..Default::default()
         };
-        let error = if issued {
-            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
-            gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
-                .unwrap_err()
-                .to_string()
+        let (key, token, credential) = if issued {
+            let (key, token, public_id, _) = gov
+                .mint_signed_with_credential_async(spec, 2000, 1000, &signed_kind(), &ISSUED_SHAPE)
+                .await
+                .unwrap();
+            (key, token, Some(public_id))
         } else {
-            gov.mint_signed(spec, 2_000, 1_000).unwrap_err().to_string()
+            let (key, token) = gov.mint_signed_async(spec, 2000, 1000).await.unwrap();
+            (key, token, None)
         };
-        let rows = store.inner.list_keys().unwrap();
-        assert_eq!(rows.len(), 1, "the successful write remains durable");
-        let id = &rows[0].id;
+        assert_eq!(gov.lookup_by_sub(&key.id).unwrap().id, key.id);
         assert!(
-            error.contains("MINT APPLIED (new secret not returned)"),
-            "{error}"
+            gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+                .is_some()
         );
-        assert!(error.contains(id), "the public committed ID is recoverable");
-        assert!(
-            !error.contains("transient store blip"),
-            "internal reconciliation details stay out of the public marker"
+        assert_eq!(
+            store.identity().get_key(&key.id).await.unwrap().unwrap(),
+            key
         );
-        assert!(
-            gov.lookup_by_sub(id).is_none(),
-            "failed refresh cannot install authority from the mint candidate"
-        );
-        let credentials = store.inner.list_credentials_since(0).unwrap();
-        assert_eq!(credentials.len(), usize::from(issued));
-        if issued {
-            assert_eq!(&credentials[0].meta.key_id, id);
-            assert!(credentials[0].secret.starts_with("v1:aead:"));
-            assert!(gov
-                .lookup_credential(&credentials[0].meta.kind, &credentials[0].meta.public_id)
-                .is_none());
+        if let Some(public_id) = credential {
+            assert!(gov.lookup_credential(&signed_kind(), &public_id).is_some());
         }
-        store.fail_list.store(false, Ordering::SeqCst);
-        gov.refresh().unwrap();
-        assert_eq!(gov.lookup_by_sub(id).unwrap().id, *id);
-        if issued {
-            assert!(gov
-                .lookup_credential(&credentials[0].meta.kind, &credentials[0].meta.public_id)
-                .is_some());
-        }
-        gov.delete_key(id).unwrap();
-        assert!(
-            gov.lookup_by_sub(id).is_none(),
-            "the identified durable key can be cleaned up normally"
+        faults.fail_scans.store(false, Ordering::SeqCst);
+        assert_eq!(store.identity().list_keys().await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .identity()
+                .list_credentials_since(0)
+                .await
+                .unwrap()
+                .len(),
+            usize::from(issued)
         );
+        gov.delete_key_outcome_async(&key.id).await.unwrap();
+        assert!(gov.lookup_by_sub(&key.id).is_none());
     }
 }
 
-#[test]
-fn signed_mints_do_not_claim_applied_when_the_write_fails() {
+#[tokio::test]
+async fn signed_mints_do_not_claim_applied_when_the_write_fails() {
     for issued in [false, true] {
-        let store = Arc::new(RefreshBlipStore::new());
-        let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
-            &[7; 32],
-            crate::governance::signing::DEFAULT_KID,
-        );
-        let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
+        let (store, faults) = native_identity_fixture().await;
+        let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap();
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3; 32], None,
         )));
-        store
-            .fail_put
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        faults.fail_writes.store(true, Ordering::SeqCst);
         let spec = NewKeySpec {
             name: "refused-mint".into(),
             ..Default::default()
         };
         let error = if issued {
-            let (kind, shape) = (signed_kind(), ISSUED_SHAPE.clone());
-            gov.mint_signed_with_credential(spec, 2_000, 1_000, &kind, &shape)
+            gov.mint_signed_with_credential_async(spec, 2000, 1000, &signed_kind(), &ISSUED_SHAPE)
+                .await
                 .unwrap_err()
                 .to_string()
         } else {
-            gov.mint_signed(spec, 2_000, 1_000).unwrap_err().to_string()
+            gov.mint_signed_async(spec, 2000, 1000)
+                .await
+                .unwrap_err()
+                .to_string()
         };
-        assert!(error.contains("write refused"));
         assert!(!error.contains("MINT APPLIED"));
-        assert!(store.inner.list_keys().unwrap().is_empty());
-        assert!(store.inner.list_credentials_since(0).unwrap().is_empty());
+        assert!(store.identity().list_keys().await.unwrap().is_empty());
+        assert!(
+            store
+                .identity()
+                .list_credentials_since(0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
-#[test]
-fn delete_key_with_a_failing_refresh_still_stops_the_credential_and_says_so() {
-    let store = Arc::new(RefreshBlipStore::new());
-    let gov = GovState::new(store.clone(), None).unwrap();
-    let (key, _secret) = {
-        gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+#[tokio::test]
+async fn delete_applied_commit_retires_old_credential_without_postcommit_refresh() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let (key, token) = gov
+        .mint_signed_async(
             NewKeySpec {
-                name: "doomed".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: std::collections::BTreeMap::new(),
+                name: "retire".into(),
                 ..Default::default()
             },
-            4_000_000_000,
-            1_700_000_000,
+            2000,
+            1000,
         )
-    }
-    .unwrap();
+        .await
+        .unwrap();
     assert!(
-        gov.lookup_by_sub(&key.id).is_some(),
-        "the key resolves before revocation"
+        gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_some()
     );
-
-    store.arm();
-    let err = gov
-        .delete_key(&key.id)
-        .expect_err("a failing reconcile is still surfaced to the caller");
-
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    gov.delete_key_outcome_async(&key.id).await.unwrap();
     assert!(
-        gov.lookup_by_sub(&key.id).is_none(),
-        "a key whose durable tombstone committed must stop resolving even when the full cache \
-         refresh failed — otherwise the revoked credential keeps authenticating"
+        gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_none()
     );
-
-    let msg = err.to_string();
-    assert!(
-        msg.contains(crate::governance::state::REVOCATION_DURABLE_MARKER),
-        "the failure must be flagged as DEGRADED-BUT-APPLIED, not a bare error implying the \
-         revocation did not take: {msg}"
-    );
-    assert!(
-        msg.contains("transient store blip"),
-        "and must still name the underlying cause: {msg}"
-    );
+    let durable = store.identity().get_key(&key.id).await.unwrap().unwrap();
+    assert!(durable.deleted_at.is_some());
 }
 
-#[test]
-fn rotate_key_with_a_failing_refresh_kills_the_old_credential_and_says_so() {
-    use crate::governance::signing::{TokenSigner, DEFAULT_KID};
-    let store = Arc::new(RefreshBlipStore::new());
-    let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
-    let gov = GovState::new_with_signer(store.clone(), None, Some(signer)).unwrap();
-    let (binding, token) = gov
-        .mint_signed(
+#[tokio::test]
+async fn rotate_applied_commit_retires_old_credential_without_postcommit_refresh() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let (key, token) = gov
+        .mint_signed_async(
             NewKeySpec {
-                name: "rotate-me".to_string(),
-                allowed_pools: None,
-                group: None,
-                labels: std::collections::BTreeMap::new(),
+                name: "retire".into(),
                 ..Default::default()
             },
-            2_000,
-            1_000,
+            2000,
+            1000,
         )
-        .expect("mint");
+        .await
+        .unwrap();
     assert!(
-        gov.verify_token(token.expose(&crate::seal::lend()), 1_500, None)
-            .is_some(),
-        "the original token verifies before the rotation"
+        gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_some()
     );
-
-    store.arm();
-    let err = match gov.rotate_key(&binding.id, 3_000) {
-        Err(e) => e,
-        Ok(_) => panic!("a failing reconcile is still surfaced"),
-    };
-
+    faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+    gov.rotate_key_outcome_async(&key.id, 3000)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
-        gov.verify_token(token.expose(&crate::seal::lend()), 1_500, None)
-            .is_none(),
-        "the PREVIOUS credential must stop verifying the moment the new generation is committed, \
-         even when the cache refresh failed"
+        gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_none()
     );
-
-    let msg = err.to_string();
-    assert!(
-        msg.contains(crate::governance::state::ROTATION_DURABLE_MARKER),
-        "the failure must say the rotation IS durable: {msg}"
-    );
-    assert!(
-        msg.contains("transient store blip"),
-        "and must still name the underlying cause: {msg}"
-    );
+    let durable = store.identity().get_key(&key.id).await.unwrap().unwrap();
+    assert_ne!(durable.generation_hash, key.generation_hash);
 }
 
-#[test]
-fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
     let survivor = sample_key("survivor3", "hs3");
@@ -4775,10 +4494,12 @@ fn test_budget_sweep_only_exempts_group_cells_that_still_enforce_a_cap() {
     );
 }
 
-#[test]
-fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
         flushing_windows: Default::default(),
@@ -4838,11 +4559,13 @@ fn test_reclaim_group_cells_drops_every_window_and_scope_of_that_group() {
     );
 }
 
-#[test]
-fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
+#[tokio::test]
+async fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     use crate::config::groups::{LimitCfg, LimitMetric};
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
 
     let concurrent_group = || crate::config::GroupCfg {
@@ -4909,10 +4632,12 @@ fn test_reclaim_group_cells_drops_the_per_group_concurrent_gauge() {
     drop(grant);
 }
 
-#[test]
-fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let max_window = 31 * SECS_PER_DAY;
     let survivor = sample_key("survivor-delim", "hs-delim");
@@ -4977,10 +4702,12 @@ fn test_sweep_exemption_survives_a_group_name_containing_the_id_delimiters() {
     );
 }
 
-#[test]
-fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_040u64;
     let cell = BudgetCell {
         flushing_windows: Default::default(),
@@ -5036,17 +4763,22 @@ fn test_reclaim_group_cells_never_takes_a_longer_name_that_shares_the_at_prefix(
     );
 }
 
-#[test]
-fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:carol";
     let now = 1_700_000_000u64;
 
-    let (first, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (first, first_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     assert!(gov.verify_token(&first_token, now, None).is_some());
 
-    gov.delete_key(&first.id).unwrap();
+    gov.delete_key(&first.id).await.unwrap();
     assert!(
         gov.verify_token(&first_token, now, None).is_none(),
         "precondition: the deleted key's token must stop verifying"
@@ -5054,6 +4786,7 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
 
     let (second, second_token) = gov
         .issue_self(sub, "corp", None, now + 3600, now)
+        .await
         .expect("a login after an admin deletion must still succeed, with a NEW binding");
 
     assert_ne!(
@@ -5061,8 +4794,11 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
         "the new binding must not reuse the deleted id — that id is never reissued"
     );
     let tombstone = gov
-        .store()
+        .core_store()
+        .unwrap()
+        .identity()
         .get_key(&first.id)
+        .await
         .unwrap()
         .expect("the tombstoned row is kept for attribution");
     assert!(
@@ -5079,23 +4815,31 @@ fn an_admin_deletion_of_a_self_serve_key_survives_the_next_login() {
     );
 }
 
-#[test]
-fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
-    let gov =
-        GovState::new_with_signer(crate::real_store::store(), None, Some(self_serve_signer()))
-            .unwrap();
+#[tokio::test]
+async fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
+    let gov = GovState::new_with_core(
+        crate::real_store::core().await,
+        None,
+        Some(self_serve_signer()),
+    )
+    .await
+    .unwrap();
 
     gov.hold_self_mint_state();
     let sub = "oidc:alice";
     let now = 1_700_000_000u64;
 
-    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    gov.issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     let (x, t1) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
         .unwrap();
     assert!(gov.verify_token(&t1, now, None).is_some());
 
-    gov.rotate_key(&x.id, now + 3600)
+    gov.rotate_key_outcome_async(&x.id, now + 3600)
+        .await
         .unwrap()
         .expect("the live key rotates");
     assert!(
@@ -5105,6 +4849,7 @@ fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
 
     let (y, t2) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
         .expect("a refresh after an admin rotation still mints");
     assert!(
         gov.verify_token(&t1, now, None).is_none(),
@@ -5117,71 +4862,68 @@ fn an_admin_rotation_of_a_self_serve_key_survives_the_next_refresh() {
     assert!(gov.verify_token(&t2, now, None).is_some());
 }
 
-#[test]
-fn a_rolled_back_refresh_can_still_be_retried() {
-    let store = Arc::new(FailDeleteStore::new());
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
-    let sub = "oidc:dave";
-    let now = 1_700_000_000u64;
-
-    let (first, first_token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
-
-    store.arm();
+#[tokio::test]
+async fn a_failed_atomic_refresh_can_still_be_retried() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
+    let now = 1_700_000_000;
+    let sub = "oidc:alice";
+    let (old, old_token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
+    faults.fail_writes.store(true, Ordering::SeqCst);
     gov.refresh_self(sub, "corp", None, now + 3600, now)
-        .expect_err("precondition: the armed failure makes this refresh fail");
-
-    let (retried, retried_token) = gov
+        .await
+        .unwrap_err();
+    faults.fail_writes.store(false, Ordering::SeqCst);
+    let (retried, token) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
-        .expect("a refresh that was rolled back must remain retryable");
-
-    assert_ne!(
-        retried.id, first.id,
-        "the retry must rotate away from the original binding"
-    );
-    assert!(
-        gov.verify_token(&retried_token, now, None).is_some(),
-        "the retried refresh's token must verify"
-    );
-    assert!(
-        gov.verify_token(&first_token, now, None).is_none(),
-        "the original token must be dead once the retry succeeded"
-    );
-
-    let enabled: Vec<VirtualKey> = gov
-        .all_keys()
+        .await
+        .unwrap();
+    assert_ne!(retried.id, old.id);
+    assert!(gov.verify_token(&token, now, None).is_some());
+    assert!(gov.verify_token(&old_token, now, None).is_none());
+    let live: Vec<_> = store
+        .identity()
+        .list_keys()
+        .await
         .unwrap()
         .into_iter()
-        .filter(|k| {
-            k.enabled
-                && k.deleted_at.is_none()
-                && k.group.as_deref() == Some(format!("{SELF_KEY_GROUP_PREFIX}{sub}").as_str())
-        })
+        .filter(|k| k.enabled && k.deleted_at.is_none())
         .collect();
-    assert_eq!(
-        enabled.len(),
-        1,
-        "the retry must leave exactly one enabled binding: {enabled:?}"
-    );
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, retried.id);
 }
 
-#[test]
-fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:erin";
     let now = 1_700_000_000u64;
 
-    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    gov.issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     for _ in 0..70 {
         gov.refresh_self(sub, "corp", None, now + 3600, now)
+            .await
             .expect("each refresh rotates and tombstones its predecessor");
     }
-    let live = self_binding_for(&gov, sub).expect("one live binding after the refresh run");
+    let live = self_binding_for(&gov, sub)
+        .await
+        .expect("one live binding after the refresh run");
 
-    gov.delete_key(&live.id).unwrap();
+    gov.delete_key(&live.id).await.unwrap();
 
     let (issued, issued_token) = gov
         .issue_self(sub, "corp", None, now + 3600, now)
+        .await
         .expect("a login after a long refresh history plus a deletion must still mint");
     assert!(
         gov.verify_token(&issued_token, now, None).is_some(),
@@ -5194,31 +4936,47 @@ fn a_long_refresh_history_does_not_lock_a_subject_out_after_a_deletion() {
 
     let (_refreshed, refreshed_token) = gov
         .refresh_self(sub, "corp", None, now + 3600, now)
+        .await
         .expect("refresh must work too, not just issue");
     assert!(gov.verify_token(&refreshed_token, now, None).is_some());
 
-    let tombstone = gov.store().get_key(&live.id).unwrap().unwrap();
+    let tombstone = gov
+        .core_store()
+        .unwrap()
+        .identity()
+        .get_key(&live.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         tombstone.deleted_at.is_some(),
         "the admin's deletion must still stand: {tombstone:?}"
     );
 }
 
-#[test]
-fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:zed";
     let now = 1_700_000_000u64;
 
-    gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    gov.issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     for _ in 0..3 {
         gov.refresh_self(sub, "corp", None, now + 3600, now)
+            .await
             .unwrap();
     }
-    let live = self_binding_for(&gov, sub).expect("one live binding");
+    let live = self_binding_for(&gov, sub).await.expect("one live binding");
 
-    gov.rotate_key(&live.id, now + 3600).unwrap().unwrap();
+    gov.rotate_key_outcome_async(&live.id, now + 3600)
+        .await
+        .unwrap()
+        .unwrap();
 
     let (issued, token) = gov
         .issue_self(
@@ -5228,6 +4986,7 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
             now + 3600,
             now,
         )
+        .await
         .unwrap();
 
     assert_eq!(
@@ -5241,7 +5000,8 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
 
     let group = format!("{SELF_KEY_GROUP_PREFIX}{sub}");
     let enabled: Vec<VirtualKey> = gov
-        .all_keys()
+        .all_keys_async()
+        .await
         .unwrap()
         .into_iter()
         .filter(|k| {
@@ -5263,67 +5023,8 @@ fn an_admin_rotate_then_a_pools_change_does_not_fork_the_binding() {
     );
 }
 
-struct MeteringFailStore {
-    inner: Arc<busbar_plugin_loader::store_v3::LoadedStore>,
-}
-
-impl RecordStore for MeteringFailStore {
-    fn put_key(
-        &self,
-        key: &busbar_contract::records::VirtualKey,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_key(key)
-    }
-    fn get_key(
-        &self,
-        id: &str,
-    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.get_key(id)
-    }
-    fn list_keys(
-        &self,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
-    {
-        self.inner.list_keys()
-    }
-    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.delete_key(id)
-    }
-    fn get_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
-        self.inner.get_usage(bucket_id, window_start)
-    }
-    fn put_usage(
-        &self,
-        bucket_id: &str,
-        window_start: u64,
-        ledger: &busbar_contract::records::UsageLedger,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        self.inner.put_usage(bucket_id, window_start, ledger)
-    }
-    fn add_metering(
-        &self,
-        _delta: &busbar_contract::records::MeteringDelta,
-    ) -> busbar_contract::records::RecordStoreResult<()> {
-        Err(busbar_contract::records::RecordStoreError(
-            "metering store unavailable".into(),
-        ))
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
-    {
-        self.inner.list_metering(bucket)
-    }
-}
-
-#[test]
-fn flush_metering_failure_warns_once_per_tick_not_per_key() {
+#[tokio::test]
+async fn flush_metering_failure_warns_once_per_tick_not_per_key() {
     use tracing_subscriber::layer::SubscriberExt as _;
     #[derive(Clone, Default)]
     struct MeteringWarnings(Arc<std::sync::Mutex<Vec<String>>>);
@@ -5353,10 +5054,11 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
         }
     }
 
-    let store: Arc<dyn RecordStore> = Arc::new(MeteringFailStore {
-        inner: crate::real_store::store(),
-    });
-    let gov = GovState::new(store, None).unwrap();
+    let store = Arc::new(FlakyStore::new().await);
+    store.meter_down.store(true, Ordering::SeqCst);
+    let gov = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
     let now = 1_700_000_500;
 
     for k in ["vk_a", "vk_b", "vk_c", "vk_d", "vk_e"] {
@@ -5365,7 +5067,10 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
 
     let cap = MeteringWarnings::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let flushed = tracing::subscriber::with_default(subscriber, || gov.flush_metering());
+    let flushed = {
+        use tracing::instrument::WithSubscriber;
+        gov.flush_metering().with_subscriber(subscriber).await
+    };
 
     let messages = cap.0.lock().unwrap().clone();
     assert_eq!(flushed, 0, "every key failed to persist");
@@ -5386,20 +5091,25 @@ fn flush_metering_failure_warns_once_per_tick_not_per_key() {
     );
 
     assert_eq!(
-        gov.flush_metering(),
+        gov.flush_metering().await,
         0,
         "the deltas are retained and retried, still failing while the store is down"
     );
 }
 
-#[test]
-fn proof_manual_revoke_kills_a_minted_key() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn proof_manual_revoke_kills_a_minted_key() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:dave";
     let now = 1_700_000_000u64;
 
-    let (binding, token) = gov.issue_self(sub, "corp", None, now + 3600, now).unwrap();
+    let (binding, token) = gov
+        .issue_self(sub, "corp", None, now + 3600, now)
+        .await
+        .unwrap();
     assert!(
         gov.verify_token(&token, now, None).is_some(),
         "precondition: the freshly minted token MUST verify before revoke, or the \
@@ -5407,7 +5117,7 @@ fn proof_manual_revoke_kills_a_minted_key() {
     );
     assert!(!gov.is_revoked(&binding.id));
 
-    gov.revoke(&binding.id, "offboarded").unwrap();
+    gov.revoke_async(&binding.id, "offboarded").await.unwrap();
 
     assert!(
         gov.verify_token(&token, now, None).is_none(),
@@ -5416,25 +5126,35 @@ fn proof_manual_revoke_kills_a_minted_key() {
     assert!(gov.is_revoked(&binding.id));
 }
 
-#[test]
-fn proof_manual_revoke_is_authoritative_across_the_fleet() {
-    let store = crate::real_store::store();
-    let node_a = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn proof_manual_revoke_is_authoritative_across_the_fleet() {
+    let store = crate::real_store::core().await;
+    let node_a = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let sub = "oidc:erin";
     let now = 1_700_000_000u64;
 
     let (binding, token) = node_a
         .issue_self(sub, "corp", None, now + 3600, now)
+        .await
         .unwrap();
-    let node_b = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+    let node_b = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     assert!(
         node_b.verify_token(&token, now, None).is_some(),
         "a second fleet node over the shared store must accept the token BEFORE the revoke"
     );
 
-    node_a.revoke(&binding.id, "offboarded").unwrap();
+    node_a
+        .revoke_async(&binding.id, "offboarded")
+        .await
+        .unwrap();
 
-    let node_c = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let node_c = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     assert!(
         node_c.verify_token(&token, now, None).is_none(),
         "the revoke MUST be authoritative on every fleet node reading the shared store"
@@ -5442,15 +5162,18 @@ fn proof_manual_revoke_is_authoritative_across_the_fleet() {
     assert!(node_c.is_revoked(&binding.id));
 }
 
-#[test]
-fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
-    let store = crate::real_store::store();
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let admin = "oidc:matthew";
     let now = 1_700_000_000u64;
 
     let (personal, personal_tok) = gov
         .issue_self(admin, "corp", None, now + 3600, now)
+        .await
         .unwrap();
     assert_eq!(personal.binding_mode.as_deref(), Some("user-bound"));
     assert_eq!(personal.idp_subject.as_deref(), Some(admin));
@@ -5475,7 +5198,10 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
             binding_mode: Some("time-bound".to_string()),
             plane_scopes: None,
         };
-        let (key, token) = gov.mint_signed(spec, now + 30 * 86_400, now).unwrap();
+        let (key, token) = gov
+            .mint_signed_async(spec, now + 30 * 86_400, now)
+            .await
+            .unwrap();
         minted.push((label, pool, key, token));
     }
 
@@ -5507,7 +5233,9 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
     }
 
     let (_, _, victim_key, victim_tok) = &minted[1];
-    gov.revoke(&victim_key.id, "compromised app token").unwrap();
+    gov.revoke_async(&victim_key.id, "compromised app token")
+        .await
+        .unwrap();
     assert!(
         gov.verify_token(victim_tok.expose(&crate::seal::lend()), now, None)
             .is_none(),
@@ -5529,11 +5257,13 @@ fn proof_one_session_mints_a_personal_key_plus_n_independent_app_tokens() {
     }
 }
 
-#[test]
-fn proof_time_bound_expiry_is_enforced_locally() {
-    let store = crate::real_store::store();
+#[tokio::test]
+async fn proof_time_bound_expiry_is_enforced_locally() {
+    let store = crate::real_store::core().await;
 
-    let gov = GovState::new_with_signer(store, None, Some(self_serve_signer())).unwrap();
+    let gov = GovState::new_with_core(store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let now = 1_700_000_000u64;
     let exp = now + 30 * 86_400;
 
@@ -5544,7 +5274,7 @@ fn proof_time_bound_expiry_is_enforced_locally() {
         labels: Default::default(),
         ..Default::default()
     };
-    let (_binding, token) = gov.mint_signed(spec, exp, now).unwrap();
+    let (_binding, token) = gov.mint_signed_async(spec, exp, now).await.unwrap();
 
     assert!(
         gov.verify_token(token.expose(&crate::seal::lend()), now, None)
@@ -5570,8 +5300,8 @@ fn proof_time_bound_expiry_is_enforced_locally() {
     );
 }
 
-#[test]
-fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
+#[tokio::test]
+async fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     let now = 1_700_000_000u64;
     let exp = now + 30 * 86_400;
     let spec = |name: &str| NewKeySpec {
@@ -5582,13 +5312,21 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
         ..Default::default()
     };
 
-    let new_gov = || {
-        GovState::new_with_signer(crate::real_store::store(), None, Some(self_serve_signer()))
-            .unwrap()
+    let new_gov = async || {
+        GovState::new_with_core(
+            crate::real_store::core().await,
+            None,
+            Some(self_serve_signer()),
+        )
+        .await
+        .unwrap()
     };
 
-    let gov = new_gov();
-    let (_b, token) = gov.mint_signed(spec("baseline"), exp, now).unwrap();
+    let gov = new_gov().await;
+    let (_b, token) = gov
+        .mint_signed_async(spec("baseline"), exp, now)
+        .await
+        .unwrap();
     assert!(
         gov.verify_token(token.expose(&crate::seal::lend()), now, None)
             .is_some(),
@@ -5596,11 +5334,12 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     );
 
     {
-        let gov = new_gov();
-        let (_b, token) = gov.mint_signed(spec("sig"), exp, now).unwrap();
-        assert!(gov
-            .verify_token(token.expose(&crate::seal::lend()), now, None)
-            .is_some());
+        let gov = new_gov().await;
+        let (_b, token) = gov.mint_signed_async(spec("sig"), exp, now).await.unwrap();
+        assert!(
+            gov.verify_token(token.expose(&crate::seal::lend()), now, None)
+                .is_some()
+        );
 
         let mut chars: Vec<char> = token.expose(&crate::seal::lend()).chars().collect();
         chars[10] = if chars[10] == 'x' { 'y' } else { 'x' };
@@ -5623,12 +5362,16 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     );
 
     {
-        let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("revoke"), exp, now).unwrap();
-        assert!(gov
-            .verify_token(token.expose(&crate::seal::lend()), now, None)
-            .is_some());
-        gov.revoke(&b.id, "offboarded").unwrap();
+        let gov = new_gov().await;
+        let (b, token) = gov
+            .mint_signed_async(spec("revoke"), exp, now)
+            .await
+            .unwrap();
+        assert!(
+            gov.verify_token(token.expose(&crate::seal::lend()), now, None)
+                .is_some()
+        );
+        gov.revoke_async(&b.id, "offboarded").await.unwrap();
         assert!(
             gov.verify_token(token.expose(&crate::seal::lend()), now, None)
                 .is_none(),
@@ -5637,12 +5380,17 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     }
 
     {
-        let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("rotate"), exp, now).unwrap();
-        assert!(gov
-            .verify_token(token.expose(&crate::seal::lend()), now, None)
-            .is_some());
-        gov.rotate_key(&b.id, exp)
+        let gov = new_gov().await;
+        let (b, token) = gov
+            .mint_signed_async(spec("rotate"), exp, now)
+            .await
+            .unwrap();
+        assert!(
+            gov.verify_token(token.expose(&crate::seal::lend()), now, None)
+                .is_some()
+        );
+        gov.rotate_key_outcome_async(&b.id, exp)
+            .await
             .unwrap()
             .expect("rotate mints a new credential over the live binding");
         assert!(
@@ -5653,12 +5401,17 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     }
 
     {
-        let gov = new_gov();
-        let (b, token) = gov.mint_signed(spec("disable"), exp, now).unwrap();
-        assert!(gov
-            .verify_token(token.expose(&crate::seal::lend()), now, None)
-            .is_some());
-        gov.update_key(&b.id, Some(false), None)
+        let gov = new_gov().await;
+        let (b, token) = gov
+            .mint_signed_async(spec("disable"), exp, now)
+            .await
+            .unwrap();
+        assert!(
+            gov.verify_token(token.expose(&crate::seal::lend()), now, None)
+                .is_some()
+        );
+        gov.update_key_outcome_async(&b.id, Some(false), None)
+            .await
             .unwrap()
             .expect("disable updates the binding in place");
         assert!(
@@ -5669,8 +5422,8 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     }
 
     {
-        let gov = new_gov();
-        let (_b, token) = gov.mint_signed(spec("aud"), exp, now).unwrap();
+        let gov = new_gov().await;
+        let (_b, token) = gov.mint_signed_async(spec("aud"), exp, now).await.unwrap();
         assert!(
             gov.verify_token(token.expose(&crate::seal::lend()), now, None)
                 .is_some(),
@@ -5688,16 +5441,18 @@ fn proof_minted_key_verifies_locally_and_never_calls_the_idp() {
     }
 }
 
-#[test]
-fn proof_minted_admission_is_store_state_config_signing_is_not() {
-    use crate::governance::signing::{TokenVerifier, DEFAULT_KID};
+#[tokio::test]
+async fn proof_minted_admission_is_store_state_config_signing_is_not() {
+    use crate::governance::signing::{DEFAULT_KID, TokenVerifier};
     let now = 1_700_000_000u64;
     let exp = now + 30 * 86_400;
 
-    let store_s = crate::real_store::store();
-    let gov_s = GovState::new_with_signer(store_s, None, Some(self_serve_signer())).unwrap();
+    let store_s = crate::real_store::core().await;
+    let gov_s = GovState::new_with_core(store_s, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let (binding, token) = gov_s
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "config-vs-store".to_string(),
                 allowed_pools: None,
@@ -5708,6 +5463,7 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
             exp,
             now,
         )
+        .await
         .unwrap();
     assert!(
         gov_s
@@ -5718,9 +5474,10 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 
     drop(gov_s);
 
-    let fresh_store = crate::real_store::store();
-    let gov_fresh =
-        GovState::new_with_signer(fresh_store, None, Some(self_serve_signer())).unwrap();
+    let fresh_store = crate::real_store::core().await;
+    let gov_fresh = GovState::new_with_core(fresh_store, None, Some(self_serve_signer()))
+        .await
+        .unwrap();
 
     let verifier = TokenVerifier::single(DEFAULT_KID, self_serve_signer().verifying_key());
     let claims = verifier
@@ -5736,13 +5493,15 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
         "the fresh store records NO binding for the minted subject"
     );
     assert!(
-        gov_fresh.verify_token(token.expose(&crate::seal::lend()), now, None).is_none(),
+        gov_fresh
+            .verify_token(token.expose(&crate::seal::lend()), now, None)
+            .is_none(),
         "admission is store state: a genuinely-signed token is refused when the store has no binding"
     );
 }
 
-#[test]
-fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
+#[tokio::test]
+async fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     const T0: u64 = 1_700_000_000_000;
     let cards = [T0, T0 + 500];
 
@@ -5756,7 +5515,9 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     };
     let clock = || T0 + 700;
 
-    let gov = GovState::new(crate::real_store::store(), None).unwrap();
+    let gov = GovState::new_with_core(crate::real_store::core().await.core(), None, None)
+        .await
+        .unwrap();
     let add = MeterCounts {
         requests: 1,
         ..MeterCounts::default()
@@ -5766,7 +5527,7 @@ fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     let drained = gov.pending_metering.drain();
     assert_eq!(drained.len(), 1, "one response, one cell");
     assert_eq!(
-        drained[0].0 .4,
+        drained[0].0.4,
         T0 + 500,
         "a response served after the second card published in the same second must date at that \
          card (#79), not at the first card the lifted second resolves to"
@@ -5798,29 +5559,35 @@ fn plane_pool(plane: &str, pool: &str) -> String {
     format!("{plane}{PLANE_LANE_SEP}{pool}")
 }
 
-fn team_gov() -> (
-    Arc<busbar_plugin_loader::store_v3::LoadedStore>,
+async fn team_gov() -> (
+    Arc<crate::persistence::facade::CoreStore>,
     GovState,
     VirtualKey,
 ) {
-    let store = crate::real_store::store();
+    let store = crate::real_store::core().await;
     let mut k = sample_key("k1", "h1");
     k.group = Some("team".to_string());
-    store.put_key(&k).unwrap();
-    let gov = GovState::new(store.clone(), None).unwrap();
+    store.identity().put_key(&k).await.unwrap();
+    let gov = GovState::new_with_core(store.clone().core(), None, None)
+        .await
+        .unwrap();
     (store, gov, k)
 }
 
 const AT: u64 = 1_700_000_000;
 
-fn spend(gov: &GovState, cost: &crate::cost::CostModel) -> i64 {
-    gov.usage_for(cost, "k1", AT).unwrap().unwrap().spend_cents
+async fn spend(gov: &GovState, cost: &crate::cost::CostModel) -> i64 {
+    gov.usage_for_async(cost, "k1", AT)
+        .await
+        .unwrap()
+        .unwrap()
+        .spend_cents
 }
 
-#[test]
-fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools_plane() {
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST};
-    let (store, gov, k) = team_gov();
+#[tokio::test]
+async fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools_plane() {
+    use busbar_kernel_ledger::cost::{PER_REQUEST, plane_fee_lane};
+    let (store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     for _ in 0..2 {
         assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "a pools request");
@@ -5833,22 +5600,23 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         );
     }
 
-    assert_eq!(spend(&gov, &cost), 19);
+    assert_eq!(spend(&gov, &cost).await, 19);
     assert_eq!(
-        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+        gov.priced_bucket_async(&cost, "k1", WINDOW_TOTAL, AT)
+            .await
             .unwrap()
             .billable_requests,
         5
     );
-    let u = gov.usage_for(&cost, "k1", AT).unwrap().unwrap();
+    let u = gov.usage_for_async(&cost, "k1", AT).await.unwrap().unwrap();
     assert_eq!(
         u.requests, 5,
         "every admission still counts toward a requests cap"
     );
     assert_eq!(u.tokens.whole_for_test(), 0, "a fee unit is not a token");
 
-    gov.flush_budgets();
-    let ledger = store.get_usage("k1", 0).unwrap();
+    gov.flush_budgets().await;
+    let ledger = store.ledger().get_usage("k1", 0).await.unwrap();
     assert_eq!(
         ledger.billable_requests, 2,
         "the flat fee base is the pools plane's"
@@ -5863,39 +5631,43 @@ fn a_planes_request_fee_charges_its_requests_and_the_pools_fee_charges_the_pools
         Count::from_stored(row.usage_units[PER_REQUEST], row.scale).unwrap(),
         whole_count(3)
     );
-    let restarted = GovState::new(store, None).unwrap();
-    restarted.hydrate_budgets(&cost, AT).unwrap();
-    assert_eq!(spend(&restarted, &cost), 19);
+    let restarted = GovState::new_with_core(store.core(), None, None)
+        .await
+        .unwrap();
+    restarted.hydrate_budgets_async(&cost, AT).await.unwrap();
+    assert_eq!(spend(&restarted, &cost).await, 19);
     assert_eq!(
         restarted
-            .priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+            .priced_bucket_async(&cost, "k1", WINDOW_TOTAL, AT)
+            .await
             .unwrap()
             .billable_requests,
         5
     );
 }
 
-#[test]
-fn a_planes_session_fee_charges_one_per_session() {
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
-    let (_store, gov, k) = team_gov();
+#[tokio::test]
+async fn a_planes_session_fee_charges_one_per_session() {
+    use busbar_kernel_ledger::cost::{PER_SESSION, plane_fee_lane};
+    let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     for _ in 0..2 {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
-    assert_eq!(spend(&gov, &cost), 80, "2 sessions × 40");
+    assert_eq!(spend(&gov, &cost).await, 80, "2 sessions × 40");
     assert_eq!(
-        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+        gov.priced_bucket_async(&cost, "k1", WINDOW_TOTAL, AT)
+            .await
             .unwrap()
             .billable_requests,
         0
     );
 }
 
-#[test]
-fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
-    let (store, gov, k) = team_gov();
+#[tokio::test]
+async fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
+    let (store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let tp = plane_pool("tp", "srv_read");
     let mut charged = Vec::new();
@@ -5904,15 +5676,15 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         let tp = gov.try_admit(&cost, &k, &tp, AT).expect("a `tp` request");
         charged.push((pools, tp));
     }
-    assert_eq!(spend(&gov, &cost), 16, "2 × 5 + 2 × 3");
+    assert_eq!(spend(&gov, &cost).await, 16, "2 × 5 + 2 × 3");
     gov.refund_charge(charged[0].1.charge());
     assert_eq!(
-        spend(&gov, &cost),
+        spend(&gov, &cost).await,
         13,
         "one `tp` fee back, the pools fees kept"
     );
-    gov.flush_budgets();
-    let ledger = store.get_usage("k1", 0).unwrap();
+    gov.flush_budgets().await;
+    let ledger = store.ledger().get_usage("k1", 0).await.unwrap();
     assert_eq!(
         ledger.billable_requests, 2,
         "the flat fee base is untouched"
@@ -5932,42 +5704,46 @@ fn a_planes_refund_returns_its_own_fee_unit_never_the_flat_base() {
         Count::ONE
     );
     assert_eq!(
-        gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests,
+        gov.usage_for_async(&cost, "k1", AT)
+            .await
+            .unwrap()
+            .unwrap()
+            .requests,
         4,
         "a refund never gives back a request slot"
     );
 
     gov.refund_charge(charged[0].0.charge());
-    assert_eq!(spend(&gov, &cost), 8);
+    assert_eq!(spend(&gov, &cost).await, 8);
     assert_eq!(
-        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+        gov.priced_bucket_async(&cost, "k1", WINDOW_TOTAL, AT)
+            .await
             .unwrap()
             .billable_requests,
         2
     );
 }
 
-#[test]
-fn the_fee_refund_primitive_returns_one_session_fee_unit() {
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
-    let (_store, gov, k) = team_gov();
+#[tokio::test]
+async fn the_fee_refund_primitive_returns_one_session_fee_unit() {
+    use busbar_kernel_ledger::cost::{PER_SESSION, plane_fee_lane};
+    let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let one = std::collections::BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     for _ in 0..2 {
         gov.record_usage(&cost, &k, "", &plane_fee_lane("sp"), &one, AT);
     }
     gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
-    assert_eq!(spend(&gov, &cost), 40, "one session fee back");
+    assert_eq!(spend(&gov, &cost).await, 40, "one session fee back");
     gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
     gov.refund_fee_unit(&cost, &k, &plane_pool("sp", ""), AT, PER_SESSION);
-    assert_eq!(spend(&gov, &cost), 0, "floored at zero");
+    assert_eq!(spend(&gov, &cost).await, 0, "floored at zero");
 }
 
-#[test]
-fn the_metering_row_carries_every_class_the_budget_book_holds() {
-    use busbar_contract::records::RecordStore as _;
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
-    let (store, gov, k) = team_gov();
+#[tokio::test]
+async fn the_metering_row_carries_every_class_the_budget_book_holds() {
+    use busbar_kernel_ledger::cost::{PER_SESSION, plane_fee_lane};
+    let (store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let map = |pairs: &[(&str, u64)]| -> std::collections::BTreeMap<String, u64> {
         pairs.iter().map(|(c, n)| (c.to_string(), *n)).collect()
@@ -5998,8 +5774,12 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
         &map(&[("input", 7), ("search_units", 4)]),
         AT,
     );
-    gov.flush_metering();
-    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    gov.flush_metering().await;
+    let rows = store
+        .ledger()
+        .list_metering(metering_bucket(AT))
+        .await
+        .unwrap();
     let row = |model: &str, provider: &str| {
         rows.iter()
             .find(|r| r.key_id == k.id && r.model == model && r.provider == provider)
@@ -6038,10 +5818,9 @@ fn the_metering_row_carries_every_class_the_budget_book_holds() {
     assert_eq!(rows.len(), 3, "nothing else was written");
 }
 
-#[test]
-fn a_served_units_open_class_lands_on_its_providers_row() {
-    use busbar_contract::records::RecordStore as _;
-    let (store, gov, k) = team_gov();
+#[tokio::test]
+async fn a_served_units_open_class_lands_on_its_providers_row() {
+    let (store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let units: std::collections::BTreeMap<String, u64> = [
         ("input".to_string(), 18),
@@ -6052,8 +5831,12 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     .collect();
     gov.record_usage_served(&cost, &k, "", "m", Some("p"), &units, AT);
     gov.record_lane_metering_for_key(&k, "m", Some("p"), &units, AT);
-    gov.flush_metering();
-    let rows = store.list_metering(metering_bucket(AT)).unwrap();
+    gov.flush_metering().await;
+    let rows = store
+        .ledger()
+        .list_metering(metering_bucket(AT))
+        .await
+        .unwrap();
     let mine: Vec<_> = rows.iter().filter(|r| r.key_id == k.id).collect();
     assert_eq!(
         mine.iter()
@@ -6073,28 +5856,36 @@ fn a_served_units_open_class_lands_on_its_providers_row() {
     );
 }
 
-#[test]
-fn a_plane_without_fees_bills_no_fee() {
-    let (_store, gov, k) = team_gov();
+#[tokio::test]
+async fn a_plane_without_fees_bills_no_fee() {
+    let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     for _ in 0..4 {
         let pool = plane_pool("np", "agent");
         assert!(gov.try_admit(&cost, &k, &pool, AT).is_ok());
     }
 
-    assert_eq!(spend(&gov, &cost), 0);
-    assert_eq!(gov.usage_for(&cost, "k1", AT).unwrap().unwrap().requests, 4);
+    assert_eq!(spend(&gov, &cost).await, 0);
     assert_eq!(
-        gov.priced_bucket(&cost, "k1", WINDOW_TOTAL, AT)
+        gov.usage_for_async(&cost, "k1", AT)
+            .await
+            .unwrap()
+            .unwrap()
+            .requests,
+        4
+    );
+    assert_eq!(
+        gov.priced_bucket_async(&cost, "k1", WINDOW_TOTAL, AT)
+            .await
             .unwrap()
             .billable_requests,
         4
     );
 }
 
-#[test]
-fn budget_caps_include_each_planes_fees() {
-    let (_store, gov, k) = team_gov();
+#[tokio::test]
+async fn budget_caps_include_each_planes_fees() {
+    let (_store, gov, k) = team_gov().await;
     let cost = plane_fee_cost(10);
     let tp = plane_pool("tp", "srv_read");
     assert!(gov.try_admit(&cost, &k, "", AT).is_ok(), "pools: 5");
@@ -6119,7 +5910,7 @@ fn budget_caps_include_each_planes_fees() {
     )]);
     let lane = busbar_kernel_ledger::cost::plane_fee_lane("sp");
     gov.record_usage(&cost, &k, "", &lane, &one, AT);
-    assert_eq!(spend(&gov, &cost), 48);
+    assert_eq!(spend(&gov, &cost).await, 48);
     assert!(
         blocked(gov.try_admit(&cost, &k, &free, AT)),
         "48 is past 10"
@@ -6143,8 +5934,8 @@ fn bound_principal() -> crate::auth::Principal {
     }
 }
 
-#[test]
-fn a_bound_key_records_its_admission_and_a_registry_key_does_not() {
+#[tokio::test]
+async fn a_bound_key_records_its_admission_and_a_registry_key_does_not() {
     let rb = bound_table(crate::config::RoleBindingCfg::default());
     let key =
         synthesize_bound_key("idp", &bound_principal(), &rb).expect("a bound role synthesizes");
@@ -6166,8 +5957,8 @@ fn a_bound_key_records_its_admission_and_a_registry_key_does_not() {
     assert!(bound_admission(&forged).is_none());
 }
 
-#[test]
-fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_goes() {
+#[tokio::test]
+async fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_goes() {
     use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
     let mut rb = bound_table(crate::config::RoleBindingCfg::default());
     let key = synthesize_bound_key("idp", &bound_principal(), &rb).expect("bound");
@@ -6216,13 +6007,15 @@ fn a_role_bound_standing_follows_the_live_bindings_and_lapses_when_the_binding_g
     assert_eq!(ask(&rb), lapsed);
 }
 
-#[test]
-fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
+#[tokio::test]
+async fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
     use crate::trust::validate::{GovResolve, Lapsed, Refusal, Snapshot, Standing};
-    let gov = GovState::new(crate::real_store::store(), None).expect("registry");
+    let gov = GovState::new_with_core(crate::real_store::core().await, None, None)
+        .await
+        .expect("registry");
     let (key, _secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
-        gov.mint_signed(
+        gov.mint_signed_async(
             NewKeySpec {
                 name: "streamer".to_string(),
                 ..Default::default()
@@ -6230,6 +6023,7 @@ fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
             4_000_000_000,
             1_700_000_000,
         )
+        .await
     }
     .expect("mint");
     let rb = bound_table(crate::config::RoleBindingCfg::default());
@@ -6254,7 +6048,8 @@ fn a_registry_key_standing_is_unchanged_by_the_bindings_resolver() {
         "the registry row, not a synthesis"
     );
 
-    gov.update_key(&key.id, Some(false), None)
+    gov.update_key_outcome_async(&key.id, Some(false), None)
+        .await
         .expect("the admin PATCH")
         .expect("the key exists");
     assert_eq!(
@@ -6269,17 +6064,17 @@ fn signed_kind() -> String {
     crate::tests::frozen_str("signed_credential_kind")
 }
 
-#[test]
-fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_credential() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_credential() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
     let now = busbar_kernel::store::now();
     let (key, _bearer, akid, secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3u8; 32], None,
         )));
-        gov.mint_signed_with_credential(
+        gov.mint_signed_with_credential_async(
             NewKeySpec {
                 name: "read".to_string(),
                 ..Default::default()
@@ -6289,6 +6084,7 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
             &signed_kind(),
             &ISSUED_SHAPE,
         )
+        .await
         .map(|(key, bearer, public_id, secret)| {
             (
                 key,
@@ -6310,24 +6106,24 @@ fn the_credential_read_answers_a_secret_for_any_id_and_live_only_for_a_live_cred
         ("", false),
         "an unknown pair answers an empty secret, not live: the verifier swaps in its own dummy"
     );
-    gov.revoke(&key.id, "test").unwrap();
+    gov.revoke_async(&key.id, "test").await.unwrap();
     assert!(
         !gov.credential_secret(&signed_kind(), &akid, now).1,
         "a revoked key is not live"
     );
 }
 
-#[test]
-fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
-    let store = crate::real_store::store();
-    let gov = GovState::new(store, None).unwrap();
+#[tokio::test]
+async fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
+    let store = crate::real_store::core().await;
+    let gov = GovState::new_with_core(store, None, None).await.unwrap();
     let now = busbar_kernel::store::now();
     let (_key, _bearer, akid, _secret) = {
         gov.set_signing_key(Some(self_serve_signer()));
         gov.set_at_rest_keys(Some(crate::governance::at_rest::AtRestKeys::new(
             &[3u8; 32], None,
         )));
-        gov.mint_signed_with_credential(
+        gov.mint_signed_with_credential_async(
             NewKeySpec {
                 name: "work".to_string(),
                 ..Default::default()
@@ -6337,6 +6133,7 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
             &signed_kind(),
             &ISSUED_SHAPE,
         )
+        .await
         .map(|(key, bearer, public_id, secret)| {
             (
                 key,
@@ -6362,6 +6159,13 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
     {
         at += window;
         gov.credential_secret(&kind, id, at);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while gov.denylist.synced_at() < at {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("credential read schedules the revocation refresh");
         assert_eq!(
             gov.denylist.synced_at(),
             at,
@@ -6371,8 +6175,8 @@ fn the_credential_read_does_the_same_work_for_a_known_and_an_unknown_id() {
     }
 }
 
-#[test]
-fn a_virtual_keys_generation_is_compared_in_constant_time() {
+#[tokio::test]
+async fn a_virtual_keys_generation_is_compared_in_constant_time() {
     let src = include_str!("../mod.rs");
     let body = src
         .split("pub fn generation_matches(")
@@ -6400,9 +6204,10 @@ fn a_virtual_keys_generation_is_compared_in_constant_time() {
 
 #[tokio::test]
 async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
-    let records = crate::real_store::store();
-    let gov = GovState::new(records.clone(), None).expect("gov");
-    assert!(gov.attach_store_calls(records.clone()));
+    let records = crate::real_store::core().await;
+    let gov = GovState::new_with_core(records.clone().core(), None, None)
+        .await
+        .expect("gov");
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after the epoch")
@@ -6417,34 +6222,47 @@ async fn a_usage_window_past_the_horizon_is_purged_from_the_durable_store() {
         ..UsageLedger::default()
     };
     for w in [old, 0, live] {
-        records.put_usage("vk_horizon", w, &one).expect("put");
+        records
+            .ledger()
+            .put_usage("vk_horizon", w, &one)
+            .await
+            .expect("put");
     }
     let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
     let flusher = crate::governance::spawn_budget_flusher(Arc::new(gov), shutdown_rx, None);
     shutdown_tx.send(()).expect("the flusher listens");
     flusher.await.expect("the flusher ends");
-    let requests = |w| records.get_usage("vk_horizon", w).expect("get").requests;
+    let requests = async |w| {
+        records
+            .ledger()
+            .get_usage("vk_horizon", w)
+            .await
+            .expect("get")
+            .requests
+    };
     assert_eq!(
-        requests(old),
+        requests(old).await,
         0,
         "a window 40 days old is still in the durable store"
     );
-    assert_eq!(requests(0), 1, "the all-time window is never purged");
-    assert_eq!(requests(live), 1, "the live window is kept");
+    assert_eq!(requests(0).await, 1, "the all-time window is never purged");
+    assert_eq!(requests(live).await, 1, "the live window is kept");
 }
 
-#[test]
-fn metering_open_units_keep_the_pinned_keys_historical_group() {
-    let (store, gov, mut key) = team_gov();
+#[tokio::test]
+async fn metering_open_units_keep_the_pinned_keys_historical_group() {
+    let (store, gov, mut key) = team_gov().await;
     let cost = plane_fee_cost(1_000);
     let units = [("search_units".to_owned(), 3)].into();
     for group in [Some("team"), Some("later"), None, Some("team")] {
         key.group = group.map(str::to_owned);
         gov.record_usage_served(&cost, &key, "", "m", Some("p"), &units, AT);
     }
-    gov.flush_metering();
+    gov.flush_metering().await;
     let counts: std::collections::BTreeMap<_, _> = store
+        .ledger()
         .list_metering(metering_bucket(AT))
+        .await
         .unwrap()
         .into_iter()
         .map(|row| {
@@ -6474,14 +6292,15 @@ fn metering_open_units_keep_the_pinned_keys_historical_group() {
     );
 }
 
-#[test]
-fn credential_postcommit_refresh_failure_is_typed_applied() {
+#[tokio::test]
+async fn credential_applied_commit_publishes_without_postcommit_refresh() {
     for operation in ["key.patch", "key.rotate", "key.delete"] {
-        let store = Arc::new(RefreshBlipStore::new());
-        let gov =
-            GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+        let (store, faults) = native_identity_fixture().await;
+        let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+            .await
+            .unwrap();
         let (key, token) = gov
-            .mint_signed(
+            .mint_signed_async(
                 NewKeySpec {
                     name: "typed-outcome".into(),
                     ..Default::default()
@@ -6489,22 +6308,25 @@ fn credential_postcommit_refresh_failure_is_typed_applied() {
                 2000,
                 1000,
             )
+            .await
             .unwrap();
-        store.arm();
-        let result = match operation {
-            "key.patch" => gov
-                .update_key_outcome(&key.id, Some(false), None)
-                .map(|_| ()),
-            "key.rotate" => gov.rotate_key_outcome(&key.id, 3000).map(|_| ()),
-            _ => gov.delete_key_outcome(&key.id),
-        };
+        faults.fail_scans_after_commit.store(true, Ordering::SeqCst);
+        match operation {
+            "key.patch" => {
+                gov.update_key_outcome_async(&key.id, Some(false), None)
+                    .await
+                    .unwrap();
+            }
+            "key.rotate" => {
+                gov.rotate_key_outcome_async(&key.id, 3000).await.unwrap();
+            }
+            _ => gov.delete_key_outcome_async(&key.id).await.unwrap(),
+        }
         assert!(
-            matches!(result, Err(KeyMutationError::Applied { key_id, operation: applied, .. }) if key_id == key.id && applied == operation)
+            gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+                .is_none()
         );
-        assert!(gov
-            .verify_token(token.expose(&crate::seal::lend()), 1500, None)
-            .is_none());
-        let durable = store.inner.get_key(&key.id).unwrap().unwrap();
+        let durable = store.identity().get_key(&key.id).await.unwrap().unwrap();
         match operation {
             "key.patch" => assert!(!durable.enabled),
             "key.rotate" => assert_ne!(durable.generation_hash, key.generation_hash),
@@ -6513,12 +6335,14 @@ fn credential_postcommit_refresh_failure_is_typed_applied() {
     }
 }
 
-#[test]
-fn credential_precommit_write_failure_is_not_typed_applied() {
-    let store = Arc::new(RefreshBlipStore::new());
-    let gov = GovState::new_with_signer(store.clone(), None, Some(self_serve_signer())).unwrap();
+#[tokio::test]
+async fn credential_precommit_write_failure_is_not_typed_applied() {
+    let (store, faults) = native_identity_fixture().await;
+    let gov = GovState::new_with_core(store.clone(), None, Some(self_serve_signer()))
+        .await
+        .unwrap();
     let (key, token) = gov
-        .mint_signed(
+        .mint_signed_async(
             NewKeySpec {
                 name: "precommit".into(),
                 ..Default::default()
@@ -6526,19 +6350,24 @@ fn credential_precommit_write_failure_is_not_typed_applied() {
             2000,
             1000,
         )
+        .await
         .unwrap();
-    store
-        .fail_put
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    faults.fail_writes.store(true, Ordering::SeqCst);
     assert!(matches!(
-        gov.update_key_outcome(&key.id, Some(false), None),
+        gov.update_key_outcome_async(&key.id, Some(false), None)
+            .await,
         Err(KeyMutationError::Store(_))
     ));
     assert!(matches!(
-        gov.rotate_key_outcome(&key.id, 3000),
+        gov.rotate_key_outcome_async(&key.id, 3000).await,
         Err(KeyMutationError::Store(_))
     ));
-    assert!(gov
-        .verify_token(token.expose(&crate::seal::lend()), 1500, None)
-        .is_some());
+    assert!(
+        gov.verify_token(token.expose(&crate::seal::lend()), 1500, None)
+            .is_some()
+    );
+    assert_eq!(
+        store.identity().get_key(&key.id).await.unwrap().unwrap(),
+        key
+    );
 }

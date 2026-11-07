@@ -133,15 +133,11 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let anchor = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+        .await
         .expect("the actual Store opens the configuration authority");
-    let overlay = busbar_kernel::config::overlay::OverlayStore::new(
-        anchor
-            .calls
-            .as_ref()
-            .cloned()
-            .expect("the actual Store exposes typed calls"),
-    )
-    .expect("the actual Store supports conditional configuration records");
+    let anchor = crate::root::real_store::core_over(anchor).await;
+    let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(anchor.clone())
+        .expect("the actual Store supports conditional configuration records");
     let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         plugin_config,
@@ -154,16 +150,19 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         Some(anchor),
         true,
     )
+    .await
     .expect("the real root composes the configured Store and admin application");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the process rate-card history and usage recovery");
-    limits.keep().expect("the actual limits commit");
+    limits.keep().await.expect("the actual limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let store = gov.store();
+    let core = gov.core_store().expect("the actual Store remains admitted");
+    let store = core.identity();
     let router = busbar_kernel::build_router(Arc::new(app));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -182,6 +181,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         .unwrap();
     let minted = store
         .get_key(created["id"].as_str().expect("actual mint id"))
+        .await
         .unwrap()
         .expect("actual persisted key");
     let minted_secret = created["token"]
@@ -199,7 +199,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
     gov.record_metering(&minted.id, "model-1", "vendor-a", Some(&usage), now);
     gov.record_metering(&minted.id, "model-2", "acme", None, now);
-    gov.flush_metering();
+    gov.flush_metering().await;
 
     let body: serde_json::Value = client
         .get(format!("http://{addr}/api/v1/admin/usage"))

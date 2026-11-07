@@ -1,0 +1,11 @@
+# what	value
+busbar	v1.5.5 busbar-aarch64-apple-darwin 48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48
+plugin	v1.0.7 busbar-store-valkey-1.0.7-aarch64-apple-darwin.tar.gz 6fb0e8df5fac5ab73864cbea61389ed352342c19231bf15ec0896f4ddfaab4f2
+backend	valkey
+recorder	c353cf689d06222191b3f876b3e2520ca340d1c4
+requests	200 200 200 503 200 200 
+file	keys.json e850e36482920a2e5915896b54a26fb93d6a5dd541d19d8b48aed463766dc4c6
+file	readback/key-fixture-grouped.json 6a27a71700e9d26f6d117cfa7f0d9410002dca0a58a55895ca6cb9341156c443
+file	readback/key-fixture-ungrouped.json c67e92384d95d42d5038fbfe155541049cac459a3eb07c6e2ffd69759cbc4937
+file	readback/usage.json ebfbfd7f97518b222b636b62d04fbcefa6f5d0c698e7b02f9bcfb3b16186f8a4
+file	rows.json e850e36482920a2e5915896b54a26fb93d6a5dd541d19d8b48aed463766dc4c6

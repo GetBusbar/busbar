@@ -284,7 +284,7 @@ fn a_claims_arrival_span_is_published_one_per_claim() {
 #[test]
 fn a_record_retention_table_lowers_to_the_tail_codes() {
     use crate::abi::plane::check::check_record_retentions;
-    use crate::abi::store::plane::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
+    use crate::host_records::{RETENTION_AGE, RETENTION_TERMINAL_ONLY};
     use crate::records::Retention;
     const TABLE: [crate::abi::plane::RecordRetention; 2] = [
         record_retention(1, Retention::TerminalOnly),

@@ -2,8 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use crate::governance::{GovState, RecordStore, VirtualKey};
+use crate::governance::{GovState, VirtualKey};
+use crate::persistence::facade::CoreStore;
 use std::sync::Arc;
+use tracing::instrument::WithSubscriber as _;
 
 use std::time::Duration;
 
@@ -81,10 +83,10 @@ fn test_init_is_idempotent_and_does_not_panic() {
     let _ = snapshot().expect("the actual recorder is installed");
 }
 
-fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
-    let store = crate::real_store::store();
-    store.put_key(&key).unwrap();
-    Arc::new(GovState::new(store, None).unwrap())
+async fn gov_with_key(key: VirtualKey) -> Arc<GovState> {
+    let store = crate::real_store::core().await;
+    store.identity().put_key(&key).await.unwrap();
+    Arc::new(GovState::new_with_core(store, None, None).await.unwrap())
 }
 
 fn sample_vkey(id: &str) -> VirtualKey {
@@ -104,15 +106,16 @@ fn sample_vkey(id: &str) -> VirtualKey {
     }
 }
 
-#[test]
-fn test_scrape_gauges_key_spend_and_remaining() {
+#[tokio::test]
+async fn test_scrape_gauges_key_spend_and_remaining() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let key = sample_vkey("vk_spend_test01");
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key(key.clone()).await;
 
-    let usage_store = gov.store();
+    let usage_store = gov.core_store_handle().unwrap();
     usage_store
+        .ledger()
         .put_usage(
             &key.id,
             0,
@@ -129,14 +132,18 @@ fn test_scrape_gauges_key_spend_and_remaining() {
                 }],
             },
         )
+        .await
         .unwrap();
 
     let cost = crate::cost::CostModel::flat(1);
 
     let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
-    metrics::with_local_recorder(&recorder, || {
+    with_recorder(&recorder, async {
         money::refresh_governance_gauges(&gov, &cost, crate::store::now())
-    });
+            .await
+            .unwrap()
+    })
+    .await;
 
     let out = handle();
 
@@ -173,13 +180,13 @@ fn test_scrape_gauges_key_spend_and_remaining() {
     );
 }
 
-#[test]
-fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
+#[tokio::test]
+async fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let mut key = sample_vkey("vk_uncapped_test01");
     key.group = Some("uncapped-grp".to_string());
-    let gov = gov_with_key(key);
+    let gov = gov_with_key(key).await;
 
     let groups: std::collections::BTreeMap<String, crate::config::GroupCfg> =
         std::collections::BTreeMap::from([(
@@ -202,7 +209,9 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
         )]);
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &groups);
 
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
 
     let out = snapshot().expect("the actual recorder is installed");
 
@@ -212,8 +221,13 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
         .filter(|sample| sample.name.contains(BUCKET_BUDGET_REMAINING_CENTS))
         .collect();
     for line in &remaining_lines {
-        assert!(!line.labels.iter().any(|(_, value)| value.contains("uncapped-grp")),
-            "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line:?}");
+        assert!(
+            !line
+                .labels
+                .iter()
+                .any(|(_, value)| value.contains("uncapped-grp")),
+            "a budget-less group bucket must not appear in budget_remaining_cents lines; got:\n{line:?}"
+        );
     }
     assert!(
         out.iter()
@@ -230,15 +244,15 @@ fn test_scrape_gauges_uncapped_group_bucket_no_remaining() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[allow(clippy::field_reassign_with_default)]
-fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
+async fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let mut key = sample_vkey("vk_bucket_test1");
     key.group = Some("growth".to_string());
     key.labels = std::collections::BTreeMap::from([("team".to_string(), "growth".to_string())]);
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key(key.clone()).await;
 
     let groups = std::collections::BTreeMap::from([(
         "growth".to_string(),
@@ -275,7 +289,9 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     );
 
     let cost = crate::cost::CostModel::resolve_parts(None, 1, &groups);
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
     let out = snapshot().expect("the actual recorder is installed");
 
     let key_line = out
@@ -350,19 +366,19 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
     );
 }
 
-static KEY_GAUGE_LATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static KEY_GAUGE_LATCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn key_gauge_latch() -> std::sync::MutexGuard<'static, ()> {
-    KEY_GAUGE_LATCH.lock().unwrap_or_else(|p| p.into_inner())
+async fn key_gauge_latch() -> tokio::sync::MutexGuard<'static, ()> {
+    KEY_GAUGE_LATCH.lock().await
 }
 
-#[test]
-fn test_key_gauge_limit_truncation() {
-    let _latch = key_gauge_latch();
+#[tokio::test]
+async fn test_key_gauge_limit_truncation() {
+    let _latch = key_gauge_latch().await;
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
-    let store = crate::real_store::store();
+    let store = crate::real_store::core().await;
 
     for i in 0..=(LIMIT) {
         let id = format!("vk_limit_{i:04x}");
@@ -380,9 +396,10 @@ fn test_key_gauge_limit_truncation() {
             revision: 1,
             ..Default::default()
         };
-        store.put_key(&key).unwrap();
+        store.identity().put_key(&key).await.unwrap();
 
         store
+            .ledger()
             .put_usage(
                 &id,
                 0,
@@ -399,13 +416,16 @@ fn test_key_gauge_limit_truncation() {
                     }],
                 },
             )
+            .await
             .unwrap();
     }
 
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let gov = Arc::new(GovState::new_with_core(store, None, None).await.unwrap());
     let cost = crate::cost::CostModel::flat(1);
 
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
 
     let out = snapshot().expect("the actual recorder is installed");
 
@@ -430,8 +450,8 @@ fn test_key_gauge_limit_truncation() {
     );
 }
 
-fn gov_with_n_keys(n: usize) -> Arc<GovState> {
-    let store = crate::real_store::store();
+async fn gov_with_n_keys(n: usize) -> Arc<GovState> {
+    let store = crate::real_store::core().await;
     for i in 0..n {
         let id = format!("vk_bound_{i:04x}");
         let key = VirtualKey {
@@ -448,8 +468,9 @@ fn gov_with_n_keys(n: usize) -> Arc<GovState> {
             revision: 1,
             ..Default::default()
         };
-        store.put_key(&key).unwrap();
+        store.identity().put_key(&key).await.unwrap();
         store
+            .ledger()
             .put_usage(
                 &id,
                 0,
@@ -466,13 +487,14 @@ fn gov_with_n_keys(n: usize) -> Arc<GovState> {
                     }],
                 },
             )
+            .await
             .unwrap();
     }
-    Arc::new(GovState::new(store, None).unwrap())
+    Arc::new(GovState::new_with_core(store, None, None).await.unwrap())
 }
 
-#[test]
-fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
+#[tokio::test]
+async fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     use std::io::Write;
     #[derive(Clone, Default)]
     struct GaugeLog(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -485,11 +507,11 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
             Ok(())
         }
     }
-    let _latch = key_gauge_latch();
+    let _latch = key_gauge_latch().await;
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     const LIMIT: usize = crate::config::DEFAULT_KEY_GAUGE_LIMIT;
 
-    let app_at_limit = gov_with_n_keys(LIMIT);
+    let app_at_limit = gov_with_n_keys(LIMIT).await;
     let cap = GaugeLog::default();
     let writer = cap.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -498,13 +520,17 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
         .with_ansi(false)
         .without_time()
         .finish();
-    tracing::subscriber::with_default(subscriber, || {
+    async {
         money::refresh_governance_gauges(
             &app_at_limit,
             &crate::cost::CostModel::flat(1),
             crate::store::now(),
-        );
-    });
+        )
+        .await
+        .unwrap();
+    }
+    .with_subscriber(subscriber)
+    .await;
     let lines = String::from_utf8(cap.0.lock().unwrap().clone()).unwrap();
     assert!(
         !lines.lines().any(|m| m.contains("per-key gauge limit")),
@@ -512,7 +538,7 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
         lines
     );
 
-    let app_over_limit = gov_with_n_keys(LIMIT + 1);
+    let app_over_limit = gov_with_n_keys(LIMIT + 1).await;
     let cap2 = GaugeLog::default();
     let writer = cap2.clone();
     let subscriber2 = tracing_subscriber::fmt()
@@ -521,13 +547,17 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
         .with_ansi(false)
         .without_time()
         .finish();
-    tracing::subscriber::with_default(subscriber2, || {
+    async {
         money::refresh_governance_gauges(
             &app_over_limit,
             &crate::cost::CostModel::flat(1),
             crate::store::now(),
-        );
-    });
+        )
+        .await
+        .unwrap();
+    }
+    .with_subscriber(subscriber2)
+    .await;
     let lines = String::from_utf8(cap2.0.lock().unwrap().clone()).unwrap();
     assert!(
         lines.lines().any(|m| m.contains("per-key gauge limit")),
@@ -537,23 +567,36 @@ fn test_key_gauge_limit_warning_fires_exactly_past_the_boundary() {
     );
 }
 
-#[test]
-fn test_cardinality_invariant_no_raw_secret_in_labels() {
+#[tokio::test]
+async fn test_cardinality_invariant_no_raw_secret_in_labels() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
 
     let key = sample_vkey("vk_carinv_test01");
-    let gov = gov_with_key(key);
+    let gov = gov_with_key(key).await;
 
     let cost = crate::cost::CostModel::flat(1);
 
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
 
     let out = snapshot().expect("the actual recorder is installed");
     assert!(
-            !out.iter().any(|family| family.name.contains("sk-bb-") || family.help.as_ref().is_some_and(|help| help.contains("sk-bb-"))
-            || family.samples.iter().any(|sample| sample.name.contains("sk-bb-") || sample.value.contains("sk-bb-") || sample.labels.iter().any(|(label, value)| label.contains("sk-bb-") || value.contains("sk-bb-")))),
-            "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out:?}"
-        );
+        !out.iter().any(|family| family.name.contains("sk-bb-")
+            || family
+                .help
+                .as_ref()
+                .is_some_and(|help| help.contains("sk-bb-"))
+            || family
+                .samples
+                .iter()
+                .any(|sample| sample.name.contains("sk-bb-")
+                    || sample.value.contains("sk-bb-")
+                    || sample.labels.iter().any(
+                        |(label, value)| label.contains("sk-bb-") || value.contains("sk-bb-")
+                    ))),
+        "raw bearer secret prefix must never appear as a label value in the scrape output; got:\n{out:?}"
+    );
 }
 
 fn local_source(
@@ -583,9 +626,11 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
             .any(|family| family.name == "busbar_test_deleted_subject"),
         "{before:?}"
     );
-    assert!(before
-        .iter()
-        .any(|family| family.name == "busbar_test_live_subject"));
+    assert!(
+        before
+            .iter()
+            .any(|family| family.name == "busbar_test_live_subject")
+    );
 
     std::thread::sleep(idle * 3);
 
@@ -621,7 +666,9 @@ fn only_gauges_are_expired() {
 
     let after = handle();
     assert!(
-        after.iter().any(|family| family.name == "busbar_test_idle_counter"),
+        after
+            .iter()
+            .any(|family| family.name == "busbar_test_idle_counter"),
         "an idle counter must survive — expiring it would reset it and break rate(), got:\n{after:?}"
     );
     assert!(
@@ -708,7 +755,7 @@ fn money_gauge_bytes_are_the_1_5_5_bytes() {
     }
 }
 
-fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey {
+async fn seed_viewed_key(store: &CoreStore, id: &str, input: u64) -> VirtualKey {
     let key = VirtualKey {
         id: id.to_string(),
         generation_hash: format!("h:{id}"),
@@ -718,7 +765,7 @@ fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey 
         revision: 1,
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let ledger = busbar_contract::records::UsageLedger {
         requests: 1,
         billable_requests: 1,
@@ -731,7 +778,7 @@ fn seed_viewed_key(store: &dyn RecordStore, id: &str, input: u64) -> VirtualKey 
             )]),
         }],
     };
-    store.put_usage(id, 0, &ledger).unwrap();
+    store.ledger().put_usage(id, 0, &ledger).await.unwrap();
     key
 }
 
@@ -770,19 +817,21 @@ fn spend_of(out: &[busbar_contract::export_calls::Family], key: &str) -> String 
 /// (2) The next scrape then reprices exactly the one bucket whose facts moved.
 /// (3) A card swap reprices every bucket on the next scrape, and the gauge shows the new card's
 ///     figure.
-#[test]
-fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
+#[tokio::test]
+async fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     let ids = ["vk_view_a", "vk_view_b", "vk_view_c"];
-    let gov = gov_with_key(sample_vkey(ids[0]));
-    let store = gov.store();
-    let keys: Vec<VirtualKey> = ids
-        .iter()
-        .map(|id| seed_viewed_key(store.as_ref(), id, 10_000))
-        .collect();
+    let gov = gov_with_key(sample_vkey(ids[0])).await;
+    let store = gov.core_store_handle().unwrap();
+    let mut keys = Vec::with_capacity(ids.len());
+    for id in ids {
+        keys.push(seed_viewed_key(store.as_ref(), id, 10_000).await);
+    }
     let cost = priced_at(100.0, 0);
 
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
     let first = gov.money_view_pricings();
     assert_eq!(
         first,
@@ -790,7 +839,9 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "the first scrape prices each bucket once"
     );
     for _ in 0..5 {
-        money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+            .await
+            .unwrap();
     }
     assert_eq!(
         gov.money_view_pricings(),
@@ -812,7 +863,9 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "the serving path prices nothing through the money view"
     );
 
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
     assert_eq!(
         gov.money_view_pricings(),
         first + 1,
@@ -824,21 +877,25 @@ fn a_scrape_reprices_only_the_buckets_whose_facts_moved() {
         "vk_view_b",
     );
     let swapped_cost = priced_at(300.0, 0);
-    money::refresh_governance_gauges(&gov, &swapped_cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &swapped_cost, crate::store::now())
+        .await
+        .unwrap();
     assert_eq!(
         gov.money_view_pricings(),
         first + 1 + ids.len() as u64,
         "a card swap reprices every bucket once"
     );
-    let want = (gov.derived_bucket_usage(
-        &swapped_cost,
-        "vk_view_b",
-        crate::governance::WINDOW_TOTAL,
-        true,
-        now,
-    ))
-    .expect("the new card prices")
-    .spend_cents;
+    let want = (gov
+        .derived_bucket_usage_async(
+            &swapped_cost,
+            "vk_view_b",
+            crate::governance::WINDOW_TOTAL,
+            true,
+            now,
+        )
+        .await)
+        .expect("the new card prices")
+        .spend_cents;
     let new = spend_of(
         &snapshot().expect("the actual recorder is installed"),
         "vk_view_b",
@@ -964,8 +1021,8 @@ fn samples_of(
     samples
 }
 
-#[test]
-fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
+#[tokio::test]
+async fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     const CHILD: &str = "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_AND_SPEND_GAUGES_ARE_THE_1_5_5_LINES";
     if std::env::var_os(CHILD).is_none() {
@@ -989,7 +1046,7 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     }
     crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_bytes");
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key(key.clone()).await;
     let card = std::collections::BTreeMap::from([(
         "m".to_string(),
         crate::config::RateEntryCfg {
@@ -1014,7 +1071,9 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
         ]),
         1_700_000_000,
     );
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
     let out = snapshot().expect("the actual recorder is installed");
     let needle = "vk_gauge_bytes";
     assert_eq!(
@@ -1079,8 +1138,8 @@ fn bucket_token_and_spend_gauges_are_the_1_5_5_lines() {
     );
 }
 
-#[test]
-fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
+#[tokio::test]
+async fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     crate::snapshot::init_for_test(Duration::from_secs(3600));
     const CHILD: &str =
         "BUSBAR_OWNER_REGISTRY_BUCKET_TOKEN_GAUGES_FOLLOW_THE_LANE_PLANES_DECLARED_TOKEN_CLASSES";
@@ -1105,7 +1164,7 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
     }
     crate::plane_driver::registry::publish_planes(&[&GAUGE_FALLBACK_PLANE, &GAUGE_AUDIO_PLANE]);
     let key = sample_vkey("vk_gauge_audio");
-    let gov = gov_with_key(key.clone());
+    let gov = gov_with_key(key.clone()).await;
     let cost = crate::cost::CostModel::resolve_parts(None, 0, &Default::default());
     gov.record_usage(
         &cost,
@@ -1118,7 +1177,9 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         ]),
         1_700_000_000,
     );
-    money::refresh_governance_gauges(&gov, &cost, crate::store::now());
+    money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+        .await
+        .unwrap();
     let out = snapshot().expect("the actual recorder is installed");
     let tiers: Vec<(String, String)> = samples_of(&out, BUCKET_TOKENS, "vk_gauge_audio")
         .iter()
@@ -1143,4 +1204,15 @@ fn bucket_token_gauges_follow_the_lane_planes_declared_token_classes() {
         ],
         "the lane's plane's token classes, and only those; got:\n{out:?}"
     );
+}
+
+async fn with_recorder<F: std::future::Future>(
+    recorder: &dyn metrics::Recorder,
+    future: F,
+) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(move |context| {
+        metrics::with_local_recorder(recorder, || future.as_mut().poll(context))
+    })
+    .await
 }

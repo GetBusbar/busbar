@@ -102,8 +102,8 @@ fn declared_plan(topology: ListenerNeeds, doors: Vec<Arc<dyn FramerDoor>>) -> Ar
     }))
 }
 
-#[test]
-fn implicit_zero_data_configuration_keeps_admin_without_a_data_listener() {
+#[tokio::test]
+async fn implicit_zero_data_configuration_keeps_admin_without_a_data_listener() {
     let topology = configured("");
     assert!(!topology.root_required);
     assert!(topology.needs.is_empty());
@@ -112,7 +112,7 @@ fn implicit_zero_data_configuration_keeps_admin_without_a_data_listener() {
     assert!(plan.binds().iter().all(|bind| bind.at != "listen"));
     assert!(plan.binds().iter().any(|bind| bind.at == "admin_listen"));
     assert_eq!(plan.stream_binds().count(), 0);
-    let app = projection_boundary_app(topology, Vec::new(), 1);
+    let app = projection_boundary_app(topology, Vec::new(), 1).await;
     plan.mount_planes(&super::super::Served::default(), &app, &[])
         .expect("engine/admin-only boot seals without any data declarations");
     plan.check(&app).unwrap();
@@ -120,8 +120,8 @@ fn implicit_zero_data_configuration_keeps_admin_without_a_data_listener() {
     assert!(plan.prepared(&app, "listen").is_none());
 }
 
-#[test]
-fn explicit_default_listen_requires_a_declared_accepting_root_framer() {
+#[tokio::test]
+async fn explicit_default_listen_requires_a_declared_accepting_root_framer() {
     let default = configured("");
     let address = default
         .binds
@@ -136,7 +136,7 @@ fn explicit_default_listen_requires_a_declared_accepting_root_framer() {
     );
     let plan = declared_plan(topology.clone(), Vec::new());
     assert!(plan.has_root_listener());
-    let app = projection_boundary_app(topology, Vec::new(), 1);
+    let app = projection_boundary_app(topology, Vec::new(), 1).await;
     let error = plan.check(&app).unwrap_err();
     assert!(
         error.contains("listen") && error.contains("no accepting transport"),
@@ -145,8 +145,8 @@ fn explicit_default_listen_requires_a_declared_accepting_root_framer() {
     assert!(plan.prepared(&app, "listen").is_none());
 }
 
-#[test]
-fn a_required_plugin_listener_refuses_a_missing_accepting_declaration() {
+#[tokio::test]
+async fn a_required_plugin_listener_refuses_a_missing_accepting_declaration() {
     let mut topology = topology();
     topology.root_required = false;
     topology.binds.retain(|bind| bind.at != "listen");
@@ -158,7 +158,7 @@ fn a_required_plugin_listener_refuses_a_missing_accepting_declaration() {
         .unwrap()
         .transport = "absent-third-claim".into();
     let plan = declared_plan(topology.clone(), Vec::new());
-    let app = projection_boundary_app(topology, vec![labeled_route("unavailable")], 1);
+    let app = projection_boundary_app(topology, vec![labeled_route("unavailable")], 1).await;
     let error = plan.check(&app).unwrap_err();
     assert!(
         error.contains("no accepting framer for absent-third-claim"),
@@ -167,20 +167,20 @@ fn a_required_plugin_listener_refuses_a_missing_accepting_declaration() {
     assert!(plan.prepared(&app, PRIVATE_LISTENER).is_none());
 }
 
-#[test]
-fn an_installed_accepting_framer_without_a_bind_declaration_is_not_a_default() {
+#[tokio::test]
+async fn an_installed_accepting_framer_without_a_bind_declaration_is_not_a_default() {
     let topology = configured("");
     let doors = opened(&[third_without_binding]);
     assert!(doors[0].accepts());
     assert!(doors[0].listener_bindings().is_empty());
     let plan = declared_plan(topology.clone(), doors);
-    let app = projection_boundary_app(topology, Vec::new(), 1);
+    let app = projection_boundary_app(topology, Vec::new(), 1).await;
     let error = plan.check(&app).unwrap_err();
     assert!(error.contains("no accepting transport declares"), "{error}");
 }
 
-#[test]
-fn a_foreign_second_claim_owns_the_root_independently_of_tls_and_offer_order() {
+#[tokio::test]
+async fn a_foreign_second_claim_owns_the_root_independently_of_tls_and_offer_order() {
     for tls in [None, Some(serde_json::json!({}))] {
         let mut topology = configured("listen: 127.0.0.1:8080\n");
         topology
@@ -220,15 +220,15 @@ fn a_foreign_second_claim_owns_the_root_independently_of_tls_and_offer_order() {
                 0,
                 "root is not served again as a plugin bind"
             );
-            let app = projection_boundary_app(topology.clone(), Vec::new(), 1);
+            let app = projection_boundary_app(topology.clone(), Vec::new(), 1).await;
             plan.check(&app)
                 .expect("aliases of one owner are not ambiguous root declarations");
         }
     }
 }
 
-#[test]
-fn two_accepting_root_declarations_refuse_both_offer_orders() {
+#[tokio::test]
+async fn two_accepting_root_declarations_refuse_both_offer_orders() {
     for doors in [
         [actual_http(), third_binding],
         [third_binding, actual_http()],
@@ -237,15 +237,15 @@ fn two_accepting_root_declarations_refuse_both_offer_orders() {
         let doors = opened(&doors);
         assert_ne!(doors[0].instance(), doors[1].instance());
         let plan = declared_plan(topology.clone(), doors);
-        let app = projection_boundary_app(topology, Vec::new(), 1);
+        let app = projection_boundary_app(topology, Vec::new(), 1).await;
         let error = plan.check(&app).unwrap_err();
         assert!(error.contains("multiple accepting transports"), "{error}");
         assert!(plan.prepared(&app, "listen").is_none());
     }
 }
 
-#[test]
-fn legacy_root_and_tls_keep_the_actual_products_declared_application_claim() {
+#[tokio::test]
+async fn legacy_root_and_tls_keep_the_actual_products_declared_application_claim() {
     for tls in [None, Some(serde_json::json!({}))] {
         let mut topology = configured("listen: 127.0.0.1:8080\n");
         topology
@@ -265,7 +265,7 @@ fn legacy_root_and_tls_keep_the_actual_products_declared_application_claim() {
             .unwrap();
         assert_eq!(root.transport, "http");
         assert_eq!(root.tls, tls);
-        let app = projection_boundary_app(topology, Vec::new(), 1);
+        let app = projection_boundary_app(topology, Vec::new(), 1).await;
         plan.mount_planes(&super::super::Served::default(), &app, &[])
             .expect("the legacy listener seals with either connector security policy");
         assert!(plan.prepared(&app, "listen").is_some());
@@ -279,7 +279,7 @@ async fn incompatible_transport_or_owner_reload_retains_the_published_listener_p
         topology.clone(),
         opened(&[actual_http(), third_without_binding]),
     );
-    let boot = projection_boundary_app(topology.clone(), vec![labeled_route("boot")], 1);
+    let boot = projection_boundary_app(topology.clone(), vec![labeled_route("boot")], 1).await;
     plan.mount_planes(&super::super::Served::default(), &boot, &[])
         .unwrap();
     let handle = Arc::new(busbar_kernel::state::AppHandle::new(boot.clone()));
@@ -315,7 +315,8 @@ async fn incompatible_transport_or_owner_reload_retains_the_published_listener_p
                 .unwrap()
                 .transport = "third-b".into();
         }
-        let rejected = projection_boundary_app(incompatible, vec![labeled_route("rejected")], 2);
+        let rejected =
+            projection_boundary_app(incompatible, vec![labeled_route("rejected")], 2).await;
         let error = plan.check(&rejected).unwrap_err();
         assert!(
             error.contains(if change == "dedicated owner" {
@@ -337,17 +338,17 @@ async fn incompatible_transport_or_owner_reload_retains_the_published_listener_p
     }
 }
 
-#[test]
-fn an_admin_only_generation_refuses_a_new_explicit_root_before_publication() {
+#[tokio::test]
+async fn an_admin_only_generation_refuses_a_new_explicit_root_before_publication() {
     let topology = configured("");
     let plan = declared_plan(topology.clone(), Vec::new());
-    let boot = projection_boundary_app(topology.clone(), Vec::new(), 1);
+    let boot = projection_boundary_app(topology.clone(), Vec::new(), 1).await;
     plan.mount_planes(&super::super::Served::default(), &boot, &[])
         .unwrap();
     let handle = busbar_kernel::state::AppHandle::new(boot.clone());
     let mut next = topology;
     next.root_required = true;
-    let rejected = projection_boundary_app(next, Vec::new(), 2);
+    let rejected = projection_boundary_app(next, Vec::new(), 2).await;
     let error = plan.check(&rejected).unwrap_err();
     assert!(
         error.contains("listen") && error.contains("restart"),

@@ -7,6 +7,15 @@
 use super::{DeployCfg, RootCfg};
 
 pub fn resolve_store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String>> {
+    resolve_store_bootstrap_with_security(deploy, &deploy.security)
+}
+
+/// Non-serving projection with an explicit caller-owned security view. Final
+/// deployment resolution must still validate the complete original policy.
+pub fn resolve_store_bootstrap_with_security(
+    deploy: &DeployCfg,
+    security: &Option<super::SecurityCfg>,
+) -> Result<RootCfg, Vec<String>> {
     let mut bootstrap: DeployCfg = serde_yaml::from_str("{}")
         .map_err(|_| vec!["cannot construct the Store bootstrap configuration".into()])?;
     bootstrap.listen.clone_from(&deploy.listen);
@@ -18,7 +27,7 @@ pub fn resolve_store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String
     bootstrap.admin_require_mtls = false;
     bootstrap.store.clone_from(&deploy.store);
     bootstrap.secrets.clone_from(&deploy.secrets);
-    bootstrap.security.clone_from(&deploy.security);
+    bootstrap.security.clone_from(security);
     bootstrap.limits.clone_from(&deploy.limits);
     bootstrap.advanced.clone_from(&deploy.advanced);
     bootstrap.health.clone_from(&deploy.health);
@@ -40,6 +49,25 @@ pub fn resolve_store_bootstrap(deploy: &DeployCfg) -> Result<RootCfg, Vec<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn captured_interpolation_reuses_the_current_injection_checks() {
+        let mut unset = Vec::new();
+        let text = super::super::interpolate_env_lookup(
+            "port: ${PORT}",
+            super::super::EnvSubst::Strict,
+            &mut unset,
+            |key| (key == "PORT").then(|| "42".into()),
+        )
+        .unwrap();
+        assert_eq!(text, "port: 42");
+        assert!(super::super::interpolate_env_lookup(
+            "port: ${PORT}",
+            super::super::EnvSubst::Strict,
+            &mut unset,
+            |_| Some("1\nother: injected".into())
+        )
+        .is_err());
+    }
     #[test]
     fn store_bootstrap_does_not_refuse_overlay_owned_identity_definitions() {
         let deploy: DeployCfg = serde_yaml::from_str("auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n").unwrap();

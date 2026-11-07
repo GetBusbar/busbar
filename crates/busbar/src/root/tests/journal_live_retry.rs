@@ -1,69 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 use super::LeaseTick;
-use crate::root::durability::{
-    build_on_store, read_chain, Durability, DurabilityConfig, JournalLane,
-};
+use crate::root::durability::node_book;
 use crate::root::plane_node::Node;
-use crate::root::store_double::RecordSlots;
-use busbar_contract::caps::StepName;
+use crate::root::store_double::NativeFaults;
+use busbar_kernel::persistence::journal::{BufferBudget, RuntimeJournal};
 use busbar_kernel_wal::{Entry, RecordClass};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
-const WAIT: Duration = Duration::from_secs(5);
+const BUDGET: BufferBudget = BufferBudget {
+    records: 3,
+    bytes: 1024 * 1024,
+};
+const HISTORY: BufferBudget = BufferBudget {
+    records: 64,
+    bytes: 1024 * 1024,
+};
 
-struct PausedStore(RecordSlots);
-
-impl PausedStore {
-    fn new(slots: &RecordSlots) -> Self {
-        slots.pause(true);
-        Self(slots.clone())
-    }
-}
-
-impl Drop for PausedStore {
-    fn drop(&mut self) {
-        self.0.pause(false);
-    }
-}
-
-fn fixture(node_id: u64) -> (RecordSlots, Arc<Mutex<Durability>>, JournalLane, LeaseTick) {
-    let slots = RecordSlots::new();
-    let lane = JournalLane::with_capacity(slots.calls(), "live-retry-store", 2).unwrap();
-    let book = Arc::new(Mutex::new(
-        build_on_store(
-            &DurabilityConfig { data_dir: None },
-            node_id,
-            lane.clone(),
-            None,
-        )
-        .unwrap(),
-    ));
+async fn fixture(
+    node_id: u64,
+) -> (
+    Arc<NativeFaults>,
+    Arc<busbar_kernel::persistence::facade::CoreStore>,
+    Arc<RuntimeJournal>,
+    LeaseTick,
+) {
+    let faults = NativeFaults::open().await;
+    let core = crate::root::real_store::core_over(faults.clone()).await;
+    let journal = RuntimeJournal::open(core.clone(), node_id, BUDGET)
+        .await
+        .unwrap();
+    let book = node_book(journal.clone(), HISTORY)
+        .await
+        .unwrap()
+        .durability;
     let node = Arc::new(Node::new());
-    node.bind_book(Arc::clone(&book));
-    (slots, book, lane, LeaseTick { node })
+    node.bind_book(book.clone());
+    faults.clear_observations();
+    (faults, core, journal, LeaseTick { node })
 }
 
-fn pressure(book: &Mutex<Durability>) {
-    let token = busbar_kernel::teller::Kernel::new().durability_token();
-    let mut book = book.lock().unwrap();
+fn pressure(journal: &RuntimeJournal) {
+    // All original frames live in the native owner's one bounded custody queue.
     for index in 0..3 {
-        let appended = book.journal.append(
-            &token,
-            StepName::Meter,
-            &[Entry::new(RecordClass::Load, vec![index])],
-        );
-        assert_eq!(appended.is_ok(), index < 2);
+        journal
+            .stage_run(&[Entry::new(RecordClass::Load, vec![index])])
+            .unwrap();
     }
-    assert_eq!(
-        book.journal.buffered(),
-        1,
-        "the third record stays in the WAL"
-    );
-    assert_eq!(book.journal.dropped_total(), 0);
+    assert!(journal
+        .stage_run(&[Entry::new(RecordClass::Load, vec![3])])
+        .is_err());
+    assert_eq!(journal.pending_records(), 3);
 }
 
-fn assert_three_once(slots: &RecordSlots, node: u64) {
-    let records = read_chain(slots.calls().as_ref(), node).unwrap();
+async fn assert_three_once(journal: &RuntimeJournal) {
+    let records = journal.read_records(HISTORY).await.unwrap();
     assert_eq!(records.len(), 3);
     assert_eq!(
         records
@@ -72,10 +65,9 @@ fn assert_three_once(slots: &RecordSlots, node: u64) {
             .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
-    let journal = busbar_kernel_wal::decode_run(&records).unwrap();
-    busbar_kernel_wal::verify_journal(&journal).unwrap();
+    busbar_kernel_wal::verify_journal(&records).unwrap();
     assert_eq!(
-        journal
+        records
             .iter()
             .map(|record| record.body.clone())
             .collect::<Vec<_>>(),
@@ -83,71 +75,71 @@ fn assert_three_once(slots: &RecordSlots, node: u64) {
     );
 }
 
-#[test]
-fn live_tick_reopens_admission_after_store_pressure_without_another_unit() {
-    let (slots, book, lane, tick) = fixture(871);
-    let paused = PausedStore::new(&slots);
-    pressure(&book);
+#[tokio::test]
+async fn live_tick_reopens_admission_after_store_pressure_without_another_unit() {
+    let (faults, core, journal, tick) = fixture(871).await;
+    faults.pause(true);
+    pressure(&journal);
+    assert_eq!(faults.waiting(), 0, "staging performs no backend crossing");
+    faults.pause(false);
+    faults.refusing.store(true, Ordering::SeqCst);
     assert!(tick.node.journal_refusal().is_some());
-
-    tick.tick();
-    assert_eq!(lane.pending(), 2);
-    assert_eq!(book.lock().unwrap().journal.buffered(), 1);
-    drop(paused);
-    assert!(lane.drain(WAIT));
-    assert!(
-        tick.node.journal_refusal().is_some(),
-        "the original live latch: WAL debt still refuses"
+    assert!(tick.tick().await.is_err());
+    assert_eq!(
+        journal.pending_records(),
+        3,
+        "refusal retains every original frame"
     );
-    assert_eq!(read_chain(slots.calls().as_ref(), 871).unwrap().len(), 2);
-
-    tick.tick();
-    assert!(lane.drain(WAIT));
+    assert!(tick.node.journal_refusal().is_some());
+    faults.refusing.store(false, Ordering::SeqCst);
+    tick.tick().await.unwrap();
     assert!(
         tick.node.journal_refusal().is_none(),
         "the live node admits after recovery"
     );
-    assert_eq!(book.lock().unwrap().journal.buffered(), 0);
+    assert_eq!(journal.pending_records(), 0);
     for _ in 0..3 {
-        tick.tick();
+        tick.tick().await.unwrap();
     }
-    assert!(lane.drain(WAIT));
-    assert_three_once(&slots, 871);
+    assert_three_once(&journal).await;
     drop(tick);
-    drop(book);
-    let restarted = build_on_store(&DurabilityConfig { data_dir: None }, 871, lane, None).unwrap();
-    assert_eq!(restarted.journal.next_seq(), 4);
+    drop(journal);
+    let restarted = RuntimeJournal::open(core, 871, BUDGET).await.unwrap();
+    assert_eq!(restarted.next_seq(), 4);
+    assert_three_once(&restarted).await;
 }
 
-#[test]
-fn live_tick_does_not_duplicate_a_batch_with_an_unknown_store_commit() {
-    let (slots, book, lane, tick) = fixture(872);
-    let paused = PausedStore::new(&slots);
-    pressure(&book);
-    slots.lose_acks(true);
-    drop(paused);
-    let until = Instant::now() + WAIT;
-    while slots.rows_under(crate::root::durability::JOURNAL_SCHEMA) == 0 {
-        assert!(
-            Instant::now() < until,
-            "the Store commits while its acknowledgement is lost"
-        );
-        std::thread::yield_now();
-    }
-    for _ in 0..3 {
-        tick.tick();
-    }
+#[tokio::test]
+async fn live_tick_does_not_duplicate_a_batch_with_an_unknown_store_commit() {
+    let (faults, _book, journal, tick) = fixture(872).await;
+    faults.pause(true);
+    pressure(&journal);
+    assert_eq!(faults.waiting(), 0, "staging performs no backend crossing");
+    faults.pause(false);
+    faults.lose_acks.store(true, Ordering::SeqCst);
+    assert!(tick.tick().await.is_err());
     assert_eq!(
-        lane.pending(),
-        2,
-        "the unknown candidate stays owned by the lane"
+        journal.pending_records(),
+        3,
+        "the exact unknown original stays owned"
     );
-    assert_eq!(book.lock().unwrap().journal.buffered(), 1);
     assert!(tick.node.journal_refusal().is_some());
-    slots.lose_acks(false);
-    assert!(lane.drain(WAIT));
-    tick.tick();
-    assert!(lane.drain(WAIT));
+    assert_eq!(
+        faults.applied(),
+        1,
+        "the actual Store applied before losing its reply"
+    );
+    for _ in 0..3 {
+        assert!(tick.tick().await.is_err());
+    }
+    let sent = faults.requests.lock().unwrap().clone();
+    assert!(sent.len() >= 4);
+    assert!(sent
+        .iter()
+        .all(|candidate| candidate.fingerprint() == sent[0].fingerprint()
+            && candidate.candidate().id == sent[0].candidate().id));
+    faults.lose_acks.store(false, Ordering::SeqCst);
+    tick.tick().await.unwrap();
     assert!(tick.node.journal_refusal().is_none());
-    assert_three_once(&slots, 872);
+    assert_three_once(&journal).await;
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::records::{MeteringDelta, VirtualKey, UNIT_INPUT};
+use busbar_contract::records::{MeteringDelta, UNIT_INPUT, VirtualKey};
 use busbar_kernel::cost::CostModel;
 use busbar_kernel::governance::{Adjustment, GovState};
 use std::collections::BTreeMap;
@@ -41,7 +41,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(initial: u64) -> Self {
+    async fn new(initial: u64) -> Self {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -87,7 +87,11 @@ impl Fixture {
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+        let backend = busbar_kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+            .await
+            .expect("the configured actual Store opens");
+        let core = crate::root::real_store::core_over(backend).await;
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -96,14 +100,18 @@ impl Fixture {
             (None, None),
             None,
             &rules,
+            Some(core),
+            true,
         )
+        .await
         .expect("the actual product builds the usage range deployment");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, &module)
+            .await
             .expect("the actual application Store binds the dated rate history");
-        limits.keep().expect("the product limits commit");
+        limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
         let gov = app
@@ -111,20 +119,20 @@ impl Fixture {
             .as_ref()
             .expect("the actual Store opened governance")
             .clone();
-        let store = gov.store();
+        let core = gov.core_store().expect("the actual Store remains admitted");
         let key = VirtualKey {
             id: KEY.into(),
             name: DISPLAY_NAME.into(),
             enabled: true,
             ..Default::default()
         };
-        store.put_key(&key).expect("key");
+        core.identity().put_key(&key).await.expect("key");
         let epoch = busbar_kernel::store::now_ms();
         let now = std::time::Duration::from_millis(epoch).as_secs();
         let raw_era = busbar_kernel::rate_apply::era_at(epoch);
         let era = raw_era.effective_from;
         let day = busbar_kernel::governance::metering_bucket(now);
-        store
+        core.ledger()
             .add_metering(&MeteringDelta {
                 scale: 0,
                 key_id: KEY.into(),
@@ -145,6 +153,7 @@ impl Fixture {
                 priced_from_ms: era,
                 usage_units: BTreeMap::new(),
             })
+            .await
             .expect("metering row");
 
         let cost = zero_cost();
@@ -174,10 +183,10 @@ impl Fixture {
         }
     }
 
-    fn adjust(&self, change: i64) {
+    async fn adjust(&self, change: i64) {
         let delta = BTreeMap::from([(UNIT_INPUT.into(), change)]);
         self.gov
-            .adjust_usage(
+            .adjust_usage_async(
                 &self.cost,
                 &Adjustment {
                     key_id: &self.key.id,
@@ -190,6 +199,7 @@ impl Fixture {
                     now: busbar_kernel::store::now(),
                 },
             )
+            .await
             .expect("store accepts exact correction")
             .expect("valid correction");
     }
@@ -280,13 +290,14 @@ async fn cumulative_positive_corrections_reach_u64_max_in_every_admin_total() {
         }
     }
 
-    let fixture = Fixture::new(0);
+    let fixture = Fixture::new(0).await;
     for change in [i64::MAX, i64::MAX, 1] {
-        fixture.adjust(change);
+        fixture.adjust(change).await;
     }
     let adjustments = fixture
         .gov
-        .usage_adjustments(fixture.day)
+        .usage_adjustments_async(fixture.day)
+        .await
         .expect("wide view");
     assert_eq!(adjustments[0].delta[UNIT_INPUT], i128::from(u64::MAX));
     assert_totals(
@@ -350,12 +361,13 @@ async fn minimum_signed_delta_and_full_unsigned_downward_net_keep_their_magnitud
         }
     }
 
-    let fixture = Fixture::new(u64::MAX);
-    fixture.adjust(i64::MIN);
+    let fixture = Fixture::new(u64::MAX).await;
+    fixture.adjust(i64::MIN).await;
     assert_eq!(
         fixture
             .gov
-            .usage_adjustments(fixture.day)
+            .usage_adjustments_async(fixture.day)
+            .await
             .expect("minimum signed view")[0]
             .delta[UNIT_INPUT],
         i128::from(i64::MIN)
@@ -364,11 +376,12 @@ async fn minimum_signed_delta_and_full_unsigned_downward_net_keep_their_magnitud
         &fixture.read().await.expect("minimum signed admin read"),
         i64::MAX as u64,
     );
-    fixture.adjust(-i64::MAX);
+    fixture.adjust(-i64::MAX).await;
     assert_eq!(
         fixture
             .gov
-            .usage_adjustments(fixture.day)
+            .usage_adjustments_async(fixture.day)
+            .await
             .expect("unsigned magnitude view")[0]
             .delta[UNIT_INPUT],
         -i128::from(u64::MAX)
@@ -434,16 +447,17 @@ async fn reversal_changes_the_sign_without_repricing_the_historical_row() {
         }
     }
 
-    let fixture = Fixture::new(1);
-    fixture.adjust(i64::MAX);
+    let fixture = Fixture::new(1).await;
+    fixture.adjust(i64::MAX).await;
     assert_totals(
         &fixture.read().await.expect("upward read"),
         i64::MIN.unsigned_abs(),
     );
-    fixture.adjust(i64::MIN);
+    fixture.adjust(i64::MIN).await;
     let adjustments = fixture
         .gov
-        .usage_adjustments(fixture.day)
+        .usage_adjustments_async(fixture.day)
+        .await
         .expect("reversed view");
     assert_eq!(adjustments[0].era, fixture.era);
     assert_eq!(adjustments[0].delta[UNIT_INPUT], -1);

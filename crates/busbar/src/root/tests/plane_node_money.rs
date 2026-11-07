@@ -1,6 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+fn native_budget() -> busbar_kernel::persistence::journal::runtime::BufferBudget {
+    busbar_kernel::persistence::journal::runtime::BufferBudget {
+        records: 4096,
+        bytes: 32 * 1024 * 1024,
+    }
+}
+fn native_journal(
+    node: u64,
+    records: usize,
+) -> Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal> {
+    let core = native_ready(crate::root::real_store::core());
+    let budget = busbar_kernel::persistence::journal::runtime::BufferBudget {
+        records,
+        ..native_budget()
+    };
+    native_ready(
+        busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(core, node, budget),
+    )
+    .expect("native journal opens")
+}
+fn native_fixture() -> Result<crate::root::durability::Durability, busbar_kernel_wal::OpenError> {
+    let journal = native_journal(
+        busbar_kernel::door::op_id().counter(),
+        native_budget().records,
+    );
+    native_ready(crate::root::durability::build_on_store(
+        &crate::root::durability::DurabilityConfig::default(),
+        journal.node(),
+        journal,
+        None,
+        native_budget(),
+    ))
+}
+fn native_node_book() -> crate::root::durability::NodeBook {
+    let journal = native_journal(
+        busbar_kernel::door::op_id().counter(),
+        native_budget().records,
+    );
+    native_ready(crate::root::durability::node_book(journal, native_budget()))
+        .expect("native node book opens")
+}
+fn selected(
+    journal: &Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>,
+) -> Vec<busbar_kernel_wal::JournalRecord> {
+    native_ready(journal.flush()).expect("staged originals confirm");
+    native_ready(journal.read_records(native_budget())).expect("selected native history verifies")
+}
+fn native_ready<T>(future: impl std::future::Future<Output = T>) -> T {
+    futures::executor::block_on(future)
+}
+
 use super::*;
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival, Authenticate, Consumption, Decode, Dial, Encode, Meter,
@@ -149,11 +200,7 @@ fn swept_node() -> (
 ) {
     let node = Node::new();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_kernel_wal::NullShipper::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
+        native_fixture().expect("a memory-buffered journal cannot fail to open"),
     ));
     node.bind_book(Arc::clone(&book));
     (node, book)
@@ -267,11 +314,7 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     );
     assert!(durability.retained_audit_findings().is_empty());
 
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let replayed = selected(&durability.journal);
     let read_back: Vec<_> = replayed
         .iter()
         .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
@@ -294,11 +337,7 @@ fn no_swept_unit_settles_with_zero_audit_records() {
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), keys.len());
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    let replayed = durability
-        .journal
-        .replay()
-        .expect("reads back")
-        .expect("verifies");
+    let replayed = selected(&durability.journal);
     assert_eq!(
         replayed
             .iter()
@@ -328,89 +367,91 @@ const RERANK_LANE: &str = "rerank-v3.5";
 
 const RERANK_UNITS: u64 = 50;
 
-#[test]
-fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
-    use crate::root::kernel::{CardApplied, RootHistory};
-    fn apply(holder: &RootHistory, input: f64, at: u64) {
-        let lanes = [(
-            "gpt".to_string(),
-            busbar_contract::billing::RawTierRates {
-                input: busbar_kernel_ledger::cost::representable_nano_rate(input),
-                output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
-                cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+#[tokio::test]
+async fn binding_the_node_keeps_every_confirmed_card_in_the_native_store() {
+    use crate::root::kernel::RootHistory;
+    use busbar_kernel::config::card::CardFields;
+    let card = |input| CardFields {
+        rate_card: Some(std::collections::BTreeMap::from([(
+            "gpt".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: input,
+                ..Default::default()
             },
-        )];
-        let _ = holder.apply_rates(
-            &busbar_kernel::rate_apply::RawRates {
-                lanes: &lanes,
-                units: &[],
-                flat_minor: 0,
-                present: true,
-                plane_fees: &busbar_kernel::config::PlaneFeesMap::new(),
-            },
-            at,
-        );
-    }
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-node-book-cards-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("scratch directory");
-
+        )])),
+        ..Default::default()
+    };
+    let core = (crate::root::real_store::core()).await;
     let holder: &'static RootHistory = Box::leak(Box::default());
-    holder.arm_journal();
-    apply(holder, 3.0, 1_000);
-    let slots = crate::root::store_double::RecordSlots::new();
-    let lane = crate::root::durability::JournalLane::start(slots.calls(), "test-store").unwrap();
+    holder
+        .keep_in_store(core.clone(), 7)
+        .expect("native price owner binds");
+    holder.card_applied(&card(3.0), "boot");
+    (holder.boot_in_store(None))
+        .await
+        .expect("opening card is confirmed");
+    let journal = (busbar_kernel::persistence::journal::runtime::RuntimeJournal::open(
+        core.clone(),
+        7,
+        native_budget(),
+    ))
+    .await
+    .unwrap();
     let book = Arc::new(Mutex::new(
-        crate::root::durability::build_on_store(
-            &crate::root::durability::DurabilityConfig {
-                data_dir: Some(dir.clone()),
-            },
+        (crate::root::durability::build_on_store(
+            &crate::root::durability::DurabilityConfig::default(),
             7,
-            lane,
+            journal.clone(),
             Some(holder),
-        )
-        .expect("the journal opens"),
+            native_budget(),
+        ))
+        .await
+        .unwrap(),
     ));
-
-    super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
-    apply(holder, 5.0, 20_000);
-
-    let cards = book
-        .lock()
-        .expect("the book")
-        .chain()
-        .expect("reads")
-        .expect("verifies")
-        .iter()
-        .filter(|r| r.class == busbar_kernel_wal::RecordClass::Policy)
-        .filter_map(|r| CardApplied::from_body(&r.body))
-        .map(|applied| applied.effective_from)
-        .collect::<Vec<_>>();
+    super::bind_node_book(&Node::new(), holder, book);
+    let prices = holder.card_store().unwrap();
+    let prepared = (prices.prepare(&card(5.0), "test"))
+        .await
+        .expect("successor prepares");
+    let successor = (prepared.confirm_activation())
+        .await
+        .expect("successor activation applies")
+        .commit();
+    let cards = prices.entries();
     assert_eq!(
-        cards,
-        vec![0, 20_000],
-        "the boot card and the card applied after the binding are both on the chain"
+        cards.len(),
+        2,
+        "opening and confirmed successor are both persisted"
     );
-    let lane = book.lock().unwrap().lane().unwrap().clone();
-    assert!(lane.drain(std::time::Duration::from_secs(5)));
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
-    drop(book);
-    let _ = std::fs::remove_dir_all(&dir);
+    assert!(cards.iter().any(|entry| entry.key == successor));
+    let restarted: &'static RootHistory = Box::leak(Box::default());
+    restarted.keep_in_store(core, 7).unwrap();
+    restarted.card_applied(&card(5.0), "boot");
+    (restarted.boot_in_store(None))
+        .await
+        .expect("native price history reopens");
+    assert_eq!(
+        restarted.card_store().unwrap().entries(),
+        cards,
+        "binding never loses a confirmed card"
+    );
+    assert_eq!(restarted.card_store().unwrap().in_force(), Some(card(5.0)));
+    (journal.flush())
+        .await
+        .expect("node journal confirms its originals");
+    prices.stop_background().await.expect("price task stops");
+    restarted
+        .card_store()
+        .unwrap()
+        .stop_background()
+        .await
+        .expect("reopened price task stops");
 }
 
 #[tokio::test]
 async fn the_exit_arm_seals_no_money_figure_into_the_record() {
     let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture().expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
 
@@ -680,7 +721,7 @@ impl RouteAwait for DoorUnit {
 #[test]
 fn cancelling_before_the_door_retires_the_borrowed_facts_and_sweeps_once() {
     use std::future::Future as _;
-    let book = crate::root::durability::node_book();
+    let book = native_node_book();
     let (node, post) = door_node(&book);
     let unit = DoorUnit {
         pause_screen: true,
@@ -825,11 +866,7 @@ async fn drive_to_end(node: &Node, post: &NodeEndPost, reported: Option<u64>) ->
 async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     use busbar_kernel::plane_driver::EndPost;
     let node = Arc::new(Node::new());
-    let durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_kernel_wal::NullShipper::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let durability = native_fixture().expect("a memory-buffered journal cannot fail to open");
     let book = Arc::new(std::sync::Mutex::new(durability));
     node.bind_book(Arc::clone(&book));
     let records = || {
@@ -884,7 +921,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_tamper_evident_chain(
 ) {
-    let book = crate::root::durability::node_book();
+    let book = native_node_book();
     let (node, post) = door_node(&book);
 
     let (_, served) = drive_door(
@@ -953,7 +990,7 @@ async fn every_unit_the_node_answers_served_or_refused_seals_one_record_on_one_t
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_screened_veto_through_the_node_admits_nothing() {
-    let book = crate::root::durability::node_book();
+    let book = native_node_book();
     let (node, post) = door_node(&book);
     let unit = DoorUnit::screened_by(busbar_contract::caps::ReasonCode::HookVeto);
     let (_, outcome) = drive_door(&node, &post, &unit, node.arrived(), no_late(), None).await;
@@ -977,29 +1014,32 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
         None,
         Some(std::path::PathBuf::from("/dev/null/legacy-journal")),
     ] {
-        let slots = crate::root::store_double::RecordSlots::new();
-        slots.refuse(true);
-        let lane =
-            crate::root::durability::JournalLane::with_capacity(slots.calls(), "test-store", 1)
-                .expect("the lane starts");
+        let journal = native_journal(1, 1);
         let book = Arc::new(std::sync::Mutex::new(
-            crate::root::durability::build_on_store(
+            native_ready(crate::root::durability::build_on_store(
                 &crate::root::durability::DurabilityConfig { data_dir },
-                0,
-                lane,
+                1,
+                journal.clone(),
                 None,
-            )
-            .expect("the store reads back"),
+                native_budget(),
+            ))
+            .expect("the native store reads back"),
         ));
-        let token = crate::root::kernel::new_kernel().durability_token();
-        for _ in 0..3 {
-            let _lost = book.lock().unwrap().journal.append(
-                &token,
-                busbar_contract::caps::StepName::Meter,
-                &[busbar_kernel_wal::Entry::new(
-                    busbar_kernel_wal::RecordClass::Load,
-                    Vec::new(),
-                )],
+        let first = journal
+            .stage_run(&[busbar_kernel_wal::Entry::new(
+                busbar_kernel_wal::RecordClass::Load,
+                Vec::new(),
+            )])
+            .expect("one original fills the buffer");
+        for _ in 0..2 {
+            assert!(
+                journal
+                    .stage_run(&[busbar_kernel_wal::Entry::new(
+                        busbar_kernel_wal::RecordClass::Load,
+                        Vec::new()
+                    )])
+                    .is_err(),
+                "full custody refuses more originals"
             );
         }
         let node = Arc::new(Node::new());
@@ -1020,13 +1060,13 @@ async fn a_full_journal_lane_refuses_a_new_unit_with_the_reason() {
             .journal_refusal()
             .expect("the node states why it refuses");
         assert!(
-            why.contains("journal is full") && why.contains("`test-store`"),
-            "the reason names the full journal and the store: {why}"
+            why.contains("journal custody buffer is full"),
+            "the reason identifies the full native journal custody: {why}"
         );
         assert_eq!(
-            book.lock().unwrap().journal.dropped_total(),
-            0,
-            "no record is dropped"
+            journal.pending_records(),
+            first.records().len(),
+            "the accepted original remains retained"
         );
     }
 }
@@ -1036,11 +1076,15 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
     use busbar_contract::abi::plane::{UnitCount, UNITS_REPORTED};
     use busbar_kernel::plane_driver::{FeeRefund, MoneySeam, PlaneMoney, UnitMoney};
     const UNITS: u64 = 8;
-    let book = crate::root::durability::node_book();
+    let book = native_node_book();
     let (node, post) = door_node(&book);
     let gov = Arc::new(
-        busbar_kernel::governance::GovState::new(crate::root::real_store::records(), None)
-            .expect("governance builds"),
+        native_ready(busbar_kernel::governance::GovState::new_with_core(
+            native_ready(crate::root::real_store::core()),
+            None,
+            None,
+        ))
+        .expect("governance builds"),
     );
     let money = Arc::new(PlaneMoney::new(Arc::clone(&gov), Arc::new(post)));
     let rates = std::collections::BTreeMap::from([(
@@ -1122,16 +1166,15 @@ fn concurrent_unit_ends_land_their_money_while_the_book_is_held() {
         );
         ended += 1;
     }
-    let landed = gov
-        .derived_bucket_usage(
-            &cost,
-            &key.id,
-            busbar_kernel::governance::WINDOW_TOTAL,
-            true,
-            EPOCH,
-        )
-        .expect("usage reads")
-        .tokens;
+    let landed = native_ready(gov.derived_bucket_usage_async(
+        &cost,
+        &key.id,
+        busbar_kernel::governance::WINDOW_TOTAL,
+        true,
+        EPOCH,
+    ))
+    .expect("usage reads")
+    .tokens;
     assert_eq!(
         landed,
         UNITS * 100,

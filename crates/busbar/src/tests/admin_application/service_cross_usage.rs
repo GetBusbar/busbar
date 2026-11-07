@@ -218,7 +218,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config.clone(),
         None,
@@ -227,18 +227,19 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         (None, None),
         None,
         &rules,
-        None,
-        true,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
     let _book = crate::root::boot::book(&app, &module)
+        .await
         .expect("the actual Store binds the node book and rate history");
     limits
         .keep()
+        .await
         .expect("the actual boot card commits after the book opens");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     document["rate_card"] = serde_json::to_value(BTreeMap::from([(
         LANE,
@@ -257,7 +258,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         .expect("the current deployment parses");
     let current = busbar_kernel::config::resolve(&current, &provider_defs)
         .expect("the current deployment resolves");
-    let (next, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (next, rotate, limits) = crate::root::real_store::build_app(
         current,
         plugin_config,
         None,
@@ -266,13 +267,15 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         (None, None),
         Some(&app),
         &rules,
-        None,
-        false,
     )
+    .await
     .expect("the actual current configuration rebuilds against the same Store");
-    limits.keep().expect("the actual current rates commit");
+    limits
+        .keep()
+        .await
+        .expect("the actual current rates commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     app = next;
     let historical = busbar_kernel::config::card::CardFields {
@@ -295,18 +298,22 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             [7u8; 32],
             "cross-surface historical posting",
         )
+        .await
         .expect("the actual Store confirms the historical rate window");
     let gov = app
         .governance
         .as_ref()
         .expect("the actual Store opened governance")
         .clone();
-    let store = gov.store();
+    let store = gov.core_store_handle().expect("actual admitted CoreStore");
     store
+        .identity()
         .put_key(&enforcement_key())
+        .await
         .expect("the actual Store retains the key needed for hydration");
     for priced_from_ms in [0, edit_ms] {
         store
+            .ledger()
             .add_metering(&busbar_contract::records::MeteringDelta {
                 scale: 0,
                 usage_units: Default::default(),
@@ -324,9 +331,10 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
                 pricing_version: String::new(),
                 priced_from_ms,
             })
+            .await
             .expect("the actual Store retains the metering delta");
     }
-    gov.refresh().expect("the actual keys refresh");
+    gov.refresh_async().await.expect("the actual keys refresh");
 
     let key = enforcement_key();
     let units = BTreeMap::from([(busbar_contract::records::UNIT_INPUT.into(), TOKENS)]);
@@ -336,7 +344,7 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
             .expect("the actual enforcement book admits the posting");
         gov.record_usage_served(&cost, &key, "", LANE, Some(PROVIDER), &units, now);
     }
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     let group_bucket = &cost
         .group_named(GROUP)
         .expect("the actual day group")
@@ -353,7 +361,9 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
         ),
     ] {
         let ledger = store
+            .ledger()
             .get_usage(bucket_id, window)
+            .await
             .expect("the actual raw usage flush persists");
         assert_eq!(ledger.requests, 2);
         assert_eq!(ledger.billable_requests, 2);
@@ -377,39 +387,43 @@ async fn one_recorded_usage_is_one_number_on_every_surface() {
     let admin = view["total"]["spend_micros"]
         .as_i64()
         .expect("the usage figure");
-    gov.hydrate_budgets(&cost, now)
+    gov.hydrate_budgets_async(&cost, now)
+        .await
         .expect("the key ledger hydrates");
 
     let group_cents = gov
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &cost,
             group_bucket,
             busbar_kernel::governance::WINDOW_DAY,
             true,
             now,
         )
+        .await
         .expect("the group bucket reads")
         .spend_cents;
 
     let key_cents = gov
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &cost,
             KEY,
             busbar_kernel::governance::WINDOW_TOTAL,
             true,
             now,
         )
+        .await
         .expect("the key bucket reads")
         .spend_cents;
 
     let scrape_cents = gov
-        .viewed_bucket_usage(
+        .viewed_bucket_usage_async(
             &cost,
             KEY,
             busbar_kernel::governance::WINDOW_TOTAL,
             true,
             now,
         )
+        .await
         .expect("the metrics bucket reads")
         .spend_cents;
 

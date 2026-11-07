@@ -1,6 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+trait ReadyAdmission {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused>;
+}
+impl ReadyAdmission for crate::host_services::KernelServices {
+    fn admit_ready(
+        &self,
+        instance: &str,
+        facts: crate::host_services::InstanceFacts,
+    ) -> Result<(), crate::host_services::AdmitRefused> {
+        futures::FutureExt::now_or_never(self.admit(instance, facts))
+            .expect("in-memory fixture admission finishes in one poll")
+    }
+}
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -23,8 +40,8 @@ use crate::plane_driver::{
 fn services(clock: &Arc<AtomicU64>) -> KernelServices {
     let c = Arc::clone(clock);
     let s = KernelServices::new().with_wall_clock(Arc::new(move || c.load(Ordering::SeqCst)));
-    s.admit("inst", InstanceFacts::default()).unwrap();
-    s.admit("other", InstanceFacts::default()).unwrap();
+    s.admit_ready("inst", InstanceFacts::default()).unwrap();
+    s.admit_ready("other", InstanceFacts::default()).unwrap();
     s
 }
 
@@ -190,7 +207,15 @@ impl CallerFacts for NoCaller {
     fn budget(&self, _: &str) -> Vec<BudgetBucketState> {
         Vec::new()
     }
-    fn hook_read(&self, _: &str, _: Option<&str>, _: &str, _: bool) {}
+    fn hook_read<'a>(
+        &'a self,
+        _: &'a str,
+        _: Option<&'a str>,
+        _: &'a str,
+        _: bool,
+    ) -> crate::audit::amend::ReadConfirmation<'a> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 fn gate(policy: Arc<dyn RoutingPolicy>, on_error: PolicyOnError) -> (u16, ResolvedPolicy) {
@@ -681,7 +706,9 @@ impl HookBinder for EntryGates {
             rewrites: Vec::new(),
             key: None,
             scan: None,
-            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {
+                Box::pin(async { Ok(()) })
+            }),
         })
     }
 }

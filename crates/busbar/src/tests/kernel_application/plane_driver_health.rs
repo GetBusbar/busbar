@@ -9,7 +9,7 @@ use busbar_kernel::plane_driver::registry::BuildCtx;
 
 use crate::root::test_plugins as plugins;
 
-fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
+async fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
     let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -48,7 +48,7 @@ fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules =
         Arc::new(crate::root::door_steps::Rules::default()) as Arc<dyn kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = kernel::build_app_from_config(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -58,24 +58,30 @@ fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the readiness deployment");
     if !crate::root::kernel::ROOT_CARD.keeps_store() {
         limits.stage_boot();
-        crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the actual deployment configured governance")
-                .store_calls()
-                .expect("the configured Store exposes its rate-history slots"),
-            146,
-        );
+        if !crate::root::kernel::ROOT_CARD.keeps_store() {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(
+                    app.governance
+                        .as_ref()
+                        .expect("the actual deployment configured governance")
+                        .core_store_handle()
+                        .expect("the configured Store exposes its rate-history slots"),
+                    146,
+                )
+                .expect("the native rate-card Store binds");
+        };
         crate::root::kernel::ROOT_CARD
             .boot_in_store(None)
+            .await
             .expect("the configured Store boots its initial rate history");
     }
-    limits.keep().expect("the product limits commit");
+    limits.keep().await.expect("the product limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     assert_eq!(
         app.engine_tables_view().lane_count(),
@@ -126,28 +132,28 @@ fn lane_less_healthz(opening: Option<bool>) -> (u16, Vec<u8>) {
         })
 }
 
-#[test]
-fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
+#[tokio::test]
+async fn healthz_with_no_model_lane_is_ready_when_a_configured_plane_opened() {
     assert_eq!(
-        lane_less_healthz(Some(true)),
+        lane_less_healthz(Some(true)).await,
         (200, b"ok".to_vec()),
         "a lane-less deployment whose configured plane opened this generation is ready"
     );
 }
 
-#[test]
-fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
+#[tokio::test]
+async fn healthz_with_no_model_lane_is_unready_when_the_planes_open_refused() {
     assert_eq!(
-        lane_less_healthz(Some(false)),
+        lane_less_healthz(Some(false)).await,
         (503, b"no usable lanes".to_vec()),
         "a plane that is configured but did not open makes nothing ready"
     );
 }
 
-#[test]
-fn healthz_with_no_plane_configured_stays_unready() {
+#[tokio::test]
+async fn healthz_with_no_plane_configured_stays_unready() {
     assert_eq!(
-        lane_less_healthz(None),
+        lane_less_healthz(None).await,
         (503, b"no usable lanes".to_vec()),
         "with nothing configured /healthz answers 1.5.5's 503"
     );

@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_kernel::config::migrate::*;
+use busbar_migrations::config::migrate::*;
 
-#[path = "../../../../busbar-kernel/src/config/legacy_markers.rs"]
-mod legacy_markers;
-use legacy_markers::{detect_legacy_markers, legacy_config_error};
+use busbar_migrations::config::migrate::{detect_legacy_markers, legacy_config_error};
 
 const LEGACY_14X: &str = r#"
 listen: "0.0.0.0:8080"
@@ -563,7 +561,7 @@ fn assert_loud_fail_with_breadcrumb(raw: &str, needle: &str) {
 fn migrate_golden(
     raw: &str,
 ) -> (
-    busbar_kernel::config::migrate::MigrateOutput,
+    busbar_migrations::config::migrate::MigrateOutput,
     serde_yaml::Value,
 ) {
     let (out, doc) = migrate_to_value(raw);

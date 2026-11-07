@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 use crate::appbuild::{load_config_from_disk, load_config_from_disk_with_store, AcceptAll};
-use crate::config::overlay::{persist_root, RootSettings};
-use busbar_contract::{
-    abi::store::OpId,
-    kinds::RecordBytes,
-    records::{MeteringDelta, PlaneRecordRef, PlaneSelector, UsageDelta},
-    store_calls::{StoreCall, StoreCalls, StoreFailure},
+use crate::config::overlay::{persist_root_async, RootSettings};
+use busbar_contract::persistence::{
+    BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Page, PersistenceBackend,
+    PreparedCandidate, Read, ReadResult, Scan,
 };
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -14,182 +12,36 @@ use std::sync::{
 };
 
 struct FailOverlayReads {
-    actual: Arc<dyn StoreCalls>,
+    actual: Arc<dyn PersistenceBackend>,
     fail: AtomicBool,
 }
-impl StoreCalls for FailOverlayReads {
-    fn supports_usage_correction(&self) -> bool {
-        self.actual.supports_usage_correction()
+impl PersistenceBackend for FailOverlayReads {
+    fn info(&self) -> BackendInfo {
+        self.actual.info()
     }
-    fn apply_usage_correction<'a>(
-        &'a self,
-        request: &'a busbar_contract::records::correction::Request,
-    ) -> StoreCall<'a, busbar_contract::records::correction::Decision> {
-        self.actual.apply_usage_correction(request)
-    }
-    fn supports_record_transaction(&self) -> bool {
-        self.actual.supports_record_transaction()
-    }
-    fn record_transaction<'a>(
-        &'a self,
-        request: &'a busbar_contract::abi::sdk::store::conditional::Request,
-    ) -> StoreCall<'a, busbar_contract::abi::sdk::store::conditional::Decision> {
-        self.actual.record_transaction(request)
-    }
-    fn add_usage_batch<'a>(
-        &'a self,
-        op: OpId,
-        cells: &'a [(&'a str, u64, UsageDelta)],
-    ) -> StoreCall<'a, ()> {
-        self.actual.add_usage_batch(op, cells)
-    }
-    fn add_metering_batch<'a>(
-        &'a self,
-        op: OpId,
-        deltas: &'a [MeteringDelta],
-    ) -> StoreCall<'a, ()> {
-        self.actual.add_metering_batch(op, deltas)
-    }
-    fn record_put<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-        value: &'a RecordBytes,
-    ) -> StoreCall<'a, ()> {
-        self.actual.record_put(schema, key, value)
-    }
-    fn record_get<'a>(
-        &'a self,
-        schema: &'a str,
-        key: &'a [u8],
-    ) -> StoreCall<'a, Option<RecordBytes>> {
-        if schema == "busbar.config.overlay.v1" && self.fail.load(Ordering::SeqCst) {
-            Box::pin(std::future::ready(Err(StoreFailure::Failed(
-                "overlay read interrupted".into(),
-            ))))
+    fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
+        let schema = b"busbar.config.overlay.v1";
+        if self.fail.load(Ordering::SeqCst)
+            && request.addresses.iter().any(|address| {
+                address
+                    .key
+                    .windows(schema.len())
+                    .any(|bytes| bytes == schema)
+            })
+        {
+            Box::pin(async { Err(Failure::Unavailable) })
         } else {
-            self.actual.record_get(schema, key)
+            self.actual.read(request)
         }
     }
-    fn record_scan<'a>(
-        &'a self,
-        schema: &'a str,
-        prefix: &'a [u8],
-        limit: u32,
-    ) -> StoreCall<'a, Vec<(Vec<u8>, RecordBytes)>> {
-        self.actual.record_scan(schema, prefix, limit)
+    fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        self.actual.scan(request)
     }
-    fn put_key<'a>(&'a self, key: &'a busbar_contract::records::VirtualKey) -> StoreCall<'a, ()> {
-        self.actual.put_key(key)
+    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+        self.actual.commit(candidate)
     }
-    fn get_key<'a>(
-        &'a self,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<busbar_contract::records::VirtualKey>> {
-        self.actual.get_key(id)
-    }
-    fn list_keys(&self) -> StoreCall<'_, Vec<busbar_contract::records::VirtualKey>> {
-        self.actual.list_keys()
-    }
-    fn delete_key<'a>(&'a self, id: &'a str) -> StoreCall<'a, ()> {
-        self.actual.delete_key(id)
-    }
-    fn put_key_with_credential<'a>(
-        &'a self,
-        key: &'a busbar_contract::records::VirtualKey,
-        secret: &'a busbar_contract::records::CredentialSecret,
-    ) -> StoreCall<'a, ()> {
-        self.actual.put_key_with_credential(key, secret)
-    }
-    fn list_credentials<'a>(
-        &'a self,
-        key_id: &'a str,
-    ) -> StoreCall<'a, Vec<busbar_contract::records::CredentialMeta>> {
-        self.actual.list_credentials(key_id)
-    }
-    fn revoke_credential<'a>(&'a self, id: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.actual.revoke_credential(id, reason)
-    }
-    fn list_credentials_since(
-        &self,
-        since: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::CredentialSecret>> {
-        self.actual.list_credentials_since(since)
-    }
-    fn add_denylist<'a>(&'a self, sub: &'a str, reason: &'a str) -> StoreCall<'a, ()> {
-        self.actual.add_denylist(sub, reason)
-    }
-    fn list_denylist(&self) -> StoreCall<'_, Vec<String>> {
-        self.actual.list_denylist()
-    }
-    fn list_metering(
-        &self,
-        bucket: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::MeteringRow>> {
-        self.actual.list_metering(bucket)
-    }
-    fn list_audit(&self) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.actual.list_audit()
-    }
-    fn list_audit_tail(
-        &self,
-        limit: u64,
-    ) -> StoreCall<'_, Vec<busbar_contract::records::AuditRecord>> {
-        self.actual.list_audit_tail(limit)
-    }
-    fn upsert_plane_record<'a>(&'a self, record: PlaneRecordRef<'a>) -> StoreCall<'a, ()> {
-        self.actual.upsert_plane_record(record)
-    }
-    fn get_plane_record<'a>(
-        &'a self,
-        kind: &'a str,
-        id: &'a str,
-    ) -> StoreCall<'a, Option<Vec<u8>>> {
-        self.actual.get_plane_record(kind, id)
-    }
-    fn append_plane_record<'a>(
-        &'a self,
-        op: OpId,
-        record: PlaneRecordRef<'a>,
-    ) -> StoreCall<'a, ()> {
-        self.actual.append_plane_record(op, record)
-    }
-    fn list_plane_records<'a>(
-        &'a self,
-        kind: &'a str,
-        selector: &'a PlaneSelector<'a>,
-    ) -> StoreCall<'a, Vec<Vec<u8>>> {
-        self.actual.list_plane_records(kind, selector)
-    }
-    fn delete_plane_record<'a>(&'a self, kind: &'a str, id: &'a str) -> StoreCall<'a, ()> {
-        self.actual.delete_plane_record(kind, id)
-    }
-    fn redeem_plane_token<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.actual.redeem_plane_token(kind, token, expires_at, now)
-    }
-    fn plane_token_live<'a>(
-        &'a self,
-        kind: &'a str,
-        token: &'a str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreCall<'a, bool> {
-        self.actual.plane_token_live(kind, token, expires_at, now)
-    }
-    fn list_plane_record_parents<'a>(&'a self, kind: &'a str) -> StoreCall<'a, Vec<String>> {
-        self.actual.list_plane_record_parents(kind)
-    }
-    fn purge_plane_records_before<'a>(&'a self, kind: &'a str, before: u64) -> StoreCall<'a, u64> {
-        self.actual.purge_plane_records_before(kind, before)
-    }
-    fn purge_usage_before(&self, before: u64) -> StoreCall<'_, u64> {
-        self.actual.purge_usage_before(before)
+    fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
+        self.actual.clock(dataset)
     }
 }
 
@@ -237,15 +89,16 @@ fn operator_input_loader_never_reads_a_legacy_overlay_or_opens_a_store() {
     );
 }
 
-#[test]
-fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
+#[tokio::test]
+async fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
     let (_dir, path) = inputs();
     let calls = Arc::new(FailOverlayReads {
-        actual: crate::real_store::store(),
+        actual: crate::real_store::native_backend().await,
         fail: AtomicBool::new(false),
     });
-    let backend = crate::config::overlay::OverlayStore::new(calls.clone()).unwrap();
-    persist_root(
+    let core = crate::real_store::core_over(calls.clone()).await;
+    let backend = crate::config::overlay::OverlayStore::from_core(core).unwrap();
+    persist_root_async(
         Some(&backend),
         &RootSettings {
             admin_require_mtls: Some(true),
@@ -253,6 +106,7 @@ fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
             ..Default::default()
         },
     )
+    .await
     .unwrap();
     let loaded = load_config_from_disk_with_store(
         &path,
@@ -262,10 +116,17 @@ fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
         &AcceptAll,
         Some(backend.clone()),
     )
+    .await
     .unwrap();
     assert_eq!(
-        loaded.overlay_path.as_ref().unwrap().read_bytes().unwrap(),
-        backend.read_bytes().unwrap()
+        loaded
+            .overlay_path
+            .as_ref()
+            .unwrap()
+            .read_bytes_async()
+            .await
+            .unwrap(),
+        backend.read_bytes_async().await.unwrap()
     );
     assert_eq!(
         loaded.overlay_doc.unwrap().root.unwrap().per_request_fee,
@@ -280,6 +141,7 @@ fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
         &AcceptAll,
         Some(backend.clone())
     )
+    .await
     .is_err());
     let quarantined = load_config_from_disk_with_store(
         &path,
@@ -289,20 +151,23 @@ fn reload_recovers_exact_store_anchor_and_refuses_unreadable_security_state() {
         &AcceptAll,
         Some(backend),
     )
+    .await
     .unwrap();
     assert!(quarantined.overlay_doc.is_none());
     assert!(quarantined.overlay_path.is_some());
 }
 
-#[test]
-fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable() {
+#[tokio::test]
+async fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable() {
     let (_dir, path) = inputs();
     std::fs::write(&path, "config:\n  locked: true\nproviders: {}\nmodels: {}\nstore:\n  module: memory\n  settings: {}\n").unwrap();
     let calls = Arc::new(FailOverlayReads {
-        actual: crate::real_store::store(),
-        fail: AtomicBool::new(true),
+        actual: crate::real_store::native_backend().await,
+        fail: AtomicBool::new(false),
     });
-    let backend = crate::config::overlay::OverlayStore::new(calls).unwrap();
+    let core = crate::real_store::core_over(calls.clone()).await;
+    let backend = crate::config::overlay::OverlayStore::from_core(core).unwrap();
+    calls.fail.store(true, Ordering::SeqCst);
     let loaded = load_config_from_disk_with_store(
         &path,
         None,
@@ -311,6 +176,7 @@ fn locked_reload_never_reads_the_overlay_even_when_its_store_is_unreadable() {
         &AcceptAll,
         Some(backend),
     )
+    .await
     .unwrap();
     assert!(loaded.config_locked);
     assert!(loaded.overlay_path.is_none());

@@ -38,6 +38,7 @@ struct Provider {
     appended: Mutex<Vec<(DiskDest, Vec<u8>)>>,
     /// Whether `snapshot.read` answers NOT READY (the recorder is not installed).
     snapshot_not_ready: std::sync::atomic::AtomicBool,
+    snapshot_pending: std::sync::atomic::AtomicBool,
 }
 
 impl Provider {
@@ -152,10 +153,17 @@ impl HostServices for Provider {
         Stored::ready(0)
     }
 
-    fn trust_sight_item(&self, c: &Caller, counterparty: &str, item: &str, digest: &str) -> Stored {
+    fn trust_sight_item(
+        &self,
+        c: &Caller,
+        counterparty: &str,
+        item: &str,
+        digest: &str,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         let arg = format!("{counterparty}/{item} {digest}");
         self.saw(c, "trust.sight_item", arg.as_bytes());
-        Stored::ready(svc::TRUST_NEW)
+        busbar_contract::services::Ran::Now(Stored::ready(svc::TRUST_NEW))
     }
 
     fn trust_serves(
@@ -180,7 +188,8 @@ impl HostServices for Provider {
         key: busbar_contract::services::TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Stored {
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         let arg = format!(
             "{}/{}@{} {approve}",
             key.counterparty,
@@ -188,7 +197,7 @@ impl HostServices for Provider {
             expected.unwrap_or("-")
         );
         self.saw(c, "trust.decide", arg.as_bytes());
-        Stored::ready(svc::TRUST_DECIDED_SERVING)
+        busbar_contract::services::Ran::Now(Stored::ready(svc::TRUST_DECIDED_SERVING))
     }
 
     fn trust_state(&self, c: &Caller, counterparty: &str) -> Stored {
@@ -226,14 +235,21 @@ impl HostServices for Provider {
         Stored::ready(svc::ENTITLED)
     }
 
-    fn ticket_mint(&self, c: &Caller, unit: Option<u64>, ttl_secs: u64, record: &[u8]) -> Stored {
+    fn ticket_mint(
+        &self,
+        c: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         let arg = format!("{unit:?} {ttl_secs} {}", String::from_utf8_lossy(record));
         self.saw(c, "ticket.mint", arg.as_bytes());
-        Stored {
+        busbar_contract::services::Ran::Now(Stored {
             bytes: format!("tk_{}", unit.unwrap_or(0)).into_bytes(),
             spans: Vec::new(),
             ..Stored::ready(1_700_000_000 + ttl_secs)
-        }
+        })
     }
 
     fn ticket_take(&self, c: &Caller, unit: Option<u64>) -> Stored {
@@ -394,12 +410,23 @@ impl HostServices for Provider {
         Ran::Later
     }
 
-    fn snapshot_read(&self, c: &Caller, scope: u32) -> busbar_contract::services::Snapshot {
+    fn snapshot_read(
+        &self,
+        c: &Caller,
+        scope: u32,
+        _later: busbar_contract::services::Later,
+    ) -> busbar_contract::services::Ran {
         self.saw(c, "snapshot.read", scope.to_string().as_bytes());
-        if self.snapshot_not_ready.load(Ordering::Relaxed) {
-            return busbar_contract::services::Snapshot::NotReady;
+        if self.snapshot_pending.swap(false, Ordering::SeqCst) {
+            self.held.lock().unwrap().push(_later);
+            return Ran::Later;
         }
-        busbar_contract::services::Snapshot::Families(snapshot_families())
+        let snapshot = if self.snapshot_not_ready.load(Ordering::Relaxed) {
+            Snapshot::NotReady
+        } else {
+            Snapshot::Families(snapshot_families())
+        };
+        Ran::Now(snapshot.stored())
     }
 }
 
@@ -1489,7 +1516,7 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
 
 fn mint_in(ttl_secs: u64, record: &[u8], buf: &mut [u8]) -> TicketMintIn {
     TicketMintIn {
-        head: head(op::TICKET_MINT, Ticket::NONE, 0, size_of::<TicketMintIn>()),
+        head: head(op::TICKET_MINT, TICKET, 0, size_of::<TicketMintIn>()),
         ttl_secs,
         record: Blob {
             ptr: record.as_ptr(),
@@ -2018,24 +2045,16 @@ fn an_unreachable_sighting_reaches_the_last_verdict_and_an_unknown_outcome_is_fa
     );
 }
 
-const fn unticketed(seq: u32) -> CompletionHandle {
-    CompletionHandle {
-        ticket: Ticket::NONE,
-        seq,
-        _reserved: 0,
-    }
-}
-
 #[test]
 fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
     let d = double();
     let s = sdk(&d);
     assert_eq!(
-        s.trust_decide(unticketed(0), "peer", Some("t"), Some("d1"), true),
+        service_ready(s.trust_decide(ticketed(0), "peer", Some("t"), Some("d1"), true)),
         Ok(svc::TRUST_DECIDED_SERVING)
     );
     assert_eq!(
-        s.trust_decide(unticketed(1), "peer", None, None, false),
+        service_ready(s.trust_decide(ticketed(1), "peer", None, None, false)),
         Ok(svc::TRUST_DECIDED_SERVING)
     );
     let bad = svc::TrustDecideIn {
@@ -2173,19 +2192,19 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
     use busbar_contract::abi::sdk::ServiceError;
     let d = double();
     let none = CompletionHandle {
-        ticket: Ticket::NONE,
+        ticket: TICKET,
         seq: 0,
         _reserved: 0,
     };
     let services = sdk(&d);
     let mut small = [0u64; 4];
-    let needed = match services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small) {
+    let needed = match service_ready(services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small))
+    {
         Err(ServiceError::Short { bytes, items: 0 }) => bytes,
         other => panic!("a short buffer earns its size: {other:?}"),
     };
     let mut buf = vec![0u64; usize::try_from(needed).unwrap().div_ceil(8)];
-    let read = services
-        .snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut buf)
+    let read = service_ready(services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut buf))
         .expect("the re-call reads");
     assert_eq!(read, Some(snapshot_families()), "read back exactly");
     d.route
@@ -2193,7 +2212,7 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
         .snapshot_not_ready
         .store(true, Ordering::Relaxed);
     assert_eq!(
-        services.snapshot_read(none, SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        service_ready(services.snapshot_read(ticketed(1), SNAPSHOT_SCOPE_WHOLE, &mut buf)),
         Ok(None),
         "not ready is NONE, never an empty success"
     );
@@ -2210,7 +2229,6 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
         seen,
         vec![
             ("double".to_string(), "snapshot.read", "1".to_string()),
-            ("double".to_string(), "snapshot.read", "1".to_string()),
             ("double".to_string(), "snapshot.read", "0".to_string()),
         ]
     );
@@ -2224,12 +2242,7 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     let at = words.as_mut_ptr().cast::<u8>();
     let call = |scope: u32, buf: *mut u8, cap: usize| {
         let i = SnapshotReadIn {
-            head: head(
-                op::SNAPSHOT_READ,
-                Ticket::NONE,
-                0,
-                size_of::<SnapshotReadIn>(),
-            ),
+            head: head(op::SNAPSHOT_READ, TICKET, 0, size_of::<SnapshotReadIn>()),
             scope,
             _reserved: 0,
             into: ServiceBufs {
@@ -3540,4 +3553,54 @@ pub(super) fn clock_provider() -> Arc<dyn HostServices> {
         clock: Some(std::time::Instant::now()),
         ..Provider::default()
     })
+}
+
+fn service_ready<T>(
+    result: std::task::Poll<Result<T, busbar_contract::abi::sdk::ServiceError>>,
+) -> Result<T, busbar_contract::abi::sdk::ServiceError> {
+    match result {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => panic!("the synchronous test provider unexpectedly pended"),
+    }
+}
+
+#[test]
+fn pending_snapshot_reuses_owned_families_and_rebases_short_delivery() {
+    use busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS;
+    use busbar_contract::abi::sdk::ServiceError;
+    use std::task::Poll;
+    let d = double();
+    d.route
+        .provider
+        .snapshot_pending
+        .store(true, Ordering::SeqCst);
+    let sdk = sdk(&d);
+    let mut initial = [0u64; 1];
+    assert!(matches!(
+        sdk.snapshot_read(ticketed(0), SNAPSHOT_SCOPE_HOOKS, &mut initial),
+        Poll::Pending
+    ));
+    let complete = d.route.provider.held.lock().unwrap().pop().unwrap();
+    complete(Snapshot::Families(snapshot_families()).stored());
+    let mut short = [0u64; 2];
+    let needed = match sdk.snapshot_read(ticketed(0), SNAPSHOT_SCOPE_HOOKS, &mut short) {
+        Poll::Ready(Err(ServiceError::Short { bytes, .. })) => bytes,
+        other => panic!("expected SHORT after completion: {other:?}"),
+    };
+    let mut destination = vec![0u64; usize::try_from(needed).unwrap().div_ceil(8)];
+    let result =
+        service_ready(sdk.snapshot_read(ticketed(0), SNAPSHOT_SCOPE_HOOKS, &mut destination))
+            .unwrap();
+    assert_eq!(result, Some(snapshot_families()));
+    assert_eq!(
+        d.route
+            .provider
+            .scoped
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, service, _)| *service == "snapshot.read")
+            .count(),
+        1
+    );
 }

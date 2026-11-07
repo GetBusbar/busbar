@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use busbar_contract::abi::plane::{
-    UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED,
+    CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED, UnitCount,
 };
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::records::VirtualKey;
@@ -109,12 +109,21 @@ fn admit(r: &Rig) {
     r.money.open(UnitKey::new(1), unit);
 }
 
-fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
-    rig_with(budget_cents, fee, mode, FeeRefund::CallerStatus)
+async fn rig(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode) -> Rig {
+    rig_with(budget_cents, fee, mode, FeeRefund::CallerStatus).await
 }
 
-fn rig_with(budget_cents: Option<u64>, fee: i64, mode: ExhaustionMode, rule: FeeRefund) -> Rig {
-    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
+async fn rig_with(
+    budget_cents: Option<u64>,
+    fee: i64,
+    mode: ExhaustionMode,
+    rule: FeeRefund,
+) -> Rig {
+    let gov = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .expect("gov"),
+    );
     let posted = Arc::new(Posted::default());
     let money = PlaneMoney::new(gov.clone(), posted.clone());
     let (cost, key) = (cost(budget_cents, fee), key());
@@ -152,17 +161,18 @@ fn reported(amount: u64) -> [UnitCount; 1] {
     }]
 }
 
-fn usage(r: &Rig) -> (Count, i64) {
+async fn usage(r: &Rig) -> (Count, i64) {
     let u = r
         .gov
-        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
         .expect("usage");
     (u.tokens, u.spend_cents)
 }
 
-#[test]
-fn the_end_ledgers_the_last_reported_counts_once() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn the_end_ledgers_the_last_reported_counts_once() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     for n in [10, 60, 100] {
         assert_eq!(
             r.money.checkpoint(&ctx(1), &reported(n)),
@@ -170,27 +180,27 @@ fn the_end_ledgers_the_last_reported_counts_once() {
         );
     }
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(0u64),
         "a running report is a checkpoint, never a ledger line"
     );
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(100u64),
         "the last cumulative count, once"
     );
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(100u64),
         "a closed unit ledgers nothing again"
     );
 }
 
-#[test]
-fn an_estimate_never_bills() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn an_estimate_never_bills() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let estimated = [UnitCount {
         class: INPUT,
         source: UNITS_ESTIMATED,
@@ -198,12 +208,12 @@ fn an_estimate_never_bills() {
     }];
     let _ = r.money.checkpoint(&ctx(1), &estimated);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, Count::from(0u64));
+    assert_eq!(usage(&r).await.0, Count::from(0u64));
 }
 
-#[test]
-fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(80));
     r.money.cancelled(
         &ctx(1),
@@ -215,30 +225,34 @@ fn a_cancel_bill_is_ledgered_and_the_end_adds_nothing() {
             billed: vec![(INPUT, Count::from(70u64))],
         },
     );
-    assert_eq!(usage(&r).0, Count::from(70u64), "the bill's counts");
+    assert_eq!(usage(&r).await.0, Count::from(70u64), "the bill's counts");
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(70u64),
         "the end does not ledger the unit a second time"
     );
 }
 
-#[test]
-fn an_undelivered_end_refunds_the_flat_fee() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn an_undelivered_end_refunds_the_flat_fee() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     admit(&r);
-    assert_eq!(usage(&r).1, 5);
+    assert_eq!(usage(&r).await.1, 5);
     r.money.settle_end(UnitKey::new(1), 503);
-    assert_eq!(usage(&r).1, 0, "1.5.5's non-2xx refund of the request fee");
+    assert_eq!(
+        usage(&r).await.1,
+        0,
+        "1.5.5's non-2xx refund of the request fee"
+    );
 }
 
-#[test]
-fn a_delivered_end_keeps_the_flat_fee() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_delivered_end_keeps_the_flat_fee() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     admit(&r);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).1, 5);
+    assert_eq!(usage(&r).await.1, 5);
 }
 
 const FEE_UNIT: u32 = 2;
@@ -255,9 +269,10 @@ fn fee_reported(amount: u64) -> UnitCount {
     }
 }
 
-fn requests(r: &Rig) -> u64 {
+async fn requests(r: &Rig) -> u64 {
     r.gov
-        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
         .expect("usage")
         .requests
 }
@@ -270,61 +285,65 @@ fn ended(caller_status: u32, refused_unspent: bool) -> UnitEnd {
     }
 }
 
-#[test]
-fn a_refused_unspent_end_releases_its_request_count() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_refused_unspent_end_releases_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
-    assert_eq!(requests(&r), 1, "admission counted the request");
+    assert_eq!(requests(&r).await, 1, "admission counted the request");
     r.money.settle_end_as(UnitKey::new(1), ended(403, true));
-    assert_eq!(requests(&r), 0, "the refusal counts against no cap");
-    assert_eq!(usage(&r).1, 0, "and its fee came back");
+    assert_eq!(requests(&r).await, 0, "the refusal counts against no cap");
+    assert_eq!(usage(&r).await.1, 0, "and its fee came back");
 }
 
-#[test]
-fn a_failed_end_keeps_its_request_count() {
+#[tokio::test]
+async fn a_failed_end_keeps_its_request_count() {
     for rule in [FeeRefund::CallerStatus, plane_fees()] {
-        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, rule);
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, rule).await;
         admit(&r);
         r.money.settle_end_as(UnitKey::new(1), ended(503, false));
-        assert_eq!(requests(&r), 1, "a failure is counted");
-        assert_eq!(usage(&r).1, 0, "its fee refunded, as before");
+        assert_eq!(requests(&r).await, 1, "a failure is counted");
+        assert_eq!(usage(&r).await.1, 0, "its fee refunded, as before");
     }
 }
 
-#[test]
-fn a_refused_end_that_reported_units_keeps_its_request_count() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_refused_end_that_reported_units_keeps_its_request_count() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &reported(10));
     r.money.settle_end_as(UnitKey::new(1), ended(403, true));
     assert_eq!(
-        requests(&r),
+        requests(&r).await,
         1,
         "units were reported: the unit was not unspent"
     );
 }
 
-#[test]
-fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_plane_that_reports_no_fee_unit_has_its_fee_refunded() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[fee_reported(0)]);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).1, 0, "the plane decides: no fee unit, no fee");
+    assert_eq!(
+        usage(&r).await.1,
+        0,
+        "the plane decides: no fee unit, no fee"
+    );
 }
 
-#[test]
-fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_plane_that_reports_its_fee_unit_keeps_the_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
     r.money.settle_end(UnitKey::new(1), 503);
-    assert_eq!(usage(&r).1, 5, "the plane reported its fee unit");
+    assert_eq!(usage(&r).await.1, 5, "the plane reported its fee unit");
 }
 
-#[test]
-fn a_fee_unit_count_is_never_ledgered_as_usage() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_fee_unit_count_is_never_ledgered_as_usage() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let report = [
         UnitCount {
@@ -337,22 +356,23 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
     let _ = r.money.checkpoint(&ctx(1), &report);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r),
+        usage(&r).await,
         (Count::from(40u64), 5),
         "the input counts and the admission's fee, nothing else"
     );
 }
 
-fn group_month(r: &Rig, at: u64) -> (Count, i64) {
+async fn group_month(r: &Rig, at: u64) -> (Count, i64) {
     let u = r
         .gov
-        .derived_bucket_usage(
+        .derived_bucket_usage_async(
             &r.cost,
             "group:g@month",
             crate::governance::WINDOW_MONTH,
             true,
             at,
         )
+        .await
         .expect("usage");
     (u.tokens, u.spend_cents)
 }
@@ -367,41 +387,46 @@ fn a_later_window() -> u64 {
     today
 }
 
-#[test]
-fn test_flat_fee_charge_and_refund_use_charged_at_window() {
+#[tokio::test]
+async fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     let r = rig_with(
         Some(1_000_000),
         30,
         ExhaustionMode::FinishUnit,
         plane_fees(),
-    );
+    )
+    .await;
     let today = a_later_window();
     admit(&r);
     assert_eq!(
-        group_month(&r, NOW).1,
+        group_month(&r, NOW).await.1,
         30,
         "admission charged the flat fee into the charged_at window"
     );
-    assert_eq!(usage(&r).1, 30, "and onto the key");
-    assert_eq!(group_month(&r, today).1, 0, "nothing in the now window");
+    assert_eq!(usage(&r).await.1, 30, "and onto the key");
+    assert_eq!(
+        group_month(&r, today).await.1,
+        0,
+        "nothing in the now window"
+    );
 
     r.money.settle_end(UnitKey::new(1), 503);
     assert_eq!(
-        group_month(&r, NOW).1,
+        group_month(&r, NOW).await.1,
         0,
         "non-2xx refund must land in the charged_at window (net 0)"
     );
-    assert_eq!(usage(&r).1, 0);
+    assert_eq!(usage(&r).await.1, 0);
     assert_eq!(
-        group_month(&r, today).1,
+        group_month(&r, today).await.1,
         0,
         "neither charge nor refund may leak into the wall-clock 'now' window (#29)"
     );
 }
 
-#[test]
-fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
-    let r = rig_with(Some(1_000_000), 0, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
+    let r = rig_with(Some(1_000_000), 0, ExhaustionMode::FinishUnit, plane_fees()).await;
     let today = a_later_window();
     let report = [
         UnitCount {
@@ -419,24 +444,24 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     let _ = r.money.checkpoint(&ctx(1), &report);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        group_month(&r, NOW).0,
+        group_month(&r, NOW).await.0,
         Count::from(1000u64),
         "token accrual must be attributed to the charged_at (header-arrival) window"
     );
     assert_eq!(
-        group_month(&r, today).0,
+        group_month(&r, today).await.0,
         Count::from(0u64),
         "token accrual must NOT leak into the wall-clock 'now' window (the #29 split bug)"
     );
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(1000u64),
         "the key's all-time bucket sees the tokens"
     );
 }
 
-#[test]
-fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
+#[tokio::test]
+async fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
     for (status, report, fee, why) in [
         (200u32, Some(1u64), 5i64, "delivered and routed upstream"),
         (200, Some(0), 0, "delivered, but no upstream leg"),
@@ -444,30 +469,31 @@ fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
         (404, Some(0), 0, "routed upstream, but undelivered (404)"),
         (503, None, 0, "neither delivered nor routed"),
     ] {
-        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
         admit(&r);
-        assert_eq!(usage(&r).1, 5, "{why}: the admission charged the fee");
+        assert_eq!(usage(&r).await.1, 5, "{why}: the admission charged the fee");
         if let Some(n) = report {
             let _ = r.money.checkpoint(&ctx(1), &[fee_reported(n)]);
         }
         r.money.settle_end(UnitKey::new(1), status);
-        assert_eq!(usage(&r).1, fee, "{why}");
+        assert_eq!(usage(&r).await.1, fee, "{why}");
     }
 }
 
-fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
-    r.gov.flush_metering();
+async fn metering_rows(r: &Rig) -> Vec<busbar_contract::records::MeteringRow> {
+    r.gov.flush_metering().await;
     r.gov
-        .metering_for(crate::governance::metering_bucket(NOW))
+        .metering_for_async(crate::governance::metering_bucket(NOW))
+        .await
         .expect("metering read")
 }
 
-#[test]
-fn a_delivered_zero_token_unit_meters_one_request() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_delivered_zero_token_unit_meters_one_request() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "m", "acme");
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(rows.len(), 1, "one metering row");
     let row = &rows[0];
     assert_eq!(
@@ -477,10 +503,10 @@ fn a_delivered_zero_token_unit_meters_one_request() {
     assert_eq!((row.tokens_input, row.tokens_output), (0, 0));
 }
 
-#[test]
-fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived_in() {
+#[tokio::test]
+async fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived_in() {
     use crate::governance::metering_bucket;
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let arrived = metering_bucket(NOW) - 1;
     assert_ne!(
         metering_bucket(arrived),
@@ -502,30 +528,31 @@ fn a_door_unit_arriving_at_a_bucket_boundary_is_metered_in_the_bucket_it_arrived
     let _ = r.money.checkpoint(&ctx(1), &reported(40));
     r.money.served(&ctx(1), "m", "acme");
     r.money.settle_end(UnitKey::new(1), 200);
-    r.gov.flush_metering();
-    let rows_in = |bucket| {
+    r.gov.flush_metering().await;
+    let rows_in = async |bucket| {
         r.gov
-            .metering_for(bucket)
+            .metering_for_async(bucket)
+            .await
             .expect("metering read")
             .into_iter()
             .filter(|row| row.key_id == r.key.id)
             .count()
     };
     assert_eq!(
-        rows_in(metering_bucket(arrived)),
+        rows_in(metering_bucket(arrived)).await,
         1,
         "the unit's figures land in the bucket it arrived in"
     );
     assert_eq!(
-        rows_in(metering_bucket(arrived + 1)),
+        rows_in(metering_bucket(arrived + 1)).await,
         0,
         "and nothing leaked into the bucket the clock was about to roll into"
     );
 }
 
-#[test]
-fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let report = [
         UnitCount {
@@ -545,7 +572,7 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
             refused_unspent: false,
         },
     );
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(rows.len(), 1, "a cut stream meters what it spent: {rows:?}");
     let row = &rows[0];
     assert_eq!(
@@ -557,7 +584,7 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
         (40_000_000, 0),
         "the row carries the tokens the plane ledgered"
     );
-    let (tokens, spend) = usage(&r);
+    let (tokens, spend) = usage(&r).await;
     assert_eq!(
         tokens,
         Count::from(40u64),
@@ -566,18 +593,19 @@ fn a_stream_cut_by_its_far_end_bills_and_meters_what_its_plane_ledgered() {
     assert!(spend >= 5, "and the fee its plane reported stands: {spend}");
     let u = r
         .gov
-        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
         .expect("usage");
     assert_eq!(u.requests, 1, "the request unit counts once");
 }
 
-#[test]
-fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(40));
     r.money.served(&ctx(1), "m2", "fallback");
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (
@@ -590,7 +618,9 @@ fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
     );
     let models: Vec<String> = r
         .gov
-        .bucket_model_tokens(&r.key.id, WINDOW_TOTAL, NOW)
+        .bucket_model_tokens_async(&r.key.id, WINDOW_TOTAL, NOW)
+        .await
+        .unwrap()
         .into_iter()
         .map(|(model, _)| model)
         .collect();
@@ -601,12 +631,12 @@ fn a_failed_over_unit_ledgers_and_meters_under_the_serving_member() {
     );
 }
 
-#[test]
-fn a_plane_lane_unit_meters_on_the_planes_row() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_plane_lane_unit_meters_on_the_planes_row() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "tp\u{1f}srv_read", "unused");
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(rows.len(), 1);
     assert_eq!(
         (
@@ -618,9 +648,9 @@ fn a_plane_lane_unit_meters_on_the_planes_row() {
     );
 }
 
-#[test]
-fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.open(
         UnitKey::new(1),
         UnitMoney {
@@ -643,7 +673,7 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
         "the plane's lane, qualified by its own key, holds over the serving member"
     );
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(
         (
@@ -655,7 +685,9 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     );
     let models: Vec<String> = r
         .gov
-        .bucket_model_tokens(&r.key.id, WINDOW_TOTAL, NOW)
+        .bucket_model_tokens_async(&r.key.id, WINDOW_TOTAL, NOW)
+        .await
+        .unwrap()
         .into_iter()
         .map(|(model, _)| model)
         .collect();
@@ -666,11 +698,11 @@ fn a_plane_named_lane_is_the_units_ledger_lane_not_its_route_entry() {
     );
 }
 
-#[test]
-fn a_plane_units_declared_class_counts_reach_its_metering_row() {
+#[tokio::test]
+async fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     const CALLS: u32 = 0;
     const BYTES: u32 = 1;
-    let r = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+    let r = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees()).await;
     r.money.open(
         UnitKey::new(1),
         UnitMoney {
@@ -699,7 +731,7 @@ fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     let _ = r.money.checkpoint(&ctx(1), &report);
     r.money.laned(&ctx(1), "srv_read");
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     let counts: Vec<_> = rows
         .iter()
         .map(|row| {
@@ -726,9 +758,9 @@ fn a_plane_units_declared_class_counts_reach_its_metering_row() {
     );
 }
 
-#[test]
-fn a_unit_naming_no_lane_keeps_its_route_entry() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_unit_naming_no_lane_keeps_its_route_entry() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.laned(&ctx(1), "");
     r.money.served(&ctx(1), "tp\u{1f}srv", "srv");
     assert_eq!(
@@ -737,16 +769,16 @@ fn a_unit_naming_no_lane_keeps_its_route_entry() {
     );
 }
 
-#[test]
-fn an_undelivered_end_meters_nothing() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn an_undelivered_end_meters_nothing() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "m", "acme");
     r.money.settle_end(UnitKey::new(1), 503);
-    assert!(metering_rows(&r).is_empty());
+    assert!(metering_rows(&r).await.is_empty());
 }
 
-#[test]
-fn a_cancelled_stream_meters_only_a_reported_bill() {
+#[tokio::test]
+async fn a_cancelled_stream_meters_only_a_reported_bill() {
     let bill = |billed: Vec<(u32, u64)>| CancelBill {
         cause: ReasonCode::ClientGone,
         disposition: CANCEL_OK_PARTIAL,
@@ -757,29 +789,32 @@ fn a_cancelled_stream_meters_only_a_reported_bill() {
             .map(|(class, count)| (class, count.into()))
             .collect(),
     };
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "m", "acme");
     r.money.cancelled(&ctx(1), &bill(vec![(INPUT, 0)]));
-    assert!(metering_rows(&r).is_empty(), "a zero bill meters nothing");
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    assert!(
+        metering_rows(&r).await.is_empty(),
+        "a zero bill meters nothing"
+    );
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.served(&ctx(1), "m", "acme");
     r.money.cancelled(&ctx(1), &bill(vec![(INPUT, 30)]));
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!((rows.len(), rows[0].tokens_input), (1, 30_000_000));
 }
 
-#[test]
-fn finish_unit_never_cuts() {
-    let r = rig(Some(1), 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn finish_unit_never_cuts() {
+    let r = rig(Some(1), 0, ExhaustionMode::FinishUnit).await;
     assert_eq!(
         r.money.checkpoint(&ctx(1), &reported(1_000_000)),
         Checkpoint::Continue
     );
 }
 
-#[test]
-fn cut_stream_cuts_at_the_tightest_budget() {
-    let r = rig(Some(1), 0, ExhaustionMode::CutStream);
+#[tokio::test]
+async fn cut_stream_cuts_at_the_tightest_budget() {
+    let r = rig(Some(1), 0, ExhaustionMode::CutStream).await;
     assert_eq!(
         r.money.checkpoint(&ctx(1), &reported(9_999)),
         Checkpoint::Continue
@@ -793,7 +828,7 @@ fn cut_stream_cuts_at_the_tightest_budget() {
         source: UNITS_ESTIMATED,
         amount: 1_000_000,
     }];
-    let r = rig(Some(1), 0, ExhaustionMode::CutStream);
+    let r = rig(Some(1), 0, ExhaustionMode::CutStream).await;
     assert_eq!(
         r.money.checkpoint(&ctx(1), &estimated),
         Checkpoint::Continue,
@@ -801,9 +836,9 @@ fn cut_stream_cuts_at_the_tightest_budget() {
     );
 }
 
-#[test]
-fn cut_stream_without_a_budget_never_cuts() {
-    let r = rig(None, 0, ExhaustionMode::CutStream);
+#[tokio::test]
+async fn cut_stream_without_a_budget_never_cuts() {
+    let r = rig(None, 0, ExhaustionMode::CutStream).await;
     assert_eq!(
         r.money
             .checkpoint(&ctx(1), &reported(i64::MAX as u64 / 1_000_000)),
@@ -811,9 +846,9 @@ fn cut_stream_without_a_budget_never_cuts() {
     );
 }
 
-#[test]
-fn an_abandoned_end_goes_to_the_roots_posting_site() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn an_abandoned_end_goes_to_the_roots_posting_site() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(r.posted.0.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -833,10 +868,10 @@ fn bill(cause: ReasonCode, amount: u64) -> CancelBill {
     }
 }
 
-#[test]
-fn a_report_that_overflows_is_unpriced_and_never_kept() {
+#[tokio::test]
+async fn a_report_that_overflows_is_unpriced_and_never_kept() {
     for mode in [ExhaustionMode::FinishUnit, ExhaustionMode::CutStream] {
-        let r = rig(None, 0, mode);
+        let r = rig(None, 0, mode).await;
         let _ = r.money.checkpoint(&ctx(1), &reported(40));
         let twice = [
             UnitCount {
@@ -857,15 +892,15 @@ fn a_report_that_overflows_is_unpriced_and_never_kept() {
         );
         r.money.settle_end(UnitKey::new(1), 200);
         assert_eq!(
-            usage(&r).0,
+            usage(&r).await.0,
             Count::from(40u64),
             "{mode:?}: the last report that added up"
         );
     }
 }
 
-#[test]
-fn class_sums_are_checked_without_a_saturating_fallback() {
+#[tokio::test]
+async fn class_sums_are_checked_without_a_saturating_fallback() {
     let classes = ["input".to_string()];
     let counts = [
         (INPUT, Count::from_micros(i128::MAX)),
@@ -882,31 +917,31 @@ fn class_sums_are_checked_without_a_saturating_fallback() {
     );
 }
 
-#[test]
-fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(10));
     r.money.finished(&ctx(1));
     r.money.settle_end(UnitKey::new(1), 200);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        (usage(&r).0, r.money.open_units()),
+        (usage(&r).await.0, r.money.open_units()),
         (Count::from(10u64), 0),
         "complete"
     );
 
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(20));
     r.money.finished(&ctx(1));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        (usage(&r).0, r.money.open_units()),
+        (usage(&r).await.0, r.money.open_units()),
         (Count::from(20u64), 0),
         "abandon after finish"
     );
 
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
@@ -919,37 +954,37 @@ fn every_path_ledgers_a_unit_exactly_once_and_closes_it() {
     r.money
         .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     assert_eq!(
-        (usage(&r).0, r.money.open_units()),
+        (usage(&r).await.0, r.money.open_units()),
         (Count::from(25u64), 0),
         "abandon then bill"
     );
 
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money
         .cancelled(&ctx(1), &bill(ReasonCode::ClientGone, 25));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
-        (usage(&r).0, r.money.open_units()),
+        (usage(&r).await.0, r.money.open_units()),
         (Count::from(25u64), 0),
         "bill then abandon"
     );
 
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &reported(30));
     r.money
         .cancelled(&ctx(1), &bill(ReasonCode::DeadlineExceeded, 5));
     r.money.settle_end(UnitKey::new(1), 504);
     assert_eq!(
-        (usage(&r).0, r.money.open_units()),
+        (usage(&r).await.0, r.money.open_units()),
         (Count::from(5u64), 0),
         "cancel then end"
     );
 }
 
-#[test]
-fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     admit(&r);
     r.money.cancelled(
         &ctx(1),
@@ -962,15 +997,15 @@ fn a_cancelled_undelivered_unit_is_refunded_once_and_an_abandoned_one_never() {
         },
     );
     r.money.settle_end(UnitKey::new(1), 504);
-    assert_eq!(usage(&r).1, 0, "the fee refunded");
+    assert_eq!(usage(&r).await.1, 0, "the fee refunded");
     r.money.settle_end(UnitKey::new(1), 504);
-    assert_eq!(usage(&r).1, 0, "and once");
+    assert_eq!(usage(&r).await.1, 0, "and once");
 
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     admit(&r);
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(
-        usage(&r).1,
+        usage(&r).await.1,
         5,
         "a caller that went away keeps the fee charged"
     );
@@ -984,16 +1019,20 @@ fn floor(class: u32, amount: u64) -> UnitCount {
     }
 }
 
-#[test]
-fn a_floor_count_bills_like_a_reported_one() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_floor_count_bills_like_a_reported_one() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let _ = r.money.checkpoint(&ctx(1), &[floor(INPUT, 51)]);
     r.money.settle_end(UnitKey::new(1), 200);
-    assert_eq!(usage(&r).0, Count::from(51u64), "the floor bills, once");
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(51u64),
+        "the floor bills, once"
+    );
 }
 
-#[test]
-fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
+#[tokio::test]
+async fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     let facts = crate::plane_driver::cancel::Facts {
         headed: false,
         status: 0,
@@ -1015,24 +1054,24 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     assert_eq!(bill.billed, vec![(INPUT, Count::from(40u64))]);
 }
 
-#[test]
-fn a_fee_unit_floor_count_keeps_the_fee() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn a_fee_unit_floor_count_keeps_the_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     admit(&r);
     let _ = r.money.checkpoint(&ctx(1), &[floor(FEE_UNIT, 1)]);
     r.money.settle_end(UnitKey::new(1), 503);
-    assert_eq!(usage(&r).1, 5, "a floor fee unit keeps the fee");
+    assert_eq!(usage(&r).await.1, 5, "a floor fee unit keeps the fee");
 }
 
-#[test]
-fn a_session_on_a_unit_with_no_money_facts_is_refused() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_session_on_a_unit_with_no_money_facts_is_refused() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     assert_eq!(r.money.session_opened(&ctx(2)), Err(ReasonCode::Unpriced));
 }
 
-#[test]
-fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
     for n in [30, 75, 120] {
         assert_eq!(
@@ -1041,26 +1080,30 @@ fn a_session_writes_one_line_of_its_last_cumulative_counts_at_its_end() {
         );
     }
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(0u64),
         "a turn is a checkpoint, never a line"
     );
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, Count::from(120u64), "the session's one line");
+    assert_eq!(
+        usage(&r).await.0,
+        Count::from(120u64),
+        "the session's one line"
+    );
     r.money.session_ended(&ctx(1));
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         Count::from(120u64),
         "nothing is ledgered twice"
     );
     assert_eq!(r.money.open_units(), 0, "the unit's end closes it");
 }
 
-#[test]
-fn a_cancelled_side_does_not_replace_the_sessions_line() {
+#[tokio::test]
+async fn a_cancelled_side_does_not_replace_the_sessions_line() {
     for cause in [ReasonCode::ClientGone, ReasonCode::OverBudget] {
-        let r = rig(None, 0, ExhaustionMode::FinishUnit);
+        let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
         assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
         let _ = r.money.checkpoint(&ctx(1), &reported(90));
         r.money.cancelled(
@@ -1075,35 +1118,35 @@ fn a_cancelled_side_does_not_replace_the_sessions_line() {
         );
         r.money.cancelled(&ctx(1), &bill(cause, 40));
         assert_eq!(
-            usage(&r).0,
+            usage(&r).await.0,
             Count::from(0u64),
             "{cause:?}: a side's bill is not the line"
         );
         r.money.session_ended(&ctx(1));
         assert_eq!(
-            usage(&r).0,
+            usage(&r).await.0,
             Count::from(90u64),
             "{cause:?}: what the session served"
         );
     }
 }
 
-#[test]
-fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn an_abandoned_session_is_billed_by_its_cleanup_and_closes() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
     let _ = r.money.checkpoint(&ctx(1), &reported(55));
     r.money.abandoned(&ctx(1), Ended::AlreadySettled);
     assert_eq!(r.posted.0.load(Ordering::SeqCst), 1);
-    assert_eq!(usage(&r).0, Count::from(0u64));
+    assert_eq!(usage(&r).await.0, Count::from(0u64));
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, Count::from(55u64));
+    assert_eq!(usage(&r).await.0, Count::from(55u64));
     assert_eq!(r.money.open_units(), 0);
 }
 
-#[test]
-fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     assert_eq!(r.money.session_opened(&ctx(1)), Ok(()));
     let _ = r.money.checkpoint(
         &ctx(1),
@@ -1117,13 +1160,13 @@ fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
         ],
     );
     r.money.session_ended(&ctx(1));
-    assert_eq!(usage(&r).0, Count::from(7u64));
+    assert_eq!(usage(&r).await.0, Count::from(7u64));
 }
 
-#[test]
-fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
+#[tokio::test]
+async fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     use busbar_contract::plane::PER_SESSION;
-    use busbar_kernel_ledger::cost::{plane_fee_lane, PlaneFees};
+    use busbar_kernel_ledger::cost::{PlaneFees, plane_fee_lane};
     let fees = crate::config::PlaneFeesMap::from([(
         "sp".to_string(),
         PlaneFees {
@@ -1133,14 +1176,19 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     )]);
     let cost = Arc::new(cost_model(None, 0).with_plane_fees(&fees));
     let pool = format!("sp{}", crate::governance::PLANE_LANE_SEP);
-    let spend = |gov: &GovState| {
-        gov.derived_bucket_usage(&cost, "k", WINDOW_TOTAL, true, NOW)
+    let spend = async |gov: &GovState| {
+        gov.derived_bucket_usage_async(&cost, "k", WINDOW_TOTAL, true, NOW)
+            .await
             .expect("usage")
             .spend_cents
     };
     let one = BTreeMap::from([(PER_SESSION.to_string(), 1)]);
     for (answered, kept) in [(false, 0), (true, 40)] {
-        let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
+        let gov = Arc::new(
+            GovState::new_with_core(crate::real_store::core().await, None, None)
+                .await
+                .expect("gov"),
+        );
         let money = PlaneMoney::new(gov.clone(), Arc::new(Posted::default()));
         money.open(
             UnitKey::new(1),
@@ -1162,7 +1210,7 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
         );
 
         gov.record_usage(&cost, &key(), "", &plane_fee_lane("sp"), &one, NOW);
-        assert_eq!(spend(&gov), 40, "the session fee charged");
+        assert_eq!(spend(&gov).await, 40, "the session fee charged");
         assert_eq!(money.session_opened(&ctx(1)), Ok(()));
         if answered {
             let _ = money.checkpoint(&ctx(1), &[fee_reported(1), reported(7)[0]]);
@@ -1170,17 +1218,21 @@ fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
         money.session_ended(&ctx(1));
         money.settle_end(UnitKey::new(1), 101);
         assert_eq!(
-            spend(&gov),
+            spend(&gov).await,
             kept,
             "answered={answered}: refunded only when the far end never answered"
         );
     }
 }
 
-#[test]
-fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
-    let node = |material: Option<[u8; 32]>| {
-        let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
+#[tokio::test]
+async fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
+    let node = async |material: Option<[u8; 32]>| {
+        let gov = Arc::new(
+            GovState::new_with_core(crate::real_store::core().await, None, None)
+                .await
+                .expect("gov"),
+        );
         let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
         let slot = money.caller_refs().expect("the book lends a slot");
         if let Some(m) = material {
@@ -1196,29 +1248,33 @@ fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
         (lent("oidc:alice"), lent("oidc:bob"))
     };
 
-    let (boot_alice, boot_bob) = node(None);
+    let (boot_alice, boot_bob) = node(None).await;
     assert!(!boot_alice.is_empty() && !boot_bob.is_empty());
     assert_ne!(boot_alice, boot_bob);
     let keyset = [7u8; 32];
-    let (alice, bob) = node(Some(keyset));
+    let (alice, bob) = node(Some(keyset)).await;
     assert!(
         !alice.is_empty() && !bob.is_empty(),
         "a verified principal was lent nothing"
     );
     assert_ne!(alice, bob, "two principals share one reference");
 
-    assert_eq!(node(Some(keyset)), (alice.clone(), bob));
+    assert_eq!(node(Some(keyset)).await, (alice.clone(), bob));
 
-    assert_ne!(node(Some([8u8; 32])).0, alice);
+    assert_ne!(node(Some([8u8; 32])).await.0, alice);
     assert_ne!(
         boot_alice, alice,
         "the keyset, once bound, keys the reference"
     );
 }
 
-#[test]
-fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
-    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
+#[tokio::test]
+async fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_references() {
+    let gov = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .expect("gov"),
+    );
     let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
     let slot = money.caller_refs().expect("the book lends a slot");
     let lent = |p: &str| {
@@ -1237,9 +1293,13 @@ fn red_a_node_with_no_signing_key_and_no_signing_chain_lends_two_principals_two_
     assert_eq!(lent("oidc:alice"), alice, "one principal, one reference");
 }
 
-#[test]
-fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
-    let gov = Arc::new(GovState::new(crate::real_store::store(), None).expect("gov"));
+#[tokio::test]
+async fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
+    let gov = Arc::new(
+        GovState::new_with_core(crate::real_store::core().await, None, None)
+            .await
+            .expect("gov"),
+    );
     let slot = gov.caller_ref_slot();
     gov.bind_deployment_caller_ref([7u8; 32]);
     let by_keyset = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
@@ -1272,15 +1332,17 @@ fn lent_to_p(gov: &GovState) -> String {
         .unwrap_or_default()
 }
 
-fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
-    let store: Arc<dyn RecordStore> = crate::real_store::store();
-    GovState::new_with_signer(store, None, signer).expect("gov")
+async fn booted(signer: Option<crate::governance::signing::TokenSigner>) -> GovState {
+    let store: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
+    GovState::new_with_core(store, None, signer)
+        .await
+        .expect("gov")
 }
 
-#[test]
-fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
-    let first_boot = booted(signer_nine());
-    let second_boot = booted(signer_nine());
+#[tokio::test]
+async fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
+    let first_boot = booted(signer_nine()).await;
+    let second_boot = booted(signer_nine()).await;
     let by_signer = lent_to_p(&first_boot);
     assert!(!by_signer.is_empty());
     assert_eq!(
@@ -1288,16 +1350,16 @@ fn a_node_built_with_a_signer_keys_the_reference_by_it_not_by_the_boot_key() {
         by_signer,
         "a per-boot key keyed a node built with a signer"
     );
-    let keyless = booted(None);
+    let keyless = booted(None).await;
     let by_boot = lent_to_p(&keyless);
     assert_ne!(by_boot, by_signer);
     keyless.set_signing_key(signer_nine());
     assert_eq!(lent_to_p(&keyless), by_signer);
 }
 
-#[test]
-fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothing() {
-    let gov = booted(None);
+#[tokio::test]
+async fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothing() {
+    let gov = booted(None).await;
     let by_boot = lent_to_p(&gov);
     assert!(!by_boot.is_empty());
     gov.set_signing_key(signer_nine());
@@ -1318,8 +1380,8 @@ fn dropping_the_signer_with_no_keyset_falls_back_to_the_boot_key_never_to_nothin
     );
 }
 
-#[test]
-fn the_checkpoint_check_agrees_with_the_checked_sums() {
+#[tokio::test]
+async fn the_checkpoint_check_agrees_with_the_checked_sums() {
     let unit = |class: u32, amount: u64| UnitCount {
         class,
         source: UNITS_REPORTED,
@@ -1354,9 +1416,9 @@ fn the_checkpoint_check_agrees_with_the_checked_sums() {
     }
 }
 
-#[test]
-fn units_over_every_shard_are_counted_and_closed() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn units_over_every_shard_are_counted_and_closed() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let money = PlaneMoney::new(r.gov.clone(), r.posted.clone());
     let keys: Vec<u64> = (1..=3 * super::SHARDS as u64).collect();
     for k in &keys {
@@ -1375,9 +1437,9 @@ fn units_over_every_shard_are_counted_and_closed() {
     assert_eq!(money.open_units(), 0, "every end closes its unit");
 }
 
-#[test]
-fn served_requests_keep_each_units_pinned_group_until_settlement() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn served_requests_keep_each_units_pinned_group_until_settlement() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let mut later_key = (*r.key).clone();
     later_key.group = Some("later".into());
     r.money.open(
@@ -1391,7 +1453,7 @@ fn served_requests_keep_each_units_pinned_group_until_settlement() {
     r.money.served(&ctx(2), "m", "acme");
     r.money.settle_end(UnitKey::new(2), 200);
     r.money.settle_end(UnitKey::new(1), 200);
-    let rows = metering_rows(&r);
+    let rows = metering_rows(&r).await;
     assert_eq!(
         rows.len(),
         2,
@@ -1430,37 +1492,46 @@ fn child(r: &Rig, parent: &ParentMoney, id: u64) -> Result<(), ReasonCode> {
     )
 }
 
-#[test]
-fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
-    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
+    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees()).await;
     let _ = baseline.money.checkpoint(&ctx(1), &reported(1_000_000));
     baseline.money.settle_end(UnitKey::new(1), 200);
-    let priced = usage(&baseline).1;
+    let priced = usage(&baseline).await.1;
     assert!(priced > 0, "the media control has a real nonzero price");
 
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     let parent = admit_parent(&r);
     child(&r, &parent, 2).expect("borrow real admission");
-    assert_eq!(usage(&r).1, 5, "registration cannot charge a second fee");
+    assert_eq!(
+        usage(&r).await.1,
+        5,
+        "registration cannot charge a second fee"
+    );
     assert_eq!(r.money.session_opened(&ctx(2)), Ok(()));
     let _ = r
         .money
         .checkpoint(&ctx(2), &[reported(1_000_000)[0], fee_reported(1)]);
     r.money.settle_end(UnitKey::new(1), 503);
-    assert_eq!(usage(&r).1, 5, "parent refund waits for the actual child");
+    assert_eq!(
+        usage(&r).await.1,
+        5,
+        "parent refund waits for the actual child"
+    );
     r.money.session_ended(&ctx(2));
     r.money.settle_end(UnitKey::new(2), 200);
     r.money.session_ended(&ctx(2));
     r.money.settle_end(UnitKey::new(2), 200);
     assert_eq!(
-        usage(&r),
+        usage(&r).await,
         (Count::from(1_000_000u64), priced + 5),
         "one fee and one priced media line"
     );
     assert_eq!(r.money.open_units(), 0);
     let totals = r
         .gov
-        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
         .unwrap();
     assert_eq!(
         totals.requests, 1,
@@ -1468,10 +1539,10 @@ fn admitted_child_prices_nonzero_usage_under_exactly_one_real_fee() {
     );
 }
 
-#[test]
-fn parent_and_all_children_must_finish_refundable_before_the_single_refund() {
+#[tokio::test]
+async fn parent_and_all_children_must_finish_refundable_before_the_single_refund() {
     for child_first in [false, true] {
-        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
         let parent = admit_parent(&r);
         child(&r, &parent, 2).unwrap();
         child(&r, &parent, 3).unwrap();
@@ -1480,29 +1551,37 @@ fn parent_and_all_children_must_finish_refundable_before_the_single_refund() {
         } else {
             r.money.settle_end(UnitKey::new(1), 503);
         }
-        assert_eq!(usage(&r).1, 5);
+        assert_eq!(usage(&r).await.1, 5);
         if child_first {
             r.money.settle_end(UnitKey::new(1), 503);
         } else {
             r.money.settle_end(UnitKey::new(2), 503);
         }
-        assert_eq!(usage(&r).1, 5, "the second child still owns participation");
+        assert_eq!(
+            usage(&r).await.1,
+            5,
+            "the second child still owns participation"
+        );
         r.money.settle_end(UnitKey::new(3), 503);
-        assert_eq!(usage(&r).1, 0, "all participants refundable: one refund");
+        assert_eq!(
+            usage(&r).await.1,
+            0,
+            "all participants refundable: one refund"
+        );
         r.money.settle_end(UnitKey::new(1), 503);
         r.money.settle_end(UnitKey::new(2), 503);
         r.money.settle_end(UnitKey::new(3), 503);
         assert_eq!(
-            usage(&r).1,
+            usage(&r).await.1,
             0,
             "repeated terminal calls cannot refund again"
         );
     }
 }
 
-#[test]
-fn child_cancellation_bills_its_actual_media_once_and_keeps_an_incurred_fee() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn child_cancellation_bills_its_actual_media_once_and_keeps_an_incurred_fee() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     let parent = admit_parent(&r);
     child(&r, &parent, 2).unwrap();
     let _ = r
@@ -1514,13 +1593,13 @@ fn child_cancellation_bills_its_actual_media_once_and_keeps_an_incurred_fee() {
         .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 70));
     r.money.settle_end(UnitKey::new(1), 503);
     r.money.settle_end(UnitKey::new(2), 499);
-    assert_eq!(usage(&r), (Count::from(70u64), 5));
+    assert_eq!(usage(&r).await, (Count::from(70u64), 5));
     assert_eq!(r.money.open_units(), 0);
 }
 
-#[test]
-fn abandoned_child_closes_fee_participation_once_without_inventing_a_refund() {
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn abandoned_child_closes_fee_participation_once_without_inventing_a_refund() {
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     let parent = admit_parent(&r);
     child(&r, &parent, 2).unwrap();
     let _ = r.money.checkpoint(&ctx(2), &reported(55));
@@ -1531,13 +1610,13 @@ fn abandoned_child_closes_fee_participation_once_without_inventing_a_refund() {
     r.money
         .cancelled(&ctx(2), &bill(ReasonCode::ClientGone, 40));
     r.money.settle_end(UnitKey::new(2), 503);
-    assert_eq!(usage(&r), (Count::from(40u64), 5));
+    assert_eq!(usage(&r).await, (Count::from(40u64), 5));
     assert_eq!(r.money.open_units(), 0);
 }
 
-#[test]
-fn parent_money_requires_the_actual_live_governor_registration() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn parent_money_requires_the_actual_live_governor_registration() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     assert!(
         r.money.parent_money(UnitKey::new(1), &r.key).is_err(),
         "ordinary open is not an admission"
@@ -1553,7 +1632,7 @@ fn parent_money_requires_the_actual_live_governor_registration() {
         r.money.parent_money(UnitKey::new(1), &foreign).is_err(),
         "foreign billing key"
     );
-    let other = rig(None, 5, ExhaustionMode::FinishUnit);
+    let other = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let _other_parent = admit_parent(&other);
     assert!(
         child(&other, &parent, 2).is_err(),
@@ -1586,9 +1665,9 @@ fn parent_money_requires_the_actual_live_governor_registration() {
     );
 }
 
-#[test]
-fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let parent = admit_parent(&r);
     r.money.served(&ctx(1), "m2", "provider");
     r.money.laned(&ctx(1), "m");
@@ -1597,18 +1676,19 @@ fn selecting_a_parent_lane_does_not_invalidate_real_admission_provenance() {
     let _ = r.money.checkpoint(&ctx(17), &reported(31));
     r.money.settle_end(UnitKey::new(1), 200);
     r.money.settle_end(UnitKey::new(17), 200);
-    assert_eq!(usage(&r), (Count::from(31u64), 5));
+    assert_eq!(usage(&r).await, (Count::from(31u64), 5));
 }
 
-#[test]
-fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_closes() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_closes() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let parent = admit_parent(&r);
     assert_eq!(r.money.validate_parent(&parent, &r.key), Ok(()));
-    assert!(r
-        .money
-        .validate_child(&parent, UnitKey::new(2), &r.key)
-        .is_err());
+    assert!(
+        r.money
+            .validate_child(&parent, UnitKey::new(2), &r.key)
+            .is_err()
+    );
     child(&r, &parent, 2).unwrap();
     assert_eq!(
         r.money.validate_child(&parent, UnitKey::new(2), &r.key),
@@ -1617,21 +1697,24 @@ fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_cl
     let mut foreign = r.key.as_ref().clone();
     foreign.generation_hash = "foreign".into();
     assert!(r.money.validate_parent(&parent, &foreign).is_err());
-    assert!(r
-        .money
-        .validate_child(&parent, UnitKey::new(2), &foreign)
-        .is_err());
-    assert!(r
-        .money
-        .validate_child(&parent, UnitKey::new(1), &r.key)
-        .is_err());
-    let other = rig(None, 5, ExhaustionMode::FinishUnit);
+    assert!(
+        r.money
+            .validate_child(&parent, UnitKey::new(2), &foreign)
+            .is_err()
+    );
+    assert!(
+        r.money
+            .validate_child(&parent, UnitKey::new(1), &r.key)
+            .is_err()
+    );
+    let other = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let other_parent = admit_parent(&other);
     child(&other, &other_parent, 2).unwrap();
-    assert!(r
-        .money
-        .validate_child(&other_parent, UnitKey::new(2), &r.key)
-        .is_err());
+    assert!(
+        r.money
+            .validate_child(&other_parent, UnitKey::new(2), &r.key)
+            .is_err()
+    );
     r.money.settle_end(UnitKey::new(1), 200);
     assert!(r.money.validate_parent(&parent, &r.key).is_err());
     assert_eq!(
@@ -1645,10 +1728,11 @@ fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_cl
         "driver finished precedes teller terminal: retain the real child's exit authority"
     );
     r.money.settle_end(UnitKey::new(2), 200);
-    assert!(r
-        .money
-        .validate_child(&parent, UnitKey::new(2), &r.key)
-        .is_err());
+    assert!(
+        r.money
+            .validate_child(&parent, UnitKey::new(2), &r.key)
+            .is_err()
+    );
     r.money.open(UnitKey::new(2), r.unit.clone());
     assert!(
         r.money
@@ -1658,9 +1742,9 @@ fn child_exit_authority_requires_a_real_matching_live_child_even_after_parent_cl
     );
 }
 
-#[test]
-fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority() {
-    let mut r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority() {
+    let mut r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let groups = BTreeMap::from([(
         "g".to_string(),
         GroupCfg {
@@ -1701,9 +1785,9 @@ fn the_real_governor_concurrency_grant_lives_through_child_and_parent_authority(
     );
 }
 
-#[test]
-fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).unwrap());
     assert!(
         r.money
@@ -1720,16 +1804,18 @@ fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
             .is_err(),
         "another actual grant for the same billing key is not this admission"
     );
-    assert!(r
-        .money
-        .validate_admitted(UnitKey::new(99), &r.key, &grant)
-        .is_err());
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(99), &r.key, &grant)
+            .is_err()
+    );
     let mut foreign = r.key.as_ref().clone();
     foreign.generation_hash = "foreign".into();
-    assert!(r
-        .money
-        .validate_admitted(UnitKey::new(1), &foreign, &grant)
-        .is_err());
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(1), &foreign, &grant)
+            .is_err()
+    );
     let parent = r.money.parent_money(UnitKey::new(1), &r.key).unwrap();
     child(&r, &parent, 2).unwrap();
     assert!(
@@ -1749,10 +1835,11 @@ fn a_units_own_exit_authority_requires_its_actual_registered_governor_grant() {
         "finished precedes the teller's terminal authority check"
     );
     r.money.settle_end(UnitKey::new(1), 200);
-    assert!(r
-        .money
-        .validate_admitted(UnitKey::new(1), &r.key, &grant)
-        .is_err());
+    assert!(
+        r.money
+            .validate_admitted(UnitKey::new(1), &r.key, &grant)
+            .is_err()
+    );
     r.money
         .open_admitted(UnitKey::new(1), r.unit.clone(), wrong);
     assert!(
@@ -1787,15 +1874,15 @@ fn adopt(r: &Rig, reservation: ReservationMoney, id: u64) -> Result<(), Returned
     )
 }
 
-#[test]
-fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled() {
-    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees());
+#[tokio::test]
+async fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled() {
+    let baseline = rig_with(None, 0, ExhaustionMode::FinishUnit, plane_fees()).await;
     let _ = baseline.money.checkpoint(&ctx(1), &reported(1_000_000));
     baseline.money.settle_end(UnitKey::new(1), 200);
-    let priced = usage(&baseline).1;
+    let priced = usage(&baseline).await.1;
     assert!(priced > 0);
 
-    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+    let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
     let reservation = reserve_parent(&r);
     let parent = r.money.parent_money(UnitKey::new(1), &r.key).unwrap();
     let _ = r.money.checkpoint(&ctx(1), &[fee_reported(1)]);
@@ -1816,19 +1903,20 @@ fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled()
         "input".into(),
         "output".into(),
     ]);
-    assert!(r
-        .money
-        .adopt_reserved(
-            reservation,
-            UnitKey::new(2),
-            "m".into(),
-            classes,
-            FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
-            &r.key
-        )
-        .is_ok());
+    assert!(
+        r.money
+            .adopt_reserved(
+                reservation,
+                UnitKey::new(2),
+                "m".into(),
+                classes,
+                FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
+                &r.key
+            )
+            .is_ok()
+    );
     assert_eq!(
-        usage(&r).1,
+        usage(&r).await.1,
         5,
         "adoption never asks the governor for a second fee"
     );
@@ -1844,10 +1932,11 @@ fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled()
     r.money.session_ended(&ctx(2));
     r.money.settle_end(UnitKey::new(2), 200);
     r.money.settle_end(UnitKey::new(2), 200);
-    assert_eq!(usage(&r), (Count::from(1_000_000u64), priced + 5));
+    assert_eq!(usage(&r).await, (Count::from(1_000_000u64), priced + 5));
     let totals = r
         .gov
-        .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+        .await
         .unwrap();
     assert_eq!(
         totals.requests, 1,
@@ -1856,17 +1945,17 @@ fn reserved_admission_becomes_priced_media_after_the_original_mint_has_settled()
     assert_eq!(r.money.open_units(), 0);
 }
 
-#[test]
-fn unused_reservation_expiry_preserves_the_original_parents_fee_decision() {
+#[tokio::test]
+async fn unused_reservation_expiry_preserves_the_original_parents_fee_decision() {
     for incurred in [false, true] {
-        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
         let reservation = reserve_parent(&r);
         let _ = r
             .money
             .checkpoint(&ctx(1), &[fee_reported(u64::from(incurred))]);
         r.money.settle_end(UnitKey::new(1), 200);
         assert_eq!(
-            usage(&r).1,
+            usage(&r).await.1,
             5,
             "the real reservation keeps settlement pending"
         );
@@ -1877,13 +1966,14 @@ fn unused_reservation_expiry_preserves_the_original_parents_fee_decision() {
         );
         drop(reservation);
         assert_eq!(
-            usage(&r).1,
+            usage(&r).await.1,
             if incurred { 5 } else { 0 },
             "expiry incurs no fee of its own"
         );
         let totals = r
             .gov
-            .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .await
             .unwrap();
         assert_eq!(
             totals.requests, 1,
@@ -1892,10 +1982,10 @@ fn unused_reservation_expiry_preserves_the_original_parents_fee_decision() {
     }
 }
 
-#[test]
-fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_cleanup() {
+#[tokio::test]
+async fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_cleanup() {
     for retry in [false, true] {
-        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
         let reservation = reserve_parent(&r);
         r.money.settle_end(UnitKey::new(1), 503);
         let mut foreign_key = r.key.as_ref().clone();
@@ -1913,7 +2003,7 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
         };
         let (reason, reservation) = returned.into_parts();
         assert_eq!(reason, ReasonCode::Unpriced);
-        assert_eq!((r.money.open_units(), usage(&r).1), (0, 5));
+        assert_eq!((r.money.open_units(), usage(&r).await.1), (0, 5));
         let other = PlaneMoney::new(r.gov.clone(), Arc::new(Posted::default()));
         let returned = match other.adopt_reserved(
             reservation,
@@ -1930,7 +2020,7 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
         };
         let (_, reservation) = returned.into_parts();
         assert_eq!(
-            (other.open_units(), r.money.open_units(), usage(&r).1),
+            (other.open_units(), r.money.open_units(), usage(&r).await.1),
             (0, 0, 5)
         );
         r.money.open(UnitKey::new(2), r.unit.clone());
@@ -1940,7 +2030,7 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
         };
         let (_, reservation) = returned.into_parts();
         assert_eq!(r.money.serving(UnitKey::new(2)).as_deref(), Some("m"));
-        assert_eq!((r.money.open_units(), usage(&r).1), (1, 5));
+        assert_eq!((r.money.open_units(), usage(&r).await.1), (1, 5));
         r.money.settle_end(UnitKey::new(2), 503);
         if retry {
             assert!(adopt(&r, reservation, 3).is_ok());
@@ -1949,14 +2039,14 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
                 .checkpoint(&ctx(3), &[reported(7)[0], fee_reported(1)]);
             r.money.settle_end(UnitKey::new(3), 503);
             assert_eq!(
-                usage(&r),
+                usage(&r).await,
                 (Count::from(7u64), 5),
                 "returned authority genuinely adopts once and bills"
             );
         } else {
             drop(reservation);
             assert_eq!(
-                usage(&r),
+                usage(&r).await,
                 (Count::from(0u64), 0),
                 "returned unused authority cleans up and refunds once"
             );
@@ -1964,15 +2054,16 @@ fn rejected_reserved_adoption_returns_the_unchanged_real_token_for_retry_or_clea
         assert_eq!(r.money.open_units(), 0);
         let totals = r
             .gov
-            .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+            .await
             .unwrap();
         assert_eq!(totals.requests, 1);
     }
 }
 
-#[test]
-fn reserving_requires_the_actual_live_original_admission() {
-    let r = rig(None, 5, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn reserving_requires_the_actual_live_original_admission() {
+    let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     assert!(
         r.money.reserve_admission(UnitKey::new(1), &r.key).is_err(),
         "ordinary open has no actual grant"
@@ -1984,10 +2075,11 @@ fn reserving_requires_the_actual_live_original_admission() {
     let parent = admit_parent(&r);
     let mut foreign_key = r.key.as_ref().clone();
     foreign_key.generation_hash = "foreign".into();
-    assert!(r
-        .money
-        .reserve_admission(UnitKey::new(1), &foreign_key)
-        .is_err());
+    assert!(
+        r.money
+            .reserve_admission(UnitKey::new(1), &foreign_key)
+            .is_err()
+    );
     child(&r, &parent, 2).unwrap();
     assert!(
         r.money.reserve_admission(UnitKey::new(2), &r.key).is_err(),
@@ -2005,10 +2097,10 @@ fn reserving_requires_the_actual_live_original_admission() {
     );
 }
 
-#[test]
-fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adoption() {
+#[tokio::test]
+async fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adoption() {
     for consume in [false, true] {
-        let mut r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        let mut r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees()).await;
         let groups = BTreeMap::from([(
             "g".to_string(),
             GroupCfg {
@@ -2050,7 +2142,7 @@ fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adopti
             drop(reservation);
         }
         assert_eq!(
-            usage(&r).1,
+            usage(&r).await.1,
             0,
             "one pending parent fee refunded after its refundable child or unused expiry"
         );
@@ -2061,13 +2153,13 @@ fn the_actual_reservation_grant_holds_concurrency_across_settled_mint_and_adopti
     }
 }
 
-#[test]
-fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
+#[tokio::test]
+async fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
     for mismatch in 0..13 {
-        let r = rig(None, 7, ExhaustionMode::FinishUnit);
+        let r = rig(None, 7, ExhaustionMode::FinishUnit).await;
         let kernel = crate::teller::Kernel::new();
         let source_call = kernel.next_call();
-        let store: Arc<dyn RecordStore> = crate::real_store::store();
+        let store: Arc<crate::persistence::facade::CoreStore> = crate::real_store::core().await;
         let identity = VerifiedTicketIdentity {
             id: "ticket-test".into(),
             principal: r.key.clone(),
@@ -2116,7 +2208,8 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
         }
         let other_node = Arc::new(());
         let other_instance = Arc::new(());
-        let other_store: Arc<dyn RecordStore> = crate::real_store::store();
+        let other_store: Arc<crate::persistence::facade::CoreStore> =
+            crate::real_store::core().await;
         let other_money = PlaneMoney::new(r.gov.clone(), r.posted.clone());
         let outcome = spent.adopt(
             if mismatch == 9 {
@@ -2175,28 +2268,29 @@ fn reserved_ticket_adoption_checks_receiving_authority_and_binding() {
             );
             r.money.settle_end(UnitKey::new(2), 200);
             assert_eq!(
-                usage(&r).0,
+                usage(&r).await.0,
                 Count::from(1_000_000u64),
                 "actual adopted usage priced once"
             );
             let total = r
                 .gov
-                .derived_bucket_usage(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+                .derived_bucket_usage_async(&r.cost, &r.key.id, WINDOW_TOTAL, true, NOW)
+                .await
                 .expect("actual ledger totals");
             assert_eq!(total.requests, 1, "mint one, reservation and signal zero");
         }
     }
 }
 
-#[test]
-fn reserved_ticket_holder_clones_share_one_financial_token() {
-    let r = rig(None, 7, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn reserved_ticket_holder_clones_share_one_financial_token() {
+    let r = rig(None, 7, ExhaustionMode::FinishUnit).await;
     let kernel = crate::teller::Kernel::new();
     let identity = VerifiedTicketIdentity {
         id: "one-take".into(),
         principal: r.key.clone(),
         expires_at: NOW + 60,
-        store: crate::real_store::store(),
+        store: crate::real_store::core().await,
         prefix: "test".into(),
         credential: String::from("redacted").into(),
     };
@@ -2221,22 +2315,26 @@ fn reserved_ticket_holder_clones_share_one_financial_token() {
     r.money.settle_end(UnitKey::new(1), 500);
     let token = holder.take().expect("sole token");
     assert!(clone.take().is_none());
-    assert_eq!(usage(&r).1, 7, "reservation retains original fee decision");
+    assert_eq!(
+        usage(&r).await.1,
+        7,
+        "reservation retains original fee decision"
+    );
     drop(token);
     assert_eq!(
-        usage(&r).1,
+        usage(&r).await.1,
         0,
         "one final participation refunds exactly once"
     );
     drop(holder);
     drop(clone);
-    assert_eq!(usage(&r).1, 0);
+    assert_eq!(usage(&r).await.1, 0);
 }
 
-#[test]
-fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
-    use crate::cost::{MeteredRow, Tally, STANDARD_TIER_BP};
-    let mut r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
+    use crate::cost::{MeteredRow, STANDARD_TIER_BP, Tally};
+    let mut r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let rates = BTreeMap::from([(
         "m".into(),
         crate::config::RateEntryCfg {
@@ -2258,7 +2356,11 @@ fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
             r.money.checkpoint(&ctx(id), &[report]),
             Checkpoint::Continue
         );
-        assert_eq!(usage(&r).0, total, "checkpoint has not settled {spelling}");
+        assert_eq!(
+            usage(&r).await.0,
+            total,
+            "checkpoint has not settled {spelling}"
+        );
         r.money.served(&ctx(id), "m", "acme");
         r.money.settle_end(UnitKey::new(id), 200);
         r.money.settle_end(UnitKey::new(id), 200);
@@ -2267,21 +2369,21 @@ fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
             .row("m", 0, STANDARD_TIER_BP, [("input", quantity)], Count::ZERO)
             .unwrap();
         assert_eq!(
-            usage(&r),
+            usage(&r).await,
             (total, tally.money().unwrap().minor_i64().unwrap())
         );
     }
     assert_eq!(total, Count::parse("1081.6").unwrap());
     let expected = tally.money().unwrap();
-    r.gov.flush_budgets();
-    let metering = metering_rows(&r);
+    r.gov.flush_budgets().await;
+    let metering = metering_rows(&r).await;
     assert_eq!(metering.len(), 1);
     let row = &metering[0];
     assert_eq!(row.scale, 6);
     assert_eq!(row.tokens_input, 1_081_600_000);
     assert_eq!(row.requests, 4);
-    let store = r.gov.store();
-    let stored = store.get_usage(&r.key.id, 0).unwrap();
+    let store = r.gov.core_store_handle().unwrap();
+    let stored = store.ledger().get_usage(&r.key.id, 0).await.unwrap();
     let model = stored
         .models
         .iter()
@@ -2297,27 +2399,32 @@ fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
     let (cost, key_id) = (Arc::clone(&r.cost), r.key.id.clone());
     drop(tally);
     drop(r);
-    let reopened = GovState::new(store, None).unwrap();
+    let reopened = GovState::new_with_core(store, None, None).await.unwrap();
     let derived = reopened
-        .derived_bucket_usage(&cost, &key_id, WINDOW_TOTAL, true, NOW)
+        .derived_bucket_usage_async(&cost, &key_id, WINDOW_TOTAL, true, NOW)
+        .await
         .unwrap();
     assert_eq!(derived.tokens, total);
     assert_eq!(derived.spend_cents, expected.minor_i64().unwrap());
     assert_eq!(
         reopened
-            .metering_for(crate::governance::metering_bucket(NOW))
+            .metering_for_async(crate::governance::metering_bucket(NOW))
+            .await
             .unwrap(),
         metering
     );
     assert_eq!(
-        reopened.bucket_model_tokens(&key_id, WINDOW_TOTAL, NOW),
+        reopened
+            .bucket_model_tokens_async(&key_id, WINDOW_TOTAL, NOW)
+            .await
+            .unwrap(),
         vec![("m".into(), BTreeMap::from([("input".into(), total)]))]
     );
 }
 
-#[test]
-fn exact_store_range_checks_estimates_separately_from_reported_counts() {
-    let r = rig(None, 0, ExhaustionMode::FinishUnit);
+#[tokio::test]
+async fn exact_store_range_checks_estimates_separately_from_reported_counts() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let maximum = Count::from_micros(i128::from(i64::MAX));
     let units = [
         UnitCount::from_count(INPUT, UNITS_ESTIMATED, maximum).unwrap(),
@@ -2326,7 +2433,7 @@ fn exact_store_range_checks_estimates_separately_from_reported_counts() {
     assert_eq!(r.money.checkpoint(&ctx(1), &units), Checkpoint::Continue);
     r.money.settle_end(UnitKey::new(1), 200);
     assert_eq!(
-        usage(&r).0,
+        usage(&r).await.0,
         maximum,
         "the estimate is not an additional bill"
     );

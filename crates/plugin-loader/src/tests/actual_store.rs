@@ -2,15 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Qualified SQLite Store image and isolated databases for ordinary ABI controls.
-use crate::dispatch::kinds::store::Store;
-use crate::dispatch::{
-    load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
-};
-use crate::store_v3::LoadedStore;
+use crate::dispatch::kinds::store_v4::StoreV4 as Store;
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::sdk::door::RawDoorFn;
-use busbar_contract::abi::store::OpId;
-use std::sync::{Arc, OnceLock};
+use busbar_contract::records::OpId;
+use std::sync::OnceLock;
 
 pub(crate) fn path() -> std::path::PathBuf {
     let path = std::env::var_os("BUSBAR_TEST_SQLITE_CDYLIB")
@@ -80,22 +76,4 @@ pub(crate) fn settings() -> Vec<u8> {
     };
     serde_json::to_vec(&serde_json::json!({"db_path": dir.join("store.sqlite3")}))
         .expect("SQLite settings")
-}
-
-pub(crate) fn open() -> LoadedStore {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let row = LinkedRow::of(door).expect("actual SQLite row");
-    let plugin = load_linked::<Store>(
-        &row,
-        Bind {
-            instance: "actual-sqlite-abi".into(),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("actual SQLite Store links");
-    LoadedStore::open(plugin, dispatcher, &settings(), mint)
-        .expect("isolated actual SQLite database opens")
 }

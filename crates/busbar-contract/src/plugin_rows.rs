@@ -130,7 +130,10 @@ pub trait PluginRows: Send + Sync + std::fmt::Debug {
     fn skipped(&self) -> Vec<Skipped>;
 
     /// THE DOOR the store `name_or_alias` resolves to opens through
-    fn store_door(&self, name_or_alias: &str) -> Result<crate::store_calls::StoreDoor, String>;
+    fn store_door(
+        &self,
+        name_or_alias: &str,
+    ) -> Result<crate::persistence::axis::StoreDoor, String>;
 
     /// Why no secret plugin answers `name_or_alias` on the secret axis, in the registry's words.
     fn secret_refusal(&self, name_or_alias: &str) -> String;

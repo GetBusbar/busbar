@@ -878,7 +878,7 @@ async fn anonymous_policy_with_upgrade(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -888,10 +888,11 @@ async fn anonymous_policy_with_upgrade(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the listener-policy deployment");
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let app = std::sync::Arc::new(app);
     assert!(crate::root::inbound::publish(&app).is_some());
@@ -980,7 +981,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -990,10 +991,11 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the listener-policy deployment");
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let old_app = std::sync::Arc::new(app);
     let old = Arc::downgrade(&old_app);
@@ -1063,7 +1065,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -1073,10 +1075,11 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the listener-policy deployment");
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let new_app = std::sync::Arc::new(app);
     for _ in 0..3 {
@@ -1233,7 +1236,7 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     let plugins = crate::root::test_plugins::trusted_config(&directory);
     let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
         as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugins,
         None,
@@ -1243,10 +1246,11 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the listener-policy deployment");
     drop(limits);
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let latest = std::sync::Arc::new(app);
     for _ in 0..3 {
@@ -3329,6 +3333,7 @@ async fn real_oidc_pending_ingest(mixed_keys: bool) {
         let boot_store = crate::root::test_plugins::bootstrap_fresh_application_store(
             &config, &plugins, &directory,
         )
+        .await
         .expect("provision the new marked-auth fixture Store before serving");
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
@@ -3344,10 +3349,11 @@ async fn real_oidc_pending_ingest(mixed_keys: bool) {
             Some(boot_store),
             false,
         )
+        .await
         .expect("the real root opens the product OIDC verifier and Store");
         drop(limits);
         if let Some(rotate) = rotate {
-            rotate();
+            rotate.await;
         }
         let app = Arc::new(app);
         armed.store(true, std::sync::atomic::Ordering::Release);

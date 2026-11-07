@@ -15,6 +15,7 @@ type Answer = (StatusCode, HeaderMap, Vec<u8>);
 
 async fn refused_call(instance: &'static str, secret: &SecretRef) -> Answer {
     let rig = try_rig_tools(instance, 0, program_section(secret))
+        .await
         .unwrap_or_else(|e| panic!("{instance}: a member's env is not resolved at compose: {e}"));
     call(&rig).await
 }

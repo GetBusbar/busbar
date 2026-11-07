@@ -37,51 +37,54 @@ pub fn application_store_settings(directory: &Path) -> serde_json::Value {
 /// Creation provenance owned only by the provisioner of a new fixture database.
 /// May cross construction stages, but must be initialized before any serving starts.
 pub struct FreshApplicationStore {
-    opened: busbar_contract::store_calls::OpenedStore,
+    opened: std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>,
     evidence_sha256: String,
     store_sha256: String,
 }
 
 impl FreshApplicationStore {
-    pub fn opened(&self) -> busbar_contract::store_calls::OpenedStore {
-        busbar_contract::store_calls::OpenedStore {
-            records: self.opened.records.clone(),
-            calls: self.opened.calls.clone(),
-        }
+    pub fn opened(&self) -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore> {
+        self.opened.clone()
     }
 
     /// Commit only the public witness of this provisioner's genuine exclusive Store creation.
     /// This does not initialize an authentication format or grant any runtime quota.
-    pub fn commit_creation_witness(
+    pub async fn commit_creation_witness(
         &self,
     ) -> Result<busbar_kernel::host_record_bootstrap::StoreWitness, String> {
-        use busbar_kernel::host_records::{RecordRows, StoreRows};
-        let calls = self
-            .opened
-            .calls
-            .clone()
-            .expect("the actual fixture Store exposes typed calls");
-        let schema = busbar_contract::ids::RecordSchemaId::new("test.fixture.principal-creation");
-        StoreRows(calls)
-            .record_put(
+        use busbar_kernel::persistence::scoped::{Outcome, ScopedStore};
+        let schema = "test.fixture.principal-creation";
+        let owner = ScopedStore::host_private(
+            self.opened.clone(),
+            "busbar.fixture.principal-creation",
+            [schema.into()],
+        )
+        .map_err(|error| format!("fixture creation owner: {error:?}"))?;
+        let outcome = owner
+            .put(
                 schema,
                 b"namespace",
-                &busbar_contract::kinds::RecordBytes::new(self.evidence_sha256.as_bytes().to_vec())
-                    .expect("the public fixture witness fits one record"),
+                busbar_contract::Secret::new(self.evidence_sha256.as_bytes().to_vec()),
             )
-            .map_err(|error| error.to_string())?;
+            .await
+            .map_err(|error| format!("fixture creation witness: {error:?}"))?;
+        if outcome != Outcome::Applied {
+            return Err(format!(
+                "fixture creation witness not confirmed: {outcome:?}"
+            ));
+        }
         Ok(busbar_kernel::host_record_bootstrap::StoreWitness {
-            schema: schema.as_str().into(),
+            schema: schema.into(),
             key_hex: hex::encode(b"namespace"),
             value_hex: hex::encode(self.evidence_sha256.as_bytes()),
         })
     }
 
-    pub fn initialize_principal_format(
+    pub async fn initialize_principal_format(
         self,
         cfg: &busbar_kernel::config::RootCfg,
         plugins: &busbar_kernel::config::PluginsCfg,
-    ) -> Result<busbar_contract::store_calls::OpenedStore, String> {
+    ) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
         use busbar_kernel::governance::principal_transition as transition;
         let store_sha256 = transition::store_fingerprint(&cfg.store)?;
         if store_sha256 != self.store_sha256 {
@@ -102,14 +105,14 @@ impl FreshApplicationStore {
             requirements.iter().any(|r| !r.format.is_empty()),
             "this explicit fixture initializer is for admitted marked-auth deployments"
         );
-        let witness = self.commit_creation_witness()?;
-        let calls = self
-            .opened
-            .calls
-            .clone()
-            .expect("the actual fixture Store exposes typed calls");
+        let witness = self.commit_creation_witness().await?;
         let receipt = transition::FreshNamespace {
-            version: 1,
+            version: 2,
+            witness_binding: Some(transition::WitnessBinding {
+                instance: "busbar.fixture.principal-creation".into(),
+                private: true,
+                source_scope: transition::WitnessScope::Unscoped,
+            }),
             store_config_sha256: store_sha256.clone(),
             requirements: requirements.clone(),
             witness: Some(witness),
@@ -122,17 +125,29 @@ impl FreshApplicationStore {
             actor: "isolated application fixture provisioner".into(),
             reason: "exclusive new database file; construction only, serving not activated".into(),
         };
-        transition::initialize_fresh(&receipt, calls, &store_sha256, &requirements)?;
+        transition::initialize_fresh(&receipt, self.opened.clone(), &store_sha256, &requirements)
+            .await?;
         Ok(self.opened)
     }
 }
 
 /// Exclusively create the actual database before its first Store open.
 /// A retained App or an already existing database cannot supply this provenance.
-pub fn provision_fresh_application_store(
+pub async fn provision_fresh_application_store(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
+) -> Result<FreshApplicationStore, String> {
+    provision_fresh_application_store_with_backend(cfg, plugins, directory, |backend| backend).await
+}
+
+pub async fn provision_fresh_application_store_with_backend(
+    cfg: &busbar_kernel::config::RootCfg,
+    plugins: &busbar_kernel::config::PluginsCfg,
+    directory: &Path,
+    decorate: impl FnOnce(
+        std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    ) -> std::sync::Arc<dyn busbar_contract::persistence::PersistenceBackend>,
 ) -> Result<FreshApplicationStore, String> {
     let store = cfg
         .store
@@ -169,7 +184,8 @@ pub fn provision_fresh_application_store(
     )
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
-    let opened = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins)?;
+    let backend = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins).await?;
+    let opened = crate::root::real_store::core_over(decorate(backend)).await;
     Ok(FreshApplicationStore {
         opened,
         evidence_sha256,
@@ -181,13 +197,15 @@ pub fn provision_fresh_application_store(
 
 /// Provision and initialize a genuinely new SQLite fixture before normal app startup.
 /// Call only for the first open in a new scratch directory; retained fixtures reopen normally.
-pub fn bootstrap_fresh_application_store(
+pub async fn bootstrap_fresh_application_store(
     cfg: &busbar_kernel::config::RootCfg,
     plugins: &busbar_kernel::config::PluginsCfg,
     directory: &Path,
-) -> Result<busbar_contract::store_calls::OpenedStore, String> {
-    provision_fresh_application_store(cfg, plugins, directory)?
+) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
+    provision_fresh_application_store(cfg, plugins, directory)
+        .await?
         .initialize_principal_format(cfg, plugins)
+        .await
 }
 
 /// The explicit configuration document for the same fixture plugin policy used at boot.

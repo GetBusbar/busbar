@@ -30,14 +30,16 @@ fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_targe
     assert!(stripped.fields.is_empty());
     let mut only_credential = head.clone();
     only_credential.query = Some("token=secret".into());
-    assert!(only_credential
-        .stripped(&[Strip {
-            place: StripPlace::Query,
-            name: "token".into(),
-        }])
-        .unwrap()
-        .query
-        .is_none());
+    assert!(
+        only_credential
+            .stripped(&[Strip {
+                place: StripPlace::Query,
+                name: "token".into(),
+            }])
+            .unwrap()
+            .query
+            .is_none()
+    );
 }
 
 #[test]
@@ -115,9 +117,12 @@ fn peer_answers_wait_for_a_provider_that_also_owns_request_authentication() {
 #[tokio::test]
 async fn actual_replay_claim_is_once_per_admission_and_denied_after_exit_or_deadline() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let actual = crate::real_store::store();
-    let gov = Arc::new(crate::governance::GovState::new(actual.clone(), None).unwrap());
-    assert!(gov.attach_store_calls(actual));
+    let core = crate::real_store::core().await;
+    let gov = Arc::new(
+        crate::governance::GovState::new_with_core(core, None, None)
+            .await
+            .unwrap(),
+    );
     let now = crate::store::now();
     let identity = VerifiedIdentity {
         replay: Some(Box::new(busbar_contract::auth_calls::Replay {
@@ -459,9 +464,11 @@ fn verifier_projection_lends_the_original_candidate_and_unrewritten_request_valu
             Some(b"exact body".to_vec())
         )
     );
-    assert!(verify_request(&head, AuthPoint::Head, 11, 13, None, None)
-        .credential
-        .is_none());
+    assert!(
+        verify_request(&head, AuthPoint::Head, 11, 13, None, None)
+            .credential
+            .is_none()
+    );
 }
 
 #[test]

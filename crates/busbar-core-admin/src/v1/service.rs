@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use busbar_kernel::diagnostics::{
     diag_debug, diag_error, diag_warn, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
     GROUP_DELETE_KEY_READ_FAILED, PLUGINS_DIR_FINGERPRINT_FAILED, PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
-    USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
 use busbar_kernel::state::App;
 
@@ -678,13 +677,13 @@ pub fn build_without_hook(current: &App, name: &str) -> Result<App, AdminError> 
     Ok(next)
 }
 
-pub(crate) fn count_keys_bound_to(app: &App, group: &str) -> Result<usize, AdminError> {
+pub(crate) async fn count_keys_bound_to(app: &App, group: &str) -> Result<usize, AdminError> {
     let Some(gov) = &app.governance else {
         return Ok(0);
     };
 
     Ok(gov
-        .all_keys()
+        .all_keys_async().await
         .map_err(|e| {
             diag_error!(GROUP_DELETE_KEY_READ_FAILED, group = %group, error = %e, "group delete: cannot read keys to check bindings");
             AdminError::Internal

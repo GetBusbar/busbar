@@ -94,7 +94,7 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (app, rotate, limits) = busbar_kernel::build_app_from_config(
+    let (app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -104,22 +104,28 @@ async fn oversized_request_413_is_reshaped_on_the_live_stack() {
         None,
         &rules,
     )
+    .await
     .expect("the actual product builds the swap deployment");
     limits.stage_boot();
-    crate::root::kernel::ROOT_CARD.keep_in_store(
-        app.governance
-            .as_ref()
-            .unwrap()
-            .store_calls()
-            .expect("actual Store calls"),
-        113,
-    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(
+                app.governance
+                    .as_ref()
+                    .unwrap()
+                    .core_store_handle()
+                    .expect("actual Store calls"),
+                113,
+            )
+            .expect("the native rate-card Store binds");
+    };
     crate::root::kernel::ROOT_CARD
         .boot_in_store(None)
+        .await
         .expect("actual rate history boots");
-    limits.keep().expect("actual rates and limits commit");
+    limits.keep().await.expect("actual rates and limits commit");
     if let Some(rotate) = rotate {
-        rotate();
+        rotate.await;
     }
     let (mut router, _handle) =
         busbar_kernel::build_router_with_limits(Arc::new(app), 64, 1024, false);

@@ -172,15 +172,25 @@ impl Registrations {
 }
 
 impl Carried {
-    pub(crate) fn over(store: Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>) -> Self {
+    pub(crate) fn over(
+        store: Option<Arc<busbar_kernel::persistence::facade::CoreStore>>,
+    ) -> Result<Self, String> {
         match store {
-            Some(calls) => Self {
-                records: Arc::new(super::cimd::Records::shared(Arc::new(
-                    super::shared::Shared::new(calls),
-                ))),
-                ..Self::default()
-            },
-            None => Self::default(),
+            Some(store) => {
+                let scoped = busbar_kernel::persistence::scoped::ScopedStore::host_private(
+                    store,
+                    "oauth-as",
+                    super::shared::Shared::schemas(),
+                )
+                .map_err(|e| format!("oauth_as store: {e:?}"))?;
+                Ok(Self {
+                    records: Arc::new(super::cimd::Records::shared(Arc::new(
+                        super::shared::Shared::new(Arc::new(scoped)),
+                    ))),
+                    ..Self::default()
+                })
+            }
+            None => Ok(Self::default()),
         }
     }
 
@@ -221,7 +231,7 @@ impl std::fmt::Display for AsBuildError {
 
 impl AsPlane {
     #[cfg(test)]
-    pub(crate) fn build(
+    pub(crate) async fn build(
         identity: AsIdentity,
         key_material: Option<&str>,
         protected_resources: Vec<String>,
@@ -234,9 +244,10 @@ impl AsPlane {
             fetch,
             Arc::default(),
         )
+        .await
     }
 
-    pub(crate) fn build_carrying(
+    pub(crate) async fn build_carrying(
         identity: AsIdentity,
         key_material: Option<&str>,
         protected_resources: Vec<String>,
@@ -257,10 +268,12 @@ impl AsPlane {
                     Some(der) => der,
                     None => {
                         let fresh = match carried.store() {
-                            Some(store) => super::shared::wait_for(store.signing_key(|| {
-                                RingEs256Key::generate_pkcs8().map_err(|e| e.to_string())
-                            }))
-                            .map_err(AsBuildError::SigningKeyMaterial)?,
+                            Some(store) => store
+                                .signing_key(|| {
+                                    RingEs256Key::generate_pkcs8().map_err(|e| e.to_string())
+                                })
+                                .await
+                                .map_err(AsBuildError::SigningKeyMaterial)?,
                             None => {
                                 RingEs256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?
                             }
@@ -765,71 +778,75 @@ pub(crate) fn seam_verify_dpop(
     })
 }
 
+type BuildFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Arc<dyn std::any::Any + Send + Sync>, String>>
+            + Send,
+    >,
+>;
+
 pub(crate) fn seam_build<C: crate::Connections>(
-    block: &serde_yaml::Value,
+    block: serde_yaml::Value,
     secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
-    prior: Option<&Arc<dyn std::any::Any + Send + Sync>>,
-    store: Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
-) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
-    let identity = crate::config::identity_of(block)?;
-    if let Some(calls) = store.as_deref() {
-        super::shared::Shared::require_atomic(calls)?;
-    }
+    prior: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    store: Option<Arc<busbar_kernel::persistence::facade::CoreStore>>,
+) -> BuildFuture {
+    Box::pin(async move {
+        let identity = crate::config::identity_of(&block)?;
+        let carried = match prior.and_then(|p| p.downcast::<AsPlane>().ok()) {
+            Some(plane) => Arc::clone(&plane.carried),
+            None => Arc::new(Carried::over(store)?),
+        };
 
-    let carried = prior
-        .and_then(|p| Arc::clone(p).downcast::<AsPlane>().ok())
-        .map_or_else(
-            || Arc::new(Carried::over(store)),
-            |p| Arc::clone(&p.carried),
-        );
+        let key_material = match identity.signing_key() {
+            None if carried.ephemeral_key.get().is_some() => None,
 
-    let key_material = match identity.signing_key() {
-        None if carried.ephemeral_key.get().is_some() => None,
-
-        None if carried.store().is_some() => {
-            diag_warn!(
+            None if carried.store().is_some() => {
+                diag_warn!(
                 OAUTH_AS_EPHEMERAL_SIGNING_KEY,
                 "oauth_as: no signing_key configured; signing with the key minted once for the \
                  deployment and kept in its store, where whoever reads the store can read it, as \
                  they read the deployment keyset. Set `oauth_as.signing_key` (a secret reference) \
                  to keep the signing key out of the store."
             );
-            None
-        }
-        None => {
-            diag_warn!(
-                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                None
+            }
+            None => {
+                diag_warn!(
+                    OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                    "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
                  generated. Every token this deployment issues stops verifying when the \
                  process restarts. Set `oauth_as.signing_key` for anything but a trial."
-            );
-            None
-        }
-        Some(_) => Some(
-            secrets
-                .iter()
-                .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
-                .map(|(_, value)| value.as_str())
-                .ok_or_else(|| {
-                    format!(
-                        "{}: the reference was not resolved",
-                        crate::config::SIGNING_KEY_PATH
-                    )
-                })?,
-        ),
-    };
+                );
+                None
+            }
+            Some(_) => Some(
+                secrets
+                    .iter()
+                    .find(|(path, _)| path == crate::config::SIGNING_KEY_PATH)
+                    .map(|(_, value)| value.as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: the reference was not resolved",
+                            crate::config::SIGNING_KEY_PATH
+                        )
+                    })?,
+            ),
+        };
 
-    let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
-    let mut plane =
-        AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
-            .map_err(|e| e.to_string())?;
+        let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
+        let mut plane =
+            AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
+                .await
+                .map_err(|e| e.to_string())?;
 
-    plane.sweeper = Some(sweep_on_clock(
-        plane.server(),
-        std::time::Duration::from_secs(60),
-    ));
-    Ok(Arc::new(plane) as Arc<dyn std::any::Any + Send + Sync>)
+        plane.sweeper = Some(sweep_on_clock(
+            plane.server(),
+            std::time::Duration::from_secs(60),
+        ));
+        Ok(Arc::new(plane) as Arc<dyn std::any::Any + Send + Sync>)
+    })
 }
 
 pub(crate) struct Sweeper {

@@ -13,8 +13,8 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::plugin::Kind;
 
 use crate::dispatch::kinds::{
-    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret, store::Store,
-    transport::Transport,
+    auth::Auth, export::Export, hook::Hook, plane::Plane, secret::Secret,
+    store_v4::StoreV4 as Store, transport::Transport,
 };
 use crate::dispatch::{
     load_dropped_bytes, load_linked, Adopter, Bind, ConnTable, EnvelopeSink, LinkedRow, Plugin,
