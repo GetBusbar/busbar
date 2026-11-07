@@ -35,7 +35,10 @@ pub(crate) extern "C" fn door() -> &'static Door {
             .expect("memory statement renders");
     let stated = busbar_contract::abi::mechanism::rendering::read(&rendered)
         .expect("memory statement reads");
-    assert_eq!(stated.name, "memory", "require actual memory product");
+    assert_eq!(
+        stated.name, "busbar-store-memory",
+        "require actual memory product"
+    );
     door
 }
 

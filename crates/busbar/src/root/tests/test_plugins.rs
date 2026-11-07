@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 #[path = "native_store_startup.rs"]
 mod native_fixture;
+pub(crate) use native_fixture::core_over;
 
 /// The separately built durable Store used by normal application boot fixtures.
 pub fn application_store_library() -> PathBuf {
@@ -188,7 +189,7 @@ pub async fn provision_fresh_application_store_with_backend(
     .expect("retain the actual fixture creation evidence");
     let evidence_sha256 = sha256_hex(&evidence);
     let backend = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins).await?;
-    let opened = native_fixture::core_over(decorate(backend)).await;
+    let opened = core_over(decorate(backend)).await;
     Ok(FreshApplicationStore {
         opened,
         evidence_sha256,

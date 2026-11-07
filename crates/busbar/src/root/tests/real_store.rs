@@ -4,9 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[path = "native_store_startup.rs"]
-mod native_store_startup;
-pub(crate) use native_store_startup::core_over;
+pub(crate) use crate::root::test_plugins::core_over;
 
 use crate::root::loader::dispatch::{
     load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,

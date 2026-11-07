@@ -77,8 +77,10 @@ impl<K: Ord + Clone> AsyncClaimSet<K> {
 
     pub fn try_claim(&self, key: K) -> Option<AsyncClaim<'_, K>> {
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        // Construct a release guard only when ownership was acquired. An eager
+        // guard on failure would drop while this mutex is held and deadlock.
         held.insert(key.clone())
-            .then_some(AsyncClaim { set: self, key })
+            .then(|| AsyncClaim { set: self, key })
     }
 
     pub async fn claim_async(&self, key: K) -> AsyncClaim<'_, K> {
