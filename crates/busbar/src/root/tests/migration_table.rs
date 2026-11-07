@@ -159,10 +159,19 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
             .map(|at| stderr[at..].trim_end_matches('\n'))
             .expect("1.5.5 printed a hint");
         let msg = format!("unknown field `{old}`");
+        assert!(
+            hint.contains(old) && hint.contains("export"),
+            "the frozen 1.5.5 fixture retains its historical destination guidance: {stderr}"
+        );
+        let config = field(row, "config");
+        let current = busbar_kernel::config::deploy_from_yaml_str(&config)
+            .expect_err("the current parser refuses the retired historical spelling");
+        let current = current.to_string();
+        assert!(current.contains(&msg));
         assert_eq!(
-            busbar_kernel::config::augment_config_error(&msg),
-            format!("{msg}{hint}"),
-            "the `{old}` hint is not 1.5.5's"
+            busbar_kernel::config::augment_config_error(&current),
+            current,
+            "historical hints must not be restored to the current parser"
         );
     }
 }

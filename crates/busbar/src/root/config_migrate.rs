@@ -324,6 +324,70 @@ impl Drop for FetchedDir {
 }
 
 impl RootHost {
+    fn validation_probe(
+        &self,
+        settings: &serde_json::Value,
+        statement: &busbar_contract::abi::mechanism::rendering::Read,
+    ) -> Result<busbar_contract::abi::sdk::cred::SettingsValue, String> {
+        use busbar_contract::secret_fields;
+        let reference = statement.reference_fields()?;
+        if secret_fields::contradiction(&statement.secret_refs, &reference).is_some() {
+            return Err("migration validation reference declarations contradict".into());
+        }
+        let allowed = [statement.secret_refs.as_slice(), reference.as_slice()].concat();
+        let mut probe = busbar_contract::abi::sdk::cred::SettingsValue::from(
+            busbar_migrations::config::templates::resolved_settings(settings, self)?,
+        );
+        if secret_fields::undeclared_reference(&probe, &allowed).is_some() {
+            return Err("migration validation contains an undeclared settings reference".into());
+        }
+        let mut staged = Vec::new();
+        if let Some(documents) = &self.startup {
+            for secret in documents.pending_secrets()? {
+                // Reuse the artifact owner's normalized source identity. No
+                // pending file is read or materialized before native commit.
+                let here = crate::root::loader::migration_secrets::externalized_path(
+                    &self.config,
+                    &secret.site,
+                    &secret.settings_path,
+                )?;
+                let original = crate::root::loader::migration_secrets::externalized_path(
+                    &secret.config_path,
+                    &secret.site,
+                    &secret.settings_path,
+                )?;
+                if here == original && original == secret.path {
+                    staged.push(secret);
+                }
+            }
+        }
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
+        // Both declared path classes reach VALIDATE as scalars. Resolution is
+        // confined to this wiping probe; authored references and the plugin's
+        // actual secret/reference classifications remain unchanged.
+        secret_fields::resolve_references(
+            probe.pointer_mut("").expect("the JSON document has a root"),
+            &[],
+            &allowed,
+            |_, reference| {
+                if let Some(secret) = reference
+                    .file_path()
+                    .and_then(|path| staged.iter().find(|secret| secret.path == Path::new(path)))
+                {
+                    let text = std::str::from_utf8(&secret.bytes)
+                        .map_err(|_| "staged migration validation reference is not UTF-8")?;
+                    if text.is_empty() {
+                        return Err("staged migration validation reference is empty".into());
+                    }
+                    return Ok(text.to_owned());
+                }
+                busbar_kernel::config::secret::resolve_linked_string_at_config(reference, &scope)
+                    .map(|value| value.into_exposed(&busbar_kernel::seal::lend()))
+                    .map_err(|_| "migration validation reference could not be resolved".into())
+            },
+        )?;
+        Ok(probe)
+    }
     #[must_use]
     pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
         let doc = serde_yaml::from_str::<serde_yaml::Value>(raw).ok();
@@ -603,12 +667,15 @@ impl MigrateHost for RootHost {
         {
             return Ok(());
         }
-        let resolved = busbar_migrations::config::templates::resolved_settings(settings, self)?;
-        let settings = &resolved;
         if let Some((_, door)) = Self::linked_door(kind, module) {
+            let row = crate::root::loader::dispatch::LinkedRow::of(door)
+                .map_err(|_| "current migration plugin statement is unavailable")?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+                .map_err(|_| "current migration plugin statement is invalid")?;
+            let probe = self.validation_probe(settings, &statement)?;
             return crate::root::loader::dispatch::migrate::validate_migrated_door(
                 crate::root::loader::dispatch::load::raw(door),
-                settings,
+                &probe,
             );
         }
         let local = self.local();
@@ -616,14 +683,26 @@ impl MigrateHost for RootHost {
             .resolve(module)
             .filter(|row| row.manifest.kind == kind)
         {
-            return row.validate_migrated(settings);
+            let statement = row
+                .statement()
+                .ok_or("current migration plugin statement is unavailable")?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .map_err(|_| "current migration plugin statement is invalid")?;
+            let probe = self.validation_probe(settings, &statement)?;
+            return row.validate_migrated(&probe);
         }
         let fetched = self.fetch(kind, module)?;
         let row = fetched
             .resolve(module)
             .filter(|row| row.manifest.kind == kind)
             .ok_or("current migration plugin is unavailable for validation")?;
-        row.validate_migrated(settings)
+        let statement = row
+            .statement()
+            .ok_or("current migration plugin statement is unavailable")?;
+        let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .map_err(|_| "current migration plugin statement is invalid")?;
+        let probe = self.validation_probe(settings, &statement)?;
+        row.validate_migrated(&probe)
     }
 
     fn externalize_secret(
