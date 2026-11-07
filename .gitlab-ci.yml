@@ -1,0 +1,21 @@
+# Root integrates this server-side forwarder into the core source commit.
+# No core runner/compiler job or Google credential is needed here.
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SOURCE == "push"'
+    - when: never
+
+stages: [website]
+
+website-dev:
+  stage: website
+  variables:
+    WEBSITE_EVENT_REPOSITORY: GetBusbar/busbar
+    WEBSITE_CORE_REVISION: $CI_COMMIT_SHA
+  trigger:
+    project: BusbarInc/marketing
+    branch: dev
+    strategy: mirror
+    forward:
+      yaml_variables: true
+      pipeline_variables: false
