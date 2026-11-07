@@ -125,11 +125,27 @@ impl AdminTransport for JsonV1 {
         #[cfg(test)]
         let router = router.layer(axum::middleware::from_fn(record_declared_error));
 
-        router.layer(axum::middleware::from_fn_with_state(
-            Arc::new(crate::keys::KeyReplayCache::new()),
-            supply_replay_cache,
-        ))
+        router
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::new(crate::keys::KeyReplayCache::new()),
+                supply_replay_cache,
+            ))
+            .layer(axum::middleware::from_fn(confirm_request_audit))
     }
+}
+
+async fn confirm_request_audit(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let (response, publication) =
+        busbar_kernel::audit::auditlog::confirmed_request(next.run(req)).await;
+    if publication.is_err() {
+        return err_json(&AdminError::Unavailable(
+            "the administrative result's audit publication is unconfirmed; do not re-submit".into(),
+        ));
+    }
+    response
 }
 
 /// Keep the response projection and its ETag on the same immutable generation. In particular,

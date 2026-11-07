@@ -80,6 +80,7 @@ async fn native_emit(
         origin: EventOrigin::ExportFailure,
         operation: [operation; 16],
         prepared: None,
+        confirmation: None,
     });
     drain_native(&queue, log, native.clone()).await.unwrap();
     let entry = log.list_filtered(0, 1, None, None).remove(0);
@@ -125,6 +126,7 @@ impl NativeHarness {
             origin: EventOrigin::ExportFailure,
             operation,
             prepared: None,
+            confirmation: None,
         });
         drain_native(&queue, &self.log, self.native.clone())
             .await
@@ -678,6 +680,7 @@ fn pending(scope: &str, tag: u8) -> PendingAudit {
         suffix: vec![tag],
         operation: [tag.wrapping_add(1); 16],
         prepared: None,
+        confirmation: None,
     }
 }
 
@@ -735,6 +738,7 @@ fn a_panicking_store_behind_its_door_is_a_queued_fault_not_an_unwind() {
         suffix,
         operation: [7; 16],
         prepared: None,
+        confirmation: None,
     });
     let mut recovered = 0;
     q.drain_with(
@@ -1795,4 +1799,22 @@ async fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
         ring.iter().all(|e| !e.recorded_here),
         "restored ring entries are seeded (recorded_here = false), never live appends"
     );
+}
+
+#[tokio::test]
+async fn a_request_refuses_an_unconfirmed_enqueue_even_when_the_caller_ignores_it() {
+    let queue = PendingAuditQueue::new(0);
+    let (_, publication) = confirmed_request(async {
+        let pending = pending_audit(ADMIN_LOG, Vec::new(), EventOrigin::Mutation).unwrap();
+        let _ignored = queue.try_enqueue(pending);
+    })
+    .await;
+    let refused = publication.expect_err("an ignored queue refusal cannot publish success");
+    assert!(
+        refused
+            .to_string()
+            .contains("request audit enqueue was not confirmed"),
+        "the request retains its enqueue failure: {refused}"
+    );
+    assert_eq!(queue.len(), 0);
 }

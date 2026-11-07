@@ -401,7 +401,13 @@ async fn complete_key_mutation(
     mutation: impl std::future::Future<Output = Response> + Send + 'static,
 ) -> Response {
     let context = busbar_kernel::auth::effect::current();
-    match tokio::spawn(busbar_kernel::auth::effect::scope(context, mutation)).await {
+    let audit_request = busbar_kernel::audit::auditlog::current_request();
+    match tokio::spawn(busbar_kernel::audit::auditlog::scope_request(
+        audit_request,
+        busbar_kernel::auth::effect::scope(context, mutation),
+    ))
+    .await
+    {
         Ok(response) => response,
         Err(error) => join_error(op, &error),
     }

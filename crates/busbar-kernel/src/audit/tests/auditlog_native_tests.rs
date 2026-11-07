@@ -36,6 +36,7 @@ fn event(operation: u8, action: &str) -> PendingAudit {
         origin: EventOrigin::ExportFailure,
         operation: [operation; 16],
         prepared: None,
+        confirmation: None,
     }
 }
 

@@ -29,6 +29,23 @@ impl AdminNode {
         request: AdminRequest,
         admission: Option<busbar_kernel::inbound::RequestAdmission>,
     ) -> AdminAnswer {
+        let (answer, publication) = busbar_kernel::audit::auditlog::confirmed_request(
+            self.answer_confirmed(request, admission),
+        )
+        .await;
+        if publication.is_err() {
+            return bound::journal_unavailable(
+                "the administrative result's audit publication is unconfirmed; do not re-submit",
+            );
+        }
+        answer
+    }
+
+    async fn answer_confirmed(
+        &self,
+        request: AdminRequest,
+        admission: Option<busbar_kernel::inbound::RequestAdmission>,
+    ) -> AdminAnswer {
         if admission
             .as_ref()
             .is_some_and(|admission| !admission.begin_execution())
