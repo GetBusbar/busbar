@@ -281,7 +281,9 @@ async fn only_a_configured_plane_builds_its_slot() {
     let fallback = linked::fallback();
     let _one = PROBE_RUN.lock().await;
     busbar_kernel::plane_driver::registry::publish_planes(&[&PROBE]);
-    let build = async |sections: &[&'static str]| {
+    let core = crate::root::real_store::core().await;
+    let mut booted = false;
+    let mut build = async |sections: &[&'static str]| {
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
             .expect("the actual store statement reads")
@@ -318,7 +320,7 @@ async fn only_a_configured_plane_builds_its_slot() {
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = crate::root::real_store::build_app(
+        let (app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -327,13 +329,18 @@ async fn only_a_configured_plane_builds_its_slot() {
             (None, None),
             None,
             &rules,
+            Some(core.clone()),
+            false,
         )
         .await
         .expect("the actual product builds the door deployment");
         limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
+        if !booted {
+            let _book = crate::root::boot::book(&app, "configured-store")
+                .await
+                .expect("the actual configured Store binds boot rate history before activation");
+            booted = true;
+        }
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;

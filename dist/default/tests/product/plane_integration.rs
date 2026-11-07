@@ -778,7 +778,7 @@ mod metrics_scrape {
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        busbar_kernel::export::plugin::open(&cfg.export).expect("the configured exporter opens");
+        let exports = cfg.export.clone();
         let (app, rotate, limits) = crate::root::real_store::build_app(
             cfg,
             plugin_config,
@@ -791,6 +791,8 @@ mod metrics_scrape {
         )
         .await
         .expect("the actual product builds the door deployment");
+        crate::dist_root_install::attach_services(&app);
+        busbar_kernel::export::plugin::open(&exports).expect("the configured exporter opens");
         limits.stage_boot();
         let _book = crate::root::boot::book(&app, "configured-store")
             .await

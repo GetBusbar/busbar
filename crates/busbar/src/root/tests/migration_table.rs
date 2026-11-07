@@ -15,6 +15,16 @@ fn field(v: &serde_yaml::Value, k: &str) -> String {
         .to_string()
 }
 
+fn historical_refusal(raw: &str) -> String {
+    let document = serde_yaml::from_str(raw).expect("historical document parses");
+    let markers = busbar_migrations::config::migrate::detect_legacy_markers(&document);
+    assert!(
+        !markers.is_empty(),
+        "the historical reader identifies its source format"
+    );
+    busbar_migrations::config::migrate::legacy_config_error(&markers)
+}
+
 fn retired_word_meets_its_1_5_5_bytes(n: usize) {
     install();
     let g = golden(n);
@@ -44,28 +54,12 @@ fn retired_word_meets_its_1_5_5_bytes(n: usize) {
         out.changes
     );
 
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-migration-{n}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let path = dir.join("config.yaml");
-    std::fs::write(&path, &raw).expect("write config");
-    let refused = busbar_kernel::load_config_from_disk(
-        &path,
-        None,
-        false,
-        busbar_kernel::config::EnvSubst::Strict,
-    )
-    .err()
-    .expect("a retired spelling refuses boot");
-    let _ = std::fs::remove_dir_all(&dir);
+    // Historical marker prose belongs to the migration reader. Ordinary
+    // startup normalizes it before the kernel's current-format admission.
+    let refused = historical_refusal(&raw);
     assert!(
         refused.contains(&format!("  - {}\n", field(&g, "marker"))),
-        "the boot refusal does not carry 1.5.5's marker:\n{refused}"
+        "the historical reader does not carry 1.5.5's marker:\n{refused}"
     );
 }
 
@@ -141,31 +135,13 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
         );
     }
 
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-migration-obs-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let path = dir.join("config.yaml");
-    std::fs::write(&path, &raw).expect("write config");
-    let refused = busbar_kernel::load_config_from_disk(
-        &path,
-        None,
-        false,
-        busbar_kernel::config::EnvSubst::Strict,
-    )
-    .err()
-    .expect("a 1.x config refuses boot");
-    let _ = std::fs::remove_dir_all(&dir);
+    let refused = historical_refusal(&raw);
     let markers = bullets(&text("validate_stderr"), "", "  - ");
     assert!(!markers.is_empty(), "the golden carries 1.5.5's markers");
     for marker in markers {
         assert!(
             refused.contains(&format!("  - {marker}\n")),
-            "the boot refusal does not carry 1.5.5's marker `{marker}`:\n{refused}"
+            "the historical reader does not carry 1.5.5's marker `{marker}`:\n{refused}"
         );
     }
 

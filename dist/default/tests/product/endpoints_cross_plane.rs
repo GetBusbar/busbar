@@ -52,6 +52,11 @@ fn vkey(allowed_pools: &[&str]) -> Arc<VirtualKey> {
 }
 
 async fn topology_app() -> Arc<App> {
+    static APP: tokio::sync::OnceCell<Arc<App>> = tokio::sync::OnceCell::const_new();
+    APP.get_or_init(build_topology_app).await.clone()
+}
+
+async fn build_topology_app() -> Arc<App> {
     register_planes();
     let yaml = r#"providers:
   fixture: {api_key: none}

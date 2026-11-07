@@ -658,6 +658,7 @@ async fn served_openapi_lists_only_the_configured_planes() {
 
         std::sync::Arc::new(app)
     };
+    let base_app = app.clone();
     let full = served_openapi(app).await;
     let plane_owned: BTreeSet<String> = sections
         .iter()
@@ -681,79 +682,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
     );
 
     let app = {
-        crate::distribution::admin_cross_plane::ensure_seam();
-        let directory = super::plugins::scratch(&format!(
-            "admin-root-{}",
-            busbar_kernel::door::op_id().counter()
-        ));
-        let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
-        let archive = super::plugins::signed(
-            &crate::dist_root_install::release_key(),
-            manifest,
-            &std::fs::read(library_path).expect("the actual Store artifact reads"),
-        );
-        std::fs::write(directory.join("store.tar.gz"), archive)
-            .expect("stage the actual Store product");
-        std::fs::write(directory.join("admin.token"), "served-openapi-token")
-            .expect("write the operator credential");
-        let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
-            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
-        }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the actual admin deployment resolves");
-        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
-            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
-            super::plugins::trusted_config(&directory),
-            None,
-            Default::default(),
-            Default::default(),
-            (None, None),
-            None,
-            &rules,
-        )
-        .await
-        .expect("the product root builds the actual admin application");
-        limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().await.expect("the product limits commit");
-        if let Some(rotate) = rotate {
-            rotate.await;
-        }
-        app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::from_core(
-                app.governance
-                    .as_ref()
-                    .expect("the actual root opened governance")
-                    .core_store_handle()
-                    .expect("the actual Store exposes its calls"),
-            )
-            .expect("the actual Store opens its overlay"),
-        );
-        app.governance = Some(gov("served-openapi-token").await);
+        let mut app = (*base_app).clone();
         app.plane_sections = Some([].iter().copied().collect());
-
         std::sync::Arc::new(app)
     };
     let doc = served_openapi(app).await;
@@ -799,79 +729,8 @@ async fn served_openapi_lists_only_the_configured_planes() {
     }
 
     let app = {
-        crate::distribution::admin_cross_plane::ensure_seam();
-        let directory = super::plugins::scratch(&format!(
-            "admin-root-{}",
-            busbar_kernel::door::op_id().counter()
-        ));
-        let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual Store statement reads")
-            .expect("the actual Store states itself");
-        let facts = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual Store statement parses");
-        let mut manifest =
-            super::plugins::manifest("store", &facts.name, super::plugins::FIXTURE_PUBLISHER);
-        manifest.version = facts.version;
-        manifest.statement = Some(hex::encode(statement));
-        let archive = super::plugins::signed(
-            &crate::dist_root_install::release_key(),
-            manifest,
-            &std::fs::read(library_path).expect("the actual Store artifact reads"),
-        );
-        std::fs::write(directory.join("store.tar.gz"), archive)
-            .expect("stage the actual Store product");
-        std::fs::write(directory.join("admin.token"), "served-openapi-token")
-            .expect("write the operator credential");
-        let settings = crate::root::test_plugins::application_store_settings(&directory);
-        let mut document = serde_json::json!({});
-        document["providers"] = serde_json::json!({});
-        document["models"] = serde_json::json!({});
-        document["store"] = serde_json::json!({"module": facts.name, "settings": settings});
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": ["admin-tokens"]});
-        document["identity-providers"] = serde_json::json!({"admin-tokens": {
-            "module": "admin-tokens", "token": {"file": directory.join("admin.token")}
-        }});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the actual admin deployment parses");
-        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default())
-            .expect("the actual admin deployment resolves");
-        let rules = std::sync::Arc::new(crate::root::door_steps::Rules::default())
-            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (mut app, rotate, limits) = crate::root::real_store::build_app(
-            cfg,
-            super::plugins::trusted_config(&directory),
-            None,
-            Default::default(),
-            Default::default(),
-            (None, None),
-            None,
-            &rules,
-        )
-        .await
-        .expect("the product root builds the actual admin application");
-        limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
-            .await
-            .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().await.expect("the product limits commit");
-        if let Some(rotate) = rotate {
-            rotate.await;
-        }
-        app.overlay_path = Some(
-            busbar_kernel::config::overlay::OverlayStore::from_core(
-                app.governance
-                    .as_ref()
-                    .expect("the actual root opened governance")
-                    .core_store_handle()
-                    .expect("the actual Store exposes its calls"),
-            )
-            .expect("the actual Store opens its overlay"),
-        );
-        app.governance = Some(gov("served-openapi-token").await);
+        let mut app = (*base_app).clone();
         app.plane_sections = Some(["tools"].iter().copied().collect());
-
         std::sync::Arc::new(app)
     };
     let doc = served_openapi(app).await;
