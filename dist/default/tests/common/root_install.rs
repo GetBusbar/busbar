@@ -17,6 +17,30 @@ pub fn trust_policy(cfg: &PluginsCfg) -> Result<TrustPolicy, String> {
 
 static CREDENTIAL_HANDLE: std::sync::OnceLock<crate::root::credentials::LateHandle> =
     std::sync::OnceLock::new();
+static HOST_SERVICES: std::sync::OnceLock<std::sync::Arc<crate::root::serve::LateServices>> =
+    std::sync::OnceLock::new();
+
+/// Bind the admitted application's real async service pool and persistence to
+/// the dispatcher used by linked auth and export plugins in this fixture.
+pub fn attach_services(app: &busbar_kernel::state::App) {
+    install();
+    let late = HOST_SERVICES
+        .get()
+        .expect("the real host services are installed");
+    let declarations: Vec<_> = busbar_kernel::plane_driver::registry::plane_decls()
+        .iter()
+        .map(|decl| &decl.declaration)
+        .collect();
+    crate::root::serve::attach(
+        late,
+        app.governance.as_deref(),
+        app.governance
+            .clone()
+            .map(|gov| gov as std::sync::Arc<dyn busbar_kernel::host_services::SignKey>),
+        &app.demotion_record,
+        &declarations,
+    );
+}
 
 /// Complete the production credential-source lifecycle for an isolated application fixture.
 pub fn bind_credentials_once(handle: std::sync::Arc<busbar_kernel::state::AppHandle>) {
@@ -43,6 +67,7 @@ pub fn install() {
             hex::encode(release_key().verifying_key().as_bytes()),
         );
         let late = crate::root::serve::LateServices::new();
+        assert!(HOST_SERVICES.set(late.clone()).is_ok());
         let dispatcher = crate::root::dispatch::boot(1, &late);
         crate::root::doors::install_dispatcher(dispatcher);
         crate::root::linked::register_stores(&crate::LINKED);

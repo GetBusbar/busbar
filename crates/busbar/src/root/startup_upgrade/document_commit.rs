@@ -851,6 +851,25 @@ mod tests {
                 doc.publication.target_digest = Sha256::digest(&doc.publication.converted).into();
                 doc.publication.transform_id =
                     Sha256::digest(doc.publication.path.as_os_str().as_encoded_bytes()).into();
+                // Capture saw a no-op pair as AlreadyConverted. After creating
+                // this synthetic conversion, retain genuine native metadata for
+                // the now-distinct original/target pair before checkpointing.
+                let DocumentInspection::Original {
+                    metadata,
+                    read_only,
+                } = crate::root::admission::DURABLE
+                    .inspect_document(
+                        &doc.publication.path,
+                        &doc.publication.original,
+                        &doc.publication.converted,
+                    )
+                    .unwrap()
+                else {
+                    panic!("the fixture must retain an actual original document");
+                };
+                assert!(!read_only, "partial-publication fixture must be writable");
+                doc.metadata = Some(metadata);
+                doc.read_only = read_only;
             }
             inventory.digest = Sha256::digest(inventory.material().unwrap()).into();
             inventory
@@ -910,6 +929,13 @@ mod tests {
             )
             .await
             .is_err());
+        assert_eq!(checkpoint.fault.load(Ordering::SeqCst), 0);
+        let (_, phase) = Inventory::decode(
+            checkpoint.stored.lock().unwrap().as_ref().unwrap(),
+            migration,
+        )
+        .unwrap();
+        assert_eq!(phase, Phase::PendingReplace(1));
         assert!(std::fs::read(&fixture.publications[0].0)
             .unwrap()
             .ends_with(b"# normalized\n"));

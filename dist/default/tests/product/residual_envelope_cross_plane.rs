@@ -27,73 +27,81 @@ async fn an_unmounted_plane_claims_no_path_by_url_shape() {
         !mounting.is_empty(),
         "the test-linked roster carries at least one plane that mounts a path"
     );
+    let mut deployed = None;
     for decl in mounting {
         let path = format!("/{}", decl.key);
 
-        let yaml = "providers: {}\nmodels: {}\n";
-        crate::dist_root_install::install();
-        let library_path = crate::root::test_plugins::application_store_library();
-        let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
-            .expect("the actual store statement reads")
-            .expect("the actual store exports its statement");
-        let module = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .expect("the actual store statement is valid")
-            .name;
-        let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
-        manifest.statement = Some(hex::encode(statement));
-        let library = std::fs::read(library_path).expect("the actual store library reads");
-        let directory = plugins::scratch(&format!(
-            "residual_envelope_cross_plane-{}",
-            busbar_kernel::door::op_id().counter()
-        ));
-        let archive = plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
-        std::fs::write(directory.join("store.tar.gz"), archive)
-            .expect("stage the actual store archive");
-        let settings = crate::root::test_plugins::application_store_settings(&directory);
-        assert!(
-            settings.is_object(),
-            "the actual store settings are an object"
-        );
-        let mut document: serde_json::Value =
-            serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
-        document["store"] = serde_json::json!({"module": module, "settings": settings});
-        document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
-        document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
-        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
-            .expect("the product deployment parses");
-        let config = busbar_kernel::config::resolve(
-            &deploy,
-            &std::collections::HashMap::from([(
-                "fixture".to_string(),
-                serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
-                    .expect("provider definition"),
-            )]),
-        )
-        .expect("the product deployment resolves");
-        let plugin_config = plugins::trusted_config(&directory);
-        let rules = Arc::new(crate::root::door_steps::Rules::default())
-            as Arc<dyn busbar_kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = crate::root::real_store::build_app(
-            config,
-            plugin_config,
-            None,
-            Default::default(),
-            Default::default(),
-            (None, None),
-            None,
-            &rules,
-        )
-        .await
-        .expect("the actual product builds the door deployment");
-        limits.stage_boot();
-        let _book = crate::root::boot::book(&app, "configured-store")
+        let app = if let Some(app) = &deployed {
+            Arc::clone(app)
+        } else {
+            let yaml = "providers: {}\nmodels: {}\n";
+            crate::dist_root_install::install();
+            let library_path = crate::root::test_plugins::application_store_library();
+            let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
+                .expect("the actual store statement reads")
+                .expect("the actual store exports its statement");
+            let module = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .expect("the actual store statement is valid")
+                .name;
+            let mut manifest = plugins::manifest("store", &module, plugins::FIXTURE_PUBLISHER);
+            manifest.statement = Some(hex::encode(statement));
+            let library = std::fs::read(library_path).expect("the actual store library reads");
+            let directory = plugins::scratch(&format!(
+                "residual_envelope_cross_plane-{}",
+                busbar_kernel::door::op_id().counter()
+            ));
+            let archive =
+                plugins::signed(&crate::dist_root_install::release_key(), manifest, &library);
+            std::fs::write(directory.join("store.tar.gz"), archive)
+                .expect("stage the actual store archive");
+            let settings = crate::root::test_plugins::application_store_settings(&directory);
+            assert!(
+                settings.is_object(),
+                "the actual store settings are an object"
+            );
+            let mut document: serde_json::Value =
+                serde_yaml::from_str(yaml).expect("the concrete product deployment is valid YAML");
+            document["store"] = serde_json::json!({"module": module, "settings": settings});
+            document["auth"] = serde_json::json!({"chain": [], "admin_auth": []});
+            document["advanced"] = serde_json::json!({"allow_destinations": ["127.0.0.1"]});
+            let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+                .expect("the product deployment parses");
+            let config = busbar_kernel::config::resolve(
+                &deploy,
+                &std::collections::HashMap::from([(
+                    "fixture".to_string(),
+                    serde_yaml::from_str("protocol: openai\nbase_url: http://127.0.0.1:9\n")
+                        .expect("provider definition"),
+                )]),
+            )
+            .expect("the product deployment resolves");
+            let plugin_config = plugins::trusted_config(&directory);
+            let rules = Arc::new(crate::root::door_steps::Rules::default())
+                as Arc<dyn busbar_kernel::appbuild::RootRules>;
+            let (app, rotate, limits) = crate::root::real_store::build_app(
+                config,
+                plugin_config,
+                None,
+                Default::default(),
+                Default::default(),
+                (None, None),
+                None,
+                &rules,
+            )
             .await
-            .expect("the actual configured Store binds boot rate history before activation");
-        limits.keep().await.expect("the product limits commit");
-        if let Some(rotate) = rotate {
-            rotate.await;
-        }
-        let app = Arc::new(app);
+            .expect("the actual product builds the door deployment");
+            limits.stage_boot();
+            let _book = crate::root::boot::book(&app, "configured-store")
+                .await
+                .expect("the actual configured Store binds boot rate history before activation");
+            limits.keep().await.expect("the product limits commit");
+            if let Some(rotate) = rotate {
+                rotate.await;
+            }
+            let app = Arc::new(app);
+            deployed = Some(app.clone());
+            app
+        };
 
         let v = oversized_413_body(app, &path).await;
 
