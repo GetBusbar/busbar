@@ -287,8 +287,14 @@ async fn governed_full(
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
+    static CORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
+        tokio::sync::OnceCell::const_new();
+    let core = CORE
+        .get_or_init(crate::root::real_store::core)
+        .await
+        .clone();
     let gov = Arc::new(
-        GovState::new_with_core(crate::root::real_store::core().await, None, Some(signer))
+        GovState::new_with_core(core.clone(), None, Some(signer))
             .await
             .expect("governance"),
     );
@@ -388,7 +394,7 @@ async fn governed_full(
     } else {
         config.per_request_fee = flat_fee.unwrap_or(1);
     }
-    let (mut app, rotate, limits) = crate::root::real_store::build_app(
+    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
         config,
         crate::root::test_plugins::trusted_config_with_key(
             &directory,
@@ -401,10 +407,36 @@ async fn governed_full(
         None,
         &(Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn busbar_kernel::appbuild::RootRules>),
+        Some(core.clone()),
+        false,
     )
     .await
     .expect("the actual root builds the money deployment");
     limits.stage_boot();
+    let journal = book
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .runtime_journal();
+    assert!(
+        journal.is_bound_to(&core),
+        "the money book and generation must share their admitted CoreStore"
+    );
+    if !crate::root::kernel::ROOT_CARD.keeps_store() {
+        crate::root::kernel::ROOT_CARD
+            .keep_in_store(core.clone(), journal.node())
+            .expect("the first money generation binds its actual native prices");
+        crate::root::kernel::ROOT_CARD
+            .boot_bound_store()
+            .await
+            .expect("the actual native price history boots before limits commit");
+    }
+    assert!(
+        crate::root::kernel::ROOT_CARD
+            .card_store()
+            .expect("native prices are loaded")
+            .is_bound_to(&core),
+        "later money generations must retain the same native price Store"
+    );
     limits.keep().await.expect("the product limits commit");
     std::fs::remove_file(&signing_file).expect("the signing secret was resolved at boot");
     if let Some(rotate) = rotate {
