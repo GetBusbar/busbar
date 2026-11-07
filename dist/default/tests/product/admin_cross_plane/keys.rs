@@ -1422,14 +1422,22 @@ async fn serve_keys_fixture(
                 )
                 .expect("the actual Store opens its overlay"),
             );
-            app.governance = None;
-
-            std::sync::Arc::new(app)
+            // Finish real native startup before disabling this resource in the
+            // synthetic posture. Rejected mutations still publish their audit
+            // record through this deployment's original configured Store.
+            let mut app = crate::root::real_store::hydrated(Arc::new(app)).await;
+            Arc::get_mut(&mut app)
+                .expect("fixture hydration leaves this unserved App uniquely owned")
+                .governance = None;
+            app
         }
     };
-    let router = crate::distribution::admin_cross_plane::build_router(
-        crate::root::real_store::hydrated(app.clone()).await,
-    );
+    let serving = if fixture == KeysFixture::Off {
+        app.clone()
+    } else {
+        crate::root::real_store::hydrated(app.clone()).await
+    };
+    let router = crate::distribution::admin_cross_plane::build_router(serving);
     let (addr, handle, _) = spin_up(router).await;
 
     let live = if fixture == KeysFixture::Signing {
