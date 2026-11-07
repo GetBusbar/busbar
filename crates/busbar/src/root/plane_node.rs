@@ -589,15 +589,24 @@ impl Node {
             ),
         };
         occupied.reached_end = true;
-        if let Err(error) = await_terminal(confirmation).await {
-            tracing::error!(reason = error, "unit terminal audit remains unconfirmed");
-            return None;
+        let mut confirming = ConfirmingUnit {
+            route: Some(units),
+            ctx: &ctx,
+        };
+        let result = async {
+            if let Err(error) = await_terminal(confirmation).await {
+                tracing::error!(reason = error, "unit terminal audit remains unconfirmed");
+                return None;
+            }
+            if let Err(error) = self.retry_held_journal().await {
+                tracing::error!(reason = error, "unit audit remains unconfirmed");
+                return None;
+            }
+            outcome
         }
-        if let Err(error) = self.retry_held_journal().await {
-            tracing::error!(reason = error, "unit audit remains unconfirmed");
-            return None;
-        }
-        outcome
+        .await;
+        confirming.route = None;
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1190,6 +1199,22 @@ struct Occupied<'n> {
     op_class: OpClassId,
 
     reached_end: bool,
+}
+
+// The teller has settled and the node has consumed its post, but the caller still owns
+// the financial end until confirmation returns. Dropping that caller must retire the
+// finished money entry even though neither the teller nor the driver is still running.
+struct ConfirmingUnit<'a, R: RouteAwait> {
+    route: Option<&'a R>,
+    ctx: &'a UnitCtx,
+}
+
+impl<R: RouteAwait> Drop for ConfirmingUnit<'_, R> {
+    fn drop(&mut self) {
+        if let Some(route) = self.route.take() {
+            route.abandoned(self.ctx, Ended::AlreadySettled);
+        }
+    }
 }
 
 struct Lost {
