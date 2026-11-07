@@ -21,7 +21,7 @@ pub fn host_identity() -> String {
         let s = s.trim().to_string();
         (!s.is_empty()).then_some(s)
     };
-    std::env::var("HOSTNAME")
+    let identity = std::env::var("HOSTNAME")
         .ok()
         .and_then(clean)
         .or_else(|| std::env::var("COMPUTERNAME").ok().and_then(clean))
@@ -34,20 +34,16 @@ pub fn host_identity() -> String {
             std::fs::read_to_string("/etc/hostname")
                 .ok()
                 .and_then(clean)
-        })
-        .or_else(|| {
-            #[cfg(target_os = "macos")]
-            {
-                let output = std::process::Command::new("/bin/hostname").output().ok()?;
-                if !output.status.success() {
-                    return None;
-                }
-                String::from_utf8(output.stdout).ok().and_then(clean)
-            }
-            #[cfg(not(target_os = "macos"))]
-            None
-        })
-        .unwrap_or_default()
+        });
+    #[cfg(target_os = "macos")]
+    let identity = identity.or_else(|| {
+        let output = std::process::Command::new("/bin/hostname").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok().and_then(clean)
+    });
+    identity.unwrap_or_default()
 }
 
 /// What a walk of every chain the store keeps found.

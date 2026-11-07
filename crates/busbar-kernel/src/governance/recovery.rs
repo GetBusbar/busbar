@@ -2568,11 +2568,12 @@ pub(in crate::governance) mod tests {
             "historical payloads are not retained in the live per-operation Book"
         );
         gov.verify_recovery_checkpoint(&old).await.unwrap();
-        let owned = gov.recovery_book.entries.lock().unwrap();
-        let entry = owned.get(&initial.operation_id).unwrap();
-        assert!(entry.pending.is_none() && entry.adoption.is_none());
-        assert_eq!(entry.initial.as_ref(), Some(&initial));
-        drop(owned);
+        {
+            let owned = gov.recovery_book.entries.lock().unwrap();
+            let entry = owned.get(&initial.operation_id).unwrap();
+            assert!(entry.pending.is_none() && entry.adoption.is_none());
+            assert_eq!(entry.initial.as_ref(), Some(&initial));
+        }
         assert_eq!(
             store
                 .ledger()

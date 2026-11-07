@@ -4,11 +4,11 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::records::{ModelTokens, RecordStore, VirtualKey};
+use busbar_contract::records::{ModelTokens, VirtualKey};
 use busbar_kernel::cost::CostModel;
-use busbar_kernel::door;
 use busbar_kernel::governance::{budget_window, GovState, LimitBlocked, WINDOW_TOTAL};
 use busbar_kernel::rate_apply::RateEpoch;
+use busbar_kernel::{door, persistence};
 use busbar_kernel_ledger::cost::{
     price_in_view, Author, CardEntryDraft, History, LaneClass, LedgerEntry, RateCard,
 };
@@ -43,14 +43,14 @@ impl RateEpoch for Holder {
     }
 }
 
-static SERIAL: Mutex<()> = Mutex::new(());
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[path = "../../busbar/src/tests/kernel_application/external_dated_budget_raw.rs"]
 mod raw_provenance;
 
-fn holder_opening(card: RateCard) -> (&'static Holder, std::sync::MutexGuard<'static, ()>) {
+async fn holder_opening(card: RateCard) -> (&'static Holder, tokio::sync::MutexGuard<'static, ()>) {
     static HOLDER: std::sync::OnceLock<&'static Holder> = std::sync::OnceLock::new();
-    let serial = SERIAL.lock().unwrap_or_else(|p| p.into_inner());
+    let serial = SERIAL.lock().await;
     let holder = *HOLDER.get_or_init(|| {
         let opening = Arc::new(History::opening(history_card(0.0), 0));
         let holder: &'static Holder = Box::leak(Box::new(Holder(
@@ -105,11 +105,11 @@ fn input(n: u64) -> BTreeMap<String, u64> {
     BTreeMap::from([("input".to_string(), n)])
 }
 
-#[test]
-fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_force() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
+#[tokio::test]
+async fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_force() {
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
+    let store = real_store::core().await;
     let key = VirtualKey {
         id: "vk_dated".to_string(),
         generation_hash: "hash-dated".to_string(),
@@ -118,8 +118,10 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         group: Some("team".to_string()),
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    store.identity().put_key(&key).await.unwrap();
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let now = busbar_kernel::store::now();
 
     let before = cost(20.0, 1_300);
@@ -163,7 +165,8 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
 
     let team = &after.group_named("team").expect("configured").buckets[0];
     let group_read = gov
-        .derived_bucket_usage(&after, &team.bucket_id, team.window, true, now)
+        .derived_bucket_usage_async(&after, &team.bucket_id, team.window, true, now)
+        .await
         .expect("priced");
     assert_eq!(
         group_read.spend_cents, reference,
@@ -171,7 +174,8 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
          window's first 300,000 tokens)"
     );
     let key_read = gov
-        .usage_for(&after, &key.id, now)
+        .usage_for_async(&after, &key.id, now)
+        .await
         .expect("priced")
         .expect("the key exists");
     assert_eq!(
@@ -202,9 +206,13 @@ fn a_card_edit_mid_window_prices_every_budget_read_and_the_gate_at_the_card_in_f
         other => panic!("the gate must refuse on the dated 1,500: {other:?}"),
     }
 
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     let window = busbar_kernel::governance::budget_window(team.window, now);
-    let row = store.get_usage(&team.bucket_id, window).unwrap();
+    let row = store
+        .ledger()
+        .get_usage(&team.bucket_id, window)
+        .await
+        .unwrap();
     assert_eq!(row.models.len(), 1, "{row:?}");
     assert_eq!(
         row.models[0].scale,
@@ -232,18 +240,20 @@ fn edit_card(holder: &Holder, card: RateCard) {
     std::thread::sleep(std::time::Duration::from_millis(2));
 }
 
-#[test]
-fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
-    let store: Arc<dyn RecordStore> = real_store::store();
-    let key = team_key(store.as_ref(), "vk_restart");
+#[tokio::test]
+async fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
+    let store = real_store::core().await;
+    let key = team_key(store.as_ref(), "vk_restart").await;
     let now = busbar_kernel::store::now();
-    let reads = |gov: &GovState, cost: &CostModel| {
+    let reads = async |gov: &GovState, cost: &CostModel| {
         let team = &cost.group_named("team").expect("configured").buckets[0];
-        let group = (gov.derived_bucket_usage(cost, &team.bucket_id, team.window, true, now))
+        let group = (gov
+            .derived_bucket_usage_async(cost, &team.bucket_id, team.window, true, now)
+            .await)
             .expect("priced")
             .spend_cents;
-        let own = (gov.usage_for(cost, &key.id, now))
+        let own = (gov.usage_for_async(cost, &key.id, now).await)
             .expect("priced")
             .expect("exists")
             .spend_cents;
@@ -254,23 +264,33 @@ fn a_clean_restart_after_a_card_edit_keeps_identical_money_and_headroom() {
     };
 
     let before = cost(20.0, 1_000_000);
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     gov.try_admit(&before, &key, "", now).expect("admits");
     gov.record_usage(&before, &key, "", "m", &input(300_000), now);
     edit_card(holder, history_card(10.0));
     let after = cost(10.0, 1_000_000);
     gov.try_admit(&after, &key, "", now).expect("admits");
     gov.record_usage(&after, &key, "", "m", &input(900_000), now);
-    let seen = reads(&gov, &after);
+    let seen = reads(&gov, &after).await;
     assert_eq!((seen.0, seen.1), (1_500, 1_500), "the dated figure");
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     drop(gov);
 
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
-    let cold = reads(&gov, &after);
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    let cold = reads(&gov, &after).await;
     assert_eq!((cold.0, cold.1), (seen.0, seen.1), "read from the store");
-    gov.hydrate_budgets(&after, now).expect("hydrate");
-    assert_eq!(reads(&gov, &after), seen, "read from the hydrated cells");
+    gov.hydrate_budgets_async(&after, now)
+        .await
+        .expect("hydrate");
+    assert_eq!(
+        reads(&gov, &after).await,
+        seen,
+        "read from the hydrated cells"
+    );
 }
 
 fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
@@ -285,11 +305,11 @@ fn row(tokens: u64) -> busbar_contract::records::UsageLedger {
     }
 }
 
-#[test]
-fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
-    let (holder, _serial) = holder_opening(history_card(20.0));
+#[tokio::test]
+async fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
+    let store = real_store::core().await;
     let key = VirtualKey {
         id: "vk_durable".to_string(),
         generation_hash: "hash-durable".to_string(),
@@ -298,15 +318,21 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
         group: Some("team".to_string()),
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     let now = busbar_kernel::store::now();
     let current = cost(10.0, 1_000_000);
     let team = &current.group_named("team").expect("configured").buckets[0];
     let key_window = budget_window(WINDOW_TOTAL, now);
     let team_window = budget_window(team.window, now);
-    store.put_usage(&key.id, key_window, &row(300_000)).unwrap();
     store
+        .ledger()
+        .put_usage(&key.id, key_window, &row(300_000))
+        .await
+        .unwrap();
+    store
+        .ledger()
         .put_usage(&team.bucket_id, team_window, &row(300_000))
+        .await
         .unwrap();
 
     let edit_ms = busbar_kernel::store::now_ms();
@@ -323,23 +349,29 @@ fn a_durable_row_prices_as_the_cell_hydrated_from_it_after_a_card_edit() {
         *history = Arc::new(next);
     }
 
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
-    let reads = |gov: &GovState| {
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    let reads = async |gov: &GovState| {
         let key_read = gov
-            .usage_for(&current, &key.id, now)
+            .usage_for_async(&current, &key.id, now)
+            .await
             .expect("priced")
             .expect("the key exists")
             .spend_cents;
         let team_read = gov
-            .derived_bucket_usage(&current, &team.bucket_id, team.window, true, now)
+            .derived_bucket_usage_async(&current, &team.bucket_id, team.window, true, now)
+            .await
             .expect("priced")
             .spend_cents;
         (key_read, team_read)
     };
 
-    let from_store = reads(&gov);
-    gov.hydrate_budgets(&current, now).expect("hydrate");
-    let from_cell = reads(&gov);
+    let from_store = reads(&gov).await;
+    gov.hydrate_budgets_async(&current, now)
+        .await
+        .expect("hydrate");
+    let from_cell = reads(&gov).await;
 
     assert_eq!(
         from_cell,
@@ -375,11 +407,11 @@ fn fee_card(fee_cents: i64) -> RateCard {
     RateCard::from_micro_rates([(LaneClass::new("m", "input"), 1.0)], fee_cents)
 }
 
-#[test]
-fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
-    let (holder, _serial) = holder_opening(fee_card(5));
+#[tokio::test]
+async fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
+    let (holder, _serial) = holder_opening(fee_card(5)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
+    let store = real_store::core().await;
     let key = VirtualKey {
         id: "vk_era_refund".to_string(),
         generation_hash: "hash-era-refund".to_string(),
@@ -388,8 +420,10 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
         group: Some("team".to_string()),
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    store.identity().put_key(&key).await.unwrap();
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let now = busbar_kernel::store::now();
 
     let before = fee_cost(5);
@@ -412,27 +446,31 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     let after = fee_cost(10);
     gov.try_admit(&after, &key, "", now)
         .expect("B admits at fee 10");
-    let spend = |gov: &GovState| {
-        (gov.usage_for(&after, &key.id, now))
+    let spend = async |gov: &GovState| {
+        (gov.usage_for_async(&after, &key.id, now).await)
             .expect("priced")
             .expect("the key exists")
             .spend_cents
     };
-    assert_eq!(spend(&gov), 15, "A's 5 and B's 10");
+    assert_eq!(spend(&gov).await, 15, "A's 5 and B's 10");
 
     gov.refund_charge(a.charge());
-    assert_eq!(spend(&gov), 10, "A's fee came back; B's 10 is owed");
+    assert_eq!(spend(&gov).await, 10, "A's fee came back; B's 10 is owed");
 
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     drop(gov);
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
-    assert_eq!(spend(&gov), 10, "read from the store after restart");
-    gov.hydrate_budgets(&after, now).expect("hydrate");
-    assert_eq!(spend(&gov), 10, "read from the hydrated cell");
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
+    assert_eq!(spend(&gov).await, 10, "read from the store after restart");
+    gov.hydrate_budgets_async(&after, now)
+        .await
+        .expect("hydrate");
+    assert_eq!(spend(&gov).await, 10, "read from the hydrated cell");
 }
 
-#[test]
-fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
+#[tokio::test]
+async fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
     let fees = |per_request| {
         busbar_kernel::config::PlaneFeesMap::from([(
@@ -447,9 +485,9 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
         let fees = fees(per_request);
         fee_card(0).with_plane_fees(fees.iter().map(|(p, f)| (p.as_str(), *f)))
     };
-    let (holder, _serial) = holder_opening(card(1));
+    let (holder, _serial) = holder_opening(card(1)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
+    let store = real_store::core().await;
     let key = VirtualKey {
         id: "vk_plane_fee_epoch".to_string(),
         generation_hash: "hash-plane-fee-epoch".to_string(),
@@ -458,21 +496,27 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
         group: Some("team".to_string()),
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    store.identity().put_key(&key).await.unwrap();
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let now = busbar_kernel::store::now();
     let pool = format!("tp{PLANE_LANE_SEP}probe");
 
     let before = fee_cost(0).with_plane_fees(&fees(1));
     gov.try_admit(&before, &key, &pool, now)
         .expect("A admits at the plane fee 1");
-    let spend = |gov: &GovState, cost: &CostModel| {
-        (gov.usage_for(cost, &key.id, now))
+    let spend = async |gov: &GovState, cost: &CostModel| {
+        (gov.usage_for_async(cost, &key.id, now).await)
             .expect("priced")
             .expect("the key exists")
             .spend_cents
     };
-    assert_eq!(spend(&gov, &before), 1, "A at the opening card's plane fee");
+    assert_eq!(
+        spend(&gov, &before).await,
+        1,
+        "A at the opening card's plane fee"
+    );
 
     let edit_ms = busbar_kernel::store::now_ms();
     {
@@ -489,7 +533,7 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     }
     let after = fee_cost(0).with_plane_fees(&fees(7));
     assert_eq!(
-        spend(&gov, &after),
+        spend(&gov, &after).await,
         1,
         "publishing a card never reprices the request admitted before it"
     );
@@ -497,15 +541,16 @@ fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
     gov.try_admit(&after, &key, &pool, now)
         .expect("B admits at the plane fee 7");
     assert_eq!(
-        spend(&gov, &after),
+        spend(&gov, &after).await,
         8,
         "each request at the plane fee in force when it was admitted (2 = opening forever, 14 = \
          newest card)"
     );
 }
 
-fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
+async fn metered(store: &persistence::facade::CoreStore, key_id: &str, at: u64, n: u64, era: u64) {
     store
+        .ledger()
         .add_metering(&busbar_contract::records::MeteringDelta {
             scale: 0,
             key_id: key_id.to_string(),
@@ -523,10 +568,11 @@ fn metered(store: &dyn RecordStore, key_id: &str, at: u64, n: u64, era: u64) {
             priced_from_ms: era,
             usage_units: Default::default(),
         })
+        .await
         .unwrap();
 }
 
-fn team_key(store: &dyn RecordStore, id: &str) -> VirtualKey {
+async fn team_key(store: &persistence::facade::CoreStore, id: &str) -> VirtualKey {
     let key = VirtualKey {
         id: id.to_string(),
         generation_hash: format!("hash-{id}"),
@@ -535,25 +581,27 @@ fn team_key(store: &dyn RecordStore, id: &str) -> VirtualKey {
         group: Some("team".to_string()),
         ..Default::default()
     };
-    store.put_key(&key).unwrap();
+    store.identity().put_key(&key).await.unwrap();
     key
 }
 
-#[test]
-fn a_correction_lands_in_its_units_own_window_and_card_entry() {
+#[tokio::test]
+async fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     use busbar_kernel::governance::{metering_bucket, Adjustment, UsageAdjustment};
-    let (holder, _serial) = holder_opening(history_card(20.0));
+    let (holder, _serial) = holder_opening(history_card(20.0)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
-    let key = team_key(store.as_ref(), "vk_own_epoch");
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    let store = real_store::core().await;
+    let key = team_key(store.as_ref(), "vk_own_epoch").await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let today = busbar_kernel::store::now();
     let yesterday = today - 86_400;
 
     let card_a = cost(20.0, 1_000_000);
     gov.record_usage(&card_a, &key, "", "m", &input(300_000), yesterday);
-    metered(store.as_ref(), &key.id, yesterday, 300_000, 0);
-    gov.flush_budgets();
+    metered(store.as_ref(), &key.id, yesterday, 300_000, 0).await;
+    gov.flush_budgets().await;
 
     let edit_ms = busbar_kernel::store::now_ms();
     {
@@ -571,7 +619,7 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
     std::thread::sleep(std::time::Duration::from_millis(2));
     let card_b = cost(10.0, 1_000_000);
     gov.record_usage(&card_b, &key, "", "m", &input(100_000), today);
-    metered(store.as_ref(), &key.id, today, 100_000, edit_ms);
+    metered(store.as_ref(), &key.id, today, 100_000, edit_ms).await;
 
     let delta = BTreeMap::from([("input".to_string(), -100_000i64)]);
     let correction = Adjustment {
@@ -584,30 +632,33 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
         delta: &delta,
         now: today,
     };
-    gov.adjust_usage(&card_b, &correction)
+    gov.adjust_usage_async(&card_b, &correction)
+        .await
         .expect("the store reads")
         .expect("the correction lands in its unit's own window and card entry");
-    gov.flush_budgets();
+    gov.flush_budgets().await;
 
     let team = &card_b.group_named("team").expect("configured").buckets[0];
-    let window = |at: u64| {
+    let window = async |at: u64| {
         let read = gov
-            .derived_bucket_usage(&card_b, &team.bucket_id, team.window, true, at)
+            .derived_bucket_usage_async(&card_b, &team.bucket_id, team.window, true, at)
+            .await
             .expect("priced");
         (read.tokens, read.spend_cents)
     };
     assert_eq!(
-        window(yesterday),
+        window(yesterday).await,
         (busbar_contract::Count::from(200_000u64), 400),
         "yesterday's window holds the corrected unit, priced at A"
     );
     assert_eq!(
-        window(today),
+        window(today).await,
         (busbar_contract::Count::from(100_000u64), 100),
         "today's window is not the unit's: untouched"
     );
     let key_read = gov
-        .usage_for(&card_b, &key.id, today)
+        .usage_for_async(&card_b, &key.id, today)
+        .await
         .expect("priced")
         .expect("the key exists");
     assert_eq!(
@@ -616,7 +667,9 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
         "200,000 at A and 100,000 at B (600 = the correction taken off B's segment)"
     );
     assert_eq!(
-        gov.usage_adjustments(metering_bucket(yesterday)).unwrap(),
+        gov.usage_adjustments_async(metering_bucket(yesterday))
+            .await
+            .unwrap(),
         vec![UsageAdjustment {
             key_id: key.id.clone(),
             lane: "m".to_string(),
@@ -627,43 +680,48 @@ fn a_correction_lands_in_its_units_own_window_and_card_entry() {
         "the metered view carries the correction on the unit's own day"
     );
     assert!(
-        gov.usage_adjustments(metering_bucket(today))
+        gov.usage_adjustments_async(metering_bucket(today))
+            .await
             .unwrap()
             .is_empty(),
         "and nothing on today's"
     );
 }
 
-#[test]
-fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_nothing() {
+#[tokio::test]
+async fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_nothing() {
     use busbar_kernel::governance::{metering_bucket, Adjustment};
-    let (_holder, _serial) = holder_opening(history_card(20.0));
+    let (_holder, _serial) = holder_opening(history_card(20.0)).await;
 
-    let store: Arc<dyn RecordStore> = real_store::store();
-    let key = team_key(store.as_ref(), "vk_gone_epoch");
-    let gov = GovState::new_with_signer(store.clone(), None, None).unwrap();
+    let store = real_store::core().await;
+    let key = team_key(store.as_ref(), "vk_gone_epoch").await;
+    let gov = GovState::new_with_core(store.clone(), None, None)
+        .await
+        .unwrap();
     let today = busbar_kernel::store::now();
     let yesterday = today - 86_400;
     let card = cost(20.0, 1_000_000);
 
-    metered(store.as_ref(), &key.id, yesterday, 1_000, 0);
+    metered(store.as_ref(), &key.id, yesterday, 1_000, 0).await;
 
     gov.record_usage(&card, &key, "", "m", &input(1_000), today);
-    metered(store.as_ref(), &key.id, today, 1_000, 0);
+    metered(store.as_ref(), &key.id, today, 1_000, 0).await;
 
     let team = &card.group_named("team").expect("configured").buckets[0];
-    let reads = |gov: &GovState| {
+    let reads = async |gov: &GovState| {
         let key_read = gov
-            .usage_for(&card, &key.id, today)
+            .usage_for_async(&card, &key.id, today)
+            .await
             .expect("priced")
             .expect("the key exists");
         let team_read = gov
-            .derived_bucket_usage(&card, &team.bucket_id, team.window, true, today)
+            .derived_bucket_usage_async(&card, &team.bucket_id, team.window, true, today)
+            .await
             .expect("priced");
         (key_read.tokens, team_read.tokens, team_read.spend_cents)
     };
     assert_eq!(
-        reads(&gov),
+        reads(&gov).await,
         (
             busbar_contract::Count::from(1_000u64),
             busbar_contract::Count::from(1_000u64),
@@ -683,7 +741,8 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
         now: today,
     };
     let refused = gov
-        .adjust_usage(&card, &correction)
+        .adjust_usage_async(&card, &correction)
+        .await
         .expect("the store reads")
         .expect_err("a correction with nowhere to land in its own window is refused");
     let why = refused.to_string();
@@ -693,9 +752,9 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
         "the refusal names the bucket and why: {why}"
     );
 
-    gov.flush_budgets();
+    gov.flush_budgets().await;
     assert_eq!(
-        reads(&gov),
+        reads(&gov).await,
         (
             busbar_contract::Count::from(1_000u64),
             busbar_contract::Count::from(1_000u64),
@@ -704,7 +763,9 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
         "no count moved"
     );
     let gone = store
+        .ledger()
         .get_usage(&team.bucket_id, budget_window(team.window, yesterday))
+        .await
         .unwrap();
     assert!(
         gone.models.is_empty(),
@@ -712,7 +773,8 @@ fn a_correction_whose_window_no_longer_holds_its_segment_is_refused_and_moves_no
     );
     for day in [yesterday, today] {
         assert!(
-            gov.usage_adjustments(metering_bucket(day))
+            gov.usage_adjustments_async(metering_bucket(day))
+                .await
                 .unwrap()
                 .is_empty(),
             "no metered adjustment row was written"

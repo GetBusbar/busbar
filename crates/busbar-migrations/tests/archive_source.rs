@@ -193,7 +193,8 @@ async fn pages_join_nonadjacent_native_rows_and_never_split_a_complete_group() {
         "one tiny marker covers nonadjacent group members"
     );
     assert!(!one.records[0].preserve_exact);
-    assert_eq!(one.records[0].value.expose_own(&Own::here()).len(), 72);
+    // The decoder enforces the fixed 72-byte frame without opening the
+    // Kernel-owned payload with the fixture encoder's separate Own seal.
     assert_eq!(
         busbar_migrations::legacy::projection::decode_marker(&one.records[0]).unwrap(),
         busbar_migrations::legacy::projection::ProjectionSource::inventory_digest(

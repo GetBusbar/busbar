@@ -6,7 +6,7 @@ use crate::rate::CONFIG_CLASS_RULES;
 use crate::verb::{KernelVerb, VerbScope};
 use crate::verbs::Verbs;
 use busbar_contract::caps::{AdminVerb, Grant};
-use busbar_kernel::persistence::recovery_api::{Store, StoreError};
+use busbar_kernel::persistence::recovery_api::Store;
 use std::sync::Mutex;
 
 fn node_limiter() -> std::sync::Arc<crate::rate::MutationLimiter> {
@@ -729,7 +729,7 @@ impl Store for RecordingStore {
     fn chain_break<'a>(
         &'a self,
         _admin: &'a Grant<AdminVerb>,
-    ) -> busbar_kernel::persistence::recovery_api::RecordCall<'a> {
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
         Box::pin(async move {
             self.0.lock().unwrap().push("chain_break");
             Ok(())
@@ -739,7 +739,7 @@ impl Store for RecordingStore {
         &'a self,
         _admin: &'a Grant<AdminVerb>,
         _backup_ref: &'a str,
-    ) -> busbar_kernel::persistence::recovery_api::RecordCall<'a> {
+    ) -> busbar_kernel::persistence::recovery_api::StoreCall<'a> {
         Box::pin(async move {
             self.0.lock().unwrap().push("store_restore");
             Ok(())

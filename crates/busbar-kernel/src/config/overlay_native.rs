@@ -668,8 +668,10 @@ mod tests {
 
     #[test]
     fn migration_rows_stream_bounded_current_chunks_before_manifest() {
-        let mut doc = OverlayDoc::default();
-        doc.deleted = vec!["x".repeat(busbar_contract::MAX_RECORD_BYTES + 17)];
+        let doc = OverlayDoc {
+            deleted: vec!["x".repeat(busbar_contract::MAX_RECORD_BYTES + 17)],
+            ..Default::default()
+        };
         let bytes = Secret::new(serde_json::to_vec(&doc).unwrap());
         let seal = crate::seal::lend();
         let mut rows = migration_rows(&bytes, [9; 16]).unwrap();

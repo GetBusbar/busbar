@@ -467,9 +467,11 @@ async fn unreadable_resume_rows_do_not_hide_a_decodable_chain_break() {
             tracing::subscriber::set_default(tracing_subscriber::registry().with(cap.clone()));
         append(&ChainBook::default(), &rows, "acme", b"|later").await;
     }
-    let codes = cap.0.lock().unwrap();
-    assert!(codes.iter().any(|line| line.contains("BUSBAR-2046")));
-    assert!(codes.iter().any(|line| line.contains("BUSBAR-2048")));
+    {
+        let codes = cap.0.lock().unwrap();
+        assert!(codes.iter().any(|line| line.contains("BUSBAR-2046")));
+        assert!(codes.iter().any(|line| line.contains("BUSBAR-2048")));
+    }
     assert_eq!(records(&rows, "acme").await.last().unwrap().seq(), 100);
 }
 #[tokio::test]

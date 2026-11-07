@@ -512,7 +512,7 @@ async fn recovery_selection_unknown_retains_exact_candidate_and_rejects_changed_
 
 #[tokio::test]
 async fn recovery_selection_cancelled_candidate_cannot_select_a_changed_original_or_owner() {
-    for tag in [b'R', b'O', b'H'] {
+    for tag in *b"ROH" {
         let backend = Arc::new(Backend::default());
         let (store, first) = old_journal(&backend).await;
         let journal = StoreJournal::new(&store, 7).unwrap();
@@ -980,7 +980,7 @@ async fn cold_transfer_unknown_replays_identical_candidate_before_native_reread(
 
 #[tokio::test]
 async fn cancelled_cold_transfer_keeps_exact_proof_and_cannot_overwrite_changed_custody() {
-    for changed in [b'H', b'O', b'D', b'W'] {
+    for changed in *b"HODW" {
         let backend = Arc::new(Backend::default());
         let (_old_store, first) = old_journal(&backend).await;
         set_root_epoch(&backend, 3);

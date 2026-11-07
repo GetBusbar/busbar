@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use oauth_as::store::Storage as _;
 
 fn shared(store: Arc<busbar_kernel::persistence::facade::CoreStore>) -> Arc<Shared> {
     Arc::new(Shared::new(Arc::new(

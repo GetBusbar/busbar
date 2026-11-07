@@ -891,7 +891,7 @@ async fn runtime_boot_keeps_unknown_original_across_an_interrupted_wait() {
     let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
     let key = book.pending().expect("boot retains the original candidate");
     assert!(
-        book.history().is_none_or(|history| history.len() == 0),
+        book.history().is_none_or(|history| history.is_empty()),
         "an unknown original grants no publication"
     );
     boot.await.unwrap();

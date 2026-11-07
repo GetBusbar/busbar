@@ -204,7 +204,7 @@ fn stored_at(scope: &str, seq: u64) -> Vec<u8> {
 }
 
 async fn tamper(store: &Arc<CoreStore>, key: &[u8], from: &[u8], to: &[u8]) {
-    let held = read_row(&store, EV, key)
+    let held = read_row(store, EV, key)
         .await
         .unwrap()
         .expect("the record is in the store")
@@ -217,7 +217,7 @@ async fn tamper(store: &Arc<CoreStore>, key: &[u8], from: &[u8], to: &[u8]) {
     let mut edited = held[..at].to_vec();
     edited.extend_from_slice(to);
     edited.extend_from_slice(&held[at + from.len()..]);
-    put_row(&store, EV, key, &RecordBytes::new(edited).unwrap())
+    put_row(store, EV, key, &RecordBytes::new(edited).unwrap())
         .await
         .unwrap();
 }
