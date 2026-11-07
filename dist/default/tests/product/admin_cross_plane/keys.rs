@@ -301,7 +301,9 @@ async fn drive_unpriced_usage_reads() -> Vec<(String, u16, serde_json::Value)> {
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, handle, client) = spin_up(router).await;
     let mut out = Vec::new();
     for path in [
@@ -574,7 +576,9 @@ async fn test_admin_v1_openapi_is_identity_json_for_every_client() {
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, handle, client) = spin_up(router).await;
     let url = format!("http://{addr}/api/v1/admin/openapi.json");
 
@@ -779,7 +783,9 @@ async fn drive_key_cap_and_delegation_errors() {
         inner.max_keys_per_principal = 2;
     }
     busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, server, client) = spin_up(router).await;
     let keys_url = format!("http://{addr}/api/v1/admin/keys");
 
@@ -1009,7 +1015,9 @@ async fn test_admin_v1_overlay_reset_unknown_section_keeps_1_5_5_sentence_shape(
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, handle, _) = spin_up(router).await;
 
     let r = reqwest::Client::new()
@@ -1419,7 +1427,9 @@ async fn serve_keys_fixture(
             std::sync::Arc::new(app)
         }
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app.clone());
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app.clone()).await,
+    );
     let (addr, handle, _) = spin_up(router).await;
 
     let live = if fixture == KeysFixture::Signing {
@@ -2052,7 +2062,9 @@ async fn admin_error_fixture() -> (std::net::SocketAddr, tokio::task::JoinHandle
         app.base_hook_names.insert("basehook".into());
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, server, client) = spin_up(router).await;
     for (rel, body) in [
         (
@@ -2961,7 +2973,9 @@ async fn drive_plugin_reload_errors() {
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, server, client) = spin_up(router).await;
 
     let r = client
@@ -3082,7 +3096,9 @@ async fn drive_plugin_rollback_errors() {
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, server, client) = spin_up(router).await;
     let rollback = |body: String| {
         client
@@ -3321,7 +3337,9 @@ async fn drive_plugin_inspect_errors() {
 
         std::sync::Arc::new(app)
     };
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, server, client) = spin_up(router).await;
 
     let r = client
@@ -3738,7 +3756,9 @@ async fn named_map_app_opts(
     app.serve_tables = tables;
     let app = Arc::new(app);
     busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
-    let router = crate::distribution::admin_cross_plane::build_router(app);
+    let router = crate::distribution::admin_cross_plane::build_router(
+        crate::root::real_store::hydrated(app).await,
+    );
     let (addr, handle, _) = spin_up(router).await;
     (dir, overlay, addr, handle)
 }
@@ -5054,7 +5074,9 @@ async fn drive_named_map_errors() {
 
             std::sync::Arc::new(app)
         };
-        let router = crate::distribution::admin_cross_plane::build_router(app);
+        let router = crate::distribution::admin_cross_plane::build_router(
+            crate::root::real_store::hydrated(app).await,
+        );
         let (addr, handle, _) = spin_up(router).await;
         {
             for (label, method, rel, body) in [
