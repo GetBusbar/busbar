@@ -30,7 +30,7 @@ pub(crate) fn isolated_fixture_done(test: &str, case: &str) {
     println!("DOOR-STEPS-CASE-DONE {test} {case}");
 }
 
-async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
+pub(crate) async fn boot_fixture_prices(app: &busbar_kernel::state::App) {
     let store = app
         .governance
         .as_ref()
