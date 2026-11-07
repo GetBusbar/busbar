@@ -200,7 +200,34 @@ async fn rollback_refuses_the_anchor_below_its_operator_bootstrap_floor_before_a
 
 #[tokio::test]
 async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
-    for anchor_target in [true, false] {
+    const CHILD: &str = "BUSBAR_SAFE_BOOTSTRAP_ROLLBACK_CASE";
+    const WITNESS: &str = "actual safe bootstrap rollback completed";
+    let case = std::env::var(CHILD).ok();
+    if case.is_none() {
+        for case in ["anchor", "nonanchor"] {
+            let name = std::thread::current()
+                .name()
+                .expect("the exact test name")
+                .to_string();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, case)
+                .output()
+                .expect("the isolated actual-root rollback starts");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{case} rollback failed: {stdout}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                stdout.contains(WITNESS),
+                "the exact {case} child must execute its assertions: {stdout}"
+            );
+        }
+        return;
+    }
+    for anchor_target in [case.as_deref() == Some("anchor")] {
         crate::dist_root_install::install();
         let library_path = std::path::PathBuf::from(
             std::env::var_os("BUSBAR_BOOTSTRAP_TEST_STORE_PLUGIN")
@@ -403,6 +430,7 @@ async fn safe_anchor_and_nonanchor_rollbacks_preserve_the_existing_pin_merge() {
         assert_eq!(persisted.plugin_versions["prior-plugin"], "3.0.0");
         server.abort();
     }
+    println!("{WITNESS}");
 }
 
 #[tokio::test]

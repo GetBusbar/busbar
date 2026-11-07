@@ -3,8 +3,8 @@
 use busbar_contract::billing::RawTierRates;
 use busbar_kernel::rate_apply::{rates_applied, RawRates};
 use std::time::{Duration, Instant};
-#[test]
-fn the_actual_rate_holder_preserves_every_tier_unit_fee_and_present_empty_card() {
+#[tokio::test]
+async fn the_actual_rate_holder_preserves_every_tier_unit_fee_and_present_empty_card() {
     const CHILD: &str = "BUSBAR_CENTRAL2_RATES_CHILD";
     const WITNESS: &str = "actual root rate view fidelity completed";
     if std::env::var_os(CHILD).is_none() {
@@ -79,13 +79,28 @@ fn the_actual_rate_holder_preserves_every_tier_unit_fee_and_present_empty_card()
     };
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     let units = [("slow".to_string(), "search_units".to_string(), 5_000)];
-    rates_applied(&RawRates {
+    let raw = RawRates {
         lanes: &lanes,
         units: &units,
         flat_minor: 11,
         present: true,
         plane_fees: &Default::default(),
-    });
+    };
+    rates_applied(&raw);
+    assert!(
+        crate::root::kernel::ROOT_CARD.history().is_none(),
+        "a raw notification cannot publish unconfirmed prices"
+    );
+    let fields = crate::root::kernel::CardForm::of(&raw, &crate::root::kernel::card_from_raw(&raw))
+        .to_fields();
+    crate::root::kernel::ROOT_CARD.card_applied(&fields, "actual rate-holder boot witness");
+    crate::root::kernel::ROOT_CARD
+        .keep_in_store(crate::root::real_store::core().await, 7)
+        .expect("the actual native Store binds the rate holder");
+    crate::root::kernel::ROOT_CARD
+        .boot_bound_store()
+        .await
+        .expect("native boot confirms the first card activation");
     let history = crate::root::kernel::ROOT_CARD
         .history()
         .expect("the actual apply publishes its card");
@@ -135,13 +150,26 @@ fn the_actual_rate_holder_preserves_every_tier_unit_fee_and_present_empty_card()
             .class_priced("search_units"),
         "a unit is not invented on another lane"
     );
-    rates_applied(&RawRates {
+    let raw = RawRates {
         lanes: &[],
         units: &[],
         flat_minor: 11,
         present: true,
         plane_fees: &Default::default(),
-    });
+    };
+    let fields = crate::root::kernel::CardForm::of(&raw, &crate::root::kernel::card_from_raw(&raw))
+        .to_fields();
+    busbar_kernel::rate_apply::prepare_with_origin(
+        &fields,
+        &raw,
+        "actual empty-card activation witness",
+    )
+    .await
+    .expect("the native Store prepares the exact empty card")
+    .confirm_activation()
+    .await
+    .expect("the native Store confirms activation")
+    .commit();
     let history = crate::root::kernel::ROOT_CARD
         .history()
         .expect("the empty apply is carried");
