@@ -179,18 +179,40 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
         .await
         .expect("the actual product builds the host deployment");
         limits.stage_boot();
-        let _ = crate::root::kernel::ROOT_CARD.keep_in_store(
-            app.governance
-                .as_ref()
-                .expect("the application has its configured governance Store")
-                .core_store_handle()
-                .expect("the configured product Store exposes actual calls"),
-            busbar_kernel::door::op_id().counter(),
-        );
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
+        let core = app
+            .governance
+            .as_ref()
+            .unwrap()
+            .core_store_handle()
+            .unwrap();
+        let node = kernel::door::op_id().counter();
+        let budget = kernel::persistence::journal::BufferBudget {
+            records: 65_536,
+            bytes: 64 * 1024 * 1024,
+        };
+        let journal = kernel::persistence::journal::RuntimeJournal::open(core, node, budget)
             .await
-            .expect("the configured product Store boots its rate-card history");
+            .expect("each native application owns its node journal");
+        let mut durability = crate::root::durability::build_on_store(
+            &Default::default(),
+            node,
+            journal,
+            None,
+            budget,
+        )
+        .await
+        .expect("the actual node journal opens");
+        durability
+            .restore_amendments(
+                &app.amendments,
+                &crate::root::kernel::new_kernel().durability_token(),
+            )
+            .await
+            .expect("restore the node's actual amendments before binding");
+        let durability = Arc::new(std::sync::Mutex::new(durability));
+        crate::root::durability::bind_amendments(&durability, &app.amendments)
+            .await
+            .expect("the application binds its own native amendment sink");
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;

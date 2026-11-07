@@ -8,6 +8,32 @@ use crate::test_common as common;
 
 use busbar_contract::persistence::*;
 
+// Each independent deployment owns a process-local root rate history. Keep
+// the policy matrix intact while giving every Store attachment its own process.
+async fn isolated_native_case(case: String) -> bool {
+    const CASE: &str = "BUSBAR_SELF_KEYS_NATIVE_CASE";
+    if let Ok(selected) = std::env::var(CASE) {
+        return selected == case;
+    }
+    let name = std::thread::current().name().unwrap().to_string();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(CASE, case)
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
 struct ObservedBackend {
     actual: Arc<dyn PersistenceBackend>,
     record_writes: std::sync::atomic::AtomicUsize,
@@ -256,6 +282,9 @@ async fn exchange_provisions_user_leaf_from_child_default_and_key_is_usable() {
 #[tokio::test]
 async fn existing_self_leaf_refuses_a_changed_team_before_issue_or_refresh() {
     for refresh in [false, true] {
+        if !isolated_native_case(format!("refresh-{refresh}")).await {
+            continue;
+        }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -577,6 +606,9 @@ async fn existing_self_leaf_with_matching_team_reuses_the_snapshot_without_persi
 #[tokio::test]
 async fn proof_self_mint_disabled_refuses_self_serve() {
     for self_mint in [Some(true), Some(false), None] {
+        if !isolated_native_case(format!("self-mint-{self_mint:?}")).await {
+            continue;
+        }
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -794,13 +826,19 @@ async fn self_mint_mode_policy_gates_exchange_login_and_refresh_before_mutation(
     let user = busbar_kernel::governance::SELF_KEY_BINDING_MODE;
     let app = busbar_kernel::governance::SELF_KEY_BINDING_MODE_APP;
     for route in ["exchange", "login", "refresh"] {
-        for (block, role, allowed) in [
+        for (case, (block, role, allowed)) in [
             (None, None, true),
             (Some(vec![user]), None, true),
             (Some(vec![app]), None, false),
             (Some(vec![]), None, false),
             (None, Some(vec![app]), false),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !isolated_native_case(format!("{route}-{case}")).await {
+                continue;
+            }
             let mut policy = serde_json::Map::new();
             if let Some(block) = block {
                 policy.insert("binding_modes".into(), serde_json::json!(block));

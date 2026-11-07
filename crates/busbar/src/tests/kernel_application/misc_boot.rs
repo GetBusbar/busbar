@@ -134,6 +134,7 @@ async fn boot_hydration_makes_the_trust_record_durable_on_the_configured_store()
         rotate.await;
     }
     let restarted_app = Arc::new(restarted_app);
+    kernel::audit::auditlog::register_test_audit_stream(&restarted_app).await;
     kernel::boot::hydrate_all(&restarted_app)
         .await
         .expect("restart hydrates from the actual Store");

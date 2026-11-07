@@ -21,7 +21,14 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
 
     let dispatcher = std::sync::Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
-        std::sync::Arc::new(busbar_kernel::host_services::KernelServices::new()),
+        std::sync::Arc::new(
+            busbar_kernel::host_services::KernelServices::new().with_pool(Arc::new(
+                busbar_kernel::host_services::BlockingPool::new(
+                    tokio::runtime::Handle::current(),
+                    64,
+                ),
+            )),
+        ),
     ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
@@ -79,7 +86,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     const CHILD: &str = "BUSBAR_ACTUAL_PLUGIN_ROUTES_CHILD";
     if std::env::var_os(CHILD).is_none() {
@@ -153,7 +160,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
         as Arc<dyn busbar_kernel::appbuild::RootRules>;
-    let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(
+    let (mut app, rotate, limits) = crate::root::real_store::build_app(
         config,
         plugin_config,
         None,
@@ -162,8 +169,6 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
         (None, None),
         None,
         &rules,
-        None,
-        true,
     )
     .await
     .expect("the actual product builds the session deployment");
