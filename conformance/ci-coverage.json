@@ -1,277 +1,277 @@
 {
-  "schema": "busbar.conformance.ci-coverage/1",
   "registry_sha256": "0a6f6fc58bbd2e9e5f326b9627315d7c82751f5ef67492d3c7944afa74b7f77e",
+  "schema": "busbar.conformance.ci-coverage/1",
   "scope": "Execution coverage only; suite verdicts and issued certifications are separate",
   "suites": {
     "a2a": {
-      "repo": "GetBusbar/busbar-plane-a2a",
-      "source_commit": "836914bc0d29380c25ba14ca8684a075915a5cba",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
       "check": "conformance",
       "command": "bash testing/conformance/a2a.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-a2a",
       "script": "testing/conformance/a2a.sh",
-      "script_sha256": "a8bd0977de0eabcbe1c4a4222c9aa029374af39cdd59a90a28b0b58817b70c0a"
-    },
-    "llm-anthropic": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "llm-bedrock": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "llm-cohere": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "llm-gemini": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "llm-openai": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "llm-responses": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/llm.sh",
-      "script": "testing/conformance/llm.sh",
-      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3"
-    },
-    "mcp": {
-      "repo": "GetBusbar/busbar-plane-mcp",
-      "source_commit": "daa1609cb9f9bdba67bb5cf4e6df359dd7d7a462",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/mcp.sh",
-      "script": "testing/conformance/mcp.sh",
-      "script_sha256": "0295439fa43152117584022c03b783c76215933aae39655bf2396c0065b6f302"
-    },
-    "voice-gemini-live": {
-      "repo": "GetBusbar/busbar-plane-streaming",
-      "source_commit": "c092000a3f1d7506a766909dd3107bfc3fee32dd",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/voice.sh gemini",
-      "script": "testing/conformance/voice.sh",
-      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976"
-    },
-    "voice-openai-realtime": {
-      "repo": "GetBusbar/busbar-plane-streaming",
-      "source_commit": "c092000a3f1d7506a766909dd3107bfc3fee32dd",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/voice.sh openai",
-      "script": "testing/conformance/voice.sh",
-      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976"
-    },
-    "voice-transcribe": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/audio.sh transcribe",
-      "script": "testing/conformance/audio.sh",
-      "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02"
-    },
-    "voice-tts": {
-      "repo": "GetBusbar/busbar-plane-llm",
-      "source_commit": "1bc022ee7ea55d19cdd11798855fda3495f6a290",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/audio.sh tts",
-      "script": "testing/conformance/audio.sh",
-      "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02"
-    },
-    "voice-twilio": {
-      "repo": "GetBusbar/busbar-plane-streaming",
-      "source_commit": "c092000a3f1d7506a766909dd3107bfc3fee32dd",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/voice.sh twilio",
-      "script": "testing/conformance/voice.sh",
-      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976"
-    },
-    "webrtc-browser": {
-      "repo": "GetBusbar/busbar-transport-webrtc",
-      "source_commit": "0c180d343c9fc83151acaa78bc06a82346a72ef8",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/webrtc-browser.sh",
-      "script": "testing/conformance/webrtc-browser.sh",
-      "script_sha256": "ba8a7c2d8ccd75e2b56d5b7dc1441892e2bc21adb3808feeb4fcc78ccea63def"
-    },
-    "fapi2": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "python3 -I testing/oidf-conformance/oidf.py",
-      "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2"
-    },
-    "h2": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/h2-conformance/h2spec.sh",
-      "script": "testing/h2-conformance/h2spec.sh",
-      "script_sha256": "c3557ee617257f7b98ac23191d83311e92c434a5f747a2d11311e7bde5a84a20"
-    },
-    "jev": {
-      "repo": "GetBusbar/busbar-plane-decisions",
-      "source_commit": "67ff2cc4df5919df597d1ac6fa48f642e34ce5fe",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/jev.sh",
-      "script": "testing/conformance/jev.sh",
-      "script_sha256": "9eaab7b8111cf8a5954117c61e16d5916683517d2ceb37e76fd4c10359e85cb1"
-    },
-    "oidf-oauth2": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "python3 -I testing/oidf-conformance/oidf.py",
-      "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2"
-    },
-    "slsa-verifier": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/slsa-verifier.sh",
-      "script": "testing/conformance/slsa-verifier.sh",
-      "script_sha256": "4cd29bd69df6ad2fcc283e500edcbe95210c1701c8e66c219c93f21af83161e8"
-    },
-    "tls": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/tls-conformance/tls.sh",
-      "script": "testing/tls-conformance/tls.sh",
-      "script_sha256": "2820a9cfa51d9560d28840ac2472d9afa9e466f4f7f8eafbc36031822864548c"
-    },
-    "ws": {
-      "repo": "GetBusbar/busbar-transport-ws",
-      "source_commit": "0f130c3245a02faeb3e8841bba0cd61b35faa0ad",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/conformance/ws.sh",
-      "script": "testing/conformance/ws.sh",
-      "script_sha256": "44a017f1086e31761c1c9fe66cc965bdd0a076e69b88dcb5eb844308c0d79419"
-    },
-    "sbom": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/sbom/sbom.sh",
-      "script": "testing/sbom/sbom.sh",
-      "script_sha256": "578e8acf8406e130febd7e7a9844d8837a3ebc4b530f8c9a0e8c2c7b5d0ff39b"
-    },
-    "sigstore": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "main",
-      "check": "main/certify-sigstore",
-      "command": "python3 -I testing/conformance/sigstore.py",
-      "script": "testing/conformance/sigstore.py",
-      "script_sha256": "3abbcb5afcaadca1979c6a5e280b67d15df583e23345f76223dd60fcac02cf4e"
-    },
-    "otlp": {
-      "repo": "GetBusbar/busbar-export-otlp",
-      "source_commit": "5a4a6afe980ada455d9edc365beca285bc255d92",
-      "core_pin": "b5cd2df36a580a70bc700d1058bd865345ef1724",
-      "stage": "qa",
-      "check": "conformance",
-      "command": "bash testing/otlp-conformance/run.sh",
-      "script": "testing/otlp-conformance/run.sh",
-      "script_sha256": "139bf955fbeb1b10ad8212b87bf59079616f7b622dccaa05c31de032b7eaa6f8"
+      "script_sha256": "a8bd0977de0eabcbe1c4a4222c9aa029374af39cdd59a90a28b0b58817b70c0a",
+      "source_commit": "2856b702c324ab888e89c6fc99b7af33f42d3fae",
+      "stage": "qa"
     },
     "evidence-audit-trail": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
       "check": "conformance",
       "command": "python3 -I testing/evidence-conformance/evidence.py audit",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d"
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
+      "source_commit": "checkout",
+      "stage": "qa"
     },
     "evidence-rbac": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
       "check": "conformance",
       "command": "python3 -I testing/evidence-conformance/evidence.py rbac",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d"
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
+      "source_commit": "checkout",
+      "stage": "qa"
     },
     "evidence-tls": {
-      "repo": "GetBusbar/busbar",
-      "source_commit": "checkout",
-      "core_pin": "checkout",
-      "stage": "qa",
       "check": "conformance",
       "command": "python3 -I testing/evidence-conformance/evidence.py tls",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d"
+      "script_sha256": "45a3c4e88a42b5d1b6604077947392f4c2b6cbba13dbba438fa274653e2d9f2d",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "fapi2": {
+      "check": "conformance",
+      "command": "python3 -I testing/oidf-conformance/oidf.py",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/oidf-conformance/oidf.py",
+      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "h2": {
+      "check": "conformance",
+      "command": "bash testing/h2-conformance/h2spec.sh",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/h2-conformance/h2spec.sh",
+      "script_sha256": "c3557ee617257f7b98ac23191d83311e92c434a5f747a2d11311e7bde5a84a20",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "jev": {
+      "check": "conformance",
+      "command": "bash testing/conformance/jev.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-decisions",
+      "script": "testing/conformance/jev.sh",
+      "script_sha256": "57fa5d493b6bb9049dea44015395cc7c85b716edbcd149e06c315e17b61d4f6e",
+      "source_commit": "f8592cc264b47b50c71301c6acee5485d9ae0717",
+      "stage": "qa"
+    },
+    "llm-anthropic": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "llm-bedrock": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "llm-cohere": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "llm-gemini": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "llm-openai": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "llm-responses": {
+      "check": "conformance",
+      "command": "bash testing/conformance/llm.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/llm.sh",
+      "script_sha256": "694eca68cdab3a41d4b1625982d7de9a6978f7e1cff59751369a2b5a332c63e3",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "mcp": {
+      "check": "conformance",
+      "command": "bash testing/conformance/mcp.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-mcp",
+      "script": "testing/conformance/mcp.sh",
+      "script_sha256": "0295439fa43152117584022c03b783c76215933aae39655bf2396c0065b6f302",
+      "source_commit": "c266407448a8356967a601002c8f92681d8327ae",
+      "stage": "qa"
+    },
+    "oidf-oauth2": {
+      "check": "conformance",
+      "command": "python3 -I testing/oidf-conformance/oidf.py",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/oidf-conformance/oidf.py",
+      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "otlp": {
+      "check": "conformance",
+      "command": "bash testing/otlp-conformance/run.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-export-otlp",
+      "script": "testing/otlp-conformance/run.sh",
+      "script_sha256": "0f27170063b7214d4fccea1c8eba491795216f8356f770a16005a526ccb41daf",
+      "source_commit": "3b771638f66bb69d7e90f6b7f2ee10e3f0417a1b",
+      "stage": "qa"
+    },
+    "sbom": {
+      "check": "conformance",
+      "command": "bash testing/sbom/sbom.sh",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/sbom/sbom.sh",
+      "script_sha256": "578e8acf8406e130febd7e7a9844d8837a3ebc4b530f8c9a0e8c2c7b5d0ff39b",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "sigstore": {
+      "check": "main/certify-sigstore",
+      "command": "python3 -I testing/conformance/sigstore.py",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/conformance/sigstore.py",
+      "script_sha256": "3abbcb5afcaadca1979c6a5e280b67d15df583e23345f76223dd60fcac02cf4e",
+      "source_commit": "checkout",
+      "stage": "main"
+    },
+    "slsa-verifier": {
+      "check": "conformance",
+      "command": "bash testing/conformance/slsa-verifier.sh",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/conformance/slsa-verifier.sh",
+      "script_sha256": "4cd29bd69df6ad2fcc283e500edcbe95210c1701c8e66c219c93f21af83161e8",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "tls": {
+      "check": "conformance",
+      "command": "bash testing/tls-conformance/tls.sh",
+      "core_pin": "checkout",
+      "repo": "GetBusbar/busbar",
+      "script": "testing/tls-conformance/tls.sh",
+      "script_sha256": "2820a9cfa51d9560d28840ac2472d9afa9e466f4f7f8eafbc36031822864548c",
+      "source_commit": "checkout",
+      "stage": "qa"
+    },
+    "voice-gemini-live": {
+      "check": "conformance",
+      "command": "bash testing/conformance/voice.sh gemini",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-streaming",
+      "script": "testing/conformance/voice.sh",
+      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976",
+      "source_commit": "669848ebb6c84889834f056a17ffd70528663bd5",
+      "stage": "qa"
+    },
+    "voice-openai-realtime": {
+      "check": "conformance",
+      "command": "bash testing/conformance/voice.sh openai",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-streaming",
+      "script": "testing/conformance/voice.sh",
+      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976",
+      "source_commit": "669848ebb6c84889834f056a17ffd70528663bd5",
+      "stage": "qa"
+    },
+    "voice-transcribe": {
+      "check": "conformance",
+      "command": "bash testing/conformance/audio.sh transcribe",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/audio.sh",
+      "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "voice-tts": {
+      "check": "conformance",
+      "command": "bash testing/conformance/audio.sh tts",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-llm",
+      "script": "testing/conformance/audio.sh",
+      "script_sha256": "b37419cbfd85600c04e014c19127cbf3858467158bd01847b0c1e2692d609b02",
+      "source_commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "stage": "qa"
+    },
+    "voice-twilio": {
+      "check": "conformance",
+      "command": "bash testing/conformance/voice.sh twilio",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-plane-streaming",
+      "script": "testing/conformance/voice.sh",
+      "script_sha256": "a862c3b9b37c5befb615e3629b3e4708bcfff122c19fbed78b7b143d517bf976",
+      "source_commit": "669848ebb6c84889834f056a17ffd70528663bd5",
+      "stage": "qa"
+    },
+    "webrtc-browser": {
+      "check": "conformance",
+      "command": "bash testing/conformance/webrtc-browser.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-transport-webrtc",
+      "script": "testing/conformance/webrtc-browser.sh",
+      "script_sha256": "9bea3e6d6d563d97335629864fe363ce8f137eb2fbf07bb4bad807df952ee4f4",
+      "source_commit": "10629708872425a6d7299a496d9b2701f8abb619",
+      "stage": "qa"
+    },
+    "ws": {
+      "check": "conformance",
+      "command": "bash testing/conformance/ws.sh",
+      "core_pin": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+      "repo": "GetBusbar/busbar-transport-ws",
+      "script": "testing/conformance/ws.sh",
+      "script_sha256": "44a017f1086e31761c1c9fe66cc965bdd0a076e69b88dcb5eb844308c0d79419",
+      "source_commit": "a6411a6e4ed1d4a9bed8ca5513dc69ed716317c8",
+      "stage": "qa"
     }
   }
 }

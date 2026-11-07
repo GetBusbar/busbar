@@ -2464,7 +2464,12 @@ fn async_snapshot_failure_is_not_recorder_not_ready() {
         ..table(None)
     };
     assert_eq!(
-        services(&pending).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        services(&pending).snapshot_read(ticketed(0), SNAPSHOT_SCOPE_WHOLE, &mut buf),
         Poll::Pending
+    );
+    assert_eq!(
+        services(&pending).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        Poll::Ready(Err(ServiceError::Broken)),
+        "a pending snapshot needs a ticket to retain its completion"
     );
 }

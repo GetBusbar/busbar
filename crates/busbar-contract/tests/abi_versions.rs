@@ -26,7 +26,9 @@ fn current_abi_generations_are_explicit() {
     assert_eq!(plane::ABI_VERSION, 1);
     assert_eq!(transport::ABI_VERSION, 1);
     assert_eq!(store::v4::ABI_VERSION, 3);
-    assert_ne!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
+    // The public Store kind exposes the current primitive table directly.
+    assert_eq!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
+    assert_eq!(store::LAYOUT_FINGERPRINT, 0x9c169c7bbc780b53);
 }
 
 #[test]

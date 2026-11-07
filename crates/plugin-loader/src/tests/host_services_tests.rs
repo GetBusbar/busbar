@@ -2058,12 +2058,7 @@ fn trust_decide_reaches_the_kernel_and_an_unknown_decision_is_fault() {
         Ok(svc::TRUST_DECIDED_SERVING)
     );
     let bad = svc::TrustDecideIn {
-        head: head(
-            op::TRUST_DECIDE,
-            Ticket::NONE,
-            0,
-            size_of::<svc::TrustDecideIn>(),
-        ),
+        head: head(op::TRUST_DECIDE, TICKET, 2, size_of::<svc::TrustDecideIn>()),
         counterparty: text("peer"),
         item: text(""),
         expected: text(""),

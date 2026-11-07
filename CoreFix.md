@@ -1150,11 +1150,15 @@ arbitrary new triggers. Keep guards after activation so reopening an old binary 
 write behind the new format. Original data is retained until the existing retention
 policy authorizes cleanup, not deleted to make an old writer fail.
 
-For Valkey, a shared unrestricted account or insufficient ACL/persistence authority
-may make that guarantee impossible without unrelated side effects. Return a precise
-native capability/topology refusal before conversion; do not invent a manual helper
-step, silently reconfigure other applications or substitute a marker. Default supported
-Valkey configuration must qualify the automatic path before CoreFix is complete.
+For Valkey, both the dedicated Busbar key scope and a full-authority standalone
+default account use the automatic path. The broad account retains reads and unrelated
+read/write scopes while the durable ACL excludes writes to the legacy `busbar:`
+namespace and admits the new `busbar:v4:` namespace. Native read/write commands
+require both permissions in one matching pattern. Bind resumed client ownership to
+the server run as well as its client ID, since IDs can repeat after restart.
+Insufficient ACL/persistence authority or unsupported topology produces a precise
+refusal before conversion; do not invent a manual helper, alter other accounts or
+substitute a marker. Preserve exact whole-policy checks and retained source data.
 Native expirations continue independently of client writes. Preserve a snapshot cut
 and original absolute expiry metadata using a supported native snapshot codec; never
 load the snapshot through ordinary expiry-filtering reads and call it exact. Bind
@@ -1233,8 +1237,10 @@ Released Valkey configurations can permit application writes while denying ACL
 administration or persistent ACL configuration. Those deployments cannot establish
 durable exclusion of a reconnecting released writer using the application's existing
 authority. The implementation must refuse before conversion when the required native
-capability is absent. This is an unresolved compatibility requirement, **not** an
-approved exception or an all-five qualification result.
+capability is absent. Actual Valkey 8.1.9 cases qualify scoped and broad full-authority
+bootstrap, persisted policy through a configuration-only server restart, resumed
+ownership, and refusal without ACL authority. These bounded results do not assert
+that every released configuration has sufficient privileges or qualify other stores.
 
 Source bytes use an encrypted anonymous/delete-on-close transient spool with an
 ephemeral process-owned key. Startup reconstructs that spool after a crash from the

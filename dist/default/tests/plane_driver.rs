@@ -1215,7 +1215,7 @@ fn a_declared_admin_route_reaches_serve_and_an_undeclared_one_is_refused() {
         .expect("the product builds the admin-route deployment");
         limits.keep().await.expect("the admin-route limits commit");
         if let Some(rotate) = rotate {
-            rotate().await;
+            rotate.await;
         }
         let app = Arc::new(app);
         busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;

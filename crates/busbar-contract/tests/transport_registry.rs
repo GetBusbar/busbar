@@ -84,7 +84,8 @@ fn a_transport_that_opens_its_own_socket_is_checked_only_on_what_it_declares() {
 fn the_transport_kind_has_one_abi_generation() {
     assert_eq!(
         busbar_contract::transport::TRANSPORT_ABI,
-        busbar_contract::transport::AbiVersion(2)
+        // Transport is a new kind since released v1.5.5.
+        busbar_contract::transport::AbiVersion(1)
     );
 }
 
