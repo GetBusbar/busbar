@@ -243,6 +243,28 @@ impl<'a> StoreJournal<'a> {
             .map(|(_, record)| record)
     }
 
+    /// Recheck the exact original at an ordinal retained by a completed replay.
+    /// This only confirms unchanged bytes; it grants no prefix membership or
+    /// selection authority. The caller still holds its complete prefix proof.
+    pub(crate) async fn confirm_original_record(
+        &self,
+        proof: &VerifiedHead,
+        ordinal: u64,
+        original: &Record,
+    ) -> Result<()> {
+        self.selected_head_predicate(proof)?;
+        if ordinal == 0 || ordinal > proof.head.count || original.node != self.node {
+            return Err(Error::Invalid);
+        }
+        let (current, bytes) = self.original_at(ordinal).await?;
+        if current.identity() != original.identity()
+            || bytes.expose(&crate::seal::lend()) != &original.body
+        {
+            return Err(Error::Corrupt);
+        }
+        Ok(())
+    }
+
     /// Use the unchanged WAL framing and digest recipe for a new host entry.
     /// The caller retains this exact original before awaiting append; sealing
     /// alone conveys no durability or permission to select a recovery verdict.

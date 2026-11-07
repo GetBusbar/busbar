@@ -373,22 +373,22 @@ async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError
 /// Both body allocation and entry metadata are bounded by the native page limits.
 #[derive(Default)]
 struct HistoryRecords {
-    records: BTreeMap<(u64, u64), Record>,
+    records: BTreeMap<(u64, u64), (u64, Record)>,
     bytes: usize,
 }
 impl HistoryRecords {
-    fn insert(&mut self, record: Record, max_entries: usize, max_bytes: usize) {
+    fn insert(&mut self, ordinal: u64, record: Record, max_entries: usize, max_bytes: usize) {
         let bytes = record.body.capacity();
         if max_entries == 0 || bytes > max_bytes {
             return;
         }
         while self.records.len() >= max_entries || self.bytes > max_bytes - bytes {
-            let Some((_, removed)) = self.records.pop_first() else {
+            let Some((_, (_, removed))) = self.records.pop_first() else {
                 break;
             };
             self.bytes -= removed.body.capacity();
         }
-        if let Some(previous) = self.records.insert(record.identity(), record) {
+        if let Some((_, previous)) = self.records.insert(record.identity(), (ordinal, record)) {
             self.bytes -= previous.body.capacity();
         }
         self.bytes += bytes;
@@ -399,9 +399,9 @@ impl HistoryRecords {
 #[test]
 fn history_records_bound_allocations_and_leave_misses_for_verified_fallback() {
     let mut cache = HistoryRecords::default();
-    cache.insert(Record::new(1, 1, vec![1; 4]), 2, 8);
-    cache.insert(Record::new(1, 2, vec![2; 4]), 2, 8);
-    cache.insert(Record::new(2, 1, vec![3; 4]), 2, 8);
+    cache.insert(1, Record::new(1, 1, vec![1; 4]), 2, 8);
+    cache.insert(1, Record::new(1, 2, vec![2; 4]), 2, 8);
+    cache.insert(1, Record::new(2, 1, vec![3; 4]), 2, 8);
     assert_eq!(cache.records.len(), 2);
     assert_eq!(cache.bytes, 8);
     assert!(!cache.records.contains_key(&(1, 1)));
@@ -409,10 +409,10 @@ fn history_records_bound_allocations_and_leave_misses_for_verified_fallback() {
     // that cannot fit is a normal cache miss, never a verification refusal.
     let mut oversized = Vec::with_capacity(9);
     oversized.push(4);
-    cache.insert(Record::new(2, 2, oversized), 2, 8);
+    cache.insert(1, Record::new(2, 2, oversized), 2, 8);
     assert!(!cache.records.contains_key(&(2, 2)));
     assert_eq!(cache.bytes, 8);
-    cache.insert(Record::new(3, 1, vec![5]), 1, 8);
+    cache.insert(1, Record::new(3, 1, vec![5]), 1, 8);
     assert_eq!(cache.records.len(), 1);
     assert_eq!(cache.bytes, 1);
 }
@@ -444,8 +444,12 @@ impl<'a> History<'a> {
         // proving another node; a failed proof simply discards cached frames.
         let mut staged = std::mem::take(&mut self.records);
         let limits = self.store.limits();
+        let mut ordinal = 0u64;
         while let Some(record) = cursor.next().await.map_err(unavailable)? {
-            staged.insert(record, limits.scan_items, limits.scan_bytes);
+            ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| invalid("journal ordinal overflow"))?;
+            staged.insert(ordinal, record, limits.scan_items, limits.scan_bytes);
         }
         let proof = Arc::new(cursor.finish().map_err(unavailable)?);
         self.records = staged;
@@ -454,10 +458,14 @@ impl<'a> History<'a> {
     }
     async fn candidate(&mut self, at: &Head) -> Result<Candidate, RecoveryError> {
         let proof = self.proof(at.node).await?;
-        if let Some(record) = self.records.records.get(&(at.node, at.sequence)) {
+        let journal = StoreJournal::new(self.store, at.node).map_err(unavailable)?;
+        if let Some((ordinal, record)) = self.records.records.get(&(at.node, at.sequence)) {
+            journal
+                .confirm_original_record(&proof, *ordinal, record)
+                .await
+                .map_err(unavailable)?;
             return Self::decode_candidate(record);
         }
-        let journal = StoreJournal::new(self.store, at.node).map_err(unavailable)?;
         let record = journal
             .read_verified_record(&proof, at.sequence)
             .await

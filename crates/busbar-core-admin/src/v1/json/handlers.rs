@@ -747,7 +747,7 @@ pub(crate) async fn register_hook(
         let existed = current.hook_registry.contains_key(&txn_name);
 
         let snapshot = current.clone();
-        Ok(txn.store_write_async(async move {
+        Ok(txn.read_store(move || {
             let installed = Arc::new(build_with_hook(&snapshot, &txn_name, cfg)?);
 
             let p = installed.clone();
