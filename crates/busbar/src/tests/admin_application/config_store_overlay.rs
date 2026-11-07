@@ -29,45 +29,53 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
             .name()
             .expect("the test runner names its test thread")
             .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
+        for failure in ["read", "corrupt", "newer"] {
+            let mut child = Child(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--nocapture"])
+                    .env(CHILD, failure)
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("start the isolated actual-root test"),
             );
-            std::thread::park_timeout(Duration::from_millis(5));
+            let until = Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    use std::io::Read;
+                    let mut output = String::new();
+                    child
+                        .0
+                        .stdout
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut output)
+                        .unwrap();
+                    assert!(
+                        status.success()
+                            && output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+                        "the actual-root usage witness failed: {status}: {output}"
+                    );
+                    assert!(
+                        output.contains(&format!("{WITNESS} {failure}")),
+                        "the exact child did not complete its assertions: {output}"
+                    );
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "the actual-root usage witness timed out"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
         }
+        return;
     }
-
-    for failure in ["read", "corrupt", "newer"] {
+    let selected = std::env::var(CHILD).expect("exact overlay failure scenario");
+    assert!(matches!(selected.as_str(), "read" | "corrupt" | "newer"));
+    for failure in ["read", "corrupt", "newer"]
+        .into_iter()
+        .filter(|failure| *failure == selected)
+    {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -232,7 +240,7 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
         assert_eq!(after.config_version, before.config_version);
         server.abort();
     }
-    println!("{WITNESS}");
+    println!("{WITNESS} {selected}");
 }
 #[tokio::test]
 async fn reload_refuses_a_store_read_failure_and_preserves_the_running_generation() {
@@ -410,45 +418,53 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
             .name()
             .expect("the test runner names its test thread")
             .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
+        for failure in ["false", "true"] {
+            let mut child = Child(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--nocapture"])
+                    .env(CHILD, failure)
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("start the isolated actual-root test"),
             );
-            std::thread::park_timeout(Duration::from_millis(5));
+            let until = Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    use std::io::Read;
+                    let mut output = String::new();
+                    child
+                        .0
+                        .stdout
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut output)
+                        .unwrap();
+                    assert!(
+                        status.success()
+                            && output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+                        "the actual-root usage witness failed: {status}: {output}"
+                    );
+                    assert!(
+                        output.contains(&format!("{WITNESS} {failure}")),
+                        "the exact child did not complete its assertions: {output}"
+                    );
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "the actual-root usage witness timed out"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
         }
+        return;
     }
-
-    for unknown in [false, true] {
+    let selected = std::env::var(CHILD).expect("exact overlay failure scenario");
+    assert!(matches!(selected.as_str(), "false" | "true"));
+    for unknown in [false, true]
+        .into_iter()
+        .filter(|unknown| unknown.to_string() == selected)
+    {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -562,7 +578,7 @@ async fn group_creation_refuses_store_failure_and_unknown_commit() {
         );
         server.abort();
     }
-    println!("{WITNESS}");
+    println!("{WITNESS} {selected}");
 }
 #[tokio::test]
 async fn settings_preserves_a_large_store_overlay_across_reload() {

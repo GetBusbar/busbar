@@ -6,6 +6,7 @@
 use crate::root::door_steps::tests::tool_door::{
     send, send_as, try_rig_tools, Rig, TlsToolServer, CALL,
 };
+use crate::root::door_steps::{isolated_fixture_cases, isolated_fixture_done};
 use axum::http::StatusCode;
 use busbar_contract::secret_ref::SecretRef;
 use serde_yaml::Value;
@@ -85,50 +86,63 @@ async fn served(rig: &Rig) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn member_ca_does_not_allow_missing_wrong_roots_or_a_wrong_spki() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::member_ca_does_not_allow_missing_wrong_roots_or_a_wrong_spki"
+    );
+    let Some(case) = isolated_fixture_cases(TEST, &["missing", "wrong-root", "wrong-spki"]) else {
+        return;
+    };
     let _one = crate::root::PUBLISHING.lock().await;
     let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let other = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
-
-    let mut missing = server.section();
-    missing["fs"]["allow_private"] = Value::Bool(true);
-    let rig = root_rig("member-ca-missing-root", server.port, missing)
-        .await
-        .unwrap();
-    refused_before_http(&rig, &mut server, "fs_read_file").await;
-
-    let mut wrong_root = member(&server);
-    wrong_root["fs"]["tls"]["ca_cert_pem"] = Value::String(other.ca_pem.clone());
-    let rig = root_rig("member-ca-wrong-root", server.port, wrong_root)
-        .await
-        .unwrap();
-    refused_before_http(&rig, &mut server, "fs_read_file").await;
-
-    let mut wrong_pin = member(&server);
-    wrong_pin["fs"]["pin"]["key"] = Value::String(other.pin.clone());
-    let rig = root_rig("member-ca-wrong-spki", server.port, wrong_pin)
-        .await
-        .unwrap();
+    let (instance, tools) = match case.as_str() {
+        "missing" => {
+            let mut tools = server.section();
+            tools["fs"]["allow_private"] = Value::Bool(true);
+            ("member-ca-missing-root", tools)
+        }
+        "wrong-root" => {
+            let mut tools = member(&server);
+            tools["fs"]["tls"]["ca_cert_pem"] = Value::String(other.ca_pem.clone());
+            ("member-ca-wrong-root", tools)
+        }
+        "wrong-spki" => {
+            let mut tools = member(&server);
+            tools["fs"]["pin"]["key"] = Value::String(other.pin.clone());
+            ("member-ca-wrong-spki", tools)
+        }
+        _ => unreachable!(),
+    };
+    let rig = root_rig(instance, server.port, tools).await.unwrap();
     refused_before_http(&rig, &mut server, "fs_read_file").await;
     server.close().await;
     other.close().await;
+    isolated_fixture_done(TEST, &case);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn member_ca_keeps_certificate_name_and_time_validation() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::member_ca_keeps_certificate_name_and_time_validation"
+    );
+    let Some(case) = isolated_fixture_cases(TEST, &["wrong-name", "expired"]) else {
+        return;
+    };
     let _one = crate::root::PUBLISHING.lock().await;
-    let mut wrong_name = TlsToolServer::member_ca_fixture("wrong.invalid", false, false).await;
-    let rig = root_rig("member-ca-wrong-name", wrong_name.port, member(&wrong_name))
+    let (name, expired, instance) = match case.as_str() {
+        "wrong-name" => ("wrong.invalid", false, "member-ca-wrong-name"),
+        "expired" => ("127.0.0.1", true, "member-ca-expired-cert"),
+        _ => unreachable!(),
+    };
+    let mut server = TlsToolServer::member_ca_fixture(name, expired, false).await;
+    let rig = root_rig(instance, server.port, member(&server))
         .await
         .unwrap();
-    refused_before_http(&rig, &mut wrong_name, "fs_read_file").await;
-    wrong_name.close().await;
-
-    let mut expired = TlsToolServer::member_ca_fixture("127.0.0.1", true, false).await;
-    let rig = root_rig("member-ca-expired-cert", expired.port, member(&expired))
-        .await
-        .unwrap();
-    refused_before_http(&rig, &mut expired, "fs_read_file").await;
-    expired.close().await;
+    refused_before_http(&rig, &mut server, "fs_read_file").await;
+    server.close().await;
+    isolated_fixture_done(TEST, &case);
 }
 
 struct IdentityEnv {
@@ -173,46 +187,74 @@ impl Drop for IdentityEnv {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn member_ca_preserves_mutual_tls_and_rejects_missing_or_untrusted_identity() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::member_ca_preserves_mutual_tls_and_rejects_missing_or_untrusted_identity"
+    );
+    let Some(case) = isolated_fixture_cases(TEST, &["missing", "wrong", "valid"]) else {
+        return;
+    };
     let _one = crate::root::PUBLISHING.lock().await;
     let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, true).await;
-    let rig = root_rig(
-        "member-ca-mtls-missing-identity",
-        server.port,
-        member(&server),
-    )
-    .await
-    .unwrap();
-    refused_before_http(&rig, &mut server, "fs_read_file").await;
-    assert!(!server.client_presented.load(Ordering::SeqCst));
-
     let other = TlsToolServer::member_ca_fixture("127.0.0.1", false, true).await;
-    let wrong = IdentityEnv::new(&other);
+    let identity = match case.as_str() {
+        "missing" => None,
+        "wrong" => Some(IdentityEnv::new(&other)),
+        "valid" => Some(IdentityEnv::new(&server)),
+        _ => unreachable!(),
+    };
     let mut tools = member(&server);
-    wrong.configure(&mut tools);
-    let rig = root_rig("member-ca-mtls-wrong-identity", server.port, tools)
-        .await
-        .unwrap();
-    refused_before_http(&rig, &mut server, "fs_read_file").await;
-    assert!(!server.client_presented.load(Ordering::SeqCst));
-
-    let right = IdentityEnv::new(&server);
-    let mut tools = member(&server);
-    right.configure(&mut tools);
-    let rig = root_rig("member-ca-mtls-valid-companion", server.port, tools)
-        .await
-        .unwrap();
-    served(&rig).await;
-    assert!(server.client_presented.load(Ordering::SeqCst));
-    assert!(
-        server.heard.try_recv().is_ok(),
-        "the live TLS peer observed actual HTTP"
-    );
+    if let Some(identity) = &identity {
+        identity.configure(&mut tools);
+    }
+    let instance = match case.as_str() {
+        "missing" => "member-ca-mtls-missing-identity",
+        "wrong" => "member-ca-mtls-wrong-identity",
+        "valid" => "member-ca-mtls-valid-companion",
+        _ => unreachable!(),
+    };
+    let rig = root_rig(instance, server.port, tools).await.unwrap();
+    if case == "valid" {
+        served(&rig).await;
+        assert!(server.client_presented.load(Ordering::SeqCst));
+        assert!(
+            server.heard.try_recv().is_ok(),
+            "the live TLS peer observed actual HTTP"
+        );
+    } else {
+        refused_before_http(&rig, &mut server, "fs_read_file").await;
+        assert!(!server.client_presented.load(Ordering::SeqCst));
+    }
     server.close().await;
     other.close().await;
+    isolated_fixture_done(TEST, &case);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::member_ca_is_scoped_to_members_and_separately_built_root_owners"
+    );
+    if std::env::var("BUSBAR_TLS_OTHER_TEST").as_deref() == Ok(TEST) {
+        let _one = crate::root::PUBLISHING.lock().await;
+        let port = std::env::var("BUSBAR_TLS_OTHER_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let tools =
+            serde_yaml::from_str(&std::env::var("BUSBAR_TLS_OTHER_TOOLS").unwrap()).unwrap();
+        let other = root_rig("member-ca-isolation-other-owner", port, tools)
+            .await
+            .unwrap();
+        let body = call(&other, "fs_read_file").await;
+        assert_eq!(
+            body["result"]["isError"], true,
+            "TLS failure is a tool error: {body}"
+        );
+        println!("TLS-OTHER-OWNER-DONE {TEST}");
+        return;
+    }
     let _one = crate::root::PUBLISHING.lock().await;
     let mut server = TlsToolServer::member_ca_fixture("127.0.0.1", false, false).await;
     let mut tools = member(&server);
@@ -230,10 +272,39 @@ async fn member_ca_is_scoped_to_members_and_separately_built_root_owners() {
     let mut untrusted = server.section();
     untrusted["fs"]["allow_private"] = Value::Bool(true);
 
-    let other = root_rig("member-ca-isolation-other-owner", server.port, untrusted)
-        .await
-        .unwrap();
-    refused_before_http(&other, &mut server, "fs_read_file").await;
+    let before = server.http_bytes.load(Ordering::SeqCst);
+    let port = server.port;
+    let tools = serde_yaml::to_string(&untrusted).unwrap();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST.split_once("::").unwrap().1, "--nocapture"])
+            .env("BUSBAR_TLS_OTHER_TEST", TEST)
+            .env("BUSBAR_TLS_OTHER_PORT", port.to_string())
+            .env("BUSBAR_TLS_OTHER_TOOLS", tools)
+            .output()
+            .expect("run the independent owner against the same live TLS peer")
+    })
+    .await
+    .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("TLS-OTHER-OWNER-DONE {TEST}")),
+        "the independent owner completed its assertions: {stdout}"
+    );
+    assert_eq!(
+        server.http_bytes.load(Ordering::SeqCst),
+        before,
+        "the rejected TLS policy must not send even partial HTTP bytes"
+    );
+    assert!(
+        server.heard.try_recv().is_err(),
+        "the rejected TLS policy must fail before any HTTP reaches the real server"
+    );
     served(&first).await;
     assert!(
         server.heard.try_recv().is_ok(),

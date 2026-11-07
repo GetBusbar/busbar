@@ -124,7 +124,10 @@ fn hook_accesses_under(
 #[tokio::test]
 async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal() {
     const OP: &str = "access-host-port";
-    let build = async || {
+    let build = async |shared: Option<(
+        Arc<kernel::persistence::facade::CoreStore>,
+        kernel::config::StoreCfg,
+    )>| {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -161,12 +164,27 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             "advanced": { "allow_destinations": ["127.0.0.1"] },
         }))
         .expect("the product deployment parses");
-        let config = kernel::config::resolve(&deploy, &Default::default())
+        let mut config = kernel::config::resolve(&deploy, &Default::default())
             .expect("the product deployment resolves");
         let plugin_config = crate::root::test_plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
             as Arc<dyn kernel::appbuild::RootRules>;
-        let (app, rotate, limits) = crate::root::real_store::build_app(
+        let core = if let Some((core, store_cfg)) = shared {
+            config.store = Some(store_cfg);
+            core
+        } else {
+            crate::root::real_store::core_over(
+                kernel::appbuild::bootstrap_config_store(&config, &plugin_config)
+                    .await
+                    .expect("the shared configured backend opens"),
+            )
+            .await
+        };
+        let store_cfg = config
+            .store
+            .clone()
+            .expect("the shared Store configuration");
+        let (app, rotate, limits) = kernel::appbuild::build_app_from_config_with_store(
             config,
             plugin_config,
             None,
@@ -175,6 +193,8 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             (None, None),
             None,
             &rules,
+            Some(core.clone()),
+            false,
         )
         .await
         .expect("the actual product builds the host deployment");
@@ -190,9 +210,10 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
             records: 65_536,
             bytes: 64 * 1024 * 1024,
         };
-        let journal = kernel::persistence::journal::RuntimeJournal::open(core, node, budget)
-            .await
-            .expect("each native application owns its node journal");
+        let journal =
+            kernel::persistence::journal::RuntimeJournal::open(core.clone(), node, budget)
+                .await
+                .expect("each native application owns its node journal");
         let mut durability = crate::root::durability::build_on_store(
             &Default::default(),
             node,
@@ -213,14 +234,28 @@ async fn the_host_hook_read_port_seals_one_access_amendment_on_the_node_journal(
         crate::root::durability::bind_amendments(&durability, &app.amendments)
             .await
             .expect("the application binds its own native amendment sink");
+        if let Some(bound) = crate::root::kernel::ROOT_CARD.card_store() {
+            assert!(
+                bound.is_bound_to(&core),
+                "both node journals share the configured price Store"
+            );
+        } else {
+            crate::root::kernel::ROOT_CARD
+                .keep_in_store(core.clone(), node)
+                .expect("the first node binds native price history");
+            crate::root::kernel::ROOT_CARD
+                .boot_in_store(None)
+                .await
+                .expect("the first node boots native price history");
+        }
         limits.keep().await.expect("the product limits commit");
         if let Some(rotate) = rotate {
             rotate.await;
         }
-        Arc::new(app)
+        (Arc::new(app), core, store_cfg)
     };
-    let app = build().await;
-    let other = build().await;
+    let (app, core, store_cfg) = build(None).await;
+    let (other, _, _) = build(Some((core, store_cfg))).await;
     let host = kernel::plane_driver::engine_host(&app);
     host.hook_read("port-hook", Some("key-1"), OP, true)
         .await

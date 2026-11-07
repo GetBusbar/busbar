@@ -221,6 +221,16 @@ fn every_linked_door_plane_is_driven() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::tool_door_a_program_members_unresolved_env_reaches_the_caller_without_its_source"
+    );
+    let Some(case) = crate::root::door_steps::isolated_fixture_cases(
+        TEST,
+        &["tools-program-env", "tools-program-file"],
+    ) else {
+        return;
+    };
     let _one = PUBLISHING.lock().await;
     let cases = [
         (
@@ -233,6 +243,9 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
         ),
     ];
     for (instance, secret) in cases {
+        if instance != case {
+            continue;
+        }
         refused_naming_its_source(&secret);
         let rig = try_rig_tools(instance, 0, program_section(&secret)).await.unwrap_or_else(|e| {
             panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
@@ -259,6 +272,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
             "{instance}: the member is not served"
         );
     }
+    crate::root::door_steps::isolated_fixture_done(TEST, &case);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -603,3 +617,25 @@ async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_i
 
 #[path = "secret_source_class.rs"]
 mod class;
+
+fn isolated_source_answer(test: &str, case: &str) -> (StatusCode, Vec<u8>) {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test.split_once("::").unwrap().1, "--nocapture"])
+        .env("BUSBAR_SECRET_SOURCE_TEST", test)
+        .env("BUSBAR_SECRET_SOURCE_CASE", case)
+        .output()
+        .expect("run the exact independent source fixture");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{case}: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let prefix = format!("SECRET-SOURCE-ANSWER {test} {case} ");
+    let answer = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .expect("the child completed every source scan and emitted its real response");
+    let (status, body): (u16, Vec<u8>) = serde_json::from_str(answer).unwrap();
+    (StatusCode::from_u16(status).unwrap(), body)
+}

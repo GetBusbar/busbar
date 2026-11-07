@@ -20,7 +20,9 @@ fn current_export_declared_references_are_validated_without_inventing_migration_
     });
     let authored = serde_json::json!({
         "store": {"module": "memory"},
-        "export": {"delivery": {"module": "request-log-webhook", "settings": settings}},
+        "export": {"delivery": {
+            "module": "request-log-webhook", "streams": ["logs"], "settings": settings,
+        }},
     });
     let raw = serde_json::to_string(&authored).unwrap();
     let host = super::RootHost::for_document(&raw, &directory.0.join("config.yaml"));

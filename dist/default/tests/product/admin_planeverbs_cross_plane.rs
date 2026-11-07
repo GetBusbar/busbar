@@ -162,8 +162,7 @@ async fn the_audit_naming_is_derived_from_the_plane() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let app = Arc::new(app);
-    busbar_kernel::audit::auditlog::register_test_audit_stream(&app).await;
+    let _app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let principal = busbar_contract::auth::AuthPrincipal(None);
     for decl in verb_planes() {
         assert_eq!(
@@ -175,6 +174,9 @@ async fn the_audit_naming_is_derived_from_the_plane() {
         for verb in ["connect", "approve"] {
             let name = format!("k3-audit-{}-{verb}", decl.key);
             busbar_core_admin::planeverbs::audit(decl.key, verb, &name, "applied", &principal);
+            busbar_kernel::audit::auditlog::flush_pending()
+                .await
+                .expect("the explicitly enqueued audit record is confirmed before reading");
             let resource = format!("{}:{name}", decl.audit_kind);
             let rows = AUDIT.list_filtered(0, 8, None, Some(&resource));
             assert_eq!(rows.len(), 1, "one audit row on `{resource}`: {rows:?}");

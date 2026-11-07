@@ -193,7 +193,7 @@ async fn first_auth_refusals_and_success_keep_one_signed_persisted_identity() {
         true,
         None,
         Screen::Nothing,
-        Some((Arc::clone(&node), Arc::clone(&book))),
+        Some((Arc::clone(&node), Arc::clone(&book), fixture.core.clone())),
         None,
         false,
     )
@@ -414,7 +414,7 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
         false,
         None,
         Screen::Nothing,
-        Some((Arc::clone(&node), Arc::clone(&book))),
+        Some((Arc::clone(&node), Arc::clone(&book), fixture.core.clone())),
         None,
         false,
     )
@@ -640,7 +640,7 @@ async fn a_full_audit_store_lane_stops_first_auth_minting_before_any_unit_tag() 
         true,
         None,
         Screen::Nothing,
-        Some((Arc::clone(&node), Arc::clone(&book))),
+        Some((Arc::clone(&node), Arc::clone(&book), fixture.core.clone())),
         None,
         false,
     )

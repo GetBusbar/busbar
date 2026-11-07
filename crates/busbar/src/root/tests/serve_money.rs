@@ -105,6 +105,7 @@ async fn governed_hooked(
 type BoundNode = (
     Arc<Node>,
     Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    Arc<busbar_kernel::persistence::facade::CoreStore>,
 );
 
 async fn governed_over(
@@ -289,10 +290,13 @@ async fn governed_full(
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     static CORE: tokio::sync::OnceCell<Arc<busbar_kernel::persistence::facade::CoreStore>> =
         tokio::sync::OnceCell::const_new();
-    let core = CORE
-        .get_or_init(crate::root::real_store::core)
-        .await
-        .clone();
+    let core = match &on {
+        Some((_, _, core)) => core.clone(),
+        None => CORE
+            .get_or_init(crate::root::real_store::core)
+            .await
+            .clone(),
+    };
     let gov = Arc::new(
         GovState::new_with_core(core.clone(), None, Some(signer))
             .await
@@ -347,7 +351,7 @@ async fn governed_full(
     gov.hydrate_budgets_async(&cost, 0).await.expect("hydrate");
 
     let (node, book) = match on {
-        Some(bound) => bound,
+        Some((node, book, _)) => (node, book),
         None => {
             let core = gov.core_store_handle().expect("admitted native core");
             let budget = busbar_kernel::persistence::journal::BufferBudget {
@@ -361,10 +365,21 @@ async fn governed_full(
             )
             .await
             .expect("native journal opens");
-            let book = crate::root::durability::node_book(journal, budget)
+            let mut book = crate::root::durability::node_book(journal, budget)
                 .await
                 .expect("native node book opens")
                 .durability;
+            let token = crate::root::kernel::new_kernel().durability_token();
+            Arc::get_mut(&mut book)
+                .expect("bootstrap owns its native money book before sharing")
+                .get_mut()
+                .unwrap()
+                .restore_amendments(gov.amendments(), &token)
+                .await
+                .expect("the money deployment restores its native amendment history");
+            crate::root::durability::bind_amendments(&book, gov.amendments())
+                .await
+                .expect("hook content handoffs use the money deployment's native book");
             let node = Arc::new(Node::new());
             node.bind_book(book.clone());
             (node, book)
@@ -443,6 +458,7 @@ async fn governed_full(
         rotate.await;
     }
     app.governance = Some(Arc::clone(&gov));
+    app.amendments = Arc::clone(gov.amendments());
     app.cost = Arc::new(cost);
     if matches!(screen, Screen::Pool(_)) {
         let gates = busbar_kernel::hooks::resolve_gate_hooks(
@@ -1321,6 +1337,13 @@ async fn an_executed_nested_unit_with_an_oversized_reply_fails_instead_of_refusi
         g.requests().await,
         2,
         "the parent and exactly one admitted child"
+    );
+    assert!(
+        g.served.planes[0]
+            .kernel
+            .drain_plane_cleanup(super::RECORD_DRAIN)
+            .await,
+        "the dropped oversized child completes its actual cancellation custody"
     );
     assert_eq!(g.post.open_units(), 0);
     assert_eq!(g.money.open_units(), 0);

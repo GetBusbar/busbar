@@ -138,10 +138,11 @@ async fn without_the_config_block_the_plane_serves_nothing() {
 #[tokio::test]
 async fn the_inventory_is_exactly_what_the_mount_registers() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let without = served_paths(application(None, None).await.as_ref());
+    let baseline = application(None, None).await;
+    let without = served_paths(&baseline);
 
     let block = cfg();
-    let app = application(Some(&block), None).await;
+    let app = application(Some(&block), Some(&baseline)).await;
     assert!(
         app.oauth_as_any().is_some(),
         "the config block was given, so the plane must exist"
@@ -180,12 +181,14 @@ async fn the_inventory_is_exactly_what_the_mount_registers() {
 #[tokio::test]
 async fn the_fapi2_posture_adds_exactly_the_par_endpoint() {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(3600));
-    let without = served_paths(application(None, None).await.as_ref());
-    let plain = served_paths(application(Some(&cfg()), None).await.as_ref());
+    let baseline = application(None, None).await;
+    let without = served_paths(&baseline);
+    let plain_app = application(Some(&cfg()), Some(&baseline)).await;
+    let plain = served_paths(&plain_app);
 
     let mut block = cfg();
     block.fapi2 = true;
-    let fapi2 = served_paths(application(Some(&block), None).await.as_ref());
+    let fapi2 = served_paths(application(Some(&block), Some(&plain_app)).await.as_ref());
 
     let added: std::collections::BTreeSet<String> = fapi2.difference(&without).cloned().collect();
     let expected: std::collections::BTreeSet<String> =

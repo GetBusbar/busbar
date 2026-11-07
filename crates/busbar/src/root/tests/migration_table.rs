@@ -147,6 +147,8 @@ fn the_observability_lift_out_meets_its_1_5_5_bytes() {
 
     let hints = g["hints"].as_sequence().expect("golden `hints`");
     assert!(!hints.is_empty(), "the golden carries 1.5.5's hints");
+    // The current reader routes providers/models/pools through their actual plane declarations.
+    crate::dist_root_install::install();
     for row in hints {
         let stderr = field(row, "stderr");
         let old = stderr

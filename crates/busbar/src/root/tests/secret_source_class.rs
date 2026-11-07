@@ -22,6 +22,15 @@ async fn refused_call(instance: &'static str, secret: &SecretRef) -> Answer {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::two_failing_sources_reach_the_caller_as_one_fixed_refusal"
+    );
+    let child = std::env::var("BUSBAR_SECRET_SOURCE_TEST").as_deref() == Ok(TEST);
+    let selected = child.then(|| std::env::var("BUSBAR_SECRET_SOURCE_CASE").unwrap());
+    if let Some(case) = &selected {
+        assert!(["tools-class-env", "tools-class-file"].contains(&case.as_str()));
+    }
     let _one = PUBLISHING.lock().await;
     let cases = [
         ("tools-class-env", SecretRef::env(unset("TOOLS_CLASS_ENV"))),
@@ -32,12 +41,23 @@ async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
     ];
     let mut answers = Vec::new();
     for (instance, secret) in &cases {
+        if !child {
+            answers.push(super::isolated_source_answer(TEST, instance));
+            continue;
+        }
+        if selected.as_deref() != Some(*instance) {
+            continue;
+        }
         refused_naming_its_source(secret);
         let (status, headers, body) = refused_call(instance, secret).await;
         for (_, other) in &cases {
             assert_clean(instance, status, &headers, &body, other);
         }
-        answers.push((status, body));
+        println!(
+            "SECRET-SOURCE-ANSWER {TEST} {instance} {}",
+            serde_json::to_string(&(status.as_u16(), &body)).unwrap()
+        );
+        return;
     }
     let (first, second) = (&answers[0], &answers[1]);
     assert_eq!(
@@ -53,6 +73,15 @@ async fn two_failing_sources_reach_the_caller_as_one_fixed_refusal() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
+    const TEST: &str = concat!(
+        module_path!(),
+        "::the_scan_catches_a_source_spliced_into_a_real_door_render"
+    );
+    let Some(case) =
+        crate::root::door_steps::isolated_fixture_cases(TEST, &["tools-red-env", "tools-red-file"])
+    else {
+        return;
+    };
     let _one = PUBLISHING.lock().await;
     let fixed = busbar_contract::conn::ConnError::Refused.text();
     let cases = [
@@ -60,6 +89,9 @@ async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
         ("tools-red-file", SecretRef::file(missing("tools-red-file"))),
     ];
     for (instance, secret) in &cases {
+        if *instance != case {
+            continue;
+        }
         let operator = refused_naming_its_source(secret);
         let (status, headers, body) = refused_call(instance, secret).await;
         assert_clean(instance, status, &headers, &body, secret);
@@ -82,4 +114,5 @@ async fn the_scan_catches_a_source_spliced_into_a_real_door_render() {
             "{instance}: the cell every door runs must fail on a render that carries {found:?}"
         );
     }
+    crate::root::door_steps::isolated_fixture_done(TEST, &case);
 }

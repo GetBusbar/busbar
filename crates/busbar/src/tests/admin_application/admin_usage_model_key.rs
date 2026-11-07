@@ -163,7 +163,8 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
     let gov = app.governance.as_ref().expect("actual governance").clone();
     let core = gov.core_store().expect("the actual Store remains admitted");
     let store = core.identity();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
