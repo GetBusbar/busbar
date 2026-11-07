@@ -24,6 +24,7 @@ mod completion_retirement;
 #[path = "plane_driver_retirement_cases.rs"]
 mod retirement_cases;
 
+use futures::FutureExt as _;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -114,6 +115,8 @@ pub(crate) fn rig_with_hooks(
         services(),
         ("test_plane", &serde_yaml::Value::Null),
     )
+    .now_or_never()
+    .expect("non-persistent fixture admission completes immediately")
     .expect("the instance is admitted");
     let driver = match hooks {
         Some(h) => driver.with_hooks(Arc::new(h)),
@@ -1584,89 +1587,22 @@ fn a_pending_piece_is_released_by_another_task_on_the_same_runtime() {
 use busbar_contract::abi::host::service as svc;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::{RecordBytes, StoreError};
 use busbar_contract::services::{Caller as Instance, HostServices, Ran, RecordsList, Stored};
-use busbar_kernel::host_records::RecordRows;
-use busbar_kernel::host_services::{InstanceFacts, KernelServices, Offload};
-use busbar_plugin_loader::store_v3::LoadedStore;
+use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices};
+#[path = "../../src/tests/real_store.rs"]
+mod real_store;
 
-fn actual_store() -> Arc<LoadedStore> {
-    use busbar_plugin_loader::dispatch::kinds::store::Store;
-    use busbar_plugin_loader::dispatch::{
-        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
-    };
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN")
-            .expect("BUSBAR_GOVERNANCE_TEST_STORE_PLUGIN names the actual built Store"),
-    );
-    let stated = rendering_of_library(&path)
-        .expect("read the actual Store statement")
-        .expect("Store exports its statement");
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-    let plugin = load_dropped::<Store>(
-        &path,
-        &stated,
-        Bind {
-            instance: format!("plane-records-{}", busbar_kernel::door::op_id().counter()).into(),
-            max_inflight_cap: 1024,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: ConnTable::NoNeeds,
-        },
-    )
-    .expect("load the actual Store through its ABI");
-    let settings =
-        std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".into());
-    Arc::new(
-        LoadedStore::open(
-            plugin,
-            dispatcher,
-            settings.as_bytes(),
-            busbar_kernel::door::op_id,
-        )
-        .expect("open the actual Store"),
-    )
+async fn actual_store() -> Arc<busbar_kernel::persistence::facade::CoreStore> {
+    real_store::core().await
 }
 
-struct Rows(Arc<LoadedStore>);
-
-impl RecordRows for Rows {
-    fn claim(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> Result<bool, busbar_contract::kinds::StoreError> {
-        busbar_contract::records::RecordStore::redeem_plane_token(
-            &*self.0, kind, token, expires_at, now,
-        )
-        .map_err(|e| busbar_contract::kinds::StoreError::Rejected(e.0))
-    }
-    fn record_put(&self, s: RecordSchemaId, k: &[u8], v: &RecordBytes) -> Result<(), StoreError> {
-        busbar_kernel::host_records::StoreRows(self.0.clone()).record_put(s, k, v)
-    }
-
-    fn record_get(&self, s: RecordSchemaId, k: &[u8]) -> Result<Option<RecordBytes>, StoreError> {
-        busbar_kernel::host_records::StoreRows(self.0.clone()).record_get(s, k)
-    }
-
-    fn record_scan(
-        &self,
-        s: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError> {
-        busbar_kernel::host_records::StoreRows(self.0.clone()).record_scan(s, prefix, limit)
-    }
-}
-
-struct Inline;
-
-impl Offload for Inline {
-    fn run(&self, job: Box<dyn FnOnce() + Send>) {
-        job();
-    }
+fn host_over(store: Arc<busbar_kernel::persistence::facade::CoreStore>) -> KernelServices {
+    let host = KernelServices::new().with_pool(Arc::new(BlockingPool::new(
+        tokio::runtime::Handle::current(),
+        1024,
+    )));
+    assert!(host.attach_persistence(store));
+    host
 }
 
 fn instance() -> Instance {
@@ -1677,40 +1613,41 @@ fn instance() -> Instance {
     }
 }
 
-fn records() -> Arc<KernelServices> {
-    let store = actual_store();
-    let s = KernelServices::new()
-        .with_records(Arc::new(Rows(Arc::clone(&store))))
-        .with_pool(Arc::new(Inline));
+async fn records() -> Arc<KernelServices> {
+    let s = host_over(actual_store().await);
     let facts = InstanceFacts {
         record_kinds: vec![RecordSchemaId::new("task")],
         ..InstanceFacts::default()
     };
-    s.admit("inst", facts).unwrap();
+    s.admit("inst", facts).await.unwrap();
     Arc::new(s)
 }
 
-fn answer(f: impl FnOnce(busbar_contract::services::Later) -> Ran) -> Stored {
-    let slot = Arc::new(Mutex::new(None));
-    let put = Arc::clone(&slot);
-    match f(Box::new(move |s| *put.lock().unwrap() = Some(s))) {
-        Ran::Now(s) => s,
-        Ran::Later => slot.lock().unwrap().take().expect("answered"),
+async fn answer(f: impl FnOnce(busbar_contract::services::Later) -> Ran) -> Stored {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    match f(Box::new(move |answer| {
+        let _ = tx.send(answer);
+    })) {
+        Ran::Now(answer) => answer,
+        Ran::Later => tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("the native host answers within its bound")
+            .expect("the host owns its callback"),
     }
 }
 
-fn get(s: &KernelServices, key: &[u8]) -> Stored {
-    answer(|l| s.records_get(&instance(), "task", key, l))
+async fn get(s: &KernelServices, key: &[u8]) -> Stored {
+    answer(|l| s.records_get(&instance(), "task", key, l)).await
 }
 
-fn list(s: &KernelServices) -> Vec<u8> {
+async fn list(s: &KernelServices) -> Vec<u8> {
     let all = RecordsList {
         kind: "task".into(),
         prefix: Vec::new(),
         after: None,
         limit: 0,
     };
-    std::mem::take(&mut answer(|l| s.records_list(&instance(), all, l)).bytes)
+    std::mem::take(&mut answer(|l| s.records_list(&instance(), all, l)).await.bytes)
 }
 
 async fn write(driver: &PlaneDriver, body: &[u8]) -> busbar_contract::caps::Outcome {
@@ -1725,17 +1662,17 @@ async fn write(driver: &PlaneDriver, body: &[u8]) -> busbar_contract::caps::Outc
 
 #[tokio::test]
 async fn a_pieces_record_writes_reach_the_records_and_a_tombstone_hides_one() {
-    let s = records();
+    let s = records().await;
     let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     r.driver = r.driver.with_records(Arc::clone(&s), instance());
     let done = |o| matches!(o, busbar_contract::caps::Outcome::Completed);
     assert!(done(write(&r.driver, b"a=1;b=2").await));
-    let a = get(&s, b"a");
+    let a = get(&s, b"a").await;
     assert_eq!((a.value, a.bytes.as_slice()), (svc::FOUND, &b"1"[..]));
-    assert_eq!(list(&s), b"a1b2");
+    assert_eq!(list(&s).await, b"a1b2");
     assert!(done(write(&r.driver, b"a=").await));
-    assert_eq!(get(&s, b"a").value, svc::ABSENT);
-    assert_eq!(list(&s), b"b2");
+    assert_eq!(get(&s, b"a").await.value, svc::ABSENT);
+    assert_eq!(list(&s).await, b"b2");
 }
 
 #[tokio::test]
@@ -1797,7 +1734,7 @@ async fn a_units_audit_row_reaches_the_kernels_chain_and_its_lane_the_money_step
 #[tokio::test]
 async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain() {
     use busbar_kernel::plane_driver::serve::{write_served_records, Served, Unserved};
-    let s = records();
+    let s = records().await;
     let rows = AuditRows::default();
     let served = Served {
         status: 200,
@@ -1818,7 +1755,7 @@ async fn a_served_requests_record_writes_reach_the_records_and_the_audit_chain()
     write_served_records(Some(&path), &rows, &served, "acct:caller")
         .await
         .expect("written");
-    let cb = get(&s, b"cb");
+    let cb = get(&s, b"cb").await;
     assert_eq!((cb.value, cb.bytes.as_slice()), (svc::FOUND, &b"done"[..]));
     assert_eq!(
         *rows.0.lock().unwrap(),
@@ -1885,16 +1822,17 @@ fn services() -> Arc<KernelServices> {
     Arc::new(KernelServices::new())
 }
 
-fn driven(every_ns: u64) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
+async fn driven(every_ns: u64) -> (Arc<Double>, Arc<cases::Book>, PlaneDriver) {
     driven_over(
         Double::default(),
         every_ns,
         services(),
         &serde_yaml::Value::Null,
     )
+    .await
 }
 
-fn driven_over(
+async fn driven_over(
     plane: Double,
     every_ns: u64,
     services: Arc<KernelServices>,
@@ -1916,13 +1854,14 @@ fn driven_over(
         services,
         ("tools", section),
     )
+    .await
     .expect("the instance is admitted");
     (plane, book, driver)
 }
 
-#[test]
-fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
-    let (plane, _book, driver) = driven(0);
+#[tokio::test]
+async fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
+    let (plane, _book, driver) = driven(0).await;
     let minted = plane.drivers.lock().unwrap().clone();
     assert_eq!(minted.len(), 1, "one driver ticket per instance");
     drop(driver);
@@ -1934,7 +1873,7 @@ fn the_driver_mints_the_instance_s_one_driver_ticket_and_recycles_it() {
 
 #[tokio::test]
 async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
-    let (plane, _book, driver) = driven(20_000_000);
+    let (plane, _book, driver) = driven(20_000_000).await;
     let run = tokio::time::timeout(Duration::from_millis(130), driver.ticks()).await;
     assert!(run.is_err(), "a schedule that asks again runs on");
     let ticks = plane.ticks.lock().unwrap().clone();
@@ -1945,7 +1884,7 @@ async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
             "a tick before its next_tick_ns: {ticks:?}"
         );
     }
-    let (plane, _book, driver) = driven(0);
+    let (plane, _book, driver) = driven(0).await;
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
         .await
         .expect("a schedule answered 0 ends");
@@ -1963,6 +1902,7 @@ fn declaring() -> Double {
             conditional_record_kinds: Vec::new(),
             label: Arc::from("inst"),
             record_kinds: vec!["approval"],
+            record_collections: Vec::new(),
             signing: None,
             scope_kinds: vec![],
             trust_keys: vec![TrustKeyDecl {
@@ -1980,25 +1920,20 @@ fn declaring() -> Double {
     }
 }
 
-fn stored() -> Arc<KernelServices> {
-    let store = actual_store();
-    Arc::new(
-        KernelServices::new()
-            .with_records(Arc::new(Rows(store)))
-            .with_pool(Arc::new(Inline)),
-    )
+async fn stored() -> Arc<KernelServices> {
+    Arc::new(host_over(actual_store().await))
 }
 
-#[test]
-fn a_built_driver_admits_its_instance_to_the_host_services() {
-    let services = stored();
+#[tokio::test]
+async fn a_built_driver_admits_its_instance_to_the_host_services() {
+    let services = stored().await;
     assert_eq!(
         services.trust_due(&instance()).outcome,
         Outcome::Refused,
         "unadmitted"
     );
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
-    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let later: busbar_contract::services::Later = Box::new(|_| {});
     match services.records_get(&instance(), "approval", b"k", later) {
         Ran::Now(s) => assert_ne!(s.outcome, Outcome::Refused, "records.get: {:?}", s.error),
@@ -2013,9 +1948,9 @@ fn a_built_driver_admits_its_instance_to_the_host_services() {
 
 #[tokio::test]
 async fn an_uncalled_upstream_is_never_fetched_over_time() {
-    let services = stored();
+    let services = stored().await;
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
-    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let due = |s: &KernelServices| std::mem::take(&mut s.trust_due(&instance()).bytes);
     assert!(due(&services).is_empty(), "nothing is due before a tick");
     tokio::time::timeout(Duration::from_secs(5), driver.ticks())
@@ -2055,9 +1990,9 @@ fn untrusted(outcome: &busbar_contract::caps::Outcome) -> bool {
 #[tokio::test]
 async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     use busbar_kernel::plane_driver::refusal_status;
-    let services = stored();
+    let services = stored().await;
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
-    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let refused = |code: u32| {
         format!(
             "refused:{}:untrusted:trust={code}",
@@ -2075,25 +2010,30 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(2));
 
-    let sight = |hash: &'static str| {
-        let later: busbar_contract::services::Later = Box::new(|_| {});
-        let _ = services.trust_sight(&instance(), "peer", hash, later);
+    let sight = async |hash: &'static str| {
+        answer(|later| services.trust_sight(&instance(), "peer", hash, later)).await
     };
-    let decide = |key: &str, decision| services.trust_rule(key, decision).expect("an admitted key");
+    let decide = async |key: &str, decision| {
+        services
+            .trust_rule(key, decision)
+            .await
+            .expect("an admitted key")
+    };
     use busbar_kernel::trust::book::Ruling;
-    sight("h1");
+    sight("h1").await;
     let (outcome, body) = approved(&driver, "/trusted/peer").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4), "sighted, never approved");
-    decide("inst/peer", Ruling::Approve);
+    decide("inst/peer", Ruling::Approve).await;
     let (outcome, _) = approved(&driver, "/trusted/peer").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
 
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
-    let _ = services.trust_sight_item(&instance(), "peer", "cap", "d1");
-    decide("inst/peer/cap", Ruling::Approve);
+    let _ =
+        answer(|later| services.trust_sight_item(&instance(), "peer", "cap", "d1", later)).await;
+    decide("inst/peer/cap", Ruling::Approve).await;
     let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d2").await;
@@ -2105,7 +2045,8 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(6));
-    let sighted = services.trust_sight_item(&instance(), "peer", "tool", "t1");
+    let sighted =
+        answer(|later| services.trust_sight_item(&instance(), "peer", "tool", "t1", later)).await;
     assert_eq!(
         sighted.value,
         busbar_contract::abi::host::service::TRUST_NEW
@@ -2113,7 +2054,7 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     let (outcome, body) = approved(&driver, "/trusted/peer/tool").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4));
-    decide("inst/peer/tool", Ruling::Approve);
+    decide("inst/peer/tool", Ruling::Approve).await;
     let serves = |item: &str| {
         services
             .trust_serves(&instance(), "peer", Some(item), None)
@@ -2125,7 +2066,8 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
     );
     let (outcome, _) = approved(&driver, "/trusted/peer/tool").await;
     assert!(!untrusted(&outcome), "{outcome:?}");
-    let _ = services.trust_sight_item(&instance(), "peer", "tool", "t2");
+    let _ =
+        answer(|later| services.trust_sight_item(&instance(), "peer", "tool", "t2", later)).await;
     assert_eq!(
         serves("tool"),
         busbar_contract::abi::host::service::DISTRUST_CHANGED
@@ -2135,20 +2077,20 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
         busbar_contract::abi::host::service::DISTRUST_UNKNOWN_ITEM
     );
 
-    sight("h2");
+    sight("h2").await;
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(3));
-    decide("inst/peer", Ruling::Approve);
+    decide("inst/peer", Ruling::Approve).await;
     let (outcome, _) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(!untrusted(&outcome), "re-approved: {outcome:?}");
-    decide("inst/peer", Ruling::Revoke);
+    decide("inst/peer", Ruling::Revoke).await;
     let (outcome, body) = approved(&driver, "/trusted/peer/cap@d1").await;
     assert!(untrusted(&outcome), "{outcome:?}");
     assert_eq!(body, refused(4), "revoked");
 
     assert_eq!(
-        services.trust_rule("inst/stranger", Ruling::Approve),
+        services.trust_rule("inst/stranger", Ruling::Approve).await,
         Err(busbar_kernel::host_services::TrustRefused::NoSuchKey)
     );
 }
@@ -2156,9 +2098,9 @@ async fn the_kernels_approve_judges_the_trust_facts_a_plane_states() {
 #[tokio::test]
 async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
     use busbar_contract::caps::{Outcome, ReasonCode, StepName};
-    let services = stored();
+    let services = stored().await;
     let section: serde_yaml::Value = serde_yaml::from_str("peer: {reverify: 1h}").unwrap();
-    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (_plane, _book, driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     let (steps, far, caller) = (
         common::TestUnits::refusing(StepName::Approve, ReasonCode::ScopeDenied),
         cases::Far::new(&["ok"], cases::CHUNKS),
@@ -2186,24 +2128,19 @@ async fn the_kernels_approve_judges_the_grant_before_the_trust_facts() {
     assert!(untrusted(&outcome), "granted, the book judges: {outcome:?}");
 }
 
-#[test]
-fn a_planes_work_section_overrides_the_hosts_work_bounds() {
+#[tokio::test]
+async fn a_planes_work_section_overrides_the_hosts_work_bounds() {
     use busbar_kernel::host_units::UnitRecord;
     use busbar_kernel::host_work::{refusal, WorkBounds};
-    let store = actual_store();
+    let store = actual_store().await;
     let host = WorkBounds {
         max_live: 3,
         retain_ms: 300_000,
     };
-    let services = Arc::new(
-        KernelServices::new()
-            .with_records(Arc::new(Rows(store)))
-            .with_pool(Arc::new(Inline))
-            .with_work_bounds(host),
-    );
+    let services = Arc::new(host_over(store).with_work_bounds(host));
     let section: serde_yaml::Value =
         serde_yaml::from_str("work: {max_live: 1}\npeer: {reverify: 1h}").unwrap();
-    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section);
+    let (_plane, _book, _driver) = driven_over(declaring(), 0, services.clone(), &section).await;
     assert_eq!(
         services.work_bounds_of("inst"),
         WorkBounds {
@@ -2218,18 +2155,11 @@ fn a_planes_work_section_overrides_the_hosts_work_bounds() {
         "no work: is the host's"
     );
     services.units().admitted(1, UnitRecord::default());
-    let open = |record: &'static [u8]| {
-        let slot: Arc<std::sync::Mutex<Option<busbar_contract::services::Stored>>> = Arc::default();
-        let mine = Arc::clone(&slot);
-        let later: busbar_contract::services::Later =
-            Box::new(move |s| *mine.lock().unwrap() = Some(s));
-        match services.work_open(&instance(), Some(1), "approval", record, later) {
-            Ran::Now(s) => s,
-            Ran::Later => slot.lock().unwrap().take().expect("answered"),
-        }
+    let open = async |record: &'static [u8]| {
+        answer(|later| services.work_open(&instance(), Some(1), "approval", record, later)).await
     };
-    assert_eq!(open(b"first").outcome, Outcome::Ready);
-    let second = open(b"second");
+    assert_eq!(open(b"first").await.outcome, Outcome::Ready);
+    let second = open(b"second").await;
     assert_eq!(
         (second.outcome, second.error),
         (Outcome::Refused, refusal::AT_BOUND),
@@ -2237,8 +2167,8 @@ fn a_planes_work_section_overrides_the_hosts_work_bounds() {
     );
 }
 
-#[test]
-fn a_misstated_work_section_refuses_the_instance() {
+#[tokio::test]
+async fn a_misstated_work_section_refuses_the_instance() {
     for bad in [
         "work: 4",
         "work: {max_live: 0}",
@@ -2257,9 +2187,10 @@ fn a_misstated_work_section_refuses_the_instance() {
                 caller_refs: None,
             },
             Arc::new(cases::Book::default()),
-            stored(),
+            stored().await,
             ("tools", &section),
         )
+        .await
         .err()
         .unwrap_or_else(|| panic!("{bad}: refused"));
         assert!(refused.starts_with("`tools.work`"), "{bad}: {refused}");
@@ -2404,7 +2335,11 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
     }
     const AT: u64 = 1_700_000_000;
 
-    let gov = Arc::new(GovState::new_with_signer(actual_store(), None, None).expect("gov"));
+    let gov = Arc::new(
+        GovState::new_with_core(actual_store().await, None, None)
+            .await
+            .expect("gov"),
+    );
     let money = Arc::new(PlaneMoney::new(gov.clone(), Arc::new(NoPost)));
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
@@ -2435,8 +2370,9 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
         revision: 1,
         ..Default::default()
     });
-    let spend = || {
-        gov.derived_bucket_usage(&cost, &key.id, WINDOW_TOTAL, true, AT)
+    let spend = async || {
+        gov.derived_bucket_usage_async(&cost, &key.id, WINDOW_TOTAL, true, AT)
+            .await
             .expect("usage")
     };
     let grant = gov
@@ -2457,7 +2393,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
             charge: grant.charge().clone(),
         },
     );
-    assert_eq!(spend().spend_cents, 5, "admission charged its fee");
+    assert_eq!(spend().await.spend_cents, 5, "admission charged its fee");
 
     let r = rig(
         Way::Double,
@@ -2514,7 +2450,7 @@ async fn a_refusal_after_admission_within_limits_is_the_planes_and_nets_no_charg
     assert!(the_planes_refusal(&rendered), "{rendered:?}");
 
     money.settle_end(unit, rendered.status);
-    let usage = spend();
+    let usage = spend().await;
     assert_eq!(
         (usage.spend_cents, usage.tokens),
         (0, busbar_contract::Count::ZERO),
@@ -2570,7 +2506,7 @@ impl busbar_kernel::plane_driver::SessionCaller for OnceCaller {
 async fn a_route_session_arrival_is_driven_as_a_session_whose_caller_leg_is_the_units() {
     use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
     use busbar_kernel::teller::{run_unit_async, AccrualMeter, Ended, Kernel, Run};
-    let (plane, book, driver) = driven(5_000_000);
+    let (plane, book, driver) = driven(5_000_000).await;
     let (steps, far, caller) = (
         common::TestUnits::passing(),
         cases::Far::new(&[], &[]),
@@ -2720,7 +2656,9 @@ impl busbar_kernel::plane_driver::HookBinder for GateFirst {
             rewrites: Vec::new(),
             key: None,
             scan: None,
-            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {}),
+            reads: Arc::new(|_: &str, _: Option<&str>, _: &str, _: bool| {
+                Box::pin(async { Ok(()) })
+            }),
         })
     }
 }
@@ -3093,7 +3031,7 @@ struct Came {
 }
 
 async fn came(far: Gone, takes: bool) -> Came {
-    let s = records();
+    let s = records().await;
     let mut r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
     r.driver = r.driver.with_records(Arc::clone(&s), instance());
     if takes {
@@ -3112,7 +3050,7 @@ async fn came(far: Gone, takes: bool) -> Came {
     Came {
         outcome,
         refused,
-        written: get(&s, b"refused"),
+        written: get(&s, b"refused").await,
         leaked,
         body,
         charged,
@@ -3302,7 +3240,7 @@ async fn a_walk_that_exhausted_with_nothing_sent_names_why_on_its_refused_piece(
 
 #[tokio::test]
 async fn a_wake_of_the_driver_ticket_re_polls_tick_after_an_answer_of_none() {
-    let (plane, _book, driver) = driven(0);
+    let (plane, _book, driver) = driven(0).await;
     plane.wake.channel.store(true, Ordering::SeqCst);
     let waker = async {
         let ticks = || plane.ticks.lock().unwrap().len();
@@ -3332,7 +3270,7 @@ async fn a_wake_of_the_driver_ticket_re_polls_tick_after_an_answer_of_none() {
 
 #[tokio::test]
 async fn an_answer_of_none_with_no_wake_ticks_once_and_stays_quiet() {
-    let (plane, _book, driver) = driven(0);
+    let (plane, _book, driver) = driven(0).await;
     plane.wake.channel.store(true, Ordering::SeqCst);
     let run = tokio::time::timeout(Duration::from_millis(150), driver.ticks()).await;
     assert!(
@@ -3344,7 +3282,7 @@ async fn an_answer_of_none_with_no_wake_ticks_once_and_stays_quiet() {
 
 #[tokio::test]
 async fn a_wake_re_arms_the_sleeping_timer_to_the_earlier_deadline() {
-    let (plane, _book, driver) = driven(2_000_000_000);
+    let (plane, _book, driver) = driven(2_000_000_000).await;
     plane.wake.channel.store(true, Ordering::SeqCst);
     let waker = async {
         while plane.ticks.lock().unwrap().is_empty() {
@@ -3662,6 +3600,8 @@ fn governed(slot: busbar_kernel::plane_driver::CallerRefs) -> Rig {
         services(),
         ("test_plane", &serde_yaml::Value::Null),
     )
+    .now_or_never()
+    .expect("non-persistent fixture admission completes immediately")
     .expect("the instance is admitted");
     Rig {
         plane,

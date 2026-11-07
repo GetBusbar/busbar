@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::*;
 use crate::trust::reverify::Policy;

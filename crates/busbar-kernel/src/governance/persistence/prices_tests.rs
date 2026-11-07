@@ -4,13 +4,13 @@
 use super::*;
 use crate::persistence::facade::{Limits, WriterAuthority};
 use busbar_contract::persistence::{
-    BackendInfo, Call, ClockObservation, DatasetId, Durability, PersistenceBackend, control,
+    control, BackendInfo, Call, ClockObservation, DatasetId, Durability, PersistenceBackend,
 };
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
-        Mutex,
         atomic::{AtomicBool, Ordering},
+        Mutex,
     },
 };
 
@@ -530,14 +530,12 @@ async fn cancellation_retains_native_candidate_before_crossing() {
     let store = attach(backend.clone()).await;
     let mut plan = store.prices().prepare(entry(1, None), false).await.unwrap();
     backend.hang.store(true, Ordering::SeqCst);
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            store.prices().submit(&mut plan)
-        )
-        .await
-        .is_err()
-    );
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        store.prices().submit(&mut plan)
+    )
+    .await
+    .is_err());
     let id = plan.pending_id().unwrap();
     assert!(plan.publication().is_none());
     backend.hang.store(false, Ordering::SeqCst);
@@ -718,11 +716,10 @@ async fn runtime_uncertain_retirement_finishes_before_superseding_original() {
     };
     assert!(book.prepare(&replacement, "ordinary apply").await.is_err());
     backend.lose_reply.store(true, Ordering::SeqCst);
-    assert!(
-        book.prepare_recovery(&replacement, "explicit reload")
-            .await
-            .is_err()
-    );
+    assert!(book
+        .prepare_recovery(&replacement, "explicit reload")
+        .await
+        .is_err());
     let original = backend.state.lock().unwrap().sent.last().unwrap().clone();
     // Retrying the old values must resolve retirement rather than activate them.
     assert!(book.prepare(&rejected, "old values retried").await.is_err());
@@ -755,14 +752,12 @@ async fn runtime_cancellation_retries_the_exact_native_plan_and_keeps_provenance
         ..CardFields::default()
     };
     backend.hang.store(true, Ordering::SeqCst);
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(10),
-            book.prepare(&card, "cancelled original actor")
-        )
-        .await
-        .is_err()
-    );
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(10),
+        book.prepare(&card, "cancelled original actor")
+    )
+    .await
+    .is_err());
     let held = backend.state.lock().unwrap().sent.last().unwrap().clone();
     backend.hang.store(false, Ordering::SeqCst);
     let prepared = book.prepare(&card, "retry actor").await.unwrap();
@@ -871,11 +866,10 @@ async fn runtime_serving_boot_refuses_historical_import_without_writing() {
     let store = Arc::new(attach(backend.clone()).await);
     let book = runtime::CardStore::new(store, 42, runtime_rates).unwrap();
     let historical = entry(1, None);
-    assert!(
-        book.boot(&historical.card, "serving boot", vec![historical.clone()])
-            .await
-            .is_err()
-    );
+    assert!(book
+        .boot(&historical.card, "serving boot", vec![historical.clone()])
+        .await
+        .is_err());
     assert!(backend.state.lock().unwrap().sent.is_empty());
     assert!(book.history().is_none());
     assert!(!book.is_loaded());

@@ -7,32 +7,25 @@ use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, Caller, HostServices, Later, Ran, RecordsList, Stored};
-use busbar_kernel::host_records::StoreRows;
-use busbar_kernel::host_services::{InstanceFacts, KernelServices as Host, Offload};
+use busbar_kernel::host_services::{BlockingPool, InstanceFacts, KernelServices as Host};
+use busbar_kernel::{door, persistence};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 const NOT_ADMITTED: &str = "the instance is not admitted";
 const NOT_A_KIND: &str = "not a record kind the instance declared";
 const NO_TTL: &str = "a claim states its time to live";
 const CHAIN_READ_WHOLE: &str = "a chained record kind is read whole, through records.list";
-struct Inline;
-impl Offload for Inline {
-    fn run(&self, f: Box<dyn FnOnce() + Send>) {
-        f();
-    }
-}
 #[path = "../src/tests/real_store.rs"]
 mod real_store;
-mod door {
-    pub use busbar_kernel::door::op_id;
+async fn admitted() -> Host {
+    admitted_over(real_store::core().await).await
 }
-fn admitted() -> Host {
-    admitted_over(real_store::store())
-}
-fn admitted_over(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>) -> Host {
-    let h = Host::new()
-        .with_records(Arc::new(StoreRows(store)))
-        .with_pool(Arc::new(Inline));
+async fn admitted_over(store: Arc<persistence::facade::CoreStore>) -> Host {
+    let h = Host::new().with_pool(Arc::new(BlockingPool::new(
+        tokio::runtime::Handle::current(),
+        1024,
+    )));
+    assert!(h.attach_persistence(store));
     h.admit(
         "plane",
         InstanceFacts {
@@ -46,6 +39,7 @@ fn admitted_over(store: Arc<busbar_plugin_loader::store_v3::LoadedStore>) -> Hos
             ..InstanceFacts::default()
         },
     )
+    .await
     .expect("actual host admits the declared instance");
     h
 }
@@ -119,9 +113,9 @@ fn random_fill_draws_fresh_bytes_and_refuses_outside_its_cap() {
         );
     }
 }
-#[test]
-fn records_refuse_an_instance_the_host_never_admitted() {
-    let h = admitted();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn records_refuse_an_instance_the_host_never_admitted() {
+    let h = admitted().await;
     let c = caller("never-admitted");
     let (l, rx) = later();
     let s = answer(h.records_get(&c, "tasks", b"k", l), &rx);
@@ -176,6 +170,14 @@ fn claim(h: &Host, kind: &str, key: &str, ttl_ms: u64) -> Stored {
     )
 }
 
+fn sight_item(h: &Host, caller: &Caller, counterparty: &str, item: &str, evidence: &str) -> Stored {
+    let (later, rx) = later();
+    answer(
+        h.trust_sight_item(caller, counterparty, item, evidence, later),
+        &rx,
+    )
+}
+
 fn rows(s: &Stored) -> Vec<(String, String)> {
     let at = |sp: busbar_contract::abi::mechanism::call::Span| {
         if sp.offset == busbar_contract::abi::mechanism::check::SPAN_ABSENT {
@@ -194,10 +196,10 @@ fn row(k: &[u8], v: &str) -> (String, String) {
     (String::from_utf8_lossy(k).into_owned(), v.to_string())
 }
 
-#[test]
-fn records_read_the_instances_own_writes_and_claim_once() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn records_read_the_instances_own_writes_and_claim_once() {
     use busbar_contract::abi::host::service::{ABSENT, CLAIM_TAKEN, CLAIM_WON, FOUND};
-    let h = admitted();
+    let h = admitted().await;
     let c = caller("plane");
     assert_eq!(get(&h, &c, "tasks", "t/1").value, ABSENT);
     let s = get(&h, &c, "secrets", "t/1");
@@ -250,21 +252,28 @@ fn records_read_the_instances_own_writes_and_claim_once() {
     );
 }
 
-#[test]
-fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
-    let store = real_store::store();
-    let h = admitted_over(store.clone());
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
+    let store = real_store::core().await;
+    let h = admitted_over(store.clone()).await;
     keep(&h, 1, b"task-a", b"first");
     keep(&h, 1, b"task-b", b"other");
     keep(&h, 1, b"task-a", b"second");
 
-    busbar_kernel::host_records::RecordRows::record_put(
-        &StoreRows(store),
-        RecordSchemaId::new("journal"),
-        &busbar_kernel::host_records::record_key("plane", &chain_key(b"task-c", 1)),
-        &RecordBytes::new(b"stray".to_vec()).unwrap(),
-    )
-    .expect("the unrelated raw row is written in the actual Store");
+    let scoped_rows =
+        persistence::scoped::ScopedStore::authorized(store, "plane", ["journal".into()])
+            .expect("the fixture owns the admitted instance's journal scope");
+    assert_eq!(
+        scoped_rows
+            .put(
+                "journal",
+                &chain_key(b"task-c", 1),
+                busbar_contract::Secret::new(b"stray".to_vec())
+            )
+            .await
+            .expect("the unrelated raw row is written in the actual Store"),
+        persistence::scoped::Outcome::Applied,
+    );
     let s = get(&h, &caller("plane"), "journal", "task-a");
     assert_eq!(
         (s.outcome, s.error),
@@ -292,7 +301,7 @@ fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
     );
 }
 
-fn trust_host() -> Host {
+async fn trust_host() -> Host {
     let h = Host::new();
     h.admit(
         "plane",
@@ -311,15 +320,16 @@ fn trust_host() -> Host {
             ..InstanceFacts::default()
         },
     )
+    .await
     .expect("actual host admits explicit digest-bound item approval");
     h
 }
-#[test]
-fn configured_item_approval_is_bound_to_its_actual_digest() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_item_approval_is_bound_to_its_actual_digest() {
     use busbar_contract::abi::host::service::{
         DISTRUST_CHANGED, DISTRUST_NONE, DISTRUST_UNKNOWN_ITEM,
     };
-    let h = trust_host();
+    let h = trust_host().await;
     let c = caller("plane");
     assert_eq!(
         h.trust_serves(&c, "fs", Some("read"), Some("one")).value,
@@ -334,7 +344,7 @@ fn configured_item_approval_is_bound_to_its_actual_digest() {
         DISTRUST_UNKNOWN_ITEM
     );
     assert_eq!(
-        h.trust_sight_item(&c, "fs", "read", "one").outcome,
+        sight_item(&h, &c, "fs", "read", "one").outcome,
         Outcome::Ready
     );
     assert_eq!(
@@ -342,13 +352,13 @@ fn configured_item_approval_is_bound_to_its_actual_digest() {
         DISTRUST_NONE
     );
 }
-#[test]
-fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changing_approval() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changing_approval() {
     use busbar_contract::abi::host::service::DISTRUST_NONE;
-    let h = trust_host();
+    let h = trust_host().await;
     let c = caller("plane");
     assert_eq!(
-        h.trust_sight_item(&c, "fs", "read", "one").outcome,
+        sight_item(&h, &c, "fs", "read", "one").outcome,
         Outcome::Ready
     );
     assert_eq!(
@@ -356,17 +366,17 @@ fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changing_appr
         DISTRUST_NONE
     );
     for who in [caller("never-admitted"), caller("another-instance")] {
-        let s = h.trust_sight_item(&who, "fs", "read", "");
+        let s = sight_item(&h, &who, "fs", "read", "");
         assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
     }
     for evidence in ["", " \t\n", "before\0after"] {
         assert_eq!(
-            h.trust_sight_item(&c, "fs", "read", evidence).outcome,
+            sight_item(&h, &c, "fs", "read", evidence).outcome,
             Outcome::Refused
         );
     }
     assert_eq!(
-        h.trust_sight_item(&c, "unknown", "read", "one").outcome,
+        sight_item(&h, &c, "unknown", "read", "one").outcome,
         Outcome::Refused
     );
     assert_eq!(
@@ -374,13 +384,13 @@ fn item_sightings_refuse_wrong_owners_and_invalid_evidence_without_changing_appr
         DISTRUST_NONE
     );
     assert_eq!(
-        h.trust_sight_item(&c, "unknown", "read", "").error,
+        sight_item(&h, &c, "unknown", "read", "").error,
         busbar_kernel::host_services::NOT_A_COUNTERPARTY
     );
 }
 
-#[test]
-fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     use busbar_contract::abi::host::service::{
         DISTRUST_NONE, DISTRUST_NOT_APPROVED, DISTRUST_UNKNOWN, DISTRUST_UNKNOWN_ITEM,
     };
@@ -411,10 +421,13 @@ fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
             ..InstanceFacts::default()
         },
     )
+    .await
     .unwrap();
     h.trust_rule("plane/agent", Ruling::Approve)
+        .await
         .expect("actual authority approves declared fingerprint");
     h.trust_rule("plane/agent/tool", Ruling::Revoke)
+        .await
         .expect("actual authority revokes declared item");
     let c = caller("plane");
     let verdict = |cp: &str, item: Option<&str>| h.trust_serves(&c, cp, item, None).value;
@@ -425,18 +438,18 @@ fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     assert_eq!(verdict("stranger", None), DISTRUST_UNKNOWN);
 }
 
-#[test]
-fn sightings_never_rewrite_the_actual_configured_item_approval() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sightings_never_rewrite_the_actual_configured_item_approval() {
     use busbar_contract::abi::host::service::{DISTRUST_NONE, DISTRUST_NOT_APPROVED};
-    let h = trust_host();
+    let h = trust_host().await;
     let c = caller("plane");
     for evidence in ["one", "one", "two"] {
         assert_eq!(
-            h.trust_sight_item(&c, "fs", "read", evidence).outcome,
+            sight_item(&h, &c, "fs", "read", evidence).outcome,
             Outcome::Ready
         );
         assert_eq!(
-            h.trust_sight_item(&c, "fs", "draft", evidence).outcome,
+            sight_item(&h, &c, "fs", "draft", evidence).outcome,
             Outcome::Ready
         );
         let rows = h.trust_rows();
@@ -464,9 +477,9 @@ fn sightings_never_rewrite_the_actual_configured_item_approval() {
     );
 }
 
-#[test]
-fn counterparty_sightings_refuse_invalid_evidence_without_mutating_seen() {
-    let h = trust_host();
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn counterparty_sightings_refuse_invalid_evidence_without_mutating_seen() {
+    let h = trust_host().await;
     let c = caller("plane");
     let sight = |who: &Caller, cp: &str, evidence: &str| {
         let (l, rx) = later();

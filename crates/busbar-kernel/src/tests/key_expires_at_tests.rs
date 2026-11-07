@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use crate::governance::signing::{DEFAULT_KID, TokenSigner};
+use crate::governance::signing::{TokenSigner, DEFAULT_KID};
 use crate::governance::{GovState, NewKeySpec};
 use std::sync::Arc;
 

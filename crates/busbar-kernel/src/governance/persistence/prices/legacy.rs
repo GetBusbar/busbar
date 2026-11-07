@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::config::card::CardFields;
 use busbar_contract::kinds::RecordBytes;
-use busbar_kernel_ledger::cost::{ENTRY_KEY_LEN, EntryKey};
+use busbar_kernel_ledger::cost::{EntryKey, ENTRY_KEY_LEN};
 use serde::{Deserialize, Serialize};
 
 pub const CARD_SCHEMA: &str = "busbar.card.v2";

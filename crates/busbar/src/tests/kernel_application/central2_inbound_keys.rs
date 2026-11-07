@@ -3,7 +3,7 @@
 
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
-use busbar_contract::abi::host::service::{FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED, UnitRef};
+use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE, FLOW_STOP, REFUSE_STOPPED};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Strip;
 use busbar_kernel::governance::NewKeySpec;

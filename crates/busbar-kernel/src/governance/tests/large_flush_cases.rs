@@ -327,12 +327,10 @@ async fn raw_entry_identity_survives_unknown_budget_flush_and_later_same_timesta
         );
         store.replies.lock().unwrap().push_back(reply);
         if matches!(reply, Reply::CancelAfter) {
-            assert!(
-                std::panic::AssertUnwindSafe(gov.flush_budgets())
-                    .catch_unwind()
-                    .await
-                    .is_err()
-            );
+            assert!(std::panic::AssertUnwindSafe(gov.flush_budgets())
+                .catch_unwind()
+                .await
+                .is_err());
         } else {
             assert_eq!(gov.flush_budgets().await, 0);
         }
@@ -378,13 +376,11 @@ async fn raw_entry_identity_survives_unknown_budget_flush_and_later_same_timesta
             batches[0], batches[1],
             "the uncertain packet never adopts the newer identity"
         );
-        assert!(
-            batches[0]
-                .1
-                .iter()
-                .flat_map(|(_, _, delta)| &delta.models)
-                .all(|row| row.model != super::super::era_model(new, MODEL))
-        );
+        assert!(batches[0]
+            .1
+            .iter()
+            .flat_map(|(_, _, delta)| &delta.models)
+            .all(|row| row.model != super::super::era_model(new, MODEL)));
     }
 }
 
@@ -418,12 +414,10 @@ async fn ordinary_small_unwind_after_commit_keeps_custody_until_next_tick() {
     let (store, gov, key, now) = setup("vk_small_cancelled_flush").await;
     accrue_dated(&gov, &key, CONCURRENT_INPUT, now);
     store.replies.lock().unwrap().push_back(Reply::CancelAfter);
-    assert!(
-        std::panic::AssertUnwindSafe(gov.flush_budgets())
-            .catch_unwind()
-            .await
-            .is_err()
-    );
+    assert!(std::panic::AssertUnwindSafe(gov.flush_budgets())
+        .catch_unwind()
+        .await
+        .is_err());
     accrue_dated(&gov, &key, NEXT_INPUT, now);
     gov.flush_budgets().await;
     assert_eq!(
@@ -484,16 +478,14 @@ async fn key_deletion_reconciles_small_unknown_commit_before_purging_usage() {
     gov.flush_budgets().await;
     store.replies.lock().unwrap().push_back(Reply::FailBefore);
     assert!(gov.delete_key(&key.id).await.is_err());
-    assert!(
-        store
-            .identity()
-            .get_key(&key.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .deleted_at
-            .is_none()
-    );
+    assert!(store
+        .identity()
+        .get_key(&key.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .deleted_at
+        .is_none());
     gov.delete_key(&key.id).await.unwrap();
     let batches = store.batches.lock().unwrap();
     assert_eq!(batches[0], batches[1]);
@@ -634,12 +626,10 @@ async fn cancellation_after_chunk_commit_retains_custody_without_stranding_other
         now,
     );
     store.replies.lock().unwrap().push_back(Reply::CancelAfter);
-    assert!(
-        std::panic::AssertUnwindSafe(gov.flush_budgets())
-            .catch_unwind()
-            .await
-            .is_err()
-    );
+    assert!(std::panic::AssertUnwindSafe(gov.flush_budgets())
+        .catch_unwind()
+        .await
+        .is_err());
     gov.flush_budgets().await;
     assert_eq!(input(store.core().as_ref(), &key.id, 0).await, LARGE_INPUT);
     assert_eq!(
@@ -784,26 +774,22 @@ async fn key_deletion_settles_unknown_large_chunks_before_releasing_raw_custody(
     gov.flush_budgets().await;
     store.replies.lock().unwrap().push_back(Reply::FailBefore);
     assert!(gov.delete_key(&key.id).await.is_err());
-    assert!(
-        store
-            .identity()
-            .get_key(&key.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .deleted_at
-            .is_none()
-    );
+    assert!(store
+        .identity()
+        .get_key(&key.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .deleted_at
+        .is_none());
     assert_eq!(gov.budget_flushes.lock().unwrap().len(), 1);
     gov.delete_key(&key.id).await.unwrap();
-    assert!(
-        store
-            .identity()
-            .get_key(&key.id)
-            .await
-            .unwrap()
-            .is_none_or(|row| row.deleted_at.is_some())
-    );
+    assert!(store
+        .identity()
+        .get_key(&key.id)
+        .await
+        .unwrap()
+        .is_none_or(|row| row.deleted_at.is_some()));
     assert!(gov.budget_flushes.lock().unwrap().is_empty());
     assert!(!gov.budget.read(&key.id).contains_key(&key.id));
     let batches = store.batches.lock().unwrap();

@@ -162,8 +162,10 @@ async fn seed_legacy(store: &CoreStore, record: &busbar_contract::records::Audit
     })
     .unwrap();
     let result = store.submit(prepared).await.unwrap().result;
-    assert!(matches!(result, crate::persistence::commit::SubmitResult::Decided(decision)
-        if matches!(&*decision, busbar_contract::persistence::Decision::Applied(_))));
+    assert!(
+        matches!(result, crate::persistence::commit::SubmitResult::Decided(decision)
+        if matches!(&*decision, busbar_contract::persistence::Decision::Applied(_)))
+    );
 }
 async fn seed_envelope(store: Arc<CoreStore>, record: PlaneRecord) {
     assert_eq!(

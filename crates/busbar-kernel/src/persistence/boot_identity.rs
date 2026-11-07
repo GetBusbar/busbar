@@ -854,7 +854,7 @@ impl NodeLease {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::host_records::tests::{Backend, attach};
+    use crate::persistence::host_records::tests::{attach, Backend};
     use std::sync::atomic::Ordering;
 
     #[tokio::test]
@@ -928,16 +928,14 @@ mod tests {
         let backend = Arc::new(Backend::default());
         let core = Arc::new(attach(backend).await);
         let owner = BootIdentity::new(core).unwrap();
-        assert!(
-            owner
-                .records
-                .decide(
-                    vec![predicate(NODE_SCHEMA, key.clone(), None)],
-                    vec![put(NODE_SCHEMA, key.clone(), bytes.clone())]
-                )
-                .await
-                .unwrap()
-        );
+        assert!(owner
+            .records
+            .decide(
+                vec![predicate(NODE_SCHEMA, key.clone(), None)],
+                vec![put(NODE_SCHEMA, key.clone(), bytes.clone())]
+            )
+            .await
+            .unwrap());
         let nodes = owner.registered().await.unwrap();
         assert_eq!(nodes, vec![("journal:0000000000000007".into(), 7)]);
         let absent = owner
@@ -953,16 +951,14 @@ mod tests {
         assert!(absent.iter().all(Option::is_none));
         let mut corrupt = bytes.clone();
         corrupt[64] ^= 1;
-        assert!(
-            owner
-                .records
-                .decide(
-                    vec![predicate(NODE_SCHEMA, key.clone(), Some(value))],
-                    vec![put(NODE_SCHEMA, key, corrupt)]
-                )
-                .await
-                .unwrap()
-        );
+        assert!(owner
+            .records
+            .decide(
+                vec![predicate(NODE_SCHEMA, key.clone(), Some(value))],
+                vec![put(NODE_SCHEMA, key, corrupt)]
+            )
+            .await
+            .unwrap());
         assert!(owner.registered().await.is_err());
     }
 
@@ -1002,29 +998,25 @@ mod tests {
         assert!(lease.refresh().await.unwrap());
         let after = owner.records.records.get(NODE_SCHEMA, &key).await.unwrap();
         assert_ne!(before, after);
-        assert!(
-            !owner
-                .records
-                .decide(
-                    vec![predicate(NODE_SCHEMA, key, before)],
-                    vec![put(
-                        NODE_SCHEMA,
-                        b"stale-renewal-must-not-write".to_vec(),
-                        vec![1]
-                    )],
-                )
-                .await
-                .unwrap()
-        );
-        assert!(
-            owner
-                .records
-                .records
-                .get(NODE_SCHEMA, b"stale-renewal-must-not-write")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(!owner
+            .records
+            .decide(
+                vec![predicate(NODE_SCHEMA, key, before)],
+                vec![put(
+                    NODE_SCHEMA,
+                    b"stale-renewal-must-not-write".to_vec(),
+                    vec![1]
+                )],
+            )
+            .await
+            .unwrap());
+        assert!(owner
+            .records
+            .records
+            .get(NODE_SCHEMA, b"stale-renewal-must-not-write")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -1092,61 +1084,55 @@ mod tests {
             match change {
                 0 => lease.release().await.unwrap(),
                 1 => {
-                    assert!(
-                        owner
-                            .records
-                            .decide(
-                                vec![],
-                                vec![put(
-                                    NODE_SCHEMA,
-                                    key.clone(),
-                                    LeaseRow {
-                                        holder: [owner.holder[0].wrapping_add(1); 16],
-                                        expires_ms: u64::MAX
-                                    }
-                                    .bytes()
-                                )]
-                            )
-                            .await
-                            .unwrap()
-                    );
+                    assert!(owner
+                        .records
+                        .decide(
+                            vec![],
+                            vec![put(
+                                NODE_SCHEMA,
+                                key.clone(),
+                                LeaseRow {
+                                    holder: [owner.holder[0].wrapping_add(1); 16],
+                                    expires_ms: u64::MAX
+                                }
+                                .bytes()
+                            )]
+                        )
+                        .await
+                        .unwrap());
                 }
                 2 => {
-                    assert!(
-                        owner
-                            .records
-                            .decide(
-                                vec![],
-                                vec![Mutation::Delete {
-                                    schema: NODE_SCHEMA.into(),
-                                    key: key.clone(),
-                                }]
-                            )
-                            .await
-                            .unwrap()
-                    );
+                    assert!(owner
+                        .records
+                        .decide(
+                            vec![],
+                            vec![Mutation::Delete {
+                                schema: NODE_SCHEMA.into(),
+                                key: key.clone(),
+                            }]
+                        )
+                        .await
+                        .unwrap());
                 }
                 _ => {
                     let authority = owner.core.authority().unwrap();
-                    assert!(
-                        owner
-                            .records
-                            .decide(
-                                vec![],
-                                vec![put(
-                                    NODE_SCHEMA,
-                                    host_key("replaced"),
-                                    Assignment {
-                                        id: taken.id.wrapping_add(1),
-                                        epoch: authority.writer_epoch,
-                                        writer: authority.writer
-                                    }
-                                    .bytes()
-                                )]
-                            )
-                            .await
-                            .unwrap()
-                    );
+                    assert!(owner
+                        .records
+                        .decide(
+                            vec![],
+                            vec![put(
+                                NODE_SCHEMA,
+                                host_key("replaced"),
+                                Assignment {
+                                    id: taken.id.wrapping_add(1),
+                                    epoch: authority.writer_epoch,
+                                    writer: authority.writer
+                                }
+                                .bytes()
+                            )]
+                        )
+                        .await
+                        .unwrap());
                 }
             }
             let before = owner.records.records.get(NODE_SCHEMA, &key).await.unwrap();

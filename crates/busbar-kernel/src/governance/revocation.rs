@@ -6,7 +6,7 @@
 //! state when stale; failures retain the previous confirmed cache and success stamp.
 //! Attempt and success clocks remain separate, including during wall-clock rewind.
 
-use crate::diagnostics::{REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING, diag_warn};
+use crate::diagnostics::{diag_warn, REVOCATION_RESYNC_FAILED, REVOCATION_RESYNC_OUTSTANDING};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};

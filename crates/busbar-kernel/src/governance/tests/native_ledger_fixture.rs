@@ -11,8 +11,8 @@ use busbar_contract::persistence::{
 };
 use busbar_contract::records::correction::{UsageAddress, UsageChange};
 use std::sync::{
-    Mutex,
     atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
+    Mutex,
 };
 
 pub(super) type Hook = Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send>;

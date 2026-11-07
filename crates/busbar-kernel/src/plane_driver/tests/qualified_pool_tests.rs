@@ -169,11 +169,9 @@ fn admitted_qualified_pool_accrues_and_refunds_the_same_scope_as_a_bare_pool() {
             );
         }
         assert_eq!(usage(&r, B), (0, 0), "another pool's bucket is untouched");
-        assert!(
-            ready(r.gov.bucket_model_tokens_async(B, WINDOW_TOTAL, NOW))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(ready(r.gov.bucket_model_tokens_async(B, WINDOW_TOTAL, NOW))
+            .unwrap()
+            .is_empty());
         r.gov.refund_charge(grant.charge());
         for bucket in ["k", A, ROOT] {
             assert_eq!(

@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use busbar_contract::abi::plane::{
-    CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED, UnitCount,
+    UnitCount, CANCEL_OK_PARTIAL, UNITS_ESTIMATED, UNITS_FLOOR, UNITS_REPORTED,
 };
 use busbar_contract::caps::{OriginKind, ReasonCode};
 use busbar_contract::records::VirtualKey;
@@ -1166,7 +1166,7 @@ async fn a_sessions_line_carries_reported_and_floor_counts_never_an_estimate() {
 #[tokio::test]
 async fn a_session_whose_open_failed_is_refunded_its_per_session_fee() {
     use busbar_contract::plane::PER_SESSION;
-    use busbar_kernel_ledger::cost::{PlaneFees, plane_fee_lane};
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PlaneFees};
     let fees = crate::config::PlaneFeesMap::from([(
         "sp".to_string(),
         PlaneFees {
@@ -1684,11 +1684,10 @@ async fn child_exit_authority_requires_a_real_matching_live_child_even_after_par
     let r = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let parent = admit_parent(&r);
     assert_eq!(r.money.validate_parent(&parent, &r.key), Ok(()));
-    assert!(
-        r.money
-            .validate_child(&parent, UnitKey::new(2), &r.key)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &r.key)
+        .is_err());
     child(&r, &parent, 2).unwrap();
     assert_eq!(
         r.money.validate_child(&parent, UnitKey::new(2), &r.key),
@@ -1697,24 +1696,21 @@ async fn child_exit_authority_requires_a_real_matching_live_child_even_after_par
     let mut foreign = r.key.as_ref().clone();
     foreign.generation_hash = "foreign".into();
     assert!(r.money.validate_parent(&parent, &foreign).is_err());
-    assert!(
-        r.money
-            .validate_child(&parent, UnitKey::new(2), &foreign)
-            .is_err()
-    );
-    assert!(
-        r.money
-            .validate_child(&parent, UnitKey::new(1), &r.key)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &foreign)
+        .is_err());
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(1), &r.key)
+        .is_err());
     let other = rig(None, 5, ExhaustionMode::FinishUnit).await;
     let other_parent = admit_parent(&other);
     child(&other, &other_parent, 2).unwrap();
-    assert!(
-        r.money
-            .validate_child(&other_parent, UnitKey::new(2), &r.key)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_child(&other_parent, UnitKey::new(2), &r.key)
+        .is_err());
     r.money.settle_end(UnitKey::new(1), 200);
     assert!(r.money.validate_parent(&parent, &r.key).is_err());
     assert_eq!(
@@ -1728,11 +1724,10 @@ async fn child_exit_authority_requires_a_real_matching_live_child_even_after_par
         "driver finished precedes teller terminal: retain the real child's exit authority"
     );
     r.money.settle_end(UnitKey::new(2), 200);
-    assert!(
-        r.money
-            .validate_child(&parent, UnitKey::new(2), &r.key)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_child(&parent, UnitKey::new(2), &r.key)
+        .is_err());
     r.money.open(UnitKey::new(2), r.unit.clone());
     assert!(
         r.money
@@ -1804,18 +1799,16 @@ async fn a_units_own_exit_authority_requires_its_actual_registered_governor_gran
             .is_err(),
         "another actual grant for the same billing key is not this admission"
     );
-    assert!(
-        r.money
-            .validate_admitted(UnitKey::new(99), &r.key, &grant)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(99), &r.key, &grant)
+        .is_err());
     let mut foreign = r.key.as_ref().clone();
     foreign.generation_hash = "foreign".into();
-    assert!(
-        r.money
-            .validate_admitted(UnitKey::new(1), &foreign, &grant)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(1), &foreign, &grant)
+        .is_err());
     let parent = r.money.parent_money(UnitKey::new(1), &r.key).unwrap();
     child(&r, &parent, 2).unwrap();
     assert!(
@@ -1835,11 +1828,10 @@ async fn a_units_own_exit_authority_requires_its_actual_registered_governor_gran
         "finished precedes the teller's terminal authority check"
     );
     r.money.settle_end(UnitKey::new(1), 200);
-    assert!(
-        r.money
-            .validate_admitted(UnitKey::new(1), &r.key, &grant)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .validate_admitted(UnitKey::new(1), &r.key, &grant)
+        .is_err());
     r.money
         .open_admitted(UnitKey::new(1), r.unit.clone(), wrong);
     assert!(
@@ -1903,18 +1895,17 @@ async fn reserved_admission_becomes_priced_media_after_the_original_mint_has_set
         "input".into(),
         "output".into(),
     ]);
-    assert!(
-        r.money
-            .adopt_reserved(
-                reservation,
-                UnitKey::new(2),
-                "m".into(),
-                classes,
-                FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
-                &r.key
-            )
-            .is_ok()
-    );
+    assert!(r
+        .money
+        .adopt_reserved(
+            reservation,
+            UnitKey::new(2),
+            "m".into(),
+            classes,
+            FeeRefund::PlaneFeeUnits(Arc::from(vec![0])),
+            &r.key
+        )
+        .is_ok());
     assert_eq!(
         usage(&r).await.1,
         5,
@@ -2075,11 +2066,10 @@ async fn reserving_requires_the_actual_live_original_admission() {
     let parent = admit_parent(&r);
     let mut foreign_key = r.key.as_ref().clone();
     foreign_key.generation_hash = "foreign".into();
-    assert!(
-        r.money
-            .reserve_admission(UnitKey::new(1), &foreign_key)
-            .is_err()
-    );
+    assert!(r
+        .money
+        .reserve_admission(UnitKey::new(1), &foreign_key)
+        .is_err());
     child(&r, &parent, 2).unwrap();
     assert!(
         r.money.reserve_admission(UnitKey::new(2), &r.key).is_err(),
@@ -2333,7 +2323,7 @@ async fn reserved_ticket_holder_clones_share_one_financial_token() {
 
 #[tokio::test]
 async fn exact_decimal_checkpoints_survive_settlement_flush_and_governor_reopen() {
-    use crate::cost::{MeteredRow, STANDARD_TIER_BP, Tally};
+    use crate::cost::{MeteredRow, Tally, STANDARD_TIER_BP};
     let mut r = rig(None, 0, ExhaustionMode::FinishUnit).await;
     let rates = BTreeMap::from([(
         "m".into(),

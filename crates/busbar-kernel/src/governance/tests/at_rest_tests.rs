@@ -230,21 +230,19 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with
     let e = try_mint(&g).await.unwrap_err().to_string();
     assert!(e.contains(NO_KEY_REFUSAL), "{e}");
     assert!(e.contains("credentials.at_rest.key"), "{e}");
-    assert!(
-        store
-            .identity()
-            .list_credentials_since(0)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(store
+        .identity()
+        .list_credentials_since(0)
+        .await
+        .unwrap()
+        .is_empty());
     assert!(
         store.identity().list_keys().await.unwrap().is_empty(),
         "a binding was written"
     );
 
-    assert!(
-        g.mint_signed_async(
+    assert!(g
+        .mint_signed_async(
             NewKeySpec {
                 name: "bearer".to_string(),
                 ..Default::default()
@@ -253,8 +251,7 @@ async fn minting_a_recoverable_credential_without_an_at_rest_key_is_refused_with
             1_700_000_000,
         )
         .await
-        .is_ok()
-    );
+        .is_ok());
 }
 
 #[tokio::test]
@@ -466,13 +463,11 @@ mod immutable_store {
             meta, expected.meta,
             "CAS only changes envelope and store revision"
         );
-        assert!(
-            !store
-                .identity()
-                .rewrap_credential(&expected, &replacement)
-                .await
-                .unwrap()
-        );
+        assert!(!store
+            .identity()
+            .rewrap_credential(&expected, &replacement)
+            .await
+            .unwrap());
         assert_eq!(row(&store).await, after, "replay makes no write");
     }
 
@@ -499,13 +494,11 @@ mod immutable_store {
                     .unwrap();
             }
             let before = store.identity().list_credentials_since(0).await.unwrap();
-            assert!(
-                !store
-                    .identity()
-                    .rewrap_credential(&expected, &replacement)
-                    .await
-                    .unwrap()
-            );
+            assert!(!store
+                .identity()
+                .rewrap_credential(&expected, &replacement)
+                .await
+                .unwrap());
             assert_eq!(
                 store.identity().list_credentials_since(0).await.unwrap(),
                 before

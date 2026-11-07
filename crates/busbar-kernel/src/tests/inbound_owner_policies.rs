@@ -30,16 +30,14 @@ fn consumed_query_credentials_are_stripped_without_interpreting_the_opaque_targe
     assert!(stripped.fields.is_empty());
     let mut only_credential = head.clone();
     only_credential.query = Some("token=secret".into());
-    assert!(
-        only_credential
-            .stripped(&[Strip {
-                place: StripPlace::Query,
-                name: "token".into(),
-            }])
-            .unwrap()
-            .query
-            .is_none()
-    );
+    assert!(only_credential
+        .stripped(&[Strip {
+            place: StripPlace::Query,
+            name: "token".into(),
+        }])
+        .unwrap()
+        .query
+        .is_none());
 }
 
 #[test]
@@ -464,11 +462,9 @@ fn verifier_projection_lends_the_original_candidate_and_unrewritten_request_valu
             Some(b"exact body".to_vec())
         )
     );
-    assert!(
-        verify_request(&head, AuthPoint::Head, 11, 13, None, None)
-            .credential
-            .is_none()
-    );
+    assert!(verify_request(&head, AuthPoint::Head, 11, 13, None, None)
+        .credential
+        .is_none());
 }
 
 #[test]

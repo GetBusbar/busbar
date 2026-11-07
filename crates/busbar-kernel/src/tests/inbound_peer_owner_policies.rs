@@ -219,16 +219,14 @@ fn mixed_peer_metadata_requires_each_declared_request_point_and_peer_only_never_
         let points = AuthPoints(POINT_PEER | request_point);
         assert!(points.has(AuthPoint::Peer));
         assert!(points.has(AuthPoint::from_bit(request_point).unwrap()));
-        assert!(
-            !points.has(
-                AuthPoint::from_bit(if request_point == POINT_HEAD {
-                    POINT_HEAD_BODY
-                } else {
-                    POINT_HEAD
-                })
-                .unwrap()
-            )
-        );
+        assert!(!points.has(
+            AuthPoint::from_bit(if request_point == POINT_HEAD {
+                POINT_HEAD_BODY
+            } else {
+                POINT_HEAD
+            })
+            .unwrap()
+        ));
     }
     assert!(AuthPoints::PEER.has(AuthPoint::Peer));
     assert!(!AuthPoints::PEER.has(AuthPoint::Head));

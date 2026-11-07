@@ -496,17 +496,17 @@ mod platform {
     use windows_sys::Win32::{
         Foundation::HANDLE,
         Security::{
-            Authorization::{SE_FILE_OBJECT, SetSecurityInfo},
-            DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetKernelObjectSecurity,
-            GetSecurityDescriptorControl, LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+            Authorization::{SetSecurityInfo, SE_FILE_OBJECT},
+            GetKernelObjectSecurity, GetSecurityDescriptorControl, DACL_SECURITY_INFORMATION,
+            GROUP_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
             PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED, SE_SACL_PRESENT,
             UNPROTECTED_DACL_SECURITY_INFORMATION,
         },
         Storage::FileSystem::{
+            FileRenameInfoEx, GetFileInformationByHandle, SetFileInformationByHandle,
             BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_REPARSE_POINT,
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH,
             FILE_RENAME_INFO, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-            FileRenameInfoEx, GetFileInformationByHandle, SetFileInformationByHandle,
         },
     };
     fn handle(file: &File) -> HANDLE {
@@ -1012,7 +1012,7 @@ mod platform {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
     struct Fixture(std::path::PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -1072,14 +1072,12 @@ mod tests {
     #[test]
     fn a_nonempty_native_acl_is_preserved_with_the_file_owner() {
         let fixture = Fixture::new();
-        assert!(
-            std::process::Command::new("/bin/chmod")
-                .args(["+a", "everyone allow read"])
-                .arg(fixture.path())
-                .status()
-                .unwrap()
-                .success()
-        );
+        assert!(std::process::Command::new("/bin/chmod")
+            .args(["+a", "everyone allow read"])
+            .arg(fixture.path())
+            .status()
+            .unwrap()
+            .success());
         let saved = fixture.capture();
         assert_eq!(
             replace_document(&fixture.path(), b"original", b"converted", &saved).unwrap(),
@@ -1124,15 +1122,13 @@ mod tests {
         assert!(replace_document(&f.path(), b"original", b"converted", &saved).is_err());
         assert_eq!(std::fs::read(other.path()).unwrap(), b"original");
         symlink(&other.0, f.0.join("linked")).unwrap();
-        assert!(
-            replace_document(
-                &f.0.join("linked/config.yaml"),
-                b"original",
-                b"converted",
-                &saved
-            )
-            .is_err()
-        );
+        assert!(replace_document(
+            &f.0.join("linked/config.yaml"),
+            b"original",
+            b"converted",
+            &saved
+        )
+        .is_err());
     }
     #[test]
     fn missing_requires_explicit_recovery_and_the_original_parent_and_security() {
@@ -1267,9 +1263,8 @@ mod windows_tests {
     #[test]
     fn ordinary_replacement_keeps_the_only_bootstrap_path_present() {
         use std::sync::{
-            Arc,
             atomic::{AtomicBool, Ordering},
-            mpsc,
+            mpsc, Arc,
         };
         let fixture = Fixture::new();
         let saved = fixture.capture();

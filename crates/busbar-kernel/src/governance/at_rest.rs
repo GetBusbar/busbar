@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use std::collections::BTreeSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use base64::Engine as _;
 use busbar_contract::records::CredentialMeta;
-use ring::aead::{AES_256_GCM, Aad, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM, NONCE_LEN};
 use ring::hkdf;
 use zeroize::Zeroizing;
 

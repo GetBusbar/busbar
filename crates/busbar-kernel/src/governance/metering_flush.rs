@@ -1,5 +1,5 @@
 use super::*;
-use crate::diagnostics::{METERING_FLUSH_PARTIAL_FAILURE, diag_error, diag_warn};
+use crate::diagnostics::{diag_error, diag_warn, METERING_FLUSH_PARTIAL_FAILURE};
 use busbar_contract::records::OpId;
 
 /// One raw count operation. Its identity and body remain together until acknowledgement.

@@ -185,13 +185,11 @@ async fn test_admin_v1_list_keys_filters() {
     assert_eq!(none["items"].as_array().unwrap().len(), 0);
 
     let enabled = get("?enabled=true".into()).await;
-    assert!(
-        enabled["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|k| k["id"] == minted.id)
-    );
+    assert!(enabled["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|k| k["id"] == minted.id));
 
     handle.abort();
     println!("{WITNESS}");

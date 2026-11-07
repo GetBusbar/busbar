@@ -3,8 +3,8 @@
 
 use super::*;
 use std::sync::{
-    Mutex,
     atomic::{AtomicBool, Ordering},
+    Mutex,
 };
 use std::time::Duration;
 
@@ -170,17 +170,15 @@ async fn ticket_store_waits_leave_the_scheduler_live_and_admission_is_one_shot()
             }
         );
         if op == "live" {
-            assert!(
-                gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-                    .await
-                    .is_some()
-            );
-        }
-        assert!(
-            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            assert!(gov
+                .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
                 .await
-                .is_none()
-        );
+                .is_some());
+        }
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 
@@ -208,11 +206,10 @@ async fn revocation_while_ticket_store_waits_is_checked_before_accepting_identit
             .unwrap();
         release.0.release();
         assert!(!running.await.unwrap());
-        assert!(
-            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-                .await
-                .is_none()
-        );
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 
@@ -256,11 +253,10 @@ async fn cancelling_a_started_ticket_store_wait_does_not_reopen_redemption() {
                 "retry preserves the same native candidate fingerprint"
             );
         }
-        assert!(
-            gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-                .await
-                .is_none()
-        );
+        assert!(gov
+            .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+            .await
+            .is_none());
     }
 }
 
@@ -281,9 +277,8 @@ async fn an_expired_ticket_peek_wait_cannot_accept_the_late_store_answer() {
     assert!(running.await.unwrap().is_err());
     assert!(release.0.busy.load(Ordering::SeqCst));
     release.0.release();
-    assert!(
-        gov.admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
-            .await
-            .is_some()
-    );
+    assert!(gov
+        .admit_ticket_async(PREFIX, &ticket, crate::store::now() + 1)
+        .await
+        .is_some());
 }

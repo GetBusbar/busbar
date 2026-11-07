@@ -419,6 +419,7 @@ async fn completion_retirement_preserves_primary_settlement_in_both_orders() {
             services(),
             ("test_plane", &serde_yaml::Value::Null),
         )
+        .await
         .unwrap()
         .with_audit(rows.clone());
         let (send, receive) = tokio::sync::mpsc::unbounded_channel();
@@ -495,6 +496,7 @@ async fn completion_retirement_dropped_before_consumption_sweeps_without_duplica
         services(),
         ("test_plane", &serde_yaml::Value::Null),
     )
+    .await
     .unwrap()
     .with_audit(rows.clone());
     let (send, receive) = tokio::sync::mpsc::unbounded_channel();

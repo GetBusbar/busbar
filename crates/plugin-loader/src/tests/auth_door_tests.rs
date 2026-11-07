@@ -1064,8 +1064,7 @@ mod ticketed {
     use busbar_contract::abi::sdk::door::{abi_str, statement};
     use busbar_contract::auth_calls::{AuthCalls, Verified, VerifiedIdentity, VerifyRequest};
     use busbar_contract::services::{
-        Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Stored,
-        TrustKeyRef,
+        Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Stored, TrustKeyRef,
     };
     use busbar_contract::Secret;
 

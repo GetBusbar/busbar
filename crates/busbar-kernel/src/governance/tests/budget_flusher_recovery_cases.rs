@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::governance::recovery::{
-    RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict, tests::Journal,
+    tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
 };
 
 #[tokio::test]
@@ -59,12 +59,10 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
         delta: &correction_delta,
         now,
     };
-    assert!(
-        first
-            .adjust_usage_async(&old_cost, &adjustment)
-            .await
-            .is_err()
-    );
+    assert!(first
+        .adjust_usage_async(&old_cost, &adjustment)
+        .await
+        .is_err());
     let original = journal
         .selected
         .lock()
@@ -118,24 +116,23 @@ async fn live_flusher_resumes_not_landed_with_current_cost_without_blocking_reac
     let unknown = gov.recovery_event(original.operation_id).unwrap();
     assert_eq!(unknown.state, RecoveryState::LandedUnknown);
     store.replies.lock().unwrap().push_back(Reply::FailBefore);
-    assert!(
-        gov.recovery()
-            .resolve(
-                &old_cost,
-                RecoveryResolution {
-                    operation_id: unknown.operation_id,
-                    body_fingerprint: unknown.body_fingerprint,
-                    expected_revision: unknown.revision,
-                    verdict: RecoveryVerdict::NotLanded,
-                    sender_quiesced: true,
-                    backend_quiesced: true,
-                    actor: "operator".into(),
-                    reason: "old sender retired; backend confirms no original mutation".into(),
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(gov
+        .recovery()
+        .resolve(
+            &old_cost,
+            RecoveryResolution {
+                operation_id: unknown.operation_id,
+                body_fingerprint: unknown.body_fingerprint,
+                expected_revision: unknown.revision,
+                verdict: RecoveryVerdict::NotLanded,
+                sender_quiesced: true,
+                backend_quiesced: true,
+                actor: "operator".into(),
+                reason: "old sender retired; backend confirms no original mutation".into(),
+            }
+        )
+        .await
+        .is_err());
     assert_eq!(
         gov.recovery_event(original.operation_id).unwrap().state,
         RecoveryState::VerdictNotLanded

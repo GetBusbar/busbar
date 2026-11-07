@@ -217,17 +217,13 @@ fn malformed_metadata_chunks_and_conflicting_duplicates_never_publish_an_entry()
         assert!(scanned.entries.is_empty());
         assert!(scanned.intents.is_empty());
         assert!(!scanned.unreadable.is_empty());
-        assert!(
-            scanned
-                .unreadable
-                .iter()
-                .all(|(_, why)| !why.contains("admin"))
-        );
-        assert!(
-            Scanned::of(bad.into_iter().rev().collect())
-                .entries
-                .is_empty()
-        );
+        assert!(scanned
+            .unreadable
+            .iter()
+            .all(|(_, why)| !why.contains("admin")));
+        assert!(Scanned::of(bad.into_iter().rev().collect())
+            .entries
+            .is_empty());
     }
     let mut same_duplicate = records.clone();
     same_duplicate.extend(records);

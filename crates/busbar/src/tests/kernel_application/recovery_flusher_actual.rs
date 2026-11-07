@@ -5,11 +5,11 @@ use crate::root::test_plugins as plugins;
 use busbar_contract::records::{MeteringDelta, VirtualKey};
 use busbar_kernel::config::groups::{GroupCfg, LimitCfg, LimitMetric, LimitWindow};
 use busbar_kernel::cost::CostModel;
-use busbar_kernel::governance::GovState;
 use busbar_kernel::governance::recovery::{
     RecoveryError, RecoveryEvent, RecoveryKind, RecoveryResolution, RecoverySink, RecoveryState,
     RecoveryVerdict,
 };
+use busbar_kernel::governance::GovState;
 use busbar_kernel::persistence::facade::CoreStore;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -410,24 +410,23 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        gov.recovery()
-            .resolve(
-                &old_cost,
-                RecoveryResolution {
-                    operation_id: unknown.operation_id,
-                    body_fingerprint: unknown.body_fingerprint,
-                    expected_revision: unknown.revision,
-                    verdict: RecoveryVerdict::NotLanded,
-                    sender_quiesced: true,
-                    backend_quiesced: true,
-                    actor: "operator".into(),
-                    reason: "old sender retired; backend confirms no original mutation".into(),
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(gov
+        .recovery()
+        .resolve(
+            &old_cost,
+            RecoveryResolution {
+                operation_id: unknown.operation_id,
+                body_fingerprint: unknown.body_fingerprint,
+                expected_revision: unknown.revision,
+                verdict: RecoveryVerdict::NotLanded,
+                sender_quiesced: true,
+                backend_quiesced: true,
+                actor: "operator".into(),
+                reason: "old sender retired; backend confirms no original mutation".into(),
+            }
+        )
+        .await
+        .is_err());
     assert_eq!(
         journal.current(original.operation_id).state,
         RecoveryState::VerdictNotLanded

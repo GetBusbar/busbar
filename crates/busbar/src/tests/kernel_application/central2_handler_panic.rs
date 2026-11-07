@@ -239,12 +239,10 @@ async fn a_panicking_handler_fails_only_its_own_request() {
         .await
         .expect("the administrative panic answers");
     assert_eq!(response.status().as_u16(), 500);
-    assert!(
-        response.headers()["content-type"]
-            .to_str()
-            .unwrap()
-            .starts_with("application/json")
-    );
+    assert!(response.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("application/json"));
     let envelope: serde_json::Value = response.json().await.unwrap();
     assert_eq!(envelope["error"]["code"], "internal");
     let next = client

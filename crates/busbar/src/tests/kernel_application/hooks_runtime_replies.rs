@@ -369,11 +369,9 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         RoutingDecision::Prefer(vec![0]),
         "no content reached the gate → it ranks, never rejects"
     );
-    assert!(
-        recorded.lock().unwrap().last().unwrap()["request"]
-            .get("messages")
-            .is_none()
-    );
+    assert!(recorded.lock().unwrap().last().unwrap()["request"]
+        .get("messages")
+        .is_none());
 
     use busbar_kernel::config::PolicyOnError;
     let ResolvedPolicy::Policy {

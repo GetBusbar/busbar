@@ -626,11 +626,9 @@ fn a_gauge_that_stops_being_refreshed_is_expired() {
             .any(|family| family.name == "busbar_test_deleted_subject"),
         "{before:?}"
     );
-    assert!(
-        before
-            .iter()
-            .any(|family| family.name == "busbar_test_live_subject")
-    );
+    assert!(before
+        .iter()
+        .any(|family| family.name == "busbar_test_live_subject"));
 
     std::thread::sleep(idle * 3);
 

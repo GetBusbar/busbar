@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{MintPolicy, MintRequest, RoleCeiling, apply_mint_ttl_ceiling};
+use super::{apply_mint_ttl_ceiling, MintPolicy, MintRequest, RoleCeiling};
 
 const DAY: u64 = 86_400;
 
@@ -52,20 +52,16 @@ fn mint_ceiling_of_named_pools_refuses_a_grant_of_another_kind() {
         .check_mint(&other)
         .expect_err("another kind under a pool ceiling must be refused");
     assert!(err.contains("auth.policy.mint_ceilings"), "got: {err}");
-    assert!(
-        policy
-            .check_mint(&req(&roles, Some(&pools), DAY, true))
-            .is_ok()
-    );
+    assert!(policy
+        .check_mint(&req(&roles, Some(&pools), DAY, true))
+        .is_ok());
     let unceilinged = vec!["someone-else".to_string()];
-    assert!(
-        policy
-            .check_mint(&MintRequest {
-                grants_other_kinds: true,
-                ..req(&unceilinged, Some(&pools), DAY, true)
-            })
-            .is_ok()
-    );
+    assert!(policy
+        .check_mint(&MintRequest {
+            grants_other_kinds: true,
+            ..req(&unceilinged, Some(&pools), DAY, true)
+        })
+        .is_ok());
 }
 
 #[test]
@@ -118,11 +114,9 @@ fn mint_ceiling_role_pool_subset_is_enforced() {
     let roles = vec!["app-admin".to_string()];
 
     let ok = vec!["growth".to_string()];
-    assert!(
-        policy
-            .check_mint(&req(&roles, Some(&ok), DAY, true))
-            .is_ok()
-    );
+    assert!(policy
+        .check_mint(&req(&roles, Some(&ok), DAY, true))
+        .is_ok());
 
     let bad = vec!["growth".to_string(), "secret".to_string()];
     let err = policy
@@ -136,11 +130,9 @@ fn mint_ceiling_role_pool_subset_is_enforced() {
     );
 
     let none: Vec<String> = Vec::new();
-    assert!(
-        policy
-            .check_mint(&req(&roles, Some(&none), DAY, true))
-            .is_ok()
-    );
+    assert!(policy
+        .check_mint(&req(&roles, Some(&none), DAY, true))
+        .is_ok());
 }
 
 #[test]

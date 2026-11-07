@@ -4,7 +4,7 @@
 use crate::root::test_plugins as plugins;
 use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD};
 use busbar_contract::abi::host::service::REFUSE_STOPPED;
-use busbar_contract::abi::host::service::{FLOW_CONTINUE, UnitRef};
+use busbar_contract::abi::host::service::{UnitRef, FLOW_CONTINUE};
 use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_kernel::governance::NewKeySpec;
 use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
@@ -453,20 +453,18 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
         held.push((unit, receipt));
     }
     inbound.framing_detached(7, 21).unwrap();
-    assert!(
-        inbound
-            .framing_adopting(
-                busbar_contract::framing_scope::AdoptionSource {
-                    owner: 7,
-                    listener: 71,
-                    leg: 21,
-                    conn: 11
-                },
-                97,
-                29
-            )
-            .is_err()
-    );
+    assert!(inbound
+        .framing_adopting(
+            busbar_contract::framing_scope::AdoptionSource {
+                owner: 7,
+                listener: 71,
+                leg: 21,
+                conn: 11
+            },
+            97,
+            29
+        )
+        .is_err());
     for (unit, _) in &held {
         assert!(inbound.unit_secret(7, unit.id).is_some());
     }
@@ -565,11 +563,9 @@ async fn actual_inbound_foreign_binding_and_session_custody() {
     }
     .unwrap();
     assert_eq!(answer.flow, FLOW_CONTINUE);
-    assert!(
-        answer
-            .strips
-            .contains(&busbar_contract::auth_calls::Strip::field("authorization"))
-    );
+    assert!(answer
+        .strips
+        .contains(&busbar_contract::auth_calls::Strip::field("authorization")));
     let mut framed_admitted = framed.clone();
     framed_admitted
         .fields

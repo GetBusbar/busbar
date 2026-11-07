@@ -3,9 +3,9 @@
 
 use super::*;
 use crate::persistence::facade::CoreStore;
-use busbar_contract::records::OpId;
 use busbar_contract::records::correction::{Decision, Request, UsageAddress, UsageChange};
-use busbar_contract::records::{ModelTokens, UNIT_INPUT, UsageLedger};
+use busbar_contract::records::OpId;
+use busbar_contract::records::{ModelTokens, UsageLedger, UNIT_INPUT};
 
 const KEY: &str = "adjustment-view-key";
 const LANE: &str = "adjustment-view-lane";
@@ -104,24 +104,22 @@ async fn raw_adjustment_view_preserves_the_full_difference_of_unsigned_rows() {
                 delta: BTreeMap::from([(UNIT_INPUT.into(), expected)]),
             }]
         );
-        assert!(
-            gov.usage_adjustments_async(day - crate::governance::METERING_BUCKET_SECS)
-                .await
-                .expect("other day")
-                .is_empty()
-        );
+        assert!(gov
+            .usage_adjustments_async(day - crate::governance::METERING_BUCKET_SECS)
+            .await
+            .expect("other day")
+            .is_empty());
     }
 }
 
 #[tokio::test]
 async fn cumulative_raw_rows_can_reverse_sign_and_cancel_without_losing_the_slot() {
     let (store, gov, day) = state().await;
-    assert!(
-        gov.usage_adjustments_async(day)
-            .await
-            .expect("empty rows")
-            .is_empty()
-    );
+    assert!(gov
+        .usage_adjustments_async(day)
+        .await
+        .expect("empty rows")
+        .is_empty());
     let up = i64::MAX as u64;
     publish(&store, day, LANE, up, 0, OpId([1; 16])).await;
     assert_eq!(
@@ -134,12 +132,11 @@ async fn cumulative_raw_rows_can_reverse_sign_and_cancel_without_losing_the_slot
         i128::from(i64::MIN)
     );
     publish(&store, day, LANE, u64::MAX, u64::MAX, OpId([3; 16])).await;
-    assert!(
-        gov.usage_adjustments_async(day)
-            .await
-            .expect("canceled")
-            .is_empty()
-    );
+    assert!(gov
+        .usage_adjustments_async(day)
+        .await
+        .expect("canceled")
+        .is_empty());
 }
 
 #[tokio::test]

@@ -66,7 +66,7 @@ fn write_row(store: &Arc<CoreStore>, reference: &[u8], value: Vec<u8>) {
 }
 
 use crate::host_services::tests::caller;
-use crate::host_services::{InstanceFacts, KernelServices, NOT_A_KIND, Offload, POOL_REFUSED};
+use crate::host_services::{InstanceFacts, KernelServices, Offload, NOT_A_KIND, POOL_REFUSED};
 use crate::host_units::UnitRecord;
 
 struct Inline;
@@ -201,11 +201,9 @@ fn an_opened_handle_is_found_by_its_reference_under_its_principal() {
     let r = rig();
     let (handle, reference) = open(&r, 1, b"rec-1");
     assert_eq!(reference.len(), svc::WORK_REFERENCE_LEN);
-    assert!(
-        reference
-            .iter()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    );
+    assert!(reference
+        .iter()
+        .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
 
     let found = find(&r, "inst", 2, &reference);
     assert_eq!((found.outcome, found.value), (Outcome::Ready, handle));
@@ -778,12 +776,10 @@ fn inspection_work_denials_collapse_and_only_an_actual_find_imports_durable_work
         Err(InspectionError::NotFound)
     );
     assert_ne!(find(&restarted, "inst", 1, &reference).value, svc::ABSENT);
-    assert!(
-        restarted
-            .s
-            .inspect(&caller("inst"), Some(1), &query)
-            .is_ok()
-    );
+    assert!(restarted
+        .s
+        .inspect(&caller("inst"), Some(1), &query)
+        .is_ok());
     assert_eq!(
         settle(&r, "inst", Some(1), handle, b"done").outcome,
         Outcome::Ready

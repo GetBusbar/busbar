@@ -210,7 +210,7 @@ impl std::error::Error for AdjustRefused {}
 // the legacy flat counter. Only that lane's per-request class belongs in this projection;
 // provider usage and session fees are separate facts, even when their class names overlap.
 fn billable_request_count(cell: &BudgetCell) -> Result<u64, busbar_contract::count::CountError> {
-    use busbar_kernel_ledger::cost::{PER_REQUEST, split_plane_lane};
+    use busbar_kernel_ledger::cost::{split_plane_lane, PER_REQUEST};
     cell.models
         .iter()
         .filter(|model| {
@@ -485,7 +485,7 @@ mod view_tests;
 mod billable_request_count_tests {
     use super::*;
     use busbar_contract::count::CountError;
-    use busbar_kernel_ledger::cost::{PER_REQUEST, PER_SESSION, plane_fee_lane};
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_REQUEST, PER_SESSION};
 
     #[test]
     fn ledger_request_fees_include_only_legacy_and_named_request_fee_rows() {

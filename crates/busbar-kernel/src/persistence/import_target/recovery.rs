@@ -4,9 +4,9 @@
 //! Current recovery ancestry and adoption verification over verified originals.
 //! This read-only capability grants neither a writer nor business replay rights.
 
-pub use super::journal::{RecoveryHistory, inspect_recovery_operation};
+pub use super::journal::{inspect_recovery_operation, RecoveryHistory};
 pub use crate::governance::recovery::{RecoveryError, RecoverySelection};
 
 pub use crate::governance::persistence::recovery::imported::{
-    AppliedImportEvidence, applied_disposition_authorizes, applied_disposition_rows,
+    applied_disposition_authorizes, applied_disposition_rows, AppliedImportEvidence,
 };

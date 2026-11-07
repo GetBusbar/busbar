@@ -1741,11 +1741,9 @@ pub(in crate::governance) mod tests {
             successor(&previous, decision)
                 .follows(Some(&previous))
                 .unwrap();
-            assert!(
-                successor(&previous, RecoveryState::Intent)
-                    .follows(Some(&previous))
-                    .is_err()
-            );
+            assert!(successor(&previous, RecoveryState::Intent)
+                .follows(Some(&previous))
+                .is_err());
         }
     }
 

@@ -172,8 +172,8 @@ fn fullrange_metering_add_checks_all_columns_and_open_counts() {
 
 #[test]
 fn fullrange_correction_fingerprint_and_numeric_encoding_are_lossless() {
-    use busbar_contract::records::OpId;
     use busbar_contract::records::correction::{Request, UsageAddress, UsageChange, VERSION};
+    use busbar_contract::records::OpId;
     let request = Request {
         version: VERSION,
         op_id: OpId::from_parts(91, 7),

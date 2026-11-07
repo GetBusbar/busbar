@@ -325,9 +325,8 @@ fn policy(
 fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
-        Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
         kinds::export::{Export, ExportFacts},
-        load_dropped, rendering_of_library,
+        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
     };
     let path = std::path::PathBuf::from(
         std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")

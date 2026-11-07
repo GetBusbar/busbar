@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::governance::recovery::{
-    RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict, tests::Journal,
+    tests::Journal, RecoveryKind, RecoveryResolution, RecoveryState, RecoveryVerdict,
 };
 
 const MODEL: &str = "m";
@@ -428,12 +428,10 @@ async fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_f
     let (corrector, corrected_key) = (gov.clone(), key.clone());
     *store.before_add.lock().unwrap() = Some(Box::new(move || {
         Box::pin(async move {
-            assert!(
-                corrector
-                    .adjust_usage_async(&model(&[]), &correction(&corrected_key, &delta(), now))
-                    .await
-                    .is_err()
-            );
+            assert!(corrector
+                .adjust_usage_async(&model(&[]), &correction(&corrected_key, &delta(), now))
+                .await
+                .is_err());
         })
     }));
     gov.flush_budgets().await;
@@ -441,12 +439,11 @@ async fn correction_excludes_a_same_window_inflight_flush_without_changing_raw_f
         input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         INITIAL_INPUT
     );
-    assert!(
-        gov.usage_adjustments_async(crate::governance::metering_bucket(now))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(gov
+        .usage_adjustments_async(crate::governance::metering_bucket(now))
+        .await
+        .unwrap()
+        .is_empty());
     gov.adjust_usage_async(&cm, &correction(&key, &delta(), now))
         .await
         .unwrap()
@@ -718,12 +715,10 @@ async fn restarted_unlanded_correction_revalidates_foreign_usage_before_repostin
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        first
-            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
-            .await
-            .is_err()
-    );
+    assert!(first
+        .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
+        .is_err());
     assert_eq!(
         input(&store.ledger().get_usage(&key.id, 0).await.unwrap()),
         0,
@@ -770,12 +765,10 @@ async fn restarted_unlanded_correction_revalidates_foreign_usage_before_repostin
             RecoveryState::VerdictNotLanded
         )
     );
-    assert!(
-        staged
-            .iter()
-            .all(|event| event.body_fingerprint == original.body_fingerprint
-                && event.first_sent_at_ms == original.first_sent_at_ms)
-    );
+    assert!(staged
+        .iter()
+        .all(|event| event.body_fingerprint == original.body_fingerprint
+            && event.first_sent_at_ms == original.first_sent_at_ms));
     let repeated = GovState::stage_foreign_correction_verdict(
         &staged[1],
         &RecoveryResolution {
@@ -876,12 +869,11 @@ async fn restarted_unlanded_correction_revalidates_foreign_usage_before_repostin
         reason: "all senders retired; backend confirms no original write".into(),
     };
     let count = journal.selected.lock().unwrap().len();
-    assert!(
-        gov.recovery()
-            .resolve(&cm, resolution.clone())
-            .await
-            .is_err()
-    );
+    assert!(gov
+        .recovery()
+        .resolve(&cm, resolution.clone())
+        .await
+        .is_err());
     assert_eq!(
         journal.selected.lock().unwrap().len(),
         count,
@@ -910,12 +902,10 @@ async fn restarted_unlanded_correction_revalidates_foreign_usage_before_repostin
         CORRECTED_INPUT + FOREIGN_INPUT + CONCURRENT_INPUT
     );
     let events = journal.selected.lock().unwrap().clone();
-    assert!(
-        events
-            .iter()
-            .filter(|event| event.operation_id == original.operation_id)
-            .all(|event| event.body_fingerprint == original.body_fingerprint)
-    );
+    assert!(events
+        .iter()
+        .filter(|event| event.operation_id == original.operation_id)
+        .all(|event| event.body_fingerprint == original.body_fingerprint));
     let successor = events
         .iter()
         .find(|event| {
@@ -970,12 +960,10 @@ async fn restarted_landed_correction_keeps_foreign_basis_and_does_not_reapply_th
     store
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        first
-            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
-            .await
-            .is_err()
-    );
+    assert!(first
+        .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
+        .is_err());
     let original = journal
         .selected
         .lock()
@@ -1155,12 +1143,10 @@ async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_b
     faulting
         .lose_correction_reply
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        first
-            .adjust_usage_async(&cm, &correction(&key, &delta(), now))
-            .await
-            .is_err()
-    );
+    assert!(first
+        .adjust_usage_async(&cm, &correction(&key, &delta(), now))
+        .await
+        .is_err());
     assert_eq!(faulting.correction_calls.lock().unwrap().len(), 1);
     let original = journal
         .selected
@@ -1229,14 +1215,12 @@ async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_b
         payload["targets"][0]["accepted"]["flushed_billable_requests"], 1,
         "dependent negative fee custody is not released with the common positive"
     );
-    assert!(
-        !journal
-            .selected
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|event| event.operation_id == child_id)
-    );
+    assert!(!journal
+        .selected
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| event.operation_id == child_id));
     drop(second);
     journal
         .fail_after_write
@@ -1297,7 +1281,7 @@ async fn checkpointed_common_positive_survives_lost_handoff_ack_and_posts_once_b
 
 #[tokio::test]
 async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_is_quarantined() {
-    use busbar_kernel_ledger::cost::{PER_SESSION, plane_fee_lane};
+    use busbar_kernel_ledger::cost::{plane_fee_lane, PER_SESSION};
     let store = crate::real_store::core().await;
     let journal = Arc::new(Journal::default());
     let first = GovState::new_with_core(store.core(), None, None)
@@ -1341,24 +1325,22 @@ async fn independent_entry_refund_posts_while_only_the_matching_entry_negative_i
     journal
         .fail_after_write
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    assert!(
-        first
-            .adjust_usage_async(
-                &cm,
-                &super::super::Adjustment {
-                    key_id: &key.id,
-                    pool: "",
-                    model: &lane,
-                    entry_era: 0,
-                    entry_id: entry_b.entry_id,
-                    card_epoch_ms: now * 1_000,
-                    delta: &increase,
-                    now,
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(first
+        .adjust_usage_async(
+            &cm,
+            &super::super::Adjustment {
+                key_id: &key.id,
+                pool: "",
+                model: &lane,
+                entry_era: 0,
+                entry_id: entry_b.entry_id,
+                card_epoch_ms: now * 1_000,
+                delta: &increase,
+                now,
+            }
+        )
+        .await
+        .is_err());
     let original = journal
         .selected
         .lock()

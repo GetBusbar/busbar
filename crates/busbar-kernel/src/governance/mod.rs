@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::count::{COUNT_SCALE, Count, CountError};
+use busbar_contract::count::{Count, CountError, COUNT_SCALE};
 use busbar_kernel_ledger::cost::{EntryId, RawRateEra};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -21,7 +21,7 @@ mod unit_checkpoint_counts;
 pub mod unit_checkpoint_store;
 
 use crate::diagnostics::{
-    GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED, diag_debug, diag_warn,
+    diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
 };
 
 pub const WINDOW_TOTAL: &str = "total";
@@ -290,7 +290,7 @@ impl BudgetCell {
         cost: &crate::cost::CostModel,
         include_fee: bool,
     ) -> Result<busbar_kernel_ledger::cost::Money, busbar_kernel_ledger::cost::MoneyError> {
-        use busbar_kernel_ledger::usage::{DatedHistory, price_dated_counts_raw};
+        use busbar_kernel_ledger::usage::{price_dated_counts_raw, DatedHistory};
         let history = crate::rate_apply::dated_history();
         let now_ms = crate::store::now_ms();
         let dated = history.as_deref().map(|h| DatedHistory::of(h, now_ms));
@@ -439,7 +439,7 @@ fn era_bucket(bucket: &str) -> String {
 }
 
 pub fn is_token_class(class: &str) -> bool {
-    use crate::plane_driver::registry::{TOKEN_FAMILY, plane_decls};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     busbar_contract::records::RESERVED_UNITS.contains(&class)
         || plane_decls().iter().any(|d| {
             (d.billable_classes.iter()).any(|c| c.family == TOKEN_FAMILY && c.class == class)
@@ -450,7 +450,7 @@ pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, Count>,
 ) -> Vec<(String, Count)> {
-    use crate::plane_driver::registry::{TOKEN_FAMILY, plane_decls};
+    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
     let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
     let owner = plane_decls().iter().find(|d| {
         if plane.is_empty() {
@@ -847,15 +847,15 @@ mod state;
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
 pub use state::{
-    ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET, AdjustRefused, Adjustment, KeyMutationError, MintError,
-    PricedBucket, UsageAdjustment, metering_lane,
+    metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
+    UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
 };
 
 mod tickets;
-pub use tickets::{TICKET_RECORD_KIND, TICKET_SPENT_KIND, TicketRefusal, ticket_record_live};
 pub(crate) use tickets::{
     legacy_ticket_authorizes, legacy_ticket_expiry, legacy_ticket_record, legacy_ticket_token,
 };
+pub use tickets::{ticket_record_live, TicketRefusal, TICKET_RECORD_KIND, TICKET_SPENT_KIND};
 
 /// Which native asynchronous self-serve mint operation to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
