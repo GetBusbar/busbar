@@ -63,6 +63,17 @@ pub(crate) async fn admin_scoped() -> Arc<busbar_kernel::persistence::scoped::Sc
     )
 }
 
+/// Complete normal startup restoration on the exact App a fixture will serve.
+/// Call after binding its book and activating rates, before arming operation faults.
+pub(crate) async fn hydrated(
+    app: Arc<busbar_kernel::state::App>,
+) -> Arc<busbar_kernel::state::App> {
+    busbar_kernel::boot::hydrate_all(&app)
+        .await
+        .expect("the actual serving App completes normal startup hydration");
+    app
+}
+
 /// Build a test App through the actual native Store admission used at boot. Reloads
 /// reuse their carrier's admitted CoreStore, including its writer and pending custody.
 #[allow(clippy::too_many_arguments)]

@@ -513,7 +513,8 @@ async fn test_admin_v1_config_settings_process_level_flagged_reload_to_apply() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -763,7 +764,8 @@ async fn test_admin_v1_config_settings_partial_update_preserves_prior() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -979,7 +981,8 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1189,7 +1192,8 @@ async fn test_admin_v1_config_settings_read_redacts_every_settings_bag() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

@@ -175,7 +175,8 @@ async fn test_create_key_budget_group_and_labels_roundtrip_and_missing_group_400
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -402,7 +403,8 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
     let a = mint("a").await;
     let _b = mint("b").await;
 
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

@@ -178,7 +178,8 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         ),
         "the actual destination-wide failure trips the configured m0 lane"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -433,7 +434,8 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         ),
         "the actual destination-wide failure trips the configured m0 lane"
     );
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

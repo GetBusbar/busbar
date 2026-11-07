@@ -139,7 +139,8 @@ async fn test_signed_mint_verify_then_delete_denies() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -320,7 +321,8 @@ async fn test_signed_revoke_denylists_without_deleting() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -516,7 +518,8 @@ async fn test_key_state_distinguishes_disable_revoke_and_tombstone() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -752,7 +755,8 @@ async fn test_list_keys_include_tombstoned() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -963,7 +967,8 @@ async fn test_signed_mint_group_none_and_pool_acl_matrix() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1147,7 +1152,8 @@ async fn a_repeated_key_post_keys_replays_the_first_response_byte_for_byte() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1314,7 +1320,8 @@ async fn test_create_key_with_aws_credential_returns_secret_once_and_hides_on_re
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

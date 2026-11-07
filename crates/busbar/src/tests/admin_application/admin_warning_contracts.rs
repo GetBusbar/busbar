@@ -191,7 +191,8 @@ async fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let cap = WarnMessages::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(cap.clone()))
         .expect("the isolated exact child installs its passive warning observer once");
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -382,7 +383,8 @@ async fn test_get_config_settings_warns_when_overlay_is_unreadable() {
     let cap = WarnMessages::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(cap.clone()))
         .expect("the isolated exact child installs its passive warning observer once");
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

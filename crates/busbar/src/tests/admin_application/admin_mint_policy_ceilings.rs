@@ -187,7 +187,8 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -394,7 +395,8 @@ async fn proof_role_binding_mode_ceiling_bounds_a_delegated_admin_allowed() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -574,7 +576,8 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -747,7 +750,8 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default_default_clampe
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -958,7 +962,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1171,7 +1176,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_over_ttl() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1384,7 +1390,8 @@ async fn proof_role_mint_ceiling_bounds_a_delegated_admin_allowed() {
         rotate.await;
     }
     let gov = app.governance.as_ref().expect("actual governance").clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

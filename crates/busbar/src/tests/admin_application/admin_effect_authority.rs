@@ -103,7 +103,9 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
         rotate.await;
     }
 
-    let handle = Arc::new(AppHandle::new(Arc::new(app)));
+    let handle = Arc::new(AppHandle::new(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+    ));
     let original = handle.load();
     let store = Arc::new(
         ScopedStore::host_private(

@@ -144,8 +144,12 @@ async fn hook_register_and_replace_refuse_oversized_timeouts_without_swapping() 
     )
     .expect("the actual Store supports overlay transactions");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("admin listener");
@@ -324,8 +328,12 @@ async fn reload_refuses_env_policy_injection_without_publishing() {
     )
     .expect("the actual Store supports overlay transactions");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("admin listener");

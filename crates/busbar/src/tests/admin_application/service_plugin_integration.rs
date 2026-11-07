@@ -186,7 +186,8 @@ async fn install_answers_the_admissions_refusals_in_their_classes() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -306,7 +307,8 @@ async fn install_catalog_remove_roundtrip() {
     }
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
     app.plugins_cfg.trust.allow_unsigned = true;
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -472,7 +474,8 @@ async fn remove_filesystem_failure_is_internal_error() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -613,7 +616,8 @@ async fn catalog_repeat_gets_reuse_the_cached_scan() {
     }));
     let observed: &'static InventoryReads = observed;
     app.plugin_admission = Some(observed);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -790,7 +794,8 @@ async fn catalog_unreadable_dir_does_not_serve_stale_cache() {
     }));
     let observed: &'static InventoryReads = observed;
     app.plugin_admission = Some(observed);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -936,7 +941,8 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     }));
     let observed: &'static InventoryReads = observed;
     app.plugin_admission = Some(observed);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1070,8 +1076,9 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     }));
     let observed: &'static InventoryReads = observed;
     app.plugin_admission = Some(observed);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     observed.panic.store(true, Ordering::SeqCst);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1215,7 +1222,8 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
     app.plugin_admission = Some(observed);
     let (release, blocked) = std::sync::mpsc::channel();
     *observed.gate.lock().unwrap() = Some(blocked);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1357,7 +1365,10 @@ async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
     *observed.gate.lock().unwrap() = Some(blocked);
     let request_entered = Arc::new(tokio::sync::Notify::new());
     let entering = request_entered.clone();
-    let router = busbar_kernel::build_router(Arc::new(app)).layer(axum::middleware::from_fn(
+    let router = busbar_kernel::build_router(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+    )
+    .layer(axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
             let entering = entering.clone();
             async move {
@@ -1502,7 +1513,8 @@ async fn the_store_catalog_heads_with_the_linked_store_rows() {
     if let Some(rotate) = rotate {
         rotate.await;
     }
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1627,7 +1639,8 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
     let evil_dir = directory.join("evil");
     std::fs::create_dir(&evil_dir).unwrap();
     std::fs::write(evil_dir.join("probe.tar.gz"), b"not a real tarball").unwrap();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1750,7 +1763,8 @@ async fn validate_config_waits_on_the_plugin_scan_gate_and_runs_off_the_reactor(
     app.plugin_admission = Some(observed);
     let (release, blocked) = std::sync::mpsc::channel();
     *observed.gate.lock().unwrap() = Some(blocked);
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1912,7 +1926,8 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
         .expect_err("the actual policy refuses a malformed publisher key");
     let mut no_admission = app.clone();
     no_admission.plugin_admission = None;
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1966,7 +1981,9 @@ async fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
             .all(|p| p["loader"] == "compiled-in"),
         "unresolvable policy lists linked rows alone"
     );
-    let router = busbar_kernel::build_router(Arc::new(no_admission));
+    let router = busbar_kernel::build_router(
+        crate::root::real_store::hydrated(Arc::new(no_admission)).await,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let other_addr = listener.local_addr().unwrap();
     let other_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2115,7 +2132,8 @@ async fn rollback_reads_the_target_and_merges_pins() {
     .unwrap();
     let rejected = plugins::seal(manifest, &library);
     std::fs::write(directory.join("unsigned.tar.gz"), rejected).unwrap();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2263,7 +2281,8 @@ async fn install_filesystem_failures_are_internal_errors() {
     std::fs::create_dir(&publish_dir).unwrap();
     std::fs::create_dir(publish_dir.join("plugin.tar.gz")).unwrap();
     app.plugins_dir = publish_dir.clone();
-    let router = busbar_kernel::build_router(Arc::new(app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2322,11 +2341,12 @@ async fn install_filesystem_failures_are_internal_errors() {
         gate: std::sync::Mutex::new(None),
         entered: tokio::sync::Notify::new(),
     }));
-    observed.block_publish.store(true, Ordering::SeqCst);
     let mut blocked_app = base_app.clone();
     blocked_app.plugins_dir = blocked_dir.clone();
     blocked_app.plugin_admission = Some(observed);
-    let router = busbar_kernel::build_router(Arc::new(blocked_app));
+    let blocked_app = crate::root::real_store::hydrated(Arc::new(blocked_app)).await;
+    observed.block_publish.store(true, Ordering::SeqCst);
+    let router = busbar_kernel::build_router(blocked_app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let blocked_addr = listener.local_addr().unwrap();
     let blocked_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -2352,7 +2372,8 @@ async fn install_filesystem_failures_are_internal_errors() {
     assert_eq!(std::fs::read(&blocked_dir).unwrap(), b"keep this file");
     blocked_server.abort();
     std::fs::remove_file(directory.join("store.tar.gz")).unwrap();
-    let router = busbar_kernel::build_router(Arc::new(base_app));
+    let router =
+        busbar_kernel::build_router(crate::root::real_store::hydrated(Arc::new(base_app)).await);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let success_server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

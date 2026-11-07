@@ -26,44 +26,53 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             .name()
             .expect("the test runner names its test thread")
             .to_string();
-        let mut child = Child(
-            std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture"])
-                .env(CHILD, "1")
-                .stdout(std::process::Stdio::piped())
-                .spawn()
-                .expect("start the isolated actual-root test"),
-        );
-        let until = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Some(status) = child.0.try_wait().unwrap() {
-                use std::io::Read;
-                let mut output = String::new();
-                child
-                    .0
-                    .stdout
-                    .take()
-                    .unwrap()
-                    .read_to_string(&mut output)
-                    .unwrap();
-                assert!(
-                    status.success(),
-                    "the actual-root usage witness failed: {status}: {output}"
-                );
-                assert!(
-                    output.contains(WITNESS),
-                    "the exact child did not complete its assertions: {output}"
-                );
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "the actual-root usage witness timed out"
+        for failure in ["listing", "rewrap"] {
+            let mut child = Child(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &name, "--nocapture"])
+                    .env(CHILD, failure)
+                    .stdout(std::process::Stdio::piped())
+                    .spawn()
+                    .expect("start the isolated actual-root test"),
             );
-            std::thread::park_timeout(Duration::from_millis(5));
+            let until = Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(status) = child.0.try_wait().unwrap() {
+                    use std::io::Read;
+                    let mut output = String::new();
+                    child
+                        .0
+                        .stdout
+                        .take()
+                        .unwrap()
+                        .read_to_string(&mut output)
+                        .unwrap();
+                    assert!(
+                        status.success()
+                            && output.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+                        "the actual-root usage witness failed: {status}: {output}"
+                    );
+                    assert!(
+                        output.contains(&format!("{WITNESS} {failure}")),
+                        "the exact child did not complete its assertions: {output}"
+                    );
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "the actual-root usage witness timed out"
+                );
+                std::thread::park_timeout(Duration::from_millis(5));
+            }
         }
+        return;
     }
-    for failure in ["listing", "rewrap"] {
+    let selected = std::env::var(CHILD).expect("exact maintenance scenario");
+    assert!(matches!(selected.as_str(), "listing" | "rewrap"));
+    for failure in ["listing", "rewrap"]
+        .into_iter()
+        .filter(|failure| *failure == selected)
+    {
         crate::dist_root_install::install();
         let library_path = crate::root::test_plugins::application_store_library();
         let statement = busbar_plugin_loader::dispatch::rendering_of_library(&library_path)
@@ -215,13 +224,17 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
             .expect("actual governance")
             .core_store_handle()
             .expect("actual boot Store calls");
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(boot_calls, 101)
-            .expect("native rate history binding");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("the actual rate history boots before rates are committed");
+        assert!(
+            Arc::ptr_eq(&boot_calls, &core),
+            "the rebuilt App retains its original CoreStore"
+        );
+        assert!(
+            crate::root::kernel::ROOT_CARD
+                .card_store()
+                .expect("the original native price owner remains loaded")
+                .is_bound_to(&boot_calls),
+            "reload retains the same native price owner"
+        );
         limits
             .keep()
             .await
@@ -232,19 +245,20 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         app.config_path = Some(config_path);
         app.providers_path = Some(providers_path);
         let gov = app.governance.as_ref().unwrap().clone();
-        crate::root::kernel::ROOT_CARD
-            .keep_in_store(core.clone(), 93)
-            .expect("native rate history binding");
-        crate::root::kernel::ROOT_CARD
-            .boot_in_store(None)
-            .await
-            .expect("actual rate history boots");
+        assert!(crate::root::kernel::ROOT_CARD
+            .card_store()
+            .expect("the actual native price history remains loaded")
+            .is_bound_to(&core));
         let overlay_faults = store.clone();
         let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(core.clone())
             .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -340,7 +354,7 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         server.abort();
         let _ = std::fs::remove_dir_all(dir);
     }
-    println!("{WITNESS}");
+    println!("{WITNESS} {selected}");
 }
 // Faults affect only native operations owned by the selected maintenance path.
 // Core continues to own credential interpretation, CAS and ciphertext custody.

@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[cfg(any(feature = "plane-decisions", linked_driver_proofs))]
+pub(super) fn independent_cases(test: &str, cases: &[&str]) -> Option<String> {
+    if std::env::var("BUSBAR_SERVE_INDEPENDENT_TEST").as_deref() == Ok(test) {
+        let case = std::env::var("BUSBAR_SERVE_INDEPENDENT_CASE").unwrap();
+        assert!(cases.contains(&case.as_str()));
+        return Some(case);
+    }
+    let exact = test.split_once("::").unwrap().1;
+    for case in cases {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", exact, "--nocapture"])
+            .env("BUSBAR_SERVE_INDEPENDENT_TEST", test)
+            .env("BUSBAR_SERVE_INDEPENDENT_CASE", case)
+            .output()
+            .expect("run the exact independent native deployment case");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{case}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains(&format!("SERVE-CASE-DONE {test} {case}")),
+            "the independent case must execute its assertions: {stdout}"
+        );
+    }
+    None
+}
+#[cfg(any(feature = "plane-decisions", linked_driver_proofs))]
+pub(super) fn independent_case_done(test: &str, case: &str) {
+    println!("SERVE-CASE-DONE {test} {case}");
+}
+
 // A nextest process represents one deployment; sequential rigs are generations
 // of it. Keep its native authority with the process-global price holder.
 pub(super) async fn process_store() -> std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>
@@ -3870,7 +3903,10 @@ pub(super) mod session_door {
         (status, content_type, body_of(response).await.to_vec())
     }
 
-    fn session_open_refusals(s: &SessionDoor) -> usize {
+    async fn session_open_refusals(s: &SessionDoor) -> usize {
+        busbar_kernel::audit::auditlog::flush_pending()
+            .await
+            .expect("the native audit stream confirms the observed refusal rows");
         busbar_kernel::audit::auditlog::AUDIT_LOG
             .list_filtered(0, 1000, Some("door.session_open"), None)
             .into_iter()
@@ -3901,7 +3937,7 @@ pub(super) mod session_door {
         busbar_kernel::boot::hydrate_all(&s.app)
             .await
             .expect("the actual boot registers the durable audit stream before serving units");
-        let before = session_open_refusals(&s);
+        let before = session_open_refusals(&s).await;
         let (_browser, offer) = RtcPeer::offer(
             s.connector
                 .framer_for("webrtc")
@@ -3916,7 +3952,7 @@ pub(super) mod session_door {
             message.contains(".media.listen"),
             "names the missing setting: {message}"
         );
-        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert_eq!(session_open_refusals(&s).await, before + 1, "audited");
         assert!(s.heard.try_recv().is_err(), "nothing dialled");
 
         let mut s = session_with("serve-door-session-no-lines", Opts::default())
@@ -3925,7 +3961,7 @@ pub(super) mod session_door {
         busbar_kernel::boot::hydrate_all(&s.app)
             .await
             .expect("the actual boot registers the durable audit stream before serving units");
-        let before = session_open_refusals(&s);
+        let before = session_open_refusals(&s).await;
         let (status, content_type, body) = post_offer(
             &s,
             b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=no-lines\r\nt=0 0\r\n",
@@ -3939,7 +3975,7 @@ pub(super) mod session_door {
                 || message.to_ascii_lowercase().contains("media"),
             "names why the offer opens no media: {message}"
         );
-        assert_eq!(session_open_refusals(&s), before + 1, "audited");
+        assert_eq!(session_open_refusals(&s).await, before + 1, "audited");
         assert!(s.heard.try_recv().is_err(), "nothing dialled");
     }
 
@@ -9624,75 +9660,95 @@ mod pools_door_refusals {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_doors_governance_refusals_leak_no_internal_vocabulary() {
+        const EXACT: &str = concat!(
+            module_path!(),
+            "::the_pools_doors_governance_refusals_leak_no_internal_vocabulary"
+        );
+        let Some(case) = crate::root::serve::door_tests::independent_cases(
+            EXACT,
+            &["restricted", "budget", "rate"],
+        ) else {
+            return;
+        };
         let _one = ONE_PUBLISHER.lock().await;
         let far = seat_far_end(200, SERVED_BY_TWIN).await;
         let pool = "any-pool";
         let request = serde_json::json!({"model": pool, "max_tokens": 16,
             "messages": [{"role": "user", "content": "hi"}]});
 
-        let instance = "rehome-gate-leak-restricted";
-        let restricted = rig(
-            instance,
-            RigOpts {
-                members: &[(far.port, 1)],
-                more_pools: &[(pool, &[(0, 1)])],
-                allowed_pools: Some(&["allowed-only"]),
-                ..RigOpts::default()
-            },
-        )
-        .await;
-        let (status, _, body) = restricted
-            .send("POST", "/v1/chat/completions", Some(request.clone()))
+        if case == "restricted" {
+            let instance = "rehome-gate-leak-restricted";
+            let restricted = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    more_pools: &[(pool, &[(0, 1)])],
+                    allowed_pools: Some(&["allowed-only"]),
+                    ..RigOpts::default()
+                },
+            )
             .await;
-        assert_eq!(status, 403, "a pool the key may not reach");
-        assert_leak_free(&String::from_utf8_lossy(&body), &restricted.key_id, pool);
-        drop(restricted);
+            let (status, _, body) = restricted
+                .send("POST", "/v1/chat/completions", Some(request.clone()))
+                .await;
+            assert_eq!(status, 403, "a pool the key may not reach");
+            assert_leak_free(&String::from_utf8_lossy(&body), &restricted.key_id, pool);
+            drop(restricted);
+            crate::root::serve::door_tests::independent_case_done(EXACT, &case);
+        }
 
-        let empty = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
-        let instance = "rehome-gate-leak-broke";
-        let broke = rig(
-            instance,
-            RigOpts {
-                members: &[(far.port, 1)],
-                more_pools: &[(pool, &[(0, 1)])],
-                group: Some(("empty", &empty)),
-                ..RigOpts::default()
-            },
-        )
-        .await;
-        let (status, _, body) = broke
-            .send("POST", "/v1/chat/completions", Some(request.clone()))
+        if case == "budget" {
+            let empty = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+            let instance = "rehome-gate-leak-broke";
+            let broke = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    more_pools: &[(pool, &[(0, 1)])],
+                    group: Some(("empty", &empty)),
+                    ..RigOpts::default()
+                },
+            )
             .await;
-        assert_eq!(status, 429, "a zero budget");
-        assert_leak_free(&String::from_utf8_lossy(&body), &broke.key_id, pool);
-        let converse_on_pool = door_word("converse_path").replacen("/p/", &format!("/{pool}/"), 1);
-        let (status, _, body) = broke
-            .send("POST", &converse_on_pool, Some(body_word("converse_body")))
-            .await;
-        let text = String::from_utf8_lossy(&body);
-        assert_eq!(status, 400, "a zero budget on converse: {text}");
-        assert!(text.contains("ServiceQuotaExceededException"), "{text}");
-        assert_leak_free(&text, &broke.key_id, pool);
-        drop(broke);
+            let (status, _, body) = broke
+                .send("POST", "/v1/chat/completions", Some(request.clone()))
+                .await;
+            assert_eq!(status, 429, "a zero budget");
+            assert_leak_free(&String::from_utf8_lossy(&body), &broke.key_id, pool);
+            let converse_on_pool =
+                door_word("converse_path").replacen("/p/", &format!("/{pool}/"), 1);
+            let (status, _, body) = broke
+                .send("POST", &converse_on_pool, Some(body_word("converse_body")))
+                .await;
+            let text = String::from_utf8_lossy(&body);
+            assert_eq!(status, 400, "a zero budget on converse: {text}");
+            assert!(text.contains("ServiceQuotaExceededException"), "{text}");
+            assert_leak_free(&text, &broke.key_id, pool);
+            drop(broke);
+            crate::root::serve::door_tests::independent_case_done(EXACT, &case);
+        }
 
-        let closed = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
-        let instance = "rehome-gate-leak-throttled";
-        let throttled = rig(
-            instance,
-            RigOpts {
-                members: &[(far.port, 1)],
-                more_pools: &[(pool, &[(0, 1)])],
-                group: Some(("closed", &closed)),
-                ..RigOpts::default()
-            },
-        )
-        .await;
-        let (status, head, body) = throttled
-            .send("POST", "/v1/chat/completions", Some(request))
+        if case == "rate" {
+            let closed = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
+            let instance = "rehome-gate-leak-throttled";
+            let throttled = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    more_pools: &[(pool, &[(0, 1)])],
+                    group: Some(("closed", &closed)),
+                    ..RigOpts::default()
+                },
+            )
             .await;
-        assert_eq!(status, 429, "no request a minute");
-        assert!(head.contains_key("retry-after"), "{head:?}");
-        assert_leak_free(&String::from_utf8_lossy(&body), &throttled.key_id, pool);
+            let (status, head, body) = throttled
+                .send("POST", "/v1/chat/completions", Some(request))
+                .await;
+            assert_eq!(status, 429, "no request a minute");
+            assert!(head.contains_key("retry-after"), "{head:?}");
+            assert_leak_free(&String::from_utf8_lossy(&body), &throttled.key_id, pool);
+            crate::root::serve::door_tests::independent_case_done(EXACT, &case);
+        }
         assert_eq!(far.served(), 0, "no refusal is dialled");
     }
 
@@ -12283,69 +12339,83 @@ async fn call_through(
 #[cfg(feature = "plane-decisions")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_decisions_unit_past_its_budget_is_refused_with_a_retry_after() {
+    const EXACT: &str = concat!(
+        module_path!(),
+        "::a_decisions_unit_past_its_budget_is_refused_with_a_retry_after"
+    );
+    let Some(case) = crate::root::serve::door_tests::independent_cases(EXACT, &["hour", "total"])
+    else {
+        return;
+    };
     use busbar_kernel::config::groups::LimitWindow;
     let _one = PUBLISHING.lock().await;
-    let instance = "serve-door-budget";
-    let (port, mut heard) = far_end().await;
-    let serving = serve_governed(
-        &crate::LINKED,
-        instance,
-        port,
-        vec![budget_of(1, LimitWindow::Hour)],
-        1,
-        None,
-    )
-    .await;
+    if case == "hour" {
+        let instance = "serve-door-budget";
+        let (port, mut heard) = far_end().await;
+        let serving = serve_governed(
+            &crate::LINKED,
+            instance,
+            port,
+            vec![budget_of(1, LimitWindow::Hour)],
+            1,
+            None,
+        )
+        .await;
 
-    let (status, wait, reached) = call_through(&serving, &mut heard).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "within its budget the unit is served"
-    );
-    assert!(reached, "and dispatched");
-    assert_eq!(wait, None, "a served unit names no wait");
-    let usage = serving
-        .gov
-        .usage_for_async(&serving.app.cost, &serving.key, busbar_kernel::store::now())
-        .await
-        .expect("a read")
-        .expect("the key exists");
-    assert_eq!(usage.requests, 1, "its spend is the presenting key's");
+        let (status, wait, reached) = call_through(&serving, &mut heard).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "within its budget the unit is served"
+        );
+        assert!(reached, "and dispatched");
+        assert_eq!(wait, None, "a served unit names no wait");
+        let usage = serving
+            .gov
+            .usage_for_async(&serving.app.cost, &serving.key, busbar_kernel::store::now())
+            .await
+            .expect("a read")
+            .expect("the key exists");
+        assert_eq!(usage.requests, 1, "its spend is the presenting key's");
 
-    let (status, wait, reached) = call_through(&serving, &mut heard).await;
-    assert_eq!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "past its budget the unit is refused"
-    );
-    assert!(!reached, "before its dial");
-    let secs: u64 = wait
-        .expect("the refusal names its wait")
-        .parse()
-        .expect("whole seconds");
-    assert!(
-        (1..=3600).contains(&secs),
-        "the seconds until the hour's window rolls: {secs}"
-    );
-    drop(serving);
+        let (status, wait, reached) = call_through(&serving, &mut heard).await;
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "past its budget the unit is refused"
+        );
+        assert!(!reached, "before its dial");
+        let secs: u64 = wait
+            .expect("the refusal names its wait")
+            .parse()
+            .expect("whole seconds");
+        assert!(
+            (1..=3600).contains(&secs),
+            "the seconds until the hour's window rolls: {secs}"
+        );
+        drop(serving);
+        crate::root::serve::door_tests::independent_case_done(EXACT, &case);
+    }
 
-    let instance = "serve-door-budget-total";
-    let (port, mut heard) = far_end().await;
-    let serving = serve_governed(
-        &crate::LINKED,
-        instance,
-        port,
-        vec![budget_of(1, LimitWindow::Total)],
-        1,
-        None,
-    )
-    .await;
-    assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
-    let (status, wait, reached) = call_through(&serving, &mut heard).await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-    assert!(!reached);
-    assert_eq!(wait, None, "a total never rolls: no wait is named");
+    if case == "total" {
+        let instance = "serve-door-budget-total";
+        let (port, mut heard) = far_end().await;
+        let serving = serve_governed(
+            &crate::LINKED,
+            instance,
+            port,
+            vec![budget_of(1, LimitWindow::Total)],
+            1,
+            None,
+        )
+        .await;
+        assert_eq!(call_through(&serving, &mut heard).await.0, StatusCode::OK);
+        let (status, wait, reached) = call_through(&serving, &mut heard).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert!(!reached);
+        assert_eq!(wait, None, "a total never rolls: no wait is named");
+        crate::root::serve::door_tests::independent_case_done(EXACT, &case);
+    }
 }
 
 #[cfg(feature = "plane-decisions")]

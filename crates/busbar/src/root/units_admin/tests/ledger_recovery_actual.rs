@@ -257,7 +257,7 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     );
     app.amendments = Arc::clone(restarted.amendments());
     app.governance = Some(restarted.clone());
-    let app = Arc::new(app);
+    let app = crate::root::real_store::hydrated(Arc::new(app)).await;
     let (_data, bare_admin, handle) =
         busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
     let live_handle = handle.clone();

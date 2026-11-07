@@ -74,12 +74,12 @@ pub async fn tail(
         }
         let budget_owner = gov.clone();
         match tokio::spawn(async move { budget_owner.flush_budgets_final().await }).await {
-            Ok(flushed) => tracing::info!(flushed, "final budget driver completed"),
+            Ok(flushed) => tracing::info!(flushed, "budget shutdown flush completed"),
             Err(error) => failures.push(format!("budget final driver failed: {error}")),
         }
         let metering_owner = gov.clone();
         match tokio::spawn(async move { metering_owner.flush_metering_final().await }).await {
-            Ok(flushed) => tracing::info!(flushed, "final metering driver completed"),
+            Ok(flushed) => tracing::info!(flushed, "metering shutdown flush completed"),
             Err(error) => failures.push(format!("metering final driver failed: {error}")),
         }
     }

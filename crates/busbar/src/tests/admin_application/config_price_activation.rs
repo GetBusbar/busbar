@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 use axum::http::StatusCode;
 use busbar_contract::persistence::{
-    Address, BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Mutation, Page,
-    PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
+    Address, AttemptId, BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure,
+    Mutation, Page, PersistenceBackend, PreparedCandidate, Read, ReadResult, Scan,
 };
 use busbar_kernel::config::overlay::OverlayStore;
 use busbar_kernel::config::overlay::{persist_root_async, RootSettings};
@@ -170,8 +170,12 @@ async fn an_absent_card_and_unchanged_prices_allow_a_successful_settings_handler
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(calls)
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -369,8 +373,12 @@ async fn settings_refuses_unconfirmed_prices_then_reload_confirms_the_exact_cand
             busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
                 .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -680,8 +688,12 @@ async fn config_refusal_or_unknown_reply_never_attempts_price_activation() {
             busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
                 .expect("actual Store overlay");
         app.overlay_path = Some(overlay.clone());
-        let (_data, admin, handle) =
-            busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+        let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+            crate::root::real_store::hydrated(Arc::new(app)).await,
+            1 << 20,
+            0,
+            false,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -857,8 +869,12 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let pending_router = admin.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let _addr = listener.local_addr().unwrap();
@@ -937,7 +953,70 @@ async fn pending_activation_and_canceled_handler_keep_the_old_generation_until_c
             epoch: 1
         }
     );
-    assert_eq!(price_faults.attempts(activation_tag).len(), 1);
+    let attempts = price_faults.attempts(activation_tag);
+    assert!(
+        !attempts.is_empty(),
+        "the actual activation reached the backend"
+    );
+    assert!(
+        attempts.iter().all(|attempt| attempt.0 == attempts[0].0),
+        "both activation phases retain one price-entry key"
+    );
+    let mut phases: Vec<_> = attempts
+        .iter()
+        .map(|(_, bytes)| status_phase(bytes))
+        .collect();
+    phases.dedup();
+    assert_eq!(
+        phases,
+        ["activating", "active"],
+        "authorization is durable before final Active publication"
+    );
+    let submissions = price_faults.native_attempts.lock().unwrap().clone();
+    let mut native_phases: Vec<_> = submissions
+        .iter()
+        .map(|(phase, _, _)| phase.clone())
+        .collect();
+    native_phases.dedup();
+    assert_eq!(native_phases, phases);
+    for phase in ["activating", "active"] {
+        let bodies: Vec<_> = attempts
+            .iter()
+            .filter(|(_, bytes)| status_phase(bytes) == phase)
+            .collect();
+        assert!(!bodies.is_empty());
+        assert!(
+            bodies.iter().all(|body| *body == bodies[0]),
+            "retries of {phase} retain their exact key/body"
+        );
+        let native: Vec<_> = submissions
+            .iter()
+            .filter(|(actual, _, _)| actual == phase)
+            .collect();
+        assert!(!native.is_empty());
+        assert!(
+            native.iter().all(|attempt| *attempt == native[0]),
+            "retries of {phase} retain their native AttemptId and complete candidate fingerprint"
+        );
+    }
+    assert_ne!(
+        submissions.first().unwrap().1,
+        submissions.last().unwrap().1,
+        "distinct protocol transitions have distinct immutable native attempts"
+    );
+    let active = attempts.last().unwrap();
+    assert_eq!(
+        price_faults.read_value(&active.0).await,
+        Some(active.1.clone())
+    );
+    assert_eq!(
+        book.entries()
+            .iter()
+            .filter(|entry| entry.card.per_request_fee == PENDING_ACTIVATION_FEE)
+            .count(),
+        1,
+        "physical replay publishes one logical activation"
+    );
     server.abort();
     println!("{WITNESS}");
 }
@@ -1094,8 +1173,12 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
     let overlay = busbar_kernel::config::overlay::OverlayStore::from_core(overlay_faults.core())
         .expect("actual Store overlay");
     app.overlay_path = Some(overlay.clone());
-    let (_data, admin, handle) =
-        busbar_kernel::build_split_routers_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (_data, admin, handle) = busbar_kernel::build_split_routers_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, admin).await });
@@ -1104,9 +1187,16 @@ async fn callback_panics_preserve_one_coherent_published_price_generation() {
         let before = handle.load();
         let before_limits = busbar_kernel::config::limits::installed();
         overlay_faults.mode.store(4, Ordering::SeqCst);
+        let response = put(addr, PRE_PUBLICATION_PANIC_FEE).await;
+        let status = response.status();
+        let response_body = response
+            .text()
+            .await
+            .expect("actual callback-panic response body");
         assert_eq!(
-            put(addr, PRE_PUBLICATION_PANIC_FEE).await.status(),
-            StatusCode::INTERNAL_SERVER_ERROR
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "pre-publication callback response: {response_body}"
         );
         assert!(Arc::ptr_eq(&handle.load(), &before));
         assert_eq!(
@@ -1179,6 +1269,12 @@ struct LivePrice {
     fee: i64,
     epoch: u64,
 }
+fn status_phase(bytes: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(bytes).expect("native price status JSON")["phase"]
+        .as_str()
+        .expect("native price status phase")
+        .to_owned()
+}
 fn live_price(book: &crate::root::card_history::CardStore) -> LivePrice {
     LivePrice {
         fee: book.in_force().expect("actual active card").per_request_fee,
@@ -1230,6 +1326,7 @@ struct PriceStoreFaults {
     paused: AtomicBool,
     refuse_all_card_writes: AtomicBool,
     writes: std::sync::Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
+    native_attempts: std::sync::Mutex<Vec<(String, AttemptId, [u8; 32])>>,
     pause: Arc<Pause>,
 }
 impl PriceStoreFaults {
@@ -1244,6 +1341,7 @@ impl PriceStoreFaults {
             paused: AtomicBool::new(false),
             refuse_all_card_writes: AtomicBool::new(false),
             writes: Default::default(),
+            native_attempts: Default::default(),
             pause: Arc::new(Pause::default()),
         });
         let core = crate::root::real_store::core_over(backend.clone()).await;
@@ -1330,6 +1428,24 @@ impl PersistenceBackend for PriceStoreFaults {
                         ));
                     }
                 }
+            }
+            if selected && self.tag.load(Ordering::SeqCst) == b'S' {
+                let phase = candidate
+                    .candidate()
+                    .mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        Mutation::Put { address, value } if self.card_target(address) => {
+                            Some(status_phase(value.expose(&busbar_kernel::seal::lend())))
+                        }
+                        _ => None,
+                    })
+                    .expect("the selected native activation has its exact status value");
+                self.native_attempts.lock().unwrap().push((
+                    phase,
+                    candidate.candidate().id,
+                    candidate.fingerprint(),
+                ));
             }
             let mode = self.mode.load(Ordering::SeqCst);
             if (price && self.refuse_all_card_writes.load(Ordering::SeqCst))

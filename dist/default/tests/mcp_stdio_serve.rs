@@ -386,8 +386,10 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
         "the refusal names the budget: {refusal}"
     );
 
-    let code = child.eof_and_wait(Duration::from_secs(60));
-    assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
+    drop(child.stdin.take());
+    let code = wait_bounded(&mut child.child, Duration::from_secs(60));
+    let stderr = child.stderr_so_far();
+    assert_eq!(code, 0, "EOF on stdin is a clean shutdown: {stderr}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

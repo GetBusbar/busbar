@@ -127,8 +127,12 @@ async fn build_without_group_removes_leaf() {
     .await
     .unwrap();
     app.overlay_path = Some(backend);
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (router, handle) = busbar_kernel::build_router_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -254,8 +258,12 @@ async fn build_without_group_conflict_when_still_a_parent() {
     .await
     .unwrap();
     app.overlay_path = Some(backend);
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (router, handle) = busbar_kernel::build_router_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -378,8 +386,12 @@ async fn build_without_group_not_found() {
     .await
     .unwrap();
     app.overlay_path = Some(backend);
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (router, handle) = busbar_kernel::build_router_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -529,8 +541,12 @@ async fn build_without_group_conflict_when_keys_still_bound() {
         .filter(|key| key.group.as_deref() == Some("team"))
         .count();
     assert_eq!(bound, 1, "one key is bound to `team`");
-    let (router, handle) =
-        busbar_kernel::build_router_with_limits(Arc::new(app), 1 << 20, 0, false);
+    let (router, handle) = busbar_kernel::build_router_with_limits(
+        crate::root::real_store::hydrated(Arc::new(app)).await,
+        1 << 20,
+        0,
+        false,
+    );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
