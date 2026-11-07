@@ -322,10 +322,20 @@ async fn actual_ticket_preflight_preserves_unspent_custody_and_invalid_prefix_re
         "only this explicit final admission consumes the still-live ticket"
     );
     assert_eq!(call(bearer(&ticket)).await.flow, FLOW_STOP);
-    let (expired, _) = gov
-        .mint_ticket(&key.id, "tk_", 1, None, b"expired", now - 5)
+    let (expired, expiry) = gov
+        .mint_ticket(
+            &key.id,
+            "tk_",
+            1,
+            None,
+            b"expired",
+            busbar_kernel::store::now(),
+        )
         .await
         .unwrap();
+    while busbar_kernel::store::now() <= expiry {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     let relabeled = format!("tk_{}", ordinary.strip_prefix("bbk_").unwrap());
     for invalid in ["tk_malformed", expired.as_str(), relabeled.as_str()] {
         assert_eq!(call(bearer(invalid)).await.flow, FLOW_STOP);
