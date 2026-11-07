@@ -574,12 +574,12 @@ impl Node {
             open.sealing
                 .into_seal(key, self.kernel.origin(origin), parent.map(|p| p.key))
         });
-        match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
+        let confirmation = match self.late_arm(Some(late), principal, arrived, history.as_ref()) {
             Some(mut arm) => {
                 arm.seal = seal;
-                drop(arm.carrying(ended).post());
+                arm.carrying(ended).post()
             }
-            None => self.seal_end(
+            None => self.seal_end_task(
                 principal,
                 arrived,
                 history.as_ref(),
@@ -587,8 +587,12 @@ impl Node {
                 seal,
                 Vec::new(),
             ),
-        }
+        };
         occupied.reached_end = true;
+        if let Err(error) = await_terminal(confirmation).await {
+            tracing::error!(reason = error, "unit terminal audit remains unconfirmed");
+            return None;
+        }
         if let Err(error) = self.retry_held_journal().await {
             tracing::error!(reason = error, "unit audit remains unconfirmed");
             return None;
