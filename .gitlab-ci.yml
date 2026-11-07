@@ -1,6 +1,6 @@
-# Root integrates this server-side forwarder into the core source commit.
-# No core runner/compiler job or Google credential is needed here.
 workflow:
+  auto_cancel:
+    on_new_commit: conservative
   rules:
     - if: '$CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SOURCE == "push"'
     - when: never
