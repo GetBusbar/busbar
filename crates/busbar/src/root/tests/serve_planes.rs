@@ -127,6 +127,7 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
     .await
     .expect("the normal application admits its native Store");
     limits.stage_boot();
+    crate::root::door_steps::tests::boot_fixture_prices(&app).await;
     limits.keep().await.expect("the application limits commit");
     if let Some(rotate) = rotate {
         rotate.await;
