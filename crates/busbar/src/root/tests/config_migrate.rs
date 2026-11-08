@@ -390,3 +390,97 @@ fn frozen_overlay_host_keeps_coincident_authored_templates_as_literal_data() {
         None
     );
 }
+
+#[test]
+fn current_settings_validation_does_not_read_a_selected_planes_historical_catalog() {
+    use std::cell::Cell;
+
+    struct Host {
+        catalog_reads: Cell<usize>,
+        auth_validations: Cell<usize>,
+    }
+    impl MigrateHost for Host {
+        fn migrate(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+            _: &str,
+        ) -> Result<Option<(String, busbar_contract::abi::sdk::migrate::Migrated)>, String>
+        {
+            Ok(None)
+        }
+        fn repin(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn providers_catalog(
+            &self,
+        ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+            self.catalog_reads.set(self.catalog_reads.get() + 1);
+            Err("historical catalog unavailable".into())
+        }
+        fn validate_migrated(
+            &self,
+            kind: &str,
+            module: &str,
+            settings: &serde_json::Value,
+        ) -> Result<(), String> {
+            if kind == "auth" {
+                assert_eq!(module, "oidc");
+                assert_eq!(
+                    settings,
+                    &serde_json::json!({
+                        "issuer": "https://issuer.example", "audience": "witness"
+                    })
+                );
+                self.auth_validations.set(self.auth_validations.get() + 1);
+            }
+            Ok(())
+        }
+    }
+
+    crate::dist_root_install::install();
+    assert!(
+        busbar_kernel::plane_driver::registry::plane_decls()
+            .iter()
+            .any(|plane| {
+                (plane.config_section == "models"
+                    || plane.owned_config_sections.contains(&"models"))
+                    && busbar_kernel::plane_driver::door::consumed_sections(plane)
+                        .contains(&"providers")
+            }),
+        "the actual installed model plane selects a historical providers envelope"
+    );
+    let raw = "store: {module: memory}
+providers: {}
+models: {}
+pools: {}
+identity-providers: {rig: {module: oidc, settings: {issuer: https://issuer.example, audience: witness}}}
+auth: {chain: [keys], admin_auth: [rig], signing_key: {env: UNUSED_CATALOG_WITNESS}, role_bindings: {rig: {reader: {admin_scope: read-only}}}}
+";
+    let host = Host {
+        catalog_reads: Cell::new(0),
+        auth_validations: Cell::new(0),
+    };
+    let current = busbar_migrations::config::normalize_authored(raw, &host).unwrap();
+    assert_eq!(host.catalog_reads.get(), 0);
+    assert_eq!(host.auth_validations.get(), 1);
+    assert!(current.todos.is_empty(), "{:?}", current.todos);
+    assert_eq!(current.yaml, raw);
+
+    let historical = migrate_config_with(raw, &host).unwrap();
+    assert!(host.catalog_reads.get() > 0);
+    assert!(
+        historical
+            .todos
+            .iter()
+            .any(|todo| todo.starts_with("providers:")
+                && todo.contains("providers catalog could not be read for the plane migrations")
+                && todo.contains("historical catalog unavailable")),
+        "{:?}",
+        historical.todos
+    );
+}
