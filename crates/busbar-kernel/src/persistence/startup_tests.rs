@@ -210,8 +210,11 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
     ));
     assert_eq!(
         prior.freeze(vec![initial_binding("one", 1)]).await,
-        Err(Error::Authority)
+        Ok(Progress::Reconcile)
     );
+    assert!(!prior.permits("one").await.unwrap());
+    assert!(!prior.published().await);
+    assert!(current.permits("one").await.unwrap());
     assert!(!backend
         .0
         .lock()
@@ -259,7 +262,10 @@ async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly
     // A late replay can correctly acknowledge old effects; only the final current
     // owner CAS grants publication, so that acknowledgment cannot revive the owner.
     assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
-    assert_eq!(prior.complete("two").await, Err(Error::Authority));
+    assert_eq!(prior.complete("two").await, Ok(Progress::Reconcile));
+    assert!(!prior.permits("two").await.unwrap());
+    assert!(!prior.published().await);
+    assert!(current.permits("two").await.unwrap());
     assert_eq!(current.complete("one").await.unwrap(), Progress::Advanced);
     assert_eq!(current.complete("two").await.unwrap(), Progress::Advanced);
     assert_eq!(current.publish().await.unwrap(), Progress::Advanced);
@@ -324,8 +330,15 @@ async fn first_start_late_applied_ready_cannot_publish_after_owner_takeover() {
     assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
     assert_eq!(
         prior.publish().await,
-        Err(Error::Authority),
+        Ok(Progress::Reconcile),
         "late Applied proves old effects, never current publication ownership"
+    );
+    assert!(!prior.permits("one").await.unwrap());
+    assert!(!prior.published().await);
+    assert!(!current.published().await);
+    assert!(
+        !current.permits("one").await.unwrap(),
+        "the current owner's Done entry remains closed"
     );
     assert_eq!(current.publish().await.unwrap(), Progress::Advanced);
 }
