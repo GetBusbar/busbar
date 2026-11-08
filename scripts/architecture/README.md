@@ -11,7 +11,8 @@ or candidate job. The script requires explicit server, policy revision, local ma
 policy bytes and controlled merge-user IDs. `inspect` is read-only. `apply` installs
 the external CI setting, fast-forward merges, required successful pipelines, disabled
 pipeline-variable overrides and no direct/job-token/force pushes. Existing stricter
-QA/main merge permissions stay unchanged. `merge` accepts only a same-project dev MR
+QA/main merge permissions stay unchanged. Creating a missing QA/main protection
+requires an explicit `--stage-owner-id`; it never grants the dev operator promotion access. `merge` accepts only a same-project dev MR
 with the current successful native job and an exact source/target/policy receipt.
 Every matching project and group rule is checked because permissions are additive.
 Unreadable group rules, permissive wildcards or unavailable settings prevent admission.
@@ -33,16 +34,23 @@ in project settings. Ordinary pipelines cannot override it. Once admitted, remov
 cohort override: the job resolves canonical dev once and records its actual revision.
 The selected host's SDK pin must match the plugin's `.busbar-ref`. Native conformance
 records the tested host commit, rather than mislabeling the SDK commit as a binary.
+Before compilation, the trusted source collector fetches the exact public Git inputs
+from canonical repositories into a task-local cache. Cargo receives credential-free
+local URL mappings while source identities and lockfiles stay unchanged. This permits
+qualification before public stage mirrors advance, without publishing candidate branches.
 
 `native.py` refuses execution outside GitLab. It runs the existing required full suites
 and assembled-product checks there; local development uses fmt/clippy/build and targeted
 regressions. Missing services, native libraries, inputs, tools or receipts fail the job.
 Job artifacts retain source/SDK/host/policy identities, commands, actual exit codes,
-dependency/lock hashes and binary/library hashes. Fixtures and job scratch are removed
+dependency/lock hashes and binary/library hashes. Each command retains hashed logs;
+nextest steps also retain their actual JUnit reports. Existing conformance suites retain
+source-bound invocation and verdict files for the website collector. Fixtures and job scratch are removed
 after evidence export. Enterprise artifacts remain member-only in private projects.
 
-A successful assembled-product dev job triggers the existing marketing dev pipeline,
-binding `WEBSITE_CORE_REVISION` to that exact commit. The website independently checks
+Successful core and public-plugin dev jobs trigger the existing marketing dev pipeline.
+Core binds `WEBSITE_CORE_REVISION` to the exact assembled commit; plugin events carry
+their own source identity and resolve the assembled dev host independently. The website independently checks
 branch freshness and publishes the current results at `/certifications/`. A failed,
 missing or stale qualification cannot trigger a green publication. Successful native
 CI evidence does not create a signed certification or promote code to QA/main.

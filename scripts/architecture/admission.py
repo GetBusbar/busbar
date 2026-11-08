@@ -93,7 +93,7 @@ def validate_protection(project_rules, group_rules, merge_users):
             raise ValueError('no controlled admission user can merge: ' + branch)
 
 
-def apply_project(api, project, policy_revision, merge_users):
+def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
     identity = 'projects/' + str(project['id'])
     expected = 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + policy_revision
     settings = dict(ci_config_path=expected, merge_method='ff', only_allow_merge_if_pipeline_succeeds=True,
@@ -112,7 +112,16 @@ def apply_project(api, project, policy_revision, merge_users):
                 desired.pop('allowed_to_merge')
             desired['allowed_to_push'] = [{'id': row['id'], '_destroy': True} for row in rule['push_access_levels']] + desired['allowed_to_push']
             if 'allowed_to_merge' in desired:
-                desired['allowed_to_merge'] = [{'id': row['id'], '_destroy': True} for row in rule['merge_access_levels']] + desired['allowed_to_merge']
+                # Preserve existing approved records. Destroy/recreate of the same
+                # user in one PATCH fails GitLab's unique access-record validation.
+                retained = {row['user_id'] for row in rule['merge_access_levels']
+                            if row.get('user_id') in merge_users and not row.get('group_id')}
+                desired['allowed_to_merge'] = [
+                    {'id': row['id'], '_destroy': True} for row in rule['merge_access_levels']
+                    if row.get('user_id') not in retained
+                ] + [{'user_id': user} for user in sorted(merge_users - retained)]
+                if not desired['allowed_to_merge']:
+                    desired.pop('allowed_to_merge')
             try:
                 # Do not rewrite already-strict rules whose unprotect permission may
                 # deliberately belong only to the instance owner (especially qa/main).
@@ -121,6 +130,10 @@ def apply_project(api, project, policy_revision, merge_users):
                 api.request(identity + '/protected_branches/' + encoded(branch), 'PATCH', desired)
         else:
             # Protect the name, without creating a qa/main branch or promoting code.
+            if branch != 'dev':
+                if stage_owner not in merge_users:
+                    raise ValueError('new QA/main protection requires an explicit stage owner')
+                desired['allowed_to_merge'] = [{'user_id': stage_owner}]
             api.request(identity + '/protected_branches', 'POST', dict(name=branch, **desired))
     actual = api.request(identity)
     for key, value in settings.items():
@@ -166,6 +179,8 @@ def main():
     parser.add_argument('--merge-request', type=int)
     parser.add_argument('--merge-user-id', type=int, action='append', required=True,
                         help='Architecture owner/admission operator, never a candidate job identity')
+    parser.add_argument('--stage-owner-id', type=int,
+                        help='Owner-only merge permission when QA/main protection must be created')
     args = parser.parse_args()
     if not re.fullmatch('[0-9a-f]{40}', args.policy_revision):
         raise ValueError('an immutable approved policy revision is required')
@@ -196,7 +211,7 @@ def main():
             raise ValueError('enterprise project is not private: ' + name)
         identity = 'projects/' + str(project['id'])
         if args.action == 'apply':
-            result = apply_project(api, project, args.policy_revision, merge_users)
+            result = apply_project(api, project, args.policy_revision, merge_users, args.stage_owner_id)
             report['projects'].append(result)
             group = name.split('/')[0]
             if group in report['groups']:
