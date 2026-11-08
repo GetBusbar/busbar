@@ -44,7 +44,7 @@ and assembled-product checks there; local development uses fmt/clippy/build and 
 regressions. Missing services, native libraries, inputs, tools or receipts fail the job.
 Job artifacts retain source/SDK/host/policy identities, commands, actual exit codes,
 dependency/lock hashes and binary/library hashes. Each command retains hashed logs;
-nextest steps also retain their actual JUnit reports. Existing conformance suites retain
+nextest steps also retain their actual JUnit reports. Existing plugin conformance suites retain
 source-bound invocation and verdict files for the website collector. Fixtures and job scratch are removed
 after evidence export. Enterprise artifacts remain member-only in private projects.
 
