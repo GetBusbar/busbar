@@ -228,6 +228,17 @@ impl FlakyStore {
     pub async fn new() -> Self {
         let backend = crate::real_store::native_backend().await;
         let inner = crate::real_store::core_over(backend.clone()).await;
+        // Both facades model live writers. Finish initial publication so opening
+        // the faulted writer does not fence an unfinished first-start owner.
+        let initial = inner.first_start().unwrap();
+        assert_eq!(
+            initial.freeze(Vec::new()).await.unwrap(),
+            crate::persistence::startup::Progress::Advanced
+        );
+        assert_eq!(
+            initial.publish().await.unwrap(),
+            crate::persistence::startup::Progress::Advanced
+        );
         let faults = Arc::new(Faults::default());
         let native = crate::real_store::core_over(Arc::new(FaultBackend {
             inner: backend,

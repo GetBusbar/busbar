@@ -48,6 +48,16 @@ impl ChunkStore {
     async fn new() -> Self {
         let backend = crate::real_store::native_backend().await;
         let inner = crate::real_store::core_over(backend.clone()).await;
+        // Keep the independent writer admitted when the faulted writer opens.
+        let initial = inner.first_start().unwrap();
+        assert_eq!(
+            initial.freeze(Vec::new()).await.unwrap(),
+            crate::persistence::startup::Progress::Advanced
+        );
+        assert_eq!(
+            initial.publish().await.unwrap(),
+            crate::persistence::startup::Progress::Advanced
+        );
         let faults = Arc::new(ChunkFaults::default());
         let native = crate::real_store::core_over(Arc::new(ChunkBackend {
             inner: backend,
