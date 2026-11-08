@@ -2292,3 +2292,95 @@ async fn native_guard_validates_exact_baseline_and_refuses_missing_or_changed_id
     changed[0].domain_sha256 = "0".repeat(64);
     assert!(guard_native(core, &binding, &changed).await.is_err());
 }
+
+#[tokio::test]
+async fn native_startup_initializes_principal_baseline_once_and_preserves_it_after_restart() {
+    let backend = crate::real_store::native_backend().await;
+    let core = crate::real_store::core_over(backend.clone()).await;
+    let required = vec![Requirement {
+        provider: "corp".into(),
+        plugin: "auth-corp".into(),
+        format: "principal-v2".into(),
+        domain_sha256: "a".repeat(64),
+        product_sha256: "b".repeat(64),
+        settings_sha256: "c".repeat(64),
+    }];
+    let store = "d".repeat(64);
+    assert!(guard_native(core.clone(), &store, &required).await.is_err());
+    assert!(guard_startup_native(core.clone(), &store, &required)
+        .await
+        .unwrap()
+        .is_empty());
+    let first = native_receipt_snapshot(&core).await.unwrap();
+    let (_, head) = super::read_head(&first).unwrap().unwrap();
+    assert!(guard_startup_native(core.clone(), &store, &required)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        super::read_head(&native_receipt_snapshot(&core).await.unwrap())
+            .unwrap()
+            .unwrap()
+            .1,
+        head
+    );
+    let mut changed = required.clone();
+    changed[0].domain_sha256 = "e".repeat(64);
+    assert!(guard_startup_native(core.clone(), &store, &changed)
+        .await
+        .is_err());
+    let proof = core.first_start().unwrap();
+    assert_eq!(
+        proof.freeze(Vec::new()).await.unwrap(),
+        crate::persistence::startup::Progress::Advanced
+    );
+    assert_eq!(
+        proof.publish().await.unwrap(),
+        crate::persistence::startup::Progress::Advanced
+    );
+    let reopened = crate::real_store::core_over(backend).await;
+    assert!(reopened.first_start().is_none());
+    assert!(guard_startup_native(reopened.clone(), &store, &required)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        super::read_head(&native_receipt_snapshot(&reopened).await.unwrap())
+            .unwrap()
+            .unwrap()
+            .1,
+        head
+    );
+    assert!(guard_startup_native(reopened, &store, &changed)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn native_startup_does_not_infer_principal_freshness_from_missing_records() {
+    let backend = crate::real_store::native_backend().await;
+    let core = crate::real_store::core_over(backend.clone()).await;
+    let proof = core.first_start().unwrap();
+    proof.freeze(Vec::new()).await.unwrap();
+    proof.publish().await.unwrap();
+    let reopened = crate::real_store::core_over(backend).await;
+    assert!(reopened.first_start().is_none());
+    let required = vec![Requirement {
+        provider: "corp".into(),
+        plugin: "auth-corp".into(),
+        format: "principal-v2".into(),
+        domain_sha256: "a".repeat(64),
+        product_sha256: "b".repeat(64),
+        settings_sha256: "c".repeat(64),
+    }];
+    assert!(
+        guard_startup_native(reopened.clone(), &"d".repeat(64), &required)
+            .await
+            .is_err()
+    );
+    assert!(
+        super::read_head(&native_receipt_snapshot(&reopened).await.unwrap())
+            .unwrap()
+            .is_none()
+    );
+}

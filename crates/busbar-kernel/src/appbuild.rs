@@ -1462,7 +1462,7 @@ async fn build_app_native(
                 diag_warn!(STATEFUL_PLANE_EPHEMERAL_STORE, "{msg}");
             }
         }
-        let transition_holds = governance::principal_transition::guard_native(
+        let transition_holds = governance::principal_transition::guard_startup_native(
             core.clone(),
             &governance::principal_transition::store_fingerprint(&cfg.store)?,
             &transition_requirements,

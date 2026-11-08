@@ -32,6 +32,8 @@ pub(super) struct Birth {
     version: u32,
     dataset: [u8; 16],
     pub(super) owner: Option<[u8; 16]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    initialized: Vec<Binding>,
     plan: Option<Vec<Binding>>,
     done: Vec<String>,
     pub(super) published: bool,
@@ -43,6 +45,7 @@ impl Birth {
             version: 1,
             dataset: dataset.0,
             owner: None,
+            initialized: Vec::new(),
             plan: None,
             done: Vec::new(),
             published: false,
@@ -58,10 +61,14 @@ impl Birth {
             || value.dataset != dataset.0
             || value.owner == Some([0; 16])
             || (value.owner.is_none()
-                && (value.plan.is_some() || !value.done.is_empty() || value.published))
+                && (!value.initialized.is_empty()
+                    || value.plan.is_some()
+                    || !value.done.is_empty()
+                    || value.published))
         {
             return Err(startup::Error::Corrupt);
         }
+        validate_plan(&value.initialized)?;
         if let Some(plan) = &value.plan {
             validate_plan(plan)?;
             if value.done.windows(2).any(|w| w[0] >= w[1])
@@ -150,6 +157,78 @@ impl FirstStart {
         self.authority.writer
     }
 
+    /// Atomically consume a finite host initialization binding with its native effects.
+    pub(crate) async fn initialize_host(
+        &self,
+        binding: Binding,
+        predicates: Vec<Predicate>,
+        mutations: Vec<Mutation>,
+    ) -> Result<startup::Progress, startup::Error> {
+        validate_plan(std::slice::from_ref(&binding))?;
+        let mut state = self.state.lock().await;
+        if state.birth.published {
+            return Err(startup::Error::Authority);
+        }
+        if let Some(held) = state
+            .birth
+            .initialized
+            .iter()
+            .find(|held| held.instance == binding.instance)
+        {
+            if held != &binding || state.pending.is_some() {
+                return Err(startup::Error::Authority);
+            }
+            return self
+                .verify(&state.birth)
+                .await
+                .map(|()| startup::Progress::Advanced);
+        }
+        if state.birth.plan.is_some() {
+            return Err(startup::Error::Authority);
+        }
+        let mut next = state.birth.clone();
+        next.initialized.push(binding);
+        next.initialized.sort_by(|a, b| a.instance.cmp(&b.instance));
+        validate_plan(&next.initialized)?;
+        let progress = self
+            .change_with(&mut state, next, predicates, mutations)
+            .await?;
+        if progress == startup::Progress::Advanced {
+            self.verify(&state.birth).await?;
+        }
+        Ok(progress)
+    }
+
+    /// Whether a retained initialization still needs its exact native decision reconciled.
+    pub(crate) async fn host_initialization_pending(&self, instance: &str) -> bool {
+        let state = self.state.lock().await;
+        !state
+            .birth
+            .initialized
+            .iter()
+            .any(|b| b.instance == instance)
+            && state
+                .pending
+                .as_ref()
+                .is_some_and(|(next, _)| next.initialized.iter().any(|b| b.instance == instance))
+    }
+
+    /// Verified, nonsecret receipt preimage. An uncertain initialization keeps its
+    /// original preimage stable until initialize_host reconciles the exact candidate.
+    pub(crate) async fn initialization_witness(&self) -> Result<Vec<u8>, startup::Error> {
+        let state = self.state.lock().await;
+        if state.birth.published {
+            return Err(startup::Error::Authority);
+        }
+        let pending = match &state.pending {
+            Some((next, _)) if next.initialized != state.birth.initialized => Some(next),
+            Some(_) => return Err(startup::Error::Authority),
+            None => None,
+        };
+        self.verify_with(&state.birth, pending).await?;
+        state.birth.encode()
+    }
+
     /// Freeze before any instance initialization or public route publication. A changed
     /// selection, including a changed configuration on crash resume, grants nothing.
     pub async fn freeze(&self, plan: Vec<Binding>) -> Result<startup::Progress, startup::Error> {
@@ -234,6 +313,14 @@ impl FirstStart {
     }
 
     async fn verify(&self, birth: &Birth) -> Result<(), startup::Error> {
+        self.verify_with(birth, None).await
+    }
+
+    async fn verify_with(
+        &self,
+        birth: &Birth,
+        alternate: Option<&Birth>,
+    ) -> Result<(), startup::Error> {
         let info = self.backend.info();
         let observed = self
             .backend
@@ -259,8 +346,14 @@ impl FirstStart {
             return Err(startup::Error::Corrupt);
         }
         let seal = crate::seal::lend();
-        if values[0].as_ref().map(|v| v.expose(&seal).as_slice())
-            != Some(birth.encode()?.as_slice())
+        let encoded = birth.encode()?;
+        let alternate = alternate.map(Birth::encode).transpose()?;
+        let observed_birth = values[0].as_ref().map(|v| v.expose(&seal).as_slice());
+        if birth.owner != Some(self.authority.writer)
+            || (observed_birth != Some(encoded.as_slice())
+                && !alternate
+                    .as_ref()
+                    .is_some_and(|bytes| observed_birth == Some(bytes.as_slice())))
             || values[1]
                 .as_ref()
                 .and_then(|v| control::Dataset::decode(v.expose(&seal)))
@@ -283,14 +376,27 @@ impl FirstStart {
         state: &mut State,
         next: Birth,
     ) -> Result<startup::Progress, startup::Error> {
-        let next_bytes = next.encode()?;
-        let attempt = if let Some((held, attempt)) = &state.pending {
-            if held.encode()? != next_bytes {
+        self.change_with(state, next, Vec::new(), Vec::new()).await
+    }
+
+    async fn change_with(
+        &self,
+        state: &mut State,
+        next: Birth,
+        predicates: Vec<Predicate>,
+        mutations: Vec<Mutation>,
+    ) -> Result<startup::Progress, startup::Error> {
+        let operation = match &state.pending {
+            Some((_, attempt)) => attempt.candidate().candidate().id.operation,
+            None => startup::random_id()?,
+        };
+        let candidate = self.candidate(&state.birth, &next, operation, predicates, mutations)?;
+        let attempt = if let Some((_, attempt)) = &state.pending {
+            if attempt.candidate().fingerprint() != candidate.fingerprint() {
                 return Err(startup::Error::Authority);
             }
             attempt.clone()
         } else {
-            let candidate = self.candidate(&state.birth, &next)?;
             let attempt = Arc::new(
                 Attempt::new(candidate, self.backend.clone())
                     .map_err(|_| startup::Error::Authority)?,
@@ -310,27 +416,32 @@ impl FirstStart {
         &self,
         before: &Birth,
         after: &Birth,
+        operation: [u8; 16],
+        mut predicates: Vec<Predicate>,
+        mut mutations: Vec<Mutation>,
     ) -> Result<PreparedCandidate, startup::Error> {
         if before.owner != Some(self.authority.writer) || after.owner != before.owner {
             return Err(startup::Error::Authority);
         }
+        predicates.push(Predicate {
+            address: address(),
+            expected: ExpectedValue::Exact(Secret::new(before.encode()?)),
+        });
+        mutations.push(Mutation::Put {
+            address: address(),
+            value: Secret::new(after.encode()?),
+        });
         PreparedCandidate::new(Candidate {
             id: AttemptId {
                 dataset: self.backend.info().dataset,
                 writer_epoch: self.authority.writer_epoch,
                 writer: self.authority.writer,
                 execution_epoch: self.authority.execution_epoch,
-                operation: startup::random_id()?,
+                operation,
             },
             codec: CANDIDATE_VERSION,
-            predicates: vec![Predicate {
-                address: address(),
-                expected: ExpectedValue::Exact(Secret::new(before.encode()?)),
-            }],
-            mutations: vec![Mutation::Put {
-                address: address(),
-                value: Secret::new(after.encode()?),
-            }],
+            predicates,
+            mutations,
             time: None,
             result: Secret::new(Vec::new()),
         })

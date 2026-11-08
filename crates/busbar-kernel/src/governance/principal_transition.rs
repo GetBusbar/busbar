@@ -1312,6 +1312,90 @@ pub async fn guard_native(
     guard_rows(&rows, store_sha256, required)
 }
 
+/// Normal first boot may establish a baseline only from native empty-dataset
+/// authority. Existing data and cold identity changes retain the explicit guard.
+/// The birth consumption and complete baseline are one atomic native candidate.
+pub async fn guard_startup_native(
+    core: Arc<CoreStore>,
+    store_sha256: &str,
+    required: &[Requirement],
+) -> Result<BTreeSet<String>, String> {
+    use crate::persistence::{first_start::Binding as InitialBinding, startup::Progress};
+    use busbar_contract::persistence::{
+        ExpectedValue, Mutation as NativeMutation, Predicate as NativePredicate,
+    };
+    let rows = native_receipt_snapshot(&core).await?;
+    let Some(proof) = core.first_start() else {
+        return guard_rows(&rows, store_sha256, required);
+    };
+    let pending = proof.host_initialization_pending(NATIVE_INSTANCE).await;
+    if !pending && (read_head(&rows)?.is_some() || required.iter().all(|r| r.format.is_empty())) {
+        return guard_rows(&rows, store_sha256, required);
+    }
+    let witness = proof
+        .initialization_witness()
+        .await
+        .map_err(|_| "native principal initialization ownership refused")?;
+    let receipt = FreshNamespace {
+        version: 1,
+        store_config_sha256: store_sha256.into(),
+        requirements: required.to_vec(),
+        witness_binding: None,
+        // Historical evidence of native custody, not a caller-supplied host-record grant.
+        witness: Some(StoreWitness {
+            schema: "busbar.native-first-start.v1".into(),
+            key_hex: hex::encode(core.info().dataset.0),
+            value_hex: hex::encode(&witness),
+        }),
+        ephemeral_instance: core.info().durability == busbar_contract::persistence::Durability::Ephemeral,
+        exclusive_instance: true,
+        creation_evidence_sha256: hex::encode(Sha256::digest(&witness)),
+        newly_created_namespace: true,
+        sender_quiesced: true,
+        backend_quiesced: true,
+        actor: "busbar native startup".into(),
+        reason: "Atomic native empty-dataset admission; baseline and finite birth authority are committed together".into(),
+    };
+    let mut identity = Sha256::new();
+    identity.update(b"busbar.initial-principal-baseline.v1\0");
+    identity.update(serde_json::to_vec(&(store_sha256, required)).map_err(|e| e.to_string())?);
+    let binding = InitialBinding {
+        instance: NATIVE_INSTANCE.into(),
+        digest: identity.finalize().into(),
+    };
+    loop {
+        let (_, mutations) = fresh_mutations(&receipt)?;
+        let mutations = mutations
+            .into_iter()
+            .map(|mutation| {
+                let Mutation::Put { schema, key, value } = mutation else {
+                    return Err(
+                        "fresh principal initialization only writes its own records".to_string()
+                    );
+                };
+                Ok(NativeMutation::Put {
+                    address: witness_address(&schema, &key, &value, None)?,
+                    value: busbar_contract::Secret::new(value),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let predicates = vec![NativePredicate {
+            address: witness_address(SCHEMA.as_str(), HEAD, &[], None)?,
+            expected: ExpectedValue::Absent,
+        }];
+        match proof
+            .initialize_host(binding.clone(), predicates, mutations)
+            .await
+            .map_err(|_| "native principal baseline initialization refused")?
+        {
+            Progress::Advanced => break,
+            Progress::Pending => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+            _ => return Err("native principal baseline requires retained reconciliation".into()),
+        }
+    }
+    guard_native(core, store_sha256, required).await
+}
+
 pub async fn pending_guard_native(
     core: Arc<crate::persistence::facade::CoreStore>,
 ) -> Result<(), String> {
@@ -2296,6 +2380,36 @@ pub async fn initialize_ephemeral_with_record_bootstrap(
     })
 }
 
+fn fresh_mutations(receipt: &FreshNamespace) -> Result<(String, Vec<Mutation>), String> {
+    let receipt_sha256 = digest(receipt)?;
+    let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?;
+    let mut mutations = chunks(&body_prefix(&receipt_sha256), &body)?;
+    let head = Head {
+        version: 1,
+        plan_sha256: receipt_sha256.clone(),
+        length: body.len(),
+        fresh: true,
+        previous: None,
+        retired_keys: Default::default(),
+        historical_groups: Default::default(),
+        depth: 0,
+        store_config_sha256: receipt.store_config_sha256.clone(),
+        requirements: receipt.requirements.clone(),
+        holds: Default::default(),
+        held_principals: Default::default(),
+        complete: true,
+        authorization: None,
+        rollover: None,
+        extra_carry: Vec::new(),
+    };
+    mutations.push(Mutation::Put {
+        schema: SCHEMA.as_str().into(),
+        key: HEAD.to_vec(),
+        value: serde_json::to_vec(&head).map_err(|e| e.to_string())?,
+    });
+    Ok((receipt_sha256, mutations))
+}
+
 async fn initialize_namespace(
     receipt: &FreshNamespace,
     core: Arc<CoreStore>,
@@ -2331,27 +2445,7 @@ async fn initialize_namespace(
             expected: Expected::Bytes(value),
         });
     }
-    let receipt_sha256 = digest(receipt)?;
-    let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?;
-    let mut mutations = chunks(&body_prefix(&receipt_sha256), &body)?;
-    let head = Head {
-        version: 1,
-        plan_sha256: receipt_sha256.clone(),
-        length: body.len(),
-        fresh: true,
-        previous: None,
-        retired_keys: Default::default(),
-        historical_groups: Default::default(),
-        depth: 0,
-        store_config_sha256: store_sha256.into(),
-        requirements: required.to_vec(),
-        holds: Default::default(),
-        held_principals: Default::default(),
-        complete: true,
-        authorization: None,
-        rollover: None,
-        extra_carry: Vec::new(),
-    };
+    let (receipt_sha256, mutations) = fresh_mutations(receipt)?;
     let rows = native_receipt_snapshot(&core).await?;
     if read_head(&rows)?.is_some() {
         return Err("namespace already has a principal baseline or pending transition".into());
@@ -2369,14 +2463,7 @@ async fn initialize_namespace(
                 });
                 predicates
             },
-            mutations: {
-                mutations.push(Mutation::Put {
-                    schema: SCHEMA.as_str().into(),
-                    key: HEAD.to_vec(),
-                    value: serde_json::to_vec(&head).map_err(|e| e.to_string())?,
-                });
-                mutations
-            },
+            mutations,
         },
         receipt.witness_binding.as_ref(),
     )
