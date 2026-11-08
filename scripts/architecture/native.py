@@ -112,6 +112,16 @@ class Qualification:
         row = dict(name=name, argv=list(map(str, argv)), status='running', started_at=now())
         self.receipt['steps'].append(row)
         self.save()
+        is_nextest = list(argv[:3]) == ['cargo', 'nextest', 'run']
+        if is_nextest:
+            locate = ['cargo', 'locate-project', '--workspace', '--message-format', 'plain']
+            if '--manifest-path' in argv:
+                locate += ['--manifest-path', argv[argv.index('--manifest-path') + 1]]
+            workspace = Path(subprocess.check_output(locate, cwd=cwd or self.root, env=self.env, text=True).strip()).parent
+            # Nextest's default store is workspace-relative, independent of Cargo's
+            # target-dir. The distribution workspace therefore has its own report.
+            junit = workspace / 'target/nextest/default/native.xml'
+            junit.unlink(missing_ok=True)
         with (self.evidence / (name + '.stdout')).open('wb') as out, (self.evidence / (name + '.stderr')).open('wb') as err:
             process = subprocess.Popen(argv, cwd=cwd or self.root, env=self.env, stdout=out, stderr=err, start_new_session=True)
             try:
@@ -134,6 +144,13 @@ class Qualification:
                 except ProcessLookupError:
                     pass
         row.update(status='pass' if code == 0 else 'fail', exit_code=code, finished_at=now())
+        for stream in ('stdout', 'stderr'):
+            row[stream + '_sha256'] = digest(self.evidence / (name + '.' + stream))
+        if is_nextest and code == 0:
+            if not junit.is_file():
+                raise Violation('nextest did not produce its current machine-readable report')
+            shutil.copyfile(junit, self.evidence / (name + '.xml'))
+            row['junit_sha256'] = digest(junit)
         self.save()
         print(json.dumps(row), flush=True)
         if code:
@@ -141,6 +158,8 @@ class Qualification:
         return self.evidence / (name + '.stdout')
 
     def host(self):
+        if hasattr(self, '_host'):
+            return self._host
         if self.repository == 'GetBusbar/busbar':
             host = self.root
         else:
@@ -149,14 +168,24 @@ class Qualification:
             # once and the exact resulting revision is retained in the receipt.
             revision = os.environ.get('BUSBAR_ADMISSION_CORE_REVISION', 'dev')
             host = checkout('GetBusbar/busbar', revision, self.work / 'host')
-            sdk = (self.root / '.busbar-ref').read_text().split()[0]
-            if json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk'] != sdk:
-                raise Violation('assembled host and plugin SDK differ; submit a coherent cohort')
+            if self.repository != 'GetBusbar/busbar-release':
+                sdk = (self.root / '.busbar-ref').read_text().split()[0]
+                if json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk'] != sdk:
+                    raise Violation('assembled host and plugin SDK differ; submit a coherent cohort')
         self.receipt['host_revision'] = git(host, 'rev-parse', 'HEAD')
         self.env['BUSBAR_CHECKOUT'] = str(host)
         self.env['BUSBAR_ADMISSION_CORE_REVISION'] = self.receipt['host_revision']
         self.save()
+        self._host = host
         return host
+
+    def sdk(self):
+        if not hasattr(self, '_sdk'):
+            pin = json.loads((self.host() / 'scripts/ci-product-pins.json').read_text())['sdk']
+            self._sdk = checkout('GetBusbar/busbar', pin, self.work / 'sdk')
+            self.receipt['sdk_revision'] = pin
+            self.save()
+        return self._sdk
 
     def architecture(self, sdk=None):
         command = ['python3', str(self.trusted / 'scripts/architecture/check.py'), '--policy', str(self.trusted / 'ci/architecture.toml'),
@@ -170,7 +199,7 @@ class Qualification:
         self.architecture()
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
-        checkout('GetBusbar/busbar', sdk, self.work / 'sdk')
+        self.sdk()
         # A local assembly patch must not hide SDK source drift behind an old pin.
         self.run('sdk-source-identity', ['git', 'diff', '--exit-code', sdk, 'HEAD', '--',
             'crates/busbar-contract/src', 'crates/busbar-contract/include', 'crates/busbar-contract/Cargo.toml'])
@@ -222,17 +251,34 @@ class Qualification:
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
+            self.env['BUSBAR_BIN'] = str(binary)
+            self.conformance('core-native-conformance')
 
     def plugin(self):
         host = self.host()
         sdk_pin = (self.root / '.busbar-ref').read_text().split()[0]
-        sdk = checkout('GetBusbar/busbar', sdk_pin, self.work / 'sdk')
+        sdk = self.sdk()
         self.receipt['sdk_revision'] = sdk_pin
         self.architecture(sdk)
         from native_fixtures import Services
         with Services(self, host):
             from native_plugins import qualify_plugin
             qualify_plugin(self, host, sdk)
+
+    def conformance(self, name):
+        suites = self.root / 'testing/conformance/suites.tsv'
+        if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
+            self.run(name, ['bash', str(self.root / 'testing/conformance/run.sh')])
+            source = self.root / 'target/conformance'
+            destination = self.evidence / 'conformance'
+            destination.mkdir()
+            for relative in ('invocation.json', *[str(p.relative_to(source)) for p in sorted((source / 'verdicts').glob('*.json'))]):
+                path = source / relative
+                if path.is_symlink() or not path.is_file():
+                    raise Violation('missing or indirect conformance evidence')
+                out = destination / relative
+                out.parent.mkdir(exist_ok=True)
+                shutil.copyfile(path, out)
 
     def finish(self, status, error=None):
         self.receipt.update(status=status, finished_at=now())
@@ -255,6 +301,8 @@ def main():
         raise Violation('full native qualification runs in GitLab CI only')
     qualification = Qualification(args)
     try:
+        from native_sources import prepare
+        prepare(qualification, qualification.host())
         if qualification.repository == 'GetBusbar/busbar':
             qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
@@ -268,6 +316,12 @@ def main():
             raise Violation('source revision changed during qualification')
         if git(qualification.root, 'diff', 'HEAD', '--'):
             raise Violation('tracked source changed during qualification')
+        qualification.receipt['source_unchanged'] = True
+        archive = subprocess.Popen(['git', '-C', str(qualification.root), 'archive', '--format=tar', 'HEAD'], stdout=subprocess.PIPE)
+        qualification.receipt['source_archive_sha256'] = hashlib.file_digest(archive.stdout, 'sha256').hexdigest()
+        archive.stdout.close()
+        if archive.wait():
+            raise Violation('could not bind the qualified source archive')
         qualification.finish('pass')
     except BaseException as error:
         qualification.finish('fail', error)

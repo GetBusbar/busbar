@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from native import checkout, digest, git
+from native import digest, git
 
 
 def qualify_plugin(q, host, sdk):
@@ -65,9 +65,7 @@ def qualify_plugin(q, host, sdk):
     registered = next((p for p in registry['plugins'] if p['repo'] == q.repository.rsplit('/', 1)[1]), {})
     if registered.get('extra_test'):
         q.run('plugin-required-extra', ['bash', '-euo', 'pipefail', '-c', registered['extra_test']])
-    suites = q.root / 'testing/conformance/suites.tsv'
-    if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
-        q.run('plugin-native-conformance', ['bash', str(q.root / 'testing/conformance/run.sh')])
+    q.conformance('plugin-native-conformance')
     q.receipt['library_sha256'] = digest(library)
     q.receipt['lock_sha256'] = digest(q.root / 'Cargo.lock')
     q.receipt['private'] = entry['private']
@@ -77,15 +75,16 @@ def qualify_plugin(q, host, sdk):
 def qualify_generator(q):
     """One generator, with all fourteen kind/distribution combinations checked by
     the same trusted role graph, source guard and native door fixtures."""
-    host = checkout('GetBusbar/busbar', __import__('os').environ.get('BUSBAR_ADMISSION_CORE_REVISION', 'dev'), q.work / 'host')
+    host = q.host()
     pin = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
-    sdk = checkout('GetBusbar/busbar', pin, q.work / 'sdk')
+    sdk = q.sdk()
     q.env.update(BUSBAR_SDK_CHECKOUT=str(sdk), BUSBAR_SDK_REVISION=pin,
                  BUSBAR_SCAFFOLD_OUTPUT=str(q.work / 'generated'))
     q.receipt.update(host_revision=git(host, 'rev-parse', 'HEAD'), sdk_revision=pin)
     q.run('fmt', ['cargo', 'fmt', '--all', '--check'])
     q.run('clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'])
-    q.run('tooling-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked'])
+    q.run('tooling-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked',
+        '--tool-config-file', 'admission:' + str(q.trusted / 'ci/native-nextest.toml')])
     q.run('tooling-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked'])
     q.run('render-canonical', ['cargo', 'test', '--locked', '-p', 'busbar-release-plugin', '--test', 'boundary_scaffold',
         'canonical_seven_kind_skeletons', '--', '--ignored', '--exact'])

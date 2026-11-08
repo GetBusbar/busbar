@@ -69,9 +69,12 @@ website-dev:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
       variables:
         WEBSITE_CORE_REVISION: $CI_COMMIT_SHA
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_NAMESPACE == "GetBusbar" && $CI_PROJECT_NAME =~ /^busbar-/'
     - when: never
   variables:
     WEBSITE_EVENT_REPOSITORY: $CI_PROJECT_PATH
+    WEBSITE_SOURCE_REVISION: $CI_COMMIT_SHA
+    WEBSITE_UPSTREAM_PIPELINE_ID: $CI_PIPELINE_ID
   trigger:
     project: BusbarInc/marketing
     branch: dev

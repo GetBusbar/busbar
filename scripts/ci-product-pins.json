@@ -1,375 +1,375 @@
 {
-  "sdk": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+  "sdk": "32ab284dd9935f555bf0988eafa98f82ed737bb1",
   "products": [
     {
       "repo": "busbar-auth-admin-tokens",
       "url": "https://github.com/GetBusbar/busbar-auth-admin-tokens",
-      "commit": "90f5d2dd3242536ffadbf23ec21960abd68846ef",
+      "commit": "f6c9ffd9f29b3ae143ce0ed73b9d26f801d7f667",
       "package": "busbar-auth-admin-tokens-plugin",
       "kind": "auth",
       "alias": "admin-tokens",
       "image": "libbusbar_auth_admin_tokens_plugin.so",
       "declares": "auth-admin-tokens/declares.json",
-      "lock_sha256": "d0a55acdb3ac75e26d4207cc1724b594ffb5b6efcb450a29aaa2899d26d59fd0"
+      "lock_sha256": "76b924002ba77a361f017801e142e768a5533758425f438e17d806201ceea6c7"
     },
     {
       "repo": "busbar-auth-header",
       "url": "https://github.com/GetBusbar/busbar-auth-header",
-      "commit": "7d50a09039830a7ea6b2cf7bb075806c86cdf1ab",
+      "commit": "6044d18cbc9f9fa7ea4f6786e66bb134c91f31a5",
       "package": "busbar-auth-header-plugin",
       "kind": "auth",
       "alias": "header",
       "image": "libbusbar_auth_header_plugin.so",
       "declares": "auth-header/declares.json",
-      "lock_sha256": "7cd52b2e557eb12620e7a9da09af69c103d425a7af38e0c05edcab92be0c8b8b"
+      "lock_sha256": "aa85c0155c4de9e0fe31dc63bd0f732779c56a4c35f4a17a3a6ee7adc73cd654"
     },
     {
       "repo": "busbar-auth-ldap",
       "url": "https://github.com/GetBusbar/busbar-auth-ldap",
-      "commit": "23d5d895d54a7aa5ac1e50192dd2c987fe908230",
+      "commit": "4bdbeb97077bb3ab8d458f9544262839fe0cb956",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
       "image": "libbusbar_auth_ldap_plugin.so",
       "declares": "auth-ldap/declares.json",
-      "lock_sha256": "1644b4a2b59a944cdaec2c6e495521ffbf3067fa1bfc0ede2c1f6860dabdfe40"
+      "lock_sha256": "8753a9ec26808ded5e3faca593b0b319509aa96f841d8f540e63d2cd3338bad4"
     },
     {
       "repo": "busbar-auth-sigv4",
       "url": "https://github.com/GetBusbar/busbar-auth-sigv4",
-      "commit": "ea5dbc4086cc6327840556bef4465e3f12bcd7f6",
+      "commit": "e777dd1443b581c76a7736cfbd2432cce4f6a646",
       "package": "busbar-auth-sigv4-plugin",
       "kind": "auth",
       "alias": "sigv4",
       "image": "libbusbar_auth_sigv4_plugin.so",
       "declares": "auth-sigv4/declares.json",
-      "lock_sha256": "cb606983d760f3d6357ee00706236c613c769068c304d38f33ba1b813fb37e21"
+      "lock_sha256": "6bcc83739cf1e0da407bd45cef7ec4337440ced1ce937b4f3237600141908013"
     },
     {
       "repo": "busbar-auth-webhook-signature",
       "url": "https://github.com/GetBusbar/busbar-auth-webhook-signature",
-      "commit": "7d4777eb076159fd543dff43e5871197f97cc73f",
+      "commit": "4e1481f1cf0c52fe64297b443046584aa61955b1",
       "package": "busbar-auth-webhook-signature-plugin",
       "kind": "auth",
       "alias": "webhook-signature",
       "image": "libbusbar_auth_webhook_signature_plugin.so",
       "declares": "auth-webhook-signature/declares.json",
-      "lock_sha256": "6121667d7aa2909235f92b16c9b042d366f6bd3f5fd8952e93f6b8afc854f8f5"
+      "lock_sha256": "1ba82aefe1513af1be189f0260509c45157d9f46270b6b65a0f0bbea66d39795"
     },
     {
       "repo": "busbar-export-file",
       "url": "https://github.com/GetBusbar/busbar-export-file",
-      "commit": "6fb3ff22e9bee558a6dbab52bb347babf46439df",
+      "commit": "aaa222f84a945c69839435e58076ecbdc94cf25b",
       "package": "busbar-export-file-plugin",
       "kind": "export",
       "alias": "file",
       "image": "libbusbar_export_file_plugin.so",
       "declares": "export-file/declares.json",
-      "lock_sha256": "210467d86e5c8e1269bfce6f6a055496cb10116277892cbab7c39cf9921ac532"
+      "lock_sha256": "308897e28a4385172cf1aa2c6c17f040202ec975a4b99a741c04a0463a92d803"
     },
     {
       "repo": "busbar-export-prometheus",
       "url": "https://github.com/GetBusbar/busbar-export-prometheus",
-      "commit": "768b28d0cc491b88cb01f4ea5447ce85c61d0e8b",
+      "commit": "498306356b415be3364a70a2f31f14cd95f54a37",
       "package": "busbar-export-prometheus-plugin",
       "kind": "export",
       "alias": "prometheus",
       "image": "libbusbar_export_prometheus_plugin.so",
       "declares": "export-prometheus/declares.json",
-      "lock_sha256": "7f4be7aa50c4d58b06784bedfb7366a9d8de971d9fe165ceb7af540d1e791b93"
+      "lock_sha256": "afe80fe85996935ec3f54a8dc742e66fc576e3212392ee271d3c91fe7efc60ba"
     },
     {
       "repo": "busbar-hook-ranking",
       "url": "https://github.com/GetBusbar/busbar-hook-ranking",
-      "commit": "b91b27702b041cd65eeed8cf137ca1c9c77744d5",
+      "commit": "baf2e6d3b2d1401aecd7f3a8b25803330fe9d233",
       "package": "busbar-hook-ranking-plugin",
       "kind": "hook",
       "alias": "ranking",
       "image": "libbusbar_hook_ranking_plugin.so",
       "declares": "hook-ranking/declares.json",
-      "lock_sha256": "c39a63fbe408b6e4718432fe5b7c357b4c6afcb929c6ffb889a1e865c6b68278"
+      "lock_sha256": "019b872182cbc8d63d283a7b4bb7570babb3e1458e8a7d7287d10d62aaaa9bf9"
     },
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "1678cd1fcfd7ef50cd0b20df5494ddd3597db06f",
+      "commit": "a6097ce0756f588a2c1319258559177a7a1ea630",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
       "image": "libbusbar_plane_llm_plugin.so",
       "declares": "plane-llm/declares.json",
-      "lock_sha256": "04459e76f1cd619aa0f033670d20a2cd40ec2ff6bf4e892247711aac64b330b0"
+      "lock_sha256": "5f0f5dc747b5b66f75ca51dfeb58edec2bb3ded7e44a8084c2fcff63889bb181"
     },
     {
       "repo": "busbar-secret-env",
       "url": "https://github.com/GetBusbar/busbar-secret-env",
-      "commit": "996b8f58abb4391203a7ae2db235db753c0ef6f3",
+      "commit": "4f8ba9a2b60b33de4281d21e933a78bb868ae6b3",
       "package": "busbar-secret-env-plugin",
       "kind": "secret",
       "alias": "env",
       "image": "libbusbar_secret_env_plugin.so",
       "declares": "secret-env/declares.json",
-      "lock_sha256": "d36d14f33bb6570d90435bae479a60d9280fcfd4b8128b5d47c8bb4486e3b968"
+      "lock_sha256": "24d5fd89325fddfd516a2f8b85b85ca0e7e45fd5012c193908a78d8738af90e4"
     },
     {
       "repo": "busbar-secret-file",
       "url": "https://github.com/GetBusbar/busbar-secret-file",
-      "commit": "4c5426cfc3dc7e574d78dea71acaa206ee5d03dc",
+      "commit": "1f6265f71ad17cee4f350274fb122f4845750f47",
       "package": "busbar-secret-file-plugin",
       "kind": "secret",
       "alias": "file",
       "image": "libbusbar_secret_file_plugin.so",
       "declares": "secret-file/declares.json",
-      "lock_sha256": "d40ba9e6fde1fe488064da9f994c9572799e686156710f714b4bb7204b10e195"
+      "lock_sha256": "898b5151a01787e40411e9827f4bf3080a6183512a4f1839fb79a0e86ff595b4"
     },
     {
       "repo": "busbar-store-memory",
       "url": "https://github.com/GetBusbar/busbar-store-memory",
-      "commit": "0033fea1817e114261d5de312c8ee1c920c74a60",
+      "commit": "abf8f7991b43590b05e88ff3277f240a1edb2060",
       "package": "busbar-store-memory-plugin",
       "kind": "store",
       "alias": "memory",
       "image": "libbusbar_store_memory_plugin.so",
       "declares": "store-memory/declares.json",
-      "lock_sha256": "d1dea68c831925e02bcf6cecf59b77a96c71b5898634a7eb50fae5dc0582664e"
+      "lock_sha256": "bb433b3082a207b9ff2d23014ec0b0c5e4f36774d7171af746fde4fdddd3ffd8"
     },
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "5fe74246ab6824b75e855f7b504f99b7d6bf2ba0",
+      "commit": "b23641f261e292adb31b9762315ef652cc9a3c6a",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "2dcbadd33a9f1f34d2864105d2031fb6ed24525c0f6c46f7fe6bc0e38249992e"
+      "lock_sha256": "06a473f7e910d56d3492ac9d7adcf584611b4db27cb6cc9bdf65f1aa51ac6223"
     },
     {
       "repo": "busbar-transport-grpc",
       "url": "https://github.com/GetBusbar/busbar-transport-grpc",
-      "commit": "3442d99b0fb30d4df0f321577e9848aa3cc7af73",
+      "commit": "7b94d300010a952669c11b0b76ba5d0a84ec8911",
       "package": "busbar-transport-grpc-plugin",
       "kind": "transport",
       "alias": "grpc",
       "image": "libbusbar_transport_grpc_plugin.so",
       "declares": "transport-grpc/declares.json",
-      "lock_sha256": "3ed4bac05096d513d39e2577f9409f03aca7bc2ad141703c97bce1c02ecfb120"
+      "lock_sha256": "e6a2d6e8013770de6b547945e38f05855c0a4c2a2b7f30caea08e8a09d082491"
     },
     {
       "repo": "busbar-transport-http",
       "url": "https://github.com/GetBusbar/busbar-transport-http",
-      "commit": "efe040e4482b40876a45de0a557ba50a27280492",
+      "commit": "a319aed6ec56811b793c06289547b98c20908e40",
       "package": "busbar-transport-http-plugin",
       "kind": "transport",
       "alias": "http",
       "image": "libbusbar_transport_http_plugin.so",
       "declares": "transport-http/declares.json",
-      "lock_sha256": "4cb28e5df8e6259d98b21d7e6b5bd500bbd164400afc1cb2feab9c0d9588f6b5"
+      "lock_sha256": "f489561f98f30e16c83b94c58082dbc46604031ea6c0aeeacc86f914b5576ab9"
     },
     {
       "repo": "busbar-transport-stdio",
       "url": "https://github.com/GetBusbar/busbar-transport-stdio",
-      "commit": "271d069244f15585b01b86b013942bad902b564c",
+      "commit": "bd728d125617afe592aa0192cf8d82a01c241cb1",
       "package": "busbar-transport-stdio-plugin",
       "kind": "transport",
       "alias": "stdio",
       "image": "libbusbar_transport_stdio_plugin.so",
       "declares": "transport-stdio/declares.json",
-      "lock_sha256": "021db98403869ae4be598098066e6d6745b09965e226a19e0aff588426a8d161"
+      "lock_sha256": "2ee3abc9a8b16d386974f8f167e5ad1e0321a62e77bfd232887826ab068a6068"
     },
     {
       "repo": "busbar-transport-tcp",
       "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "c73467f16f1d2cab2801517328d1d5942b7d1530",
+      "commit": "63b2f8b15e37eeb15116e7b57143a2bce653f48d",
       "package": "busbar-transport-tcp-plugin",
       "kind": "transport",
       "alias": "tcp",
       "image": "libbusbar_transport_tcp_plugin.so",
       "declares": "transport-tcp/declares.json",
-      "lock_sha256": "46001a46dd8a3486de165f648d829ee8b24f43381aad38b92e834bf8dc09b21e"
+      "lock_sha256": "b514358cd8d06d13577d0dc0fa9623053474817371109ce5caec189829de6f61"
     },
     {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
-      "commit": "10629708872425a6d7299a496d9b2701f8abb619",
+      "commit": "349f785c58b717331efeae9ee57b0e936fa0a311",
       "package": "busbar-transport-webrtc-plugin",
       "kind": "transport",
       "alias": "webrtc",
       "image": "libbusbar_transport_webrtc_plugin.so",
       "declares": "transport-webrtc/declares.json",
-      "lock_sha256": "c19bdced6d8544ba708a7548620423f0c068c0a5392adbd2d3351d1e7ab063fb"
+      "lock_sha256": "1144ea6610ed9c3c93dcf8358c8359260bbf5d3ba97bb14a2cd89487afb2572c"
     },
     {
       "repo": "busbar-transport-ws",
       "url": "https://github.com/GetBusbar/busbar-transport-ws",
-      "commit": "a6411a6e4ed1d4a9bed8ca5513dc69ed716317c8",
+      "commit": "925a66e8d839e2911709bebab6c6fbc805d3439d",
       "package": "busbar-transport-ws-plugin",
       "kind": "transport",
       "alias": "ws",
       "image": "libbusbar_transport_ws_plugin.so",
       "declares": "transport-ws/declares.json",
-      "lock_sha256": "9ca2f29061e3d3ea1acc4f4f6e09d56f8947036426da02090992bb55784bf6f9"
+      "lock_sha256": "6df9e5c72965f39216af22d0a243e54727c5441a519c1bf371d7efecf6c36a35"
     },
     {
       "repo": "busbar-auth-github",
       "url": "https://github.com/GetBusbar/busbar-auth-github",
-      "commit": "fcdcc930335fdd7de01613dd8e33a32481534833",
+      "commit": "d6eef0c88fcd86d25521880a3864e6617299ff79",
       "package": "busbar-auth-github-plugin",
       "kind": "auth",
       "alias": "github",
       "image": "libbusbar_auth_github_plugin.so",
       "declares": "auth-github/declares.json",
-      "lock_sha256": "8e48b8613dd2c8bdde6bb2b8e604a3882fb38c29a77ca9865cc7e8fbda269d0d"
+      "lock_sha256": "c9061a8dd4ea2ceee34593c928b8e27b974bb34905e5481abb06faef3172fda1"
     },
     {
       "repo": "busbar-auth-oauth",
       "url": "https://github.com/GetBusbar/busbar-auth-oauth",
-      "commit": "1772ef871eea37d4611527ae9a9c316446e21c6d",
+      "commit": "728c7358e3dee2aa8d72cbf15a7b9ca10fba748b",
       "package": "busbar-auth-oauth-plugin",
       "kind": "auth",
       "alias": "oauth",
       "image": "libbusbar_auth_oauth_plugin.so",
       "declares": "auth-oauth/declares.json",
-      "lock_sha256": "93b8521cebf3d03a42abe22065b7c2d78cf3b9e26d62e539638c77c2074b3abc"
+      "lock_sha256": "53abc8a13754485097142c93dba86bc0ef116b966f6a2a941b1023c5f2f984fe"
     },
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "68b3c13c20b15c2b5bfe73a4af4e18f2509c06a1",
+      "commit": "293129023d01fd201a0db15d4574f3764dff6fb9",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
       "image": "libbusbar_auth_oidc_plugin.so",
       "declares": "auth-oidc/declares.json",
-      "lock_sha256": "4a0754e55d6de1a39c1686b65442e9329f4dfc6b1d36e56c75eaafe07356dd8e"
+      "lock_sha256": "e6830a9d49a0e48f94145fac324c52469b8bc144a74eef42c00be0273a8a5256"
     },
     {
       "repo": "busbar-export-otlp",
       "url": "https://github.com/GetBusbar/busbar-export-otlp",
-      "commit": "3b771638f66bb69d7e90f6b7f2ee10e3f0417a1b",
+      "commit": "0b3924e9e1c3ab4aad6b28de4cbd5519b04732ac",
       "package": "busbar-export-otlp-plugin",
       "kind": "export",
       "alias": "otlp",
       "image": "libbusbar_export_otlp_plugin.so",
       "declares": "export-otlp/declares.json",
-      "lock_sha256": "8aefd4c47bdcc631f15c5a350154d505793290b2558867a26750d6dd96e7c3ff"
+      "lock_sha256": "a2c0ec81d2167e4776130707879ec4398c8bb3c5bfbe5999d1eba85fa9fc0050"
     },
     {
       "repo": "busbar-export-webhook",
       "url": "https://github.com/GetBusbar/busbar-export-webhook",
-      "commit": "ea8296d8d3a117b77fe46b8a6d412a3616e23d5a",
+      "commit": "8fbe58764489e5a0cfdcc2a759bcc05c8995980c",
       "package": "busbar-export-webhook-plugin",
       "kind": "export",
       "alias": "webhook",
       "image": "libbusbar_export_webhook_plugin.so",
       "declares": "export-webhook/declares.json",
-      "lock_sha256": "77b19d52bad6122f57ea368ad8e58e4793d28a66002fbcecc4e9531264237b42"
+      "lock_sha256": "05bf85a07cf6d86e929b33aec051e1a5953e521c7944200e79a4d8c1f193b3f2"
     },
     {
       "repo": "busbar-hook-webrequest",
       "url": "https://github.com/GetBusbar/busbar-hook-webrequest",
-      "commit": "9a1479492bfb479a4e6b032dc054dfe09bbe68c6",
+      "commit": "ca9fcfeb308a8e6262f9ea475944e18e0f260e1a",
       "package": "busbar-hook-webrequest-plugin",
       "kind": "hook",
       "alias": "webrequest",
       "image": "libbusbar_hook_webrequest_plugin.so",
       "declares": "hook-webrequest/declares.json",
-      "lock_sha256": "eeb8247e1a8efaabafd99e908479c1168092b1d7d2927cb0b81b2e8aca000e7e"
+      "lock_sha256": "34c52b7db62c154d1bd75096896f1568c0695c53b9dc909cf86859e16035fbb0"
     },
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "72d9fe98d9db2f478d5fc4f364f3c6fbb6726c03",
+      "commit": "655611c3d601a79f8501bb9a4ae0e0fc92fe59db",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
       "image": "libbusbar_plane_a2a_plugin.so",
       "declares": "plane-a2a/declares.json",
-      "lock_sha256": "5e60d36184aeac3ee69307bcc340b02e6166bf8c68ea20208c56afb7cabdd4e2"
+      "lock_sha256": "4ee6a0efaba4d35a2bdafe3ddeca8b630843c5c37c001452155b095bfba88d46"
     },
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "f8592cc264b47b50c71301c6acee5485d9ae0717",
+      "commit": "9ea5a934bd8fa3370289b33e366bc65058a20a88",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
       "image": "libbusbar_plane_decisions_plugin.so",
       "declares": "plane-decisions/declares.json",
-      "lock_sha256": "f8f1016ae352c08c2b9c9e621bd201dd333b8cc17cc2ed4348c5fa559645fe87"
+      "lock_sha256": "2ac2d1a90e15b6e63a43e8cb7bccf9fa032467a43779708df1c4478a026bcd46"
     },
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "c266407448a8356967a601002c8f92681d8327ae",
+      "commit": "1be15801497b1cc3698a03d0c22fcd7734c16ff2",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
       "image": "libbusbar_plane_mcp_plugin.so",
       "declares": "plane-mcp/declares.json",
-      "lock_sha256": "6cc8fa21558702400f6e7dc4c05d87fb2ef9eed0bb0121727468469e2a5cbfa0"
+      "lock_sha256": "86ee6469b5c822ea894939cdf74e9d5dc5b462dd7511d8a2aa674f9d2884f9b9"
     },
     {
       "repo": "busbar-plane-streaming",
       "url": "https://github.com/GetBusbar/busbar-plane-streaming",
-      "commit": "669848ebb6c84889834f056a17ffd70528663bd5",
+      "commit": "182bd06f2ce73ab760694a020da463e51f849d62",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",
       "image": "libbusbar_plane_streaming_plugin.so",
       "declares": "plane-streaming/declares.json",
-      "lock_sha256": "032e30084be3687e8fab69d9915e76a00b4917ac7da5e32efc0d7db5f26715d5"
+      "lock_sha256": "3fd5a144dd0652fcba7061bf0b2fcc74147336f7d93cef65509fe20f64d1e201"
     },
     {
       "repo": "busbar-secret-vault",
       "url": "https://github.com/GetBusbar/busbar-secret-vault",
-      "commit": "bd9e5afc02e397744aa918fd787f469322ed3ec2",
+      "commit": "424d28d276145aa789b0035ecd33148ea70d568c",
       "package": "busbar-secret-vault-plugin",
       "kind": "secret",
       "alias": "vault",
       "image": "libbusbar_secret_vault_plugin.so",
       "declares": "secret-vault/declares.json",
-      "lock_sha256": "f93039509be961a436e597c6594f735e2a250a0f0811dd77c78b708f2f54d043"
+      "lock_sha256": "02237ac0805be9616f5ace34ff20cca840dbced17c953ebbe18b9f57b1b7b69b"
     },
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "d1289a2e9e0845d4c235e882491870aded614061",
+      "commit": "8407ab816c5606483549b13fc958054df837abd1",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "4c11482930b779b7b795623468fee7faee8875ac21b0c6eb1ced7b440fb69dc7"
+      "lock_sha256": "8a64e64a3f46111701e7d4190ae96327e0b3a9374738433568ed9751a9f12a7a"
     },
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "2e896aae9db7eb5b55743a52a07ee7c0d968937e",
+      "commit": "df51c0a25eae1f3fa65202ed77fca46b17f78e7d",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "27ca22d132c156f33040038ff3fa6283ba7d1caf4b9df408e3c5c2c7ef3b42ba"
+      "lock_sha256": "0f887c8089b79d230d69e0e2c96e82df93288ea2d655961663291480a9572f02"
     },
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "05986735a06eea9fd1aa638529edb1fe9ecc3890",
+      "commit": "03eac1f5f43d0e4eb8924463244be441792aaf63",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
       "image": "libbusbar_store_valkey_plugin.so",
       "declares": "store-valkey/declares.json",
-      "lock_sha256": "f5164d019123522fe338ef5fed2b4f0d63297c7003e5a91c80f75b1a9574e99c"
+      "lock_sha256": "5455ee89070571f08660d37430614ae253aa106d86ec2efc08336d70bb48543a"
     }
   ],
   "c_witness": {
     "repo": "busbar-secret-c",
     "url": "https://github.com/GetBusbar/busbar-secret-c",
-    "commit": "90c84d1d9692afde15c74aa1edeedc8bd0b42bd2",
-    "sdk": "24b15da367cced369a6cccfd6adeb2bd2adb38c0",
+    "commit": "4dfe3244e7af1c6ae11ea69efb20365df9fe5768",
+    "sdk": "32ab284dd9935f555bf0988eafa98f82ed737bb1",
     "kind": "secret",
     "language": "c",
     "header": "crates/busbar-contract/include/busbar_plugin.h"
