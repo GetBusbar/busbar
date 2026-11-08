@@ -204,10 +204,10 @@ async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes
     );
     assert!(current.permits("one").await.unwrap());
     assert!(!current.permits("unrelated").await.unwrap());
-    assert_eq!(
+    assert!(matches!(
         backend.commit(delayed).await.unwrap(),
         Decision::ExpiredUnknown
-    );
+    ));
     assert_eq!(
         prior.freeze(vec![initial_binding("one", 1)]).await,
         Err(Error::Authority)
