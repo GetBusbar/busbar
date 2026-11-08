@@ -708,7 +708,7 @@ crate::dispatch_tests::c_abi! {
             let bytes=wire::statement(&[]).unwrap().into_boxed_slice();let bytes=Box::leak(bytes);
             statement.extensions=Blob{ptr:bytes.as_ptr(),len:bytes.len(),fmt:BLOB_OCTETS,flags:0};
             let statement=Box::leak(Box::new(statement));
-            let door=unsafe{Door::__from_parts(DoorParts{ops:std::ptr::from_ref(ops).cast(),statement,..real})};Box::into_raw(Box::new(door)) as usize
+            let door=unsafe{Door::__from_parts(DoorParts{ops:std::ptr::from_ref(ops).cast(),statement,ready:Some(crossed),..real})};Box::into_raw(Box::new(door)) as usize
         });unsafe{&*(ptr as *const busbar_contract::abi::mechanism::door::Door)}
     }
 }
@@ -748,6 +748,55 @@ fn plane_rig() -> (
     let state = frame.out.open.instance.cast::<PluginState>();
     (dispatcher, plugin, provider, state)
 }
+#[test]
+fn actual_dispatch_ready_waits_for_applied_and_resumes_with_exact_receipt() {
+    use super::super::Frame;
+    use busbar_contract::abi::mechanism::{call::DeadlineClass, lifecycle::ReadyIn};
+    let (dispatcher, plugin, provider, state) = plane_rig();
+    let ticket = dispatcher.mint(0).unwrap();
+    let mut input: ReadyIn = unsafe { std::mem::zeroed() };
+    input.head = in_head();
+    let reply = dispatcher.submit(
+        &plugin,
+        ticket,
+        slot::READY,
+        Frame::new(input, out_head()),
+        DeadlineClass::Call,
+        0,
+    );
+    let start = std::time::Instant::now();
+    while provider.accepted.lock().unwrap().is_empty() {
+        if let Some(done) = reply.wait(std::time::Duration::ZERO) {
+            panic!(
+                "READY ended before the provider received its transaction: {:?}",
+                done.outcome
+            );
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        std::thread::yield_now();
+    }
+    assert!(
+        reply.wait(std::time::Duration::ZERO).is_none(),
+        "READY cannot finish while its transaction has no definitive receipt"
+    );
+    let (candidate, acked) = provider.accepted.lock().unwrap().remove(0);
+    let expected = unsafe { (*state).request.as_ref().unwrap().candidate.clone() };
+    assert_eq!(candidate, expected);
+    assert!(unsafe { &*state }.observed.lock().unwrap().is_empty());
+    acked(ConditionalResult {
+        correlation: candidate.correlation,
+        decision: Ok(Decision::Applied),
+    });
+    let done = reply.wait(std::time::Duration::from_secs(10)).unwrap();
+    assert_eq!(done.outcome, Outcome::Ready);
+    assert!(!done.short);
+    let state = unsafe { &*state };
+    assert_eq!(&*state.observed.lock().unwrap(), &[(slot::READY, true)]);
+    assert_eq!(state.released.load(Ordering::SeqCst), 1);
+    assert!(provider.accepted.lock().unwrap().is_empty());
+    dispatcher.recycle(ticket);
+}
+
 #[test]
 fn actual_dispatch_serve_waits_for_applied_releases_pending_lease_and_retains_short_receipt() {
     use super::super::Frame;

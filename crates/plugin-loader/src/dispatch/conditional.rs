@@ -261,6 +261,11 @@ fn isolated(a: &super::Answer) -> Result<(), ()> {
             let o = a.out::<PlaneDriveOut>().map_err(|_| ())?;
             o.sessions_written == 0 && o.sessions_needed == 0
         }
+        slot::READY => {
+            // READY has only an OutHead; there are no publication effects in a tail.
+            a.out::<OutHead>().map_err(|_| ())?;
+            true
+        }
         slot::TICK => true,
         _ => false,
     };
@@ -359,6 +364,10 @@ fn nonapplied_output(answer: &super::Answer, receipt: ReceiptKind) -> Result<(),
             if !observed && (out.sessions_written != 0 || out.sessions_needed != 0) {
                 return Err(());
             }
+        }
+        slot::READY => {
+            // Receipt authority is checked by the caller; READY has no emitted output.
+            answer.out::<OutHead>().map_err(|_| ())?;
         }
         slot::TICK => {
             if !observed
