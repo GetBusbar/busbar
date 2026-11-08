@@ -19,7 +19,7 @@ use crate::abi::mechanism::lifecycle::{
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::out::Out;
-use crate::abi::sdk::safe::{Instance, SafeSlot};
+use crate::abi::sdk::safe::SafeSlot;
 use crate::abi::secret::{ResolveIn, ResolveOut};
 
 use super::*;
@@ -36,6 +36,7 @@ static CANCELLED: std::sync::Mutex<Vec<(Vec<u8>, Ticket)>> = std::sync::Mutex::n
 struct Echo(Vec<u8>);
 
 impl Life for Echo {
+    type Kind = FixtureKind;
     const CANCEL: u32 = DISPOSITION;
     const DRIVE: Outcome = Outcome::Refused;
 
@@ -134,6 +135,7 @@ impl Life for Echo {
 /// `resolve`: the state's bytes, into the host's secret buffer.
 struct Resolve;
 impl SafeSlot for Resolve {
+    type Kind = FixtureKind;
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Echo>;
@@ -775,6 +777,7 @@ fn releasing_a_chain_drops_its_storage_after_unlocking_and_removing_the_whole_ch
 /// A kind that states no `validate` of its own: the SDK's object check, in the SDK's words.
 struct Defaulted;
 impl Life for Defaulted {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Defaulted)
@@ -787,6 +790,7 @@ impl Life for Defaulted {
 /// A kind whose plugin answers its own refusal text (a 1.5.5 plugin's words).
 struct Worded;
 impl Life for Worded {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         settings_object(settings)
@@ -1045,3 +1049,9 @@ fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
         assert_eq!(text(out.head.error).as_bytes(), settings);
     }
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::SecretKind;

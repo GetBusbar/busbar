@@ -18,7 +18,7 @@ use crate::abi::host::conn::connector::{
 use crate::abi::host::service::ServiceOut;
 use crate::abi::mechanism::call::{Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
-use crate::abi::sdk::conn::{ConnFailure, Host};
+use crate::abi::sdk::conn::ConnFailure;
 use crate::abi::sdk::cred::{Cred, Seal, NOT_SECURE};
 use crate::abi::sdk::store::op::Parked;
 use crate::abi::sdk::store::{Op, Step};
@@ -869,3 +869,7 @@ fn a_unix_store_target_and_its_bytes_reach_the_host_unchanged() {
     drop(parked);
     drop(pool);
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::StoreKind;

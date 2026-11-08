@@ -3,6 +3,7 @@
 
 //! ONE REQUEST, ONE REPLY, over a framed host connection. [`exchange`]
 
+use crate::plugin::KindMarker;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -334,7 +335,10 @@ impl Exchange {
         self.expires_at_ns
     }
 
-    fn within_timeout(&mut self, c: &mut Connector<'_>) -> Result<(), ConnFailure> {
+    fn within_timeout<K: KindMarker>(
+        &mut self,
+        c: &mut Connector<'_, K>,
+    ) -> Result<(), ConnFailure> {
         if self.timeout_ms.is_none() && self.deadline_ns.is_none() {
             return Ok(());
         }
@@ -387,7 +391,11 @@ impl Exchange {
         }
     }
 
-    fn timeout_failed(&mut self, c: &Connector<'_>, error: ConnFailure) -> Result<(), ConnFailure> {
+    fn timeout_failed<K: KindMarker>(
+        &mut self,
+        c: &Connector<'_, K>,
+        error: ConnFailure,
+    ) -> Result<(), ConnFailure> {
         self.wipe_sending();
         if let Some(stream) = self.stream.take() {
             c.closer().close(stream);
@@ -647,12 +655,15 @@ fn extend_wiping(body: &mut Vec<u8>, bytes: &[u8]) {
 }
 
 /// Check an already anchored absolute bound around one service step. Clock reads never draw a
-fn bounded_step<T>(
-    c: &mut Connector<'_>,
+fn bounded_step<T, K: KindMarker>(
+    c: &mut Connector<'_, K>,
     expires_at_ns: Option<u64>,
-    step: impl FnOnce(&mut Connector<'_>) -> Answer<T>,
+    step: impl FnOnce(&mut Connector<'_, K>) -> Answer<T>,
 ) -> Answer<T> {
-    fn check(c: &mut Connector<'_>, expiry: Option<u64>) -> Result<(), ConnFailure> {
+    fn check<K: KindMarker>(
+        c: &mut Connector<'_, K>,
+        expiry: Option<u64>,
+    ) -> Result<(), ConnFailure> {
         let Some(expiry) = expiry else {
             return Ok(());
         };
@@ -676,7 +687,7 @@ fn bounded_step<T>(
 }
 
 /// Send what `state` holds on `stream`.
-fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
+fn send<K: KindMarker>(c: &mut Connector<'_, K>, state: &mut Exchange, stream: u64) -> Answer<()> {
     let budget = c.budget_ms();
     let expiry = state.expires_at_ns;
     match &mut state.sending {
@@ -722,8 +733,8 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
 }
 
 /// Send, then read the reply to its terminal piece into `state`, then close the stream: on a
-fn send_and_read(
-    c: &mut Connector<'_>,
+fn send_and_read<K: KindMarker>(
+    c: &mut Connector<'_, K>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
@@ -752,8 +763,8 @@ fn send_and_read(
 }
 
 /// One pass of [`send_and_read`]: establish, send, read to the terminal piece, close a whole one.
-fn exchange_once(
-    c: &mut Connector<'_>,
+fn exchange_once<K: KindMarker>(
+    c: &mut Connector<'_, K>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
@@ -813,7 +824,11 @@ fn exchange_once(
 }
 
 /// Send on `stream`, then read the reply to its terminal piece (for a head-only exchange, its head
-fn read_to_end(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> {
+fn read_to_end<K: KindMarker>(
+    c: &mut Connector<'_, K>,
+    state: &mut Exchange,
+    stream: u64,
+) -> Answer<()> {
     ready!(send(c, state, stream));
     loop {
         if let Err(error) = state.within_timeout(c) {
@@ -913,7 +928,7 @@ fn apply(state: &mut Exchange, p: ReplyPiece, len: usize, fresh: bool) -> Result
 }
 
 /// Read `stream`'s facts into `state` where it asks ([`Exchange::observing`]): a facts answer the
-fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()> {
+fn observe<K: KindMarker>(c: &mut Connector<'_, K>, state: &mut Exchange, stream: u64) -> Poll<()> {
     if !state.observe {
         return Poll::Ready(());
     }
@@ -928,8 +943,8 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 }
 
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
-pub fn exchange(
-    c: &mut Connector<'_>,
+pub fn exchange<K: KindMarker>(
+    c: &mut Connector<'_, K>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
@@ -944,8 +959,8 @@ pub fn exchange(
 }
 
 /// SEND and learn what became of it, over any transport (a pure-send one answers a single ack):
-pub fn send_and_ack(
-    c: &mut Connector<'_>,
+pub fn send_and_ack<K: KindMarker>(
+    c: &mut Connector<'_, K>,
     state: &mut Exchange,
     need: u32,
     target: Option<&str>,
@@ -976,7 +991,7 @@ pub(crate) trait Parks {
     fn resume(&self) -> Option<Box<Exchange>>;
 }
 
-impl<T: Send + Sync + 'static> Parks for Instance<'_, T> {
+impl<T: Send + Sync + 'static, K: KindMarker> Parks for Instance<'_, T, K> {
     fn ticket(&self) -> Ticket {
         Instance::ticket(self)
     }
@@ -1076,15 +1091,15 @@ impl std::error::Error for ExchangeFailure {
 }
 
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
-pub struct Op<'a> {
+pub struct Op<'a, K: KindMarker> {
     on: &'a dyn Parks,
-    host: Option<&'a Host>,
+    host: Option<&'a Host<K>>,
     timeout_ms: Cell<Option<u64>>,
     deadline_ns: Cell<Option<u64>>,
     wake_at_ns: Cell<Option<u64>>,
 }
 
-impl std::fmt::Debug for Op<'_> {
+impl<K: KindMarker> std::fmt::Debug for Op<'_, K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Op")
             .field("ticket", &self.on.ticket())
@@ -1093,18 +1108,18 @@ impl std::fmt::Debug for Op<'_> {
     }
 }
 
-impl<'a> Op<'a> {
+impl<'a, K: KindMarker> Op<'a, K> {
     /// The op `instance` runs, over the host tables `open` handed it (`None`: every exchange
     #[must_use]
     pub fn new<'b: 'a, T: Send + Sync + 'static>(
-        instance: &'a Instance<'b, T>,
-        host: Option<&'a Host>,
+        instance: &'a Instance<'b, T, K>,
+        host: Option<&'a Host<K>>,
     ) -> Self {
         Self::over(instance, host)
     }
 
     /// A kind SDK's composite continuation, still owned and cleaned up by its safe instance.
-    pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host>) -> Self {
+    pub(crate) fn over(on: &'a dyn Parks, host: Option<&'a Host<K>>) -> Self {
         Self {
             on,
             host,
@@ -1147,7 +1162,7 @@ impl<'a> Op<'a> {
 
     /// The host tables the op runs over (`None`: the instance was handed none): what an op that
     #[must_use]
-    pub fn host(&self) -> Option<&'a Host> {
+    pub fn host(&self) -> Option<&'a Host<K>> {
         self.host
     }
 
@@ -1198,7 +1213,10 @@ impl<'a> Op<'a> {
         state: &mut Inspection,
         id: u64,
         query: &crate::abi::mechanism::inspection::InspectionQuery,
-    ) -> Poll<crate::abi::mechanism::inspection::InspectionResult> {
+    ) -> Poll<crate::abi::mechanism::inspection::InspectionResult>
+    where
+        K: crate::abi::host::access::Inspect,
+    {
         use crate::abi::mechanism::call::{InHead, FLAG_RESUME};
         use crate::abi::mechanism::inspection::{self, InspectionError, InspectionRequest};
         // SAFETY: AbiIn starts with InHead, and Lent's host-owned pointers live for this entry.

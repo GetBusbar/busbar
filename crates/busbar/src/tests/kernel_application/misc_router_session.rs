@@ -72,7 +72,10 @@ async fn real_session_framer(
     };
 
     let publishing = crate::root::PUBLISHING.lock().await;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     assert!(crate::root::inbound::install(&dispatcher));
     let mut products = Vec::new();
     for variable in ["BUSBAR_TEST_HTTP_CDYLIB", "BUSBAR_TEST_WS_CDYLIB"] {

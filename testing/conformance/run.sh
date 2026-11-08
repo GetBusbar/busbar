@@ -4,10 +4,10 @@
 # RENDERED by `busbar-release plugin heal` from GetBusbar/busbar-release template/conformance/run.sh;
 # a hand edit is overwritten by the next sync.
 #
-# THE CONFORMANCE CHECK: every official suite this repo owns, run against busbar at the pin in
-# `.busbar-ref` (busbar itself, which has no pin, judges its own HEAD), each judged into one busbar.conformance.verdict/1 file that busbar's
-# conformance/verdicts/ imports. ModernCI runs it as the `conformance` check of every plugin repo
-# (template/modernci/conformance.yaml):
+# THE CONFORMANCE CHECK: every official suite this repo owns, run against the assembled
+# host selected by trusted admission. `.busbar-ref` identifies its SDK, which must match
+# that host's dependency vector. Core judges its own HEAD. Each suite produces one
+# busbar.conformance.verdict/1 file for publication by the native CI job:
 #
 #     bash testing/conformance/run.sh            # every suite in testing/conformance/suites.tsv
 #     bash testing/conformance/run.sh --selftest # the verdict judge bites on planted verdicts
@@ -21,8 +21,8 @@
 #
 #     CONFORMANCE_SUITE  the suite id
 #     CONFORMANCE_OUT    an empty directory; the command MUST write $CONFORMANCE_OUT/verdict.json
-#     BUSBAR_CHECKOUT    busbar at the pin (a full checkout)
-#     BUSBAR_PIN         the pin's sha
+#     BUSBAR_CHECKOUT    the assembled host checkout
+#     BUSBAR_PIN         the actual assembled host sha (not its SDK source revision)
 #     CARGO_TARGET_DIR   this repo's target/ (the subject builds there)
 #
 # and Node at testing/conformance/tools.sh's pin on PATH. Rust workspaces also receive the Rust
@@ -357,8 +357,10 @@ export CONF_HEAD="${MODERNCI_COMMIT:-$actual_head}"
 [ "$CONF_HEAD" = "$actual_head" ] || { say "the checkout is $actual_head, expected $CONF_HEAD"; exit 2; }
 # busbar itself carries no .busbar-ref: its core suites judge this checkout, so the pin is HEAD.
 if [ -f .busbar-ref ]; then
-  pin="$(awk '{print $1; exit}' .busbar-ref)"
-  [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { say ".busbar-ref field 1 is not a full sha: '$pin'"; exit 2; }
+  sdk_pin="$(awk '{print $1; exit}' .busbar-ref)"
+  [[ "$sdk_pin" =~ ^[0-9a-f]{40}$ ]] || { say ".busbar-ref field 1 is not a full sha: '$sdk_pin'"; exit 2; }
+  pin="${BUSBAR_ADMISSION_CORE_REVISION:-}"
+  [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || { say "BUSBAR_ADMISSION_CORE_REVISION must select the exact assembled host; .busbar-ref selects only its SDK"; exit 2; }
 else
   [ -f crates/busbar-contract/Cargo.toml ] || { say "no .busbar-ref, and this is not busbar"; exit 2; }
   pin="$CONF_HEAD"
@@ -395,6 +397,9 @@ W="$(mktemp -d "${TMPDIR:-/tmp}/conformance.XXXXXX")" || { say "the invocation w
 trap 'rm -rf "$W"' EXIT
 if [ ! -f .busbar-ref ]; then
   export BUSBAR_CHECKOUT="$here"
+elif [ -n "${BUSBAR_CHECKOUT:-}" ]; then
+  [ "$(git -C "$BUSBAR_CHECKOUT" rev-parse HEAD)" = "$pin" ] || { say "supplied host checkout is not $pin"; exit 2; }
+  [ -z "$(git -C "$BUSBAR_CHECKOUT" status --porcelain --untracked-files=no)" ] || { say "supplied host checkout has modified source"; exit 2; }
 else
   export BUSBAR_CHECKOUT="$W/busbar"
   mkdir -p "$BUSBAR_CHECKOUT" && git -C "$BUSBAR_CHECKOUT" init -q \
@@ -402,6 +407,15 @@ else
   && run_bounded "$FETCH_TIMEOUT" "core fetch" git -C "$BUSBAR_CHECKOUT" fetch -q --depth 1 --no-tags origin "$pin" \
   && git -C "$BUSBAR_CHECKOUT" -c advice.detachedHead=false checkout -q FETCH_HEAD \
   || { say "busbar $pin could not be fetched"; exit 2; }
+fi
+if [ -f .busbar-ref ]; then
+  python3 -I - "$BUSBAR_CHECKOUT/scripts/ci-product-pins.json" "$sdk_pin" <<'PYSDK' || exit 2
+import json, sys
+with open(sys.argv[1]) as stream:
+    actual = json.load(stream)['sdk']
+if actual != sys.argv[2]:
+    raise SystemExit('assembled host and plugin SDK differ; qualify a coherent cohort')
+PYSDK
 fi
 
 invocation_receipt start || exit 2

@@ -67,7 +67,10 @@ pub(crate) unsafe fn prepare(
     let Some(served) = route.services() else {
         return Ok(None);
     };
-    if wake.caller.get().is_none() {
+    let policy = busbar_contract::abi::host::access::extension(
+        busbar_contract::abi::host::access::Extension::AcknowledgeSettlement,
+    );
+    if super::access::admit(wake, Some(&policy), Some(operation)).is_err() {
         return Ok(None);
     }
     let driver = matches!(operation, slot::DRIVE | slot::TICK);
@@ -92,7 +95,11 @@ pub(crate) unsafe fn prepare(
     } else {
         None
     };
-    let normal = if served.provider.supports_record_transactions()
+    let commit_policy = busbar_contract::abi::host::access::extension(
+        busbar_contract::abi::host::access::Extension::CommitRecords,
+    );
+    let normal = if super::access::admit(wake, Some(&commit_policy), Some(operation)).is_ok()
+        && served.provider.supports_record_transactions()
         && !served
             .store
             .conditional_current_retired(caller(wake), head.ticket)
@@ -407,6 +414,25 @@ fn output_allowed(
             })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnswerError {
+    Malformed,
+    Authority,
+}
+impl From<()> for AnswerError {
+    fn from(_: ()) -> Self {
+        Self::Malformed
+    }
+}
+impl AnswerError {
+    pub(crate) fn outcome(self) -> Outcome {
+        match self {
+            Self::Malformed => Outcome::Fault,
+            Self::Authority => Outcome::Refused,
+        }
+    }
+}
+
 /// # Safety
 /// The validated answer and every extension byte remain leased for this call.
 pub(crate) unsafe fn answer(
@@ -416,11 +442,21 @@ pub(crate) unsafe fn answer(
     unit: Option<u64>,
     head: &OutHead,
     answer: &super::Answer,
-) -> Result<bool, ()> {
+) -> Result<bool, AnswerError> {
     let operation = answer.slot;
     let outcome = answer.outcome;
     if kind != KindCode::Plane {
-        return Ok(false);
+        if head.extensions.len > busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize {
+            return Err(AnswerError::Malformed);
+        }
+        // SAFETY: the bounded plugin output remains under its validated answer lease.
+        let bytes =
+            unsafe { super::validate::lent(head.extensions.ptr, head.extensions.len) }.ok_or(())?;
+        return if wire::present(bytes) {
+            Err(AnswerError::Authority)
+        } else {
+            Ok(false)
+        };
     }
     let waking = Waking::of(wake);
     let route = waking.as_ref().and_then(|w| w.route.upgrade());
@@ -447,7 +483,7 @@ pub(crate) unsafe fn answer(
         || (head.extensions.len != 0 && head.extensions.ptr.is_null())
     {
         if negotiated {
-            return Err(());
+            return Err(AnswerError::Malformed);
         }
         &[][..]
     } else {
@@ -459,15 +495,20 @@ pub(crate) unsafe fn answer(
             .map_err(|_| ())?
             .is_some()
         {
-            return Err(());
+            return Err(AnswerError::Malformed);
         }
         if let Some(ack) = wire::read_settlement_ack(bytes).map_err(|_| ())? {
+            let policy = busbar_contract::abi::host::access::extension(
+                busbar_contract::abi::host::access::Extension::AcknowledgeSettlement,
+            );
+            super::access::admit(wake, Some(&policy), Some(operation))
+                .map_err(|_| AnswerError::Authority)?;
             if !matches!(operation, slot::DRIVE | slot::TICK)
                 || !matches!(outcome, Outcome::Ready | Outcome::Pending | Outcome::Failed)
                 || head.extensions.fmt != BLOB_OCTETS
                 || head.extensions.flags & !busbar_contract::abi::mechanism::call::BLOB_SECRET != 0
             {
-                return Err(());
+                return Err(AnswerError::Malformed);
             }
             isolated(answer)?;
             for key in [
@@ -479,7 +520,7 @@ pub(crate) unsafe fn answer(
                 busbar_contract::abi::mechanism::inspection::EXT_REQUEST,
             ] {
                 if wire::entry(bytes, key).map_err(|_| ())?.is_some() {
-                    return Err(());
+                    return Err(AnswerError::Malformed);
                 }
             }
             let served = served.ok_or(())?;
@@ -488,7 +529,7 @@ pub(crate) unsafe fn answer(
                     .store
                     .conditional_output_allowed(caller(wake), ticket, unit)
             {
-                return Err(());
+                return Err(AnswerError::Malformed);
             }
             let consumed =
                 served
@@ -508,7 +549,7 @@ pub(crate) unsafe fn answer(
                 .as_ref()
                 .is_some_and(|s| !output_allowed(s.store, wake, ticket, unit, answer, bytes))
         {
-            return Err(());
+            return Err(AnswerError::Malformed);
         }
         if let Some(s) = &served {
             if outcome == Outcome::Ready {
@@ -535,17 +576,17 @@ pub(crate) unsafe fn answer(
             .map_err(|_| ())?
             .is_some()
     {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     let request = wire::read_request(bytes)
         .map_err(|_| ())?
         .map(zeroize::Zeroizing::new);
     let observation = wire::read_observation(bytes).map_err(|_| ())?;
     if request.is_some() == observation.is_some() {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     if outcome != Outcome::Pending || ticket.is_none() {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     isolated(answer)?;
 
@@ -555,17 +596,25 @@ pub(crate) unsafe fn answer(
     )
     .is_some()
     {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     let served = served.ok_or(())?;
     let waking = waking.ok_or(())?;
     if !served.provider.supports_record_transactions() {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     let authority = wake.caller.get().ok_or(())?;
+    let operation_policy =
+        busbar_contract::abi::host::access::extension(if observation.is_some() {
+            busbar_contract::abi::host::access::Extension::ObserveRecordChain
+        } else {
+            busbar_contract::abi::host::access::Extension::CommitRecords
+        });
+    super::access::admit(wake, Some(&operation_policy), Some(operation))
+        .map_err(|_| AnswerError::Authority)?;
     if let Some(observation) = observation {
         if observation.capability.ticket != ticket {
-            return Err(());
+            return Err(AnswerError::Malformed);
         }
         if !served
             .store
@@ -623,7 +672,7 @@ pub(crate) unsafe fn answer(
     }
     let request = request.ok_or(())?;
     if request.capability.ticket != ticket {
-        return Err(());
+        return Err(AnswerError::Malformed);
     }
     if !served.store.conditional_begin(wake, unit, &request)? {
         return Ok(true);

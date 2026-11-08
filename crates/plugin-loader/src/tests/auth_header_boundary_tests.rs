@@ -274,10 +274,13 @@ extern "C" fn all_door() -> &'static Door {
 }
 
 fn open(door: DoorFn, second: bool) -> AuthInstance {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 1,
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     let sink = AuthSink::new(SELECTED);
     let plugin = load_linked::<Auth>(
         &LinkedRow::of(door).unwrap(),

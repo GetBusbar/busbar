@@ -407,6 +407,7 @@ mod blocked_disk_resolver {
     pub static HOLD: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
     pub struct Source;
     impl Life for Source {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         const CANCEL: u32 = busbar_contract::abi::secret::cancel::ABORTED;
         fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Self)
@@ -414,11 +415,12 @@ mod blocked_disk_resolver {
     }
     pub struct Resolve;
     impl SafeSlot for Resolve {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         type In = ResolveIn;
         type Out = ResolveOut;
         type State = Held<Source>;
         fn call(
-            _: Instance<'_, Held<Source>>,
+            _: Instance<'_, Held<Source>, Self::Kind>,
             input: Lent<'_, ResolveIn>,
             mut out: Out<'_, ResolveOut>,
         ) -> Outcome {

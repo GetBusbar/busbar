@@ -131,7 +131,7 @@ fn observer_histograms_reserve_generated_quantiles_before_cardinality_and_snapsh
         metrics::with_local_recorder(&source, || {
             let observe = |metric| {
                 OBSERVER.observe(
-                    &*TEST_GRANTS,
+                    &TEST_GRANTS,
                     plugin,
                     busbar_contract::abi::mechanism::kind::EXPORT,
                     &[metric],
@@ -219,7 +219,7 @@ fn observer_counters_and_gauges_keep_their_quantile_dimension() {
     metrics::with_local_recorder(&source, || {
         for kind in ["counter", "gauge"] {
             OBSERVER.observe(
-                &*TEST_GRANTS,
+                &TEST_GRANTS,
                 plugin,
                 busbar_contract::abi::mechanism::kind::EXPORT,
                 &[
@@ -313,7 +313,7 @@ fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted(
     let recorder = Registered::default();
     metrics::with_local_recorder(&recorder, || {
         fold_metrics(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "s1-first-party",
             &[
                 entry("busbar_s1_fold_total", "counter"),
@@ -323,7 +323,7 @@ fn a_granted_first_party_series_renders_as_declared_and_nothing_else_is_granted(
             ],
         );
         fold_metrics(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "s1-third-party",
             &[entry("busbar_s1_fold_total", "counter")],
         );
@@ -351,12 +351,12 @@ fn a_reported_metric_name_keeps_one_type_across_plugins_and_label_sets() {
     };
     let recorder = Registered::default();
     metrics::with_local_recorder(&recorder, || {
-        fold_metrics(&*TEST_GRANTS, first, &[entry("counter", "first")]);
-        fold_metrics(&*TEST_GRANTS, first, &[entry("gauge", "first")]);
-        fold_metrics(&*TEST_GRANTS, first, &[entry("histogram", "second")]);
-        fold_metrics(&*TEST_GRANTS, second, &[entry("gauge", "third")]);
-        fold_metrics(&*TEST_GRANTS, second, &[entry("counter", "third")]);
-        fold_metrics(&*TEST_GRANTS, first, &[entry("counter", "first")]);
+        fold_metrics(&TEST_GRANTS, first, &[entry("counter", "first")]);
+        fold_metrics(&TEST_GRANTS, first, &[entry("gauge", "first")]);
+        fold_metrics(&TEST_GRANTS, first, &[entry("histogram", "second")]);
+        fold_metrics(&TEST_GRANTS, second, &[entry("gauge", "third")]);
+        fold_metrics(&TEST_GRANTS, second, &[entry("counter", "third")]);
+        fold_metrics(&TEST_GRANTS, first, &[entry("counter", "first")]);
     });
     let seen = recorder.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
     forget_cardinality(first);
@@ -376,7 +376,7 @@ fn the_reserved_namespace_is_refused() {
     let recorder = Registered::default();
     metrics::with_local_recorder(&recorder, || {
         fold_metrics(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "reserved-namespace-witness",
             &[
                 serde_json::json!({"name": "busbar_file_logs_rotated_total", "type": "counter", "value": 1}),
@@ -494,7 +494,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
     let recorder = Registered::default();
     metrics::with_local_recorder(&recorder, || {
         OBSERVER.observe(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "hook-freeze-witness",
             busbar_contract::abi::mechanism::kind::HOOK,
             &entries,
@@ -509,7 +509,7 @@ fn hook_envelope_metrics_are_carried_but_not_folded() {
             "the hook's envelope metrics must not be registered"
         );
         OBSERVER.observe(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "export-freeze-control",
             busbar_contract::abi::mechanism::kind::EXPORT,
             &entries,
@@ -548,7 +548,7 @@ fn a_hooks_diagnostic_is_emitted_while_its_metrics_stay_frozen() {
         .finish();
     tracing::subscriber::with_default(subscriber, || {
         OBSERVER.observe(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "some-hook",
             busbar_contract::abi::mechanism::kind::HOOK,
             &[serde_json::json!({"name": "x_total", "type": "counter", "value": 1})],
@@ -606,13 +606,13 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
         let url = String::from("https://a/");
         crate::diagnostics::diag_warn!(d, webhook_url = url, status = 503u16, "it broke");
         OBSERVER.observe(
-            &*TEST_GRANTS,
+            &TEST_GRANTS,
             "k9c-first-party",
             "export",
             &[],
             std::slice::from_ref(&entry),
         );
-        OBSERVER.observe(&*TEST_GRANTS, "k9c-third-party", "export", &[], &[entry]);
+        OBSERVER.observe(&TEST_GRANTS, "k9c-third-party", "export", &[], &[entry]);
     });
     let text = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -627,21 +627,85 @@ fn a_first_party_plugins_diagnostic_is_written_as_the_hosts_own_line() {
 #[derive(Default)]
 struct TestGrants(std::sync::Mutex<std::collections::HashMap<String, Vec<(String, String)>>>);
 
-impl Grants for TestGrants {
-    fn first_party(&self, plugin: &str) -> bool {
-        self.0.lock().unwrap().contains_key(plugin)
+struct BoundGrants<'a> {
+    declarations: &'a TestGrants,
+    plugin: &'a str,
+    owner: ObservationOwner,
+}
+impl Grants for BoundGrants<'_> {
+    fn owner(&self) -> &ObservationOwner {
+        &self.owner
     }
-    fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool {
-        self.0
+    fn first_party(&self) -> bool {
+        self.declarations
+            .0
             .lock()
             .unwrap()
-            .get(plugin)
+            .contains_key(self.plugin)
+    }
+    fn first_party_series(&self, name: &str, kind: &str) -> bool {
+        self.declarations
+            .0
+            .lock()
+            .unwrap()
+            .get(self.plugin)
             .is_some_and(|s| s.iter().any(|(n, k)| n == name && k == kind))
     }
 }
-
-const OBSERVER: KernelPluginObserver =
-    KernelPluginObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
+static OWNERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, ObservationOwner>>,
+> = std::sync::LazyLock::new(Default::default);
+fn owner(plugin: &str) -> ObservationOwner {
+    OWNERS
+        .lock()
+        .unwrap()
+        .entry(plugin.into())
+        .or_default()
+        .clone()
+}
+fn bound<'a>(declarations: &'a TestGrants, plugin: &'a str) -> BoundGrants<'a> {
+    BoundGrants {
+        declarations,
+        plugin,
+        owner: owner(plugin),
+    }
+}
+fn forget_cardinality(plugin: &str) {
+    super::forget_cardinality(&owner(plugin));
+}
+fn admits_cardinality(plugin: &str, series: &str, label: u64) -> bool {
+    super::admits_cardinality(&owner(plugin), series, label)
+}
+fn fold_metrics(grants: &TestGrants, plugin: &str, raw: &[serde_json::Value]) {
+    super::fold_metrics(&bound(grants, plugin), &Output(plugin), raw);
+}
+struct TestObserver(KernelPluginObserver);
+impl TestObserver {
+    const fn lent(catalogue: crate::diagnostics::Catalogue) -> Self {
+        Self(KernelPluginObserver::lent(catalogue))
+    }
+    fn observe(
+        &self,
+        grants: &TestGrants,
+        plugin: &str,
+        kind: &str,
+        metrics: &[serde_json::Value],
+        diagnostics: &[serde_json::Value],
+    ) {
+        let kind = busbar_contract::abi::mechanism::KindCode::ALL
+            .into_iter()
+            .find(|k| k.word() == kind)
+            .unwrap();
+        self.0.observe(
+            &bound(grants, plugin),
+            &Output(plugin),
+            kind,
+            metrics,
+            diagnostics,
+        );
+    }
+}
+const OBSERVER: TestObserver = TestObserver::lent(crate::diagnostics::Catalogue::NEUTRAL);
 
 static TEST_GRANTS: std::sync::LazyLock<TestGrants> = std::sync::LazyLock::new(TestGrants::default);
 
@@ -680,11 +744,10 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
         since: "1.6.0",
         retired: false,
     };
-    let folded =
-        KernelPluginObserver::lent(crate::diagnostics::Catalogue::lent(Box::leak(Box::new([
-            &OWN,
-        ]))));
-    let other = KernelPluginObserver::lent(crate::diagnostics::Catalogue::lent(&[]));
+    let folded = TestObserver::lent(crate::diagnostics::Catalogue::lent(Box::leak(Box::new([
+        &OWN,
+    ]))));
+    let other = TestObserver::lent(crate::diagnostics::Catalogue::lent(&[]));
     grant("lent-observer-plugin", &[]);
     let entry = serde_json::to_value(
         busbar_contract::abi::mechanism::observe::PluginDiagnostic::warn(
@@ -693,7 +756,7 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
         ),
     )
     .unwrap();
-    let emitted = |observer: KernelPluginObserver| {
+    let emitted = |observer: TestObserver| {
         let buf = Buf::default();
         let writer = buf.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -703,7 +766,7 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             observer.observe(
-                &*TEST_GRANTS,
+                &TEST_GRANTS,
                 "lent-observer-plugin",
                 "export",
                 &[],
@@ -723,4 +786,95 @@ fn two_observers_lent_two_catalogues_each_emit_only_their_own_roots_codes() {
         theirs.is_empty(),
         "the other root's observer holds no such code: {theirs}"
     );
+}
+
+// Test output renders accepted values into the existing thread-local recorders.
+struct Output<'a>(&'a str);
+impl ObservationSink for Output<'_> {
+    fn metric(&self, m: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool) {
+        let labels = labels_for((!canonical).then_some(self.0), m);
+        match m.kind.as_str() {
+            "counter" => metrics::counter!(m.name.clone(), labels).increment(m.value as u64),
+            "gauge" => metrics::gauge!(m.name.clone(), labels).set(m.value),
+            "histogram" => metrics::histogram!(m.name.clone(), labels).record(m.value),
+            _ => {}
+        }
+    }
+    fn diagnostic(
+        &self,
+        diag: &'static crate::diagnostics::Diagnostic,
+        level: tracing::Level,
+        message: &str,
+        fields: &[(String, String)],
+        canonical: bool,
+    ) {
+        if canonical {
+            crate::diagnostics::emit(diag, level, message, fields);
+            return;
+        }
+        let plugin = self.0;
+        let banner = diag.banner();
+        let fields = fields
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match level {
+            tracing::Level::ERROR => {
+                tracing::error!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
+            }
+            tracing::Level::WARN => {
+                tracing::warn!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
+            }
+            tracing::Level::INFO => {
+                tracing::info!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
+            }
+            _ => tracing::debug!(diag = %banner, plugin = %plugin, fields = %fields, "{message}"),
+        }
+    }
+    fn cardinality(&self, series: &str, max_series: usize, max_label_sets: usize) {
+        tracing::warn!(plugin = %self.0, series = %series, max_series, max_label_sets,
+            "plugin exceeded its metric cardinality budget; further new series or label sets from it \
+             are refused (established ones keep reporting)");
+    }
+}
+
+fn labels_for(
+    plugin: Option<&str>,
+    m: &busbar_contract::hook_wire::reply::HookMetric,
+) -> Vec<metrics::Label> {
+    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
+    let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
+    if let Some(own) = &m.labels {
+        for (k, v) in own {
+            if k == PLUGIN_LABEL {
+                continue;
+            }
+            labels.push(metrics::Label::new(k.clone(), v.clone()));
+        }
+    }
+    labels
+}
+
+#[test]
+fn cloned_observation_owner_shares_budget_and_another_owner_does_not() {
+    let first = ObservationOwner::default();
+    let replacement = first.clone();
+    let other = ObservationOwner::default();
+    for i in 0..MAX_SERIES_PER_PLUGIN {
+        assert!(super::admits_cardinality(
+            &first,
+            &format!("owner_series_{i}"),
+            0
+        ));
+    }
+    assert!(!super::admits_cardinality(
+        &replacement,
+        "owner_over_budget",
+        0
+    ));
+    assert!(super::admits_cardinality(&replacement, "owner_series_0", 0));
+    assert!(super::admits_cardinality(&other, "owner_over_budget", 0));
+    super::forget_cardinality(&first);
+    super::forget_cardinality(&other);
 }

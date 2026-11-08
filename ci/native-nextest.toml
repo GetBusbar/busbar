@@ -1,0 +1,3 @@
+# Existing native qualification timeout; no test is retried or silently skipped.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 5 }

@@ -1281,7 +1281,10 @@ fn served_pools_door() -> crate::root::loader::dispatch::kinds::plane::ServedFac
     use crate::root::loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    let probe = Dispatcher::new(DispatchConfig::default());
+    let probe = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     crate::LINKED
         .plane_doors
         .iter()
@@ -1400,6 +1403,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
             serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
         let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
             crate::root::loader::dispatch::DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
         ));
         crate::root::connector::install_io(&dispatcher);
         let reach = crate::root::door_steps::DoorReach {

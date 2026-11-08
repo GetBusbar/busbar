@@ -34,6 +34,7 @@ struct Reloaded;
 macro_rules! life {
     ($life:ident, $tick:expr) => {
         impl Life for $life {
+            type Kind = busbar_contract::plugin::markers::AuthKind;
             const CANCEL: u32 = CANCEL_ABANDONED;
             const DRIVE: Outcome = Outcome::Refused;
             fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -67,10 +68,11 @@ life!(Reloaded, |now| now + GAP_NS);
 
 struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
 impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for Refuses<L, I, O> {
+    type Kind = busbar_contract::plugin::markers::AuthKind;
     type In = I;
     type Out = O;
     type State = Held<L>;
-    fn call(_: Instance<'_, Held<L>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+    fn call(_: Instance<'_, Held<L>, Self::Kind>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }
@@ -118,12 +120,15 @@ door!(forever, Forever, "ticked-forever");
 door!(reloaded, Reloaded, "ticked-reloaded");
 
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        budgets: Budgets::default(),
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }))
+    Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 2,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ))
 }
 
 fn opened(

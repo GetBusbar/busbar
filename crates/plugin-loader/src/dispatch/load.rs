@@ -313,6 +313,8 @@ pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LoadError {
+    /// The composition root did not retain its host authority issuer.
+    NoCallerBinding,
     /// The manifest's mechanism version is not the host's (checked before `dlopen`).
     ManifestMechanism {
         /// The manifest's.
@@ -492,6 +494,7 @@ pub const REBUILD: &str = "rebuild the plugin against the 1.6.0 SDK";
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoCallerBinding => f.write_str("the core caller binding provider is unavailable"),
             Self::ManifestMechanism { stated, host } => write!(
                 f,
                 "the manifest states mechanism version {stated}; this host speaks {host} — {REBUILD}"

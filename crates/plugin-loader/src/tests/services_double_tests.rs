@@ -13,11 +13,7 @@ use busbar_contract::services::{
 use super::{Double, ServicesDouble, Unserved};
 
 fn caller() -> Caller {
-    Caller {
-        instance: Arc::from("the-instance"),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Store,
-    }
+    Caller::for_test(Arc::from("the-instance"), KindCode::Store)
 }
 
 fn later(calls: &Arc<AtomicUsize>) -> Later {

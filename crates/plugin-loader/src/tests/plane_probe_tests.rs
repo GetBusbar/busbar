@@ -102,7 +102,11 @@ impl Gate {
 fn red_a_probe_is_bound_and_opened_with_the_probes_lock_let_go() {
     let gate = Arc::new(Gate::default());
     let parks = Arc::clone(&gate);
-    let inner = linked_probe(crate::plane_door_plugin::door, "the-probe");
+    let inner = linked_probe(
+        crate::plane_door_plugin::door,
+        "the-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind: ProbeBind = Arc::new(move || {
         parks.park();
         inner()
@@ -138,7 +142,11 @@ fn a_linked_plane_registry_row_binds_no_probe_until_its_section_is_judged() {
     let door = crate::plane_door_plugin::door;
     let binds = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&binds);
-    let inner = linked_probe(door, "the-probe");
+    let inner = linked_probe(
+        door,
+        "the-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind: ProbeBind = Arc::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
         inner()
@@ -150,7 +158,12 @@ fn a_linked_plane_registry_row_binds_no_probe_until_its_section_is_judged() {
         0,
         "registering a linked plane's row bound a probe instance of it"
     );
-    let bound = registration(linked_probe(door, "the-probe")).expect("the plane binds");
+    let bound = registration(linked_probe(
+        door,
+        "the-probe",
+        busbar_contract::services::test_caller_binding(),
+    ))
+    .expect("the plane binds");
     assert_eq!(
         reg.key, bound.key,
         "the stated row names the plane its bind does"
@@ -176,7 +189,11 @@ fn concurrent_facing_owns_its_probe_until_completion_then_closes_the_spare() {
     let parks = Arc::clone(&gate);
     let held = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed = Arc::clone(&held);
-    let inner = linked_probe(crate::plane_door_plugin::door, "concurrent-probe");
+    let inner = linked_probe(
+        crate::plane_door_plugin::door,
+        "concurrent-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind: ProbeBind = Arc::new(move || {
         let p = inner()?;
         observed.lock().unwrap().push(Arc::clone(&p.inner));
@@ -267,7 +284,11 @@ static REFRESH_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::
 fn an_open_probe_in_refresh_is_not_closed_by_a_concurrent_same_input() {
     let held = Arc::new(std::sync::Mutex::new(Vec::new()));
     let observed = Arc::clone(&held);
-    let inner = linked_probe(refusing_probe_door, "in-use-probe");
+    let inner = linked_probe(
+        refusing_probe_door,
+        "in-use-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind: ProbeBind = Arc::new(move || {
         let p = inner()?;
         observed.lock().unwrap().push(Arc::clone(&p.inner));
@@ -452,7 +473,11 @@ fn refused_probe_attempts_close_and_retry_with_a_fresh_instance() {
     let observed = Arc::clone(&held);
     let fail_bind = Arc::new(AtomicBool::new(false));
     let failures = Arc::clone(&fail_bind);
-    let inner = linked_probe(refusing_probe_door, "refusing-probe");
+    let inner = linked_probe(
+        refusing_probe_door,
+        "refusing-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind: ProbeBind = Arc::new(move || {
         if failures.swap(false, Ordering::SeqCst) {
             return Err("fixture bind refused".into());

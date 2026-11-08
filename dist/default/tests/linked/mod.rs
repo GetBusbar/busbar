@@ -29,8 +29,12 @@ fn fold_door(
     door: busbar_contract::abi::mechanism::door::DoorFn,
 ) -> &'static PlaneDecl {
     use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
-    let reg = registration(linked_probe(door, label))
-        .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
+    let reg = registration(linked_probe(
+        door,
+        label,
+        busbar_contract::services::test_caller_binding(),
+    ))
+    .unwrap_or_else(|e| panic!("the test-linked door `{label}` binds: {e}"));
     busbar_kernel::plane_driver::door::fold(reg)
         .unwrap_or_else(|e| panic!("the test-linked door `{label}` folds: {e}"))
 }

@@ -28,6 +28,7 @@ fn sink() -> Arc<dyn ExportCalls> {
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::new(services),
+        busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::connector::install_io(&dispatcher);
     let transport_settings = busbar_contract::transport::TransportSettings::default();

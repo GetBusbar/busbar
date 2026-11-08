@@ -15,7 +15,10 @@ use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
 
 fn ready(settings: &'static [u8]) -> (Result<(), String>, u64) {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row =
         LinkedRow::of(with_ready::door).expect("the existing READY boundary witness states itself");
     let plugin = load_linked::<Secret>(

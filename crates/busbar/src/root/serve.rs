@@ -504,7 +504,7 @@ impl busbar_kernel::host_services::TicketPress for LiveTickets {
                 .values()
                 .find(|s| {
                     s.unit.get() == unit
-                        && s.instance == caller.instance.as_ref()
+                        && s.instance == caller.namespace().as_ref()
                         && s.key.as_ref() == principal.as_ref()
                 })
                 .cloned();
@@ -717,6 +717,7 @@ impl HostServices for NotInstalled {
     fn trust_decide(
         &self,
         _: &Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _: busbar_contract::services::TrustKeyRef<'_>,
         _: Option<&str>,
         _: bool,
@@ -2122,8 +2123,8 @@ pub(crate) async fn compose_planes_over(
             hash.update(b"busbar.initial-record-binding/1\0");
             for bytes in [
                 instance.as_bytes(),
-                caller.instance.as_bytes(),
-                caller.plugin.as_bytes(),
+                caller.namespace().as_bytes(),
+                plugin.name().as_bytes(),
                 public_url.unwrap_or_default().as_bytes(),
                 plugin.statement_digest().as_slice(),
                 handed.as_slice(),

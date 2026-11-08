@@ -45,7 +45,10 @@ extern "C" fn scrape_door() -> &'static busbar_contract::abi::mechanism::door::D
 }
 
 fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
     let bind = Bind {
         instance: Arc::from("export.metrics"),
@@ -256,7 +259,10 @@ impl Drop for QueueRelease {
 #[test]
 fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock() {
     let guard = crate::observe::testing::exclusive();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let plugin = load_linked::<Export>(
         &LinkedRow::of(stop_accounting_door).unwrap(),
         Bind {
@@ -430,7 +436,10 @@ impl busbar_contract::io_host::IoHost for Reaps {
 
 #[test]
 fn an_instance_let_go_has_its_io_handles_reaped() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let io = Arc::new(Reaps::default());
     assert!(dispatcher.install_io(io.clone()));
     let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
@@ -487,7 +496,10 @@ extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::d
 #[test]
 fn a_door_that_states_span_records_takes_them() {
     let open = |door: busbar_contract::abi::mechanism::door::DoorFn| {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let row = LinkedRow::of(door).expect("the door states itself");
         let bind = Bind {
             instance: Arc::from("export.metrics"),
@@ -519,6 +531,7 @@ mod leaky {
     pub struct Leaky;
 
     impl Life for Leaky {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         const CANCEL: u32 = 0;
         fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Leaky)
@@ -532,21 +545,27 @@ mod leaky {
     impl<I: busbar_contract::abi::sdk::door::AbiIn, O: busbar_contract::abi::sdk::door::AbiOut>
         SafeSlot for Ready<I, O>
     {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = I;
         type Out = O;
         type State = Held<Leaky>;
-        fn call(_: Instance<'_, Held<Leaky>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+        fn call(
+            _: Instance<'_, Held<Leaky>, Self::Kind>,
+            _: Lent<'_, I>,
+            _: Out<'_, O>,
+        ) -> Outcome {
             Outcome::Ready
         }
     }
 
     pub struct Status;
     impl SafeSlot for Status {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = InHead;
         type Out = StatusOut;
         type State = Held<Leaky>;
         fn call(
-            i: Instance<'_, Held<Leaky>>,
+            i: Instance<'_, Held<Leaky>, Self::Kind>,
             _: Lent<'_, InHead>,
             mut out: Out<'_, StatusOut>,
         ) -> Outcome {
@@ -560,11 +579,12 @@ mod leaky {
 
     pub struct Check;
     impl SafeSlot for Check {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = CheckIn;
         type Out = CheckOut;
         type State = Held<Leaky>;
         fn call(
-            i: Instance<'_, Held<Leaky>>,
+            i: Instance<'_, Held<Leaky>, Self::Kind>,
             _: Lent<'_, CheckIn>,
             mut out: Out<'_, CheckOut>,
         ) -> Outcome {
@@ -578,11 +598,12 @@ mod leaky {
 
     pub struct Serve;
     impl SafeSlot for Serve {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = ServeIn;
         type Out = ServeOut;
         type State = Held<Leaky>;
         fn call(
-            i: Instance<'_, Held<Leaky>>,
+            i: Instance<'_, Held<Leaky>, Self::Kind>,
             _: Lent<'_, ServeIn>,
             mut out: Out<'_, ServeOut>,
         ) -> Outcome {
@@ -623,7 +644,10 @@ mod leaky {
 
 #[test]
 fn a_lease_named_on_a_failed_or_refused_answer_is_released() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(leaky::door).expect("the door states itself");
     let bind = Bind {
         instance: Arc::from("export.leaky"),
@@ -730,7 +754,10 @@ mod push_only {
 
 #[test]
 fn a_push_sink_may_leave_scrape_and_serve_unstated() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let bind = |name: &str| Bind {
         instance: Arc::from(name),
         max_inflight_cap: 4,

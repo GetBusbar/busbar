@@ -3,10 +3,15 @@
 
 //! ONE STORE OP'S CONTEXT (the plugin ABI: every call is Ready or Pending(wake), never a blocking
 
+type Host = KindGenericHost<crate::plugin::markers::StoreKind>;
+type Connector<'a> = KindGenericConnector<'a, crate::plugin::markers::StoreKind>;
+
 use std::any::Any;
 
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::{Answer, ConnFailure, Connector, Host};
+use crate::abi::sdk::conn::{
+    Answer, ConnFailure, Connector as KindGenericConnector, Host as KindGenericHost,
+};
 
 /// A store op's answer: its result, or not yet.
 #[derive(Debug, Clone, PartialEq, Eq)]

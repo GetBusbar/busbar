@@ -78,14 +78,17 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
 
     let publishing = crate::root::PUBLISHING.lock().await;
     crate::dist_root_install::install();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     assert!(crate::root::inbound::install(&dispatcher));
     let http = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let ws = crate::root::test_plugins::linked_transport(
-        busbar_transport_ws::door::door,
+        busbar_transport_ws::door,
         bind_on(&dispatcher),
     );
     let http: Arc<dyn FramerDoor> = Arc::new(

@@ -285,7 +285,26 @@ impl ServeTables {
         let (routes, route) = (table.routes.len(), &table.routes[index]);
         let calls = &*table.calls;
         let at = index as u32;
-        let served = serve(calls, table.caps, routes, at, target.as_bytes(), head, body).await;
+        // `answer` is mounted behind core admin authorization. Public routes never
+        // enter here. Read-only verbs receive no trust mutation authority.
+        let authority = matches!(route.verb.as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+            .then(|| {
+                table
+                    .records
+                    .as_ref()
+                    .map(|(services, caller)| (services.as_ref(), caller, name))
+            })
+            .flatten();
+        let served = serve_authorized(
+            calls,
+            table.caps,
+            (routes, at),
+            target.as_bytes(),
+            head,
+            body,
+            authority,
+        )
+        .await;
         let actor = principal.unwrap_or(AuthPrincipal(None));
         let served = match served {
             Ok(s) => write_served_records(
@@ -604,6 +623,22 @@ pub async fn serve(
     head: HeadFields,
     body: Bytes,
 ) -> Result<Served, Unserved> {
+    serve_authorized(calls, caps, (routes, route), target, head, body, None).await
+}
+
+async fn serve_authorized(
+    calls: &dyn PlaneCalls,
+    caps: BufferCaps,
+    (routes, route): (usize, u32),
+    target: &[u8],
+    head: HeadFields,
+    body: Bytes,
+    authority: Option<(
+        &crate::host_services::KernelServices,
+        &busbar_contract::services::Caller,
+        &str,
+    )>,
+) -> Result<Served, Unserved> {
     if route as usize >= routes {
         return Err(Unserved::NoRoute);
     }
@@ -613,6 +648,9 @@ pub async fn serve(
         ticket,
         crossing: false,
     };
+    let _authority = authority.and_then(|(services, caller, counterparty)| {
+        services.grant_trust_decision(caller, ticket, counterparty)
+    });
     let keep = Arc::new(Mutex::new(Bufs {
         target: target.to_vec(),
         head: FieldList::new(head),

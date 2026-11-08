@@ -1,0 +1,81 @@
+# Selected by each project's CI configuration setting at an immutable approved SHA.
+# Candidate .gitlab-ci.yml and candidate architecture tooling are never executed here.
+workflow:
+  auto_cancel:
+    on_new_commit: conservative
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+    - when: never
+
+stages: [qualify, website]
+
+native-qualification:
+  stage: qualify
+  tags: [busbar-native-admission]
+  interruptible: true
+  allow_failure: false
+  retry: 0
+  timeout: 4h
+  variables:
+    GIT_DEPTH: "0"
+    GIT_STRATEGY: clone
+    RUSTUP_TOOLCHAIN: "1.98.0"
+    CARGO_TERM_COLOR: never
+    PYTHONDONTWRITEBYTECODE: "1"
+  script:
+    - |
+      set -eu
+      # Bootstrap from the server-selected top-level configuration, not a variable
+      # or script supplied by the candidate. Pipeline variable overrides are disabled.
+      python3 - <<'PY'
+      import base64, os, pathlib, re, shutil, subprocess
+      uri = os.environ['CI_CONFIG_REF_URI']
+      match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + r'/GetBusbar/busbar//ci/architecture-pipeline\.yml@([0-9a-f]{40})', uri)
+      if not match:
+          raise SystemExit('CI configuration must select the approved immutable core revision: ' + uri)
+      base = pathlib.Path(os.environ['BUSBAR_NATIVE_SCRATCH']).resolve()
+      work = base / ('boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID'])
+      work.mkdir(parents=True, exist_ok=False)
+      trusted = work / 'trusted'
+      trusted.mkdir()
+      env = dict(os.environ)
+      auth = base64.b64encode(('gitlab-ci-token:' + env['CI_JOB_TOKEN']).encode()).decode()
+      server = env['CI_SERVER_URL'].rstrip('/')
+      env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.' + server + '/.extraheader', GIT_CONFIG_VALUE_0='Authorization: Basic ' + auth, GIT_TERMINAL_PROMPT='0')
+      try:
+          subprocess.run(['git', '-C', str(trusted), 'init', '-q'], check=True)
+          subprocess.run(['git', '-C', str(trusted), 'fetch', '--depth', '1', server + '/GetBusbar/busbar.git', match[1]], env=env, check=True)
+          subprocess.run(['git', '-C', str(trusted), 'checkout', '--detach', 'FETCH_HEAD'], check=True)
+          actual = subprocess.check_output(['git', '-C', str(trusted), 'rev-parse', 'HEAD'], text=True).strip()
+          if actual != match[1]:
+              raise SystemExit('trusted policy checkout mismatch')
+          subprocess.run(['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)], check=True)
+      finally:
+          shutil.rmtree(work, ignore_errors=True)
+      PY
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 30 days
+    paths: [boundary-evidence/]
+
+# Every qualified assembled-product dev change refreshes current website evidence.
+# The marketing pipeline independently verifies source and binary freshness.
+website-dev:
+  stage: website
+  needs: [native-qualification]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+      variables:
+        WEBSITE_CORE_REVISION: $CI_COMMIT_SHA
+    - when: never
+  variables:
+    WEBSITE_EVENT_REPOSITORY: $CI_PROJECT_PATH
+  trigger:
+    project: BusbarInc/marketing
+    branch: dev
+    strategy: mirror
+    forward:
+      yaml_variables: true
+      pipeline_variables: false

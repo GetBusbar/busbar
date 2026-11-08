@@ -17,7 +17,10 @@ fn product(variable: &str, cell: &'static OnceLock<Arc<LoadedSecret>>) -> Arc<Lo
         let stated = rendering_of_library(&path)
             .expect("the actual Secret image renders")
             .expect("the actual Secret image carries a door");
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            crate::host_services::caller_binding(),
+        ));
         let plugin = load_dropped::<Secret>(
             &path,
             &stated,

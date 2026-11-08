@@ -1570,6 +1570,7 @@ fn resolve_upgrading(
         .collect();
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::connector::install_io(&dispatcher);
 
@@ -2377,6 +2378,7 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::with_services(
         crate::root::loader::dispatch::DispatchConfig::default(),
         crate::root::serve::LateServices::new().served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     assert!(
         dispatcher.host_services().is_some(),
@@ -2934,7 +2936,10 @@ pub(crate) mod tool_door {
             #[cfg(distribution_root)]
             crate::dist_root_install::install();
             let section = endpoint_section();
-            let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            let dispatcher = Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_kernel::host_services::caller_binding(),
+            ));
             crate::root::connector::install_io(&dispatcher);
 
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -3727,6 +3732,7 @@ pub(crate) mod tool_door {
                     wall: Arc::clone(&wall),
                     work_observations: Arc::clone(&work_observations),
                 }),
+                busbar_kernel::host_services::caller_binding(),
             ));
 
             crate::root::connector::install_io(&dispatcher);
@@ -4247,7 +4253,7 @@ pub(crate) mod tool_door {
                     .lock()
                     .expect("the observation log")
                     .push(ObservedWork {
-                        instance: caller.instance.to_string(),
+                        instance: caller.namespace().to_string(),
                         reference: reference.clone(),
                         observation: *observation,
                     });
@@ -4336,13 +4342,14 @@ pub(crate) mod tool_door {
         fn trust_decide(
             &self,
             caller: &busbar_contract::services::Caller,
+            ticket: busbar_contract::abi::mechanism::ticket::Ticket,
             key: busbar_contract::services::TrustKeyRef<'_>,
             expected: Option<&str>,
             approve: bool,
             later: busbar_contract::services::Later,
         ) -> busbar_contract::services::Ran {
             self.inner
-                .trust_decide(caller, key, expected, approve, later)
+                .trust_decide(caller, ticket, key, expected, approve, later)
         }
         fn trust_state(
             &self,
@@ -5654,7 +5661,10 @@ pub(crate) mod tool_door {
             let server = &server;
             let money = money.clone();
             async move {
-                let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+                let dispatcher = Arc::new(Dispatcher::new(
+                    DispatchConfig::default(),
+                    busbar_kernel::host_services::caller_binding(),
+                ));
                 crate::root::connector::install_io(&dispatcher);
 
                 let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -5690,7 +5700,10 @@ pub(crate) mod tool_door {
         }
         {
             let block = "serve-door-tools-claims-block";
-            let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            let dispatcher = Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_kernel::host_services::caller_binding(),
+            ));
             crate::root::connector::install_io(&dispatcher);
 
             let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -5813,6 +5826,7 @@ pub(crate) mod door_boundary {
             registration(linked_probe(
                 super::tool_door::line_door(),
                 "door-boundary-row",
+                busbar_kernel::host_services::caller_binding(),
             ))
             .expect("the linked door binds"),
         )
@@ -6806,7 +6820,10 @@ mod spent_ledger {
         let stated = rendering_of_library(&path)
             .expect("the actual durable store statement reads")
             .expect("the actual durable store exports its statement");
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        ));
         let plugin = load_dropped::<StoreV4>(
             &path,
             &stated,
@@ -9154,6 +9171,7 @@ fn own_reach() -> super::DoorReach<'static> {
     crate::dist_root_install::install();
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     super::DoorReach {
         providers: &NO_PROVIDERS,
@@ -11189,6 +11207,7 @@ fn red_a_peer_key_pin_naming_no_digest_refuses_the_load_naming_the_field_and_its
 fn serving_a_style_binds_only_the_linked_row_that_states_it() {
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let linked = crate::LINKED.auths;
@@ -11274,6 +11293,7 @@ fn a_dropped_rows_styles_are_read_from_its_signed_manifest_with_no_library_load(
     let registry: &'static crate::root::loader::PluginRegistry = Box::leak(Box::new(registry));
     let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         crate::root::loader::dispatch::DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let auths = super::OutboundAuths::new(
         dispatcher,
@@ -11330,7 +11350,10 @@ fn oauth_settings_validate_before_open_with_no_credential_or_host_secrets() {
         auth_outbound::check_settings, kinds::auth::Auth, load_linked, Bind, ConnTable,
         DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let row = LinkedRow::of(busbar_auth_oauth::door).expect("OAuth declaration");
     let plugin = load_linked::<Auth>(
         &row,
@@ -11380,7 +11403,10 @@ fn settings_only_validation_requires_the_auth_declaration_capability() {
             (!facts.outbound_settings_check && !facts.styles.is_empty()).then_some(*door)
         })
         .expect("a conventional outbound auth row does not advertise settings-only validation");
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let plugin = load_linked::<Auth>(
         &LinkedRow::of(door).unwrap(),
         Bind {

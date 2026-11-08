@@ -148,6 +148,7 @@ fn err(out: &mut OutHead, text: &'static str) {
 
 pub struct Validate;
 impl RawSlot for Validate {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -157,6 +158,7 @@ impl RawSlot for Validate {
 
 pub struct Open;
 impl RawSlot for Open {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, _: &OpenIn, o: &mut OpenOut) -> Outcome {
@@ -171,6 +173,7 @@ impl RawSlot for Open {
 
 pub struct Close;
 impl RawSlot for Close {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(p: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -184,6 +187,7 @@ impl RawSlot for Close {
 
 pub struct Cancel;
 impl RawSlot for Cancel {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, _: &CancelIn, o: &mut CancelOut) -> Outcome {
@@ -197,6 +201,7 @@ macro_rules! answer {
         #[doc = concat!("`", stringify!($name), "`.")]
         pub struct $name;
         impl RawSlot for $name {
+            type Kind = busbar_contract::plugin::markers::TransportKind;
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -223,6 +228,7 @@ answer!(Arrival, ArrivalIn, ArrivalOut, Outcome::Refused);
 
 pub struct Locate;
 impl RawSlot for Locate {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = LocateIn;
     type Out = LocateOut;
     unsafe fn call(_: *mut c_void, i: &LocateIn, o: &mut LocateOut) -> Outcome {
@@ -250,6 +256,7 @@ impl RawSlot for Locate {
 
 pub struct Begin;
 impl RawSlot for Begin {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = BeginIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &BeginIn, o: &mut FramerOut) -> Outcome {
@@ -277,6 +284,7 @@ impl RawSlot for Begin {
 
 pub struct Adopt;
 impl RawSlot for Adopt {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = AdoptIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &AdoptIn, o: &mut FramerOut) -> Outcome {
@@ -311,6 +319,7 @@ fn with(
 
 pub struct Ingest;
 impl RawSlot for Ingest {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = IngestIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &IngestIn, o: &mut FramerOut) -> Outcome {
@@ -330,6 +339,7 @@ impl RawSlot for Ingest {
 
 pub struct Emit;
 impl RawSlot for Emit {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = EmitIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &EmitIn, o: &mut FramerOut) -> Outcome {
@@ -352,6 +362,7 @@ impl RawSlot for Emit {
 
 pub struct Refuse;
 impl RawSlot for Refuse {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = RefuseIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &RefuseIn, o: &mut FramerOut) -> Outcome {
@@ -376,6 +387,7 @@ impl RawSlot for Refuse {
 
 pub struct Timer;
 impl RawSlot for Timer {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FramingIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
@@ -385,6 +397,7 @@ impl RawSlot for Timer {
 
 pub struct Finish;
 impl RawSlot for Finish {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FinishIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FinishIn, o: &mut FramerOut) -> Outcome {
@@ -430,6 +443,7 @@ impl RawSlot for Finish {
 
 pub struct Detach;
 impl RawSlot for Detach {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FramingIn;
     type Out = FramerOut;
     unsafe fn call(p: *mut c_void, i: &FramingIn, o: &mut FramerOut) -> Outcome {
@@ -453,6 +467,7 @@ impl RawSlot for Detach {
 
 pub struct Encode;
 impl RawSlot for Encode {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = EncodeIn;
     type Out = FramerOut;
     unsafe fn call(_: *mut c_void, i: &EncodeIn, o: &mut FramerOut) -> Outcome {

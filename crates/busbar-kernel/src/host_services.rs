@@ -892,12 +892,35 @@ impl Drop for NativeClaimGuard {
     }
 }
 
+type TrustDecisionKey = (
+    busbar_contract::services::Incarnation,
+    busbar_contract::abi::mechanism::ticket::Ticket,
+);
+const NO_TRUST_DECISION_GRANT: &str = "this call has no core-issued trust decision grant";
+
+/// Held only while core serves an authorized private administrative write. Neither
+/// a plugin's kind nor its request bytes can create this authority.
+pub(crate) struct TrustDecisionGrant<'a> {
+    services: &'a KernelServices,
+    key: TrustDecisionKey,
+}
+impl Drop for TrustDecisionGrant<'_> {
+    fn drop(&mut self) {
+        self.services
+            .trust_decisions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
+}
+
 pub struct KernelServices {
     origin: Instant,
     wall_ms: WallMs,
 
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
+    trust_decisions: Mutex<HashMap<TrustDecisionKey, Arc<str>>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
     native_record_bootstrap: Mutex<HashMap<String, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
@@ -940,7 +963,7 @@ pub struct KernelServices {
 }
 
 struct CarrierSession {
-    instance: Arc<str>,
+    incarnation: busbar_contract::services::Incarnation,
 
     principal: String,
 
@@ -1026,6 +1049,7 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
+            trust_decisions: Mutex::default(),
             record_bootstrap: Mutex::default(),
             native_record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
@@ -1057,6 +1081,39 @@ impl KernelServices {
             credentials: None,
             tickets: OnceLock::new(),
         }
+    }
+
+    /// Only the core's gated admin dispatcher lends this scoped authority. It is
+    /// bound to the opened caller, live ticket and configured counterparty.
+    pub(crate) fn grant_trust_decision(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        counterparty: &str,
+    ) -> Option<TrustDecisionGrant<'_>> {
+        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane
+            || ticket.is_none()
+            || !self
+                .facts(caller)?
+                .trust
+                .iter()
+                .any(|(name, _)| name == counterparty)
+        {
+            return None;
+        }
+        let key = (caller.incarnation().clone(), ticket);
+        let mut grants = self
+            .trust_decisions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if grants.contains_key(&key) {
+            return None;
+        }
+        grants.insert(key.clone(), Arc::from(counterparty));
+        Some(TrustDecisionGrant {
+            services: self,
+            key,
+        })
     }
 
     /// Install an operator-attested cold migration grant before ANY instance admission. The
@@ -1123,11 +1180,11 @@ impl KernelServices {
             .unwrap_or_else(|e| e.into_inner());
         let Some(grant) = held
             .as_mut()
-            .filter(|grant| grant.instance == caller.instance.as_ref())
+            .filter(|grant| grant.instance == caller.namespace().as_ref())
         else {
             return Ok(());
         };
-        if instances.contains_key(&caller.instance) {
+        if instances.contains_key(caller.namespace()) {
             return Err("cold bootstrap namespace is already admitted");
         }
         grant.bind_caller(caller)
@@ -1144,7 +1201,7 @@ impl KernelServices {
             .and_then(|f| f.ticket_prefix.clone())
     }
 
-    pub fn open_carrier_session(&self, instance: &str, principal: &str, sink: CarrierSink) -> u64 {
+    pub fn open_carrier_session(&self, caller: &Caller, principal: &str, sink: CarrierSink) -> u64 {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.sessions
@@ -1153,7 +1210,7 @@ impl KernelServices {
             .insert(
                 number,
                 CarrierSession {
-                    instance: Arc::from(instance),
+                    incarnation: caller.incarnation().clone(),
                     principal: principal.to_string(),
                     sink,
                 },
@@ -1269,10 +1326,10 @@ impl KernelServices {
             .native_record_bootstrap
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if grants.contains_key(caller.instance.as_ref()) {
+        if grants.contains_key(caller.namespace().as_ref()) {
             return Err("native record bootstrap caller already bound");
         }
-        grants.insert(caller.instance.to_string(), grant);
+        grants.insert(caller.namespace().to_string(), grant);
         Ok(())
     }
 
@@ -1282,12 +1339,12 @@ impl KernelServices {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         if grants
-            .get(caller.instance.as_ref())
+            .get(caller.namespace().as_ref())
             .is_some_and(|grant| !grant.native_accepts(caller))
         {
             return Err("native record bootstrap caller changed");
         }
-        grants.remove(caller.instance.as_ref());
+        grants.remove(caller.namespace().as_ref());
         Ok(())
     }
 
@@ -1304,7 +1361,7 @@ impl KernelServices {
             .cloned()
             .ok_or_else(|| Stored::refused(NO_POOL))?;
         Ok(Some(NativeWorkWriter {
-            instance: Arc::clone(&caller.instance),
+            instance: Arc::clone(caller.namespace()),
             store: Arc::clone(store),
             batcher: Arc::clone(&self.batcher),
             pending: Arc::clone(&self.pending),
@@ -1339,7 +1396,7 @@ impl KernelServices {
         schemas.push(crate::host_chains::CHAIN_LIFE_SCHEMA.as_str().into());
         crate::host_records_async::AsyncRecords::authorized(
             Arc::clone(store),
-            &caller.instance,
+            caller.namespace(),
             schemas,
         )
         .map(|rows| Some(NativeRecordScope { rows, facts }))
@@ -1666,12 +1723,12 @@ impl KernelServices {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
-                    .is_some_and(|grant| grant.instance == caller.instance.as_ref())
+                    .is_some_and(|grant| grant.instance == caller.namespace().as_ref())
                     || self
                         .native_record_bootstrap
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .get(caller.instance.as_ref())
+                        .get(caller.namespace().as_ref())
                         .is_some_and(|grant| grant.native_accepts(caller)));
         }
         if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
@@ -1683,7 +1740,7 @@ impl KernelServices {
         if !facts.scope_kinds.iter().any(|k| k == kind) {
             crate::diagnostics::diag_debug!(
                 crate::diagnostics::ENTITLEMENT_UNDECLARED_SCOPE_KIND,
-                instance = %caller.instance,
+                instance = %caller.namespace(),
                 scope_kind = %kind,
                 "an entitlement check named a scope kind this plane does not declare"
             );
@@ -1756,7 +1813,7 @@ impl KernelServices {
                     .is_some_and(|schema| schema.as_str() == kind)
             })
         } else {
-            self.conditional_kind(&caller.instance, kind)
+            self.conditional_kind(caller.namespace(), kind)
         };
         if conditional {
             return Err("this record kind requires conditional publication");
@@ -1780,10 +1837,10 @@ impl KernelServices {
         let make = || {
             let seq = match chain {
                 Some(_) => 0,
-                None => pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec()),
+                None => pending.enqueue(caller.namespace(), kind, key, value.as_slice().to_vec()),
             };
             Write {
-                instance: Arc::clone(&caller.instance),
+                instance: Arc::clone(caller.namespace()),
                 schema,
                 key: key.to_vec(),
                 value,
@@ -1859,7 +1916,7 @@ impl KernelServices {
                 .map_err(|stored| stored.error)?
                 .ok_or(NO_STORE)?;
             let pool = self.pool().ok_or(NO_POOL)?;
-            let instance = Arc::clone(&caller.instance);
+            let instance = Arc::clone(caller.namespace());
             let owed = LifeObservationOwed(Some(done));
             pool.run_async(Box::pin(async move {
                 owed.answer(
@@ -1875,7 +1932,7 @@ impl KernelServices {
             return Err("record transactions are unsupported");
         }
         let rows = Arc::clone(&records.reads);
-        let instance = Arc::clone(&caller.instance);
+        let instance = Arc::clone(caller.namespace());
         let owed = LifeObservationOwed(Some(done));
         pool.run(Box::new(move || {
             owed.answer(crate::host_chains::observe_life(
@@ -1941,7 +1998,7 @@ impl KernelServices {
             request.predicates.reserve(1);
             request.predicates.push(Predicate {
                 schema: schema.as_str().to_string(),
-                key: record_key(&caller.instance, &predicate.key),
+                key: record_key(caller.namespace(), &predicate.key),
                 expected: predicate.expected.clone(),
             });
         }
@@ -1952,7 +2009,7 @@ impl KernelServices {
                     let schema = schema_at(*kind, false)?;
                     Mutation::Put {
                         schema: schema.as_str().to_string(),
-                        key: record_key(&caller.instance, key),
+                        key: record_key(caller.namespace(), key),
                         value: value.clone(),
                     }
                 }
@@ -1960,7 +2017,7 @@ impl KernelServices {
                     let schema = schema_at(*kind, false)?;
                     Mutation::Delete {
                         schema: schema.as_str().to_string(),
-                        key: record_key(&caller.instance, key),
+                        key: record_key(caller.namespace(), key),
                     }
                 }
             });
@@ -2024,7 +2081,7 @@ impl KernelServices {
                 .map_err(|_| "invalid record transaction")?;
         }
         let write = ConditionalWrite::new(
-            Arc::clone(&caller.instance),
+            Arc::clone(caller.namespace()),
             request,
             chains,
             ConditionalOwed::new(candidate.correlation, acked),
@@ -2293,12 +2350,12 @@ impl KernelServices {
     }
 
     fn facts(&self, caller: &Caller) -> Option<Arc<InstanceFacts>> {
-        let facts = self.lock_instances().get(&caller.instance).cloned()?;
+        let facts = self.lock_instances().get(caller.namespace()).cloned()?;
         if self
             .native_record_bootstrap
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .get(caller.instance.as_ref())
+            .get(caller.namespace().as_ref())
             .is_some_and(|grant| !grant.native_accepts(caller))
         {
             return None;
@@ -2524,10 +2581,10 @@ impl HostServices for KernelServices {
                 let reference = parse_reference(reference).ok_or(InspectionError::NotFound)?;
                 let (_, work) = self
                     .work
-                    .by_reference(&caller.instance, &reference)
+                    .by_reference(caller.namespace(), &reference)
                     .filter(|(_, work)| work.owner == owner)
                     .ok_or(InspectionError::NotFound)?;
-                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let retain_ms = self.work_bounds_of(caller.namespace()).retain_ms;
                 let observed_ms = (self.wall_ms)();
                 if !work.live && work.settled_ms.saturating_add(retain_ms) <= observed_ms {
                     return Err(InspectionError::NotFound);
@@ -2550,7 +2607,7 @@ impl HostServices for KernelServices {
                         session: *session,
                         live: open
                             .get(session)
-                            .is_some_and(|held| held.instance == caller.instance),
+                            .is_some_and(|held| &held.incarnation == caller.incarnation()),
                     })
                     .collect();
                 Ok(InspectionObservation::CarrierSessions(observations))
@@ -2610,14 +2667,14 @@ impl HostServices for KernelServices {
                 if Self::chain_of_facts(&records.facts, kind).is_some() {
                     return Ran::Now(Stored::refused(crate::host_chains::CHAIN_READ_WHOLE));
                 }
-                if let Some(value) = self.pending.get(&caller.instance, kind, key) {
+                if let Some(value) = self.pending.get(caller.namespace(), kind, key) {
                     return Ran::Now(native_record_found(value));
                 }
                 let Some(pool) = self.pool() else {
                     return Ran::Now(Stored::refused(NO_POOL));
                 };
                 let schema = kind.to_string();
-                let key = record_key(&caller.instance, key);
+                let key = record_key(caller.namespace(), key);
                 return submit_async(pool, later, async move {
                     match records.rows.get(&schema, &key).await {
                         Ok(Some(value)) => {
@@ -2648,7 +2705,7 @@ impl HostServices for KernelServices {
             s
         };
 
-        if let Some(v) = self.pending.get(&caller.instance, kind, key) {
+        if let Some(v) = self.pending.get(caller.namespace(), kind, key) {
             return Ran::Now(if v.is_empty() {
                 Stored::ready(svc::ABSENT)
             } else {
@@ -2656,7 +2713,7 @@ impl HostServices for KernelServices {
             });
         }
         let reads = Arc::clone(&records.reads);
-        let key = record_key(&caller.instance, key);
+        let key = record_key(caller.namespace(), key);
         submit(pool, later, move || match reads.record_get(schema, &key) {
             Ok(Some(v)) if !v.as_slice().is_empty() => found(v.as_slice().to_vec()),
             Ok(_) => Stored::ready(svc::ABSENT),
@@ -2681,7 +2738,7 @@ impl HostServices for KernelServices {
                     Vec::new()
                 } else {
                     self.pending
-                        .under(&caller.instance, &list.kind, &list.prefix)
+                        .under(caller.namespace(), &list.kind, &list.prefix)
                 };
                 let Some(schema) = records
                     .facts
@@ -2692,7 +2749,7 @@ impl HostServices for KernelServices {
                 else {
                     return Ran::Now(Stored::refused(NOT_ADMITTED));
                 };
-                let instance = Arc::clone(&caller.instance);
+                let instance = Arc::clone(caller.namespace());
                 let scope = record_key(&instance, &[]).len();
                 let prefix = record_key(&instance, &list.prefix);
                 return submit_async(pool, later, async move {
@@ -2742,12 +2799,12 @@ impl HostServices for KernelServices {
             Some(_) => Vec::new(),
             None => self
                 .pending
-                .under(&caller.instance, &list.kind, &list.prefix),
+                .under(caller.namespace(), &list.kind, &list.prefix),
         };
         let reads = Arc::clone(&records.reads);
-        let instance = Arc::clone(&caller.instance);
-        let scope = record_key(&caller.instance, &[]).len();
-        let prefix = record_key(&caller.instance, &list.prefix);
+        let instance = Arc::clone(caller.namespace());
+        let scope = record_key(caller.namespace(), &[]).len();
+        let prefix = record_key(caller.namespace(), &list.prefix);
 
         submit(pool, later, move || {
             match reads.record_scan(schema, &prefix, u32::MAX) {
@@ -2791,12 +2848,15 @@ impl HostServices for KernelServices {
                 return Ran::Now(Stored::refused(EXPIRY_OVERFLOW));
             };
             let expires_at = expires_ms.div_ceil(1000);
-            if store.register_claim_scope(&caller.instance, kind).is_err() {
+            if store
+                .register_claim_scope(caller.namespace(), kind)
+                .is_err()
+            {
                 return Ran::Now(failed(STORE_FAILED));
             }
-            let token = claim_token(&caller.instance, kind, key);
+            let token = claim_token(caller.namespace(), kind, key);
             let claim_key = (
-                Arc::clone(&caller.instance),
+                Arc::clone(caller.namespace()),
                 kind.to_string(),
                 token.clone(),
             );
@@ -2828,7 +2888,7 @@ impl HostServices for KernelServices {
                 key: claim_key,
             };
             let store = Arc::clone(store);
-            let instance = Arc::clone(&caller.instance);
+            let instance = Arc::clone(caller.namespace());
             let kind = kind.to_string();
             return submit_async(pool, later, async move {
                 use crate::persistence::scoped::{ClaimOutcome, ScopedStore};
@@ -2890,7 +2950,7 @@ impl HostServices for KernelServices {
 
         let now = now_ms / 1000;
         let expires_at = expires_ms.div_ceil(1000);
-        let token = claim_token(&caller.instance, kind, key);
+        let token = claim_token(caller.namespace(), kind, key);
         let rows = Arc::clone(&records.reads);
         let kind = kind.to_string();
         submit(pool, later, move || {
@@ -2931,7 +2991,7 @@ impl HostServices for KernelServices {
 
         let permit = match self
             .trust
-            .begin_sighting(&caller.instance, counterparty, None)
+            .begin_sighting(caller.namespace(), counterparty, None)
         {
             Ok(permit) => permit,
             Err(Undecided::NoSuchKey) => {
@@ -2949,7 +3009,7 @@ impl HostServices for KernelServices {
         let (sight, effect) =
             match self
                 .trust
-                .sight(&caller.instance, counterparty, hash, (self.wall_ms)())
+                .sight(caller.namespace(), counterparty, hash, (self.wall_ms)())
             {
                 Ok(v) => v,
                 Err(Unjudged::UnknownInstance) => return Ran::Now(Stored::refused(NOT_ADMITTED)),
@@ -2963,9 +3023,10 @@ impl HostServices for KernelServices {
         };
 
         let record = Arc::clone(&d.record);
-        let key = demotion_key(&caller.instance, counterparty);
+        let key = demotion_key(caller.namespace(), counterparty);
 
-        let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
+        let unprefixed =
+            (*caller.namespace() == d.default_instance).then(|| counterparty.to_string());
         let owed = TrustSightOwed {
             permit: Some(permit),
             later: Some(later),
@@ -3051,7 +3112,7 @@ impl HostServices for KernelServices {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&session)
-            .filter(|s| *s.instance == *caller.instance)
+            .filter(|s| &s.incarnation == caller.incarnation())
             .map(|s| (Arc::clone(&s.sink), s.principal.clone()));
         let Some((sink, principal)) = open else {
             return Stored::refused(SESSION_NOT_OPEN);
@@ -3147,7 +3208,7 @@ impl HostServices for KernelServices {
     }
 
     fn trust_unreached(&self, caller: &Caller, counterparty: &str) -> Stored {
-        match self.trust.last_verdict(&caller.instance, counterparty) {
+        match self.trust.last_verdict(caller.namespace(), counterparty) {
             Ok(sight) => Stored::ready(sight_code(sight)),
             Err(Unjudged::UnknownInstance) => Stored::refused(NOT_ADMITTED),
             Err(Unjudged::UnknownCounterparty) => Stored::refused(NOT_A_COUNTERPARTY),
@@ -3157,6 +3218,7 @@ impl HostServices for KernelServices {
     fn trust_decide(
         &self,
         caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         key: busbar_contract::services::TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
@@ -3165,13 +3227,22 @@ impl HostServices for KernelServices {
         if self.facts(caller).is_none() {
             return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
+        let authorized = self
+            .trust_decisions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&(caller.incarnation().clone(), ticket))
+            .is_some_and(|counterparty| counterparty.as_ref() == key.counterparty);
+        if !authorized {
+            return Ran::Now(Stored::refused(NO_TRUST_DECISION_GRANT));
+        }
         let ruling = if approve {
             Ruling::Approve
         } else {
             Ruling::Revoke
         };
         let work = match self.prepare_decision(
-            &caller.instance,
+            caller.namespace(),
             key.counterparty,
             key.item,
             ruling,
@@ -3198,7 +3269,9 @@ impl HostServices for KernelServices {
             .trust
             .rows()
             .into_iter()
-            .filter(|r| *r.instance == *caller.instance && r.counterparty == counterparty)
+            .filter(|r| {
+                r.instance.as_str() == caller.namespace().as_ref() && r.counterparty == counterparty
+            })
             .collect();
         let Some(whole) = rows.iter().find(|r| r.item.is_none()) else {
             return Stored::refused(if self.facts(caller).is_some() {
@@ -3235,26 +3308,27 @@ impl HostServices for KernelServices {
         digest: &str,
         later: Later,
     ) -> Ran {
-        let mut permit = match self
-            .trust
-            .begin_sighting(&caller.instance, counterparty, Some(item))
-        {
-            Ok(permit) => permit,
-            Err(Undecided::NoSuchKey) => {
-                return Ran::Now(Stored::refused(if self.facts(caller).is_some() {
-                    NOT_A_COUNTERPARTY
-                } else {
-                    NOT_ADMITTED
-                }))
-            }
-            Err(_) => return Ran::Now(Stored::refused(DECISION_UNKEPT)),
-        };
+        let mut permit =
+            match self
+                .trust
+                .begin_sighting(caller.namespace(), counterparty, Some(item))
+            {
+                Ok(permit) => permit,
+                Err(Undecided::NoSuchKey) => {
+                    return Ran::Now(Stored::refused(if self.facts(caller).is_some() {
+                        NOT_A_COUNTERPARTY
+                    } else {
+                        NOT_ADMITTED
+                    }))
+                }
+                Err(_) => return Ran::Now(Stored::refused(DECISION_UNKEPT)),
+            };
         if !valid_trust_evidence(digest) {
             return Ran::Now(Stored::refused(INVALID_TRUST_EVIDENCE));
         }
         match self
             .trust
-            .sight_item_kept(&caller.instance, counterparty, item, digest)
+            .sight_item_kept(caller.namespace(), counterparty, item, digest)
         {
             Ok((sight, demotion)) => {
                 if demotion.is_some() {
@@ -3297,14 +3371,14 @@ impl HostServices for KernelServices {
             item,
             digest,
         };
-        Stored::ready(match self.trust.judge(&caller.instance, &facts) {
+        Stored::ready(match self.trust.judge(caller.namespace(), &facts) {
             Ok(()) => svc::DISTRUST_NONE,
             Err(why) => distrust_code(why),
         })
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
-        let Some(names) = self.trust.due(&caller.instance) else {
+        let Some(names) = self.trust.due(caller.namespace()) else {
             return Stored::refused(NOT_ADMITTED);
         };
         let mut stored = Stored::ready(0);
@@ -3320,7 +3394,7 @@ impl HostServices for KernelServices {
     }
 
     fn trust_verify(&self, caller: &Caller, cp: &str, payload: &[u8], sigs: &[u8]) -> Stored {
-        let key = match self.trust.root_key(&caller.instance, cp) {
+        let key = match self.trust.root_key(caller.namespace(), cp) {
             Ok(Some(key)) => key,
             Ok(None) => return Stored::refused(NO_ROOT_KEY),
             Err(Unjudged::UnknownInstance) => return Stored::refused(NOT_ADMITTED),
@@ -3408,7 +3482,7 @@ impl HostServices for KernelServices {
                     return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
                 };
                 let book = Arc::clone(&self.work);
-                let bounds = self.work_bounds_of(&caller.instance);
+                let bounds = self.work_bounds_of(caller.namespace());
                 let wall_ms = Arc::clone(&self.wall_ms);
                 let kind = kind.to_string();
                 let record = record.to_vec();
@@ -3488,9 +3562,9 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
-        let bounds = self.work_bounds_of(&caller.instance);
+        let bounds = self.work_bounds_of(caller.namespace());
         let wall_ms = Arc::clone(&self.wall_ms);
-        let instance = Arc::clone(&caller.instance);
+        let instance = Arc::clone(caller.namespace());
         let (kind, record) = (kind.to_string(), record.to_vec());
         submit(pool, later, move || {
             if book.load(&*rows, &instance).is_err() {
@@ -3558,7 +3632,7 @@ impl HostServices for KernelServices {
                 };
                 let book = Arc::clone(&self.work);
                 let units = Arc::clone(&self.units);
-                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let retain_ms = self.work_bounds_of(caller.namespace()).retain_ms;
                 let wall_ms = Arc::clone(&self.wall_ms);
                 let pool = Arc::clone(&writer.pool);
                 return submit_async(&*pool, later, async move {
@@ -3613,9 +3687,9 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
-        let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+        let retain_ms = self.work_bounds_of(caller.namespace()).retain_ms;
         let wall_ms = Arc::clone(&self.wall_ms);
-        let instance = Arc::clone(&caller.instance);
+        let instance = Arc::clone(caller.namespace());
         submit(pool, later, move || {
             let held = match book.by_reference(&instance, &reference) {
                 Some(held) => Some(held),
@@ -3648,7 +3722,7 @@ impl HostServices for KernelServices {
                     return Ran::Now(Stored::ready(svc::WORK_STATUS_ABSENT));
                 };
                 let book = Arc::clone(&self.work);
-                let retain_ms = self.work_bounds_of(&caller.instance).retain_ms;
+                let retain_ms = self.work_bounds_of(caller.namespace()).retain_ms;
                 let wall_ms = Arc::clone(&self.wall_ms);
                 let pool = Arc::clone(&writer.pool);
                 return submit_async(&*pool, later, async move {
@@ -3676,7 +3750,7 @@ impl HostServices for KernelServices {
         };
         let book = Arc::clone(&self.work);
         let rows = Arc::clone(&records.reads);
-        let instance = Arc::clone(&caller.instance);
+        let instance = Arc::clone(caller.namespace());
         let retain_ms = self.work_bounds_of(&instance).retain_ms;
         let wall_ms = Arc::clone(&self.wall_ms);
         submit(pool, later, move || {
@@ -3704,7 +3778,7 @@ impl HostServices for KernelServices {
                 let owner = self.owner_of_unit(unit);
                 let in_flight = |unit| self.units.get(unit).is_some();
                 let settled = match self.work.settle(
-                    &caller.instance,
+                    caller.namespace(),
                     handle,
                     owner.as_ref(),
                     &in_flight,
@@ -3749,7 +3823,7 @@ impl HostServices for KernelServices {
         let owner = self.owner_of_unit(unit);
         let in_flight = |u: u64| self.units.get(u).is_some();
         let settled = match self.work.settle(
-            &caller.instance,
+            caller.namespace(),
             handle,
             owner.as_ref(),
             &in_flight,
@@ -3771,7 +3845,7 @@ impl HostServices for KernelServices {
             later: Some(later),
         };
         let rows = Arc::clone(&records.reads);
-        let key = work_key(&caller.instance, &settled.reference);
+        let key = work_key(caller.namespace(), &settled.reference);
         pool.run(Box::new(move || {
             let confirmed = rows.record_put(WORK_SCHEMA, &key, &row).is_ok();
             unwritten.answer(confirmed);
@@ -3787,7 +3861,7 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(work_refusal::NO_UNIT));
         };
         Ran::Now(
-            match self.work.bind(&caller.instance, handle, &owner, unit) {
+            match self.work.bind(caller.namespace(), handle, &owner, unit) {
                 Ok(w) => {
                     let mut stored = work_found(handle, &w);
                     stored.value = 0;
@@ -3803,7 +3877,7 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NOT_ADMITTED));
         }
         self.verify
-            .lookup(&caller.instance, key, (self.wall_ms)(), later)
+            .lookup(caller.namespace(), key, (self.wall_ms)(), later)
     }
 
     fn verify_store(&self, caller: &Caller, key: &[u8], entry: &[u8], ttl_ms: u64) -> Stored {
@@ -3811,7 +3885,7 @@ impl HostServices for KernelServices {
             return Stored::refused(NOT_ADMITTED);
         }
         self.verify
-            .store(&caller.instance, key, entry, ttl_ms, (self.wall_ms)())
+            .store(caller.namespace(), key, entry, ttl_ms, (self.wall_ms)())
     }
 
     fn content_scan(
@@ -3901,7 +3975,7 @@ impl KernelServices {
             .units
             .stage(unit)
             .ok_or_else(|| Stored::refused(STAGE_NOT_BOUND))?;
-        if stage.instance() != &*caller.instance {
+        if stage.instance() != caller.namespace().as_ref() {
             return Err(Stored::refused(STAGE_NOT_YOURS));
         }
         Ok(stage)
@@ -4049,3 +4123,19 @@ mod host_stage_tests;
 #[cfg(test)]
 #[path = "tests/host_chains_tests.rs"]
 mod chain_tests;
+
+/// Core-owned authority issuer for the loader's validated bindings. The root wires
+/// this provider; plugins cannot depend on the kernel or receive this value.
+pub fn caller_binding() -> Arc<dyn busbar_contract::services::CallerBinding> {
+    struct Binding;
+    impl busbar_contract::services::CallerBinding for Binding {
+        fn bind(
+            &self,
+            namespace: Arc<str>,
+            kind: busbar_contract::abi::mechanism::KindCode,
+        ) -> Caller {
+            Caller::issue(&crate::seal::acquire(), namespace, kind)
+        }
+    }
+    Arc::new(Binding)
+}

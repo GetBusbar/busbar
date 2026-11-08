@@ -34,7 +34,10 @@ fn actual_mcp_function_macro_and_loaded_rows_preserve_the_same_door_and_statemen
     use crate::dispatch::kinds::plane::Plane;
     use crate::dispatch::{load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
     use std::sync::Arc;
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind = |row: &LinkedRow| {
         load_linked::<Plane>(
             row,
@@ -70,7 +73,10 @@ fn actual_dropped_mcp_bytes_enter_the_production_staging_path_once() {
     use std::sync::Arc;
     let bytes = std::fs::read(crate::actual_mcp::cdylib()).expect("read the actual MCP image");
     let stated = rendering_of(crate::actual_mcp::door).expect("actual MCP statement");
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let before = crate::stage::STAGED_HERE.with(std::cell::Cell::get);
     let plugin = load_dropped_bytes::<crate::dispatch::kinds::plane::Plane>(
         &bytes,

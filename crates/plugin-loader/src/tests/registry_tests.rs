@@ -638,6 +638,7 @@ fn the_hook_axis_refuses_a_non_hook_kind() {
     assert!(reg.resolve("gamma").is_some(), "the store row resolves");
     let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
         crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
     ));
     let rows = crate::hook_door::HookRows::new(&[], Some(&reg), dispatcher).expect("the axis");
     let err = rows

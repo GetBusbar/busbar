@@ -4,7 +4,6 @@
 //! The actual distribution's A2A relay, through its typed linked row and actual dropped image.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -312,8 +311,8 @@ fn bind_plane(
 }
 
 fn first_crossings(plane: &Plugin<Plane>) -> u64 {
-    let resumes = plane.inner.resumes.load(Ordering::SeqCst);
-    plane.inner.crossings.load(Ordering::SeqCst) - resumes
+    let (crossings, resumes) = plane.test_invocations();
+    crossings - resumes
 }
 
 struct RawA2aUnits {
@@ -827,14 +826,13 @@ fn raw_relay_and_lifecycle(
     assert_eq!(refusal_status, 403);
     assert_eq!(&reply[..refusal.out.reply_written as usize], REFUSAL);
     let auxiliary = serve_and_project(plane, dispatcher);
-    let driven = &plane.inner.driven;
-    let seen = driven.answers();
-    dispatch::ticket::host_wake(plane.inner.ctx(), driver);
+    let seen = plane.test_driver_answers();
+    dispatch::ticket::host_wake(plane.test_host_context(), driver);
     assert_eq!(
-        driven.answered_after(seen, Duration::from_secs(15)),
+        plane.test_driver_answer_after(seen, Duration::from_secs(15)),
         Some(Outcome::Ready)
     );
-    let _ = driven.drain();
+    let _ = plane.test_driver_sessions();
 
     dispatcher.recycle(driver);
     let lifecycle = dispatcher
@@ -1255,6 +1253,7 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
             services.served(),
+            busbar_kernel::host_services::caller_binding(),
         ));
         let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
         crate::root::connector::install_io(&dispatcher);
@@ -1496,11 +1495,10 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
             records: kernel.units().clone(),
             owned: Vec::new(),
         };
-        let caller = busbar_contract::services::Caller {
-            instance: Arc::from(instance.as_str()),
-            plugin: Arc::from(raw.name()),
-            kind: busbar_contract::abi::mechanism::KindCode::Plane,
-        };
+        let caller = busbar_contract::services::Caller::for_test(
+            Arc::from(instance.as_str()),
+            busbar_contract::abi::mechanism::KindCode::Plane,
+        );
         for unit in [7, 9, 11] {
             assert!(
                 units.records.get(unit).is_none(),

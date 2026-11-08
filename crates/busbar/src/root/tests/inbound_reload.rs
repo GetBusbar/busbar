@@ -343,7 +343,10 @@ fn authenticated_request(stream: u32, path: &str, preface: bool, provider: &Prov
 async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
     crate::dist_root_install::install();
     let _publishing = crate::root::PUBLISHING.lock().await;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let units = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
@@ -352,7 +355,7 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
         units: units.clone()
     })));
     let plugin = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let door: Arc<dyn FramerDoor> = Arc::new(
@@ -445,7 +448,10 @@ async fn a_live_listener_reloads_new_requests_and_pins_the_old_requests_app() {
 async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing_the_data_list() {
     crate::dist_root_install::install();
     let _publishing = crate::root::PUBLISHING.lock().await;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let units = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(AtomicUsize::new(0));
     assert!(dispatcher.install_auth_handle(Arc::new(ObserveActual {
@@ -454,7 +460,7 @@ async fn a_need_listener_uses_its_selected_policy_across_reload_without_changing
         units: units.clone()
     })));
     let plugin = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let door: Arc<dyn FramerDoor> =

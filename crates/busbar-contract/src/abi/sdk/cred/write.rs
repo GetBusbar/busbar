@@ -81,8 +81,8 @@ pub struct SealedWrite {
 /// Confirm the established stream's host facts before writing a protected credential.
 /// Outputless replay is accepted only when this caller already observed secure facts for the
 /// same stream; an unavailable initial answer never proves security.
-pub(crate) fn confirm_secure(
-    c: &mut Connector<'_>,
+pub(crate) fn confirm_secure<K: crate::plugin::KindMarker>(
+    c: &mut Connector<'_, K>,
     stream: u64,
     previously_confirmed: bool,
 ) -> Answer<()> {
@@ -130,7 +130,11 @@ impl SealedWrite {
         self.secure
     }
 
-    fn confirm(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+    fn confirm<K: crate::plugin::KindMarker>(
+        &mut self,
+        c: &mut Connector<'_, K>,
+        stream: u64,
+    ) -> Answer<()> {
         if self.refused {
             return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Refused(
                 super::NOT_SECURE.into(),
@@ -174,7 +178,11 @@ impl SealedWrite {
     }
 
     /// Write what is left on a connector `stream`: `Ready(Ok(()))` once every byte is taken.
-    pub fn poll(&mut self, c: &mut Connector<'_>, stream: u64) -> Answer<()> {
+    pub fn poll<K: crate::plugin::KindMarker>(
+        &mut self,
+        c: &mut Connector<'_, K>,
+        stream: u64,
+    ) -> Answer<()> {
         std::task::ready!(self.confirm(c, stream))?;
         while !self.finished() {
             match c.write(stream, &self.buf[self.done..]) {
@@ -206,9 +214,9 @@ impl SealedWrite {
     }
 
     /// Write it as one request piece on a framed `stream` (`piece`'s spans index these bytes).
-    pub fn request(
+    pub fn request<K: crate::plugin::KindMarker>(
         &mut self,
-        c: &mut Connector<'_>,
+        c: &mut Connector<'_, K>,
         stream: u64,
         piece: &RequestPiece,
     ) -> Answer<usize> {

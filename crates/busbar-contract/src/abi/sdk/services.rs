@@ -3,6 +3,9 @@
 
 //! THE HOST SERVICES, PLUGIN SIDE (`BUSBAR-1.6.0.md` THE DESIGN, host services; the plugin ABI: the
 
+use crate::plugin::KindMarker;
+use std::marker::PhantomData;
+
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::task::Poll;
@@ -376,7 +379,7 @@ unsafe impl Sync for Wake {}
 impl Wake {
     /// The wake in the tables `open` handed the instance; `None` when the host handed none.
     #[must_use]
-    pub fn of(tables: impl HostSource) -> Option<Self> {
+    pub fn of<K: KindMarker>(tables: super::lent::KindHostLoan<'_, K>) -> Option<Self> {
         let tables = tables.tables();
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
@@ -390,7 +393,8 @@ impl Wake {
     /// The wake remains callable while the result is used and checks opaque context handles
     /// before accessing host state, including after the original table allocation is dropped.
     #[must_use]
-    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub unsafe fn test_from_raw(tables: &HostTables) -> Option<Self> {
         tables.wake.map(|wake| Self {
             ctx: tables.ctx,
             wake,
@@ -404,25 +408,30 @@ impl Wake {
 }
 
 /// An owned service table snapshot retained by an instance.
-pub type StaticServices = Services;
+pub type StaticServices<K> = Services<K>;
 
 /// The host context and an owned copy of its advertised service functions.
 #[derive(Debug, Clone, Copy)]
-pub struct Services {
+pub struct Services<K: KindMarker> {
+    _kind: PhantomData<K>,
     ctx: HostCtx,
     table: HostSlots,
 }
 
-impl Services {
+impl<K: KindMarker> Services<K> {
     /// Copy the services proved by a typed lifecycle loan; absent or short tables offer none.
     #[must_use]
-    pub fn of(tables: impl HostSource) -> Option<Self> {
+    pub fn of(tables: super::lent::KindHostLoan<'_, K>) -> Option<Self> {
         // SAFETY: the sealed loan proves the advertised nested prefix and callback contract.
         unsafe { Self::from_raw(tables.tables()) }
     }
 
     pub(super) const fn from_snapshot(ctx: HostCtx, table: HostSlots) -> Self {
-        Self { ctx, table }
+        Self {
+            ctx,
+            table,
+            _kind: PhantomData,
+        }
     }
 
     /// Copy the service table from raw host tables.
@@ -432,14 +441,23 @@ impl Services {
     /// during this call. Its callbacks remain callable while the result is used, obey the
     /// service ABI, and validate opaque context handles before accessing host state.
     #[must_use]
-    pub unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub unsafe fn test_from_raw(tables: &HostTables) -> Option<Self> {
+        // SAFETY: the fixture caller proves the same raw-table contract.
+        unsafe { Self::from_raw(tables) }
+    }
+
+    pub(crate) unsafe fn from_raw(tables: &HostTables) -> Option<Self> {
         // SAFETY: the caller proves the advertised prefix and callback contract.
         unsafe { super::conn::snapshot_services(tables.services) }
             .map(|table| Self::from_snapshot(tables.ctx, table))
     }
 
     /// `clock.now`: the kernel's one clock, wall and monotonic, so a plugin reads no clock of its
-    pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError> {
+    pub fn clock_now(&self, handle: CompletionHandle) -> Result<ClockReading, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::CLOCK_NOW }>,
+    {
         let mut reading = ClockReading {
             size: size_of::<ClockReading>() as u32,
             _reserved: 0,
@@ -460,7 +478,10 @@ impl Services {
     }
 
     /// `entitlement.check`: whether the unit the calling op serves is entitled to `target`,
-    pub fn entitled(&self, handle: CompletionHandle, target: &str) -> Result<bool, ServiceError> {
+    pub fn entitled(&self, handle: CompletionHandle, target: &str) -> Result<bool, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::ENTITLEMENT_CHECK }>,
+    {
         let input = EntitlementCheckIn {
             head: head::<EntitlementCheckIn>(op::ENTITLEMENT_CHECK, handle),
             target: text(target),
@@ -478,11 +499,10 @@ impl Services {
     }
 
     /// `random.fill`: fill `buf` from the kernel's CSPRNG. `buf` holds 1 to `MAX_RANDOM_FILL`
-    pub fn random_fill(
-        &self,
-        handle: CompletionHandle,
-        buf: &mut [u8],
-    ) -> Result<(), ServiceError> {
+    pub fn random_fill(&self, handle: CompletionHandle, buf: &mut [u8]) -> Result<(), ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::RANDOM_FILL }>,
+    {
         let input = RandomFillIn {
             head: head::<RandomFillIn>(op::RANDOM_FILL, handle),
             len: buf.len() as u64,
@@ -515,7 +535,10 @@ impl Services {
         handle: CompletionHandle,
         session: u64,
         bytes: &[u8],
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::SESSION_EMIT }>,
+    {
         let input = SessionEmitIn {
             head: head::<SessionEmitIn>(op::SESSION_EMIT, handle),
             session,
@@ -544,7 +567,10 @@ impl Services {
         handle: CompletionHandle,
         ttl_secs: u64,
         record: &[u8],
-    ) -> Pend<Minted> {
+    ) -> Pend<Minted>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TICKET_MINT }>,
+    {
         let mut size = TICKET_FIRST_BYTES;
         for _ in 0..2 {
             let mut buf = Zeroizing::new(vec![0_u8; size]);
@@ -595,7 +621,10 @@ impl Services {
         &self,
         handle: CompletionHandle,
         buf: &'b mut [u8],
-    ) -> Result<Option<&'b [u8]>, ServiceError> {
+    ) -> Result<Option<&'b [u8]>, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TICKET_TAKE }>,
+    {
         let input = TicketTakeIn {
             head: head::<TicketTakeIn>(op::TICKET_TAKE, handle),
             into: bufs(buf, &mut []),
@@ -617,7 +646,10 @@ impl Services {
         dest: &str,
         egress_class: u32,
         resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
-    ) -> Pend<Judged<'b>> {
+    ) -> Pend<Judged<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DEST_JUDGE }>,
+    {
         self.dest_judge_as(handle, dest, egress_class, 0, resolve)
     }
 
@@ -629,7 +661,10 @@ impl Services {
         egress_class: u32,
         flags: u32,
         resolve: Option<(&'b mut [u8], &'b mut [ItemSpan])>,
-    ) -> Pend<Judged<'b>> {
+    ) -> Pend<Judged<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DEST_JUDGE }>,
+    {
         let flags = (flags & !DEST_RESOLVE) | if resolve.is_some() { DEST_RESOLVE } else { 0 };
         let (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]) = resolve.unwrap_or_default();
         let input = DestJudgeIn {
@@ -660,12 +695,18 @@ impl Services {
         handle: CompletionHandle,
         counterparty: &str,
         catalogue_hash: &str,
-    ) -> Pend<u64> {
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_SIGHT }>,
+    {
         self.sighting(handle, counterparty, catalogue_hash, TRUST_REACHED)
     }
 
     /// `trust.sight` with [`TRUST_UNREACHABLE`]: the plane could NOT reach `counterparty` to look.
-    pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64> {
+    pub fn trust_unreachable(&self, handle: CompletionHandle, counterparty: &str) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_SIGHT }>,
+    {
         self.sighting(handle, counterparty, "", TRUST_UNREACHABLE)
     }
 
@@ -698,7 +739,10 @@ impl Services {
         counterparty: &str,
         item: &str,
         digest: &str,
-    ) -> Pend<u64> {
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_SIGHT_ITEM }>,
+    {
         let input = TrustSightItemIn {
             head: head::<TrustSightItemIn>(op::TRUST_SIGHT_ITEM, handle),
             counterparty: text(counterparty),
@@ -720,7 +764,10 @@ impl Services {
         counterparty: &str,
         item: Option<&str>,
         digest: Option<&str>,
-    ) -> Result<u64, ServiceError> {
+    ) -> Result<u64, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_SERVES }>,
+    {
         let input = TrustServesIn {
             head: head::<TrustServesIn>(op::TRUST_SERVES, handle),
             counterparty: text(counterparty),
@@ -744,7 +791,10 @@ impl Services {
         item: Option<&str>,
         expected: Option<&str>,
         approve: bool,
-    ) -> Pend<u64> {
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_DECIDE }>,
+    {
         let input = TrustDecideIn {
             head: head::<TrustDecideIn>(op::TRUST_DECIDE, handle),
             counterparty: text(counterparty),
@@ -772,7 +822,10 @@ impl Services {
         counterparty: &str,
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Result<TrustItems<'b>, ServiceError> {
+    ) -> Result<TrustItems<'b>, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_STATE }>,
+    {
         let input = TrustStateIn {
             head: head::<TrustStateIn>(op::TRUST_STATE, handle),
             counterparty: text(counterparty),
@@ -802,7 +855,10 @@ impl Services {
         handle: CompletionHandle,
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Result<Names<'b>, ServiceError> {
+    ) -> Result<Names<'b>, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_DUE }>,
+    {
         let input = TrustDueIn {
             head: head::<TrustDueIn>(op::TRUST_DUE, handle),
             into: bufs(buf, spans),
@@ -819,7 +875,10 @@ impl Services {
         payload: &[u8],
         signatures: &[u8],
         buf: &'b mut [u8],
-    ) -> Result<Signed<'b>, ServiceError> {
+    ) -> Result<Signed<'b>, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::TRUST_VERIFY }>,
+    {
         let input = TrustVerifyIn {
             head: head::<TrustVerifyIn>(op::TRUST_VERIFY, handle),
             counterparty: text(counterparty),
@@ -850,7 +909,10 @@ impl Services {
         data: &[u8],
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Result<Signature<'b>, ServiceError> {
+    ) -> Result<Signature<'b>, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::SIGN }>,
+    {
         let input = SignIn {
             head: head::<SignIn>(op::SIGN, handle),
             data: blob(data, BLOB_OCTETS),
@@ -873,7 +935,10 @@ impl Services {
         kind: &str,
         key: &[u8],
         buf: &'b mut [u8],
-    ) -> Pend<Option<&'b [u8]>> {
+    ) -> Pend<Option<&'b [u8]>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::RECORDS_GET }>,
+    {
         let mut span = [ItemSpan::ZERO];
         let input = RecordsGetIn {
             head: head::<RecordsGetIn>(op::RECORDS_GET, handle),
@@ -912,7 +977,10 @@ impl Services {
         after: Option<&[u8]>,
         limit: u32,
         (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
-    ) -> Pend<Records<'b>> {
+    ) -> Pend<Records<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::RECORDS_LIST }>,
+    {
         let input = RecordsListIn {
             head: head::<RecordsListIn>(op::RECORDS_LIST, handle),
             kind: text(kind),
@@ -952,7 +1020,10 @@ impl Services {
         kind: &str,
         key: &[u8],
         ttl_ms: u64,
-    ) -> Pend<bool> {
+    ) -> Pend<bool>
+    where
+        K: crate::abi::host::access::Permitted<{ op::RECORDS_CLAIM }>,
+    {
         let input = RecordsClaimIn {
             head: head::<RecordsClaimIn>(op::RECORDS_CLAIM, handle),
             kind: text(kind),
@@ -977,7 +1048,10 @@ impl Services {
         handle: CompletionHandle,
         kind: &str,
         id: &str,
-    ) -> Pend<CredentialSecret> {
+    ) -> Pend<CredentialSecret>
+    where
+        K: crate::abi::host::access::Permitted<{ op::RECORDS_SECRET }>,
+    {
         let mut sizes = (SECRET_FIRST_BYTES, 1_usize);
         for _ in 0..2 {
             let mut buf = Zeroizing::new(vec![0_u8; sizes.0]);
@@ -1040,7 +1114,10 @@ impl Services {
         record: &[u8],
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Pend<Opened<'b>> {
+    ) -> Pend<Opened<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::WORK_OPEN }>,
+    {
         let input = WorkOpenIn {
             head: head::<WorkOpenIn>(op::WORK_OPEN, handle),
             kind: text(kind),
@@ -1069,7 +1146,10 @@ impl Services {
         reference: &str,
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Pend<Option<Found<'b>>> {
+    ) -> Pend<Option<Found<'b>>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::WORK_FIND }>,
+    {
         let input = WorkFindIn {
             head: head::<WorkFindIn>(op::WORK_FIND, handle),
             reference: text(reference),
@@ -1091,7 +1171,10 @@ impl Services {
 
     /// `work.status`: observe this instance's durable reference without a serving unit.
     /// Only `WorkStatus::Settled` proves settlement. Older hosts return `Unserved`.
-    pub fn work_status(&self, handle: CompletionHandle, reference: &str) -> Pend<WorkStatus> {
+    pub fn work_status(&self, handle: CompletionHandle, reference: &str) -> Pend<WorkStatus>
+    where
+        K: crate::abi::host::access::Permitted<{ op::WORK_STATUS }>,
+    {
         use crate::abi::host::service::{
             check_work_status, WorkStatusIn, WORK_STATUS_ABSENT, WORK_STATUS_LIVE,
             WORK_STATUS_SETTLED, WORK_STATUS_SETTLING,
@@ -1118,7 +1201,10 @@ impl Services {
     }
 
     /// `work.settle`: settle this instance's live handle `work` with its final `record`. May pend.
-    pub fn work_settle(&self, handle: CompletionHandle, work: u64, record: &[u8]) -> Pend<()> {
+    pub fn work_settle(&self, handle: CompletionHandle, work: u64, record: &[u8]) -> Pend<()>
+    where
+        K: crate::abi::host::access::Permitted<{ op::WORK_SETTLE }>,
+    {
         let input = WorkSettleIn {
             head: head::<WorkSettleIn>(op::WORK_SETTLE, handle),
             handle: work,
@@ -1142,7 +1228,10 @@ impl Services {
         work: u64,
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Pend<Found<'b>> {
+    ) -> Pend<Found<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::WORK_RESUME }>,
+    {
         let input = WorkResumeIn {
             head: head::<WorkResumeIn>(op::WORK_RESUME, handle),
             handle: work,
@@ -1173,7 +1262,10 @@ impl Services {
         body: &[u8],
         buf: &'b mut [u8],
         spans: &'b mut [ItemSpan],
-    ) -> Pend<Nested<'b>> {
+    ) -> Pend<Nested<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::UNIT_NEST }>,
+    {
         let input = UnitNestIn {
             head: head::<UnitNestIn>(op::UNIT_NEST, handle),
             verb: text(verb),
@@ -1211,7 +1303,10 @@ impl Services {
         handle: CompletionHandle,
         key: &[u8],
         buf: &'b mut [u8],
-    ) -> Pend<Verified<'b>> {
+    ) -> Pend<Verified<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::VERIFY_LOOKUP }>,
+    {
         let mut span = [ItemSpan::ZERO];
         let input = VerifyLookupIn {
             head: head::<VerifyLookupIn>(op::VERIFY_LOOKUP, handle),
@@ -1253,7 +1348,10 @@ impl Services {
         key: &[u8],
         entry: &[u8],
         ttl_ms: u64,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::VERIFY_STORE }>,
+    {
         let input = VerifyStoreIn {
             head: head::<VerifyStoreIn>(op::VERIFY_STORE, handle),
             key: raw(key),
@@ -1280,7 +1378,10 @@ impl Services {
         handle: CompletionHandle,
         content: &[u8],
         buf: &'b mut [u8],
-    ) -> Pend<Scanned<'b>> {
+    ) -> Pend<Scanned<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::CONTENT_SCAN }>,
+    {
         let input = ContentScanIn {
             head: head::<ContentScanIn>(op::CONTENT_SCAN, handle),
             content: blob(content, BLOB_OCTETS),
@@ -1312,7 +1413,7 @@ impl Services {
     /// ```compile_fail,E0308
     /// use busbar_contract::abi::{hook::MessageView, sdk::services::Services,
     ///     mechanism::ticket::CompletionHandle};
-    /// fn forged(s: &Services, h: CompletionHandle, raw: &[MessageView], b: &mut [u8]) {
+    /// fn forged(s: &Services<busbar_contract::plugin::markers::PlaneKind>, h: CompletionHandle, raw: &[MessageView], b: &mut [u8]) {
     ///     let _ = s.hook_call(h, (1, 0), None, raw, b);
     /// }
     /// ```
@@ -1323,7 +1424,10 @@ impl Services {
         system: Option<&str>,
         messages: &[HookMessage<'_>],
         buf: &'b mut [u8],
-    ) -> Pend<Hooked<'b>> {
+    ) -> Pend<Hooked<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::HOOK_CALL }>,
+    {
         let messages: Vec<MessageView> = messages
             .iter()
             .map(|m| MessageView {
@@ -1376,7 +1480,10 @@ impl Services {
         handle: CompletionHandle,
         scope: u32,
         buf: &mut [u64],
-    ) -> Pend<Option<Vec<crate::export_calls::Family>>> {
+    ) -> Pend<Option<Vec<crate::export_calls::Family>>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::SNAPSHOT_READ }>,
+    {
         self.snapshot_read_with_used(handle, scope, buf)
             .map(|result| result.map(|snapshot| snapshot.map(|(families, _used)| families)))
     }
@@ -1387,7 +1494,10 @@ impl Services {
         handle: CompletionHandle,
         scope: u32,
         buf: &mut [u64],
-    ) -> Pend<Option<(Vec<crate::export_calls::Family>, usize)>> {
+    ) -> Pend<Option<(Vec<crate::export_calls::Family>, usize)>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::SNAPSHOT_READ }>,
+    {
         let bytes = std::mem::size_of_val(buf);
         let at = buf.as_mut_ptr().cast::<u8>();
         let input = SnapshotReadIn {
@@ -1445,7 +1555,10 @@ impl Services {
         stream: u64,
         request: &HeadViewArgs<'_>,
         body: Option<&[u8]>,
-    ) -> Pend<AuthCalled<O>> {
+    ) -> Pend<AuthCalled<O>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::AUTH_CALL }>,
+    {
         let fields = view_fields(request);
         let (mut cap, mut spans_cap) = (AUTH_CALL_BYTES, AUTH_CALL_SPANS);
         for _ in 0..2 {
@@ -1507,7 +1620,10 @@ impl Services {
         conn: u64,
         stream: u64,
         request: &HeadViewArgs<'_>,
-    ) -> Result<(u32, UnitRef), ServiceError> {
+    ) -> Result<(u32, UnitRef), ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::UNIT_HAND_IN }>,
+    {
         let fields = view_fields(request);
         let mut answer = answer_slot();
         let input = UnitHandInIn {
@@ -1542,7 +1658,10 @@ impl Services {
         conn: u64,
         stream: u64,
         request: &HeadViewArgs<'_>,
-    ) -> Result<RefusalCopy, ServiceError> {
+    ) -> Result<RefusalCopy, ServiceError>
+    where
+        K: crate::abi::host::access::Permitted<{ op::UNIT_REFUSE }>,
+    {
         let fields = view_fields(request);
         let mut answer = RefusalAnswer {
             size: 0,

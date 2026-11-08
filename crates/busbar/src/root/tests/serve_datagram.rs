@@ -222,6 +222,24 @@ pub(crate) mod peer {
         }
     }
 
+    /// Exercise the real transport door; fixtures never construct plugin internals.
+    pub(crate) fn offer_description() -> zeroize::Zeroizing<Vec<u8>> {
+        let (_framing, yielded) = DatagramFraming::dial(
+            super::real::loaded(),
+            Arc::new(SessionCert::mint().unwrap()),
+            "127.0.0.1:40000".parse().unwrap(),
+            &[("channel".into(), b"events".to_vec())],
+            Arc::new(Loopback),
+            0,
+        )
+        .expect("the real WebRTC door offers a data channel");
+        zeroize::Zeroizing::new(description(&yielded))
+    }
+
+    // The WebRTC ABI assigns media line n stream 2^32 + n; this is a fixture's
+    // independent expected wire identifier, not an imported implementation constant.
+    pub(crate) const FIRST_AUDIO_STREAM: u64 = 1 << 32;
+
     pub(crate) struct Peer {
         socket: UdpSocket,
         framing: DatagramFraming,
@@ -586,7 +604,7 @@ pub(crate) mod real {
                                 yielded
                             },
                             Some(Input::Audio(bytes)) => {
-                                let yielded = peer.emit(busbar_transport_webrtc::framing::MEDIA_BASE, &bytes, true, false, Instant::now()).unwrap();
+                                let yielded = peer.emit(super::peer::FIRST_AUDIO_STREAM, &bytes, true, false, Instant::now()).unwrap();
                                 // RTP is paced: emit can advertise a deadline before it owes a
                                 // wire packet. Drive its advertised deadlines until this explicit
                                 // frame reaches the wire, while the autonomous loop stays paused.
@@ -753,7 +771,7 @@ async fn boot_binds_a_claim_door_for_the_actual_datagram_product_and_no_stream_l
             "webrtc" => Some(real::loaded()),
             "http" => {
                 let plugin = crate::root::test_plugins::linked_transport(
-                    busbar_transport_http::door::door,
+                    busbar_transport_http::door,
                     crate::root::doors::bind(),
                 );
                 Some(Arc::new(

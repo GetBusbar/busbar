@@ -193,9 +193,19 @@ fn slot<R: Into<Kept>>(
         if head.op != service || (head.size as usize) < in_size {
             return Answered::fault();
         }
+        if !head.handle.ticket.is_none() && !super::services::crossing_names(head.handle.ticket) {
+            return Answered::bare(Outcome::Refused, super::services::NOT_THIS_CROSSING);
+        }
         let Some(wake) = super::handle::resolve(ctx) else {
             return refusal(ConnError::Unarmed);
         };
+        if let Err(refused) = super::access::admit(
+            wake,
+            busbar_contract::abi::host::access::connector(service),
+            super::access::operation(),
+        ) {
+            return refused;
+        }
         let st = &wake.conn_state;
         let authority = if service == service::IDENTITY {
             wake.conn.get().map(|conn| Authority {
@@ -733,7 +743,7 @@ fn warn_unverified(ctx: HostCtx) {
     let instance = wake
         .caller
         .get()
-        .map_or_else(|| "<unbound>".to_owned(), |c| c.instance.to_string());
+        .map_or_else(|| "<unbound>".to_owned(), |c| c.namespace().to_string());
     tracing::warn!(
         instance = %instance,
         "plugin instance '{instance}' secures a connection WITHOUT verifying the far end's certificate (operator opt-in, e.g. `#insecure`); its traffic can be intercepted"

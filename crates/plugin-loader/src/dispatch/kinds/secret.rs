@@ -17,6 +17,8 @@ unsafe impl InFrame for ResolveIn {}
 unsafe impl InFrame for CheckIn {}
 unsafe impl OutFrame for ResolveOut {}
 
+impl crate::dispatch::kind_seal::Validated for Secret {}
+
 impl Kind for Secret {
     const CODE: KindCode = KindCode::Secret;
     type Ops = secret::Ops;

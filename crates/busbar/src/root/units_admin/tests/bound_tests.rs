@@ -325,11 +325,10 @@ async fn trust_digest_guard_rejects_stale_and_malformed_reviews_at_the_admin_bou
         let kernel = Arc::clone(&kernel);
         Arc::new(move || Some(Arc::clone(&kernel)))
     };
-    let caller = Caller {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("plane"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
     let sight = |digest| {
         assert!(matches!(
             kernel.trust_sight(&caller, "cp", digest, Box::new(|_| {})),

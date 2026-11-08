@@ -39,6 +39,7 @@ impl Drop for Release {
 
 pub struct Closing;
 impl Life for Closing {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     const CANCEL: u32 = busbar_contract::abi::hook::cancel::ABORTED;
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Self)
@@ -46,7 +47,7 @@ impl Life for Closing {
     fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
         Ok(Refreshed::default())
     }
-    fn close(&self, _: Option<&busbar_contract::abi::sdk::conn::Host>) {
+    fn close(&self, _: Option<&busbar_contract::abi::sdk::conn::Host<Self::Kind>>) {
         let mut gate = GATE.0.lock().unwrap();
         gate.closes += 1;
         GATE.1.notify_all();
@@ -57,10 +58,11 @@ impl Life for Closing {
 }
 pub struct Unused<I, O>(PhantomData<(I, O)>);
 impl<I: AbiIn, O: AbiOut> SafeSlot for Unused<I, O> {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = I;
     type Out = O;
     type State = Held<Closing>;
-    fn call(_: Instance<'_, Self::State>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+    fn call(_: Instance<'_, Self::State, Self::Kind>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }
@@ -109,7 +111,10 @@ async fn hooked_app() -> Arc<busbar_kernel::state::App> {
     let secret = directory.join("uncached");
     std::fs::write(&secret, b"retirement-hook-setting")
         .expect("the actual file-backed hook reference exists");
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let axis = Arc::new(HookRows::new(&[fixture::door], None, dispatcher).unwrap());
     let registry = crate::root::loader::PluginRegistry::empty()
         .link(vec![crate::root::loader::LinkedPlugin::door_of_kind(

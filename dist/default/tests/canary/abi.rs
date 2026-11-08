@@ -43,12 +43,9 @@ fn doors() -> &'static Doors {
         };
         let webhook_signature = linked(
             "busbar-auth-webhook-signature (linked)",
-            busbar_auth_webhook_signature::compiled_in::door::door,
+            busbar_auth_webhook_signature::door,
         );
-        let header = linked(
-            "busbar-auth-header (linked)",
-            busbar_auth_header::compiled_in::door::door,
-        );
+        let header = linked("busbar-auth-header (linked)", busbar_auth_header::door);
 
         let path = common::plugins::token_verifier_cdylib_path().unwrap_or_else(|| {
             common::plugins::missing(
@@ -83,7 +80,7 @@ pub fn signing_secret_crossing() -> (String, String) {
     let index = facts
         .secret_refs
         .iter()
-        .position(|path| path == busbar_auth_webhook_signature::SECRET_REF)
+        .position(|path| path == "signing_secret")
         .expect("the actual webhook declares its signing secret");
     (
         format!("abi:host->plugin:op:open.secrets[{index}]"),
@@ -195,6 +192,7 @@ fn host() -> &'static (Arc<Dispatcher>, Arc<Connector>) {
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
             services,
+            busbar_kernel::host_services::caller_binding(),
         ));
         assert!(dispatcher.lend_seal(busbar_kernel::seal::lend()));
         dispatcher.install_runtime(runtime().handle().clone());
@@ -265,13 +263,13 @@ fn sources() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
                         .map_err(str::to_string)
                 });
         sources
-            .link(busbar_secret_env::door::door)
+            .link(busbar_secret_env::door)
             .expect("the real env source");
         sources
-            .link(busbar_secret_file::door::door)
+            .link(busbar_secret_file::door)
             .expect("the real file source");
         sources
-            .declare_linked(busbar_secret_file::door::door, busbar_secret_file::DECLARES)
+            .declare_linked(busbar_secret_file::door, busbar_secret_file::DECLARES)
             .expect("the file source's own disk declaration");
         sources
     })
@@ -326,7 +324,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     s.insert("variant".into(), "twilio".into());
     s.insert("origin".into(), "wss://edge.canary.invalid".into());
     s.insert(
-        busbar_auth_webhook_signature::SECRET_REF.into(),
+        "signing_secret".into(),
         source(
             SECRET_MODULE_FILE,
             serde_json::json!({"path": secret_file.display().to_string()}),

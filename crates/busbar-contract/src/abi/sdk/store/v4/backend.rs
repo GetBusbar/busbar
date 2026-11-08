@@ -3,7 +3,9 @@
 
 //! Plugin-side primitive persistence adapter. Product policy belongs to the host.
 
-use crate::abi::sdk::conn::Host;
+type Host = KindGenericHost<crate::plugin::markers::StoreKind>;
+
+use crate::abi::sdk::conn::Host as KindGenericHost;
 use crate::abi::sdk::store::{Op, Step};
 use crate::persistence::*;
 use crate::redacted::OwnerSeal;

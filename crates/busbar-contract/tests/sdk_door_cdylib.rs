@@ -14,8 +14,7 @@ use busbar_contract::abi::mechanism::call::{
 };
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, CancelIn, CancelOut, GenIn, OpenIn, OpenOut, OpsHead, TickOut, ValidateIn,
-    LIFECYCLE_SLOTS,
+    slot, CancelIn, CancelOut, OpenIn, OpenOut, ValidateIn, LIFECYCLE_SLOTS,
 };
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
@@ -166,11 +165,6 @@ fn call<I, O>(op: Option<Op>, input: &I, out: &mut O) -> Outcome {
 }
 
 /// The fixture's table: the lifecycle and one kind op.
-#[repr(C)]
-struct OneKindOp {
-    head: OpsHead,
-    echo: Option<Op>,
-}
 
 #[test]
 fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
@@ -192,9 +186,12 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(door.kind(), KindCode::Secret as u32);
     assert_eq!(door.kind_abi(), KindCode::Secret.abi_version());
     // SAFETY: the fixture's table is a `OneKindOp`.
-    let table = unsafe { &*door.ops().cast::<OneKindOp>() };
-    assert_eq!(table.head.size as usize, size_of::<OneKindOp>());
-    assert_eq!(table.head.slots, LIFECYCLE_SLOTS + 1);
+    let table = unsafe { &*door.ops().cast::<busbar_contract::abi::secret::Ops>() };
+    assert_eq!(
+        table.head.size as usize,
+        size_of::<busbar_contract::abi::secret::Ops>()
+    );
+    assert_eq!(table.head.slots, LIFECYCLE_SLOTS + 2);
 
     let panics = ValidateIn {
         head: in_head(size_of::<ValidateIn>(), slot::VALIDATE),
@@ -230,25 +227,37 @@ fn the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort() {
     assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
     assert!(out.instance.is_null());
 
-    let echo = |generation| GenIn {
-        head: in_head(size_of::<GenIn>(), LIFECYCLE_SLOTS),
-        generation,
+    let echo = |generation| busbar_contract::abi::secret::ResolveIn {
+        head: in_head(
+            size_of::<busbar_contract::abi::secret::ResolveIn>(),
+            LIFECYCLE_SLOTS,
+        ),
+        settings: busbar_contract::abi::mechanism::call::Blob {
+            len: generation as usize,
+            ..busbar_contract::abi::mechanism::call::Blob::ZERO
+        },
+        ..busbar_contract::abi::sdk::door::blank_in()
     };
-    let mut out = TickOut {
-        head: out_head(size_of::<TickOut>()),
-        next_tick_ns: 0x5EED,
+    let mut out = busbar_contract::abi::secret::ResolveOut {
+        head: out_head(size_of::<busbar_contract::abi::secret::ResolveOut>()),
+        needed: 0x5EED,
+        ..busbar_contract::abi::sdk::door::blank_out()
     };
-    assert_eq!(call(table.echo, &echo(PANIC_GEN), &mut out), Outcome::Fault);
-    assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
-    assert_eq!((out.next_tick_ns, out.head.wake_at_ns), (0x5EED, 0xAAAA));
-
-    let mut out = TickOut {
-        head: out_head(size_of::<TickOut>()),
-        next_tick_ns: 0,
-    };
-    assert_eq!(call(table.echo, &echo(5), &mut out), Outcome::Ready);
     assert_eq!(
-        (out.head.outcome.outcome(), out.next_tick_ns),
+        call(table.resolve, &echo(PANIC_GEN), &mut out),
+        Outcome::Fault
+    );
+    assert_eq!(out.head.outcome.outcome(), Outcome::Fault);
+    assert_eq!((out.needed, out.head.wake_at_ns), (0x5EED, 0xAAAA));
+
+    let mut out = busbar_contract::abi::secret::ResolveOut {
+        head: out_head(size_of::<busbar_contract::abi::secret::ResolveOut>()),
+        needed: 0,
+        ..busbar_contract::abi::sdk::door::blank_out()
+    };
+    assert_eq!(call(table.resolve, &echo(5), &mut out), Outcome::Ready);
+    assert_eq!(
+        (out.head.outcome.outcome(), out.needed),
         (Outcome::Ready, 5)
     );
     let cancel = CancelIn {

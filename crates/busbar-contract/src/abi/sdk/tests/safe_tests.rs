@@ -20,7 +20,7 @@ use crate::abi::mechanism::KindCode;
 use crate::abi::sdk::door::KindOps;
 use crate::abi::sdk::lent::Lent;
 
-use super::{Instance, SafeSlot};
+use super::SafeSlot;
 use crate::abi::sdk::out::Out;
 
 #[repr(C)]
@@ -31,7 +31,14 @@ struct LifecycleOnly {
 
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, nothing after it; the lifecycle's `open` out is
 // `OpenOut`.
+impl crate::abi::sdk::door::table_seal::Sealed for LifecycleOnly {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I> for LifecycleOnly {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I>
+    for crate::abi::sdk::door::Lifecycle
+{
+}
 unsafe impl KindOps for LifecycleOnly {
+    type Marker = FixtureKind;
     const KIND: KindCode = KindCode::Secret;
     type Lifecycle = crate::abi::sdk::door::Lifecycle;
 }
@@ -82,6 +89,7 @@ mod plugin {
         ($name:ident, $state:ty, $in:ty, $out:ty, |$inst:ident, $input:ident, $o:ident| $body:expr) => {
             pub struct $name;
             impl SafeSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 type State = $state;
@@ -720,3 +728,7 @@ fn the_parked_table_grows_past_a_segment_and_every_ticket_resumes_its_own() {
     assert_eq!(h.count(), 0, "every slot is free again");
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::SecretKind;

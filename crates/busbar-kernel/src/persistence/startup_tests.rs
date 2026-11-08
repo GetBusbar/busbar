@@ -552,19 +552,11 @@ async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_re
     let host = KernelServices::new();
     assert!(host.attach_persistence(store));
     host.admit("one", InstanceFacts::default()).await.unwrap();
-    let caller = Caller {
-        instance: Arc::from("one"),
-        plugin: Arc::from("protocol"),
-        kind: KindCode::Plane,
-    };
+    let caller = Caller::for_test(Arc::from("one"), KindCode::Plane);
     host.bind_native_record_bootstrap(&caller).await.unwrap();
     assert!(host.entitled(&caller, None, ENTITLEMENT));
     assert!(host.entitled(&caller.clone(), None, ENTITLEMENT));
-    let replacement = Caller {
-        instance: Arc::from("one"),
-        plugin: Arc::from("protocol"),
-        kind: KindCode::Plane,
-    };
+    let replacement = Caller::for_test(Arc::from("one"), KindCode::Plane);
     assert!(!host.entitled(&replacement, None, ENTITLEMENT));
     assert!(!host.entitled(&caller, None, "record-quota-bootstrap:forged"));
     assert!(host.admit("one", InstanceFacts::default()).await.is_err());

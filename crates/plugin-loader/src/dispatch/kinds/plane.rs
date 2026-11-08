@@ -624,7 +624,7 @@ impl crate::dispatch::Plugin<Plane> {
             .map(|f| f.declared.clone())
             .unwrap_or_default();
         if let Some(c) = self.inner.wake.caller.get() {
-            d.label = Arc::clone(&c.instance);
+            d.label = Arc::clone(c.namespace());
         }
         d
     }
@@ -654,13 +654,14 @@ pub type ProbeBind = Arc<dyn Fn() -> Result<crate::dispatch::Plugin<Plane>, Stri
 pub fn linked_probe(
     door: busbar_contract::abi::mechanism::door::DoorFn,
     instance: &str,
+    callers: Arc<dyn busbar_contract::services::CallerBinding>,
 ) -> ProbeBind {
-    static PROBE: std::sync::OnceLock<crate::dispatch::Dispatcher> = std::sync::OnceLock::new();
+    let dispatcher = Arc::new(crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        callers,
+    ));
     let instance: Arc<str> = Arc::from(instance);
     Arc::new(move || {
-        let dispatcher = PROBE.get_or_init(|| {
-            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default())
-        });
         let row = crate::dispatch::LinkedRow::of(door).map_err(|e| format!("{e:?}"))?;
         crate::dispatch::load_linked::<Plane>(
             &row,
@@ -1216,6 +1217,8 @@ fn check_tail_trust_keys(tail: &PlaneTail) -> Result<(), Fault> {
     }
     Ok(())
 }
+
+impl crate::dispatch::kind_seal::Validated for Plane {}
 
 impl Kind for Plane {
     const CODE: KindCode = KindCode::Plane;

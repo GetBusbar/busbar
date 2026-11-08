@@ -200,6 +200,7 @@ fn synthetic_registry(alias: &str) -> Arc<crate::root::loader::PluginRegistry> {
 fn synthetic_calls(alias: &str, mode: &str) -> Arc<dyn busbar_contract::auth_calls::AuthCalls> {
     let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
         Default::default(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::loader::auth_axis::AuthRows::new(synthetic_registry(alias), dispatcher)
         .open(alias, alias, &serde_json::json!({"mode":mode}))

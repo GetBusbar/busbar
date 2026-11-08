@@ -9,7 +9,7 @@ use crate::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::{Held, Life, Refreshed};
 use crate::abi::sdk::test_support::zeroed;
-use crate::abi::sdk::{Instance, Lent, Safe, SafeSlot};
+use crate::abi::sdk::{Lent, Safe, SafeSlot};
 use crate::abi::secret::{Ops, ResolveIn, ERROR_KIND_UNSET};
 
 /// Where the probe's references name their value.
@@ -19,6 +19,7 @@ const NAMES: &str = "variable in its own settings.key";
 struct Probe;
 
 impl Life for Probe {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
@@ -38,6 +39,7 @@ impl Life for Probe {
 struct Resolve;
 
 impl SafeSlot for Resolve {
+    type Kind = FixtureKind;
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Probe>;
@@ -299,3 +301,7 @@ fn a_source_with_no_settings_escapes_refused_keys_without_losing_its_reason() {
     assert_eq!(takes_no_settings(br#"{"key":1}"#, "probe", NAMES).unwrap_err(),
         format!("secret module 'probe' takes no settings; remove settings.key (each reference names its {NAMES})"));
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::SecretKind;

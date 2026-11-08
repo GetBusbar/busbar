@@ -324,7 +324,7 @@ async fn actual_listener_with_routers(
     let dispatcher = Arc::new(crate::root::dispatch::build(2, &late));
     crate::root::connector::install_io(&dispatcher);
     let connector = crate::root::connector::the().clone();
-    let row = LinkedRow::of(busbar_plane_llm::plane_door::door)
+    let row = LinkedRow::of(busbar_plane_llm::door)
         .expect("the normal linked LLM product states its actual memory ABI");
     let plugin = Arc::new(
         load_linked::<Plane>(

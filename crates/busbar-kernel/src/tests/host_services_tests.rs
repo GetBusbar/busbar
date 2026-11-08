@@ -105,11 +105,7 @@ const KIND: RecordSchemaId = RecordSchemaId::new("approval");
 const SECTION_KEY: &str = "tools";
 
 pub(crate) fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
+    Caller::for_test(Arc::from(instance), KindCode::Plane)
 }
 
 struct Rig {
@@ -522,13 +518,20 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     use busbar_contract::services::TrustKeyRef;
     let r = rig();
     let me = caller("inst");
+    let ticket = busbar_contract::abi::mechanism::ticket::Ticket {
+        slot: 9,
+        generation: 1,
+    };
+    let _grant =
+        r.s.grant_trust_decision(&me, ticket, "cp")
+            .expect("gated admin grant");
     let tool = TrustKeyRef {
         counterparty: "cp",
         item: Some("t"),
     };
     let serves = |item| r.s.trust_serves(&me, "cp", Some(item), None).value;
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, Some("d1"), true, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, Some("d1"), true, later)).value,
         svc::UNDECIDED_UNPINNED,
         "nothing sighted yet"
     );
@@ -538,13 +541,13 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     );
     assert_eq!(serves("t"), svc::DISTRUST_NOT_APPROVED);
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, Some("d0"), true, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, Some("d0"), true, later)).value,
         svc::UNDECIDED_STALE,
         "approve what you saw"
     );
 
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, Some("d1"), true, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, Some("d1"), true, later)).value,
         svc::TRUST_DECIDED_PENDING
     );
     assert_eq!(
@@ -558,7 +561,10 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
     };
     run(|l| r.s.trust_sight(&me, "cp", "fp", l));
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, whole, Some("fp"), true, later)).value,
+        run(|later| r
+            .s
+            .trust_decide(&me, ticket, whole, Some("fp"), true, later))
+        .value,
         svc::TRUST_DECIDED_SERVING
     );
     assert_eq!(serves("t"), svc::DISTRUST_NONE, "approved, it serves");
@@ -572,12 +578,12 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         "a changed sighting refuses"
     );
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, None, true, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, None, true, later)).value,
         svc::TRUST_DECIDED_SERVING,
         "re-approved at its current sighting"
     );
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, None, false, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, None, false, later)).value,
         svc::TRUST_DECIDED_PENDING
     );
     assert_eq!(
@@ -588,11 +594,14 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
 
     run(|l| r.s.trust_sight(&me, "cp", "moved", l));
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, tool, None, false, later)).value,
+        run(|later| r.s.trust_decide(&me, ticket, tool, None, false, later)).value,
         svc::TRUST_DECIDED_QUARANTINED
     );
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, whole, Some("moved"), true, later)).value,
+        run(|later| r
+            .s
+            .trust_decide(&me, ticket, whole, Some("moved"), true, later))
+        .value,
         svc::TRUST_DECIDED_SERVING
     );
     let stranger = TrustKeyRef {
@@ -600,11 +609,11 @@ fn trust_decide_is_the_one_decide_path_for_a_planes_own_verb() {
         item: None,
     };
     assert_eq!(
-        run(|later| r.s.trust_decide(&me, stranger, None, true, later)).value,
-        svc::UNDECIDED_UNKNOWN
+        run(|later| r.s.trust_decide(&me, ticket, stranger, None, true, later)).outcome,
+        Outcome::Refused
     );
     let s = run(|later| {
-        r.s.trust_decide(&caller("nowhere"), whole, None, true, later)
+        r.s.trust_decide(&caller("nowhere"), ticket, whole, None, true, later)
     });
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
 }
@@ -730,7 +739,8 @@ fn two_instances_of_one_plugin_have_distinct_registries() {
     )
     .unwrap();
     let (first, second) = (caller("inst"), caller("second"));
-    assert_eq!(first.plugin, second.plugin);
+    assert_eq!(first.kind(), second.kind());
+    assert!(!first.same_incarnation(&second));
     let s = run(|l| r.s.records_get(&second, "approval", b"k", l));
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_A_KIND));
     assert_eq!(r.s.sign(&second, b"x").bytes, b"q-K1dom2:x");
@@ -880,10 +890,10 @@ fn another_instance_declaring_the_same_kind_never_reaches_the_records_of_this_on
     r.s.admit_sync("other", declares()).unwrap();
     r.s.admit_sync("elsewhere", declares()).unwrap();
 
-    let elsewhere = Caller {
-        plugin: Arc::from("another-plugin"),
-        ..caller("elsewhere")
-    };
+    let elsewhere = Caller::for_test(
+        (caller("elsewhere")).namespace().clone(),
+        (caller("elsewhere")).kind(),
+    );
     let everything = RecordsList {
         kind: "approval".into(),
         prefix: Vec::new(),
@@ -1904,6 +1914,7 @@ fn dest_judge_answers_the_installed_guard_admission() {
 #[test]
 fn an_emit_reaches_only_its_own_open_session() {
     let services = KernelServices::new();
+    let me = caller("door");
     let written: Arc<std::sync::Mutex<Vec<Vec<u8>>>> = Arc::default();
     let sink = {
         let written = Arc::clone(&written);
@@ -1912,10 +1923,10 @@ fn an_emit_reaches_only_its_own_open_session() {
             true
         }) as CarrierSink
     };
-    let session = services.open_carrier_session("door", "key-1", sink);
+    let session = services.open_carrier_session(&me, "key-1", sink);
     assert_eq!(
         services
-            .session_emit(&caller("door"), session, b"{\"ping\":1}\n")
+            .session_emit(&me, session, b"{\"ping\":1}\n")
             .outcome,
         Outcome::Ready
     );
@@ -1928,28 +1939,31 @@ fn an_emit_reaches_only_its_own_open_session() {
     );
 
     assert_eq!(
-        services
-            .session_emit(&caller("door"), session + 1000, b"x")
-            .outcome,
+        services.session_emit(&me, session + 1000, b"x").outcome,
         Outcome::Refused
     );
 
-    services.close_carrier_session(session);
     assert_eq!(
         services
-            .session_emit(&caller("door"), session, b"x")
+            .session_emit(&caller("door"), session, b"replacement")
             .outcome,
+        Outcome::Refused,
+        "a reopened plane with equal namespace cannot use the earlier incarnation's session"
+    );
+    services.close_carrier_session(session);
+    assert_eq!(
+        services.session_emit(&me, session, b"x").outcome,
         Outcome::Refused
     );
     assert_eq!(*written.lock().unwrap(), vec![b"{\"ping\":1}\n".to_vec()]);
 
-    let gone = services.open_carrier_session("door", "key-1", Arc::new(|_: &[u8]| false));
+    let gone = services.open_carrier_session(&me, "key-1", Arc::new(|_: &[u8]| false));
     assert_eq!(
-        services.session_emit(&caller("door"), gone, b"x").outcome,
+        services.session_emit(&me, gone, b"x").outcome,
         Outcome::Refused
     );
     assert_eq!(
-        services.session_emit(&caller("door"), gone, b"x").outcome,
+        services.session_emit(&me, gone, b"x").outcome,
         Outcome::Refused
     );
 }
@@ -2422,10 +2436,7 @@ async fn an_instance_whose_trust_records_cannot_be_read_is_not_admitted() {
     ));
     assert!(r
         .node
-        .facts(&Caller {
-            instance: "unread".into(),
-            ..caller()
-        })
+        .facts(&Caller::for_test("unread".into(), (caller()).kind()))
         .is_none());
 }
 
@@ -2478,7 +2489,7 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
             now: u64,
         ) -> Result<(String, u64), &'static str> {
             assert_eq!(unit, 71);
-            assert_eq!(&*caller.instance, "minter");
+            assert_eq!(caller.namespace().as_ref(), "minter");
             assert!(Arc::ptr_eq(principal, &self.principal));
             assert_eq!(principal.generation_hash, "full-generation-binding");
             assert_eq!(prefix, "tk_");
@@ -2512,4 +2523,69 @@ async fn ticket_press_receives_the_exact_host_unit_caller_and_principal() {
     let result = ticket_result(&r.s, caller("minter"), Some(71), 600, b"opaque").await;
     assert_eq!(result.outcome, Outcome::Ready);
     assert_eq!(result.bytes, b"published");
+}
+
+#[test]
+fn trust_decision_authority_is_scoped_to_incarnation_ticket_counterparty_and_lifetime() {
+    use busbar_contract::{abi::mechanism::ticket::Ticket, services::TrustKeyRef};
+    let r = rig();
+    let me = caller("inst");
+    let clone = me.clone();
+    let replacement = caller("inst");
+    let ticket = Ticket {
+        slot: 9,
+        generation: 1,
+    };
+    let other_ticket = Ticket {
+        slot: 9,
+        generation: 2,
+    };
+    let key = TrustKeyRef {
+        counterparty: "cp",
+        item: None,
+    };
+    let decide = |who: &Caller, ticket, key| {
+        run(|later| r.s.trust_decide(who, ticket, key, Some("fp"), true, later))
+    };
+    run(|later| r.s.trust_sight(&me, "cp", "fp", later));
+    assert_eq!(decide(&me, ticket, key).error, NO_TRUST_DECISION_GRANT);
+    assert!(r.s.grant_trust_decision(&me, Ticket::NONE, "cp").is_none());
+    assert!(r.s.grant_trust_decision(&me, ticket, "foreign").is_none());
+    let grant =
+        r.s.grant_trust_decision(&me, ticket, "cp")
+            .expect("admin call owns this grant");
+    assert!(
+        r.s.grant_trust_decision(&me, ticket, "cp").is_none(),
+        "cannot replace an outstanding grant"
+    );
+    assert_eq!(
+        decide(&replacement, ticket, key).error,
+        NO_TRUST_DECISION_GRANT
+    );
+    assert_eq!(
+        decide(&me, other_ticket, key).error,
+        NO_TRUST_DECISION_GRANT
+    );
+    assert_eq!(
+        decide(
+            &me,
+            ticket,
+            TrustKeyRef {
+                counterparty: "foreign",
+                item: None
+            }
+        )
+        .error,
+        NO_TRUST_DECISION_GRANT
+    );
+    assert_eq!(
+        r.s.trust_serves(&me, "cp", None, None).value,
+        svc::DISTRUST_NOT_APPROVED
+    );
+    assert_eq!(
+        decide(&clone, ticket, key).value,
+        svc::TRUST_DECIDED_SERVING
+    );
+    drop(grant);
+    assert_eq!(decide(&me, ticket, key).error, NO_TRUST_DECISION_GRANT);
 }

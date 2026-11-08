@@ -871,7 +871,7 @@ mod lent_ops {
             },
             watchdog_period: Duration::from_millis(20),
             ..DispatchConfig::default()
-        });
+        }, busbar_contract::services::test_caller_binding());
         let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);

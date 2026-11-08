@@ -28,7 +28,14 @@ struct LifecycleOnly {
 }
 
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, nothing after it.
+impl crate::abi::sdk::door::table_seal::Sealed for LifecycleOnly {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I> for LifecycleOnly {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I>
+    for crate::abi::sdk::door::Lifecycle
+{
+}
 unsafe impl KindOps for LifecycleOnly {
+    type Marker = FixtureKind;
     const KIND: KindCode = KindCode::Secret;
     type Lifecycle = crate::abi::sdk::door::Lifecycle;
 }
@@ -40,8 +47,9 @@ const PANIC_GEN: u64 = 0xDEAD_0001;
 /// `tick` at this `now_ns` answers PENDING.
 const PEND_AT: u64 = 42;
 
-struct Validate;
-impl RawSlot for Validate {
+struct Validate<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Validate<K> {
+    type Kind = K;
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -52,8 +60,9 @@ impl RawSlot for Validate {
     }
 }
 
-struct Open;
-impl RawSlot for Open {
+struct Open<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Open<K> {
+    type Kind = K;
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, input: &OpenIn, out: &mut OpenOut) -> Outcome {
@@ -63,8 +72,9 @@ impl RawSlot for Open {
     }
 }
 
-struct Refresh;
-impl RawSlot for Refresh {
+struct Refresh<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Refresh<K> {
+    type Kind = K;
     type In = RefreshIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &RefreshIn, _: &mut OutHead) -> Outcome {
@@ -72,8 +82,9 @@ impl RawSlot for Refresh {
     }
 }
 
-struct Retire;
-impl RawSlot for Retire {
+struct Retire<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Retire<K> {
+    type Kind = K;
     type In = GenIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
@@ -81,8 +92,9 @@ impl RawSlot for Retire {
     }
 }
 
-struct Tick;
-impl RawSlot for Tick {
+struct Tick<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Tick<K> {
+    type Kind = K;
     type In = TickIn;
     type Out = TickOut;
     unsafe fn call(_: *mut c_void, input: &TickIn, out: &mut TickOut) -> Outcome {
@@ -95,8 +107,9 @@ impl RawSlot for Tick {
     }
 }
 
-struct Drive;
-impl RawSlot for Drive {
+struct Drive<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Drive<K> {
+    type Kind = K;
     type In = DriveIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &DriveIn, _: &mut OutHead) -> Outcome {
@@ -104,8 +117,9 @@ impl RawSlot for Drive {
     }
 }
 
-struct Cancel;
-impl RawSlot for Cancel {
+struct Cancel<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Cancel<K> {
+    type Kind = K;
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, input: &CancelIn, out: &mut CancelOut) -> Outcome {
@@ -114,8 +128,9 @@ impl RawSlot for Cancel {
     }
 }
 
-struct Release;
-impl RawSlot for Release {
+struct Release<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Release<K> {
+    type Kind = K;
     type In = ReleaseIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &ReleaseIn, _: &mut OutHead) -> Outcome {
@@ -123,8 +138,9 @@ impl RawSlot for Release {
     }
 }
 
-struct Close;
-impl RawSlot for Close {
+struct Close<K = FixtureKind>(std::marker::PhantomData<K>);
+impl<K: crate::plugin::KindMarker> RawSlot for Close<K> {
+    type Kind = K;
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(instance: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -596,7 +612,14 @@ struct TwoKindOps {
 }
 
 // SAFETY: `#[repr(C)]`, `head: OpsHead` first, then only `Option<Op>` slots.
+impl crate::abi::sdk::door::table_seal::Sealed for TwoKindOps {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<TwoKindOps, I> for TwoKindOps {}
+impl<const I: u32> crate::abi::sdk::door::table_seal::For<TwoKindOps, I>
+    for crate::abi::sdk::door::Lifecycle
+{
+}
 unsafe impl KindOps for TwoKindOps {
+    type Marker = FixtureKind;
     const KIND: KindCode = KindCode::Store;
     type Lifecycle = crate::abi::sdk::door::Lifecycle;
 }
@@ -614,6 +637,7 @@ unsafe impl KindSlot<{ LIFECYCLE_SLOTS + 1 }> for TwoKindOps {
 
 struct First;
 impl RawSlot for First {
+    type Kind = FixtureKind;
     type In = InHead;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -623,6 +647,7 @@ impl RawSlot for First {
 
 struct Second;
 impl RawSlot for Second {
+    type Kind = FixtureKind;
     type In = GenIn;
     type Out = TickOut;
     unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
@@ -740,6 +765,17 @@ fn a_panicking_open_answers_fault_and_hands_back_no_instance() {
 mod auth_plugin {
     //! A REAL kind table: every auth kind op wired to the structs `abi::auth` states for it.
     use super::*;
+    type FixtureKind = crate::plugin::markers::AuthKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::auth::{
         BeginLoginIn, BeginLoginOut, CompleteLoginIn, FieldsIn, FieldsOut, IdentifyOut,
         OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, VerifyIn,
@@ -749,6 +785,7 @@ mod auth_plugin {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -830,12 +867,24 @@ mod secret_plugin {
     //! A REAL kind table: the secret kind's one op wired to the structs `abi::secret` states for
 
     use super::*;
+    type FixtureKind = crate::plugin::markers::SecretKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::secret::{ResolveIn, ResolveOut};
 
     macro_rules! answers {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -903,10 +952,22 @@ fn a_kind_op_a_door_does_not_name_is_absent() {
 mod secret_check_plugin {
     //! A secret door that SERVES `check`: the slot it names is the one the table holds.
     use super::*;
+    type FixtureKind = crate::plugin::markers::SecretKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::secret::{CheckIn, ResolveIn, ResolveOut};
 
     pub struct Resolve;
     impl RawSlot for Resolve {
+        type Kind = FixtureKind;
         type In = ResolveIn;
         type Out = ResolveOut;
         unsafe fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
@@ -915,6 +976,7 @@ mod secret_check_plugin {
     }
     pub struct Check;
     impl RawSlot for Check {
+        type Kind = FixtureKind;
         type In = CheckIn;
         type Out = OutHead;
         unsafe fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
@@ -960,6 +1022,17 @@ fn a_secret_plugin_that_serves_check_answers_it() {
 mod export_plugin {
     //! A REAL kind table: every export kind op wired to the structs `abi::export` states for it.
     use super::*;
+    type FixtureKind = crate::plugin::markers::ExportKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::export::{
         CheckIn, CheckOut, DeliverIn, ScrapeIn, ScrapeOut, ServeIn, ServeOut, StatusOut,
     };
@@ -968,6 +1041,7 @@ mod export_plugin {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1037,6 +1111,17 @@ fn an_export_plugin_wires_every_kind_op() {
 mod hook_plugin {
     //! A REAL kind table: every hook kind op wired to the structs `abi::hook` states for it.
     use super::*;
+    type FixtureKind = crate::plugin::markers::HookKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::hook::{
         ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn, ServeIn, ServeOut,
         StatusOut, TransformOut,
@@ -1046,6 +1131,7 @@ mod hook_plugin {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1128,6 +1214,17 @@ fn a_hook_plugin_wires_every_kind_op() {
 mod store_plugin {
     //! Every primitive Store operation is wired to its actual request and response.
     use super::*;
+    type FixtureKind = crate::plugin::markers::StoreKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::store::v4::{
         ClockIn, ClockOut, CommitIn, CommitOut, ReadIn, ReadOut, ScanIn, ScanOut,
     };
@@ -1135,6 +1232,7 @@ mod store_plugin {
         ($name:ident, $input:ty, $output:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $input;
                 type Out = $output;
                 unsafe fn call(_: *mut c_void, _: &$input, _: &mut $output) -> Outcome {
@@ -1202,6 +1300,13 @@ fn a_store_plugin_wires_every_kind_op() {
 mod plane_plugin {
     //! A REAL kind table: every plane kind op wired to the structs `abi::plane` states for it.
     use super::*;
+    type FixtureKind = crate::plugin::markers::PlaneKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::plane::{ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, RefusalIn, RefusalOut};
     use crate::abi::plane::{PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut};
     use crate::abi::plane::{PlaneRefreshOut, PlaneSnapshot};
@@ -1211,6 +1316,7 @@ mod plane_plugin {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1271,6 +1377,7 @@ mod plane_plugin {
     /// `open`: the plane's own `out`, carrying the snapshot; it notes how many providers' facts
     pub struct Open;
     impl RawSlot for Open {
+        type Kind = FixtureKind;
         type In = PlaneOpenIn;
         type Out = PlaneOpenOut;
         unsafe fn call(_: *mut c_void, input: &PlaneOpenIn, out: &mut PlaneOpenOut) -> Outcome {
@@ -1283,6 +1390,7 @@ mod plane_plugin {
     /// `cancel`: the plane's own `in`/`out` (the lifecycle's embedded first).
     pub struct Cancel;
     impl RawSlot for Cancel {
+        type Kind = FixtureKind;
         type In = crate::abi::plane::PlaneCancelIn;
         type Out = crate::abi::plane::PlaneCancelOut;
         unsafe fn call(
@@ -1298,6 +1406,7 @@ mod plane_plugin {
     /// `drive`: names the session `41` ready in the host's buffer.
     pub struct Drive;
     impl RawSlot for Drive {
+        type Kind = FixtureKind;
         type In = PlaneDriveIn;
         type Out = PlaneDriveOut;
         unsafe fn call(_: *mut c_void, input: &PlaneDriveIn, out: &mut PlaneDriveOut) -> Outcome {
@@ -1449,6 +1558,17 @@ mod transport_plugin {
     //! A REAL kind table: every transport kind op wired to the structs `abi::transport`
 
     use super::*;
+    type FixtureKind = crate::plugin::markers::TransportKind;
+    type Validate = super::Validate<FixtureKind>;
+    type Open = super::Open<FixtureKind>;
+    type Refresh = super::Refresh<FixtureKind>;
+    type Retire = super::Retire<FixtureKind>;
+    type Tick = super::Tick<FixtureKind>;
+    type Drive = super::Drive<FixtureKind>;
+    type Cancel = super::Cancel<FixtureKind>;
+    type Release = super::Release<FixtureKind>;
+    type Close = super::Close<FixtureKind>;
+
     use crate::abi::transport::{AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn};
     use crate::abi::transport::{ConnIn, ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut};
     use crate::abi::transport::{FramingIn, IngestIn, IoOut, ListenIn, ListenOut, LocateIn};
@@ -1458,6 +1578,7 @@ mod transport_plugin {
         ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
             pub struct $name;
             impl RawSlot for $name {
+                type Kind = FixtureKind;
                 type In = $in;
                 type Out = $out;
                 unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -1547,3 +1668,5 @@ fn a_transport_plugin_wires_every_kind_op() {
         assert!(s.is_some(), "transport kind op {i} is NULL");
     }
 }
+
+type FixtureKind = crate::plugin::markers::SecretKind;

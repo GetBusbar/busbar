@@ -328,7 +328,10 @@ impl MoneySeam for Money {
 }
 
 fn calls() -> (Arc<Calls>, Arc<Control>, usize) {
-    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let p = dispatch::load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {

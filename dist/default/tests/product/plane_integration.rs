@@ -1498,7 +1498,7 @@ async fn plane_router(
 
     let mut transports = crate::LINKED.transports.to_vec();
     for row in [
-        crate::root::linked::linked_transport!(busbar_transport_http::door::door),
+        crate::root::linked::linked_transport!(busbar_transport_http::door),
         crate::root::linked::linked_transport!(busbar_transport_grpc::door),
     ] {
         if !transports

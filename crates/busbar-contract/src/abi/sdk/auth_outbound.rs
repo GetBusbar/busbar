@@ -3,6 +3,10 @@
 
 //! THE AUTH KIND'S OUTBOUND DOOR, FOR A SAFE PLUGIN (`abi::auth`, the outbound family; THE DESIGN,
 
+type Host = KindGenericHost<crate::plugin::markers::AuthKind>;
+type Op<'a> = KindGenericOp<'a, crate::plugin::markers::AuthKind>;
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::AuthKind>;
+
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::task::Poll;
@@ -20,14 +24,14 @@ use crate::abi::mechanism::extensions;
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::sdk::auth_door::{verify_answer, verify_op, VerifyPlugin};
-use crate::abi::sdk::conn::Host;
+use crate::abi::sdk::conn::Host as KindGenericHost;
 use crate::abi::sdk::cred::{Parts, SealedWrite};
 use crate::abi::sdk::door::{AbiIn, AbiOut};
-use crate::abi::sdk::exchange::Op;
+use crate::abi::sdk::exchange::Op as KindGenericOp;
 use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
-use crate::abi::sdk::safe::{Instance, SafeSlot};
+use crate::abi::sdk::safe::{Instance as KindGenericInstance, SafeSlot};
 
 /// Versioned sealed-field custody handshake in the existing call extensions. In a request,
 pub const EXT_SEALED_FIELDS: &str = "auth.sealed_fields";
@@ -517,7 +521,7 @@ pub enum Driven {
 }
 
 /// A [`Life`] that holds an [`OutboundPlugin`] `T`: [`Outbound<T>`], or [`Both<T>`] for a plugin
-pub trait HoldsOutbound<T: OutboundPlugin>: Life {
+pub trait HoldsOutbound<T: OutboundPlugin>: Life<Kind = crate::plugin::markers::AuthKind> {
     /// The plugin.
     fn outbound(&self) -> &T;
 }
@@ -552,6 +556,7 @@ fn validate_outbound<T: OutboundPlugin>(settings: &[u8], ext: &[u8]) -> Result<(
 }
 
 impl<T: OutboundPlugin> Life for Outbound<T> {
+    type Kind = crate::plugin::markers::AuthKind;
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
@@ -606,6 +611,7 @@ impl<T> Both<T> {
 }
 
 impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
+    type Kind = crate::plugin::markers::AuthKind;
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
@@ -656,6 +662,7 @@ impl<T: VerifyPlugin + OutboundPlugin> HoldsOutbound<T> for Both<T> {
 #[derive(Debug)]
 pub struct OpenOutboundSlot<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OpenOutboundSlot<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = OpenOutboundIn;
     type Out = OpenOutboundOut;
     type State = Held<L>;
@@ -693,6 +700,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OpenOutboundSlot<T, L>
 #[derive(Debug)]
 pub struct OutboundReadySlot<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundReadySlot<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = OutboundReadyIn;
     type Out = OutboundReadyOut;
     type State = Held<L>;
@@ -715,6 +723,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundReadySlot<T, L
 #[derive(Debug)]
 pub struct FieldsSlot<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = FieldsIn;
     type Out = FieldsOut;
     type State = Held<L>;
@@ -767,6 +776,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for FieldsSlot<T, L> {
 #[derive(Debug)]
 pub struct OutboundTick<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundTick<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = TickIn;
     type Out = TickOut;
     type State = Held<L>;
@@ -794,6 +804,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundTick<T, L> {
 #[derive(Debug)]
 pub struct OutboundDrive<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = DriveIn;
     type Out = OutHead;
     type State = Held<L>;
@@ -834,6 +845,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundDrive<T, L> {
 #[derive(Debug)]
 pub struct OutboundCancel<T, L = Outbound<T>>(PhantomData<(T, L)>);
 impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = CancelIn;
     type Out = CancelOut;
     type State = Held<L>;
@@ -855,6 +867,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
 #[derive(Debug)]
 pub struct VerifyBoth<T>(PhantomData<T>);
 impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = VerifyIn;
     type Out = IdentifyOut;
     type State = Held<Both<T>>;
@@ -880,7 +893,10 @@ impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
 /// saying so, never called.
 #[derive(Debug)]
 pub struct NotServed<L, I, O>(PhantomData<(L, I, O)>);
-impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for NotServed<L, I, O> {
+impl<L: Life<Kind = crate::plugin::markers::AuthKind>, I: AbiIn, O: AbiOut> SafeSlot
+    for NotServed<L, I, O>
+{
+    type Kind = crate::plugin::markers::AuthKind;
     type In = I;
     type Out = O;
     type State = Held<L>;

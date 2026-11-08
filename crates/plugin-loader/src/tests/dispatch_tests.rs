@@ -236,6 +236,7 @@ pub(crate) use unload_witness::UnloadWitness;
 struct TestContext(u32);
 
 pub(crate) struct TestKind;
+impl crate::dispatch::kind_seal::Validated for TestKind {}
 impl Kind for TestKind {
     const CODE: KindCode = plug::KIND;
     type Ops = OpsHead;
@@ -580,7 +581,7 @@ fn config() -> DispatchConfig {
 fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     let sink = Arc::new(Recorder::default());
     let p = load(sink.clone());
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let mut out = Vec::new();
     let mut say = |line: String, sink: &Recorder| {
         out.push(line);
@@ -1084,7 +1085,7 @@ mod open_faults_on_its_resume {
 
     #[test]
     fn red_an_open_that_faults_on_its_resume_leaves_no_instance() {
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let row = LinkedRow::of_raw(door).expect("the restated door states itself");
         let p = load_linked::<TestKind>(&row, bind(quiet())).expect("it loads");
 
@@ -1259,7 +1260,7 @@ mod open_left_live_is_closed {
     #[test]
     fn red_an_open_the_host_judged_fault_is_closed_never_leaked() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let row = LinkedRow::of_raw(door).expect("the restated door states itself");
 
         MODE.store(PEND, Ordering::SeqCst);
@@ -1314,7 +1315,7 @@ mod open_left_live_is_closed {
     #[test]
     fn red_a_cancelled_pended_open_is_closed_once() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
 
         let (p, t) = pended(&d);
         let deadline = now_ns() + 50_000_000;
@@ -1357,7 +1358,7 @@ mod open_left_live_is_closed {
     #[test]
     fn red_a_late_close_after_the_auto_close_is_refused_never_double_freed() {
         let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let (p, t) = pended(&d);
         let deadline = now_ns() + 50_000_000;
         let done = d
@@ -1402,7 +1403,7 @@ mod open_left_live_is_closed {
 
 #[test]
 fn red_outcome_mismatch_unknown_byte_and_pending_on_none_are_fault() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     for mode in [
         plug::MISMATCH,
@@ -1425,7 +1426,7 @@ fn red_outcome_mismatch_unknown_byte_and_pending_on_none_are_fault() {
 
 #[test]
 fn red_over_max_inflight_is_refused_without_a_call() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, sink) = opened(&d);
     let calls0 = count(&p, &sink).0;
     let (a, b, c) = (d.mint(0).unwrap(), d.mint(0).unwrap(), d.mint(1).unwrap());
@@ -1448,7 +1449,7 @@ fn red_over_max_inflight_is_refused_without_a_call() {
 
 #[test]
 fn red_a_stale_generation_wake_is_dropped() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let old = d.mint(0).unwrap();
     d.recycle(old);
@@ -1494,7 +1495,7 @@ fn red_a_stale_generation_wake_is_dropped() {
 
 #[test]
 fn red_a_reload_drain_does_not_wait_on_a_pending_write_behind() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, sink) = opened(&d);
     let w = d.mint(0).unwrap();
     let rw = d.submit(
@@ -1928,7 +1929,7 @@ fn panic_child(origin: &str) {
     } else {
         linked(quiet())
     };
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     assert_eq!(open(&d, &p, 0), Outcome::Ready);
     let _ = p.call(TICK, &mut frame(plug::PANIC));
 
@@ -1978,7 +1979,7 @@ fn outhead_is_prefilled_as_fault() {
 
 #[test]
 fn red_an_answer_that_fails_validation_is_fault() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, sink) = opened(&d);
     for mode in [plug::OVERSIZE, plug::BAD_TEXT, plug::BAD_ENVELOPE] {
         let c = p.call(TICK, &mut frame(mode));
@@ -1998,7 +1999,7 @@ fn red_an_answer_that_fails_validation_is_fault() {
 
 #[test]
 fn red_the_kinds_validator_refuses_an_answer_as_fault() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     assert_eq!(
         p.call(TICK, &mut frame(plug::REJECTED)).outcome,
@@ -2010,7 +2011,7 @@ fn red_the_kinds_validator_refuses_an_answer_as_fault() {
 
 #[test]
 fn red_one_recall_a_second_short_answer_is_fault() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let t = d.mint(0).unwrap();
     let ask = |mode| {
@@ -2114,7 +2115,7 @@ fn close_frame() -> Frame<busbar_contract::abi::mechanism::call::InHead, OutHead
 
 #[test]
 fn red_close_is_refused_while_an_op_is_in_flight() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let t = d.mint(0).unwrap();
     let held = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
@@ -2141,7 +2142,7 @@ fn red_close_is_refused_while_an_op_is_in_flight() {
 
 #[test]
 fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let drv = d.driver(&p, 0).unwrap();
     assert_eq!(
@@ -2160,7 +2161,7 @@ fn red_after_close_a_late_wake_and_every_op_fault_without_crossing() {
 
 #[test]
 fn red_a_close_that_faults_leaves_the_instance_closed() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     assert_eq!(
         p.call(TICK, &mut frame(plug::CLOSE_FAULTS)).outcome,
@@ -2208,7 +2209,7 @@ fn red_text_is_capped_before_any_slice_is_made() {
         Some(&b"x"[..])
     );
 
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let c = p.call(TICK, &mut frame(plug::HUGE_TEXT));
     assert_eq!((c.outcome, c.error), (Outcome::Fault, None));
@@ -2216,7 +2217,7 @@ fn red_text_is_capped_before_any_slice_is_made() {
 
 #[test]
 fn red_a_hung_ticketless_call_faults_its_instance() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let (p2, _s2) = opened(&d);
 
@@ -2241,10 +2242,13 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
 
 #[test]
 fn an_older_ticketless_call_is_counted_when_its_longer_budget_expires() {
-    let d = Dispatcher::new(DispatchConfig {
-        quarantine_after: 2,
-        ..config()
-    });
+    let d = Dispatcher::new(
+        DispatchConfig {
+            quarantine_after: 2,
+            ..config()
+        },
+        busbar_contract::services::test_caller_binding(),
+    );
     let (p, _) = opened(&d);
     let (release, _) = opened(&d);
     let p = Arc::new(p);
@@ -2311,10 +2315,13 @@ fn an_older_ticketless_call_is_counted_when_its_longer_budget_expires() {
 
 #[test]
 fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
-    let d = Dispatcher::new(DispatchConfig {
-        quarantine_after: 2,
-        ..config()
-    });
+    let d = Dispatcher::new(
+        DispatchConfig {
+            quarantine_after: 2,
+            ..config()
+        },
+        busbar_contract::services::test_caller_binding(),
+    );
     let (p, _sink) = opened(&d);
     let p = Arc::new(p);
     let (p2, _s2) = opened(&d);
@@ -2359,7 +2366,7 @@ fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
 
 #[test]
 fn cancel_carries_the_disposition_and_a_fault_on_cancel_is_fault() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     for (mode, want) in [
         (&b"pend:hold:0"[..], (Outcome::Failed, Some(0))),
@@ -2384,7 +2391,7 @@ fn cancel_carries_the_disposition_and_a_fault_on_cancel_is_fault() {
 
 #[test]
 fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
 
     let mut f = frame(plug::SILENT);
@@ -2401,7 +2408,7 @@ fn red_the_host_zeroes_the_whole_out_before_a_crossing() {
 fn recycling_the_last_driver_releases_its_own_image_on_a_permanent_worker() {
     let caller = std::thread::current().id();
     let (witness, registration) = UnloadWitness::new();
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
         .expect("this test's independently owned image loads");
     crate::dlclose_on_worker(registration);
@@ -2430,7 +2437,10 @@ fn recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker() {
     unload_witness::assert_reentrant_child(
         "dispatch_tests::recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker",
         || {
-            let d = Arc::new(Dispatcher::new(config()));
+            let d = Arc::new(Dispatcher::new(
+                config(),
+                busbar_contract::services::test_caller_binding(),
+            ));
             let (witness, registration) = UnloadWitness::reentrant(Arc::clone(&d));
             let p = load_dropped::<TestKind>(witness.path(), &stated(), bind(quiet()))
                 .expect("this child's owned image loads");
@@ -2461,7 +2471,7 @@ fn recycling_a_driver_allows_its_finalizer_to_mint_on_the_same_worker() {
 #[test]
 fn red_a_hanging_unload_faults_no_innocent_instance() {
     use crate::dispatch::load::reap;
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
 
     let (release, hold) = std::sync::mpsc::channel::<()>();
@@ -2523,7 +2533,7 @@ fn red_a_hanging_unload_holds_back_no_other_unload() {
 fn red_a_hung_unload_is_warned_of_and_counted_live() {
     use crate::dispatch::load::{reap_within, HUNG_WARNED};
     use std::sync::atomic::Ordering::SeqCst;
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let warned0 = HUNG_WARNED.load(SeqCst);
     let (release, hold) = std::sync::mpsc::channel::<()>();
     let (entered, inside) = std::sync::mpsc::channel::<()>();
@@ -2553,7 +2563,7 @@ fn red_a_hung_unload_is_warned_of_and_counted_live() {
 
 #[test]
 fn red_a_ticketless_short_answer_is_re_called_once() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let first = p.call(TICK, &mut frame(plug::SHORT_ANSWER));
     assert_eq!(first.outcome, Outcome::Failed);
@@ -2602,13 +2612,16 @@ fn red_a_ticketless_short_answer_is_re_called_once() {
 
 #[test]
 fn red_a_hung_ticketless_open_is_watched_from_bind() {
-    let d = Dispatcher::new(DispatchConfig {
-        budgets: Budgets {
-            lifecycle: Duration::from_millis(400),
-            ..config().budgets
+    let d = Dispatcher::new(
+        DispatchConfig {
+            budgets: Budgets {
+                lifecycle: Duration::from_millis(400),
+                ..config().budgets
+            },
+            ..config()
         },
-        ..config()
-    });
+        busbar_contract::services::test_caller_binding(),
+    );
     let sink = quiet();
     let p = load_linked::<TestKind>(
         &row(),
@@ -2644,13 +2657,16 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
 
 #[test]
 fn red_close_is_refused_while_a_drive_is_mid_crossing() {
-    let d = Dispatcher::new(DispatchConfig {
-        budgets: Budgets {
-            connection: Duration::from_secs(30),
-            ..config().budgets
+    let d = Dispatcher::new(
+        DispatchConfig {
+            budgets: Budgets {
+                connection: Duration::from_secs(30),
+                ..config().budgets
+            },
+            ..config()
         },
-        ..config()
-    });
+        busbar_contract::services::test_caller_binding(),
+    );
     let (p, _sink) = opened(&d);
 
     let (other, _s) = opened(&d);
@@ -2685,13 +2701,16 @@ fn red_close_is_refused_while_a_drive_is_mid_crossing() {
 
 #[test]
 fn red_a_wake_behind_a_scheduled_tick_on_a_driver_ticket_still_drives() {
-    let d = Dispatcher::new(DispatchConfig {
-        budgets: Budgets {
-            call: Duration::from_secs(30),
-            ..config().budgets
+    let d = Dispatcher::new(
+        DispatchConfig {
+            budgets: Budgets {
+                call: Duration::from_secs(30),
+                ..config().budgets
+            },
+            ..config()
         },
-        ..config()
-    });
+        busbar_contract::services::test_caller_binding(),
+    );
     let (p, sink) = opened(&d);
     let (other, _s) = opened(&d);
     let drv = d.driver(&p, 0).unwrap();
@@ -2722,7 +2741,7 @@ fn red_a_wake_behind_a_scheduled_tick_on_a_driver_ticket_still_drives() {
 
 #[test]
 fn red_a_kind_check_judges_every_outcome_in_its_bound_context() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
 
     assert_eq!(
@@ -2747,7 +2766,7 @@ fn one_thread() -> tokio::runtime::Runtime {
 
 #[test]
 fn an_await_on_a_one_thread_runtime_completes() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let rt = one_thread();
 
@@ -2782,7 +2801,7 @@ fn an_await_on_a_one_thread_runtime_completes() {
 
 #[test]
 fn red_dropping_a_pending_reply_cancels_and_a_late_wake_is_a_no_op() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, sink) = opened(&d);
     let rt = one_thread();
     let t = d.mint(0).unwrap();
@@ -2861,7 +2880,7 @@ fn lent(mode: &[u8]) -> (Arc<LentMode>, Arc<std::sync::atomic::AtomicBool>) {
 
 #[test]
 fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let (owner, dropped) = lent(b"hang:lent");
     let t = d.mint(0).unwrap();
@@ -2901,7 +2920,7 @@ fn red_a_dropped_reply_keeps_its_lent_memory_until_the_crossing_returns() {
 
 #[test]
 fn a_dropped_pending_reply_keeps_its_lent_memory_until_the_cancel() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, sink) = opened(&d);
     let (owner, dropped) = lent(plug::PEND_HOLD);
     let t = d.mint(0).unwrap();
@@ -2933,9 +2952,8 @@ fn a_dropped_pending_reply_keeps_its_lent_memory_until_the_cancel() {
 fn bind_states_the_caller_to_the_host_services() {
     let p = linked(quiet());
     let caller = p.inner.wake.caller.get().expect("bind states a caller");
-    assert_eq!(&*caller.instance, "the-instance");
-    assert_eq!(&*caller.plugin, p.inner.name());
-    assert_eq!(caller.kind, p.inner.kind);
+    assert_eq!(caller.namespace().as_ref(), "the-instance");
+    assert_eq!(caller.kind(), p.inner.kind);
 }
 
 #[test]
@@ -2953,8 +2971,9 @@ fn two_instances_of_one_plugin_are_two_callers() {
         first.inner.wake.caller.get().unwrap(),
         second.inner.wake.caller.get().unwrap(),
     );
-    assert_eq!(a.plugin, b.plugin);
-    assert_ne!(a.instance, b.instance);
+    assert_eq!(first.inner.name(), second.inner.name());
+    assert!(!a.same_incarnation(b));
+    assert_ne!(a.namespace(), b.namespace());
 }
 
 #[test]
@@ -3153,7 +3172,7 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
     let control = one_thread();
     let d = {
         let _inside = control.enter();
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let (p, _sink) = opened(&d);
         assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Ready);
         d
@@ -3359,7 +3378,7 @@ mod tracing_context {
 
     #[test]
     fn queued_and_resumed_crossings_keep_the_submitters_span_and_dispatcher() {
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let p = plugin(&d);
         let capture = Capture::default();
         let ticket = d.mint(0).unwrap();
@@ -3420,7 +3439,7 @@ mod tracing_context {
 
     #[test]
     fn cancellation_and_inline_crossings_keep_the_hosts_span() {
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let p = plugin(&d);
         let capture = Capture::default();
         let ticket = d.mint(0).unwrap();
@@ -3462,7 +3481,10 @@ mod tracing_context {
     #[test]
     fn dropping_a_completed_jobs_trace_context_can_reenter_its_worker() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let d = Arc::new(Dispatcher::new(config()));
+        let d = Arc::new(Dispatcher::new(
+            config(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let p = plugin(&d);
         let capture = Capture::default();
         let worker_closes = Arc::new(AtomicUsize::new(0));
@@ -3502,7 +3524,7 @@ mod tracing_context {
 
     #[test]
     fn orphan_cancellation_keeps_its_creator_context_across_the_ffi_thread() {
-        let d = Dispatcher::new(config());
+        let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
         let healthy = plugin(&d);
         let capture = Capture::default();
         let ticket = d.mint(0).unwrap();
@@ -3566,7 +3588,7 @@ mod tracing_context {
 
 #[test]
 fn a_forged_context_quarantines_the_instance_that_forged_it() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let honest = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &honest, 0), Outcome::Ready);
     assert_eq!(
@@ -3610,7 +3632,7 @@ fn a_forged_context_quarantines_the_instance_that_forged_it() {
 
 #[test]
 fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let crossing = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &crossing, 0), Outcome::Ready);
     let other = linked(Arc::new(Recorder::default()));
@@ -3652,7 +3674,7 @@ fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
 
 #[test]
 fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let outer = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &outer, 0), Outcome::Ready);
     let forged = busbar_contract::abi::mechanism::ticket::HostCtx {
@@ -3685,7 +3707,7 @@ fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
 
 #[test]
 fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch = crate::dispatch::handle::Latch::new();
     let resolves = |ctx| crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some();
 
@@ -3746,7 +3768,7 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
 
 #[test]
 fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let bind_adopted = || Bind {
         dispatcher: d.adopter(),
         ..bind(Arc::new(Recorder::default()))
@@ -3784,7 +3806,7 @@ fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
 #[test]
 fn a_boot_whose_entropy_fails_is_refused() {
     crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(true));
-    let refused = Dispatcher::try_new(config());
+    let refused = Dispatcher::try_new(config(), busbar_contract::services::test_caller_binding());
     let bound = load_linked::<TestKind>(&row(), bind(Arc::new(Recorder::default())));
     crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(false));
     assert!(
@@ -3799,7 +3821,7 @@ fn a_boot_whose_entropy_fails_is_refused() {
 
 #[test]
 fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let honest = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &honest, 0), Outcome::Ready);
     let forger = linked(Arc::new(Recorder::default()));
@@ -3842,7 +3864,7 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     use busbar_contract::abi::host::service::{op, ServiceHead};
     use busbar_contract::abi::mechanism::ticket::CompletionHandle;
 
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let supplier = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &supplier, 0), Outcome::Ready);
     let bystander = linked(Arc::new(Recorder::default()));
@@ -3892,8 +3914,10 @@ fn a_connection_wake_uses_its_suppliers_dispatcher() {
         }
     }
 
-    let connector_dispatcher = Dispatcher::new(config());
-    let supplier_dispatcher = Dispatcher::new(config());
+    let connector_dispatcher =
+        Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
+    let supplier_dispatcher =
+        Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let supplier = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&supplier_dispatcher, &supplier, 0), Outcome::Ready);
     let owner = crate::dispatch::handle::instance_id(supplier.inner.ctx());
@@ -3927,7 +3951,7 @@ fn a_connection_wake_uses_its_suppliers_dispatcher() {
 
 #[test]
 fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch: &'static crate::dispatch::handle::Latch =
         Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
     d.judge_against(latch);
@@ -3974,7 +3998,7 @@ fn own_latch(d: &Dispatcher) -> &'static crate::dispatch::handle::Latch {
 fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
     use crate::dispatch::inline::INLINE_WORKER;
     use crate::dispatch::ticket::encode;
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch = own_latch(&d);
     let held = d.inline_ticket().expect("an inline ticket");
     let live = held.ticket();
@@ -4020,7 +4044,7 @@ fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
 
 #[test]
 fn red_an_op_whose_dial_frames_inside_its_crossing_pends_and_resumes_ready() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (plane, _) = opened(&d);
     let (framer, _) = opened(&d);
     let t = d.mint(0).expect("a ticket");
@@ -4057,7 +4081,7 @@ fn red_an_op_whose_dial_frames_inside_its_crossing_pends_and_resumes_ready() {
 
 #[test]
 fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch = own_latch(&d);
     let waker = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &waker, 0), Outcome::Ready);
@@ -4110,7 +4134,7 @@ impl Counted {
 
 #[test]
 fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let old_task = Arc::new(Counted::default());
     let held = d.inline_ticket().expect("an inline ticket");
     held.register(&std::task::Waker::from(old_task.clone()));
@@ -4143,7 +4167,7 @@ fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
 
 #[test]
 fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let held = d.inline_ticket().expect("an inline ticket");
     let old = held.ticket();
     let new_task = Arc::new(Counted::default());
@@ -4178,7 +4202,7 @@ fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task()
 
 #[test]
 fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch = own_latch(&d);
     let forger = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &forger, 0), Outcome::Ready);
@@ -4198,7 +4222,7 @@ fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
 
 #[test]
 fn red_a_slot_whose_counter_is_spent_is_retired() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let latch: &'static crate::dispatch::handle::Latch =
         Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
     d.judge_against(latch);
@@ -4528,6 +4552,8 @@ static CANCEL_NAMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 
 struct UnitKind;
 
+impl crate::dispatch::kind_seal::Validated for UnitKind {}
+
 impl Kind for UnitKind {
     const CODE: KindCode = plug::KIND;
     type Ops = OpsHead;
@@ -4594,7 +4620,7 @@ impl crate::dispatch::CancelFrame for Naming {
 
 #[test]
 fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let p = load_linked::<UnitKind>(&row(), bind(quiet())).expect("the linked door loads");
     let t = d.mint(0).expect("a ticket");
     let opened = d
@@ -4622,7 +4648,7 @@ fn red_a_client_drop_cancel_names_the_unit_its_op_serves() {
 
 #[test]
 fn red_close_is_refused_while_an_admitted_units_op_is_in_flight() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let t = d.mint(0).unwrap();
     let held = d.submit_unit(
@@ -4663,6 +4689,7 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
     static CANCEL_SCOPES: Mutex<Vec<Option<ScopeIdentity>>> = Mutex::new(Vec::new());
 
     struct ScopeKind;
+    impl crate::dispatch::kind_seal::Validated for ScopeKind {}
     impl Kind for ScopeKind {
         const CODE: KindCode = TestKind::CODE;
         type Ops = OpsHead;
@@ -4692,7 +4719,7 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
         }
     }
 
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let sink = quiet();
     let healthy =
         load_linked::<ScopeKind>(&row(), bind(sink.clone())).expect("the linked door loads");
@@ -4777,7 +4804,7 @@ fn red_a_replaced_workers_pending_op_of_a_healthy_instance_is_cancelled_before_i
 
 #[test]
 fn red_an_inline_tickets_kept_results_go_at_its_next_op_and_with_the_ticket() {
-    let d = Dispatcher::new(config());
+    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
     let (p, _sink) = opened(&d);
     let side = d.inline_ticket().expect("an inline ticket");
     let t = side.ticket();
@@ -4867,6 +4894,8 @@ fn unknown_kind_versions_are_rejected_before_reading_kind_metadata() {
 }
 
 struct StagedStoreV4;
+
+impl crate::dispatch::kind_seal::Validated for StagedStoreV4 {}
 
 impl Kind for StagedStoreV4 {
     const CODE: KindCode = KindCode::Store;

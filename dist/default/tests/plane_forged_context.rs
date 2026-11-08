@@ -20,7 +20,10 @@ use busbar_plugin_loader::dispatch::{
 
 #[test]
 fn a_forged_context_in_a_non_lifecycle_op_answers_fault_and_quarantines() {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let bind = Bind {
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,

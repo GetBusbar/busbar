@@ -23,7 +23,8 @@ mod pending_boundary {
     };
     use busbar_contract::abi::mechanism::call::{InHead, Op, RawOutcome, FLAG_RESUME};
     use busbar_contract::abi::mechanism::ticket::HostTables;
-    use busbar_contract::abi::sdk::conn::{ConnFailure, Host};
+    use busbar_contract::abi::sdk::conn::ConnFailure;
+    type Host = busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::ExportKind>;
     use busbar_contract::abi::transport::FrameSpan;
     use std::ffi::c_void;
     use std::sync::LazyLock;
@@ -139,7 +140,7 @@ mod pending_boundary {
         // SAFETY: this is the real production connector table with this bound instance's
         // registry-backed context. Host snapshots it, retaining no pointer to this stack frame.
         let host = unsafe {
-            Host::from_raw(&HostTables {
+            Host::test_from_raw(&HostTables {
                 size: std::mem::size_of::<HostTables>() as u32,
                 _reserved: 0,
                 ctx: plugin.inner.ctx(),
@@ -938,6 +939,7 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
         let d = Arc::new(Dispatcher::with_services(
             config,
             crate::dispatch::services::clock_for_tests(),
+            busbar_contract::services::test_caller_binding(),
         ));
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
@@ -1133,6 +1135,7 @@ fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
         let dispatcher = Arc::new(Dispatcher::with_services(
             config,
             crate::dispatch::services::clock_for_tests(),
+            busbar_contract::services::test_caller_binding(),
         ));
         let worker_ticket = dispatcher
             .mint(PROBE_WORKER_INDEX)

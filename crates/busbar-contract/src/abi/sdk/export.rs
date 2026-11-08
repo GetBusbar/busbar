@@ -3,6 +3,8 @@
 
 //! THE EXPORT KIND'S SHARED SINK PIECES (`abi::export`): what every export sink answered alike,
 
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::ExportKind>;
+
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ptr;
@@ -13,7 +15,7 @@ use crate::abi::mechanism::door::KindTailHead;
 use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::life::{Held, Life, Refusal};
 use crate::abi::sdk::out::Out;
-use crate::abi::sdk::safe::{Instance, SafeSlot};
+use crate::abi::sdk::safe::{Instance as KindGenericInstance, SafeSlot};
 
 /// `scrape`'s refusal on a sink that carries no `metrics` stream.
 pub const NO_EXPOSITION: &str = "this sink carries no metrics stream, so it renders no exposition";
@@ -47,7 +49,8 @@ pub const fn tail(streams: &'static [u8], routes: &'static [Route]) -> Tail {
 #[derive(Debug)]
 pub struct NoScrape<L>(PhantomData<L>);
 
-impl<L: Life> SafeSlot for NoScrape<L> {
+impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for NoScrape<L> {
+    type Kind = crate::plugin::markers::ExportKind;
     type In = ScrapeIn;
     type Out = ScrapeOut;
     type State = Held<L>;
@@ -64,7 +67,8 @@ impl<L: Life> SafeSlot for NoScrape<L> {
 #[derive(Debug)]
 pub struct NoServe<L>(PhantomData<L>);
 
-impl<L: Life> SafeSlot for NoServe<L> {
+impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for NoServe<L> {
+    type Kind = crate::plugin::markers::ExportKind;
     type In = ServeIn;
     type Out = ServeOut;
     type State = Held<L>;
@@ -77,7 +81,8 @@ impl<L: Life> SafeSlot for NoServe<L> {
 #[derive(Debug)]
 pub struct Quiet<L>(PhantomData<L>);
 
-impl<L: Life> SafeSlot for Quiet<L> {
+impl<L: Life<Kind = crate::plugin::markers::ExportKind>> SafeSlot for Quiet<L> {
+    type Kind = crate::plugin::markers::ExportKind;
     type In = InHead;
     type Out = StatusOut;
     type State = Held<L>;

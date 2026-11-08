@@ -826,11 +826,7 @@ async fn native_host_callbacks_write_and_read_without_legacy_rows_or_blocking_po
         )
         .await
         .unwrap();
-    let caller = Caller {
-        instance: Arc::from("instance"),
-        plugin: Arc::from("plugin"),
-        kind: KindCode::Plane,
-    };
+    let caller = Caller::for_test(Arc::from("instance"), KindCode::Plane);
     let (sent, received) = tokio::sync::oneshot::channel();
     kernel
         .record_write(

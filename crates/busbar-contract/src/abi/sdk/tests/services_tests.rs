@@ -129,7 +129,7 @@ fn fill_table(slot: Option<ServiceFn>) -> HostSlots {
     }
 }
 
-fn services(t: &HostSlots) -> Services {
+fn typed_services<K: crate::plugin::KindMarker>(t: &HostSlots) -> super::Services<K> {
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
@@ -140,7 +140,7 @@ fn services(t: &HostSlots) -> Services {
         io: std::ptr::null(),
     };
     /* SAFETY: the harness owns these live tables and callback context. */
-    unsafe { Services::from_raw(&tables) }.expect("a table was handed")
+    unsafe { super::Services::<K>::from_raw(&tables) }.expect("a table was handed")
 }
 
 fn handle() -> CompletionHandle {
@@ -261,7 +261,7 @@ fn snapshot_receipt_tracks_successful_wire_bytes_and_can_shrink() {
         snapshot_read: Some(snapshots),
         ..table(None)
     };
-    let s = services(&t);
+    let s = export_services(&t);
     let mut buf = [0u64; 128];
     let (large, used_large) =
         service_ready(s.snapshot_read_with_used(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf))
@@ -292,7 +292,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
         ..table(None)
     };
     assert_eq!(
-        service_ready(services(&not_ready).snapshot_read_with_used(
+        service_ready(export_services(&not_ready).snapshot_read_with_used(
             handle(),
             SNAPSHOT_SCOPE_WHOLE,
             &mut buf
@@ -304,7 +304,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
         ..table(None)
     };
     assert_eq!(
-        service_ready(services(&broken).snapshot_read_with_used(
+        service_ready(export_services(&broken).snapshot_read_with_used(
             handle(),
             SNAPSHOT_SCOPE_WHOLE,
             &mut buf
@@ -315,7 +315,7 @@ fn snapshot_receipt_does_not_turn_not_ready_or_invalid_layout_into_success() {
         snapshot_read: Some(snapshots),
         ..table(None)
     };
-    let answer = service_ready(services(&short).snapshot_read_with_used(
+    let answer = service_ready(export_services(&short).snapshot_read_with_used(
         handle(),
         SNAPSHOT_SCOPE_WHOLE,
         &mut [],
@@ -1792,7 +1792,7 @@ extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut Service
 fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
     let t = auth_table(Some(sees_scheme));
     let call = |request: &HeadViewArgs<'_>| {
-        match services(&t).auth_call::<Own>(
+        match transport_services(&t).auth_call::<Own>(
             ticketed(0),
             LINE_REF,
             UnitRef::NONE,
@@ -1828,7 +1828,7 @@ fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
 #[test]
 fn auth_call_answers_the_names_to_strip_for_an_inbound_line() {
     let t = auth_table(Some(strips));
-    let called: AuthCalled<Own> = match services(&t).auth_call(
+    let called: AuthCalled<Own> = match transport_services(&t).auth_call(
         ticketed(0),
         LINE_REF,
         UnitRef::NONE,
@@ -1857,7 +1857,7 @@ fn auth_call_answers_the_names_to_strip_for_an_inbound_line() {
 fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_secret() {
     let t = auth_table(Some(signs_long));
     AUTH_CALLS.set(0);
-    let Poll::Ready(Ok(called)) = services(&t).auth_call::<Own>(
+    let Poll::Ready(Ok(called)) = transport_services(&t).auth_call::<Own>(
         ticketed(0),
         LINE_REF,
         MINTED,
@@ -1879,7 +1879,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
     let t = auth_table(Some(always_short));
     AUTH_CALLS.set(0);
     assert!(matches!(
-        services(&t).auth_call::<Own>(
+        transport_services(&t).auth_call::<Own>(
             ticketed(0),
             LINE_REF,
             MINTED,
@@ -1897,7 +1897,7 @@ fn auth_call_owns_the_one_short_recall_and_holds_outbound_values_as_the_callers_
 #[test]
 fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
     let t = auth_table(Some(pends));
-    assert!(services(&t)
+    assert!(transport_services(&t)
         .auth_call::<Own>(
             ticketed(0),
             LINE_REF,
@@ -1911,7 +1911,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
         .is_pending());
 
     assert!(matches!(
-        services(&t).auth_call::<Own>(
+        transport_services(&t).auth_call::<Own>(
             handle(),
             LINE_REF,
             UnitRef::NONE,
@@ -1925,7 +1925,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
     ));
     let t = auth_table(Some(names_nowhere));
     assert!(matches!(
-        services(&t).auth_call::<Own>(
+        transport_services(&t).auth_call::<Own>(
             ticketed(0),
             LINE_REF,
             UnitRef::NONE,
@@ -1938,7 +1938,7 @@ fn auth_call_pends_on_a_ticket_and_refuses_what_breaks_the_rules() {
         Poll::Ready(Err(ServiceError::Broken))
     ));
     assert!(matches!(
-        services(&auth_table(None)).auth_call::<Own>(
+        transport_services(&auth_table(None)).auth_call::<Own>(
             ticketed(0),
             LINE_REF,
             UnitRef::NONE,
@@ -1974,7 +1974,7 @@ fn unit_hand_in_answers_the_flow_and_the_unit() {
         ..table(None)
     };
     assert_eq!(
-        services(&t).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
+        transport_services(&t).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
         Ok((FLOW_STOP, MINTED))
     );
     let failing = HostSlots {
@@ -1982,7 +1982,15 @@ fn unit_hand_in_answers_the_flow_and_the_unit() {
         ..table(None)
     };
     assert_eq!(
-        services(&failing).unit_hand_in(handle(), LINE_REF, UnitRef::NONE, 4, 1, 1, &request()),
+        transport_services(&failing).unit_hand_in(
+            handle(),
+            LINE_REF,
+            UnitRef::NONE,
+            4,
+            1,
+            1,
+            &request()
+        ),
         Err(ServiceError::Declined(Outcome::Failed))
     );
 }
@@ -2015,7 +2023,7 @@ fn unit_refuse_copies_the_kernels_answer_out() {
         ..table(None)
     };
     assert_eq!(
-        services(&t).unit_refuse(
+        transport_services(&t).unit_refuse(
             handle(),
             UnitRef::NONE,
             REFUSE_NO_ROUTE,
@@ -2035,7 +2043,7 @@ fn unit_refuse_copies_the_kernels_answer_out() {
         ..table(None)
     };
     assert_eq!(
-        services(&broken).unit_refuse(
+        transport_services(&broken).unit_refuse(
             handle(),
             UnitRef::NONE,
             REFUSE_NO_ROUTE,
@@ -2121,7 +2129,7 @@ fn secret_table(slot: Option<ServiceFn>) -> HostSlots {
 #[test]
 fn records_secret_answers_the_secret_and_its_liveness_and_pends_on_a_ticket() {
     let t = secret_table(Some(holds_secrets));
-    let s = services(&t);
+    let s = auth_services(&t);
     let Poll::Ready(Ok(live)) = s.records_secret(ticketed(0), "signing-key", "AKID") else {
         panic!("a held credential is READY");
     };
@@ -2157,26 +2165,26 @@ fn records_secret_answers_the_secret_and_its_liveness_and_pends_on_a_ticket() {
 #[test]
 fn records_secret_failures_are_errors() {
     assert_eq!(
-        services(&secret_table(None))
+        auth_services(&secret_table(None))
             .records_secret(ticketed(0), "signing-key", "AKID")
             .map(|r| r.map(|s| s.live())),
         Poll::Ready(Err(ServiceError::Unserved))
     );
     assert_eq!(
-        services(&secret_table(Some(holds_secrets)))
+        auth_services(&secret_table(Some(holds_secrets)))
             .records_secret(ticketed(0), "undeclared", "AKID")
             .map(|r| r.map(|s| s.live())),
         Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
     );
 
     assert_eq!(
-        services(&secret_table(Some(holds_secrets)))
+        auth_services(&secret_table(Some(holds_secrets)))
             .records_secret(handle(), "signing-key", "slow")
             .map(|r| r.map(|s| s.live())),
         Poll::Ready(Err(ServiceError::Broken))
     );
     assert_eq!(
-        services(&secret_table(Some(holds_no_secret)))
+        auth_services(&secret_table(Some(holds_no_secret)))
             .records_secret(ticketed(0), "signing-key", "AKID")
             .map(|r| r.map(|s| s.live())),
         Poll::Ready(Err(ServiceError::Broken)),
@@ -2190,7 +2198,8 @@ fn the_secret_holder_zeroizes() {
     fn wipes_on_drop<T: ZeroizeOnDrop>() {}
     wipes_on_drop::<CredentialSecret>();
     let t = secret_table(Some(holds_secrets));
-    let Poll::Ready(Ok(mut held)) = services(&t).records_secret(ticketed(0), "signing-key", "AKID")
+    let Poll::Ready(Ok(mut held)) =
+        auth_services(&t).records_secret(ticketed(0), "signing-key", "AKID")
     else {
         panic!("a held credential is READY");
     };
@@ -2212,14 +2221,14 @@ fn a_verify_op_issues_its_handles_in_order_and_never_crosses_ticketless() {
     use crate::abi::sdk::auth_door::VerifyOp;
     let t = secret_table(Some(holds_secrets));
     let ticket = ticketed(0).ticket;
-    let op = VerifyOp::new(Some(services(&t)), ticket);
+    let op = VerifyOp::new(Some(auth_services(&t)), ticket);
     assert_eq!(op.handle(), ticketed(0));
     assert_eq!(op.handle(), ticketed(1));
     let Poll::Ready(Ok(live)) = op.records_secret("signing-key", "AKID") else {
         panic!("READY on a ticket");
     };
     assert_eq!(live.secret(), LIVE_SECRET);
-    let none = VerifyOp::new(Some(services(&t)), Ticket::NONE);
+    let none = VerifyOp::new(Some(auth_services(&t)), Ticket::NONE);
     assert!(none.records_secret("signing-key", "probe").is_pending());
     assert_eq!(
         PROBE_CROSSINGS.load(Ordering::SeqCst),
@@ -2456,7 +2465,7 @@ fn async_snapshot_failure_is_not_recorder_not_ready() {
         ..table(None)
     };
     assert_eq!(
-        services(&failed).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        export_services(&failed).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
         Poll::Ready(Err(ServiceError::Declined(Outcome::Failed)))
     );
     let pending = HostSlots {
@@ -2464,12 +2473,29 @@ fn async_snapshot_failure_is_not_recorder_not_ready() {
         ..table(None)
     };
     assert_eq!(
-        services(&pending).snapshot_read(ticketed(0), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        export_services(&pending).snapshot_read(ticketed(0), SNAPSHOT_SCOPE_WHOLE, &mut buf),
         Poll::Pending
     );
     assert_eq!(
-        services(&pending).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
+        export_services(&pending).snapshot_read(handle(), SNAPSHOT_SCOPE_WHOLE, &mut buf),
         Poll::Ready(Err(ServiceError::Broken)),
         "a pending snapshot needs a ticket to retain its completion"
     );
+}
+
+type Services = crate::abi::sdk::services::Services<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::PlaneKind;
+
+fn services(t: &HostSlots) -> Services {
+    typed_services(t)
+}
+fn export_services(t: &HostSlots) -> super::Services<crate::plugin::markers::ExportKind> {
+    typed_services(t)
+}
+fn transport_services(t: &HostSlots) -> super::Services<crate::plugin::markers::TransportKind> {
+    typed_services(t)
+}
+fn auth_services(t: &HostSlots) -> super::Services<crate::plugin::markers::AuthKind> {
+    typed_services(t)
 }

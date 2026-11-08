@@ -104,7 +104,10 @@ fn answer<const FAIL: bool>() -> LoginOutcome {
         .expect("the original malicious ABI descriptor links");
     let rows = AuthRows::new(
         Arc::new(registry),
-        Arc::new(Dispatcher::new(DispatchConfig::default())),
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        )),
     );
     let auth = rows
         .open("login-output", "login-output", &serde_json::json!({}))

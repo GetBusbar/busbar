@@ -387,7 +387,10 @@ mod typed_transport_cancellation {
         Arc<FramingContext>,
         u64,
     ) {
-        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let plugin = load_linked::<Transport>(
             &LinkedRow::of(fault_door).expect("the genuine transport Statement renders"),
             Bind {

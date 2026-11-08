@@ -161,6 +161,7 @@ fn a_secret_plugin_that_breaks_resolve_is_refused_through_both_doors() {
 fn the_secret_door_is_not_another_kinds_door() {
     let dispatcher = std::sync::Arc::new(crate::dispatch::Dispatcher::new(
         crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
     ));
     let row = LinkedRow::of(secret_fixture::door).expect("the linked row states");
     let err = load_linked::<Export>(&row, both::bind(&dispatcher))

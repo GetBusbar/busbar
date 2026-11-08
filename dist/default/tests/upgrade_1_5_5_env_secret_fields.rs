@@ -137,12 +137,9 @@ fn post(port: u16, path: &str, body: &str) -> Option<u16> {
     text.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn declared(
-    statement: &busbar_contract::abi::mechanism::door::Statement,
-) -> (Vec<String>, Vec<String>) {
+fn declared(door: busbar_contract::abi::mechanism::door::DoorFn) -> (Vec<String>, Vec<String>) {
     use busbar_contract::abi::mechanism::rendering;
-    // SAFETY: a linked sink's `STATEMENT` names only `'static` strings and lists.
-    let bytes = unsafe { rendering::render(statement) }.expect("the Statement renders");
+    let bytes = busbar_plugin_loader::dispatch::rendering_of(door).expect("the Statement renders");
     let stated = rendering::read(&bytes).expect("the rendering reads back");
     let reference = stated
         .reference_fields()
@@ -154,12 +151,12 @@ fn declared(
 fn the_export_sinks_declare_url_reference_capable_and_the_auth_header_value_secret() {
     let (none, url) = (Vec::<String>::new(), vec!["url".to_string()]);
     assert_eq!(
-        declared(&busbar_export_otlp::door::STATEMENT),
+        declared(busbar_export_otlp::door),
         (none, url.clone()),
         "otlp: `url` reference-capable, nothing secret"
     );
     assert_eq!(
-        declared(&busbar_export_webhook::STATEMENT),
+        declared(busbar_export_webhook::door),
         (vec!["auth_header.value".to_string()], url),
         "request-log-webhook: `auth_header.value` secret, `url` reference-capable"
     );

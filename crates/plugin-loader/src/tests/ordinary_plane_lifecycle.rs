@@ -194,9 +194,10 @@ mod wrong_lifecycle_shape {
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::mechanism::door::Door;
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-    use busbar_contract::abi::sdk::door::{kind_op, Lifecycle, RawSlot};
+    use busbar_contract::abi::sdk::door::{kind_op, RawSlot};
     struct LifecycleOpen;
     impl RawSlot for LifecycleOpen {
+        type Kind = busbar_contract::plugin::markers::PlaneKind;
         type In = OpenIn;
         type Out = OpenOut;
         unsafe fn call(_: *mut std::ffi::c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
@@ -205,10 +206,32 @@ mod wrong_lifecycle_shape {
         }
     }
 
+    unsafe extern "C" fn malformed_open(
+        instance: *mut std::ffi::c_void,
+        input: *const std::ffi::c_void,
+        out: *mut std::ffi::c_void,
+    ) -> busbar_contract::abi::mechanism::call::RawOutcome {
+        // SAFETY: this deliberate malformed fixture consumes only the lifecycle prefix
+        // of the loader's full plane frames and leaves the required snapshot absent.
+        let outcome = unsafe {
+            LifecycleOpen::call(
+                instance,
+                &*input.cast::<OpenIn>(),
+                &mut *out.cast::<OpenOut>(),
+            )
+        };
+        unsafe {
+            (*out.cast::<OpenOut>()).head.outcome =
+                busbar_contract::abi::mechanism::call::RawOutcome::of(outcome);
+        }
+        busbar_contract::abi::mechanism::call::RawOutcome::of(outcome)
+    }
+
     static LIFECYCLE_CLOSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     struct LifecycleClose;
     impl RawSlot for LifecycleClose {
+        type Kind = busbar_contract::plugin::markers::PlaneKind;
         type In = busbar_contract::abi::mechanism::call::InHead;
         type Out = busbar_contract::abi::mechanism::call::OutHead;
         unsafe fn call(
@@ -245,8 +268,14 @@ mod wrong_lifecycle_shape {
             (d, *d.ops().cast::<busbar_contract::abi::plane::Ops>())
         };
         let mut ops = ops;
-        ops.head.open = kind_op::<Lifecycle, LifecycleOpen, TestCapture, { life::OPEN }>();
-        ops.head.close = kind_op::<Lifecycle, LifecycleClose, TestCapture, { life::CLOSE }>();
+        ops.head.open = Some(malformed_open);
+        ops.head.close = kind_op::<
+            busbar_contract::abi::plane::Ops,
+            busbar_contract::abi::plane::PlaneLifecycle,
+            LifecycleClose,
+            TestCapture,
+            { life::CLOSE },
+        >();
         let ops: &'static busbar_contract::abi::plane::Ops = Box::leak(Box::new(ops));
         Box::leak(Box::new(unsafe {
             Door::__from_parts(busbar_contract::abi::mechanism::door::DoorParts {
@@ -479,7 +508,10 @@ fn served_refresh_waits_for_a_crossing_then_publishes_the_actual_plane_generatio
     use std::time::{Duration, Instant};
 
     for dropped_image in [false, true] {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = Arc::new(served_lifecycle_plane(dropped_image, &dispatcher));
         let first = open_door(&plugin, b"{}", b"{}", None).unwrap();
         let held = plugin
@@ -551,7 +583,10 @@ fn served_refresh_cancels_a_timed_out_admission_without_publishing_later() {
     for dropped_image in [false, true] {
         let mut config = DispatchConfig::default();
         config.budgets.lifecycle = Duration::from_millis(100);
-        let dispatcher = Arc::new(Dispatcher::new(config));
+        let dispatcher = Arc::new(Dispatcher::new(
+            config,
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = Arc::new(served_lifecycle_plane(dropped_image, &dispatcher));
         open_door(&plugin, b"{}", b"{}", None).unwrap();
         let prior = plugin.inner.wake.exports.pin(Ticket::NONE).unwrap();
@@ -637,7 +672,10 @@ fn served_refresh_keeps_active_result_custody_past_its_queue_deadline() {
 
     let mut config = DispatchConfig::default();
     config.budgets.lifecycle = Duration::from_secs(2);
-    let dispatcher = Arc::new(Dispatcher::new(config));
+    let dispatcher = Arc::new(Dispatcher::new(
+        config,
+        busbar_contract::services::test_caller_binding(),
+    ));
     let mut validated = crate::dispatch::load::validate_door::<Plane>(crate::actual_mcp::door())
         .expect("the actual MCP descriptor validates before wrapping REFRESH");
     let actual = validated.slots[slot::REFRESH as usize];

@@ -1227,7 +1227,7 @@ impl Instance {
             .wake
             .caller
             .get()
-            .map_or(self.name.as_str(), |c| &*c.instance);
+            .map_or(self.name.as_str(), |c| c.namespace().as_ref());
         self.sink.refused(label, refusal);
     }
 
@@ -1839,6 +1839,7 @@ impl Instance {
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
         let _ticket = super::services::crossing(ticket);
+        let _authority_phase = super::access::enter(s);
         // The copied receipt uses the existing epoch; its composed input loan lasts this call.
         // SAFETY: this crossing owns the host input frame and its original extension blob.
         let _inspection_input =
@@ -1904,6 +1905,7 @@ impl Instance {
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
                 let _ticket = super::services::crossing(ticket);
+                let _authority_phase = super::access::enter(s);
                 super::export_bindings::crossing(binding.clone(), || {
                     with_crossing(Some(self), || {
                         let raw = enter_lifecycle((self.op_name)(s), op, instance, input, output);
@@ -2041,7 +2043,7 @@ impl Instance {
         };
         // Copy and validate the transaction before any independent inspection effect or lease release.
         // SAFETY: the answer remains live under its lease and its kind's checks passed.
-        if unsafe {
+        if let Err(error) = unsafe {
             super::conditional::answer(
                 self.wake,
                 self.kind,
@@ -2050,10 +2052,8 @@ impl Instance {
                 &head,
                 &answer,
             )
-        }
-        .is_err()
-        {
-            return Crossed::host(Outcome::Refused).unread(head.lease);
+        } {
+            return Crossed::host(error.outcome()).unread(head.lease);
         }
         // SAFETY: the same validated answer remains live under its lease.
         if unsafe {
@@ -2461,9 +2461,15 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
         .flatten()
 }
 
+/// A validated binding. Its implementation cannot be replaced by another kind.
+/// ```compile_fail,E0616
+/// use busbar_plugin_loader::dispatch::{Plugin, kinds::{store_v4::StoreV4, auth::Auth}};
+/// fn swap(store: &mut Plugin<StoreV4>, auth: &Plugin<Auth>) {
+///     store.inner = auth.inner.clone();
+/// }
+/// ```
 pub struct Plugin<K: Kind> {
-    #[doc(hidden)]
-    pub inner: Arc<Instance>,
+    pub(crate) inner: Arc<Instance>,
     _k: PhantomData<fn() -> K>,
 }
 
@@ -2651,8 +2657,12 @@ impl<K: Kind> Plugin<K> {
             ctx,
             wake: Some(host_wake),
             conns,
-            services: &super::services::HOST_SLOTS,
-            io: &super::io_slots::IO_SLOTS,
+            services: super::services::host_slots(v.kind),
+            io: if v.kind == KindCode::Transport {
+                &super::io_slots::IO_SLOTS
+            } else {
+                std::ptr::null()
+            },
         }));
         let name = str_bytes(st.name)
             .ok_or_else(|| LoadError::BadStatement("the name is NULL or over-long".into()))?;
@@ -2667,11 +2677,15 @@ impl<K: Kind> Plugin<K> {
             })
             .collect::<Result<_, _>>()?;
         let reference_fields = super::load::reference_fields(&st)?.into_boxed_slice();
-        let _ = wake.caller.set(busbar_contract::services::Caller {
-            instance: Arc::clone(&bind.instance),
-            plugin: Arc::from(String::from_utf8_lossy(name).as_ref()),
-            kind: v.kind,
-        });
+        let caller = bind
+            .dispatcher
+            .bind_caller(Arc::clone(&bind.instance), v.kind)?;
+        if caller.kind() != v.kind || caller.namespace().as_ref() != bind.instance.as_ref() {
+            return Err(LoadError::BadStatement(
+                "caller binding does not match the validated descriptor".into(),
+            ));
+        }
+        let _ = wake.caller.set(caller);
         let context = K::context(&st).map_err(LoadError::KindTail)?;
         let _ = wake
             .credential_kinds
@@ -2826,6 +2840,55 @@ impl<K: Kind> Plugin<K> {
             .conn
             .get()
             .map(|(_, table)| Arc::clone(table))
+    }
+
+    /// Read-only conformance witness; never exposes a replaceable instance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_invocations(&self) -> (u64, u64) {
+        (
+            self.inner.crossings.load(Ordering::SeqCst),
+            self.inner.resumes.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Read-only driver completion count for isolated conformance fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_driver_answers(&self) -> u64 {
+        self.inner.driven.answers()
+    }
+
+    /// Drain recorded session identifiers for isolated driver conformance fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_driver_sessions(&self) -> Vec<u64> {
+        self.inner.driven.drain()
+    }
+
+    /// Observe a driver result without exposing or replacing its owning instance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_driver_answer_after(
+        &self,
+        seen: u64,
+        timeout: std::time::Duration,
+    ) -> Option<Outcome> {
+        self.inner.driven.answered_after(seen, timeout)
+    }
+
+    /// Retained read-only counts for teardown assertions in isolated conformance.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_invocation_probe(&self) -> impl Fn() -> (u64, u64) + Send + Sync + 'static {
+        let instance = Arc::clone(&self.inner);
+        move || {
+            (
+                instance.crossings.load(Ordering::SeqCst),
+                instance.resumes.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    /// Context for adversarial raw-ABI conformance calls; absent from shipping builds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_host_context(&self) -> HostCtx {
+        self.inner.ctx()
     }
 
     pub fn max_inflight(&self) -> u32 {
@@ -3102,3 +3165,11 @@ mod instance_id_tests;
 #[cfg(test)]
 #[path = "../tests/envelope_array_tests.rs"]
 mod envelope_array_tests;
+
+impl Plugin<super::kinds::transport::Transport> {
+    /// Host-issued I/O owner for the validated transport binding. This exposes no
+    /// mutable instance or callbacks and cannot retag a binding as another kind.
+    pub fn io_owner(&self) -> u64 {
+        self.inner.ctx().handle
+    }
+}

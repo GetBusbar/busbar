@@ -22,7 +22,11 @@ pub fn boot(workers: usize, services: &LateServices) -> Arc<Dispatcher> {
 
 #[must_use]
 pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
-    let dispatcher = Dispatcher::with_slot(config(workers), services.slot());
+    let dispatcher = Dispatcher::with_slot(
+        config(workers),
+        services.slot(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     dispatcher
 }

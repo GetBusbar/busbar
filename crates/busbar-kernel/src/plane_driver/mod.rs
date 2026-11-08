@@ -501,6 +501,17 @@ impl PlaneDriver {
         self
     }
 
+    /// Bind a carrier session to this opened plane, so a replacement sharing the
+    /// configured namespace cannot inherit its live session authority.
+    pub fn open_carrier_session(
+        &self,
+        principal: &str,
+        sink: crate::host_services::CarrierSink,
+    ) -> Option<u64> {
+        let (services, caller) = self.records.as_ref()?;
+        Some(services.open_carrier_session(caller, principal, sink))
+    }
+
     pub fn reload(&self) {
         self.reload.send_replace(true);
     }
@@ -1702,11 +1713,7 @@ mod section_admission_tests {
     }
 
     async fn approve(services: &KernelServices) {
-        let caller = Caller {
-            instance: Arc::from(INSTANCE),
-            plugin: Arc::from("test-plane"),
-            kind: KindCode::Plane,
-        };
+        let caller = Caller::for_test(Arc::from(INSTANCE), KindCode::Plane);
         let Ran::Now(answer) = services.trust_sight(
             &caller,
             "peer",

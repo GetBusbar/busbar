@@ -136,7 +136,7 @@ crate::dispatch_tests::c_abi! {
 }
 
 fn rig(config: DispatchConfig) -> (Dispatcher, Plugin<Plane>, Arc<Control>) {
-    let dispatcher = Dispatcher::new(config);
+    let dispatcher = Dispatcher::new(config, busbar_contract::services::test_caller_binding());
     let (plugin, control) = plugin(&dispatcher);
     (dispatcher, plugin, control)
 }

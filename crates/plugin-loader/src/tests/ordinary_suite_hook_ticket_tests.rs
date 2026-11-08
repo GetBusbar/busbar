@@ -91,7 +91,10 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
     use busbar_contract::abi::mechanism::lifecycle::slot as life;
     PENDING_ENTRIES.store(0, Ordering::SeqCst);
     PRODUCT_DECISIONS.store(0, Ordering::SeqCst);
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = load_linked::<Hook>(
         &LinkedRow::of(pending_door).expect("actual Ranking descriptor"),
         Bind {

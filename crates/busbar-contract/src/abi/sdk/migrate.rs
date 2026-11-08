@@ -93,6 +93,8 @@ impl Migrated {
 
 /// A plugin's own migration of its settings section.
 pub trait Migrate {
+    /// Kind whose settings are being migrated.
+    type Kind: crate::plugin::KindMarker;
     /// Migrate `settings` (the section as the operator wrote it; `null` when it wrote none) from
     fn migrate(settings: serde_json::Value, from: &str) -> Migrated;
 }
@@ -105,6 +107,7 @@ pub trait Migrate {
 pub struct Migrator<M>(PhantomData<M>);
 
 impl<M: Migrate> RawSlot for Migrator<M> {
+    type Kind = M::Kind;
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, input: &ValidateIn, out: &mut OutHead) -> Outcome {

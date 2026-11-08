@@ -28,7 +28,10 @@ fn sealing_plane() -> (ServedFacts, NeedId) {
     use crate::root::loader::dispatch::{
         load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    let probe = Dispatcher::new(DispatchConfig::default());
+    let probe = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     crate::LINKED
         .plane_doors
         .iter()

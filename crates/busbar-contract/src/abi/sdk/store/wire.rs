@@ -14,7 +14,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::op::{Checkout, Op, Step};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::{ConnFailure, Host, ProcessId};
+type Host = crate::abi::sdk::conn::Host<crate::plugin::markers::StoreKind>;
+use crate::abi::sdk::conn::{ConnFailure, ProcessId};
 
 #[path = "wire_input.rs"]
 mod input;

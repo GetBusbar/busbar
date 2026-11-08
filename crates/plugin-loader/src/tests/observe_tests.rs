@@ -101,8 +101,14 @@ fn a_second_install_is_refused() {
 #[test]
 fn the_observer_and_the_host_series_are_the_dispatchers() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
-    let mine = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
-    let other = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let mine = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
+    let other = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     assert!(mine
         .observing()
         .install_host_series(|name| name == "dispatcher_owned_host_total"));
@@ -232,7 +238,10 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
     kind: &str,
 ) {
     let guard = exclusive();
-    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let d = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let binder = std::sync::Arc::new(Binder::default());
     let row = crate::dispatch::LinkedRow::of(door).expect("the door states its Statement");
     let name = busbar_contract::abi::mechanism::rendering::read(&row.statement)

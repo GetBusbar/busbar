@@ -584,7 +584,7 @@ fn disk_append_preserves_octets_ticket_and_resumed_issue_order() {
     };
     // SAFETY: all harness tables and callbacks remain live while Host copies them.
     let h = unsafe {
-        Host::from_raw(&HostTables {
+        crate::abi::sdk::conn::Host::<crate::plugin::markers::ExportKind>::from_raw(&HostTables {
             size: std::mem::size_of::<HostTables>() as u32,
             _reserved: 0,
             ctx: HostCtx::NONE,
@@ -616,3 +616,7 @@ fn disk_append_preserves_octets_ticket_and_resumed_issue_order() {
         vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
     );
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::TransportKind;

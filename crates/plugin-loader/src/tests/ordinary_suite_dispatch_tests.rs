@@ -117,7 +117,10 @@ fn tick() -> Frame<TickIn, TickOut> {
 
 #[test]
 fn a_wait_that_is_woken_passes() {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = opened(&d, waking_door);
     let before = (
         p.inner.crossings.load(Ordering::SeqCst),
@@ -144,7 +147,10 @@ fn a_wait_that_is_woken_passes() {
 
 #[test]
 fn red_a_wait_a_deadline_ended_is_refused() {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = opened(&d, unwoken_door);
     let before = d.stats().deadline_without_wake;
     let ticket = d.mint(0).expect("ticket");
@@ -273,7 +279,10 @@ fn open_frame(
 
 #[test]
 fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let raw = bound(&d, pending_open_door);
     assert_eq!(
         raw.call(slot::OPEN, &mut open_frame()).outcome,

@@ -90,10 +90,21 @@ impl Wake for Routed {
     }
 }
 
-fn caller(ctx: HostCtx) -> Option<Caller> {
-    let waking = Waking::of(super::handle::resolve(ctx)?)?;
-    let io = waking.route.upgrade()?.io()?;
-    Some(Caller {
+fn caller(ctx: HostCtx, service: u32) -> Result<Caller, Answered> {
+    let unavailable = || Answered::bare(Outcome::Refused, NO_IO);
+    let supplier = super::handle::resolve(ctx).ok_or_else(unavailable)?;
+    super::access::admit(
+        supplier,
+        busbar_contract::abi::host::access::io(service),
+        super::access::operation(),
+    )?;
+    let waking = Waking::of(supplier).ok_or_else(unavailable)?;
+    let io = waking
+        .route
+        .upgrade()
+        .and_then(|route| route.io())
+        .ok_or_else(unavailable)?;
+    Ok(Caller {
         owner: ctx.handle,
         waking,
         io,
@@ -129,8 +140,12 @@ fn slot<I: Copy>(
         if may_pend(service) && ticket.is_none() {
             return Answered::bare(Outcome::Refused, UNTICKETED);
         }
-        let Some(c) = caller(ctx) else {
-            return Answered::bare(Outcome::Refused, NO_IO);
+        if !ticket.is_none() && !super::services::crossing_names(ticket) {
+            return Answered::bare(Outcome::Refused, super::services::NOT_THIS_CROSSING);
+        }
+        let c = match caller(ctx, service) {
+            Ok(caller) => caller,
+            Err(refused) => return refused,
         };
         // SAFETY: the head covered an `I`.
         let i = unsafe { input.cast::<I>().read_unaligned() };

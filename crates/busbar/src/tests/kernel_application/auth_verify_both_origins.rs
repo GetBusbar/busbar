@@ -162,7 +162,7 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         .expect("read actual OIDC")
         .expect("OIDC statement");
 
-    let door = busbar_auth_oidc::door::door;
+    let door = busbar_auth_oidc::door;
     let linked_statement = busbar_plugin_loader::dispatch::rendering_of(door)
         .expect("the real linked OIDC door renders its Statement");
     assert_eq!(

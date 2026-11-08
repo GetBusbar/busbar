@@ -3,6 +3,8 @@
 
 //! THE PLANE LIFECYCLE, ONCE FOR EVERY PLANE: the nine lifecycle slots of a plane's door over the
 
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::PlaneKind>;
+
 use std::ffi::c_void;
 use std::marker::PhantomData;
 
@@ -17,7 +19,7 @@ use crate::abi::sdk::lent::Lent;
 use crate::abi::sdk::life::{settings_object, Refusal};
 use crate::abi::sdk::out::Out;
 use crate::abi::sdk::publish::{Generations, SnapshotSpec};
-use crate::abi::sdk::safe::{Instance, SafeSlot};
+use crate::abi::sdk::safe::{Instance as KindGenericInstance, SafeSlot};
 
 /// What one generation publishes: its snapshot, and what the plane holds beside it until that
 /// generation retires.
@@ -62,7 +64,10 @@ pub trait PlaneLife: Send + Sync + Sized + 'static {
     }
 
     /// `open`: the state, and the first generation's snapshot, from the plane's `open` `in`.
-    fn open(input: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal>;
+    fn open(
+        input: &Lent<'_, PlaneOpenIn>,
+        host: Option<crate::abi::sdk::lent::KindHostLoan<'_, crate::plugin::markers::PlaneKind>>,
+    ) -> Result<Opened<Self>, Refusal>;
 
     /// `refresh` to `generation` with `settings`: that generation's snapshot.
     fn refresh(&self, settings: &[u8], generation: u64) -> Result<Published<Self::Held>, Refusal>;
@@ -117,6 +122,7 @@ macro_rules! plane_slot {
         #[derive(Debug)]
         pub struct $name<P>(PhantomData<P>);
         impl<P: PlaneLife> SafeSlot for $name<P> {
+    type Kind = crate::plugin::markers::PlaneKind;
             type In = $in;
             type Out = $out;
             type State = P;
@@ -145,7 +151,7 @@ plane_slot!(
     /// `open`: [`PlaneLife::open`]; the first generation is published and the state held.
     Open(PlaneOpenIn => PlaneOpenOut) |instance, input, out| {
         let generation = input.open().generation();
-        match P::open(&input) {
+        match P::open(&input, input.open().host().map(|loan| instance.host(loan))) {
             Ok(Opened { plane, first }) => {
                 out.publish_with(
                     |o| &o.snapshot,
@@ -231,6 +237,7 @@ plane_slot!(
 pub struct Inert;
 
 impl RawSlot for Inert {
+    type Kind = crate::plugin::markers::PlaneKind;
     type In = GenIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
@@ -244,6 +251,7 @@ impl RawSlot for Inert {
 pub struct NoServe;
 
 impl RawSlot for NoServe {
+    type Kind = crate::plugin::markers::PlaneKind;
     type In = ServeIn;
     type Out = ServeOut;
     unsafe fn call(_: *mut c_void, _: &ServeIn, _: &mut ServeOut) -> Outcome {

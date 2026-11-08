@@ -280,7 +280,7 @@ transport-tcp = []
 # path hands it its arrivals through the plane driver.
 plane-decisions = ["dep:busbar-plane-decisions"]
 # THE LLM PLANE'S DOOR ROW, carried by `plane-llm` and never set on its own. The plane's memory-ABI
-# door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the loader's one
+# door (`busbar_plane_llm::door`) is a `plane-door` row, bound through the loader's one
 # load beside every dropped-in plane door, the same table as its dropped-in cdylib (#2, #30; THE
 # DESIGN section 11.4).
 plane-llm-door = ["dep:busbar-plane-llm"]
@@ -455,23 +455,23 @@ plane-a2a-door = "plane-door"
 
 # A linked crate whose entry module is not `<crate>::linked`.
 [package.metadata.busbar.linked-entry]
-# A secret plugin's door is its `door` module's.
-busbar-secret-env = "busbar_secret_env::door"
-busbar-secret-file = "busbar_secret_file::door"
-# An auth plugin's entry is its crate root; its memory-ABI door is `<entry>::door::door`.
+# Every entry names a crate's public door.
+busbar-secret-env = "busbar_secret_env"
+busbar-secret-file = "busbar_secret_file"
+# Auth follows the same `<entry>::door` boundary as every other kind.
 busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
-busbar-auth-header = "busbar_auth_header::compiled_in"
-busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
-busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
-busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
+busbar-auth-header = "busbar_auth_header"
+busbar-auth-sigv4 = "busbar_auth_sigv4"
+busbar-auth-oauth = "busbar_auth_oauth"
+busbar-auth-webhook-signature = "busbar_auth_webhook_signature"
 # A plane door row's entry is its public exporting module (the crate root for a re-export).
 plane-decisions = "busbar_plane_decisions"
-plane-llm-door = "busbar_plane_llm::plane_door"
+plane-llm-door = "busbar_plane_llm"
 plane-mcp-door = "busbar_plane_mcp"
 plane-a2a-door = "busbar_plane_a2a"
-# A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
-busbar-export-prometheus = "busbar_export_prometheus::door"
-busbar-export-otlp = "busbar_export_otlp::door"
+# Export sinks expose their generated door at the crate root.
+busbar-export-prometheus = "busbar_export_prometheus"
+busbar-export-otlp = "busbar_export_otlp"
 # The file and webhook sinks' doors are at their logic crates' roots (`pub use table::door`).
 busbar-export-file = "busbar_export_file"
 busbar-export-webhook = "busbar_export_webhook"
@@ -570,6 +570,7 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
 ring = { workspace = true }

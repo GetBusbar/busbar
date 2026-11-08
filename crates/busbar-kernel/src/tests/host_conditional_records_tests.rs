@@ -569,11 +569,10 @@ impl crate::host_services::Offload for Inline {
 }
 
 fn caller() -> busbar_contract::services::Caller {
-    busbar_contract::services::Caller {
-        instance: Arc::from(INSTANCE),
-        plugin: Arc::from("plane"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    }
+    busbar_contract::services::Caller::for_test(
+        Arc::from(INSTANCE),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    )
 }
 
 fn logical() -> ConditionalCandidate {

@@ -1001,7 +1001,10 @@ fn resolve_validation_listeners(
         .iter()
         .map(|(_, door)| transport::linked_facts(*door))
         .collect::<Result<Vec<_>, _>>()?;
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let bind = Bind {
         instance: Arc::from("configuration-listeners"),
         max_inflight_cap: 1,
@@ -1815,7 +1818,10 @@ fn locate_provider_destination_with(
         })
         .ok_or("endpoint must name an absolute registered transport claim")?
         .to_ascii_lowercase();
-    let on = Dispatcher::new(DispatchConfig::default());
+    let on = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let bind = Bind {
         instance: Arc::from("configuration-locate"),
         max_inflight_cap: 1,

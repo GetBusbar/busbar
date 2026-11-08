@@ -57,7 +57,10 @@ pub(crate) unsafe fn prepare(
     let Some(served) = route.services() else {
         return Ok(None);
     };
-    if wake.caller.get().is_none() {
+    let policy = busbar_contract::abi::host::access::extension(
+        busbar_contract::abi::host::access::Extension::InspectWork,
+    );
+    if super::access::admit(wake, Some(&policy), Some(operation)).is_err() {
         return Ok(None);
     }
     let caller = caller_key(wake);
@@ -246,7 +249,18 @@ pub(crate) unsafe fn answer(
     if !served.store.inspection_begin(caller, unit, &request)? {
         return Ok(true);
     }
-    let result = served.provider.inspect(authority, unit, &request.query);
+    use busbar_contract::abi::{
+        host::access::{extension, Extension},
+        mechanism::inspection::{InspectionError, InspectionQuery},
+    };
+    let policy = extension(match &request.query {
+        InspectionQuery::Work { .. } => Extension::InspectWork,
+        InspectionQuery::CarrierSessions { .. } => Extension::InspectCarrierSessions,
+    });
+    let result = match super::access::admit(wake, Some(&policy), Some(operation)) {
+        Ok(()) => served.provider.inspect(authority, unit, &request.query),
+        Err(_) => Err(InspectionError::Refused),
+    };
     let receipt = InspectionReceipt {
         request: request.clone(),
         result,

@@ -68,7 +68,10 @@ extern "C" fn fault_door() -> &'static Door {
 #[test]
 fn fault_arrival_and_projection_never_copy_unjudged_output_text() {
     for project in [false, true] {
-        let d = Dispatcher::new(DispatchConfig::default());
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let p = load_linked::<Plane>(
             &LinkedRow::of(fault_door).unwrap(),
             Bind {

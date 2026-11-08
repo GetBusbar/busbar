@@ -55,7 +55,10 @@ extern "C" fn file_door() -> &'static Door {
         let stated = rendering_of_library(&path)
             .expect("read the actual file Statement")
             .expect("the actual file image exports its door");
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            crate::host_services::caller_binding(),
+        ));
         let held = load_dropped::<Export>(
             &path,
             &stated,
@@ -190,6 +193,7 @@ fn dispatcher() -> Arc<Dispatcher> {
     Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::new(KernelServices::new()),
+        crate::host_services::caller_binding(),
     ))
 }
 fn instance_label(base: &str) -> String {
@@ -644,6 +648,7 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
         let d = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
             Arc::new(KernelServices::new().with_disk_lane(disk.lane.clone())),
+            crate::host_services::caller_binding(),
         ));
         let plugin = load_file(dropped, &d, Arc::new(Tape::default()));
         let sink = Arc::new(opened(plugin, d.clone(), &file_settings(&a)));
@@ -723,6 +728,7 @@ fn two_actual_file_instances_progress_independently_while_one_destination_is_blo
         let dispatcher = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
             Arc::new(KernelServices::new().with_disk_lane(Arc::clone(&lane))),
+            crate::host_services::caller_binding(),
         ));
         let sink_a = Arc::new(opened(
             load_file(dropped, &dispatcher, Arc::new(Tape::default())),

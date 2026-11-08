@@ -46,7 +46,10 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .iter()
         .copied()
         .find(|door| {
-            let probe = Dispatcher::new(DispatchConfig::default());
+            let probe = Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_kernel::host_services::caller_binding(),
+            );
             let row = LinkedRow::of(*door).expect("a linked door states itself");
             load_linked::<Plane>(
                 &row,
@@ -763,6 +766,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(pools_door()).expect("the door states itself");

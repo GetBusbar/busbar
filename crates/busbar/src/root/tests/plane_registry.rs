@@ -25,8 +25,12 @@ pub(crate) fn fallback() -> &'static busbar_kernel::plane_driver::registry::Plan
             .plane_doors
             .iter()
             .map(|door| {
-                registration(linked_probe(*door, "root-fallback"))
-                    .expect("the actual linked plane registers through its ABI")
+                registration(linked_probe(
+                    *door,
+                    "root-fallback",
+                    busbar_kernel::host_services::caller_binding(),
+                ))
+                .expect("the actual linked plane registers through its ABI")
             })
             .filter(|registration| registration.fallback);
         let registration = fallback.next().unwrap_or_else(|| {
@@ -43,7 +47,10 @@ pub(crate) fn fallback() -> &'static busbar_kernel::plane_driver::registry::Plan
             let stated = rendering_of_library(&path)
                 .expect("the actual fallback plane library reads")
                 .expect("the actual fallback plane carries its Statement");
-            let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+            let dispatcher = std::sync::Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_kernel::host_services::caller_binding(),
+            ));
             let bind: ProbeBind = std::sync::Arc::new(move || {
                 load_dropped::<Plane>(
                     &path,

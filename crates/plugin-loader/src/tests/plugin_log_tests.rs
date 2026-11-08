@@ -16,6 +16,7 @@ use crate::dispatch::{
 };
 
 struct WitnessKind;
+impl crate::dispatch::kind_seal::Validated for WitnessKind {}
 impl Kind for WitnessKind {
     const CODE: KindCode = witness::KIND;
     type Ops = OpsHead;

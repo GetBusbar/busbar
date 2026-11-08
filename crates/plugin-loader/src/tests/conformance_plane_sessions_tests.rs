@@ -520,8 +520,7 @@ fn served_fold(leg: Leg, host: &str, all: &Value) -> Fold {
         .expect("a host is stated");
     let d = std::sync::Arc::new(crate::dispatch::Dispatcher::with_services(
         crate::dispatch::DispatchConfig::default(),
-        std::sync::Arc::new(host),
-    ));
+        std::sync::Arc::new(host), busbar_contract::services::test_caller_binding()));
     let p = load::<Plane>(&s, leg, s.bind(&d, "plane")).expect("the plane fixture loads");
     let mut r = Recorder::new(crossings(&p));
     r.line("open", 1, || open(&p, b"{}", None));
@@ -611,11 +610,7 @@ fn red_a_lane_record_or_turn_other_than_answered_is_refused() {
 #[test]
 fn red_a_unit_the_grant_does_not_list_is_entitled_to_nothing() {
     let host = super::host::Host::of(&serde_json::from_str(HOST).expect("JSON")).expect("host");
-    let caller = busbar_contract::services::Caller {
-        instance: std::sync::Arc::from("i"),
-        plugin: std::sync::Arc::from("p"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = busbar_contract::services::Caller::for_test(std::sync::Arc::from("i"), busbar_contract::abi::mechanism::KindCode::Plane);
     use crate::dispatch::HostServices;
     use busbar_contract::abi::host::service::{ENTITLED, NOT_ENTITLED};
     assert_eq!(

@@ -1,21 +1,12 @@
+# The project CI configuration must select the owner-approved immutable revision of
+# ci/architecture-pipeline.yml in GetBusbar/busbar. This file cannot grant admission.
+# Unregistered scaffolds fail closed until the canonical policy classifies their
+# repository, kind, package paths and open-source/enterprise distribution.
 workflow:
-  auto_cancel:
-    on_new_commit: conservative
   rules:
-    - if: '$CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SOURCE == "push"'
-    - when: never
+    - when: always
 
-stages: [website]
-
-website-dev:
-  stage: website
-  variables:
-    WEBSITE_EVENT_REPOSITORY: GetBusbar/busbar
-    WEBSITE_CORE_REVISION: $CI_COMMIT_SHA
-  trigger:
-    project: BusbarInc/marketing
-    branch: dev
-    strategy: mirror
-    forward:
-      yaml_variables: true
-      pipeline_variables: false
+admission-not-configured:
+  script:
+    - echo 'Configure the owner-approved immutable CI revision and protected GitLab admission.'
+    - exit 1

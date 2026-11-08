@@ -266,10 +266,13 @@ impl Rig {
 }
 
 pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 2,
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     let plugin = load(way, &dispatcher);
     let book = Arc::new(book);
     let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
@@ -317,7 +320,10 @@ impl EnvelopeSink for Gauges {
 #[test]
 fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
     for way in ways() {
-        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let gauges = Arc::new(Gauges::default());
         let plugin = load_with(way, &dispatcher, gauges.clone());
         let t = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
@@ -457,7 +463,10 @@ fn until(what: &str, done: impl Fn() -> bool) {
 #[tokio::test]
 async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = load(way, &dispatcher);
         arrive_at(&plugin, "/tick-every:20");
         let driver = driver_of(&plugin, dispatcher.clone());
@@ -492,7 +501,10 @@ async fn the_kernel_ticks_a_plane_on_its_driver_ticket_at_each_next_tick() {
 #[tokio::test]
 async fn no_tick_follows_a_tick_that_asks_for_none() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = load(way, &dispatcher);
         let driver = driver_of(&plugin, dispatcher.clone());
         parks_after_one_tick(&driver).await;
@@ -508,7 +520,10 @@ async fn parks_after_one_tick(driver: &PlaneDriver) {
 #[tokio::test]
 async fn a_wake_of_the_driver_ticket_runs_drive_then_ticks_again() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = load(way, &dispatcher);
         let driver = driver_of(&plugin, dispatcher.clone());
         let waker = async {
@@ -634,7 +649,10 @@ impl Conns for Far {
 #[tokio::test]
 async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         arrive_at(&plugin, "/tick-read");
@@ -669,7 +687,10 @@ async fn a_read_inside_tick_pends_on_the_driver_ticket_and_resumes_through_drive
 #[tokio::test]
 async fn a_tick_forgets_what_the_last_cycle_kept_on_the_driver_ticket() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         let driver = driver_of(&plugin, dispatcher.clone());
@@ -722,7 +743,10 @@ async fn beside_ticks(
 #[tokio::test]
 async fn a_tick_keeps_every_held_exchange_and_the_second_completes_while_the_first_pends() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         let driver = driver_of(&plugin, dispatcher.clone());
@@ -789,7 +813,10 @@ fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> A
 #[tokio::test]
 async fn a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answer() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_over(way, &dispatcher, Arc::new(NoSink), Some(far.clone()));
         let driver = driver_of(&plugin, dispatcher.clone());
@@ -830,7 +857,10 @@ async fn a_tick_that_reuses_a_held_handle_is_faulted_not_answered_the_held_answe
 #[tokio::test]
 async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_per_exchange() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_capped(way, &dispatcher, &far, 2);
         let driver = driver_of(&plugin, dispatcher.clone());
@@ -881,7 +911,10 @@ async fn the_held_set_on_a_driver_ticket_is_bounded_by_max_inflight_and_frees_pe
 #[tokio::test]
 async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let far = Arc::new(Far::default());
         let plugin = load_capped(way, &dispatcher, &far, 2);
         let drv = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
@@ -934,7 +967,10 @@ async fn a_tick_parked_at_the_cap_runs_when_a_slot_frees_without_a_poke() {
 #[test]
 fn the_crossing_is_under_a_microsecond() {
     for way in ways() {
-        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let plugin = load(way, &dispatcher);
         let mut reply = vec![0u8; 64];
         let mut units = vec![
@@ -1058,10 +1094,13 @@ fn serve_table(
     busbar_kernel::plane_driver::serve::ServeTable,
 ) {
     use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable};
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 2,
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     let (plugin, snapshot) = load_open(way, &dispatcher, Arc::new(NoSink), ConnTable::Probe);
     let routes = snapshot
         .admin_routes
@@ -1833,10 +1872,13 @@ impl busbar_kernel::plane_driver::MoneySeam for Unstated {
 #[tokio::test]
 async fn a_session_is_refused_while_its_money_is_unstated() {
     for way in ways() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-            workers: 2,
-            ..DispatchConfig::default()
-        }));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig {
+                workers: 2,
+                ..DispatchConfig::default()
+            },
+            busbar_contract::services::test_caller_binding(),
+        ));
         let plugin = load(way, &dispatcher);
         let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
         let refusal_statuses = calls.refusal_statuses();

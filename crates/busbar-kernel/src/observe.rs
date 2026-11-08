@@ -3,6 +3,42 @@
 
 pub const PLUGIN_LABEL: &str = "plugin";
 
+/// An opaque budget group. The composition root reuses one owner for every
+/// instance of an implementation, including replacements. This is not authority.
+#[derive(Clone, Debug)]
+pub struct ObservationOwner(std::sync::Arc<()>);
+impl Default for ObservationOwner {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(()))
+    }
+}
+impl PartialEq for ObservationOwner {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for ObservationOwner {}
+impl std::hash::Hash for ObservationOwner {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.0), state);
+    }
+}
+
+/// Output only: metadata decoration belongs to the composition root. Policy
+/// cannot retrieve an implementation name or use this sink to dispatch work.
+pub trait ObservationSink {
+    fn metric(&self, metric: &busbar_contract::hook_wire::reply::HookMetric, canonical: bool);
+    fn diagnostic(
+        &self,
+        diagnostic: &'static crate::diagnostics::Diagnostic,
+        level: tracing::Level,
+        message: &str,
+        fields: &[(String, String)],
+        canonical: bool,
+    );
+    fn cardinality(&self, series: &str, max_series: usize, max_label_sets: usize);
+}
+
 const RESERVED_PREFIX: &str = "busbar_";
 
 pub(crate) fn admits_metric_name(name: &str) -> bool {
@@ -29,7 +65,7 @@ enum MetricRefusal {
     Type,
 }
 
-static LEDGER: std::sync::RwLock<Option<std::collections::HashMap<String, Budget>>> =
+static LEDGER: std::sync::RwLock<Option<std::collections::HashMap<ObservationOwner, Budget>>> =
     std::sync::RwLock::new(None);
 
 fn fingerprint(bytes: &[u8]) -> u64 {
@@ -54,12 +90,16 @@ fn fingerprint_pairs(labels: Option<&std::collections::BTreeMap<String, String>>
 }
 
 #[cfg(test)]
-pub(crate) fn admits_cardinality(plugin: &str, series: &str, label_fingerprint: u64) -> bool {
-    admit_metric(plugin, series, "", label_fingerprint).is_ok()
+pub(crate) fn admits_cardinality(
+    owner: &ObservationOwner,
+    series: &str,
+    label_fingerprint: u64,
+) -> bool {
+    admit_metric(owner, series, "", label_fingerprint).is_ok()
 }
 
 fn admit_metric(
-    plugin: &str,
+    owner: &ObservationOwner,
     series: &str,
     kind: &str,
     label_fingerprint: u64,
@@ -75,7 +115,7 @@ fn admit_metric(
         return Err(MetricRefusal::Type);
     }
 
-    let budget = ledger.entry(plugin.to_string()).or_default();
+    let budget = ledger.entry(owner.clone()).or_default();
     match budget.series.get_mut(series) {
         Some(held) => {
             if held.labels.contains(&label_fingerprint) {
@@ -104,10 +144,10 @@ fn admit_metric(
 }
 
 #[cfg(test)]
-pub(crate) fn forget_cardinality(plugin: &str) {
+pub(crate) fn forget_cardinality(owner: &ObservationOwner) {
     let mut guard = LEDGER.write().unwrap_or_else(|e| e.into_inner());
     if let Some(ledger) = guard.as_mut() {
-        ledger.remove(plugin);
+        ledger.remove(owner);
     }
 }
 
@@ -122,10 +162,11 @@ pub struct KernelPluginObserver {
     catalogue: crate::diagnostics::Catalogue,
 }
 
+/// Verified declarations bound by the root to one opaque budget owner.
 pub trait Grants: Send + Sync {
-    fn first_party(&self, plugin: &str) -> bool;
-
-    fn first_party_series(&self, plugin: &str, name: &str, kind: &str) -> bool;
+    fn owner(&self) -> &ObservationOwner;
+    fn first_party(&self) -> bool;
+    fn first_party_series(&self, name: &str, kind: &str) -> bool;
 }
 
 impl KernelPluginObserver {
@@ -142,26 +183,26 @@ impl KernelPluginObserver {
     pub fn observe(
         &self,
         grants: &dyn Grants,
-        plugin: &str,
-        kind: &str,
+        sink: &dyn ObservationSink,
+        kind: busbar_contract::abi::mechanism::KindCode,
         metrics: &[serde_json::Value],
         diagnostics: &[serde_json::Value],
     ) {
-        fold_diagnostics(grants, self.catalogue, plugin, diagnostics);
-        if kind == busbar_contract::abi::mechanism::kind::HOOK {
+        fold_diagnostics(grants, sink, self.catalogue, diagnostics);
+        if kind == busbar_contract::abi::mechanism::KindCode::Hook {
             return;
         }
-        fold_metrics(grants, plugin, metrics);
+        fold_metrics(grants, sink, metrics);
     }
 }
 
-fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
+fn fold_metrics(grants: &dyn Grants, sink: &dyn ObservationSink, raw: &[serde_json::Value]) {
     if raw.is_empty() {
         return;
     }
 
     for mut m in busbar_contract::hook_wire::reply::parse_status_metrics(raw) {
-        let granted = grants.first_party_series(plugin, &m.name, &m.kind);
+        let granted = grants.first_party_series(&m.name, &m.kind);
         if !granted && !admits_metric_name(&m.name) {
             continue;
         }
@@ -173,73 +214,40 @@ fn fold_metrics(grants: &dyn Grants, plugin: &str, raw: &[serde_json::Value]) {
         }
 
         if let Err(refusal) = admit_metric(
-            plugin,
+            grants.owner(),
             &m.name,
             &m.kind,
             fingerprint_pairs(m.labels.as_ref()),
         ) {
             if matches!(refusal, MetricRefusal::Cardinality) {
-                warn_cardinality_once(plugin, &m.name);
+                warn_cardinality_once(grants.owner(), sink, &m.name);
             }
             continue;
         }
-        let labels = labels_for((!granted).then_some(plugin), &m);
-        match m.kind.as_str() {
-            "counter" => {
-                if m.value < 0.0 {
-                    continue;
-                }
-
-                metrics::counter!(m.name.clone(), labels).increment(m.value as u64);
-            }
-            "gauge" => metrics::gauge!(m.name.clone(), labels).set(m.value),
-            "histogram" => metrics::histogram!(m.name.clone(), labels).record(m.value),
-
-            _ => {}
+        if m.kind == "counter" && m.value < 0.0 {
+            continue;
         }
+        sink.metric(&m, granted);
     }
 }
 
-static WARNED: std::sync::RwLock<Option<std::collections::HashSet<String>>> =
+static WARNED: std::sync::RwLock<Option<std::collections::HashSet<ObservationOwner>>> =
     std::sync::RwLock::new(None);
 
-fn warn_cardinality_once(plugin: &str, series: &str) {
+fn warn_cardinality_once(owner: &ObservationOwner, sink: &dyn ObservationSink, series: &str) {
     let mut guard = WARNED.write().unwrap_or_else(|e| e.into_inner());
     let warned = guard.get_or_insert_with(std::collections::HashSet::new);
-    if !warned.insert(plugin.to_string()) {
+    if !warned.insert(owner.clone()) {
         return;
     }
-    tracing::warn!(
-        plugin = %plugin,
-        series = %series,
-        max_series = MAX_SERIES_PER_PLUGIN,
-        max_label_sets = MAX_LABEL_SETS_PER_SERIES,
-        "plugin exceeded its metric cardinality budget; further new series or label sets from it \
-         are refused (established ones keep reporting)"
-    );
-}
-
-fn labels_for(
-    plugin: Option<&str>,
-    m: &busbar_contract::hook_wire::reply::HookMetric,
-) -> Vec<metrics::Label> {
-    let provenance = plugin.map(|p| metrics::Label::new(PLUGIN_LABEL, p.to_string()));
-    let mut labels: Vec<metrics::Label> = provenance.into_iter().collect();
-    if let Some(own) = &m.labels {
-        for (k, v) in own {
-            if k == PLUGIN_LABEL {
-                continue;
-            }
-            labels.push(metrics::Label::new(k.clone(), v.clone()));
-        }
-    }
-    labels
+    drop(guard);
+    sink.cardinality(series, MAX_SERIES_PER_PLUGIN, MAX_LABEL_SETS_PER_SERIES);
 }
 
 fn fold_diagnostics(
     grants: &dyn Grants,
+    sink: &dyn ObservationSink,
     catalogue: crate::diagnostics::Catalogue,
-    plugin: &str,
     raw: &[serde_json::Value],
 ) {
     if raw.is_empty() {
@@ -257,13 +265,13 @@ fn fold_diagnostics(
 
         let level = clamp_level(d.level, diag.severity);
 
-        if grants.first_party(plugin) {
+        if grants.first_party() {
             let fields: Vec<(String, String)> = d
                 .ordered_fields()
                 .into_iter()
                 .take(MAX_DIAG_FIELDS)
                 .collect();
-            crate::diagnostics::emit(diag, tracing_level(level), &d.message, &fields);
+            sink.diagnostic(diag, tracing_level(level), &d.message, &fields, true);
             continue;
         }
         let message =
@@ -274,29 +282,13 @@ fn fold_diagnostics(
             .take(MAX_DIAG_FIELDS)
             .filter(|(k, _)| busbar_contract::hook_wire::reply::valid_metric_name(k))
             .map(|(k, v)| {
-                format!(
-                    "{k}={}",
-                    busbar_contract::hook_wire::reply::sanitize_cap(v, MAX_DIAG_FIELD_CHARS)
+                (
+                    k.clone(),
+                    busbar_contract::hook_wire::reply::sanitize_cap(v, MAX_DIAG_FIELD_CHARS),
                 )
             })
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let banner = diag.banner();
-        match level {
-            busbar_contract::abi::mechanism::observe::DiagLevel::Error => {
-                tracing::error!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
-            }
-            busbar_contract::abi::mechanism::observe::DiagLevel::Warn => {
-                tracing::warn!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
-            }
-            busbar_contract::abi::mechanism::observe::DiagLevel::Info => {
-                tracing::info!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
-            }
-            busbar_contract::abi::mechanism::observe::DiagLevel::Debug => {
-                tracing::debug!(diag = %banner, plugin = %plugin, fields = %fields, "{message}")
-            }
-        }
+            .collect::<Vec<_>>();
+        sink.diagnostic(diag, tracing_level(level), &message, &fields, false);
     }
 }
 

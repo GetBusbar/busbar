@@ -23,6 +23,7 @@ const BODY: [SettingRow; 1] = [SettingRow {
 pub struct Probe;
 
 impl Life for Probe {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
@@ -42,6 +43,7 @@ impl Life for Probe {
 struct Flush;
 
 impl SafeSlot for Flush {
+    type Kind = FixtureKind;
     type In = ConnIn;
     type Out = OutHead;
     type State = Held<Probe>;
@@ -266,3 +268,7 @@ fn the_declared_body_bound_is_the_hosts() {
         crate::transport::DEFAULT_REQUEST_BODY_MAX_BYTES.to_string()
     );
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::TransportKind;

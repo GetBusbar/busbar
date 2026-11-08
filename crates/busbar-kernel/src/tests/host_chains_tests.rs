@@ -115,11 +115,7 @@ const EV: RecordSchemaId = RecordSchemaId::new("ev");
 const INST: &str = "inst";
 
 fn me() -> Caller {
-    Caller {
-        instance: Arc::from(INST),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
+    Caller::for_test(Arc::from(INST), KindCode::Plane)
 }
 
 async fn services_over(store: &Arc<CoreStore>, framing: u32, flags: u32) -> KernelServices {
@@ -508,10 +504,7 @@ async fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained
     .await
     .unwrap();
     append(&s, b"ref", b"a").unwrap();
-    let other = Caller {
-        instance: Arc::from("other"),
-        ..me()
-    };
+    let other = Caller::for_test(Arc::from("other"), (me()).kind());
     let got: Answered = Arc::default();
     let into = Arc::clone(&got);
     s.record_write(

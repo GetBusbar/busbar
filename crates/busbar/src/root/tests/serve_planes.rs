@@ -144,7 +144,10 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
         post() as Arc<dyn EndPost>,
     ));
     let money = || native_money.clone();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let instance = "serve-compose-configured";
     let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);
@@ -194,7 +197,10 @@ async fn a_configured_door_plane_is_opened_driven_and_its_admin_routes_published
 async fn a_door_plane_whose_section_is_absent_stays_unopened() {
     let native_money = money().await;
     let money = || native_money.clone();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let instance = "serve-compose-unconfigured";
     let plane = bound(instance, &dispatcher);
     let doors = vec![(instance.to_string(), plane)];
@@ -219,7 +225,10 @@ async fn a_door_plane_whose_section_is_absent_stays_unopened() {
 async fn no_door_plane_composes_nothing_and_needs_no_services() {
     let native_money = money().await;
     let money = || native_money.clone();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let served = compose_planes(
         &[],
         &dispatcher,
@@ -317,7 +326,10 @@ test_plane_owned:
     for key in ["test_plane", "test_plane_owned"] {
         sections.insert(key, doc.get(key).cloned().expect("written"));
     }
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let instance = "serve-compose-plane-bound";
     let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);
@@ -411,7 +423,10 @@ test_plane_owned:
 #[test]
 fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     use crate::root::door_steps::{dialect_facts, ProviderRoute, StyleParams};
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let plane = bound("serve-open-dialect-facts", &dispatcher);
 
     let _late = composed_services();
@@ -564,7 +579,10 @@ async fn a_pools_refresh_whose_snapshot_the_host_refuses_is_retired() {
     .expect("yaml");
     let mut sections = BTreeMap::new();
     sections.insert("test_plane", section);
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let instance = "serve-pools-refresh-refused";
     let _one = PUBLISHING.lock().await;
     let plane = bound(instance, &dispatcher);

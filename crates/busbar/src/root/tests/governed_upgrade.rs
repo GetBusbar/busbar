@@ -148,7 +148,10 @@ async fn exercise(case: Case) {
     let g = governed("governed-upgrade-witness", true).await;
     let plane = Arc::clone(&g.served.planes[0].live.plugin);
     assert_eq!(handler_pieces(&plane), 0);
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let host = Arc::new(AdmissionHost {
         actual: crate::root::inbound::LoaderSide(Arc::clone(crate::root::inbound::host())),
         case,

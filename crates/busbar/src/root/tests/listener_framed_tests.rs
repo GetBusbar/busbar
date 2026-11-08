@@ -913,10 +913,13 @@ async fn reset_before_any_head_releases_the_old_app_but_body_end_keeps_its_loan(
     use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
 
     let _publishing = crate::root::PUBLISHING.lock().await;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     assert!(inbound::install(&dispatcher));
     let plugin = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let door: Arc<dyn FramerDoor> =
@@ -1314,13 +1317,16 @@ fn actual_transport_on(
 
 fn actual_transport(door: busbar_contract::abi::mechanism::door::DoorFn) -> Arc<dyn FramerDoor> {
     use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     assert!(crate::root::inbound::install(&dispatcher));
     actual_transport_on(door, dispatcher)
 }
 
 fn actual_http_framer() -> DataFramer {
-    let door = actual_transport(busbar_transport_http::door::door);
+    let door = actual_transport(busbar_transport_http::door);
     data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| Arc::clone(&door))
     }))
@@ -1523,17 +1529,17 @@ async fn actual_session_framer() -> (
 ) {
     use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
     let publishing = anonymous_policy_with_upgrade(Some("ws")).await;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     assert!(crate::root::inbound::install(&dispatcher));
     let http = ObservedDoor::new(actual_transport_on(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         dispatcher.clone(),
     ));
     #[cfg(feature = "transport-ws")]
-    let ws = ObservedDoor::new(actual_transport_on(
-        busbar_transport_ws::door::door,
-        dispatcher,
-    ));
+    let ws = ObservedDoor::new(actual_transport_on(busbar_transport_ws::door, dispatcher));
     #[cfg(not(feature = "transport-ws"))]
     let ws = {
         use crate::root::loader::dispatch::{
@@ -1637,7 +1643,7 @@ async fn answer(s: &mut tokio::net::TcpStream) -> String {
 #[tokio::test]
 async fn the_data_listener_is_served_through_its_framers_accept_side() {
     let _publishing = anonymous_policy().await;
-    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door));
     let door: Arc<dyn FramerDoor> = observed.clone();
     let framer = data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| door.clone())
@@ -1832,7 +1838,7 @@ async fn a_silent_connection_is_closed_at_the_first_byte_bound() {
 #[tokio::test]
 async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
     let _publishing = anonymous_policy().await;
-    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door));
     let door: Arc<dyn FramerDoor> = observed.clone();
     let framer = data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| door.clone())
@@ -1906,7 +1912,7 @@ async fn a_parked_response_head_keeps_its_body_until_the_head_resumes() {
 #[tokio::test]
 async fn a_final_body_emit_remains_alive_through_graceful_drain() {
     let _publishing = anonymous_policy().await;
-    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door));
     let door: Arc<dyn FramerDoor> = observed.clone();
     let framer = data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| door.clone())
@@ -2005,7 +2011,7 @@ async fn a_final_body_emit_remains_alive_through_graceful_drain() {
 #[tokio::test]
 async fn a_parked_stream_does_not_hold_an_independent_stream_behind_its_body() {
     let _publishing = anonymous_policy().await;
-    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+    let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door));
     let door: Arc<dyn FramerDoor> = observed.clone();
     let framer = data_framer(Arc::new(move |scheme| {
         (scheme == DATA_SCHEME).then(|| door.clone())
@@ -3449,7 +3455,7 @@ async fn real_oidc_pending_ingest(mixed_keys: bool) {
             "/first",
             axum::routing::get(move || async move { first_body }),
         );
-        let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door::door));
+        let observed = ObservedDoor::new(actual_transport(busbar_transport_http::door));
         let door: Arc<dyn FramerDoor> = observed.clone();
         let framer = data_framer(Arc::new(move |scheme| {
             (scheme == DATA_SCHEME).then(|| door.clone())

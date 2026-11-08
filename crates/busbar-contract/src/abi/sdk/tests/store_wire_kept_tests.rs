@@ -80,7 +80,7 @@ mod replay_handles {
     use crate::abi::mechanism::call::RawOutcome;
     use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
     use crate::abi::mechanism::ticket::{HostCtx, HostTables};
-    use crate::abi::sdk::conn::{ConnFailure, Host};
+    use crate::abi::sdk::conn::ConnFailure;
     use crate::abi::sdk::door::abi_str;
     use crate::abi::sdk::store::op::Parked;
     use crate::abi::sdk::store::wire::{drive_kept, Body};
@@ -764,7 +764,7 @@ mod waiting {
     use crate::abi::host::service::{ClockNowIn, HostSlots, ServiceOut};
     use crate::abi::mechanism::call::{Outcome, RawOutcome};
     use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
-    use crate::abi::sdk::conn::{ConnFailure, Host};
+    use crate::abi::sdk::conn::ConnFailure;
     use crate::abi::sdk::store::op::Parked;
     use crate::abi::sdk::store::wire::drive_kept;
 
@@ -1019,3 +1019,7 @@ mod waiting {
         assert!(wakes().is_empty());
     }
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::StoreKind;

@@ -3,6 +3,9 @@
 
 //! THE HOOK KIND'S SDK: a hook plugin over the hook kind's door (`abi::hook`), written against
 
+type Op<'a> = KindGenericOp<'a, crate::plugin::markers::HookKind>;
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::HookKind>;
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -27,9 +30,9 @@ use crate::abi::hook::{
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::exchange::{Context, Exchange, Op, Parks};
+use crate::abi::sdk::exchange::{Context, Exchange, Op as KindGenericOp, Parks};
 use crate::abi::sdk::life::{settings_object, Held, Life, Refreshed, Refusal};
-use crate::abi::sdk::{Instance, Lent, LentList, Out, SafeSlot};
+use crate::abi::sdk::{Instance as KindGenericInstance, Lent, LentList, Out, SafeSlot};
 use crate::hook_wire::{HookStageProjection, OP_NOTIFY};
 use crate::hooks::{
     BudgetBucketState, CallerIdentity, Candidate, PromptProjection, RoutingContext, RoutingRequest,
@@ -997,6 +1000,7 @@ fn opened<P: HookOpen>(
 }
 
 impl<P: HookOpen> Life for HookLife<P> {
+    type Kind = crate::plugin::markers::HookKind;
     /// A hook op pends only on its exchange; a cancel aborts it (the SDK drops what it parked).
     const CANCEL: u32 = cancel::ABORTED;
 
@@ -1039,6 +1043,7 @@ macro_rules! hook_op {
         #[derive(Debug)]
         pub struct $name<P>(PhantomData<P>);
         impl<P: HookOpen> SafeSlot for $name<P> {
+    type Kind = crate::plugin::markers::HookKind;
             type In = $in;
             type Out = $out;
             type State = Held<HookLife<P>>;

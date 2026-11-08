@@ -66,13 +66,19 @@ fn dispatcher() -> Arc<Dispatcher> {
     }
     drop(gate);
     static ONE: OnceLock<Arc<Dispatcher>> = OnceLock::new();
-    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
-        .clone()
+    ONE.get_or_init(|| {
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ))
+    })
+    .clone()
 }
 
 pub struct Closing;
 
 impl Life for Closing {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     const CANCEL: u32 = cancel::ABORTED;
 
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -83,7 +89,12 @@ impl Life for Closing {
         Ok(Refreshed::default())
     }
 
-    fn close(&self, _: Option<&busbar_contract::abi::sdk::conn::Host>) {
+    fn close(
+        &self,
+        _: Option<
+            &busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::SecretKind>,
+        >,
+    ) {
         let mut gate = GATE.0.lock().unwrap();
         gate.closes += 1;
         GATE.1.notify_all();
@@ -96,11 +107,16 @@ impl Life for Closing {
 pub struct Resolve;
 
 impl SafeSlot for Resolve {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Closing>;
 
-    fn call(_: Instance<'_, Self::State>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+    fn call(
+        _: Instance<'_, Self::State, Self::Kind>,
+        _: Lent<'_, Self::In>,
+        _: Out<'_, Self::Out>,
+    ) -> Outcome {
         Outcome::Ready
     }
 }

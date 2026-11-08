@@ -27,14 +27,19 @@ struct State {
     release_scopes: Mutex<Vec<Option<Identity>>>,
     probe: Mutex<Option<Probe>>,
     close_probe: Mutex<Option<CloseProbe>>,
-    services: Option<busbar_contract::abi::sdk::services::Services>,
+    services: Option<
+        busbar_contract::abi::sdk::services::Services<
+            busbar_contract::plugin::markers::TransportKind,
+        >,
+    >,
     extensions: Mutex<std::collections::HashMap<u64, Box<[u8]>>>,
     entered: AtomicBool,
     unblock: AtomicBool,
 }
 struct LeaseKind;
+impl crate::dispatch::kind_seal::Validated for LeaseKind {}
 impl Kind for LeaseKind {
-    const CODE: KindCode = KindCode::Export;
+    const CODE: KindCode = KindCode::Transport;
     type Ops = OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
     fn short(a: &super::super::Answer) -> bool {
@@ -51,7 +56,7 @@ crate::dispatch_tests::c_abi! {
         let (input, out) = unsafe { (&*input.cast::<OpenIn>(), &mut *out.cast::<OpenOut>()) };
         // SAFETY: the loader lends its complete host tables for OPEN; the copied service
         // callbacks validate their context and remain callable until this instance closes.
-        let services = unsafe { input.host.as_ref().and_then(|host| busbar_contract::abi::sdk::services::Services::from_raw(host)) };
+        let services = unsafe { input.host.as_ref().and_then(|host| busbar_contract::abi::sdk::services::Services::test_from_raw(host)) };
         out.instance = Box::into_raw(Box::new(State { services, ..State::default() })).cast();
         out.head.outcome = RawOutcome::of(Outcome::Ready);
         RawOutcome::of(Outcome::Ready)
@@ -127,7 +132,15 @@ crate::dispatch_tests::c_abi! {
     fn door() -> &'static Door {
         static ADDRESS: OnceLock<usize> = OnceLock::new();
         let address = *ADDRESS.get_or_init(|| {
-            let real = crate::dispatch_test_plugin::door().parts();
+            let mut real = crate::dispatch_test_plugin::door().parts();
+            // The internal fixture uses only common lifecycle slots of this kind.
+            let mut statement = unsafe { *real.statement };
+            statement.kind = KindCode::Transport as u32;
+            statement.kind_abi = KindCode::Transport.abi_version();
+            real.statement = Box::leak(Box::new(statement));
+            real.kind = KindCode::Transport as u32;
+            real.kind_abi = KindCode::Transport.abi_version();
+            real.layout = KindCode::Transport.layout_fingerprint();
             let mut ops = unsafe { *real.ops };
             ops.open = Some(open); ops.close = Some(close); ops.tick = Some(tick);
             ops.release = Some(release); ops.cancel = Some(cancel);
@@ -140,7 +153,10 @@ crate::dispatch_tests::c_abi! {
 }
 
 fn rig() -> (Dispatcher, Plugin<LeaseKind>, *const State) {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = load_linked::<LeaseKind>(
         &LinkedRow::of(door).unwrap(),
         Bind {

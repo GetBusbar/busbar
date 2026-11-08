@@ -318,6 +318,7 @@ fn establish_as(
     member: Option<&'static str>,
     size: usize,
 ) -> ServiceOut {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     let i = EstablishIn {
         head: ServiceHead {
             size: size as u32,
@@ -689,6 +690,7 @@ const OWNED_TRUSTING: [Need; 1] = [Need {
 }];
 
 struct PlaneShaped;
+impl crate::dispatch::kind_seal::Validated for PlaneShaped {}
 impl crate::dispatch::Kind for PlaneShaped {
     const CODE: busbar_contract::abi::mechanism::KindCode =
         busbar_contract::abi::mechanism::KindCode::Plane;
@@ -1377,6 +1379,7 @@ fn head_of<I>(op: u32, seq: u32) -> ServiceHead {
 }
 
 fn call<I>(p: &Plugin<TestKind>, f: Option<ServiceFn>, input: &I) -> ServiceOut {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     // SAFETY: an all-zero `ServiceOut` is a valid value the slot overwrites.
     let mut out: ServiceOut = unsafe { std::mem::zeroed() };
     out.size = std::mem::size_of::<ServiceOut>() as u32;
@@ -1775,6 +1778,7 @@ fn establish_within_reaches_the_connect_raw_and_framed() {
 }
 
 fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     use busbar_contract::abi::host::service::{op, NeedAdmitIn};
     let i = NeedAdmitIn {
         head: ServiceHead {
@@ -1801,6 +1805,7 @@ fn admit(p: &Plugin<TestKind>, need: u32) -> Outcome {
 
 #[test]
 fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     let table = Arc::new(Recording::default());
     let p = bound(Box::leak(Box::new(NEEDS)), &table);
     assert_eq!(admit(&p, 0), Outcome::Refused, "not yet declared");
@@ -1817,11 +1822,13 @@ fn need_admit_answers_the_tables_verdict_on_the_declared_need() {
     assert_eq!(admit(&q, 0), Outcome::Refused, "the table refused it");
 }
 
-fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
+fn sdk_host(
+    p: &Plugin<TestKind>,
+) -> busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::TransportKind> {
     use busbar_contract::abi::mechanism::ticket::HostTables;
     /* SAFETY: these harness tables and callbacks are live for the snapshot. */
     unsafe {
-        busbar_contract::abi::sdk::conn::Host::from_raw(&HostTables {
+        busbar_contract::abi::sdk::conn::Host::test_from_raw(&HostTables {
             size: std::mem::size_of::<HostTables>() as u32,
             _reserved: 0,
             ctx: p.inner.ctx(),
@@ -1835,6 +1842,7 @@ fn sdk_host(p: &Plugin<TestKind>) -> busbar_contract::abi::sdk::conn::Host {
 
 #[test]
 fn an_sdk_upgrade_reaches_the_table_and_follows_the_replay_rule() {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     use std::task::Poll;
     let table = Arc::new(Scripted {
         upgrade_pends: Mutex::new(1),
@@ -1842,7 +1850,9 @@ fn an_sdk_upgrade_reaches_the_table_and_follows_the_replay_rule() {
     });
     let p = bound_over(&table);
     let host = sdk_host(&p);
-    let entry = |host: &busbar_contract::abi::sdk::conn::Host| {
+    let entry = |host: &busbar_contract::abi::sdk::conn::Host<
+        busbar_contract::plugin::markers::TransportKind,
+    >| {
         let mut c = host.connector(T);
         let Poll::Ready(Ok(stream)) = c.establish(0, Some("127.0.0.1:9"), "") else {
             panic!("the raw stream is established");
@@ -2256,7 +2266,10 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
         ..Scripted::default()
     });
 
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, dispatcher.adopter());
     whole_request(&p, 0);
     assert_eq!(
@@ -2299,7 +2312,10 @@ fn an_auth_door_query_field_is_never_opened_as_a_header() {
         }),
         ..Scripted::default()
     });
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, dispatcher.adopter());
     whole_request(&p, 0);
     let opened = table.opened.lock().unwrap();
@@ -2345,7 +2361,10 @@ fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock(
         .unwrap()
         .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
 
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, dispatcher.adopter());
     let stream = whole_request(&p, 0);
     assert!(
@@ -2375,7 +2394,10 @@ fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock(
 #[test]
 fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
     let table = Arc::new(Scripted::default());
-    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let d = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let latch: &'static crate::dispatch::handle::Latch =
         Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
     d.judge_against(latch);
@@ -2647,8 +2669,10 @@ fn a_members_auth_failure_and_refusal_keep_their_causes() {
                 auth: Some(Arc::new(AnswerAuth { failed, now })),
                 ..Scripted::default()
             });
-            let dispatcher =
-                crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+            let dispatcher = crate::dispatch::Dispatcher::new(
+                crate::dispatch::DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            );
             let p = bound_over_by(&table, dispatcher.adopter());
             let stream = whole_request(&p, 0);
             let mut buf = [0; 16];
@@ -2930,7 +2954,10 @@ fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes
 fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
     let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
 
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, dispatcher.adopter());
     let waived = RequestPiece {
         fields: span(10, WAIVED_HEAD.len() - 10),
@@ -3034,6 +3061,7 @@ fn whole_request_on(p: &Plugin<TestKind>, seq: u32, stream: u64) {
 }
 
 struct AuthShaped;
+impl crate::dispatch::kind_seal::Validated for AuthShaped {}
 impl crate::dispatch::Kind for AuthShaped {
     const CODE: busbar_contract::abi::mechanism::KindCode =
         busbar_contract::abi::mechanism::KindCode::Auth;
@@ -3122,7 +3150,10 @@ fn red_an_instances_last_drop_on_a_worker_closes_with_no_worker_lock_held() {
         framed: true,
         ..Scripted::default()
     });
-    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let d = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, d.adopter());
     assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
     let id = p.instance();
@@ -3174,7 +3205,10 @@ fn red_a_dial_left_in_flight_is_closed_with_no_worker_lock_held() {
         landing: true,
         ..Scripted::default()
     });
-    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let d = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, d.adopter());
     assert_eq!(open_with(&p, b"{}"), Outcome::Ready);
     let driver = d.driver(&p, 0).expect("a driver ticket");
@@ -3627,8 +3661,10 @@ fn a_members_protected_fields_never_open_on_a_table_without_secure_custody() {
             auth: Some(Arc::new(ProtectedAuth(now))),
             ..Scripted::default()
         });
-        let dispatcher =
-            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let dispatcher = crate::dispatch::Dispatcher::new(
+            crate::dispatch::DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let p = bound_over_by(&table, dispatcher.adopter());
         let stream = whole_request(&p, 0);
         let mut buf = [0; 64];
@@ -3677,7 +3713,10 @@ mod refresh_driver_generation {
     fn pending_driver_keeps_authority_and_autonomous_next_cycle_uses_refreshed_generation() {
         OBSERVED.lock().unwrap().clear();
         FINISH.store(false, Ordering::SeqCst);
-        let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let d = crate::dispatch::Dispatcher::new(
+            crate::dispatch::DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let table = Arc::new(Recording::default());
         let conns: Arc<dyn DeclaredConns> = table.clone();
         let real = unsafe { *plug::busbar_plugin_door() };
@@ -3800,8 +3839,10 @@ fn framed_opens_keep_the_serving_unit_through_sync_and_pending_auth() {
             auth: Some(auth.clone()),
             ..Scripted::default()
         });
-        let dispatcher =
-            crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+        let dispatcher = crate::dispatch::Dispatcher::new(
+            crate::dispatch::DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let p = bound_over_by(&table, dispatcher.adopter());
         for (index, unit) in [71, 93].into_iter().enumerate() {
             let seq = index as u32 * 10;
@@ -3956,6 +3997,7 @@ fn forgetting_a_pending_establish_reclaims_the_unpublished_connection() {
 /// never depend on the SDK's legacy missing-payload replay compatibility path.
 #[test]
 fn sdk_facts_replay_always_retains_the_observed_security_state() {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     use std::task::Poll;
     for secure in [false, true] {
         let table = Arc::new(Scripted::default());
@@ -3994,3 +4036,63 @@ fn sdk_facts_replay_always_retains_the_observed_security_state() {
 
 #[path = "conn_prepared_tests.rs"]
 mod conn_prepared_tests;
+
+#[test]
+fn cached_connector_cannot_create_work_while_retiring_or_under_another_ticket() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    assert_eq!(
+        open_with(&p, br#"{"upstream":"127.0.0.1:9"}"#),
+        Outcome::Ready
+    );
+    let ticket = Ticket {
+        slot: 2,
+        generation: 1,
+    };
+    let input = EstablishIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<EstablishIn>() as u32,
+            op: service::ESTABLISH,
+            handle: CompletionHandle {
+                ticket,
+                seq: 0,
+                _reserved: 0,
+            },
+        },
+        need: 0,
+        timeout_ms: 0,
+        target: abi_str("127.0.0.1:9"),
+        within: NONE,
+        member: NONE,
+    };
+    let invoke = || {
+        // SAFETY: the complete initialized frames and bound callback context remain live.
+        let mut out: ServiceOut = unsafe { std::mem::zeroed() };
+        out.size = std::mem::size_of::<ServiceOut>() as u32;
+        unsafe {
+            CONN_SLOTS.establish.unwrap()(
+                p.inner.ctx(),
+                std::ptr::from_ref(&input).cast(),
+                &mut out,
+            )
+        }
+        .outcome()
+    };
+    {
+        let _phase = crate::dispatch::access::enter(slot::RETIRE);
+        assert_eq!(invoke(), Outcome::Refused);
+    }
+    {
+        let _phase = crate::dispatch::access::enter(slot::TICK);
+        let _other = crate::dispatch::services::crossing(Ticket {
+            slot: 9,
+            generation: 1,
+        });
+        assert_eq!(invoke(), Outcome::Refused);
+    }
+    assert!(table.opened.lock().unwrap().is_empty());
+    let _phase = crate::dispatch::access::enter(slot::TICK);
+    let _own = crate::dispatch::services::crossing(ticket);
+    assert_eq!(invoke(), Outcome::Ready);
+    assert_eq!(table.opened.lock().unwrap().len(), 1);
+}

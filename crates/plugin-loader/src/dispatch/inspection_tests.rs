@@ -29,8 +29,9 @@ struct State {
     tick_continue: std::sync::atomic::AtomicBool,
 }
 struct InspectionKind;
+impl crate::dispatch::kind_seal::Validated for InspectionKind {}
 impl Kind for InspectionKind {
-    const CODE: KindCode = KindCode::Export;
+    const CODE: KindCode = KindCode::Plane;
     type Ops = OpsHead;
     const TIMEOUT: Outcome = Outcome::Failed;
     fn short(answer: &crate::dispatch::Answer) -> bool {
@@ -118,7 +119,15 @@ crate::dispatch_tests::c_abi! {
     fn door() -> &'static Door {
         static ADDRESS: OnceLock<usize> = OnceLock::new();
         let ptr = *ADDRESS.get_or_init(|| {
-            let real = crate::dispatch_test_plugin::door().parts();
+            let mut real = crate::dispatch_test_plugin::door().parts();
+            // The internal fixture uses only common lifecycle slots of this kind.
+            let mut statement = unsafe { *real.statement };
+            statement.kind = KindCode::Plane as u32;
+            statement.kind_abi = KindCode::Plane.abi_version();
+            real.statement = Box::leak(Box::new(statement));
+            real.kind = KindCode::Plane as u32;
+            real.kind_abi = KindCode::Plane.abi_version();
+            real.layout = KindCode::Plane.layout_fingerprint();
             // SAFETY: the original test door's table is an OpsHead, copied then restated with
             // matching fixture slot signatures. Every table and door allocation is static.
             let mut ops = unsafe { *real.ops };
@@ -135,7 +144,11 @@ crate::dispatch_tests::c_abi! {
 
 fn rig() -> (Dispatcher, Plugin<InspectionKind>, *const State) {
     let provider = Arc::new(InspectionOnlyHost);
-    let d = Dispatcher::with_services(DispatchConfig::default(), provider);
+    let d = Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider,
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow::of(door).expect("fixture door");
     let p = crate::dispatch::load_linked::<InspectionKind>(
         &row,
@@ -290,11 +303,10 @@ fn one_copied_request_commits_and_wakes_once_even_if_the_plugin_repeats_it() {
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake
         .caller
-        .set(Caller {
-            instance: Arc::from("actual-bound-instance"),
-            plugin: Arc::from("fixture"),
-            kind: KindCode::Plane
-        })
+        .set(Caller::for_test(
+            Arc::from("actual-bound-instance"),
+            KindCode::Plane
+        ))
         .is_ok());
     let mut input = in_head();
     input.ticket = Ticket {
@@ -432,11 +444,10 @@ fn input_route() -> (Arc<InspectionRoute>, &'static InstanceWake, InHead) {
     assert!(wake.route.set(Arc::downgrade(&dynamic)).is_ok());
     assert!(wake
         .caller
-        .set(super::super::services::Caller {
-            instance: Arc::from("inspection-secret"),
-            plugin: Arc::from("fixture"),
-            kind: KindCode::Plane
-        })
+        .set(super::super::services::Caller::for_test(
+            Arc::from("inspection-secret"),
+            KindCode::Plane
+        ))
         .is_ok());
     let mut input = in_head();
     input.ticket = Ticket {
@@ -700,6 +711,7 @@ fn plane_rig() -> (crate::dispatch::plane_calls::PlaneInstance, *const State) {
     let d = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::new(InspectionOnlyHost),
+        busbar_contract::services::test_caller_binding(),
     ));
     let row = LinkedRow::of(inspection_plane_door).unwrap();
     let p = crate::dispatch::load_linked::<Plane>(
@@ -1083,6 +1095,7 @@ impl busbar_contract::services::HostServices for InspectionOnlyHost {
     fn trust_decide(
         &self,
         _caller: &busbar_contract::services::Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _key: busbar_contract::services::TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,

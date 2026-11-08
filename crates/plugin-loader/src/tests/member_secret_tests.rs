@@ -28,6 +28,7 @@ fn env_reference(r: &SecretRef) -> Result<(), String> {
         || {
             std::sync::Arc::new(crate::dispatch::Dispatcher::new(
                 crate::dispatch::DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
             ))
         },
         || None,

@@ -8,7 +8,6 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
-use std::time::Instant;
 
 use busbar_contract::transport::TransportSettings;
 use busbar_core_connector::datagram::{Across, LegSink, Pairing};
@@ -70,22 +69,7 @@ impl FramerDoor for OpeningFramer {
 }
 
 fn offer() -> zeroize::Zeroizing<Vec<u8>> {
-    use busbar_transport_webrtc::framing::{Framing, Opening, Side};
-    let certificate = busbar_core_connector::dtls::SessionCert::mint().unwrap();
-    let mut peer = Framing::begin(
-        Side::Dial,
-        certificate.public_der(),
-        Some("127.0.0.1:40000".parse().unwrap()),
-        &Opening {
-            channels: vec!["events".into()],
-            audio: false,
-        },
-        Instant::now(),
-    )
-    .expect("the real WebRTC peer offers a data channel");
-    peer.next_piece()
-        .expect("the real peer's SDP offer")
-        .into_bytes()
+    crate::root::serve::serve_datagram::peer::offer_description()
 }
 
 fn assert_description(bytes: &[u8]) {
@@ -191,6 +175,7 @@ async fn deployment(instance: &'static str) -> Deployment {
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = load_linked::<Plane>(

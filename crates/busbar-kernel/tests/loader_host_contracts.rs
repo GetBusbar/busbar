@@ -64,11 +64,7 @@ fn keep(h: &Host, kind: u32, key: &[u8], value: &[u8]) {
         .expect("actual store accepts the write");
 }
 fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("plane"),
-        kind: KindCode::Plane,
-    }
+    Caller::for_test(Arc::from(instance), KindCode::Plane)
 }
 
 fn later() -> (Later, mpsc::Receiver<Stored>) {

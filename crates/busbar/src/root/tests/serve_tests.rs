@@ -173,7 +173,10 @@ fn render_metrics() -> String {
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
-    let dispatcher = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = std::sync::Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
         &path,
@@ -232,6 +235,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
                 ),
             )),
         ),
+        busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(
@@ -910,7 +914,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     )
     .expect("the connector builds");
 
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
 
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1260,7 +1267,10 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let refused = u16::try_from(refusal_status(ReasonCode::Unauthenticated)).expect("a status");
     assert_ne!(send(&bare, CLAIMED, None).await.status().as_u16(), refused);
 
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
 
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1398,7 +1408,10 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
         rotate.await;
     }
     let app = std::sync::Arc::new(app);
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
 
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -1959,7 +1972,10 @@ pub(super) mod session_door {
     pub(in crate::root::serve) fn name() -> Option<String> {
         let _one = PUBLISHING.blocking_lock();
         let instance = "session-door-name";
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        ));
         session_door(instance, &dispatcher, connector() as Arc<dyn DeclaredConns>)
             .map(|plane| plane.name().to_owned())
     }
@@ -6802,7 +6818,10 @@ async fn serve_configured(
         busbar_core_connector::spawn_env::linked_spawn_secret,
     )
     .expect("the connector builds");
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
 
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
@@ -12515,6 +12534,7 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         crate::root::loader::dispatch::kinds::plane::linked_probe(
             decisions_door,
             "decisions-listed",
+            busbar_kernel::host_services::caller_binding(),
         ),
     )
     .expect("the linked door binds");

@@ -48,6 +48,7 @@ impl HostServices for Judges {
     fn trust_decide(
         &self,
         _: &Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _: busbar_contract::services::TrustKeyRef<'_>,
         _: Option<&str>,
         _: bool,
@@ -159,11 +160,10 @@ fn the_installed_services_answer_and_a_second_install_is_refused() {
 
 fn every_service(late: &LateServices) -> Vec<Stored> {
     let s = late.served();
-    let caller = Caller {
-        instance: Arc::from("the-instance"),
-        plugin: Arc::from("the-plugin"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test(
+        Arc::from("the-instance"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
     let now = |ran| match ran {
         Ran::Now(stored) => stored,
         Ran::Later => panic!("the late services never pend"),
@@ -547,11 +547,10 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
         ..InstanceFacts::default()
     };
     k.admit("owner", facts).await.expect("admitted");
-    let caller = Caller {
-        instance: Arc::from("owner"),
-        plugin: Arc::from("the-plugin"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test(
+        Arc::from("owner"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
     let sight = |hash| {
         let (tx, rx) = std::sync::mpsc::channel();
         match late.served().trust_sight(

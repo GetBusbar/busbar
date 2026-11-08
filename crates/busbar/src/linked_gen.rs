@@ -487,7 +487,7 @@ pub(crate) fn linked_source(
             )
             .unwrap_or_else(|| name.clone());
 
-            let door = format!("{entry}::door::door");
+            let door = format!("{entry}::door");
             out.push_str(&format!("({name:?}, {canonical:?}, {door}), "));
         }
     }

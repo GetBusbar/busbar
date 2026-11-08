@@ -151,12 +151,15 @@ mod judge {
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        budgets: Budgets::default(),
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }))
+    Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 2,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ))
 }
 
 fn rows() -> AuthRows {
@@ -915,7 +918,9 @@ mod outbound {
             style: &str,
             credential: Option<&[u8]>,
             _: Option<&[u8]>,
-            _: Option<&busbar_contract::abi::sdk::conn::Host>,
+            _: Option<
+                &busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::AuthKind>,
+            >,
             _: &mut Diags,
         ) -> Result<u64, OpenRefusal> {
             if style != "bearer-test" {
@@ -931,7 +936,7 @@ mod outbound {
             &self,
             r: &FieldsView<'_>,
             out: &mut FieldsWriter<'_>,
-            _: &Op<'_>,
+            _: &Op<'_, busbar_contract::plugin::markers::AuthKind>,
         ) -> Poll<FieldsAnswer> {
             let bindings = self.bindings.lock().unwrap();
             let Some(credential) = bindings.get(&r.handle()) else {
@@ -1209,6 +1214,7 @@ mod ticketed {
         fn trust_decide(
             &self,
             caller: &Caller,
+            _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
             key: TrustKeyRef<'_>,
             expected: Option<&str>,
             approve: bool,
@@ -1385,7 +1391,11 @@ mod ticketed {
             ..DispatchConfig::default()
         };
         let provider: Arc<dyn HostServices> = double;
-        let d = Arc::new(Dispatcher::with_services(config, provider));
+        let d = Arc::new(Dispatcher::with_services(
+            config,
+            provider,
+            busbar_contract::services::test_caller_binding(),
+        ));
         AuthRows::new(Arc::new(registry), d)
             .open("proves", "proves", &serde_json::json!({}))
             .expect("the linked door opens")
@@ -1464,6 +1474,7 @@ mod ticketed {
         let d = Arc::new(Dispatcher::with_services(
             DispatchConfig::default(),
             provider,
+            busbar_contract::services::test_caller_binding(),
         ));
         let a = AuthRows::new(Arc::new(registry), d)
             .open("judge", "judge-sync", &serde_json::json!("ok"))
@@ -1651,11 +1662,12 @@ mod reasons {
 
     pub(super) struct RejectSaying;
     impl SafeSlot for RejectSaying {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         type In = VerifyIn;
         type Out = IdentifyOut;
         type State = Held<Verifier<Says>>;
         fn call(
-            _: Instance<'_, Held<Verifier<Says>>>,
+            _: Instance<'_, Held<Verifier<Says>>, Self::Kind>,
             _: Lent<'_, VerifyIn>,
             mut out: Out<'_, IdentifyOut>,
         ) -> Outcome {
@@ -1668,11 +1680,12 @@ mod reasons {
 
     pub(super) struct OutageSaying;
     impl SafeSlot for OutageSaying {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         type In = CompleteLoginIn;
         type Out = IdentifyOut;
         type State = Held<Verifier<Says>>;
         fn call(
-            _: Instance<'_, Held<Verifier<Says>>>,
+            _: Instance<'_, Held<Verifier<Says>>, Self::Kind>,
             input: Lent<'_, CompleteLoginIn>,
             mut out: Out<'_, IdentifyOut>,
         ) -> Outcome {
