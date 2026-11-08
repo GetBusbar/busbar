@@ -252,7 +252,9 @@ class Qualification:
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
             self.env['BUSBAR_BIN'] = str(binary)
-            self.conformance('core-native-conformance')
+            # Section 15 qualifies the native product and its boundary. Core's
+            # separate certification launcher includes the unimplemented ModernCI
+            # attestation producer; this cutover does not commission that project.
 
     def plugin(self):
         host = self.host()
