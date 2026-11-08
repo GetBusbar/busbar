@@ -10,7 +10,7 @@
       "repo": "GetBusbar/busbar-plane-a2a",
       "script": "testing/conformance/a2a.sh",
       "script_sha256": "a8bd0977de0eabcbe1c4a4222c9aa029374af39cdd59a90a28b0b58817b70c0a",
-      "source_commit": "5f0b5415058cccf531afd2c32bdb29f3d255662d",
+      "source_commit": "72d9fe98d9db2f478d5fc4f364f3c6fbb6726c03",
       "stage": "qa"
     },
     "evidence-audit-trail": {
