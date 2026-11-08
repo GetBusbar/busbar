@@ -160,11 +160,233 @@ async fn admitted(startup: &mut Startup) -> Arc<CoreStore> {
     panic!("startup did not finish bounded phases")
 }
 
+fn initial_binding(instance: &str, digest: u8) -> first_start::Binding {
+    first_start::Binding {
+        instance: instance.into(),
+        digest: [digest; 32],
+    }
+}
+
+fn delayed_initial_write(store: &CoreStore) -> PreparedCandidate {
+    PreparedCandidate::new(Candidate {
+        id: store.next_id().unwrap(),
+        codec: CANDIDATE_VERSION,
+        predicates: Vec::new(),
+        mutations: vec![Mutation::Put {
+            address: Address {
+                namespace: [9; 16],
+                key: b"initial-state".to_vec(),
+            },
+            value: Secret::new(b"incurred-state".to_vec()),
+        }],
+        time: None,
+        result: Secret::new(Vec::new()),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes() {
+    let backend = Arc::new(Backend::default());
+    let first = admitted(&mut startup(&backend, true)).await;
+    let prior = first.first_start().unwrap();
+    let delayed = delayed_initial_write(&first);
+    // A crash before the plan exists has issued no plane initialization authority.
+    assert!(!prior.permits("one").await.unwrap());
+    let second = admitted(&mut startup(&backend, false)).await;
+    let current = second.first_start().unwrap();
+    assert_eq!(
+        current
+            .freeze(vec![initial_binding("one", 2)])
+            .await
+            .unwrap(),
+        Progress::Advanced
+    );
+    assert!(current.permits("one").await.unwrap());
+    assert!(!current.permits("unrelated").await.unwrap());
+    assert_eq!(
+        backend.commit(delayed).await.unwrap(),
+        Decision::ExpiredUnknown
+    );
+    assert_eq!(
+        prior.freeze(vec![initial_binding("one", 1)]).await,
+        Err(Error::Authority)
+    );
+    assert!(!backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .keys()
+        .any(|a| a.namespace == [9; 16]));
+}
+
+#[tokio::test]
+async fn first_start_frozen_plan_and_native_initialization_survive_crash_exactly() {
+    let backend = Arc::new(Backend::default());
+    let first = admitted(&mut startup(&backend, true)).await;
+    let prior = first.first_start().unwrap();
+    let plan = vec![initial_binding("one", 1), initial_binding("two", 2)];
+    assert_eq!(
+        prior.freeze(plan.clone()).await.unwrap(),
+        Progress::Advanced
+    );
+    // Native initialization effects and quota/barrier state remain intact through
+    // takeover. Successor authority is never permission to reconstruct counters.
+    assert!(matches!(
+        backend.commit(delayed_initial_write(&first)).await.unwrap(),
+        Decision::Applied(_)
+    ));
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Pending);
+    let second = admitted(&mut startup(&backend, false)).await;
+    let current = second.first_start().unwrap();
+    assert_eq!(
+        current
+            .freeze(vec![initial_binding("one", 8), initial_binding("two", 2)])
+            .await,
+        Err(Error::Authority)
+    );
+    assert_eq!(
+        current.freeze(plan.clone()).await.unwrap(),
+        Progress::Advanced
+    );
+    assert!(
+        !current.permits("one").await.unwrap(),
+        "confirmed per-instance Done cannot regrant"
+    );
+    assert!(current.permits("two").await.unwrap());
+    // A late replay can correctly acknowledge old effects; only the final current
+    // owner CAS grants publication, so that acknowledgment cannot revive the owner.
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
+    assert_eq!(prior.complete("two").await, Err(Error::Authority));
+    assert_eq!(current.complete("one").await.unwrap(), Progress::Advanced);
+    assert_eq!(current.complete("two").await.unwrap(), Progress::Advanced);
+    assert_eq!(current.publish().await.unwrap(), Progress::Advanced);
+    assert!(!current.permits("two").await.unwrap());
+    let third = admitted(&mut startup(&backend, false)).await;
+    assert!(
+        third.first_start().is_none(),
+        "completed birth proof grants no new process authority"
+    );
+    let native = backend.0.lock().unwrap();
+    assert_eq!(
+        native.rows[&Address {
+            namespace: [9; 16],
+            key: b"initial-state".to_vec()
+        }]
+            .expose(&crate::seal::lend()),
+        b"incurred-state"
+    );
+}
+
+#[tokio::test]
+async fn first_start_unknown_plan_freeze_retains_exact_candidate_and_missing_proof_never_grants() {
+    let backend = Arc::new(Backend::default());
+    let first = admitted(&mut startup(&backend, true)).await;
+    let proof = first.first_start().unwrap();
+    let plan = vec![initial_binding("one", 1)];
+    backend.0.lock().unwrap().unknown_before = true;
+    assert_eq!(proof.freeze(plan.clone()).await.unwrap(), Progress::Pending);
+    let sent = *backend.0.lock().unwrap().sends.last().unwrap();
+    assert!(!proof.permits("one").await.unwrap());
+    assert_eq!(
+        proof.freeze(vec![initial_binding("one", 2)]).await,
+        Err(Error::Authority)
+    );
+    assert_eq!(proof.freeze(plan).await.unwrap(), Progress::Advanced);
+    assert_eq!(*backend.0.lock().unwrap().sends.last().unwrap(), sent);
+    assert!(proof.permits("one").await.unwrap());
+    // An older current-format namespace without the new native birth marker is
+    // retained data, even when all plugin business rows happen to be absent.
+    backend
+        .0
+        .lock()
+        .unwrap()
+        .rows
+        .remove(&first_start::address());
+    let retained = admitted(&mut startup(&backend, false)).await;
+    assert!(retained.first_start().is_none());
+}
+
+#[tokio::test]
+async fn first_start_late_applied_ready_cannot_publish_after_owner_takeover() {
+    let backend = Arc::new(Backend::default());
+    let first = admitted(&mut startup(&backend, true)).await;
+    let prior = first.first_start().unwrap();
+    let plan = vec![initial_binding("one", 1)];
+    prior.freeze(plan.clone()).await.unwrap();
+    backend.0.lock().unwrap().lose_reply = true;
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Pending);
+    let successor = admitted(&mut startup(&backend, false)).await;
+    let current = successor.first_start().unwrap();
+    current.freeze(plan).await.unwrap();
+    assert_eq!(prior.complete("one").await.unwrap(), Progress::Advanced);
+    assert_eq!(
+        prior.publish().await,
+        Err(Error::Authority),
+        "late Applied proves old effects, never current publication ownership"
+    );
+    assert_eq!(current.publish().await.unwrap(), Progress::Advanced);
+}
+
+#[tokio::test]
+async fn first_start_entitlement_is_exact_caller_scoped_and_ends_at_confirmed_ready() {
+    use crate::{
+        host_record_bootstrap::ENTITLEMENT,
+        host_services::{InstanceFacts, KernelServices},
+    };
+    use busbar_contract::{abi::mechanism::KindCode, services::Caller};
+    let backend = Arc::new(Backend::default());
+    let store = admitted(&mut startup(&backend, true)).await;
+    let proof = store.first_start().unwrap();
+    proof.freeze(vec![initial_binding("one", 1)]).await.unwrap();
+    let host = KernelServices::new();
+    assert!(host.attach_persistence(store));
+    host.admit("one", InstanceFacts::default()).await.unwrap();
+    let caller = Caller {
+        instance: Arc::from("one"),
+        plugin: Arc::from("protocol"),
+        kind: KindCode::Plane,
+    };
+    host.bind_native_record_bootstrap(&caller).await.unwrap();
+    assert!(host.entitled(&caller, None, ENTITLEMENT));
+    assert!(host.entitled(&caller.clone(), None, ENTITLEMENT));
+    let replacement = Caller {
+        instance: Arc::from("one"),
+        plugin: Arc::from("protocol"),
+        kind: KindCode::Plane,
+    };
+    assert!(!host.entitled(&replacement, None, ENTITLEMENT));
+    assert!(!host.entitled(&caller, None, "record-quota-bootstrap:forged"));
+    assert!(host.admit("one", InstanceFacts::default()).await.is_err());
+    proof.complete("one").await.unwrap();
+    host.revoke_native_record_bootstrap(&caller).unwrap();
+    assert!(!host.entitled(&caller, None, ENTITLEMENT));
+    host.bind_native_record_bootstrap(&caller).await.unwrap();
+    assert!(
+        !host.entitled(&caller, None, ENTITLEMENT),
+        "per-instance Done cannot regrant even before global publication"
+    );
+    proof.publish().await.unwrap();
+    host.admit("one", InstanceFacts::default()).await.unwrap();
+    host.bind_native_record_bootstrap(&replacement)
+        .await
+        .unwrap();
+    assert!(
+        !host.entitled(&replacement, None, ENTITLEMENT),
+        "reload never inherits initial authority"
+    );
+}
+
 #[tokio::test]
 async fn startup_reopen_uses_new_writer_and_retirement_is_durable() {
     let backend = Arc::new(Backend::default());
     let mut first = startup(&backend, true);
     let a = admitted(&mut first).await;
+    let proof = a.first_start().unwrap();
+    assert_eq!(proof.freeze(Vec::new()).await.unwrap(), Progress::Advanced);
+    assert_eq!(proof.publish().await.unwrap(), Progress::Advanced);
     let mut second = startup(&backend, false);
     let b = admitted(&mut second).await;
     assert_ne!(a.authority().unwrap().writer, b.authority().unwrap().writer);
@@ -236,7 +458,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
             panic!("one retained initialization")
         };
         let candidate = attempt.candidate();
-        assert_eq!(candidate.candidate().mutations.len(), 3);
+        assert_eq!(candidate.candidate().mutations.len(), 4);
         assert!(control::initialization(
             candidate.candidate(),
             backend.info().dataset
@@ -261,7 +483,7 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
             );
             assert_eq!(
                 native.rows.len(),
-                if interruption == "before" { 0 } else { 3 }
+                if interruption == "before" { 0 } else { 4 }
             );
         }
         assert_eq!(start.advance().await.unwrap(), Progress::Advanced);
@@ -281,9 +503,10 @@ async fn fresh_initialization_never_exposes_authority_without_its_manifest() {
                 1,
                 "no separate format publication commit"
             );
-            assert_eq!(native.rows.len(), 3);
+            assert_eq!(native.rows.len(), 4);
             assert!(native.rows.contains_key(&root_address()));
             assert!(native.rows.contains_key(&manifest_address()));
+            assert!(native.rows.contains_key(&first_start::address()));
         }
         // A process lost after the initialization commit can reopen the complete
         // current format instead of inheriting a ROOT-only intermediate state.

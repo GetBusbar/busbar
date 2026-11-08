@@ -709,6 +709,7 @@ pub struct Instance {
     reference_fields: Box<[String]>,
     pub(crate) kind: KindCode,
     name: String,
+    statement_digest: [u8; 32],
     slots: Box<[Op]>,
 
     ready: Option<Op>,
@@ -2562,6 +2563,13 @@ impl<K: Kind> Plugin<K> {
             v
         };
         let st = v.statement;
+        // SAFETY: validation bounded every retained Statement list. The exact rendered
+        // declaration was authenticated before binding, for linked and dropped images alike.
+        let stated = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
+            .map_err(|e| LoadError::Rendering(e.to_string()))?;
+        let mut statement_digest = [0; 32];
+        statement_digest
+            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &stated).as_ref());
         let families = (0..st.families_len)
             .map(|i| {
                 // SAFETY: `validate` checked `families` holds `families_len` entries.
@@ -2676,6 +2684,7 @@ impl<K: Kind> Plugin<K> {
                 reference_fields,
                 kind: v.kind,
                 name: String::from_utf8_lossy(name).into_owned(),
+                statement_digest,
                 slots: v.slots,
                 ready: v.ready,
                 families,
@@ -2759,6 +2768,12 @@ impl<K: Kind> Plugin<K> {
 
     pub fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    /// Exact authenticated declaration retained at bind, including the kind tail,
+    /// layouts and conditional record inventory. This is Rust-only host metadata.
+    pub fn statement_digest(&self) -> [u8; 32] {
+        self.inner.statement_digest
     }
 
     /// The loader's exact host-service identity. The composition root shares these Arc identities

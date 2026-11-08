@@ -2081,12 +2081,82 @@ pub(crate) async fn compose_planes_over(
         tables: tables.clone(),
         ..Served::default()
     };
-    if doors.is_empty() {
-        return Ok(served);
+    let Some(kernel) = late.kernel() else {
+        if doors.is_empty() {
+            return Ok(served);
+        }
+        return Err("the kernel's host services are not composed".into());
+    };
+    let first_start = match kernel.native_first_start() {
+        Some(proof) if !proof.published().await => Some(proof),
+        _ => None,
+    };
+    let mut staged_tables = Vec::new();
+    if let Some(proof) = &first_start {
+        use sha2::{Digest, Sha256};
+        let mut plan = Vec::new();
+        for (instance, plugin) in doors {
+            if !plugin.declared().conditional_records {
+                continue;
+            }
+            let facts = plugin.served();
+            let empty = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            let section = match sections.get(facts.section) {
+                Some(section) => section,
+                None if facts.owns.iter().any(|name| sections.contains_key(name)) => &empty,
+                None => continue,
+            };
+            if !plugin.has_ready() {
+                return Err(format!(
+                    "{instance}: conditional records require initial READY"
+                ));
+            }
+            let caller = plugin
+                .service_caller()
+                .ok_or("initial plane caller is unbound")?;
+            let settings = settings_of(&facts, section, sections);
+            let walked = walked_section(&facts, section, sections);
+            let owned = owned_sections(&facts, sections);
+            let dialects = egress
+                .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
+                .unwrap_or_default();
+            let handed =
+                zeroize::Zeroizing::new(handed_settings(settings_path(&facts), &settings)?);
+            let owned = zeroize::Zeroizing::new(owned_bytes(&owned)?);
+            let mut hash = Sha256::new();
+            hash.update(b"busbar.initial-record-binding/1\0");
+            for bytes in [
+                instance.as_bytes(),
+                caller.instance.as_bytes(),
+                caller.plugin.as_bytes(),
+                public_url.unwrap_or_default().as_bytes(),
+                plugin.statement_digest().as_slice(),
+                handed.as_slice(),
+                owned.as_slice(),
+            ] {
+                hash.update((bytes.len() as u64).to_be_bytes());
+                hash.update(bytes);
+            }
+            hash.update((dialects.len() as u64).to_be_bytes());
+            for dialect in dialects {
+                for bytes in [
+                    dialect.name.as_bytes(),
+                    dialect.protocol.as_bytes(),
+                    dialect.error_map.as_deref().unwrap_or_default(),
+                ] {
+                    hash.update((bytes.len() as u64).to_be_bytes());
+                    hash.update(bytes);
+                }
+                hash.update([u8::from(dialect.error_map.is_some())]);
+            }
+            plan.push(busbar_kernel::persistence::first_start::Binding {
+                instance: instance.clone(),
+                digest: hash.finalize().into(),
+            });
+        }
+        plan.sort_by(|a, b| a.instance.cmp(&b.instance));
+        confirm_first_start(|| proof.freeze(plan.clone())).await?;
     }
-    let kernel = late
-        .kernel()
-        .ok_or("the kernel's host services are not composed")?;
     for (instance, plugin) in doors {
         let served_facts = plugin.served();
 
@@ -2162,6 +2232,29 @@ pub(crate) async fn compose_planes_over(
         .map_err(|e| format!("{instance}: {e}"))?
         .with_records(Arc::clone(&kernel), caller.clone());
 
+        if plugin.declared().conditional_records {
+            kernel
+                .bind_native_record_bootstrap(&caller)
+                .await
+                .map_err(str::to_string)?;
+            let ready_plugin = plugin.clone();
+            let ready_dispatcher = Arc::clone(dispatcher);
+            tokio::task::spawn_blocking(move || {
+                ready_plugin.ready(
+                    &ready_dispatcher,
+                    crate::root::loader::dispatch::ready::READY_DEADLINE,
+                )
+            })
+            .await
+            .map_err(|error| format!("{instance}: READY worker: {error}"))??;
+            if let Some(proof) = &first_start {
+                confirm_first_start(|| proof.complete(instance)).await?;
+                kernel
+                    .revoke_native_record_bootstrap(&caller)
+                    .map_err(str::to_string)?;
+            }
+        }
+
         let driver = match hooks {
             Some(stage)
                 if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_HOOKS_GATED != 0 =>
@@ -2195,20 +2288,14 @@ pub(crate) async fn compose_planes_over(
             })
             .collect();
 
-        served
-            .tables
-            .publish(
-                ServeTable {
-                    instance: instance.clone(),
-                    audit_kind: served_facts.audit_kind.to_string(),
-                    calls,
-                    caps: BufferCaps::default(),
-                    routes,
-                    records: Some((Arc::clone(&kernel), caller)),
-                },
-                &[],
-            )
-            .map_err(|c| format!("{instance}: admin route {:?} overlaps {}", c.route, c.with))?;
+        staged_tables.push(ServeTable {
+            instance: instance.clone(),
+            audit_kind: served_facts.audit_kind.to_string(),
+            calls,
+            caps: BufferCaps::default(),
+            routes,
+            records: Some((Arc::clone(&kernel), caller)),
+        });
         let declared = plugin.declared();
 
         let mut registration = crate::root::kernel::new_registration();
@@ -2287,7 +2374,41 @@ pub(crate) async fn compose_planes_over(
             dialects: served_facts.dialects.clone(),
         });
     }
+    served
+        .tables
+        .validate_batch(&staged_tables, &[])
+        .map_err(|c| format!("admin route {:?} overlaps {}", c.route, c.with))?;
+    if let Some(proof) = &first_start {
+        confirm_first_start(|| proof.publish()).await?;
+    }
+    served
+        .tables
+        .publish_batch(staged_tables, &[])
+        .map_err(|c| format!("admin route {:?} overlaps {}", c.route, c.with))?;
     Ok(served)
+}
+
+async fn confirm_first_start<F, T>(mut advance: F) -> Result<(), String>
+where
+    F: FnMut() -> T,
+    T: std::future::Future<
+        Output = Result<
+            busbar_kernel::persistence::startup::Progress,
+            busbar_kernel::persistence::startup::Error,
+        >,
+    >,
+{
+    use busbar_kernel::persistence::startup::Progress;
+    loop {
+        match advance()
+            .await
+            .map_err(|error| format!("native first publication refused: {error:?}"))?
+        {
+            Progress::Advanced => return Ok(()),
+            Progress::Pending => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+            _ => return Err("native first publication requires reconciliation".into()),
+        }
+    }
 }
 
 const SESSION_KEY: &str = "session";

@@ -18,6 +18,7 @@ use super::{
     commit::{Attempt, SubmitResult},
     facade::{AccessError, CoreStore, Limits, WriterAuthority},
     fences,
+    first_start::{self, Birth, FirstStart},
 };
 
 const NAMESPACE: NamespaceId = NamespaceId(*b"busbar.format1\0\0");
@@ -116,8 +117,8 @@ pub enum Progress {
 enum Phase {
     Inspect,
     Initialize(Arc<Attempt>),
-    Register(Manifest, WriterAuthority, Arc<Attempt>),
-    Attach(Manifest, WriterAuthority),
+    Register(Manifest, WriterAuthority, Option<Birth>, Arc<Attempt>),
+    Attach(Manifest, WriterAuthority, Option<Birth>),
     Admitted(Session),
     Grant(Session, WriterAuthority, control::Writer, Arc<Attempt>),
     Drain(Session),
@@ -179,16 +180,26 @@ impl Startup {
                 }
                 self.phase = Phase::Inspect;
             }
-            Phase::Register(manifest, authority, attempt) => {
+            Phase::Register(manifest, authority, birth, attempt) => {
                 if let Some(progress) = decided(&attempt).await? {
                     return Ok(progress);
                 }
-                self.phase = Phase::Attach(manifest, authority);
+                self.phase = Phase::Attach(manifest, authority, birth);
             }
-            Phase::Attach(manifest, authority) => {
+            Phase::Attach(manifest, authority, birth) => {
                 let store = CoreStore::attach(self.backend.clone(), authority, self.limits)
                     .await
                     .map_err(Error::Access)?;
+                if let Some(birth) = birth {
+                    store
+                        .first_start
+                        .set(Arc::new(FirstStart::new(
+                            self.backend.clone(),
+                            authority,
+                            birth,
+                        )))
+                        .map_err(|_| Error::Authority)?;
+                }
                 self.phase = Phase::Admitted(Session {
                     manifest,
                     store: Arc::new(store),
@@ -306,10 +317,19 @@ impl Startup {
 
     async fn inspect(&mut self) -> Result<(), Error> {
         let info = self.backend.info();
-        let values = self.read(vec![root_address(), manifest_address()]).await?;
+        let values = self
+            .read(vec![
+                root_address(),
+                manifest_address(),
+                first_start::address(),
+            ])
+            .await?;
         let seal = crate::seal::lend();
         match (&values[0], &values[1]) {
             (None, None) => {
+                if values[2].is_some() {
+                    return Err(Error::Corrupt);
+                }
                 if !self.initialize_empty {
                     return Err(Error::InitializationNotAllowed);
                 }
@@ -325,7 +345,13 @@ impl Startup {
                     info.dataset,
                     manifest.registrar.writer,
                     random_id()?,
-                    vec![(manifest_address(), Secret::new(manifest.encode().to_vec()))],
+                    vec![
+                        (manifest_address(), Secret::new(manifest.encode().to_vec())),
+                        (
+                            first_start::address(),
+                            Secret::new(Birth::new(info.dataset).encode()?),
+                        ),
+                    ],
                 )
                 .map_err(|_| Error::Corrupt)?;
                 // The adapter proves the whole dataset empty at COMMIT. Authority
@@ -356,26 +382,64 @@ impl Startup {
                     execution_epoch: 1,
                     writer_epoch: manifest.registrar.writer_epoch,
                 };
-                let candidate = prepare(
-                    manifest,
-                    vec![
-                        exact(root_address(), root_bytes.expose(&seal).clone()),
-                        exact(manifest_address(), bytes.expose(&seal).clone()),
-                        exact(
-                            writer_address(manifest.registrar.writer),
-                            registrar.encode().ok_or(Error::Corrupt)?.to_vec(),
-                        ),
-                        Predicate {
-                            address: writer_address(authority.writer),
-                            expected: ExpectedValue::Absent,
-                        },
-                    ],
-                    vec![Mutation::Put {
+                let mut birth = values[2]
+                    .as_ref()
+                    .map(|bytes| Birth::decode(bytes.expose(&seal), info.dataset))
+                    .transpose()?;
+                let mut predicates = vec![
+                    exact(root_address(), root_bytes.expose(&seal).clone()),
+                    exact(manifest_address(), bytes.expose(&seal).clone()),
+                    exact(
+                        writer_address(manifest.registrar.writer),
+                        registrar.encode().ok_or(Error::Corrupt)?.to_vec(),
+                    ),
+                    Predicate {
                         address: writer_address(authority.writer),
-                        value: Secret::new(open_writer().encode().ok_or(Error::Corrupt)?.to_vec()),
-                    }],
-                )?;
-                self.phase = Phase::Register(manifest, authority, self.attempt(candidate)?);
+                        expected: ExpectedValue::Absent,
+                    },
+                ];
+                let mut mutations = vec![Mutation::Put {
+                    address: writer_address(authority.writer),
+                    value: Secret::new(open_writer().encode().ok_or(Error::Corrupt)?.to_vec()),
+                }];
+                if let Some(pending) = birth.as_mut().filter(|birth| !birth.published) {
+                    predicates.push(exact(first_start::address(), pending.encode()?));
+                    if let Some(previous) = pending.owner {
+                        if previous == manifest.registrar.writer {
+                            return Err(Error::Corrupt);
+                        }
+                        let observed = self.read(vec![writer_address(previous)]).await?;
+                        let bytes = observed[0].as_ref().ok_or(Error::Corrupt)?.expose(&seal);
+                        let prior = control::Writer::decode(bytes).ok_or(Error::Corrupt)?;
+                        let retired = control::Writer {
+                            retired_through: prior.admitted_through,
+                            ..prior
+                        };
+                        control::replacement(
+                            control::Key::Writer(previous),
+                            info.dataset,
+                            Some(bytes),
+                            &retired.encode().ok_or(Error::Corrupt)?,
+                        )
+                        .map_err(|_| Error::Authority)?;
+                        predicates.push(exact(writer_address(previous), bytes.clone()));
+                        mutations.push(Mutation::Put {
+                            address: writer_address(previous),
+                            value: Secret::new(retired.encode().ok_or(Error::Corrupt)?.to_vec()),
+                        });
+                    }
+                    pending.owner = Some(authority.writer);
+                    mutations.push(Mutation::Put {
+                        address: first_start::address(),
+                        value: Secret::new(pending.encode()?),
+                    });
+                } else {
+                    // Publication already completed, or this retained format predates the
+                    // native birth proof. Neither can mint initial-record authority.
+                    birth = None;
+                }
+                let candidate = prepare(manifest, predicates, mutations)?;
+                self.phase = Phase::Register(manifest, authority, birth, self.attempt(candidate)?);
             }
         }
         Ok(())
@@ -430,7 +494,7 @@ fn writer_transition(session: &Session, next: control::Writer) -> Result<Prepare
     )
 }
 
-async fn decided(attempt: &Attempt) -> Result<Option<Progress>, Error> {
+pub(super) async fn decided(attempt: &Attempt) -> Result<Option<Progress>, Error> {
     match attempt.submit().await {
         SubmitResult::Decided(value) => match value.as_ref() {
             Decision::Applied(_) => Ok(None),
@@ -464,7 +528,7 @@ fn prepare(
     })
     .map_err(|_| Error::Corrupt)
 }
-fn random_id() -> Result<[u8; 16], Error> {
+pub(super) fn random_id() -> Result<[u8; 16], Error> {
     let mut value = [0; 16];
     getrandom::fill(&mut value).map_err(|_| Error::Entropy)?;
     if value == [0; 16] {

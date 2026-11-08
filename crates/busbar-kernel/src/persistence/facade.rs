@@ -85,6 +85,7 @@ pub struct CoreStore {
     limits: Limits,
     pending: Mutex<Pending>,
     pub(super) claim_maintenance: Mutex<super::claims::Maintenance>,
+    pub(super) first_start: std::sync::OnceLock<Arc<super::first_start::FirstStart>>,
 }
 
 impl CoreStore {
@@ -155,6 +156,7 @@ impl CoreStore {
             info,
             limits,
             claim_maintenance: Mutex::default(),
+            first_start: std::sync::OnceLock::new(),
             pending: Mutex::new(Pending {
                 authority,
                 accepting: true,
@@ -167,6 +169,12 @@ impl CoreStore {
     #[must_use]
     pub fn info(&self) -> BackendInfo {
         self.info
+    }
+
+    /// A native initial-namespace proof exists only while Startup owns unfinished
+    /// first publication. Retained stores without that durable marker grant nothing.
+    pub fn first_start(&self) -> Option<Arc<super::first_start::FirstStart>> {
+        self.first_start.get().cloned()
     }
 
     pub fn authority(&self) -> Result<WriterAuthority, AccessError> {
