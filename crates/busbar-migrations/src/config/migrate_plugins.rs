@@ -162,7 +162,9 @@ pub(super) fn migrate_recognized(
     ledger: &mut Ledger<'_>,
 ) {
     let from = host.migrating_from().to_owned();
-    for site in sites(root, &registry_planes(), host, ledger) {
+    // Current plane payloads are validated by ordinary admission. Do not construct
+    // historical plane envelopes or read their consumed catalogs on this path.
+    for site in sites(root, &[], host, ledger) {
         if site.kind == busbar_contract::abi::mechanism::kind::STORE
             || site.kind == busbar_contract::abi::mechanism::kind::PLANE
         {
