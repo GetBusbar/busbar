@@ -139,6 +139,12 @@ pub(crate) struct Bootstrap {
     // Kept for audit/debug correlation. This receipt can never authorize another cold process.
     pub epoch: String,
     caller: Option<Caller>,
+    origin: Origin,
+}
+
+enum Origin {
+    Operator,
+    NativeFirstStart,
 }
 
 impl Bootstrap {
@@ -195,6 +201,7 @@ impl Bootstrap {
                     instance: receipt.instance,
                     epoch: receipt.epoch,
                     caller: None,
+                    origin: Origin::Operator,
                 }),
                 NativeDecision::ConditionConflict => {
                     Err("bootstrap receipt consumed or wrong store witness")
@@ -228,6 +235,32 @@ impl Bootstrap {
 
     pub fn bound(&self) -> bool {
         self.caller.is_some()
+    }
+
+    pub(crate) async fn native(
+        proof: &crate::persistence::first_start::FirstStart,
+        caller: &Caller,
+    ) -> Result<Option<Self>, &'static str> {
+        if !proof
+            .permits(&caller.instance)
+            .await
+            .map_err(|_| "native record bootstrap ownership refused")?
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            instance: caller.instance.to_string(),
+            epoch: hex::encode(proof.owner()),
+            caller: Some(caller.clone()),
+            origin: Origin::NativeFirstStart,
+        }))
+    }
+
+    pub(crate) fn native_accepts(&self, caller: &Caller) -> bool {
+        matches!(self.origin, Origin::NativeFirstStart)
+            && self.bound()
+            && self.accepts(caller)
+            && self.instance == caller.instance.as_ref()
     }
 }
 

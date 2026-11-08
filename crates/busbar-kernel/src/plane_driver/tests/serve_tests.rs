@@ -195,6 +195,52 @@ impl PlaneCalls for Echo {
 #[derive(Default)]
 struct Rows(Mutex<Vec<(String, String)>>);
 
+#[test]
+fn a_composition_route_collision_publishes_none_of_its_staged_instances() {
+    let tables = ServeTables::default();
+    let reader = tables.clone();
+    let table = |instance: &str, target: &str| ServeTable {
+        instance: instance.into(),
+        audit_kind: "door".into(),
+        calls: Arc::new(Echo::default()),
+        caps: BufferCaps::default(),
+        routes: vec![ServeRoute {
+            verb: "GET".into(),
+            target: target.into(),
+            flags: 0,
+            audit_verb: String::new(),
+        }],
+        records: None,
+    };
+    tables.publish(table("existing", "/held"), &[]).unwrap();
+    assert!(tables
+        .publish_batch(vec![table("one", "/new"), table("two", "/held")], &[])
+        .is_err());
+    assert_eq!(
+        reader
+            .0
+            .now
+            .load()
+            .iter()
+            .map(|t| t.instance.as_str())
+            .collect::<Vec<_>>(),
+        ["existing"]
+    );
+    tables
+        .publish_batch(vec![table("one", "/new"), table("two", "/another")], &[])
+        .unwrap();
+    assert_eq!(
+        reader
+            .0
+            .now
+            .load()
+            .iter()
+            .map(|t| t.instance.as_str())
+            .collect::<Vec<_>>(),
+        ["existing", "one", "two"]
+    );
+}
+
 impl AuditSink for Rows {
     fn record(&self, action: &str, _: &str, _: &'static str, principal: &str) {
         self.0

@@ -899,6 +899,7 @@ pub struct KernelServices {
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
     record_bootstrap: Mutex<Option<crate::host_record_bootstrap::Bootstrap>>,
+    native_record_bootstrap: Mutex<HashMap<String, crate::host_record_bootstrap::Bootstrap>>,
     plane_cleanup: Mutex<Vec<std::sync::Weak<crate::plane_driver::PlaneDriver>>>,
     records: OnceLock<Records>,
     persistence: OnceLock<Arc<crate::persistence::facade::CoreStore>>,
@@ -1026,6 +1027,7 @@ impl KernelServices {
             mono_ns: None,
             instances: Mutex::default(),
             record_bootstrap: Mutex::default(),
+            native_record_bootstrap: Mutex::default(),
             plane_cleanup: Mutex::default(),
             records: OnceLock::new(),
             persistence: OnceLock::new(),
@@ -1246,6 +1248,49 @@ impl KernelServices {
         self.persistence.set(store).is_ok()
     }
 
+    pub fn native_first_start(&self) -> Option<Arc<crate::persistence::first_start::FirstStart>> {
+        self.persistence.get().and_then(|store| store.first_start())
+    }
+
+    /// Only the selected initial caller may initialize records during READY. Native
+    /// ownership, not an empty scan or a principal grant, supplies this finite authority.
+    pub async fn bind_native_record_bootstrap(&self, caller: &Caller) -> Result<(), &'static str> {
+        let Some(proof) = self.native_first_start() else {
+            return Ok(());
+        };
+        if proof.published().await {
+            return Ok(());
+        }
+        let Some(grant) = crate::host_record_bootstrap::Bootstrap::native(&proof, caller).await?
+        else {
+            return Ok(());
+        };
+        let mut grants = self
+            .native_record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if grants.contains_key(caller.instance.as_ref()) {
+            return Err("native record bootstrap caller already bound");
+        }
+        grants.insert(caller.instance.to_string(), grant);
+        Ok(())
+    }
+
+    pub fn revoke_native_record_bootstrap(&self, caller: &Caller) -> Result<(), &'static str> {
+        let mut grants = self
+            .native_record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if grants
+            .get(caller.instance.as_ref())
+            .is_some_and(|grant| !grant.native_accepts(caller))
+        {
+            return Err("native record bootstrap caller changed");
+        }
+        grants.remove(caller.instance.as_ref());
+        Ok(())
+    }
+
     fn native_work_writer(&self, caller: &Caller) -> Result<Option<NativeWorkWriter>, Stored> {
         let Some(store) = self.persistence.get() else {
             return Ok(None);
@@ -1427,6 +1472,17 @@ impl KernelServices {
         );
         let mut instances = self.lock_instances();
         if self
+            .native_record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(instance)
+            && instances.contains_key(instance)
+        {
+            return Err(AdmitRefused::BootstrapHeld {
+                instance: instance.to_string(),
+            });
+        }
+        if self
             .record_bootstrap
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1605,12 +1661,18 @@ impl KernelServices {
             .is_some_and(|(kind, _)| kind == "record-quota-bootstrap")
         {
             return target == crate::host_record_bootstrap::ENTITLEMENT
-                && self
+                && (self
                     .record_bootstrap
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .as_ref()
-                    .is_some_and(|grant| grant.instance == caller.instance.as_ref());
+                    .is_some_and(|grant| grant.instance == caller.instance.as_ref())
+                    || self
+                        .native_record_bootstrap
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(caller.instance.as_ref())
+                        .is_some_and(|grant| grant.native_accepts(caller)));
         }
         if target == busbar_contract::abi::host::service::ENTITLEMENT_STANDING {
             return self.stands(unit);
@@ -2232,6 +2294,15 @@ impl KernelServices {
 
     fn facts(&self, caller: &Caller) -> Option<Arc<InstanceFacts>> {
         let facts = self.lock_instances().get(&caller.instance).cloned()?;
+        if self
+            .native_record_bootstrap
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(caller.instance.as_ref())
+            .is_some_and(|grant| !grant.native_accepts(caller))
+        {
+            return None;
+        }
         if self
             .record_bootstrap
             .lock()

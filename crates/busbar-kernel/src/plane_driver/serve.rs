@@ -130,35 +130,39 @@ fn fill<'p>(target: &str, path: &'p str) -> Option<&'p str> {
 
 impl ServeTables {
     pub fn publish(&self, table: ServeTable, reserved: &[(&str, &str)]) -> Result<(), Collision> {
+        self.publish_batch(vec![table], reserved)
+    }
+
+    /// Check the whole staged composition before committing its native publication
+    /// marker. Publishing repeats this check under the writer lock.
+    pub fn validate_batch(
+        &self,
+        batch: &[ServeTable],
+        reserved: &[(&str, &str)],
+    ) -> Result<(), Collision> {
+        validate_tables(&self.0.now.load(), batch, reserved)
+    }
+
+    /// Publish one fully confirmed composition in a single visible snapshot. Until
+    /// this succeeds, readers retain the entire previous generation's route table.
+    pub fn publish_batch(
+        &self,
+        batch: Vec<ServeTable>,
+        reserved: &[(&str, &str)],
+    ) -> Result<(), Collision> {
         let _turn = self
             .0
             .writing
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let tables = self.0.now.load();
-        let mut seen: Vec<(&str, &str, &str)> =
-            reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
-        for t in tables.iter().filter(|t| t.instance != table.instance) {
-            seen.extend(admin(&t.routes).map(|r| (&*r.verb, &*r.target, &*t.instance)));
-        }
-        for r in admin(&table.routes) {
-            if let Some((_, _, with)) = seen
-                .iter()
-                .find(|(v, t, _)| v.eq_ignore_ascii_case(&r.verb) && overlap(t, &r.target))
-            {
-                return Err(Collision {
-                    route: (r.verb.clone(), r.target.clone()),
-                    with: (*with).to_string(),
-                });
-            }
-            seen.push((&r.verb, &r.target, &table.instance));
-        }
+        validate_tables(&tables, &batch, reserved)?;
         let mut next: Vec<Arc<ServeTable>> = tables
             .iter()
-            .filter(|t| t.instance != table.instance)
+            .filter(|t| !batch.iter().any(|new| new.instance == t.instance))
             .cloned()
             .collect();
-        next.push(Arc::new(table));
+        next.extend(batch.into_iter().map(Arc::new));
         self.0.now.store(Arc::new(next));
         Ok(())
     }
@@ -177,6 +181,37 @@ impl ServeTables {
             .collect();
         self.0.now.store(Arc::new(next));
     }
+}
+
+fn validate_tables(
+    tables: &[Arc<ServeTable>],
+    batch: &[ServeTable],
+    reserved: &[(&str, &str)],
+) -> Result<(), Collision> {
+    let mut seen: Vec<(&str, &str, &str)> =
+        reserved.iter().map(|(v, t)| (*v, *t, "kernel")).collect();
+    for table in tables
+        .iter()
+        .filter(|table| !batch.iter().any(|new| new.instance == table.instance))
+    {
+        seen.extend(
+            admin(&table.routes).map(|route| (&*route.verb, &*route.target, &*table.instance)),
+        );
+    }
+    for table in batch {
+        for route in admin(&table.routes) {
+            if let Some((_, _, with)) = seen.iter().find(|(verb, target, _)| {
+                verb.eq_ignore_ascii_case(&route.verb) && overlap(target, &route.target)
+            }) {
+                return Err(Collision {
+                    route: (route.verb.clone(), route.target.clone()),
+                    with: (*with).to_string(),
+                });
+            }
+            seen.push((&route.verb, &route.target, &table.instance));
+        }
+    }
+    Ok(())
 }
 
 fn admin(routes: &[ServeRoute]) -> impl Iterator<Item = &ServeRoute> {
