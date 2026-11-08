@@ -447,12 +447,11 @@ fn current_settings_validation_does_not_read_a_selected_planes_historical_catalo
         busbar_kernel::plane_driver::registry::plane_decls()
             .iter()
             .any(|plane| {
-                (plane.config_section == "models"
-                    || plane.owned_config_sections.contains(&"models"))
+                (plane.config_section == "pools" || plane.owned_config_sections.contains(&"pools"))
                     && busbar_kernel::plane_driver::door::consumed_sections(plane)
                         .contains(&"providers")
             }),
-        "the actual installed model plane selects a historical providers envelope"
+        "the actual installed pools plane consumes providers for historical migration"
     );
     let raw = "store: {module: memory}
 providers: {}
