@@ -185,6 +185,201 @@ fn delayed_initial_write(store: &CoreStore) -> PreparedCandidate {
     .unwrap()
 }
 
+fn host_initialization(value: &[u8]) -> (Vec<Predicate>, Vec<Mutation>) {
+    let address = Address {
+        namespace: [8; 16],
+        key: b"host-initial-state".to_vec(),
+    };
+    (
+        vec![Predicate {
+            address: address.clone(),
+            expected: ExpectedValue::Absent,
+        }],
+        vec![Mutation::Put {
+            address,
+            value: Secret::new(value.to_vec()),
+        }],
+    )
+}
+
+#[tokio::test]
+async fn first_start_host_initialization_is_atomic_and_replay_is_read_only() {
+    let backend = Arc::new(Backend::default());
+    let store = admitted(&mut startup(&backend, true)).await;
+    let proof = store.first_start().unwrap();
+    let before = proof.initialization_witness().await.unwrap();
+    let (mut predicates, mutations) = host_initialization(b"initial");
+    predicates[0].expected = ExpectedValue::Exact(Secret::new(b"missing".to_vec()));
+    assert_eq!(
+        proof
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Err(Error::Conflict)
+    );
+    // Neither the consumption marker nor the host row can survive a failed condition.
+    {
+        let native = backend.0.lock().unwrap();
+        assert_eq!(
+            native.rows[&first_start::address()].expose(&crate::seal::lend()),
+            &before
+        );
+        assert!(!native.rows.keys().any(|a| a.namespace == [8; 16]));
+    }
+    // A fresh process reconciles the definite conflict without repurposing its candidate.
+    let store = admitted(&mut startup(&backend, false)).await;
+    let proof = store.first_start().unwrap();
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        proof
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Ok(Progress::Advanced)
+    );
+    let after = proof.initialization_witness().await.unwrap();
+    assert_ne!(before, after);
+    let sends = backend.0.lock().unwrap().sends.len();
+    let (predicates, mutations) = host_initialization(b"replacement");
+    assert_eq!(
+        proof
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Ok(Progress::Advanced)
+    );
+    assert_eq!(backend.0.lock().unwrap().sends.len(), sends);
+    let native = backend.0.lock().unwrap();
+    let address = Address {
+        namespace: [8; 16],
+        key: b"host-initial-state".to_vec(),
+    };
+    assert_eq!(
+        native.rows[&address].expose(&crate::seal::lend()),
+        b"initial"
+    );
+    assert!(String::from_utf8(after).unwrap().contains("initialized"));
+}
+
+#[tokio::test]
+async fn first_start_host_unknown_retains_complete_candidate_and_stable_witness() {
+    for lost_after in [false, true] {
+        let backend = Arc::new(Backend::default());
+        let store = admitted(&mut startup(&backend, true)).await;
+        let proof = store.first_start().unwrap();
+        let before = proof.initialization_witness().await.unwrap();
+        assert!(!proof.host_initialization_pending("host").await);
+        {
+            let mut native = backend.0.lock().unwrap();
+            native.unknown_before = !lost_after;
+            native.lose_reply = lost_after;
+        }
+        let (predicates, mutations) = host_initialization(b"initial");
+        assert_eq!(
+            proof
+                .initialize_host(initial_binding("host", 1), predicates, mutations)
+                .await,
+            Ok(Progress::Pending)
+        );
+        assert!(proof.host_initialization_pending("host").await);
+        assert!(!proof.host_initialization_pending("other").await);
+        let fingerprint = *backend.0.lock().unwrap().sends.last().unwrap();
+        assert_eq!(proof.initialization_witness().await.unwrap(), before);
+        let (predicates, mutations) = host_initialization(b"initial");
+        assert_eq!(
+            proof
+                .initialize_host(initial_binding("host", 2), predicates, mutations)
+                .await,
+            Err(Error::Authority)
+        );
+        let (predicates, mutations) = host_initialization(b"changed");
+        assert_eq!(
+            proof
+                .initialize_host(initial_binding("host", 1), predicates, mutations)
+                .await,
+            Err(Error::Authority)
+        );
+        let (mut predicates, mutations) = host_initialization(b"initial");
+        predicates[0].expected = ExpectedValue::Exact(Secret::new(b"changed".to_vec()));
+        assert_eq!(
+            proof
+                .initialize_host(initial_binding("host", 1), predicates, mutations)
+                .await,
+            Err(Error::Authority)
+        );
+        assert_eq!(proof.freeze(Vec::new()).await, Err(Error::Authority));
+        let (predicates, mutations) = host_initialization(b"initial");
+        assert_eq!(
+            proof
+                .initialize_host(initial_binding("host", 1), predicates, mutations)
+                .await,
+            Ok(Progress::Advanced)
+        );
+        assert_eq!(
+            *backend.0.lock().unwrap().sends.last().unwrap(),
+            fingerprint
+        );
+        assert!(!proof.host_initialization_pending("host").await);
+        assert_ne!(proof.initialization_witness().await.unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn first_start_host_initialization_takeover_fences_stale_completion() {
+    let backend = Arc::new(Backend::default());
+    let store = admitted(&mut startup(&backend, true)).await;
+    let prior = store.first_start().unwrap();
+    backend.0.lock().unwrap().lose_reply = true;
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        prior
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Ok(Progress::Pending)
+    );
+    let successor = admitted(&mut startup(&backend, false)).await;
+    let current = successor.first_start().unwrap();
+    assert_eq!(prior.initialization_witness().await, Err(Error::Authority));
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        prior
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Err(Error::Authority)
+    );
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        current
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Ok(Progress::Advanced)
+    );
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        current
+            .initialize_host(initial_binding("host", 2), predicates, mutations)
+            .await,
+        Err(Error::Authority)
+    );
+    current.freeze(Vec::new()).await.unwrap();
+    let (predicates, mutations) = host_initialization(b"new");
+    assert_eq!(
+        current
+            .initialize_host(initial_binding("another", 1), predicates, mutations)
+            .await,
+        Err(Error::Authority)
+    );
+    current.publish().await.unwrap();
+    assert_eq!(
+        current.initialization_witness().await,
+        Err(Error::Authority)
+    );
+    let (predicates, mutations) = host_initialization(b"initial");
+    assert_eq!(
+        current
+            .initialize_host(initial_binding("host", 1), predicates, mutations)
+            .await,
+        Err(Error::Authority)
+    );
+}
+
 #[tokio::test]
 async fn first_start_before_plan_freeze_can_resume_but_fences_delayed_old_writes() {
     let backend = Arc::new(Backend::default());
