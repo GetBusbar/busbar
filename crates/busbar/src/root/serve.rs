@@ -2106,11 +2106,6 @@ pub(crate) async fn compose_planes_over(
                 None if facts.owns.iter().any(|name| sections.contains_key(name)) => &empty,
                 None => continue,
             };
-            if !plugin.has_ready() {
-                return Err(format!(
-                    "{instance}: conditional records require initial READY"
-                ));
-            }
             let caller = plugin
                 .service_caller()
                 .ok_or("initial plane caller is unbound")?;
@@ -2233,20 +2228,22 @@ pub(crate) async fn compose_planes_over(
         .with_records(Arc::clone(&kernel), caller.clone());
 
         if plugin.declared().conditional_records {
-            kernel
-                .bind_native_record_bootstrap(&caller)
+            if plugin.has_ready() {
+                kernel
+                    .bind_native_record_bootstrap(&caller)
+                    .await
+                    .map_err(str::to_string)?;
+                let ready_plugin = plugin.clone();
+                let ready_dispatcher = Arc::clone(dispatcher);
+                tokio::task::spawn_blocking(move || {
+                    ready_plugin.ready(
+                        &ready_dispatcher,
+                        crate::root::loader::dispatch::ready::READY_DEADLINE,
+                    )
+                })
                 .await
-                .map_err(str::to_string)?;
-            let ready_plugin = plugin.clone();
-            let ready_dispatcher = Arc::clone(dispatcher);
-            tokio::task::spawn_blocking(move || {
-                ready_plugin.ready(
-                    &ready_dispatcher,
-                    crate::root::loader::dispatch::ready::READY_DEADLINE,
-                )
-            })
-            .await
-            .map_err(|error| format!("{instance}: READY worker: {error}"))??;
+                .map_err(|error| format!("{instance}: READY worker: {error}"))??;
+            }
             if let Some(proof) = &first_start {
                 confirm_first_start(|| proof.complete(instance)).await?;
                 kernel
