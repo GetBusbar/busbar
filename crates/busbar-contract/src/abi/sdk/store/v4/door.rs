@@ -8,6 +8,9 @@
 //! across pending resumes and exact-ticket short-buffer retries; only output buffer
 //! addresses/capacities may change. No output loan is retained between crossings.
 
+type Host = KindGenericHost<crate::plugin::markers::StoreKind>;
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::StoreKind>;
+
 use std::any::Any;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
@@ -16,18 +19,20 @@ use super::backend::{Backend, Committed};
 use super::{decode, encode, metadata};
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
-use crate::abi::sdk::conn::Host;
+use crate::abi::sdk::conn::Host as KindGenericHost;
 use crate::abi::sdk::door::{KindOps, KindSlot, Lifecycle};
 use crate::abi::sdk::life::{Held, Life, Opening, Refusal};
 use crate::abi::sdk::out::{Replies, ReplyKey};
 use crate::abi::sdk::store::op::Parked;
 use crate::abi::sdk::store::{Op, Step};
-use crate::abi::sdk::{Instance, Lent, Out, SafeSlot};
+use crate::abi::sdk::{Instance as KindGenericInstance, Lent, Out, SafeSlot};
 use crate::abi::store::v4 as wire;
 use crate::persistence as owned;
 
 // SAFETY: this table leads with OpsHead and appends exactly five Option<Op>s.
+impl crate::abi::sdk::door::table_seal::Sealed for wire::Ops {}
 unsafe impl KindOps for wire::Ops {
+    type Marker = crate::plugin::markers::StoreKind;
     const KIND: crate::abi::mechanism::KindCode = crate::abi::mechanism::KindCode::Store;
     const ABI_VERSION: u32 = wire::ABI_VERSION;
     const LAYOUT_FINGERPRINT: u64 = wire::LAYOUT_FINGERPRINT;
@@ -75,6 +80,7 @@ impl<B: Backend> Served<B> {
 }
 
 impl<B: Backend> Life for Served<B> {
+    type Kind = crate::plugin::markers::StoreKind;
     const CANCEL: u32 = crate::abi::store::CANCEL_UNKNOWN;
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
         B::validate(settings).map_err(Refusal::failed)
@@ -482,6 +488,7 @@ impl<B: Backend> Primitive<B> for Clock<B> {
 macro_rules! safe_slot {
     ($name:ident, $input:ty, $output:ty) => {
         impl<B: Backend> SafeSlot for $name<B> {
+            type Kind = crate::plugin::markers::StoreKind;
             type In = $input;
             type Out = $output;
             type State = Held<Served<B>>;

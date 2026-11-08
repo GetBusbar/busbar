@@ -50,7 +50,10 @@ fn both(name: &str, door: DoorFn, path: std::path::PathBuf) -> [PluginRegistry; 
 }
 
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::new(DispatchConfig::default()))
+    Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ))
 }
 
 const EXPOSITION: &str = "\

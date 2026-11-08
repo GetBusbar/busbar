@@ -364,7 +364,10 @@ fn fixture(legacy: bool, hold: bool) -> (Arc<LoadedPrepared>, Arc<Stats>) {
     });
     stats.hold.store(hold, Ordering::SeqCst);
     registry().lock().unwrap().insert(id, stats.clone());
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let plugin = load_linked::<StoreV4>(
         &LinkedRow::of_kind::<StoreV4>(door as busbar_contract::abi::mechanism::door::DoorFn)
             .unwrap(),

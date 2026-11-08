@@ -42,11 +42,7 @@ fn host(v: &Value) -> Host {
 }
 
 fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("plane"),
-        kind: KindCode::Plane,
-    }
+    Caller::for_test(Arc::from(instance), KindCode::Plane)
 }
 
 fn later() -> (Later, mpsc::Receiver<Stored>) {

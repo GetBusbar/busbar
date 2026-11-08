@@ -109,7 +109,10 @@ extern "C" fn selected_door() -> &'static Door {
 
 #[test]
 fn configured_instances_read_their_own_subset_from_ready_open_extensions() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let open = |variant: &str| {
         let sink = AuthSink::new(variant);
         let plugin = load_linked::<Auth>(

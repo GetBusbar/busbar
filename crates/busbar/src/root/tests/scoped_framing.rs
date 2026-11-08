@@ -239,11 +239,14 @@ impl FramerDoor for TraceDoor {
 }
 
 fn opened() -> (Arc<TraceDoor>, Arc<Host>) {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let host = Arc::new(Host::default());
     assert!(dispatcher.install_auth_handle(host.clone()));
     let plugin = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let door = Dispatched::open_on(plugin, &TransportSettings::default(), dispatcher)
@@ -501,12 +504,15 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
         route::{LineEntry, RouteMatch},
     };
 
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let host = Arc::new(Host::default());
     let served: Arc<dyn AuthHandleHost> = host.clone();
     assert!(dispatcher.install_auth_handle(served.clone()));
     let plugin = crate::root::test_plugins::linked_transport(
-        busbar_transport_http::door::door,
+        busbar_transport_http::door,
         bind_on(&dispatcher),
     );
     let mut opened_frame = Frame::new(blank_in::<OpenIn>(), blank_out::<OpenOut>());

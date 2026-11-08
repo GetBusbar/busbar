@@ -547,7 +547,10 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
         .iter()
         .copied()
         .find(|door| {
-            let dispatcher = Dispatcher::new(DispatchConfig::default());
+            let dispatcher = Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            );
             let row = LinkedRow::of(*door).expect("a linked door states itself");
             load_linked::<Plane>(
                 &row,
@@ -568,7 +571,10 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
 }
 
 pub(crate) fn dialects() -> Vec<String> {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow::of(pools_door()).expect("the plane door states its Statement");
     load_linked::<Plane>(
         &row,
@@ -679,10 +685,13 @@ pub struct Rig {
 impl Rig {
     pub async fn new(primary: Pool, fallback: Option<Pool>, hooks: Hooks) -> Self {
         bind_native_amendments(&hooks.callers.journal).await;
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-            workers: 2,
-            ..DispatchConfig::default()
-        }));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig {
+                workers: 2,
+                ..DispatchConfig::default()
+            },
+            busbar_contract::services::test_caller_binding(),
+        ));
         let mut pools = vec![&primary];
         if let Some(f) = &fallback {
             pools.push(f);

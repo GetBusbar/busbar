@@ -389,7 +389,10 @@ fn the_witness_counts_what_it_measures_and_nothing_else() {
 
 #[test]
 fn every_request_path_op_is_measured() {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let plugin = opened(&dispatcher);
     let mut bufs = Bufs::new();
     let ops = request_path_ops();

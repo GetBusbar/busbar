@@ -152,6 +152,8 @@ unsafe impl OutFrame for StatusOut {}
 unsafe impl OutFrame for CheckOut {}
 unsafe impl OutFrame for ServeOut {}
 
+impl crate::dispatch::kind_seal::Validated for Export {}
+
 impl Kind for Export {
     const CODE: KindCode = KindCode::Export;
     type Ops = export::Ops;

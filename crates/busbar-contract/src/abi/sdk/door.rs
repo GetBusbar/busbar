@@ -3,6 +3,8 @@
 
 //! THE DOOR MACRO — the plugin side of the shared mechanism (THE DESIGN, the plugin ABI; abi-v2, the door and the SDK).
 
+use crate::plugin::KindMarker;
+
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of, MaybeUninit};
 use std::panic::{catch_unwind, RefUnwindSafe, UnwindSafe};
@@ -82,7 +84,9 @@ unsafe impl AbiOut for CancelOut {}
 ///
 /// Every field of the table is an integer or an `Option` of a function pointer, so the all-zero
 /// bit pattern is a valid table with every op absent ([`absent_table`]).
-pub unsafe trait KindOps: Copy + 'static {
+pub unsafe trait KindOps: table_seal::Sealed + Copy + 'static {
+    /// The SDK marker whose slots this table accepts.
+    type Marker: KindMarker;
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
     /// Exact version of this table; defaults to the currently admitted kind.
@@ -143,30 +147,22 @@ slot_structs!(Lifecycle {
 /// use busbar_contract::abi::mechanism::KindCode;
 /// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
-/// #[repr(C)]
-/// #[derive(Clone, Copy)]
-/// pub struct OneOp { head: OpsHead, only: Option<Op> }
-/// unsafe impl KindOps for OneOp {
-///     const KIND: KindCode = KindCode::Store;
-///     type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
-/// }
-/// // Kind op 0 reads a `GenIn` and writes a `TickOut`.
-/// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
+/// use busbar_contract::abi::secret::{Ops, ResolveIn, ResolveOut};
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #     impl RawSlot for $n { type Kind = busbar_contract::plugin::markers::SecretKind; type In = $i; type Out = $o;
 /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
 /// # ready!(Rt, GenIn, OutHead); ready!(Tk, TickIn, TickOut); ready!(Dr, DriveIn, OutHead);
 /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
-/// ready!(Only, GenIn, TickOut); // the kind's own structs: compiles
+/// ready!(Only, ResolveIn, ResolveOut); // the kind's own structs: compiles
 /// busbar_contract::plugin_door! {
-///     ops: OneOp,
+///     ops: Ops,
 ///     statement: busbar_contract::abi::sdk::door::statement("one-op", "0", 1),
 ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
 ///                  cancel: Cn, release: Rl, close: Cl },
-///     kind_ops: { only: Only },
+///     kind_ops: { resolve: Only },
 /// }
 /// # fn main() { let _ = door(); }
 /// ```
@@ -179,17 +175,10 @@ slot_structs!(Lifecycle {
 /// use busbar_contract::abi::mechanism::KindCode;
 /// use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
 /// # use std::ffi::c_void;
-/// #[repr(C)]
-/// #[derive(Clone, Copy)]
-/// pub struct OneOp { head: OpsHead, only: Option<Op> }
-/// unsafe impl KindOps for OneOp {
-///     const KIND: KindCode = KindCode::Store;
-///     type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
-/// }
-/// unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneOp { type In = GenIn; type Out = TickOut; }
+/// use busbar_contract::abi::secret::{Ops, ResolveIn, ResolveOut};
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #     impl RawSlot for $n { type Kind = busbar_contract::plugin::markers::SecretKind; type In = $i; type Out = $o;
 /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Op_, OpenIn, OpenOut); ready!(Rf, RefreshIn, OutHead);
@@ -197,11 +186,11 @@ slot_structs!(Lifecycle {
 /// # ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead); ready!(Cl, InHead, OutHead);
 /// ready!(Only, CancelIn, CancelOut); // another op's structs: refused
 /// busbar_contract::plugin_door! {
-///     ops: OneOp,
+///     ops: Ops,
 ///     statement: busbar_contract::abi::sdk::door::statement("one-op", "0", 1),
 ///     lifecycle: { validate: V, open: Op_, refresh: Rf, retire: Rt, tick: Tk, drive: Dr,
 ///                  cancel: Cn, release: Rl, close: Cl },
-///     kind_ops: { only: Only },
+///     kind_ops: { resolve: Only },
 /// }
 /// # fn main() { let _ = door(); }
 /// ```
@@ -209,36 +198,73 @@ slot_structs!(Lifecycle {
 /// # Safety
 /// `In`/`Out` are exactly the structs the kind's ABI states for slot `INDEX` of `Self`; the
 /// trampoline trusts them to size its copies.
-pub unsafe trait KindSlot<const INDEX: u32> {
+pub unsafe trait KindSlot<const INDEX: u32>: table_seal::Sealed {
     /// The op's `in`.
     type In: AbiIn;
     /// The op's `out`.
     type Out: AbiOut;
 }
 
+pub(crate) mod table_seal {
+    pub trait Sealed {}
+    pub trait For<O, const INDEX: u32> {}
+}
+impl table_seal::Sealed for Lifecycle {}
+impl table_seal::Sealed for crate::abi::plane::PlaneLifecycle {}
+impl table_seal::Sealed for crate::abi::secret::Ops {}
+impl table_seal::Sealed for crate::abi::auth::Ops {}
+impl table_seal::Sealed for crate::abi::hook::Ops {}
+impl table_seal::Sealed for crate::abi::export::Ops {}
+impl table_seal::Sealed for crate::abi::plane::Ops {}
+impl table_seal::Sealed for crate::abi::transport::Ops {}
+
+// The input/output table and owning kind must agree, including widened lifecycles.
+macro_rules! bound_table {
+    ($ops:ty, $life:ty) => {
+        impl<const I: u32> table_seal::For<$ops, I> for $ops {}
+        impl<const I: u32> table_seal::For<$ops, I> for $life {}
+    };
+}
+bound_table!(crate::abi::secret::Ops, Lifecycle);
+bound_table!(crate::abi::auth::Ops, Lifecycle);
+bound_table!(crate::abi::hook::Ops, Lifecycle);
+bound_table!(crate::abi::export::Ops, Lifecycle);
+bound_table!(crate::abi::transport::Ops, Lifecycle);
+bound_table!(crate::abi::store::v4::Ops, Lifecycle);
+bound_table!(crate::abi::plane::Ops, crate::abi::plane::PlaneLifecycle);
+// These two mechanism entries never widen, even for Plane.
+impl table_seal::For<crate::abi::plane::Ops, { lc::slot::READY }> for Lifecycle {}
+impl table_seal::For<crate::abi::plane::Ops, { lc::slot::MIGRATE }> for Lifecycle {}
+
 // SAFETY (all seven): each kind's `Ops` is `#[repr(C)]`, leads with `head: OpsHead`, and appends
 // only `Option<Op>` slots (`abi/<kind>/`).
 unsafe impl KindOps for crate::abi::secret::Ops {
+    type Marker = crate::plugin::markers::SecretKind;
     const KIND: KindCode = KindCode::Secret;
     type Lifecycle = Lifecycle;
 }
 unsafe impl KindOps for crate::abi::auth::Ops {
+    type Marker = crate::plugin::markers::AuthKind;
     const KIND: KindCode = KindCode::Auth;
     type Lifecycle = Lifecycle;
 }
 unsafe impl KindOps for crate::abi::hook::Ops {
+    type Marker = crate::plugin::markers::HookKind;
     const KIND: KindCode = KindCode::Hook;
     type Lifecycle = Lifecycle;
 }
 unsafe impl KindOps for crate::abi::export::Ops {
+    type Marker = crate::plugin::markers::ExportKind;
     const KIND: KindCode = KindCode::Export;
     type Lifecycle = Lifecycle;
 }
 unsafe impl KindOps for crate::abi::plane::Ops {
+    type Marker = crate::plugin::markers::PlaneKind;
     const KIND: KindCode = KindCode::Plane;
     type Lifecycle = crate::abi::plane::PlaneLifecycle;
 }
 unsafe impl KindOps for crate::abi::transport::Ops {
+    type Marker = crate::plugin::markers::TransportKind;
     const KIND: KindCode = KindCode::Transport;
     type Lifecycle = Lifecycle;
 }
@@ -256,7 +282,7 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 /// use busbar_contract::abi::sdk::door::RawSlot;
 /// use std::ffi::c_void;
 /// pub struct Peek;
-/// impl RawSlot for Peek {
+/// impl RawSlot for Peek { type Kind = busbar_contract::plugin::markers::SecretKind;
 ///     type In = GenIn;
 ///     type Out = OutHead;
 ///     unsafe fn call(instance: *mut c_void, _: &GenIn, _: &mut OutHead) -> Outcome {
@@ -294,6 +320,8 @@ unsafe impl KindOps for crate::abi::transport::Ops {
 /// fn main() {}
 /// ```
 pub trait RawSlot {
+    /// The validated kind of the slot.
+    type Kind: KindMarker;
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -317,6 +345,8 @@ pub trait RawSlot {
 /// [`SAFE`](Self::SAFE) is `true` only when `enter` reads the instance as the SDK's typed state
 /// and, in `open`, answers only an instance the SDK minted: the SDK's slots trust it.
 pub unsafe trait Entry {
+    /// The validated kind of the slot.
+    type Kind: KindMarker;
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -342,6 +372,7 @@ pub unsafe trait Entry {
 // SAFETY: a raw slot states `SAFE = false`, and its body runs under the contract `enter` is
 // called under, which is `RawSlot::call`'s.
 unsafe impl<S: RawSlot> Entry for S {
+    type Kind = S::Kind;
     type In = S::In;
     type Out = S::Out;
     unsafe fn enter(instance: *mut c_void, _: u32, input: &S::In, out: &mut S::Out) -> Outcome {
@@ -529,10 +560,11 @@ pub const fn slot_count<T: KindOps>() -> u32 {
 
 /// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
 #[must_use]
-pub const fn kind_op<T, S, H, const INDEX: u32>() -> Option<Op>
+pub const fn kind_op<O, T, S, H, const INDEX: u32>() -> Option<Op>
 where
-    T: KindSlot<INDEX>,
-    S: Entry<In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
+    O: KindOps,
+    T: KindSlot<INDEX> + table_seal::For<O, INDEX>,
+    S: Entry<Kind = O::Marker, In = <T as KindSlot<INDEX>>::In, Out = <T as KindSlot<INDEX>>::Out>,
     H: CaptureHome,
 {
     Some(trampoline::<S, H, INDEX>)
@@ -757,7 +789,7 @@ pub const unsafe fn door<T: KindOps>(
 /// ```
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
-/// # impl Life for P {
+/// # impl Life for P { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     const CANCEL: u32 = 0;
 /// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
 /// #         Ok(P)
@@ -805,7 +837,7 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// ```compile_fail
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
-/// # impl Life for P {
+/// # impl Life for P { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     const CANCEL: u32 = 0;
 /// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
 /// #         Ok(P)
@@ -833,7 +865,7 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// ```
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
-/// # impl Life for P {
+/// # impl Life for P { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     const CANCEL: u32 = 0;
 /// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
 /// #         Ok(P)
@@ -863,7 +895,7 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// ```compile_fail
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
-/// # impl Life for P {
+/// # impl Life for P { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     const CANCEL: u32 = 0;
 /// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
 /// #         Ok(P)
@@ -891,7 +923,7 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// ```
 /// # use busbar_contract::abi::sdk::life::{Life, Refreshed, Refusal};
 /// # struct P;
-/// # impl Life for P {
+/// # impl Life for P { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     const CANCEL: u32 = 0;
 /// #     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
 /// #         Ok(P)
@@ -1002,9 +1034,10 @@ impl MacroDoor {
 macro_rules! plugin_door {
     // The door's `ready` entry: none, or the trampoline over the named slot (kind-neutral: the
     // mechanism's own `ReadyIn`/`OutHead`, whatever the kind).
-    (@ready $capture:ty) => { ::core::option::Option::None };
-    (@ready $capture:ty, $ready:ty) => {
+    (@ready $ops:ty, $capture:ty) => { ::core::option::Option::None };
+    (@ready $ops:ty, $capture:ty, $ready:ty) => {
         $crate::abi::sdk::door::kind_op::<
+            $ops,
             $crate::abi::sdk::door::Lifecycle,
             $ready,
             $capture,
@@ -1012,9 +1045,10 @@ macro_rules! plugin_door {
         >()
     };
     // The door's `migrate` entry, likewise (the mechanism's own `ValidateIn`/`OutHead`).
-    (@migrate $capture:ty) => { ::core::option::Option::None };
-    (@migrate $capture:ty, $migrate:ty) => {
+    (@migrate $ops:ty, $capture:ty) => { ::core::option::Option::None };
+    (@migrate $ops:ty, $capture:ty, $migrate:ty) => {
         $crate::abi::sdk::door::kind_op::<
+            $ops,
             $crate::abi::sdk::door::Lifecycle,
             $migrate,
             $capture,
@@ -1151,18 +1185,18 @@ macro_rules! plugin_door {
             #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
-                    __sdk::kind_op::<__Life, $validate, __Capture, { __lc::slot::VALIDATE }>(),
-                    __sdk::kind_op::<__Life, $open, __Capture, { __lc::slot::OPEN }>(),
-                    __sdk::kind_op::<__Life, $refresh, __Capture, { __lc::slot::REFRESH }>(),
-                    __sdk::kind_op::<__Life, $retire, __Capture, { __lc::slot::RETIRE }>(),
-                    __sdk::kind_op::<__Life, $tick, __Capture, { __lc::slot::TICK }>(),
-                    __sdk::kind_op::<__Life, $drive, __Capture, { __lc::slot::DRIVE }>(),
-                    __sdk::kind_op::<__Life, $cancel, __Capture, { __lc::slot::CANCEL }>(),
-                    __sdk::kind_op::<__Life, $release, __Capture, { __lc::slot::RELEASE }>(),
-                    __sdk::kind_op::<__Life, $close, __Capture, { __lc::slot::CLOSE }>(),
+                    __sdk::kind_op::<__Ops, __Life, $validate, __Capture, { __lc::slot::VALIDATE }>(),
+                    __sdk::kind_op::<__Ops, __Life, $open, __Capture, { __lc::slot::OPEN }>(),
+                    __sdk::kind_op::<__Ops, __Life, $refresh, __Capture, { __lc::slot::REFRESH }>(),
+                    __sdk::kind_op::<__Ops, __Life, $retire, __Capture, { __lc::slot::RETIRE }>(),
+                    __sdk::kind_op::<__Ops, __Life, $tick, __Capture, { __lc::slot::TICK }>(),
+                    __sdk::kind_op::<__Ops, __Life, $drive, __Capture, { __lc::slot::DRIVE }>(),
+                    __sdk::kind_op::<__Ops, __Life, $cancel, __Capture, { __lc::slot::CANCEL }>(),
+                    __sdk::kind_op::<__Ops, __Life, $release, __Capture, { __lc::slot::RELEASE }>(),
+                    __sdk::kind_op::<__Ops, __Life, $close, __Capture, { __lc::slot::CLOSE }>(),
                 ),
                 $($(
-                    $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
+                    $field: __sdk::kind_op::<__Ops, __Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
                 ..__sdk::absent_table::<__Ops>()
             };
@@ -1173,9 +1207,9 @@ macro_rules! plugin_door {
                 __sdk::door::<__Ops>(
                     __STATEMENT,
                     __OPS,
-                    $crate::plugin_door!(@ready __Capture $(, $ready)?),
+                    $crate::plugin_door!(@ready __Ops, __Capture $(, $ready)?),
                 )
-                .__with_migrate($crate::plugin_door!(@migrate __Capture $(, $migrate)?))
+                .__with_migrate($crate::plugin_door!(@migrate __Ops, __Capture $(, $migrate)?))
             };
             __DOOR
         }

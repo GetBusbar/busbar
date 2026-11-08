@@ -391,6 +391,7 @@ mod unsupported_host {
         fn trust_decide(
             &self,
             _caller: &Caller,
+            _ticket: crate::abi::mechanism::ticket::Ticket,
             _key: TrustKeyRef<'_>,
             _expected: Option<&str>,
             _approve: bool,
@@ -540,11 +541,7 @@ fn unsupported_host_refuses_without_a_callback_or_legacy_operation() {
     use crate::services::{Caller, HostServices};
     let host = OldHost;
     assert!(!host.supports_record_transactions());
-    let caller = Caller {
-        instance: "instance".into(),
-        plugin: "plugin".into(),
-        kind: crate::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test("instance".into(), crate::abi::mechanism::KindCode::Plane);
     let candidate = ConditionalCandidate {
         correlation: 1,
         predicates: vec![],

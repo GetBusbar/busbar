@@ -14,11 +14,10 @@ use crate::trust::section::TrustEntry;
 const UNVERIFIED: &str = "unverified";
 
 fn caller() -> Caller {
-    Caller {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("the-plane"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    }
+    Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    )
 }
 
 fn kernel() -> KernelServices {
@@ -87,7 +86,13 @@ fn generic_approve_never_pins_an_unverified_sighting() {
         item: None,
     };
     for expected in [None, Some(UNVERIFIED)] {
-        let decided = immediate(|later| k.trust_decide(&caller(), key, expected, true, later));
+        let me = caller();
+        let ticket = busbar_contract::abi::mechanism::ticket::Ticket {
+            slot: 1,
+            generation: 1,
+        };
+        let _grant = k.grant_trust_decision(&me, ticket, "cp").unwrap();
+        let decided = immediate(|later| k.trust_decide(&me, ticket, key, expected, true, later));
         assert_eq!(
             decided.value,
             svc::UNDECIDED_UNPINNED,
@@ -189,7 +194,14 @@ fn plugin_revoke_retains_its_existing_expected_digest_semantics() {
         counterparty: "cp",
         item: None,
     };
-    let decided = immediate(|later| k.trust_decide(&caller(), key, Some("obsolete"), false, later));
+    let me = caller();
+    let ticket = busbar_contract::abi::mechanism::ticket::Ticket {
+        slot: 1,
+        generation: 1,
+    };
+    let _grant = k.grant_trust_decision(&me, ticket, "cp").unwrap();
+    let decided =
+        immediate(|later| k.trust_decide(&me, ticket, key, Some("obsolete"), false, later));
     assert_eq!(decided.value, svc::TRUST_DECIDED_PENDING);
     assert_eq!(pinned(&k).as_deref(), Some("current"));
     assert_eq!(served(&k), Err(Distrust::NotApproved));

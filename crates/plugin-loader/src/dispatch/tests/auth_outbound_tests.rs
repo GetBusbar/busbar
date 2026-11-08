@@ -68,11 +68,12 @@ mod plugin {
 
     pub struct Open(PhantomData<Outbound>);
     impl SafeSlot for Open {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         type In = OpenOutboundIn;
         type Out = OpenOutboundOut;
         type State = Inst;
         fn call(
-            _: Instance<'_, Inst>,
+            _: Instance<'_, Inst, Self::Kind>,
             input: Lent<'_, OpenOutboundIn>,
             mut out: Out<'_, OpenOutboundOut>,
         ) -> Outcome {
@@ -91,11 +92,12 @@ mod plugin {
 
     pub struct Fields(PhantomData<Outbound>);
     impl SafeSlot for Fields {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         type In = FieldsIn;
         type Out = FieldsOut;
         type State = Inst;
         fn call(
-            instance: Instance<'_, Inst>,
+            instance: Instance<'_, Inst, Self::Kind>,
             input: Lent<'_, FieldsIn>,
             mut out: Out<'_, FieldsOut>,
         ) -> Outcome {
@@ -323,15 +325,18 @@ impl EnvelopeSink for Quiet {
 }
 
 pub(crate) fn opened() -> OutboundInstance {
-    let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
-        budgets: Budgets {
-            call: Duration::from_millis(400),
-            ..Budgets::default()
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 1,
+            budgets: Budgets {
+                call: Duration::from_millis(400),
+                ..Budgets::default()
+            },
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
         },
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }));
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(plugin::door).expect("the test auth door states its Statement");
     let p = load_linked::<Auth>(
         &row,

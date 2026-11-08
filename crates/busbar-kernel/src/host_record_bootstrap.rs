@@ -3,8 +3,6 @@
 
 //! Operator-attested cold record migration. A quiet host queue is never backend quiescence.
 
-use std::sync::Arc;
-
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::services::Caller;
 use serde::{Deserialize, Serialize};
@@ -215,14 +213,12 @@ impl Bootstrap {
     /// Host-issued caller identity, not an instance-label comparison. Clones share this identity;
     /// a new opened plugin with identical text cannot inherit the first generation's grant.
     pub fn accepts(&self, caller: &Caller) -> bool {
-        if caller.instance.as_ref() != self.instance {
+        if caller.namespace().as_ref() != self.instance {
             return true;
         }
-        self.caller.as_ref().is_some_and(|held| {
-            Arc::ptr_eq(&held.instance, &caller.instance)
-                && Arc::ptr_eq(&held.plugin, &caller.plugin)
-                && held.kind == caller.kind
-        })
+        self.caller
+            .as_ref()
+            .is_some_and(|held| held.same_incarnation(caller))
     }
 
     pub fn bind_caller(&mut self, caller: &Caller) -> Result<(), &'static str> {
@@ -242,14 +238,14 @@ impl Bootstrap {
         caller: &Caller,
     ) -> Result<Option<Self>, &'static str> {
         if !proof
-            .permits(&caller.instance)
+            .permits(caller.namespace())
             .await
             .map_err(|_| "native record bootstrap ownership refused")?
         {
             return Ok(None);
         }
         Ok(Some(Self {
-            instance: caller.instance.to_string(),
+            instance: caller.namespace().to_string(),
             epoch: hex::encode(proof.owner()),
             caller: Some(caller.clone()),
             origin: Origin::NativeFirstStart,
@@ -260,7 +256,7 @@ impl Bootstrap {
         matches!(self.origin, Origin::NativeFirstStart)
             && self.bound()
             && self.accepts(caller)
-            && self.instance == caller.instance.as_ref()
+            && self.instance == caller.namespace().as_ref()
     }
 }
 

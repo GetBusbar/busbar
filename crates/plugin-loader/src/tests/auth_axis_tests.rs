@@ -9,12 +9,15 @@ use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
 use crate::PluginRegistry;
 
 fn empty() -> AuthRows {
-    let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
-        budgets: Budgets::default(),
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 1,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     AuthRows::new(Arc::new(PluginRegistry::empty()), d)
 }
 
@@ -197,12 +200,15 @@ mod markless_default {
 }
 
 fn linking(doors: &[(&str, busbar_contract::abi::mechanism::door::DoorFn)]) -> AuthRows {
-    let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
-        budgets: Budgets::default(),
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 1,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     let linked = doors
         .iter()
         .map(|(name, door)| crate::LinkedPlugin::auth_door(name, *door))
@@ -358,12 +364,15 @@ fn dropping(alias: &str, door: busbar_contract::abi::mechanism::door::DoorFn) ->
         1,
         "the dropped-in row is loadable"
     );
-    let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 1,
-        budgets: Budgets::default(),
-        watchdog_period: Duration::from_millis(20),
-        ..DispatchConfig::default()
-    }));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 1,
+            budgets: Budgets::default(),
+            watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     AuthRows::new(Arc::new(registry), d)
 }
 

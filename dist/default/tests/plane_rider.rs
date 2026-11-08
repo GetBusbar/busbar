@@ -193,6 +193,7 @@ fn a_door_plane_reads_the_kernels_own_clock_both_ways() {
     let dispatcher = Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn HostServices>,
+        busbar_kernel::host_services::caller_binding(),
     );
     let mut answers = Vec::new();
     for way in ways() {
@@ -236,7 +237,10 @@ fn a_door_plane_reads_the_kernels_own_clock_both_ways() {
 
 #[test]
 fn with_no_host_services_the_clock_read_is_refused() {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     for way in ways() {
         let plugin = opened(way, &dispatcher);
         assert_eq!(

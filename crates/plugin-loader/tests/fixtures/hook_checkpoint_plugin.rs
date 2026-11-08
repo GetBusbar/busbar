@@ -27,6 +27,7 @@ pub struct Gate {
 }
 
 impl Life for Gate {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     const CANCEL: u32 = cancel::ABORTED;
 
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -48,11 +49,12 @@ impl Life for Gate {
 
 pub struct Decide;
 impl SafeSlot for Decide {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = DecideIn;
     type Out = DecideOut;
     type State = Held<Gate>;
     fn call(
-        instance: Instance<'_, Self::State>,
+        instance: Instance<'_, Self::State, Self::Kind>,
         input: Lent<'_, Self::In>,
         mut out: Out<'_, Self::Out>,
     ) -> Outcome {
@@ -72,11 +74,12 @@ impl SafeSlot for Decide {
 
 pub struct Configure;
 impl SafeSlot for Configure {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = ConfigureIn;
     type Out = ConfigureOut;
     type State = Held<Gate>;
     fn call(
-        instance: Instance<'_, Self::State>,
+        instance: Instance<'_, Self::State, Self::Kind>,
         input: Lent<'_, Self::In>,
         mut out: Out<'_, Self::Out>,
     ) -> Outcome {
@@ -147,21 +150,23 @@ impl SafeSlot for Configure {
 
 pub struct Refuse<I, O>(PhantomData<(I, O)>);
 impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = I;
     type Out = O;
     type State = Held<Gate>;
-    fn call(_: Instance<'_, Self::State>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+    fn call(_: Instance<'_, Self::State, Self::Kind>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }
 
 pub struct Notify;
 impl SafeSlot for Notify {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = NotifyIn;
     type Out = OutHead;
     type State = Held<Gate>;
     fn call(
-        instance: Instance<'_, Self::State>,
+        instance: Instance<'_, Self::State, Self::Kind>,
         _: Lent<'_, Self::In>,
         mut out: Out<'_, Self::Out>,
     ) -> Outcome {
@@ -180,11 +185,12 @@ impl SafeSlot for Notify {
 
 pub struct Status;
 impl SafeSlot for Status {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = InHead;
     type Out = StatusOut;
     type State = Held<Gate>;
     fn call(
-        instance: Instance<'_, Self::State>,
+        instance: Instance<'_, Self::State, Self::Kind>,
         _: Lent<'_, Self::In>,
         mut out: Out<'_, Self::Out>,
     ) -> Outcome {

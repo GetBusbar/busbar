@@ -151,15 +151,18 @@ extern "C" fn late_door() -> &'static Door {
 fn an_abandoned_serve_keeps_its_actual_inputs_until_its_crossing_returns() {
     let gate = Arc::new(Gate::default());
     assert!(GATE.set(Arc::clone(&gate)).is_ok());
-    let d = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: 2,
-        budgets: Budgets {
-            call: Duration::from_millis(100),
-            ..Budgets::default()
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: 2,
+            budgets: Budgets {
+                call: Duration::from_millis(100),
+                ..Budgets::default()
+            },
+            watchdog_period: Duration::from_millis(10),
+            ..DispatchConfig::default()
         },
-        watchdog_period: Duration::from_millis(10),
-        ..DispatchConfig::default()
-    }));
+        busbar_contract::services::test_caller_binding(),
+    ));
     let p = bound(late_door, &d, "late-serve");
     let loan = Arc::new(ServeLoan {
         target: b"/late".to_vec(),

@@ -113,9 +113,11 @@ impl fmt::Display for Kind {
 }
 
 /// A compile-time stand-in for one kind.
-pub trait KindMarker: sealed::KindSeal {
+pub trait KindMarker: sealed::KindSeal + Copy + Send + Sync + core::fmt::Debug + 'static {
     /// Which kind this marker stands for.
     const KIND: Kind;
+    /// The same closed kind on the memory ABI.
+    const CODE: crate::abi::mechanism::KindCode;
 }
 
 /// The compile-time markers, one per kind.
@@ -130,6 +132,7 @@ pub mod markers {
             impl KindSeal for $name {}
             impl KindMarker for $name {
                 const KIND: Kind = Kind::$kind;
+                const CODE: crate::abi::mechanism::KindCode = crate::abi::mechanism::KindCode::$kind;
             }
         };
     }

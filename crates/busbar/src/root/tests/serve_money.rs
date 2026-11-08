@@ -284,6 +284,7 @@ async fn governed_full(
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
@@ -892,6 +893,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
@@ -2298,7 +2300,10 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     let routes = session_custody_routes(&mut g, false);
     let kernel = busbar_kernel::host_services::KernelServices::new();
     let session = std::num::NonZeroU64::new(kernel.open_carrier_session(
-        "line-session-custody",
+        &busbar_contract::services::Caller::for_test(
+            "line-session-custody".into(),
+            busbar_contract::abi::mechanism::KindCode::Plane,
+        ),
         "fixture-principal",
         Arc::new(|_: &[u8]| true),
     ))

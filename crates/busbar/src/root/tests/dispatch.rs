@@ -66,7 +66,9 @@ fn the_binarys_dispatcher_serves_dest_judge_once_composed() {
         Stored::ready(svc::DEST_METADATA)
     );
     assert!(
-        Dispatcher::new(config(1)).host_services().is_none(),
+        Dispatcher::new(config(1), busbar_kernel::host_services::caller_binding())
+            .host_services()
+            .is_none(),
         "RED arm: a dispatcher built with no provider serves no host service"
     );
 }

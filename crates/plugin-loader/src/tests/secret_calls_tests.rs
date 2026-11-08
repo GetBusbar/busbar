@@ -32,8 +32,13 @@ fn environment() {
 
 fn dispatcher() -> Arc<Dispatcher> {
     static ONE: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
-    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
-        .clone()
+    ONE.get_or_init(|| {
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ))
+    })
+    .clone()
 }
 
 fn settings() -> serde_json::Value {
@@ -427,7 +432,10 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     let refused = open(Arc::new(Dispatcher::new_unlent(DispatchConfig::default())))
         .expect_err("no seal lent: the material is never revealed");
     assert!(refused.contains("lent its seal"), "{refused}");
-    if let Err(other) = open(Arc::new(Dispatcher::new(DispatchConfig::default()))) {
+    if let Err(other) = open(Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ))) {
         assert!(
             !other.contains("lent its seal"),
             "a lent dispatcher reveals: {other}"
@@ -460,6 +468,7 @@ fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
 pub struct Grows;
 
 impl busbar_contract::abi::sdk::life::Life for Grows {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     const CANCEL: u32 = 0;
     fn open(
         _: &[u8],
@@ -482,11 +491,12 @@ impl busbar_contract::abi::sdk::life::Life for Grows {
 pub struct GrowingResolve;
 
 impl busbar_contract::abi::sdk::SafeSlot for GrowingResolve {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = busbar_contract::abi::secret::ResolveIn;
     type Out = busbar_contract::abi::secret::ResolveOut;
     type State = busbar_contract::abi::sdk::life::Held<Grows>;
     fn call(
-        _: busbar_contract::abi::sdk::Instance<'_, Self::State>,
+        _: busbar_contract::abi::sdk::Instance<'_, Self::State, Self::Kind>,
         input: busbar_contract::abi::sdk::Lent<'_, Self::In>,
         mut out: busbar_contract::abi::sdk::Out<'_, Self::Out>,
     ) -> busbar_contract::abi::mechanism::call::Outcome {

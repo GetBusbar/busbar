@@ -34,8 +34,8 @@ fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() 
         "the boot's admission of its door answers the same key"
     );
 
-    let framer = linked_transport!(busbar_transport_http::door::door);
-    let stated = row_facts(busbar_transport_http::door::door);
+    let framer = linked_transport!(busbar_transport_http::door);
+    let stated = row_facts(busbar_transport_http::door);
     assert_eq!((framer.key)(), "http");
     assert_eq!((framer.composes_over)(), stated.composes_over);
     assert!(!stated.session, "the actual HTTP claim carries no session");

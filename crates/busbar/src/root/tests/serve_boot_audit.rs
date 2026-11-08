@@ -215,6 +215,7 @@ pub(super) async fn run() {
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let connector = crate::root::connector::the().clone();

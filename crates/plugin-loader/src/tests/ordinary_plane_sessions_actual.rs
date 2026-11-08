@@ -203,7 +203,10 @@ fn every_pending_piece_resumes_on_its_original_unit_ticket() {
     let _serial = SERIAL.lock().unwrap();
     MODE.store(0, SeqCst);
     SEEN.lock().unwrap().clear();
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = plugin(&d);
     let t = d.mint(0).unwrap();
     d.bind_plane_unit(&p, t, 73);
@@ -234,7 +237,10 @@ fn terminal_session_refuses_another_crossing_and_allows_a_fresh_unit() {
     let _serial = SERIAL.lock().unwrap();
     MODE.store(1, SeqCst);
     SEEN.lock().unwrap().clear();
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = plugin(&d);
     let t = d.mint(0).unwrap();
     d.bind_plane_unit(&p, t, 73);
@@ -277,7 +283,10 @@ fn cancelling_no_session_ticket_cannot_end_an_admitted_unit() {
     MODE.store(1, SeqCst);
     SEEN.lock().unwrap().clear();
     CANCELS.store(0, SeqCst);
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = plugin(&d);
     let t = d.mint(0).unwrap();
     d.bind_plane_unit(&p, t, 73);
@@ -305,7 +314,10 @@ fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
     let _serial = SERIAL.lock().unwrap();
     OPEN_URLS.lock().unwrap().clear();
     for url in [None, Some("https://public.example/mcp")] {
-        let d = Dispatcher::new(DispatchConfig::default());
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let p = load_linked::<Plane>(
             &LinkedRow::of(door).unwrap(),
             Bind {
@@ -331,7 +343,10 @@ fn a_short_piece_is_recalled_with_room_on_the_same_session_ticket() {
     let _serial = SERIAL.lock().unwrap();
     MODE.store(3, SeqCst);
     SEEN.lock().unwrap().clear();
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = plugin(&d);
     for unit in [73, 74] {
         let ticket = d.mint(0).unwrap();

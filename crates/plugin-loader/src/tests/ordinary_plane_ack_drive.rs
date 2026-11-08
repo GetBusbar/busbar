@@ -16,7 +16,8 @@ use busbar_contract::abi::plane::{
     PlaneOpenIn, ProjectIn, ProjectOut,
 };
 use busbar_contract::abi::sdk::completion_retirement::{self as wire, Domain, Handle, Retirement};
-use busbar_contract::abi::sdk::services::Services;
+type Services =
+    busbar_contract::abi::sdk::services::Services<busbar_contract::plugin::markers::PlaneKind>;
 use busbar_contract::services::{
     Caller, DiskDest, HookAsk, Later, NestAsk, Ran, Reading, RecordsList, Snapshot, Stored,
     TrustKeyRef,
@@ -88,8 +89,8 @@ extern "C" fn open(
         // SAFETY: loader's initialized PlaneOpen frame remains borrowed during OPEN.
         let input = unsafe { &*input.cast::<PlaneOpenIn>() };
         // SAFETY: actual OPEN accepted the host's live advertised table.
-        let services =
-            unsafe { Services::from_raw(&*input.open.host) }.expect("actual bound host services");
+        let services = unsafe { Services::test_from_raw(&*input.open.host) }
+            .expect("actual bound host services");
         let defect = match NEXT.load(SeqCst) {
             0 => Defect::Pending,
             1 => Defect::Ready,
@@ -513,6 +514,7 @@ impl busbar_contract::services::HostServices for Provider {
     fn trust_decide(
         &self,
         _caller: &Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _key: TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,
@@ -548,7 +550,7 @@ impl busbar_contract::services::HostServices for Provider {
     }
     fn entitlement_check(&self, caller: &Caller, unit: Option<u64>, target: &str) -> Stored {
         self.attributed.lock().unwrap().push((
-            caller.instance.to_string(),
+            caller.namespace().to_string(),
             unit,
             target.to_string(),
         ));
@@ -738,7 +740,11 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
             defer: matches!(defect, Defect::PendingOverflow | Defect::PendingNeeded),
             ..Provider::default()
         });
-        let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+        let dispatcher = Dispatcher::with_services(
+            DispatchConfig::default(),
+            provider.clone(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let row = LinkedRow::of(door).expect("actual MCP descriptor plus hostile ABI metadata");
         let plugin = load_linked::<Plane>(
             &row,
@@ -812,7 +818,11 @@ fn canceling_an_actual_pending_crossing_cannot_ack_its_drivers_result() {
     use busbar_contract::abi::plane::{slot, FROM_CALLER};
     NEXT.store(Defect::Cancel as u8, SeqCst);
     let provider = Arc::<Provider>::default();
-    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+    let dispatcher = Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider.clone(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
@@ -892,7 +902,11 @@ fn a_pending_driver_delivers_ids_resumes_and_retires_late_service_custody() {
         defer: true,
         ..Provider::default()
     });
-    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+    let dispatcher = Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider.clone(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {
@@ -1056,7 +1070,11 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
     let _serial = TEST_LOCK.lock().unwrap();
     NEXT.store(Defect::Pending as u8, SeqCst);
     let provider = Arc::<Provider>::default();
-    let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+    let dispatcher = Dispatcher::with_services(
+        DispatchConfig::default(),
+        provider.clone(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let plugin = load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
         Bind {

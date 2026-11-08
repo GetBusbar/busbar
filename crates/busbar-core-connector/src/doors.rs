@@ -38,7 +38,10 @@ pub fn dispatcher() -> &'static Dispatcher {
 /// [`dispatcher`], as the shared handle a door opened on it holds ([`Dispatched::open`]).
 fn process_dispatcher() -> &'static Arc<Dispatcher> {
     ONE.get_or_init(|| {
-        let d = Dispatcher::new(DispatchConfig::default());
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        );
         let _ = d.lend_seal(busbar_kernel::seal::lend());
         Arc::new(d)
     })
@@ -442,7 +445,7 @@ impl FramerDoor for Dispatched {
     }
 
     fn io_owner(&self) -> Option<u64> {
-        Some(self.live.plugin.inner.ctx().handle)
+        Some(self.live.plugin.io_owner())
     }
 
     fn seals_values(&self) -> bool {
@@ -709,7 +712,10 @@ mod identity_tests {
         let statement = rendering_of_library(&path)
             .expect("the actual TCP image renders")
             .expect("the actual TCP image exports a door");
-        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let plugin = load_dropped::<TransportKind>(
             &path,
             &statement,

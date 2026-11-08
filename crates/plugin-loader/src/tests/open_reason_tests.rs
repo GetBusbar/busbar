@@ -30,6 +30,7 @@ impl CaptureHome for CallbackCapture {
 
 struct FailureOnly;
 impl Life for FailureOnly {
+    type Kind = busbar_contract::plugin::markers::StoreKind;
     const CANCEL: u32 = 0;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
@@ -72,9 +73,14 @@ fn failed_open(reason: &[u8], buffer: &mut [u8]) -> (Outcome, OpenOut) {
     input.err_cap = buffer.len();
     let mut out: OpenOut = blank_out();
     out.head.size = size_of::<OpenOut>() as u32;
-    let callback =
-        kind_op::<Lifecycle, Safe<life::Open<FailureOnly>>, CallbackCapture, { slot::OPEN }>()
-            .expect("the SDK provides this lifecycle callback");
+    let callback = kind_op::<
+        busbar_contract::abi::store::v4::Ops,
+        Lifecycle,
+        Safe<life::Open<FailureOnly>>,
+        CallbackCapture,
+        { slot::OPEN },
+    >()
+    .expect("the SDK provides this lifecycle callback");
     // SAFETY: this is the SDK OPEN callback for these exact initialized ABI frames. NULL is
     // the initial instance; reason and the exclusive nonoverlapping output loan remain live
     // through the complete call. FailureOnly always fails, so no instance can escape it.
@@ -153,6 +159,7 @@ fn an_sdk_validate_and_open_say_their_own_owned_words_through_the_lent_buffers()
     let mut out: OutHead = blank_out();
     out.size = size_of::<OutHead>() as u32;
     let callback = kind_op::<
+        busbar_contract::abi::store::v4::Ops,
         Lifecycle,
         Safe<life::Validate<FailureOnly>>,
         CallbackCapture,

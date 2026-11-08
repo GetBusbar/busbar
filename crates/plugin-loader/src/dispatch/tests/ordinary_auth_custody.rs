@@ -10,7 +10,7 @@ use busbar_contract::abi::sdk::auth_outbound::{
     outbound_tail, style, Diags, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal,
     OutboundPlugin, SEALED_FIELDS_UNSUPPORTED,
 };
-use busbar_contract::abi::sdk::conn::Host;
+type Host = busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::AuthKind>;
 use busbar_contract::abi::sdk::cred::{Cred, Parts};
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::exchange::Op;
@@ -39,7 +39,7 @@ impl OutboundPlugin for Secure {
         &self,
         r: &FieldsView<'_>,
         out: &mut FieldsWriter<'_>,
-        _: &Op<'_>,
+        _: &Op<'_, busbar_contract::plugin::markers::AuthKind>,
     ) -> Poll<FieldsAnswer> {
         let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
         let facts = serde_json::json!({
@@ -81,7 +81,10 @@ mod real {
 }
 
 fn fixture() -> (OutboundInstance, FieldsRequest, u64) {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(real::door).expect("the existing SDK custody witness states itself");
     let plugin = load_linked::<Auth>(
         &row,

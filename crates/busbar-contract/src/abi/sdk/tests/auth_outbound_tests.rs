@@ -25,7 +25,7 @@ use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::sdk::auth_door::{with_tail, Answer, Verdict, VerifiedIdentity, VerifyView};
-use crate::abi::sdk::conn::Host as SdkHost;
+
 use crate::abi::sdk::door::{abi_str, statement};
 
 use super::*;
@@ -1433,3 +1433,7 @@ fn red_every_outbound_refusal_says_why() {
         "a handle the plugin does not hold was refused saying nothing"
     );
 }
+
+type SdkHost = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::AuthKind;

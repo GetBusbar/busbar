@@ -218,6 +218,7 @@ pub fn initialize(directory: &Path, command: &Command) -> Result<serde_json::Val
         .expect("actual Store states its door");
     let dispatcher = Arc::new(busbar_plugin_loader::dispatch::Dispatcher::new(
         busbar_plugin_loader::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
     ));
     let axis = busbar_plugin_loader::store_v4::DoorPersistenceAxis {
         dispatcher,

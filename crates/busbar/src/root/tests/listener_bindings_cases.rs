@@ -34,7 +34,7 @@ fn actual_http() -> DoorFn {
 // Keep the actual operation table and OPEN lifecycle. Only immutable declaration data is
 // restated, then admitted by the ordinary loader, so no host protocol table selects the bind.
 fn restated(cell: &RestatedTransport, binding: bool) -> &'static Door {
-    let source = busbar_transport_http::door::MACRO_DOOR;
+    let source = busbar_transport_http::MACRO_DOOR;
     let facts = crate::root::loader::dispatch::kinds::transport::stated(source.door_fn()).unwrap();
     assert!(
         facts.claims.len() >= 2,

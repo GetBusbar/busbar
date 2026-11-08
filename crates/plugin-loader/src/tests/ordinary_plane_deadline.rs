@@ -14,7 +14,10 @@ use std::time::Duration;
 #[test]
 fn the_plane_host_dispatcher_reports_real_deadline_without_wake() {
     for missed_wake in [false, true] {
-        let d = Dispatcher::new(DispatchConfig::default());
+        let d = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         let row = LinkedRow::of_raw(plug::busbar_plugin_door)
             .expect("existing adversarial ABI descriptor");
         let p = load_linked::<TestKind>(

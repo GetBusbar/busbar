@@ -163,6 +163,7 @@ pub(crate) struct Stats {
 }
 
 pub(crate) struct Env {
+    callers: Arc<dyn busbar_contract::services::CallerBinding>,
     pub(crate) budgets: Budgets,
 
     pub(crate) quarantine_after: u32,
@@ -2047,6 +2048,22 @@ impl std::fmt::Debug for Adopter {
 }
 
 impl Adopter {
+    pub(crate) fn bind_caller(
+        &self,
+        namespace: Arc<str>,
+        kind: busbar_contract::abi::mechanism::KindCode,
+    ) -> Result<busbar_contract::services::Caller, super::LoadError> {
+        if let Some(pool) = self.pool.upgrade() {
+            return Ok(pool.env.callers.bind(namespace, kind));
+        }
+        #[cfg(test)]
+        {
+            Ok(busbar_contract::services::Caller::for_test(namespace, kind))
+        }
+        #[cfg(not(test))]
+        Err(super::LoadError::NoCallerBinding)
+    }
+
     #[cfg(test)]
     pub(crate) fn unwatched() -> Self {
         Self { pool: Weak::new() }
@@ -2088,13 +2105,19 @@ impl std::fmt::Debug for Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn new(config: DispatchConfig) -> Self {
-        Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
+    pub fn new(
+        config: DispatchConfig,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    ) -> Self {
+        Self::try_new(config, callers).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
+    pub fn try_new(
+        config: DispatchConfig,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    ) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
-        Ok(Self::build(config, None, key))
+        Ok(Self::build(config, None, key, callers))
     }
 
     #[must_use]
@@ -2137,28 +2160,38 @@ impl Dispatcher {
         self.pool.env.runtime.get()
     }
 
-    pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::with_slot(config, ServicesSlot::of(provider))
+    pub fn with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    ) -> Self {
+        Self::with_slot(config, ServicesSlot::of(provider), callers)
     }
 
-    pub fn with_slot(config: DispatchConfig, slot: Arc<ServicesSlot>) -> Self {
-        Self::try_with_slot(config, slot).unwrap_or_else(|e| panic!("{e}"))
+    pub fn with_slot(
+        config: DispatchConfig,
+        slot: Arc<ServicesSlot>,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
+    ) -> Self {
+        Self::try_with_slot(config, slot, callers).unwrap_or_else(|e| panic!("{e}"))
     }
 
     pub fn try_with_slot(
         config: DispatchConfig,
         slot: Arc<ServicesSlot>,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
     ) -> Result<Self, super::LoadError> {
         let key = super::handle::ticket_key()?;
-        Ok(Self::build(config, Some(slot), key))
+        Ok(Self::build(config, Some(slot), key, callers))
     }
 
     fn build(
         config: DispatchConfig,
         provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
     ) -> Self {
-        let built = Self::build_unlent(config, provider, ticket_key);
+        let built = Self::build_unlent(config, provider, ticket_key, callers);
 
         #[cfg(test)]
         let _ = built.lend_seal(busbar_contract::plugin::TestKernelSeal);
@@ -2168,17 +2201,24 @@ impl Dispatcher {
     #[cfg(test)]
     pub(crate) fn new_unlent(config: DispatchConfig) -> Self {
         let key = super::handle::ticket_key().unwrap_or_else(|e| panic!("{e}"));
-        Self::build_unlent(config, None, key)
+        Self::build_unlent(
+            config,
+            None,
+            key,
+            busbar_contract::services::test_caller_binding(),
+        )
     }
 
     fn build_unlent(
         config: DispatchConfig,
         provider: Option<Arc<ServicesSlot>>,
         ticket_key: super::handle::TicketKey,
+        callers: Arc<dyn busbar_contract::services::CallerBinding>,
     ) -> Self {
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let services: Arc<ServiceStore> = Arc::default();
         let env = Arc::new(Env {
+            callers,
             budgets: config.budgets,
             quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),

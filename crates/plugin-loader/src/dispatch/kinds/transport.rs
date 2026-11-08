@@ -321,6 +321,8 @@ unsafe impl OutFrame for ArrivalOut {}
 unsafe impl OutFrame for LocateOut {}
 unsafe impl OutFrame for FramerOut {}
 
+impl crate::dispatch::kind_seal::Validated for Transport {}
+
 impl Kind for Transport {
     const CODE: KindCode = KindCode::Transport;
     type Ops = transport::Ops;

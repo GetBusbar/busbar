@@ -29,6 +29,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
                 ),
             )),
         ),
+        busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::connector::install_io(&dispatcher);
     let plugin = load_dropped::<Export>(

@@ -1206,7 +1206,10 @@ fn provider_location_refuses_an_unregistered_claim_and_an_omitted_target() {
 #[test]
 fn actual_http_and_ws_locate_before_open_without_network_or_runtime_state() {
     use crate::root::loader::dispatch::{Bind, ConnTable, DispatchConfig, Dispatcher, NoSink};
-    let on = Dispatcher::new(DispatchConfig::default());
+    let on = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let binding = || Bind {
         instance: Arc::from("pure-config-locate"),
         max_inflight_cap: 1,
@@ -1216,17 +1219,17 @@ fn actual_http_and_ws_locate_before_open_without_network_or_runtime_state() {
     };
     for (door, target, secure) in [
         (
-            busbar_transport_http::door::door as busbar_contract::abi::mechanism::door::DoorFn,
+            busbar_transport_http::door as busbar_contract::abi::mechanism::door::DoorFn,
             "https://unreachable.invalid:9443/path",
             true,
         ),
         (
-            busbar_transport_http::door::door,
+            busbar_transport_http::door,
             "http://127.0.0.1:9443/path",
             false,
         ),
         (
-            busbar_transport_ws::door::door,
+            busbar_transport_ws::door,
             "wss://unreachable.invalid:9443/path",
             true,
         ),

@@ -7,7 +7,7 @@ use crate::abi::host::conn::connector::{ConnectorSlots, EstablishIn, IoIn, Strea
 use crate::abi::host::service::ServiceOut;
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticket};
-use crate::abi::sdk::conn::{ConnFailure, Host};
+use crate::abi::sdk::conn::ConnFailure;
 use crate::abi::sdk::store::op::Parked;
 use crate::abi::sdk::store::wire::{drive, Wire};
 use crate::abi::sdk::store::{Op, Step};
@@ -441,3 +441,7 @@ fn always_ready_stream_yields_keeps_partial_writes_and_never_replays_ready_io() 
         });
     }
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::StoreKind;

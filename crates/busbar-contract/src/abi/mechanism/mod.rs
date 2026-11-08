@@ -36,8 +36,9 @@ pub mod kind {
     pub const TRANSPORT: &str = "transport";
 }
 
-/// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`
-pub const MECHANISM_VERSION: u32 = 2;
+/// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`.
+/// Version 3 requires kind-bound host access and host-issued caller authority.
+pub const MECHANISM_VERSION: u32 = 3;
 
 /// ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired
 pub const DOOR_MAGIC: u64 = u64::from_le_bytes(*b"BUSBARPL");

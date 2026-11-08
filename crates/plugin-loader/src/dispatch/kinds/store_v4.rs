@@ -28,6 +28,8 @@ unsafe impl OutFrame for v4::CommitOut {}
 unsafe impl OutFrame for v4::ClockOut {}
 unsafe impl OutFrame for v4::BootstrapOut {}
 
+impl crate::dispatch::kind_seal::Validated for StoreV4 {}
+
 impl Kind for StoreV4 {
     const CODE: KindCode = KindCode::Store;
     const ABI_VERSION: u32 = v4::ABI_VERSION;

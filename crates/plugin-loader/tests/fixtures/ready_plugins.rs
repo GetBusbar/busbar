@@ -9,17 +9,20 @@ use std::time::Duration;
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
-use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 use busbar_contract::abi::secret::{ResolveIn, ResolveOut};
 
-pub struct Discovers {
+pub struct Discovers<
+    K: busbar_contract::plugin::KindMarker = busbar_contract::plugin::markers::SecretKind,
+> {
+    kind: std::marker::PhantomData<K>,
     settings: String,
     pended: AtomicBool,
 }
 
-impl Life for Discovers {
+impl<K: busbar_contract::plugin::KindMarker> Life for Discovers<K> {
+    type Kind = K;
     const CANCEL: u32 = 0;
 
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -27,6 +30,7 @@ impl Life for Discovers {
         Ok(Self {
             settings: serde_json::from_str::<String>(&raw).unwrap_or(raw),
             pended: AtomicBool::new(false),
+            kind: std::marker::PhantomData,
         })
     }
 
@@ -34,7 +38,20 @@ impl Life for Discovers {
         Ok(Refreshed::default())
     }
 
-    fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
+    fn ready(
+        &self,
+        host: &busbar_contract::abi::sdk::conn::Host<Self::Kind>,
+        ticket: Ticket,
+    ) -> Poll<Result<(), Refusal>> {
+        self.ready_with(host, ticket)
+    }
+}
+impl<K: busbar_contract::plugin::KindMarker> Discovers<K> {
+    fn ready_with<H: busbar_contract::plugin::KindMarker>(
+        &self,
+        host: &busbar_contract::abi::sdk::conn::Host<H>,
+        ticket: Ticket,
+    ) -> Poll<Result<(), Refusal>> {
         if let Some(text) = self.settings.strip_prefix("err:") {
             return Poll::Ready(Err(Refusal::failed(text.to_owned())));
         }
@@ -52,11 +69,12 @@ impl Life for Discovers {
 
 pub struct Resolve;
 impl SafeSlot for Resolve {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Discovers>;
     fn call(
-        _: Instance<'_, Held<Discovers>>,
+        _: Instance<'_, Held<Discovers>, Self::Kind>,
         _: Lent<'_, ResolveIn>,
         _: Out<'_, ResolveOut>,
     ) -> Outcome {
@@ -114,11 +132,18 @@ pub mod auth {
     const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
 
     pub struct Refuses<L, I, O>(PhantomData<(L, I, O)>);
-    impl<L: Life, I: AbiIn, O: AbiOut> SafeSlot for Refuses<L, I, O> {
+    impl<L: Life<Kind = busbar_contract::plugin::markers::AuthKind>, I: AbiIn, O: AbiOut> SafeSlot
+        for Refuses<L, I, O>
+    {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         type In = I;
         type Out = O;
         type State = Held<L>;
-        fn call(_: Instance<'_, Self::State>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+        fn call(
+            _: Instance<'_, Self::State, Self::Kind>,
+            _: Lent<'_, I>,
+            _: Out<'_, O>,
+        ) -> Outcome {
             Outcome::Refused
         }
     }
@@ -128,6 +153,7 @@ pub mod auth {
     pub struct NeedsSecret;
 
     impl Life for NeedsSecret {
+        type Kind = busbar_contract::plugin::markers::AuthKind;
         const CANCEL: u32 = 0;
 
         fn open(settings: &[u8], secrets: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -169,7 +195,7 @@ pub mod auth {
     pub mod with_ready {
         use super::*;
         auth_door!(
-            super::super::Discovers,
+            super::super::Discovers<busbar_contract::plugin::markers::AuthKind>,
             with_tail(statement(NAME, "0", 4), TAIL),
             ready
         );
@@ -200,7 +226,7 @@ pub mod export {
     };
     use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
     use busbar_contract::abi::mechanism::ticket::Ticket;
-    use busbar_contract::abi::sdk::conn::Host;
+    type Host = busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::ExportKind>;
     use busbar_contract::abi::sdk::life::{Held, Life, Refreshed, Refusal};
     use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 
@@ -209,6 +235,7 @@ pub mod export {
     pub struct Exports(super::Discovers);
 
     impl Life for Exports {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         const CANCEL: u32 = 0;
 
         fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
@@ -225,7 +252,7 @@ pub mod export {
 
         fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
             READIES.fetch_add(1, Ordering::SeqCst);
-            self.0.ready(host, ticket)
+            self.0.ready_with(host, ticket)
         }
     }
 
@@ -233,10 +260,15 @@ pub mod export {
     impl<I: busbar_contract::abi::sdk::door::AbiIn, O: busbar_contract::abi::sdk::door::AbiOut>
         SafeSlot for Answers<I, O>
     {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = I;
         type Out = O;
         type State = Held<Exports>;
-        fn call(_: Instance<'_, Held<Exports>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+        fn call(
+            _: Instance<'_, Held<Exports>, Self::Kind>,
+            _: Lent<'_, I>,
+            _: Out<'_, O>,
+        ) -> Outcome {
             Outcome::Ready
         }
     }

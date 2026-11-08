@@ -55,7 +55,10 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
     let outcomes = std::thread::Builder::new()
         .name("throwaway".into())
         .spawn(|| {
-            let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+            let d = Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            ));
             let row = LinkedRow::of(actual_store::door).expect("the store states its Statement");
             let plugin = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
             let opened = plugin
@@ -125,10 +128,13 @@ fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
                 .name(format!("stress-{t}"))
                 .spawn(move || {
                     for round in (t..ROUNDS).step_by(THREADS) {
-                        let d = Arc::new(Dispatcher::new(DispatchConfig {
-                            workers: 2,
-                            ..DispatchConfig::default()
-                        }));
+                        let d = Arc::new(Dispatcher::new(
+                            DispatchConfig {
+                                workers: 2,
+                                ..DispatchConfig::default()
+                            },
+                            busbar_contract::services::test_caller_binding(),
+                        ));
                         let p = load_dropped::<Store>(&path, &stated, bind(&d))
                             .unwrap_or_else(|e| panic!("round {round}: the door loads: {e}"));
                         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -168,7 +174,7 @@ mod failed_pending_open {
     use super::*;
     use busbar_contract::abi::mechanism::door::{Door, DoorParts};
     use busbar_contract::abi::sdk::capture::{CaptureHome, CaptureRetention, CaptureSlot};
-    use busbar_contract::abi::sdk::conn::Host;
+    type Host = busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::StoreKind>;
     use busbar_contract::abi::sdk::door::{kind_op, Lifecycle, RawSlot};
     use busbar_contract::abi::sdk::life::{self, Life, Opening, Refusal};
     use busbar_contract::abi::sdk::Safe;
@@ -202,6 +208,7 @@ mod failed_pending_open {
         }
     }
     impl Life for PendingFailure {
+        type Kind = busbar_contract::plugin::markers::StoreKind;
         const CANCEL: u32 = 0;
         fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Self)
@@ -228,6 +235,7 @@ mod failed_pending_open {
     // the regression path rather than producing a useful assertion failure.
     struct ObserveClose;
     impl RawSlot for ObserveClose {
+        type Kind = busbar_contract::plugin::markers::StoreKind;
         type In = InHead;
         type Out = OutHead;
         unsafe fn call(_: *mut c_void, _: &InHead, _: &mut OutHead) -> Outcome {
@@ -241,9 +249,20 @@ mod failed_pending_open {
             let source = actual_store::door();
             // SAFETY: the fixture's admitted Store door contains this complete table.
             let mut ops = unsafe { *source.ops().cast::<busbar_contract::abi::store::v4::Ops>() };
-            ops.head.open =
-                kind_op::<Lifecycle, Safe<life::Open<PendingFailure>>, Capture, { slot::OPEN }>();
-            ops.head.close = kind_op::<Lifecycle, ObserveClose, Capture, { slot::CLOSE }>();
+            ops.head.open = kind_op::<
+                busbar_contract::abi::store::v4::Ops,
+                Lifecycle,
+                Safe<life::Open<PendingFailure>>,
+                Capture,
+                { slot::OPEN },
+            >();
+            ops.head.close = kind_op::<
+                busbar_contract::abi::store::v4::Ops,
+                Lifecycle,
+                ObserveClose,
+                Capture,
+                { slot::CLOSE },
+            >();
             let ops = Box::leak(Box::new(ops));
             // SAFETY: the immutable complete table and source metadata are permanent.
             Box::into_raw(Box::new(unsafe {
@@ -261,8 +280,14 @@ mod failed_pending_open {
     async fn concurrent_resumed_open_failures_do_not_close_sdk_freed_instances() {
         // OPEN tickets use worker zero. Independent loader owners exercise
         // concurrent native failures rather than queuing both behind that worker.
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
-        let other_dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
+        let other_dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let make_plugin = |dispatcher: &Dispatcher| {
             let row = LinkedRow::of(door).unwrap();
             load_linked::<Store>(&row, bind(dispatcher)).unwrap()

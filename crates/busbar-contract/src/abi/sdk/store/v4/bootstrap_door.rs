@@ -416,6 +416,7 @@ fn run<B: Backend>(
 #[derive(Debug)]
 pub struct Bootstrap<B>(PhantomData<B>);
 impl<B: Backend> SafeSlot for Bootstrap<B> {
+    type Kind = crate::plugin::markers::StoreKind;
     type In = wire::BootstrapIn;
     type Out = wire::BootstrapOut;
     type State = Held<Served<B>>;
@@ -642,6 +643,7 @@ struct OpeningProgress {
 #[derive(Debug)]
 pub struct Open<B>(PhantomData<B>);
 impl<B: Backend> SafeSlot for Open<B> {
+    type Kind = crate::plugin::markers::StoreKind;
     type In = OpenIn;
     type Out = OpenOut;
     type State = Held<Served<B>>;

@@ -908,7 +908,10 @@ impl busbar_contract::secret::SecretResolve for Resolver {
 
 fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> {
     use crate::dispatch::{DispatchConfig, Dispatcher};
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let c = Candidate::linked(door).expect("the auth witness states itself");
     assert_eq!(c.kind, KindCode::Auth);
     let root = kind_of(KindCode::Auth)

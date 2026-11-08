@@ -35,7 +35,10 @@ impl PlaneLife for Leasing {
     fn leases(&self) -> Option<&Leases> {
         Some(&self.leases)
     }
-    fn open(_: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal> {
+    fn open(
+        _: &Lent<'_, PlaneOpenIn>,
+        _host: Option<crate::abi::sdk::lent::KindHostLoan<'_, crate::plugin::markers::PlaneKind>>,
+    ) -> Result<Opened<Self>, Refusal> {
         Ok(Opened {
             plane: Self::default(),
             first: Published {
@@ -213,3 +216,7 @@ fn raw_release_drops_once_duplicate_is_refused_and_close_drops_unreleased_answer
     close(instance);
     assert_eq!(DROPPED.load(Ordering::SeqCst), 3);
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::PlaneKind;

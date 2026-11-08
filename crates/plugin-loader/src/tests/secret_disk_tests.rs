@@ -29,8 +29,13 @@ fn environment() {
 
 fn dispatcher() -> Arc<Dispatcher> {
     static ONE: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
-    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
-        .clone()
+    ONE.get_or_init(|| {
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ))
+    })
+    .clone()
 }
 
 fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {

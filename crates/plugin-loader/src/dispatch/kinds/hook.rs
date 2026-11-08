@@ -142,6 +142,8 @@ unsafe impl OutFrame for StatusOut {}
 unsafe impl OutFrame for DescribeOut {}
 unsafe impl OutFrame for ServeOut {}
 
+impl crate::dispatch::kind_seal::Validated for Hook {}
+
 impl Kind for Hook {
     const CODE: KindCode = KindCode::Hook;
     type Ops = hook::Ops;

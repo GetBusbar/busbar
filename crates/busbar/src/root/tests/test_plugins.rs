@@ -455,7 +455,12 @@ fn libraries() -> Vec<PathBuf> {
 
 fn transport_door(path: &Path) -> Option<(Plugin<Transport>, &'static str)> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
+    let d = ONE.get_or_init(|| {
+        Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        )
+    });
 
     let stated = rendering_of_library(path).ok()??;
     let bind = Bind {
@@ -515,7 +520,12 @@ pub fn neutral_frame_door_bytes() -> Option<Vec<u8>> {
 
 pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     static ONE: std::sync::OnceLock<Dispatcher> = std::sync::OnceLock::new();
-    let d = ONE.get_or_init(|| Dispatcher::new(DispatchConfig::default()));
+    let d = ONE.get_or_init(|| {
+        Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        )
+    });
     libraries().into_iter().find_map(|p| {
         let stated = rendering_of_library(&p).ok()??;
         let bind = Bind {
@@ -552,7 +562,10 @@ pub fn render_snapshot(
     let stated = rendering_of_library(&path)
         .expect("the library loads")
         .expect("the library states itself");
-    let d = std::sync::Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = std::sync::Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let bind = Bind {
         instance: std::sync::Arc::from(name),
         max_inflight_cap: 64,

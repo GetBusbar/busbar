@@ -3,6 +3,8 @@
 
 //! A SLOT BODY WITH NO `unsafe` (THE DESIGN, plugins: a plugin crate stays
 
+use crate::plugin::KindMarker;
+
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::ffi::c_void;
@@ -356,7 +358,8 @@ unsafe fn head<'a>(instance: *mut c_void) -> Option<&'a Head> {
 }
 
 /// The plugin's instance state, as a slot body is handed it. Only the SDK makes one; it lives for
-pub struct Instance<'call, T> {
+pub struct Instance<'call, T, K: KindMarker> {
+    _kind: PhantomData<K>,
     ptr: *mut c_void,
     index: u32,
     bootstrap: bool,
@@ -367,7 +370,7 @@ pub struct Instance<'call, T> {
     _call: PhantomData<fn(&'call ()) -> &'call ()>,
 }
 
-impl<T> std::fmt::Debug for Instance<'_, T> {
+impl<T, K: KindMarker> std::fmt::Debug for Instance<'_, T, K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Instance")
             .field("open", &!self.ptr.is_null())
@@ -378,7 +381,12 @@ impl<T> std::fmt::Debug for Instance<'_, T> {
     }
 }
 
-impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
+impl<'call, T: Send + Sync + 'static, K: KindMarker> Instance<'call, T, K> {
+    /// Bind the lifecycle's proven host loan to this checked slot's kind.
+    pub fn host<'a>(&self, loan: super::lent::HostLoan<'a>) -> super::lent::KindHostLoan<'a, K> {
+        super::lent::KindHostLoan::bind(loan)
+    }
+
     /// The state `open` installed; `None` before `open` (in `validate` and `open` itself) or when
     #[must_use]
     pub fn get(&self) -> Option<&'call T> {
@@ -453,7 +461,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
     /// struct State {
     ///     name: String,
     /// }
-    /// fn answer(instance: Instance<'_, State>, mut out: Out<'_, OutHead>) -> Outcome {
+    /// fn answer(instance: Instance<'_, State, busbar_contract::plugin::markers::SecretKind>, mut out: Out<'_, OutHead>) -> Outcome {
     ///     let gen = instance.generation();
     ///     if let Some(state) = instance.get() {
     ///         let _named: AbiStr = AbiStr::lent(&state.name, &gen);
@@ -530,6 +538,8 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
 
 /// A slot body with no `unsafe`: [`RawSlot`](crate::abi::sdk::door::RawSlot)'s safe form, named in
 pub trait SafeSlot {
+    /// Kind of this slot and every host capability it receives.
+    type Kind: KindMarker;
     /// The slot's `in`.
     type In: AbiIn;
     /// The slot's `out`.
@@ -538,7 +548,7 @@ pub trait SafeSlot {
     type State: Send + Sync + 'static;
     /// The body. `input` is the host's `in`, lent for the call; `out` a private copy of the
     fn call(
-        instance: Instance<'_, Self::State>,
+        instance: Instance<'_, Self::State, Self::Kind>,
         input: Lent<'_, Self::In>,
         out: Out<'_, Self::Out>,
     ) -> Outcome;
@@ -554,29 +564,29 @@ pub trait SafeSlot {
 /// struct State(u64);
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl SafeSlot for $n { type In = $i; type Out = $o; type State = State;
-/// #         fn call(_: Instance<'_, State>, _: Lent<'_, $i>, _: Out<'_, $o>) -> Outcome {
+/// #     impl SafeSlot for $n { type Kind = busbar_contract::plugin::markers::SecretKind; type In = $i; type Out = $o; type State = State;
+/// #         fn call(_: Instance<'_, State, busbar_contract::plugin::markers::SecretKind>, _: Lent<'_, $i>, _: Out<'_, $o>) -> Outcome {
 /// #             Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
 /// # ready!(Dr, DriveIn, OutHead); ready!(Cn, CancelIn, CancelOut); ready!(Rl, ReleaseIn, OutHead);
 /// # ready!(Cl, InHead, OutHead);
 /// struct Open;
-/// impl SafeSlot for Open {
+/// impl SafeSlot for Open { type Kind = busbar_contract::plugin::markers::SecretKind;
 ///     type In = OpenIn;
 ///     type Out = OpenOut;
 ///     type State = State;
-///     fn call(i: Instance<'_, State>, input: Lent<'_, OpenIn>, _: Out<'_, OpenOut>) -> Outcome {
+///     fn call(i: Instance<'_, State, busbar_contract::plugin::markers::SecretKind>, input: Lent<'_, OpenIn>, _: Out<'_, OpenOut>) -> Outcome {
 ///         i.open(State(input.field(|x| &x.settings).bytes().len() as u64));
 ///         Outcome::Ready
 ///     }
 /// }
 /// struct Tick;
-/// impl SafeSlot for Tick {
+/// impl SafeSlot for Tick { type Kind = busbar_contract::plugin::markers::SecretKind;
 ///     type In = TickIn;
 ///     type Out = TickOut;
 ///     type State = State;
-///     fn call(i: Instance<'_, State>, _: Lent<'_, TickIn>, mut out: Out<'_, TickOut>) -> Outcome {
+///     fn call(i: Instance<'_, State, busbar_contract::plugin::markers::SecretKind>, _: Lent<'_, TickIn>, mut out: Out<'_, TickOut>) -> Outcome {
 ///         out.set(|o| &o.next_tick_ns, i.get().map_or(0, |s| s.0));
 ///         Outcome::Ready
 ///     }
@@ -590,11 +600,11 @@ pub trait SafeSlot {
 ///     kind_ops: { resolve: Safe<Resolve> },
 /// }
 /// # struct Resolve;
-/// # impl SafeSlot for Resolve {
+/// # impl SafeSlot for Resolve { type Kind = busbar_contract::plugin::markers::SecretKind;
 /// #     type In = busbar_contract::abi::secret::ResolveIn;
 /// #     type Out = busbar_contract::abi::secret::ResolveOut;
 /// #     type State = State;
-/// #     fn call(_: Instance<'_, State>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+/// #     fn call(_: Instance<'_, State, busbar_contract::plugin::markers::SecretKind>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
 /// #         Outcome::Ready } }
 /// # fn main() { let _ = door(); }
 /// ```
@@ -610,7 +620,7 @@ pub trait SafeSlot {
 /// # use std::ffi::c_void;
 /// # macro_rules! ready { ($n:ident, $i:ty, $o:ty) => {
 /// #     struct $n;
-/// #     impl RawSlot for $n { type In = $i; type Out = $o;
+/// #     impl RawSlot for $n { type Kind = busbar_contract::plugin::markers::SecretKind; type In = $i; type Out = $o;
 /// #         unsafe fn call(_: *mut c_void, _: &$i, _: &mut $o) -> Outcome { Outcome::Ready } }
 /// # } }
 /// # ready!(V, ValidateIn, OutHead); ready!(Rf, RefreshIn, OutHead); ready!(Rt, GenIn, OutHead);
@@ -619,11 +629,11 @@ pub trait SafeSlot {
 /// #     busbar_contract::abi::secret::ResolveOut);
 /// ready!(RawOpen, OpenIn, OpenOut); // a raw `open`: it answers any pointer it likes
 /// struct Tick;
-/// impl SafeSlot for Tick {
+/// impl SafeSlot for Tick { type Kind = busbar_contract::plugin::markers::SecretKind;
 ///     type In = TickIn;
 ///     type Out = TickOut;
 ///     type State = u64;
-///     fn call(i: Instance<'_, u64>, _: Lent<'_, TickIn>, _: Out<'_, TickOut>) -> Outcome {
+///     fn call(i: Instance<'_, u64, busbar_contract::plugin::markers::SecretKind>, _: Lent<'_, TickIn>, _: Out<'_, TickOut>) -> Outcome {
 ///         let _ = i.get();
 ///         Outcome::Ready
 ///     }
@@ -643,6 +653,7 @@ pub struct Safe<S>(PhantomData<S>);
 // SAFETY: `SAFE` is true and earned: `enter` reads the instance only as the SDK's `Tagged` box,
 // and an `open` behind `Safe` answers only the box it minted.
 unsafe impl<S: SafeSlot> Entry for Safe<S> {
+    type Kind = S::Kind;
     type In = S::In;
     type Out = S::Out;
     const SAFE: bool = true;
@@ -664,7 +675,8 @@ unsafe impl<S: SafeSlot> Entry for Safe<S> {
                 h.forget(call.ticket);
             }
         }
-        let handle = Instance {
+        let handle = Instance::<_, S::Kind> {
+            _kind: PhantomData,
             ptr: instance,
             index,
             bootstrap,

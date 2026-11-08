@@ -19,7 +19,10 @@ pub(crate) async fn native_backend() -> Arc<dyn busbar_contract::persistence::Pe
     let stated = rendering_of_library(&path)
         .expect("the product store library's statement is readable")
         .expect("the product store library carries its statement");
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     let plugin = load_dropped::<crate::root::loader::dispatch::kinds::store_v4::StoreV4>(
         &path,
         &stated,

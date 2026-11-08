@@ -50,7 +50,10 @@ async fn actual_memory_open_reports_ephemeral_native_metadata() {
     use crate::store_v4::{Limits, LoadedPersistence};
     use busbar_contract::persistence::{Durability, PersistenceBackend};
     use std::sync::Arc;
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let plugin = load_linked::<Store>(
         &LinkedRow::of(door).expect("actual memory descriptor"),
         Bind {

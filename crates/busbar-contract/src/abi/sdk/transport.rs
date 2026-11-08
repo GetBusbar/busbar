@@ -136,8 +136,8 @@ macro_rules! carried {
 }
 
 /// [`carried!`](crate::carried)'s body: the instance and its armed I/O, or FAILED saying
-pub fn carried_saying<'a, L: Life>(
-    i: &Instance<'a, Held<L>>,
+pub fn carried_saying<'a, L: Life<Kind = crate::plugin::markers::TransportKind>>(
+    i: &Instance<'a, Held<L>, crate::plugin::markers::TransportKind>,
     no_instance: &'static str,
     no_io: &'static str,
 ) -> Result<(&'a L, Io<'a>), Refusal> {
@@ -164,11 +164,12 @@ macro_rules! not_served {
         #[derive(Debug)]
         pub struct $name;
         impl $crate::abi::sdk::SafeSlot for $name {
+            type Kind = $crate::plugin::markers::TransportKind;
             type In = $in;
             type Out = $out;
             type State = $state;
             fn call(
-                _: $crate::abi::sdk::Instance<'_, $state>,
+                _: $crate::abi::sdk::Instance<'_, $state, $crate::plugin::markers::TransportKind>,
                 _: $crate::abi::sdk::Lent<'_, $in>,
                 mut out: $crate::abi::sdk::Out<'_, $out>,
             ) -> $crate::abi::mechanism::call::Outcome {

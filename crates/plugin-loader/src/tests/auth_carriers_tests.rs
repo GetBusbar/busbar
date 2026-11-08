@@ -102,7 +102,10 @@ fn rows() -> AuthRows {
         .expect("the linked door registers");
     AuthRows::new(
         Arc::new(registry),
-        Arc::new(Dispatcher::new(DispatchConfig::default())),
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        )),
     )
 }
 
@@ -410,7 +413,10 @@ mod observed {
     }
 
     pub fn open(door: DoorFn, variant: &str) -> Result<AuthInstance, String> {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         let sink = AuthSink::new("observed");
         let plugin = crate::dispatch::load_linked::<Auth>(
             &crate::dispatch::LinkedRow::of(door).unwrap(),

@@ -76,7 +76,12 @@ fn open_stated(
     static ONE: OnceLock<std::sync::Arc<Dispatcher>> = OnceLock::new();
 
     let rendering = rendering_of_library(path).ok()??;
-    let on = ONE.get_or_init(|| std::sync::Arc::new(Dispatcher::new(DispatchConfig::default())));
+    let on = ONE.get_or_init(|| {
+        std::sync::Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ))
+    });
     let bind = Bind {
         instance: std::sync::Arc::from("the-instance"),
         max_inflight_cap: 64,

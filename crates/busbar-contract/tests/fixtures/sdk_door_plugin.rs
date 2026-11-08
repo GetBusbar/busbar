@@ -7,37 +7,18 @@ use std::ffi::c_void;
 
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
 use busbar_contract::abi::mechanism::lifecycle::{
-    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn, TickIn,
-    TickOut, ValidateIn, LIFECYCLE_SLOTS,
+    CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn, TickOut,
+    ValidateIn,
 };
-use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::sdk::door::{KindOps, KindSlot, RawSlot};
+use busbar_contract::abi::sdk::door::RawSlot;
 
-/// The table: the lifecycle and one kind op, `echo` (`GenIn` -> `TickOut`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct OneKindOp {
-    head: OpsHead,
-    echo: Option<busbar_contract::abi::mechanism::call::Op>,
-}
-
-// SAFETY: `#[repr(C)]`, `head: OpsHead` first, then one `Option<Op>`.
-unsafe impl KindOps for OneKindOp {
-    const KIND: KindCode = KindCode::Secret;
-    type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
-}
-
-// SAFETY: this test kind states these structs for its one op.
-unsafe impl KindSlot<{ LIFECYCLE_SLOTS }> for OneKindOp {
-    type In = GenIn;
-    type Out = TickOut;
-}
-
+use busbar_contract::abi::secret::{Ops, ResolveIn, ResolveOut};
 /// The generation at which `open` and `echo` panic.
 const PANIC_GEN: u64 = 13;
 
 struct Open;
 impl RawSlot for Open {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, input: &OpenIn, _: &mut OpenOut) -> Outcome {
@@ -48,11 +29,15 @@ impl RawSlot for Open {
 
 struct Echo;
 impl RawSlot for Echo {
-    type In = GenIn;
-    type Out = TickOut;
-    unsafe fn call(_: *mut c_void, input: &GenIn, out: &mut TickOut) -> Outcome {
-        assert_ne!(input.generation, PANIC_GEN, "the dropped-in kind op panics");
-        out.next_tick_ns = input.generation;
+    type Kind = busbar_contract::plugin::markers::SecretKind;
+    type In = ResolveIn;
+    type Out = ResolveOut;
+    unsafe fn call(_: *mut c_void, input: &ResolveIn, out: &mut ResolveOut) -> Outcome {
+        assert_ne!(
+            input.settings.len as u64, PANIC_GEN,
+            "the dropped-in kind op panics"
+        );
+        out.needed = input.settings.len as u64;
         Outcome::Ready
     }
 }
@@ -61,6 +46,7 @@ macro_rules! ready {
     ($name:ident, $in:ty, $out:ty) => {
         struct $name;
         impl RawSlot for $name {
+            type Kind = busbar_contract::plugin::markers::SecretKind;
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -72,6 +58,7 @@ macro_rules! ready {
 
 struct Validate;
 impl RawSlot for Validate {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = ValidateIn;
     type Out = OutHead;
     unsafe fn call(_: *mut c_void, input: &ValidateIn, _: &mut OutHead) -> Outcome {
@@ -84,6 +71,7 @@ impl RawSlot for Validate {
 
 struct Cancel;
 impl RawSlot for Cancel {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = CancelIn;
     type Out = CancelOut;
     unsafe fn call(_: *mut c_void, _: &CancelIn, out: &mut CancelOut) -> Outcome {
@@ -104,7 +92,7 @@ pub mod logic {
     use super::*;
 
     busbar_contract::plugin_door! {
-        ops: super::OneKindOp,
+        ops: Ops,
         statement: busbar_contract::abi::sdk::door::statement("sdk-door-plugin", "0.0.1", 4),
         lifecycle: {
             validate: Validate,
@@ -117,7 +105,7 @@ pub mod logic {
             release: Release,
             close: Close,
         },
-        kind_ops: { echo: Echo },
+        kind_ops: { resolve: Echo },
     }
 }
 

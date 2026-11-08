@@ -30,7 +30,10 @@ pub(crate) fn bind(d: &Dispatcher) -> Bind {
 }
 
 pub(crate) fn linked<K: Kind>(door: DoorFn) -> Loaded<K> {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(door).expect("the door states its Statement");
     let plugin = load_linked::<K>(&row, bind(&dispatcher)).expect("the linked door loads");
     Loaded {
@@ -45,7 +48,10 @@ pub(crate) fn dropped<K: Kind>(door: DoorFn, example: &str) -> Loaded<K> {
 }
 
 pub(crate) fn dropped_from<K: Kind>(door: DoorFn, path: &std::path::Path) -> Loaded<K> {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let stated = rendering_of(door).expect("the door renders its Statement");
     let plugin =
         load_dropped::<K>(path, &stated, bind(&dispatcher)).expect("the dropped-in door loads");

@@ -23,7 +23,7 @@
 //! ```
 //! use busbar_contract::abi::sdk::life::{Life, Refusal, Refreshed};
 //! struct Echo(usize);
-//! impl Life for Echo {
+//! impl Life for Echo { type Kind = busbar_contract::plugin::markers::SecretKind;
 //!     const CANCEL: u32 = 0;
 //!     fn validate(_: &[u8]) -> Result<(), Refusal> { Ok(()) }
 //!     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -42,11 +42,11 @@
 //! # use busbar_contract::abi::mechanism::call::Outcome;
 //! # use busbar_contract::abi::sdk::{life::Held, Instance, Lent, Out, SafeSlot};
 //! # struct Resolve;
-//! # impl SafeSlot for Resolve {
+//! # impl SafeSlot for Resolve { type Kind = busbar_contract::plugin::markers::SecretKind;
 //! #     type In = busbar_contract::abi::secret::ResolveIn;
 //! #     type Out = busbar_contract::abi::secret::ResolveOut;
 //! #     type State = Held<Echo>;
-//! #     fn call(_: Instance<'_, Held<Echo>>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+//! #     fn call(_: Instance<'_, Held<Echo>, busbar_contract::plugin::markers::SecretKind>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
 //! #         Outcome::Ready } }
 //! # fn main() { let _ = door(); }
 //! ```
@@ -368,6 +368,8 @@ pub struct Flagged {
 
 /// ONE KIND'S LIFECYCLE, as its SDK states it: the instance state the nine generic slots serve,
 pub trait Life: Send + Sync + Sized + 'static {
+    /// The kind of this lifecycle and its retained host capabilities.
+    type Kind: crate::plugin::KindMarker;
     /// The kind's default `cancel` disposition (its own vocabulary, `abi/<kind>/`).
     const CANCEL: u32;
 
@@ -398,7 +400,7 @@ pub trait Life: Send + Sync + Sized + 'static {
         settings: &[u8],
         secrets: &[&[u8]],
         generation: u64,
-        host: Option<&Host>,
+        host: Option<&Host<Self::Kind>>,
     ) -> Result<Self, Refusal> {
         let _ = host;
         Self::open(settings, secrets, generation)
@@ -407,7 +409,7 @@ pub trait Life: Send + Sync + Sized + 'static {
     /// THE OPEN'S SECOND STEP: what the opened instance reaches before the host counts it opened
     fn opening(
         &self,
-        host: Option<&Host>,
+        host: Option<&Host<Self::Kind>>,
         ticket: Ticket,
         parked: Option<Box<dyn Any + Send + Sync>>,
     ) -> Opening {
@@ -444,13 +446,13 @@ pub trait Life: Send + Sync + Sized + 'static {
     }
 
     /// `ready` (`abi::mechanism::lifecycle`, READY): what the instance must do on the network
-    fn ready(&self, host: &Host, ticket: Ticket) -> Poll<Result<(), Refusal>> {
+    fn ready(&self, host: &Host<Self::Kind>, ticket: Ticket) -> Poll<Result<(), Refusal>> {
         let _ = (host, ticket);
         Poll::Ready(Ok(()))
     }
 
     /// `close`: what the instance lets go before the SDK drops it, over the host tables `open`
-    fn close(&self, host: Option<&Host>) {
+    fn close(&self, host: Option<&Host<Self::Kind>>) {
         let _ = host;
     }
 
@@ -477,15 +479,15 @@ unsafe impl Send for Reported {}
 unsafe impl Sync for Reported {}
 
 /// THE INSTANCE STATE every generic lifecycle slot serves: the kind's [`Life`] and the leases its
-pub struct Held<L> {
+pub struct Held<L: Life> {
     life: L,
     leases: Leases,
     reported: Reported,
     raised: Raised,
-    host: Option<Host>,
+    host: Option<Host<L::Kind>>,
 }
 
-impl<L> std::fmt::Debug for Held<L> {
+impl<L: Life> std::fmt::Debug for Held<L> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Held")
             .field("leases", &self.leases)
@@ -495,7 +497,7 @@ impl<L> std::fmt::Debug for Held<L> {
 
 impl<L: Life> Held<L> {
     /// The instance state over `life`, with no lease held and the host tables `host`.
-    pub(crate) fn new(life: L, host: Option<Host>) -> Self {
+    pub(crate) fn new(life: L, host: Option<Host<L::Kind>>) -> Self {
         Self {
             life,
             leases: Leases::default(),
@@ -516,7 +518,7 @@ impl<L: Life> Held<L> {
     }
 
     /// The host tables `open` handed this instance (`OpenIn.host`); `None` when it was handed
-    pub const fn host(&self) -> Option<&Host> {
+    pub const fn host(&self) -> Option<&Host<L::Kind>> {
         self.host.as_ref()
     }
 }
@@ -586,7 +588,7 @@ pub trait HeldSlot {
     /// The body, on the open instance `held`.
     fn call(
         held: &Held<Self::Life>,
-        instance: &Instance<'_, Held<Self::Life>>,
+        instance: &Instance<'_, Held<Self::Life>, <Self::Life as Life>::Kind>,
         input: Lent<'_, Self::In>,
         out: Out<'_, Self::Out>,
     ) -> Outcome;
@@ -598,11 +600,12 @@ pub trait HeldSlot {
 pub struct Opened<S>(PhantomData<S>);
 
 impl<S: HeldSlot> SafeSlot for Opened<S> {
+    type Kind = <S::Life as Life>::Kind;
     type In = S::In;
     type Out = S::Out;
     type State = Held<S::Life>;
     fn call(
-        instance: Instance<'_, Held<S::Life>>,
+        instance: Instance<'_, Held<S::Life>, <S::Life as Life>::Kind>,
         input: Lent<'_, S::In>,
         mut out: Out<'_, S::Out>,
     ) -> Outcome {
@@ -619,11 +622,12 @@ macro_rules! life_slot {
         #[derive(Debug)]
         pub struct $name<L>(PhantomData<L>);
         impl<L: Life> SafeSlot for $name<L> {
+            type Kind = L::Kind;
             type In = $in;
             type Out = $out;
             type State = Held<L>;
             fn call(
-                $inst: Instance<'_, Held<L>>,
+                $inst: Instance<'_, Held<L>, L::Kind>,
                 $input: Lent<'_, $in>,
                 #[allow(unused_mut)] mut $o: Out<'_, $out>,
             ) -> Outcome {
@@ -652,7 +656,7 @@ life_slot!(
     /// box is retained across the pend); the RESUME runs the step again on that instance, and a
     /// RESUME with no instance or nothing parked is FAULT (an open never runs afresh on it).
     Open(OpenIn => OpenOut) |instance, input, out| {
-        let host = input.host().map(Host::of);
+        let host = input.host().map(|loan| Host::of(instance.host(loan)));
         let ticket = instance.ticket();
         if instance.resuming() {
             let Some(h) = instance.get() else {
@@ -743,7 +747,7 @@ life_slot!(
         let Some(h) = instance.get() else {
             return Outcome::Fault;
         };
-        let Some(host) = input.host().map(Host::of) else {
+        let Some(host) = input.host().map(|loan| Host::of(instance.host(loan))) else {
             return Outcome::Fault;
         };
         match h.life.ready(&host, instance.ticket()) {

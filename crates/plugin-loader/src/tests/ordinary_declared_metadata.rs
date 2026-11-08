@@ -43,7 +43,10 @@ extern "C" fn silent() -> &'static Door {
     restated(&SLOT, &[])
 }
 fn load(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::dispatch::Plugin<Store> {
-    let d = Dispatcher::new(DispatchConfig::default());
+    let d = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     load_linked::<Store>(
         &LinkedRow::of(door).expect("actual descriptor states itself"),
         Bind {
@@ -131,7 +134,10 @@ extern "C" fn observed_store() -> &'static Door {
 }
 #[tokio::test]
 async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let plugin = load_linked::<Store>(
         &LinkedRow::of(observed_store).expect("observed actual Store descriptor"),
         Bind {

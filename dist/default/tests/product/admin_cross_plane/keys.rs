@@ -3567,7 +3567,7 @@ fn linked_export_axis() {
         static SINKS: [crate::distribution::admin_cross_plane::root_install::ExportDoor; 1] = [(
             busbar_export_prometheus::NAME,
             busbar_export_prometheus::ALIAS,
-            busbar_export_prometheus::door::door,
+            busbar_export_prometheus::door,
         )];
         crate::distribution::admin_cross_plane::ensure_seam();
         crate::distribution::admin_cross_plane::root_install::link_exports(&SINKS);
@@ -4451,6 +4451,7 @@ async fn try_publish_door(
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         services.served(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let conns = crate::root::connector::installed()

@@ -506,7 +506,7 @@ mod host_source {
 /// A sealed source of host tables. Only lifecycle loans and the SDK's proven `Lent` implement
 /// this trait; a plain `HostTables` value cannot attest to the validity of its nested pointers.
 ///
-/// ```compile_fail,E0277
+/// ```compile_fail,E0603
 /// use busbar_contract::abi::{sdk::lent::HostSource, mechanism::ticket::HostTables};
 /// struct Forged(HostTables);
 /// impl HostSource for Forged {
@@ -514,17 +514,10 @@ mod host_source {
 /// }
 /// ```
 #[allow(private_bounds)]
-pub trait HostSource: host_source::Sealed {
+pub(crate) trait HostSource: host_source::Sealed {
     /// The carrier whose nested table prefixes this loan proves readable during construction.
     #[doc(hidden)]
     fn tables(&self) -> &HostTables;
-}
-
-impl host_source::Sealed for Lent<'_, HostTables> {}
-impl HostSource for Lent<'_, HostTables> {
-    fn tables(&self) -> &HostTables {
-        self.get()
-    }
 }
 
 /// A lifecycle's host-table loan, copied field by field from the advertised outer prefix.
@@ -535,10 +528,24 @@ pub struct HostLoan<'a> {
     _loan: PhantomData<&'a HostTables>,
 }
 
-impl host_source::Sealed for HostLoan<'_> {}
-impl HostSource for HostLoan<'_> {
+/// Host tables bound to the kind of the checked invocation that received them.
+#[derive(Debug, Clone, Copy)]
+pub struct KindHostLoan<'a, K: crate::plugin::KindMarker> {
+    loan: HostLoan<'a>,
+    _kind: PhantomData<K>,
+}
+impl<K: crate::plugin::KindMarker> host_source::Sealed for KindHostLoan<'_, K> {}
+impl<K: crate::plugin::KindMarker> HostSource for KindHostLoan<'_, K> {
     fn tables(&self) -> &HostTables {
-        &self.tables
+        &self.loan.tables
+    }
+}
+impl<'a, K: crate::plugin::KindMarker> KindHostLoan<'a, K> {
+    pub(crate) fn bind(loan: HostLoan<'a>) -> Self {
+        Self {
+            loan,
+            _kind: PhantomData,
+        }
     }
 }
 

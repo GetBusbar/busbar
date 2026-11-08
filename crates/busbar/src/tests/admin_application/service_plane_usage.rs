@@ -71,8 +71,12 @@ fn planes() -> &'static PlaneKeys {
         let mut rows = busbar_kernel::plane_driver::registry::plane_decls().to_vec();
         for (index, door) in crate::LINKED.plane_doors.iter().enumerate() {
             let row = busbar_kernel::plane_driver::door::fold(
-                registration(linked_probe(*door, &format!("admin-plane-usage-{index}")))
-                    .expect("the actual linked plane declares its metadata through its ABI"),
+                registration(linked_probe(
+                    *door,
+                    &format!("admin-plane-usage-{index}"),
+                    busbar_kernel::host_services::caller_binding(),
+                ))
+                .expect("the actual linked plane declares its metadata through its ABI"),
             )
             .expect("the actual linked plane metadata folds");
             if !rows.iter().any(|installed| installed.key == row.key) {

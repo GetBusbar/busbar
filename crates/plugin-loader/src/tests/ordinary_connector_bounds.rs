@@ -8,7 +8,7 @@ use crate::dispatch::{Adopter, Bind, ConnTable, NoSink};
 use busbar_contract::abi::host::conn::connector::Need;
 use busbar_contract::abi::mechanism::door::{Door, Statement};
 use busbar_contract::abi::mechanism::ticket::{HostTables, Ticket};
-use busbar_contract::abi::sdk::conn::Host;
+type Host = busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::TransportKind>;
 use busbar_contract::abi::sdk::door::abi_str;
 use busbar_contract::abi::transport::FrameSpan;
 use std::task::Poll;
@@ -98,7 +98,7 @@ fn the_real_host_reaches_an_immediate_reply_with_independent_declared_and_caller
         };
         // SAFETY: this registry-backed context and static connector table remain valid; the SDK
         // copies the slot table and retains no pointer into this local HostTables value.
-        let host = unsafe { Host::from_raw(&tables) };
+        let host = unsafe { Host::test_from_raw(&tables) };
         let mut conn = host.connector(Ticket {
             slot: 7,
             generation: 3,

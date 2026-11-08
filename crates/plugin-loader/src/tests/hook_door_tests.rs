@@ -362,7 +362,10 @@ mod sdk_refresh {
     }
 
     impl Forwarder {
-        fn exchange(&self, op: &Op<'_>) -> Poll<String> {
+        fn exchange(
+            &self,
+            op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+        ) -> Poll<String> {
             self.probe.calls.lock().unwrap().push(self.secret.clone());
             op.exchange_sealed(0, Some("http://hook.example"), || {
                 Ok((
@@ -385,13 +388,25 @@ mod sdk_refresh {
     }
 
     impl Hook for Forwarder {
-        fn decide(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<Verdict> {
+        fn decide(
+            &self,
+            _: &Decoded<'_>,
+            op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+        ) -> Poll<Verdict> {
             self.exchange(op).map(Verdict::Failed)
         }
-        fn transform(&self, _: &Decoded<'_>, op: &Op<'_>) -> Poll<RewriteVerdict> {
+        fn transform(
+            &self,
+            _: &Decoded<'_>,
+            op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+        ) -> Poll<RewriteVerdict> {
             self.exchange(op).map(RewriteVerdict::Failed)
         }
-        fn notify(&self, _: &DecodedTap<'_>, op: &Op<'_>) -> Poll<()> {
+        fn notify(
+            &self,
+            _: &DecodedTap<'_>,
+            op: &Op<'_, busbar_contract::plugin::markers::HookKind>,
+        ) -> Poll<()> {
             self.exchange(op)
                 .map(|reason| assert_eq!(reason, "<redacted>"))
         }
@@ -558,7 +573,10 @@ mod sdk_refresh {
             let scope = NEXT.fetch_add(1, Ordering::SeqCst);
             let probe = Arc::new(Probe::default());
             probes().lock().unwrap().insert(scope, Arc::clone(&probe));
-            let dispatcher = Dispatcher::new(DispatchConfig::default());
+            let dispatcher = Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            );
             let peer = Arc::new(Peer::default());
             let mut binding = bind(&dispatcher);
             binding.conns = ConnTable::Host(peer.clone());
@@ -905,6 +923,7 @@ mod actual_boundary {
         if lease == 1 && LOANS.lock().unwrap().contains_key(&(instance as usize)) {
             CURRENT.with(|key| key.set(instance as usize));
             let operation = busbar_contract::abi::sdk::door::kind_op::<
+                busbar_contract::abi::hook::Ops,
                 busbar_contract::abi::sdk::door::Lifecycle,
                 Safe<ReleaseLoan>,
                 LoanCapture,
@@ -947,6 +966,7 @@ mod actual_boundary {
         // state, so NULL prevents any cast or access to the opaque actual product instance.
         let operation = busbar_contract::abi::sdk::door::kind_op::<
             busbar_contract::abi::hook::Ops,
+            busbar_contract::abi::hook::Ops,
             Safe<Loan>,
             LoanCapture,
             { busbar_contract::abi::hook::slot::SERVE },
@@ -958,10 +978,15 @@ mod actual_boundary {
     }
     struct ReleaseLoan;
     impl SafeSlot for ReleaseLoan {
+        type Kind = busbar_contract::plugin::markers::HookKind;
         type In = busbar_contract::abi::mechanism::lifecycle::ReleaseIn;
         type Out = busbar_contract::abi::mechanism::call::OutHead;
         type State = ();
-        fn call(_: Instance<'_, ()>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+        fn call(
+            _: Instance<'_, (), Self::Kind>,
+            _: Lent<'_, Self::In>,
+            _: Out<'_, Self::Out>,
+        ) -> Outcome {
             let key = CURRENT.with(std::cell::Cell::get);
             if LOANS.lock().unwrap().remove(&key).is_some() {
                 Outcome::Ready
@@ -973,11 +998,12 @@ mod actual_boundary {
 
     struct Loan;
     impl SafeSlot for Loan {
+        type Kind = busbar_contract::plugin::markers::HookKind;
         type In = busbar_contract::abi::hook::ServeIn;
         type Out = busbar_contract::abi::hook::ServeOut;
         type State = ();
         fn call(
-            _: Instance<'_, ()>,
+            _: Instance<'_, (), Self::Kind>,
             input: Lent<'_, Self::In>,
             mut out: Out<'_, Self::Out>,
         ) -> Outcome {
@@ -1191,7 +1217,10 @@ enum Way {
 }
 
 fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     match way {
         Way::Linked => HookRows::new(&[door], None, dispatcher).expect("the linked row"),
         Way::Dropped => {
@@ -1247,7 +1276,10 @@ fn ranking_name() -> String {
 }
 
 fn ranking_rows(way: Way) -> HookRows {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     match way {
         Way::Linked => {
             HookRows::new(&[ranking_door], None, dispatcher).expect("actual descriptor linked row")
@@ -1539,7 +1571,10 @@ fn a_dropped_in_1_5_5_json_hook_plugin_is_refused_naming_the_rebuild() {
         crate::both_ways::statement("hook", "json-hook", "json-hook", abi),
         b"a 1.5.5 JSON hook library",
     );
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let refused = HookRows::new(&[], Some(&registry), dispatcher)
         .expect_err("a 1.5.5 JSON hook plugin is refused");
     assert!(
@@ -1670,10 +1705,13 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
 
 #[tokio::test]
 async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the_axis() {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        workers: MAX_INFLIGHT,
-        ..DispatchConfig::default()
-    }));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            workers: MAX_INFLIGHT,
+            ..DispatchConfig::default()
+        },
+        busbar_contract::services::test_caller_binding(),
+    ));
     let axis = HookRows::new(
         &[hook_door_plugin::conforming::door],
         None,
@@ -1769,7 +1807,12 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     let name = ranking_name();
     let settings = json!({"policy": "fastest"});
     let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
-    let dispatcher = || Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = || {
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ))
+    };
     let linked = HookRows::new(&[ranking_door], None, dispatcher())
         .expect("actual linked row")
         .with_former_names(|word| {
@@ -1814,7 +1857,10 @@ fn a_former_name_two_hooks_claim_is_refused_on_the_axis() {
             hook_door_plugin::broken::door,
         ],
         None,
-        Arc::new(Dispatcher::new(DispatchConfig::default())),
+        Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        )),
     )
     .expect("two distinct linked hooks");
     let refused = rows
@@ -1847,7 +1893,10 @@ fn a_linked_hook_and_a_different_dropped_in_hook_claiming_one_word_are_refused()
         HookRows::new(
             &[hook_door_plugin::conforming::door],
             Some(registry),
-            Arc::new(Dispatcher::new(DispatchConfig::default())),
+            Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            )),
         )
     };
     let refused = rows(&dropped(NAME)).expect_err("a word two hooks claim is refused");

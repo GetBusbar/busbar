@@ -10,6 +10,7 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out, SafeSlot};
 pub struct Stub;
 
 impl Life for Stub {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     const CANCEL: u32 = 0;
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Stub)
@@ -22,10 +23,15 @@ impl Life for Stub {
 pub struct Resolve;
 
 impl SafeSlot for Resolve {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = busbar_contract::abi::secret::ResolveIn;
     type Out = busbar_contract::abi::secret::ResolveOut;
     type State = Held<Stub>;
-    fn call(_: Instance<'_, Held<Stub>>, _: Lent<'_, Self::In>, _: Out<'_, Self::Out>) -> Outcome {
+    fn call(
+        _: Instance<'_, Held<Stub>, Self::Kind>,
+        _: Lent<'_, Self::In>,
+        _: Out<'_, Self::Out>,
+    ) -> Outcome {
         Outcome::Refused
     }
 }

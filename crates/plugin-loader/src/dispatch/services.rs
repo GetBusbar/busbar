@@ -702,6 +702,123 @@ fn rebound(route: &Waking) -> Answered {
     Answered::bare(Outcome::Fault, HANDLE_REBOUND)
 }
 
+pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'static HostSlots {
+    static TABLES: std::sync::OnceLock<[HostSlots; 7]> = std::sync::OnceLock::new();
+    let tables = TABLES.get_or_init(|| {
+        busbar_contract::abi::mechanism::KindCode::ALL.map(|kind| HostSlots {
+            size: size_of::<HostSlots>() as u32,
+            slots: SERVICES,
+            clock_now: busbar_contract::abi::host::access::service(op::CLOCK_NOW)
+                .filter(|p| p.admits(kind))
+                .map(|_| clock_now as svc::ServiceFn),
+            records_get: busbar_contract::abi::host::access::service(op::RECORDS_GET)
+                .filter(|p| p.admits(kind))
+                .map(|_| records_get as svc::ServiceFn),
+            records_list: busbar_contract::abi::host::access::service(op::RECORDS_LIST)
+                .filter(|p| p.admits(kind))
+                .map(|_| records_list as svc::ServiceFn),
+            records_claim: busbar_contract::abi::host::access::service(op::RECORDS_CLAIM)
+                .filter(|p| p.admits(kind))
+                .map(|_| records_claim as svc::ServiceFn),
+            dest_judge: busbar_contract::abi::host::access::service(op::DEST_JUDGE)
+                .filter(|p| p.admits(kind))
+                .map(|_| dest_judge as svc::ServiceFn),
+            sign: busbar_contract::abi::host::access::service(op::SIGN)
+                .filter(|p| p.admits(kind))
+                .map(|_| sign as svc::ServiceFn),
+            unit_nest: busbar_contract::abi::host::access::service(op::UNIT_NEST)
+                .filter(|p| p.admits(kind))
+                .map(|_| unit_nest as svc::ServiceFn),
+            work_open: busbar_contract::abi::host::access::service(op::WORK_OPEN)
+                .filter(|p| p.admits(kind))
+                .map(|_| work_open as svc::ServiceFn),
+            work_find: busbar_contract::abi::host::access::service(op::WORK_FIND)
+                .filter(|p| p.admits(kind))
+                .map(|_| work_find as svc::ServiceFn),
+            work_settle: busbar_contract::abi::host::access::service(op::WORK_SETTLE)
+                .filter(|p| p.admits(kind))
+                .map(|_| work_settle as svc::ServiceFn),
+            work_resume: busbar_contract::abi::host::access::service(op::WORK_RESUME)
+                .filter(|p| p.admits(kind))
+                .map(|_| work_resume as svc::ServiceFn),
+            trust_sight: busbar_contract::abi::host::access::service(op::TRUST_SIGHT)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_sight as svc::ServiceFn),
+            trust_due: busbar_contract::abi::host::access::service(op::TRUST_DUE)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_due as svc::ServiceFn),
+            verify_lookup: busbar_contract::abi::host::access::service(op::VERIFY_LOOKUP)
+                .filter(|p| p.admits(kind))
+                .map(|_| verify_lookup as svc::ServiceFn),
+            verify_store: busbar_contract::abi::host::access::service(op::VERIFY_STORE)
+                .filter(|p| p.admits(kind))
+                .map(|_| verify_store as svc::ServiceFn),
+            entitlement_check: busbar_contract::abi::host::access::service(op::ENTITLEMENT_CHECK)
+                .filter(|p| p.admits(kind))
+                .map(|_| entitlement_check as svc::ServiceFn),
+            content_scan: busbar_contract::abi::host::access::service(op::CONTENT_SCAN)
+                .filter(|p| p.admits(kind))
+                .map(|_| content_scan as svc::ServiceFn),
+            hook_call: busbar_contract::abi::host::access::service(op::HOOK_CALL)
+                .filter(|p| p.admits(kind))
+                .map(|_| hook_call as svc::ServiceFn),
+            random_fill: busbar_contract::abi::host::access::service(op::RANDOM_FILL)
+                .filter(|p| p.admits(kind))
+                .map(|_| random_fill as svc::ServiceFn),
+            need_admit: busbar_contract::abi::host::access::service(op::NEED_ADMIT)
+                .filter(|p| p.admits(kind))
+                .map(|_| need_admit as svc::ServiceFn),
+            trust_verify: busbar_contract::abi::host::access::service(op::TRUST_VERIFY)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_verify as svc::ServiceFn),
+            records_secret: busbar_contract::abi::host::access::service(op::RECORDS_SECRET)
+                .filter(|p| p.admits(kind))
+                .map(|_| records_secret as svc::ServiceFn),
+            disk_append: busbar_contract::abi::host::access::service(op::DISK_APPEND)
+                .filter(|p| p.admits(kind))
+                .map(|_| disk_append as svc::ServiceFn),
+            snapshot_read: busbar_contract::abi::host::access::service(op::SNAPSHOT_READ)
+                .filter(|p| p.admits(kind))
+                .map(|_| snapshot_read as svc::ServiceFn),
+            trust_sight_item: busbar_contract::abi::host::access::service(op::TRUST_SIGHT_ITEM)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_sight_item as svc::ServiceFn),
+            trust_serves: busbar_contract::abi::host::access::service(op::TRUST_SERVES)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_serves as svc::ServiceFn),
+            trust_decide: busbar_contract::abi::host::access::service(op::TRUST_DECIDE)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_decide as svc::ServiceFn),
+            trust_state: busbar_contract::abi::host::access::service(op::TRUST_STATE)
+                .filter(|p| p.admits(kind))
+                .map(|_| trust_state as svc::ServiceFn),
+            session_emit: busbar_contract::abi::host::access::service(op::SESSION_EMIT)
+                .filter(|p| p.admits(kind))
+                .map(|_| session_emit as svc::ServiceFn),
+            auth_call: busbar_contract::abi::host::access::service(op::AUTH_CALL)
+                .filter(|p| p.admits(kind))
+                .map(|_| auth_call as svc::ServiceFn),
+            unit_hand_in: busbar_contract::abi::host::access::service(op::UNIT_HAND_IN)
+                .filter(|p| p.admits(kind))
+                .map(|_| unit_hand_in as svc::ServiceFn),
+            unit_refuse: busbar_contract::abi::host::access::service(op::UNIT_REFUSE)
+                .filter(|p| p.admits(kind))
+                .map(|_| unit_refuse as svc::ServiceFn),
+            ticket_mint: busbar_contract::abi::host::access::service(op::TICKET_MINT)
+                .filter(|p| p.admits(kind))
+                .map(|_| ticket_mint as svc::ServiceFn),
+            ticket_take: busbar_contract::abi::host::access::service(op::TICKET_TAKE)
+                .filter(|p| p.admits(kind))
+                .map(|_| ticket_take as svc::ServiceFn),
+            work_status: busbar_contract::abi::host::access::service(op::WORK_STATUS)
+                .filter(|p| p.admits(kind))
+                .map(|_| work_status as svc::ServiceFn),
+        })
+    });
+    &tables[kind as usize - 1]
+}
+
+#[cfg(test)]
 pub static HOST_SLOTS: HostSlots = HostSlots {
     size: size_of::<HostSlots>() as u32,
     slots: SERVICES,
@@ -785,6 +902,16 @@ fn slot(
         let Some(waking) = super::handle::resolve(ctx).and_then(Waking::of) else {
             return unbound();
         };
+        let Some(supplier) = waking.supplier else {
+            return Answered::bare(Outcome::Refused, NO_CALLER);
+        };
+        if let Err(refused) = super::access::admit(
+            supplier,
+            busbar_contract::abi::host::access::service(service),
+            super::access::operation(),
+        ) {
+            return refused;
+        }
         let Some(route) = waking.route.upgrade() else {
             return unbound();
         };
@@ -1307,7 +1434,7 @@ service! {
                     counterparty: &counterparty,
                     item: item.as_deref(),
                 };
-                provider.trust_decide(caller, key, expected.as_deref(), approve, later)
+                provider.trust_decide(caller, head.handle.ticket, key, expected.as_deref(), approve, later)
             })
         }
     }
@@ -1395,7 +1522,7 @@ pub(crate) fn crossing(ticket: Ticket) -> Crossing {
     Crossing(CROSSING.with(|c| c.replace(Some(ticket))))
 }
 
-fn crossing_names(ticket: Ticket) -> bool {
+pub(crate) fn crossing_names(ticket: Ticket) -> bool {
     CROSSING
         .with(std::cell::Cell::get)
         .is_none_or(|t| t == ticket)
@@ -1505,6 +1632,16 @@ fn exact<T: Copy>(
         else {
             return Answered::bare(Outcome::Refused, "no host services are bound");
         };
+        let Some(supplier) = route.supplier else {
+            return Answered::bare(Outcome::Refused, NO_CALLER);
+        };
+        if let Err(refused) = super::access::admit(
+            supplier,
+            busbar_contract::abi::host::access::service(service),
+            super::access::operation(),
+        ) {
+            return refused;
+        }
         if svc::check_head_exact(&head, service, size_of::<T>()).is_err() {
             return Answered::bare(Outcome::Refused, NOT_EXACT);
         }

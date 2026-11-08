@@ -9,7 +9,7 @@ use busbar_core_connector::guard::{judged_class, PRIVATE_REFUSED_IN};
 
 #[test]
 fn the_linked_oidc_plugins_needs_refuse_a_private_idp_unless_allowlisted() {
-    let stated = busbar_plugin_loader::dispatch::rendering_of(busbar_auth_oidc::door::door)
+    let stated = busbar_plugin_loader::dispatch::rendering_of(busbar_auth_oidc::door)
         .expect("the oidc door renders its Statement");
     let read = rendering::read(&stated).expect("its Statement reads back");
     let outbound: Vec<&rendering::ReadNeed> = read

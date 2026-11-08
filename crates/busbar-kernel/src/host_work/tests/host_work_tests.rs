@@ -807,11 +807,12 @@ fn inspection_carriers_are_instance_owned_point_in_time_observations_without_cal
         InspectionObservation, InspectionQuery, SessionObservation,
     };
     let r = rig();
+    let me = caller("inst");
     let sink: crate::host_services::CarrierSink =
         Arc::new(|_| panic!("inspection must not call the sink"));
-    let alice = r.s.open_carrier_session("inst", "alice", Arc::clone(&sink));
-    let bob = r.s.open_carrier_session("inst", "bob", Arc::clone(&sink));
-    let foreign = r.s.open_carrier_session("other", "alice", sink);
+    let alice = r.s.open_carrier_session(&me, "alice", Arc::clone(&sink));
+    let bob = r.s.open_carrier_session(&me, "bob", Arc::clone(&sink));
+    let foreign = r.s.open_carrier_session(&caller("other"), "alice", sink);
     let query = InspectionQuery::CarrierSessions {
         sessions: vec![alice, bob, foreign, u64::MAX],
     };
@@ -836,13 +837,18 @@ fn inspection_carriers_are_instance_owned_point_in_time_observations_without_cal
         ]))
     };
 
-    let earlier = r.s.inspect(&caller("inst"), None, &query);
+    let earlier = r.s.inspect(&me, None, &query);
     assert_eq!(earlier, observation(true));
-    r.s.close_carrier_session(alice);
-    assert_eq!(
-        r.s.inspect(&caller("inst"), None, &query),
-        observation(false)
+    let replacement = r.s.inspect(&caller("inst"), None, &query).unwrap();
+    let InspectionObservation::CarrierSessions(replacement) = replacement else {
+        panic!("carrier observation");
+    };
+    assert!(
+        replacement.iter().all(|row| !row.live),
+        "reopened caller inherits no sessions"
     );
+    r.s.close_carrier_session(alice);
+    assert_eq!(r.s.inspect(&me, None, &query), observation(false));
     assert_eq!(
         earlier,
         observation(true),

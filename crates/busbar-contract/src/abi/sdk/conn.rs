@@ -3,6 +3,9 @@
 
 //! A PLUGIN'S CONNECTIONS, THROUGH THE HOST CONNECTOR (THE DESIGN, the connections section: one connector for every kind;
 
+use crate::plugin::KindMarker;
+use std::marker::PhantomData;
+
 use std::task::Poll;
 
 use super::lent::HostSource;
@@ -110,13 +113,14 @@ pub struct DiskFailure {
 pub type DiskAnswer = Poll<Result<DiskWritten, DiskFailure>>;
 
 /// An owned snapshot of the host's callable tables, retained by an instance.
-pub type StaticHost = Host;
+pub type StaticHost<K> = Host<K>;
 
 /// The host context and owned function tables read from a proven host loan.
 /// No pointer into the loan remains after construction. The context is an opaque handle;
 /// callbacks must reject retired handles before accessing host state.
 #[derive(Debug, Clone, Copy)]
-pub struct Host {
+pub struct Host<K: KindMarker> {
+    _kind: PhantomData<K>,
     ctx: HostCtx,
     wake: Option<WakeFn>,
     conns: Option<ConnectorSlots>,
@@ -229,9 +233,10 @@ snapshot_table!(
     ends
 );
 
-impl Host {
+impl<K: KindMarker> Host<K> {
     /// No wake, connector, services or I/O: the exact empty host, with no raw pointers to prove.
     pub const NONE: Self = Self {
+        _kind: PhantomData,
         ctx: HostCtx::NONE,
         wake: None,
         conns: None,
@@ -243,6 +248,7 @@ impl Host {
     #[must_use]
     pub const fn wake_only(ctx: HostCtx, wake: WakeFn) -> Self {
         Self {
+            _kind: PhantomData,
             ctx,
             wake: Some(wake),
             conns: None,
@@ -273,7 +279,7 @@ impl Host {
     /// fn forged(tables: &HostTables) { let _ = Host::of(tables); }
     /// ```
     #[must_use]
-    pub fn of(tables: impl HostSource) -> Self {
+    pub fn of(tables: super::lent::KindHostLoan<'_, K>) -> Self {
         // SAFETY: the sealed loan proves every advertised nested table prefix readable.
         unsafe { Self::from_raw(tables.tables()) }
     }
@@ -285,13 +291,20 @@ impl Host {
     /// during this call. Function slots obey their ABI, remain callable while the returned
     /// handle is used, and validate opaque context handles before accessing host state.
     #[must_use]
-    pub unsafe fn from_raw(tables: &HostTables) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub unsafe fn test_from_raw(tables: &HostTables) -> Self {
+        // SAFETY: the fixture caller proves the same raw-table contract.
+        unsafe { Self::from_raw(tables) }
+    }
+
+    pub(crate) unsafe fn from_raw(tables: &HostTables) -> Self {
         let io = if tables.size as usize >= std::mem::size_of::<HostTables>() {
             tables.io
         } else {
             std::ptr::null()
         };
         Self {
+            _kind: PhantomData,
             ctx: tables.ctx,
             wake: tables.wake,
             // SAFETY: the caller proves each advertised prefix and callback contract.
@@ -305,7 +318,10 @@ impl Host {
 
     /// THE HOST'S I/O (`abi::host::io`, `io.*`) for ONE entry of the op running on `ticket`: what
     #[must_use]
-    pub fn io(&self, ticket: Ticket) -> super::io::Io<'_> {
+    pub fn io(&self, ticket: Ticket) -> super::io::Io<'_>
+    where
+        K: crate::abi::host::access::RawIo,
+    {
         super::io::Io::new(
             self.ctx,
             self.io
@@ -329,20 +345,20 @@ impl Host {
 
     /// The host services table these tables carry (`abi::host::service`), as the SDK's typed
     #[must_use]
-    pub fn services(&self) -> Option<crate::abi::sdk::services::Services> {
+    pub fn services(&self) -> Option<crate::abi::sdk::services::Services<K>> {
         self.services
             .map(|table| crate::abi::sdk::services::Services::from_snapshot(self.ctx, table))
     }
 
     /// The connector for ONE entry of the op running on `ticket`.
     #[must_use]
-    pub fn connector(&self, ticket: Ticket) -> Connector<'_> {
+    pub fn connector(&self, ticket: Ticket) -> Connector<'_, K> {
         self.connector_from(ticket, 0)
     }
 
     /// The connector for one entry of the op running on `ticket`, its handles counting on from
     #[must_use]
-    pub fn connector_from(&self, ticket: Ticket, issued: u32) -> Connector<'_> {
+    pub fn connector_from(&self, ticket: Ticket, issued: u32) -> Connector<'_, K> {
         Connector {
             host: self,
             ticket,
@@ -366,8 +382,8 @@ impl Host {
 /// The connector for one entry of one op: each service it makes carries the next completion
 /// handle on its ticket (the replay rule, above).
 #[derive(Debug)]
-pub struct Connector<'h> {
-    host: &'h Host,
+pub struct Connector<'h, K: KindMarker> {
+    host: &'h Host<K>,
     ticket: Ticket,
     issued: u32,
     budget_ms: Option<u64>,
@@ -428,7 +444,7 @@ fn text(s: Option<&str>) -> AbiStr {
     })
 }
 
-impl Connector<'_> {
+impl<K: KindMarker> Connector<'_, K> {
     /// How many services this entry has made so far, counting from where it started.
     #[must_use]
     pub const fn issued(&self) -> u32 {
@@ -703,7 +719,7 @@ impl Connector<'_> {
     pub(crate) fn closer(&self) -> Closer {
         Closer {
             ctx: self.host.ctx,
-            conns: self.host.conns,
+            close: self.host.conns.and_then(|c| c.close),
         }
     }
 }
@@ -714,24 +730,35 @@ impl Connector<'_> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Closer {
     ctx: HostCtx,
-    conns: Option<ConnectorSlots>,
+    close: Option<ServiceFn>,
 }
 
 impl Closer {
     /// Close `stream` on no ticket: a close never pends, so it is made on none
     pub(crate) fn close(&self, stream: u64) {
-        let host = Host {
-            ctx: self.ctx,
-            wake: None,
-            conns: self.conns,
-            services: None,
-            io: None,
+        let Some(close) = self.close else {
+            return;
         };
-        let _ = host.connector(Ticket::NONE).close(stream);
+        let input = StreamIn {
+            head: ServiceHead {
+                size: std::mem::size_of::<StreamIn>() as u32,
+                op: service::CLOSE,
+                ..blank_head()
+            },
+            stream,
+        };
+        let mut out = ServiceOut {
+            size: std::mem::size_of::<ServiceOut>() as u32,
+            outcome: RawOutcome::of(Outcome::Fault),
+            ..ServiceOut::ZERO
+        };
+        // SAFETY: owned input/output live for this synchronous cleanup crossing. The
+        // host checks the retained opaque caller and ownership of the stream.
+        let _ = unsafe { close(self.ctx, std::ptr::from_ref(&input).cast(), &mut out) };
     }
 }
 
-impl Connector<'_> {
+impl<K: KindMarker> Connector<'_, K> {
     /// The host's clock (`clock.now`: wall and monotonic, the kernel's one clock). Never pends.
     pub fn clock_now(&mut self) -> Answer<ClockReading> {
         let mut reading = ClockReading {
@@ -767,7 +794,10 @@ impl Connector<'_> {
     }
 
     /// APPEND `bytes` to the local file the host maps this instance's destination `dest_key` to
-    pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer {
+    pub fn disk_append(&mut self, dest_key: &str, bytes: &[u8]) -> DiskAnswer
+    where
+        K: crate::abi::host::access::Permitted<{ op::DISK_APPEND }>,
+    {
         let blank = DiskWritten::ZERO;
         let fail = |step, rotation, why| {
             Poll::Ready(Err(DiskFailure {
@@ -869,7 +899,7 @@ pub struct Replied {
     pub len: usize,
 }
 
-impl Connector<'_> {
+impl<K: KindMarker> Connector<'_, K> {
     /// Read the next piece of the reply on `stream` into `buf`, with its descriptor. `buf` (and
     pub fn read_reply(
         &mut self,

@@ -130,7 +130,7 @@ fn an_abandoned_serve_keeps_its_actual_inputs_until_its_crossing_returns() {
         },
         watchdog_period: Duration::from_millis(10),
         ..DispatchConfig::default()
-    }));
+    }, busbar_contract::services::test_caller_binding()));
     let s = Subject::of_raw(test_door::<LateDoor>, "unused", "{}");
     let p = load::<Plane>(&s, Leg::Linked, s.bind(&d, "late-serve")).unwrap();
     assert!(open(&p, b"{}", None).starts_with("Ready"));

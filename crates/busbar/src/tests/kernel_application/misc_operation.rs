@@ -21,14 +21,13 @@ const ALL: [(OpVerb, OpShape, &str); 13] = [
 
 #[test]
 fn the_metric_label_surface_is_exactly_these_thirteen() {
+    let (_, facts) =
+        busbar_plugin_loader::dispatch::kinds::plane::stated_facts(busbar_plane_llm::door)
+            .expect("the actual LLM door declares its operations");
     let mut labels: Vec<&str> = OpVerb::ALL
         .iter()
-        .chain(
-            busbar_plane_llm::plane_door::PROTOCOLS
-                .iter()
-                .flat_map(|decl| decl.verbs.iter()),
-        )
-        .map(|o| o.name())
+        .map(|op| op.name())
+        .chain(facts.served.op_classes.iter().copied())
         .collect();
     labels.sort_unstable();
     labels.dedup();
@@ -55,10 +54,10 @@ fn the_metric_label_surface_is_exactly_these_thirteen() {
 
 #[test]
 fn no_verb_name_carries_a_protocol_identity() {
-    let identities: Vec<&str> = busbar_plane_llm::plane_door::PROTOCOLS
-        .iter()
-        .map(|d| d.name)
-        .collect();
+    let (_, facts) =
+        busbar_plugin_loader::dispatch::kinds::plane::stated_facts(busbar_plane_llm::door)
+            .expect("the actual LLM door declares its dialects");
+    let identities = facts.served.dialects;
     assert_eq!(
         identities.len(),
         6,

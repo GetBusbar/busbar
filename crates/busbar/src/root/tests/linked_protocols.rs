@@ -45,7 +45,14 @@ fn fallback_door_row() -> &'static busbar_kernel::plane_driver::registry::PlaneD
     let mut fallbacks: Vec<_> = crate::LINKED
         .plane_doors
         .iter()
-        .map(|door| registration(linked_probe(*door, "fallback-dialects")).expect("binds"))
+        .map(|door| {
+            registration(linked_probe(
+                *door,
+                "fallback-dialects",
+                busbar_kernel::host_services::caller_binding(),
+            ))
+            .expect("binds")
+        })
         .filter(|reg| reg.fallback)
         .collect();
     assert_eq!(fallbacks.len(), 1, "one linked door is the fallback plane");

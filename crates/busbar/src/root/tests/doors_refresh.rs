@@ -77,8 +77,7 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
     assert!(dispatcher.install_io(io.clone()));
     let mut binding = bind_on(&dispatcher);
     binding.instance = Arc::from("real-stdio-supervisor-refresh");
-    let plugin =
-        crate::root::test_plugins::linked_transport(busbar_transport_stdio::door::door, binding);
+    let plugin = crate::root::test_plugins::linked_transport(busbar_transport_stdio::door, binding);
     let settings = TransportSettings::default();
     let door = Arc::new(Dispatched::open_on(plugin, &settings, dispatcher).unwrap());
     let mut side = Driven::of(door.as_ref()).expect("the actual carrier owns a side");
@@ -335,14 +334,16 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
             }
         }
     }
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
     crate::root::connector::install_io(&dispatcher);
     let io = Arc::new(HostIo::new());
     assert!(dispatcher.install_io(io.clone()));
     let mut binding = bind_on(&dispatcher);
     binding.instance = Arc::from("real-stdio-refresh");
-    let plugin =
-        crate::root::test_plugins::linked_transport(busbar_transport_stdio::door::door, binding);
+    let plugin = crate::root::test_plugins::linked_transport(busbar_transport_stdio::door, binding);
     let settings = TransportSettings {
         request_body_max_bytes: 4,
         ..TransportSettings::default()

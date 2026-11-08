@@ -9,7 +9,7 @@ use crate::persistence::{
     scoped::{migration_address, ScopedStore},
 };
 use busbar_contract::abi::mechanism::KindCode;
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, Arc};
 
 trait TestAdmission {
     fn admit_sync(&self, instance: &str, facts: InstanceFacts) -> Result<(), AdmitRefused>;
@@ -122,11 +122,7 @@ impl Fixture {
     }
 
     fn caller(&self) -> Caller {
-        Caller {
-            instance: Arc::from(self.instance.as_str()),
-            plugin: Arc::from("test-plane"),
-            kind: KindCode::Plane,
-        }
+        Caller::for_test(Arc::from(self.instance.as_str()), KindCode::Plane)
     }
 }
 
@@ -167,10 +163,7 @@ fn cold_receipt_allows_repeated_callbacks_only_for_its_first_caller_generation()
         "rejected reload did not damage ongoing bootstrap"
     );
     host.admit_sync("other-instance", facts()).unwrap();
-    let other = Caller {
-        instance: Arc::from("other-instance"),
-        ..fixture.caller()
-    };
+    let other = Caller::for_test(Arc::from("other-instance"), (fixture.caller()).kind());
     assert!(!host.entitled(&other, None, ENTITLEMENT));
     assert!(!host.entitled(&caller, None, "record-quota-bootstrap:forged"));
 }
@@ -372,7 +365,7 @@ async fn native_bootstrap_unknown_grants_nothing_and_retains_original_attempt() 
         host_records::tests::{attach, Backend},
         scoped::{migration_address, ScopedStore},
     };
-    use std::sync::atomic::Ordering;
+    use std::sync::{atomic::Ordering, Arc};
     let backend = Arc::new(Backend::default());
     let store = Arc::new(attach(backend.clone()).await);
     let rows = ScopedStore::host_private(

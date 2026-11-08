@@ -8,11 +8,11 @@ use std::mem::{size_of, MaybeUninit};
 
 use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::lifecycle::{
-    slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn,
-    TickIn, TickOut, ValidateIn,
+    slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn,
+    TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::sdk::door::{KindOps, RawSlot};
+use busbar_contract::abi::sdk::door::RawSlot;
 
 pub const TARGET: &str = "log_witness";
 
@@ -28,18 +28,7 @@ pub const OUTSIDE: &[u8] = b"outside";
 
 pub const NEST: &[u8] = b"nest";
 
-/// The lifecycle-only table both plugins answer.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Ops {
-    head: OpsHead,
-}
-
-// SAFETY: `#[repr(C)]`, its one field the `OpsHead`.
-unsafe impl KindOps for Ops {
-    const KIND: KindCode = KIND;
-    type Lifecycle = busbar_contract::abi::sdk::door::Lifecycle;
-}
+pub type Ops = busbar_contract::abi::export::Ops;
 
 fn mode(input: &TickIn) -> &[u8] {
     let b = input.head.extensions;
@@ -142,6 +131,7 @@ macro_rules! ready {
     ($name:ident, $in:ty, $out:ty) => {
         struct $name;
         impl RawSlot for $name {
+            type Kind = busbar_contract::plugin::markers::ExportKind;
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -153,6 +143,7 @@ macro_rules! ready {
 
 struct Open;
 impl RawSlot for Open {
+    type Kind = busbar_contract::plugin::markers::ExportKind;
     type In = OpenIn;
     type Out = OpenOut;
     unsafe fn call(_: *mut c_void, _: &OpenIn, out: &mut OpenOut) -> Outcome {
@@ -174,6 +165,7 @@ pub mod a {
 
     struct Tick;
     impl RawSlot for Tick {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = TickIn;
         type Out = TickOut;
         unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {
@@ -212,6 +204,7 @@ pub mod b {
 
     struct Tick;
     impl RawSlot for Tick {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
         type In = TickIn;
         type Out = TickOut;
         unsafe fn call(_: *mut c_void, input: &TickIn, _: &mut TickOut) -> Outcome {

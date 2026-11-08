@@ -100,6 +100,7 @@ const STATEMENT: Statement = Statement {
 struct Probe;
 
 impl Life for Probe {
+    type Kind = crate::plugin::markers::TransportKind;
     const CANCEL: u32 = 0;
 
     fn open(settings: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -566,7 +567,7 @@ fn failed_open_writes_its_reason_into_the_caller_owned_buffer() {
 
 #[test]
 fn concrete_host_callbacks_answer_sdk_clock_records_and_short_buffer_calls() {
-    use crate::abi::sdk::services::{ServiceError, Services};
+    use crate::abi::sdk::services::ServiceError;
     use core::task::Poll;
     let slots = HostSlots {
         size: size_of::<HostSlots>() as u32,
@@ -585,7 +586,12 @@ fn concrete_host_callbacks_answer_sdk_clock_records_and_short_buffer_calls() {
         io: ptr::null(),
     };
     // SAFETY: the complete tables remain live here; both callbacks are static and use no context.
-    let services = Services::of(unsafe { crate::abi::sdk::Lent::new(&tables) }).unwrap();
+    let services = unsafe {
+        crate::abi::sdk::services::Services::<crate::plugin::markers::PlaneKind>::test_from_raw(
+            &tables,
+        )
+    }
+    .unwrap();
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
         seq: 0,
@@ -780,8 +786,6 @@ fn sdk_slot_types_match_the_kinds_declared_input_and_output_frames() {
 
 #[test]
 fn sdk_host_handles_copy_the_concrete_tables_before_the_allocations_drop() {
-    use crate::abi::sdk::conn::Host;
-    use crate::abi::sdk::services::Services;
     let (host, services) = {
         let slots = HostSlots {
             size: size_of::<HostSlots>() as u32,
@@ -804,7 +808,14 @@ fn sdk_host_handles_copy_the_concrete_tables_before_the_allocations_drop() {
         // SAFETY: all advertised table prefixes are live through these copying constructors.
         // Their sole callback is static, needs no context and remains callable afterward.
         let lent = unsafe { crate::abi::sdk::Lent::new(&tables) };
-        (Host::of(lent), Services::of(lent).unwrap())
+        (
+            unsafe {
+                crate::abi::sdk::conn::Host::<crate::plugin::markers::TransportKind>::test_from_raw(
+                    lent.get(),
+                )
+            },
+            unsafe { Services::test_from_raw(lent.get()) }.unwrap(),
+        )
     };
     let handle = CompletionHandle {
         ticket: Ticket::NONE,
@@ -826,7 +837,7 @@ mod pending_open_custody {
     use super::*;
     use crate::abi::mechanism::call::{BLOB_OCTETS, FLAG_RESUME};
     use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut};
-    use crate::abi::sdk::conn::Host;
+
     use crate::abi::sdk::life::Opening;
     use std::any::Any;
     use std::cell::RefCell;
@@ -892,6 +903,7 @@ mod pending_open_custody {
     }
 
     impl Life for PendingLife {
+        type Kind = FixtureKind;
         const CANCEL: u32 = 17;
 
         fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
@@ -1558,3 +1570,9 @@ fn restated_transport_rejects_a_claim_count_change() {
         &[],
     );
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type Services = crate::abi::sdk::services::Services<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::SecretKind;

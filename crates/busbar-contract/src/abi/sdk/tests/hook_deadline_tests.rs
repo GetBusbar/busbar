@@ -511,7 +511,7 @@ fn expiry_while_facts_is_pending_closes_without_reusing_its_replay_handle() {
         |tables| {
             // SAFETY: with_tables owns the complete outer, connector and service tables for
             // this closure; their immutable callbacks and thread-local state stay live here.
-            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
+            let host = unsafe { Host::test_from_raw(tables) };
             let mut exchange = crate::abi::sdk::exchange::Exchange::request(Request::default())
                 .unwrap()
                 .observing()
@@ -657,7 +657,7 @@ fn facts_that_reaches_expiry_in_its_service_step_cannot_lend_its_handle_to_close
         |tables| {
             // SAFETY: with_tables owns the complete outer, connector and service tables for
             // this closure; their immutable callbacks and thread-local state stay live here.
-            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
+            let host = unsafe { Host::test_from_raw(tables) };
             let mut exchange = crate::abi::sdk::exchange::Exchange::request(Request::default())
                 .unwrap()
                 .observing()
@@ -714,7 +714,7 @@ fn protected_exchange_pending_facts_keep_the_original_deadline_without_writing()
         },
         |tables| {
             // SAFETY: with_tables owns these host tables for the whole closure.
-            let host = crate::abi::sdk::conn::Host::of(unsafe { Lent::new(tables) });
+            let host = unsafe { Host::test_from_raw(tables) };
             let credential = crate::abi::sdk::cred::Cred::captured(zeroize::Zeroizing::new(
                 b"deadline-CANARY".to_vec(),
             ))
@@ -755,3 +755,7 @@ fn protected_exchange_pending_facts_keep_the_original_deadline_without_writing()
         },
     );
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::HookKind;

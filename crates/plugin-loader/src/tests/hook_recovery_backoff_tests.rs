@@ -14,14 +14,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 fn watchdog_faulting_instance() -> (HookInstance, Arc<AtomicUsize>) {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig {
-        budgets: Budgets {
-            call: Duration::from_millis(10),
-            ..Budgets::default()
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig {
+            budgets: Budgets {
+                call: Duration::from_millis(10),
+                ..Budgets::default()
+            },
+            watchdog_period: Duration::from_millis(1),
+            ..DispatchConfig::default()
         },
-        watchdog_period: Duration::from_millis(1),
-        ..DispatchConfig::default()
-    }));
+        busbar_contract::services::test_caller_binding(),
+    ));
     let axis = HookRows::new(&[hook_door_plugin::conforming::door], None, dispatcher)
         .expect("the existing slow-capable conforming door binds");
     let candidate = axis.find(NAME).unwrap().clone();

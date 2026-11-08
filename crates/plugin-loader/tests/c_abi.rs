@@ -47,7 +47,10 @@ fn stated(path: &Path) -> Vec<u8> {
 }
 
 fn load(path: &Path, rendering: &[u8]) -> Result<(Plugin<Secret>, Arc<Dispatcher>), LoadError> {
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let bind = Bind {
         instance: Arc::from("c-abi-witness"),
         max_inflight_cap: 64,

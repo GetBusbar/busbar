@@ -124,7 +124,10 @@ impl FaultingDoor {
 
 #[test]
 fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
-    let d = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let row = LinkedRow::of(FaultingDoor::door).expect("the restated actual door states itself");
     let p = load_linked::<Export>(
         &row,

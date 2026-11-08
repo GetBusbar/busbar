@@ -370,7 +370,10 @@ mod linked {
 
     fn axis() -> DoorPersistenceAxis {
         DoorPersistenceAxis {
-            dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
+            dispatcher: Arc::new(Dispatcher::new(
+                DispatchConfig::default(),
+                busbar_contract::services::test_caller_binding(),
+            )),
             logs: crate::dispatch::PluginLogConfig::from_words(
                 None,
                 None,
@@ -484,7 +487,10 @@ mod linked {
     }
     #[tokio::test]
     async fn dropped_read_future_keeps_native_descriptors_and_source_alive() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         extern "C" fn raw_door() -> *const Door {
             door()
         }
@@ -561,7 +567,10 @@ mod linked {
     }
     #[tokio::test]
     async fn async_binding_opens_readies_retries_and_preserves_commit_uncertainty() {
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
         extern "C" fn raw_door() -> *const Door {
             door()
         }

@@ -158,10 +158,15 @@ thread_local! {
 struct FillSlot;
 
 impl SafeSlot for FillSlot {
+    type Kind = busbar_contract::plugin::markers::TransportKind;
     type In = FramingIn;
     type Out = FramerOut;
     type State = ();
-    fn call(_: Instance<'_, ()>, i: Lent<'_, FramingIn>, mut o: Out<'_, FramerOut>) -> Outcome {
+    fn call(
+        _: Instance<'_, (), busbar_contract::plugin::markers::TransportKind>,
+        i: Lent<'_, FramingIn>,
+        mut o: Out<'_, FramerOut>,
+    ) -> Outcome {
         OWES.with(|c| {
             let mut owes = c.borrow_mut();
             let owes = owes.as_mut().expect("a framing to fill from");

@@ -55,7 +55,10 @@ impl ActualStore {
         use crate::root::loader::store_v4::{Limits, LoadedPersistence};
         let path = crate::root::test_plugins::application_store_library();
         let stated = rendering_of_library(&path).unwrap().unwrap();
-        let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        ));
         let plugin = load_dropped::<StoreV4>(
             &path,
             &stated,

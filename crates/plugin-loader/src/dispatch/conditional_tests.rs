@@ -102,6 +102,7 @@ impl busbar_contract::services::HostServices for Provider {
     fn trust_decide(
         &self,
         _caller: &busbar_contract::services::Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         _key: busbar_contract::services::TrustKeyRef<'_>,
         _expected: Option<&str>,
         _approve: bool,
@@ -355,11 +356,10 @@ fn rig() -> (Arc<Route>, &'static InstanceWake, InHead) {
     assert!(wake.route.set(Arc::downgrade(&dynamic)).is_ok());
     assert!(wake
         .caller
-        .set(busbar_contract::services::Caller {
-            instance: "conditional".into(),
-            plugin: "fixture".into(),
-            kind: KindCode::Plane
-        })
+        .set(busbar_contract::services::Caller::for_test(
+            "conditional".into(),
+            KindCode::Plane
+        ))
         .is_ok());
     let mut input = in_head();
     input.ticket = Ticket {
@@ -725,6 +725,7 @@ fn plane_rig() -> (
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         provider.clone(),
+        busbar_contract::services::test_caller_binding(),
     ));
     let plugin = super::super::load_linked::<Plane>(
         &LinkedRow::of(door).unwrap(),
@@ -1893,4 +1894,62 @@ fn observation_receipt_never_crosses_unit_or_cancellation() {
             Err(())
         );
     }
+}
+
+// Existing malformed-wire witnesses retain the precise Fault classification.
+unsafe fn answer(
+    wake: &'static InstanceWake,
+    kind: KindCode,
+    ticket: Ticket,
+    unit: Option<u64>,
+    head: &OutHead,
+    frame: &super::super::Answer,
+) -> Result<bool, ()> {
+    // SAFETY: each fixture supplies live complete frames and extension loans.
+    unsafe { super::answer(wake, kind, ticket, unit, head, frame) }.map_err(|error| {
+        assert_eq!(
+            error,
+            AnswerError::Malformed,
+            "existing wire refusal remains Fault"
+        );
+    })
+}
+
+#[test]
+fn conditional_extension_from_another_kind_refuses_before_accepting_a_candidate() {
+    let (route, wake, mut input) = rig();
+    let request = request(wake, &mut input, None, 77);
+    let bytes = wire::encode_request(&request).unwrap();
+    let i = TickIn {
+        head: input,
+        now_ns: 0,
+    };
+    let mut o = TickOut {
+        head: out_head(),
+        next_tick_ns: 0,
+    };
+    o.head.outcome = RawOutcome::of(Outcome::Pending);
+    o.head.extensions = Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    // SAFETY: exact initialized frames and their encoded request live throughout the call.
+    let frame = unsafe {
+        Answer::new(
+            slot::TICK,
+            Outcome::Pending,
+            &i.head,
+            std::mem::size_of_val(&i),
+            &o.head,
+            std::mem::size_of_val(&o),
+        )
+    };
+    assert_eq!(
+        unsafe { super::answer(wake, KindCode::Auth, input.ticket, None, &o.head, &frame) },
+        Err(AnswerError::Authority)
+    );
+    assert!(route.provider.accepted.lock().unwrap().is_empty());
+    assert_eq!(route.wakes.load(Ordering::SeqCst), 0);
 }

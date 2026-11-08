@@ -56,7 +56,7 @@ fn run(
     id: u64,
     query: &InspectionQuery,
 ) -> Poll<InspectionResult> {
-    let op = Op::over(on, None);
+    let op = Op::<crate::plugin::markers::PlaneKind>::over(on, None);
     // SAFETY: the test's complete input and extension bytes live through this call.
     op.inspect(
         unsafe { Lent::new(input) },

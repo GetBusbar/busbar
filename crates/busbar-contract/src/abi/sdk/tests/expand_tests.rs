@@ -496,8 +496,8 @@ fn actual_abi_frames_lend_the_owned_fields_their_accessors_name() {
 fn sdk_host_handles_read_the_actual_lent_tables() {
     use crate::abi::host::service::HostSlots;
     use crate::abi::mechanism::ticket::{HostCtx, HostTables};
-    use crate::abi::sdk::conn::Host;
-    use crate::abi::sdk::services::{Services, Wake};
+
+    use crate::abi::sdk::services::Wake;
     let mut services: HostSlots = crate::abi::sdk::test_support::zeroed();
     services.size = size_of::<HostSlots>() as u32;
     services.slots = crate::abi::host::service::SERVICES;
@@ -514,19 +514,19 @@ fn sdk_host_handles_read_the_actual_lent_tables() {
     let tables = lend(&raw_tables);
     assert!(ptr::eq(tables.get(), &raw_tables));
 
-    let host = Host::of(tables);
+    let host = unsafe { Host::test_from_raw(tables.get()) };
     // SAFETY: these actual initialized tables stay live for every handle read here.
     let raw = unsafe { Host::from_raw(&raw_tables) };
     assert_eq!(format!("{host:?}"), format!("{raw:?}"));
     assert_eq!(
-        Services::of(tables).is_some(),
+        unsafe { Services::test_from_raw(tables.get()) }.is_some(),
         // SAFETY: as above.
         unsafe { Services::from_raw(&raw_tables) }.is_some()
     );
     assert_eq!(
-        Wake::of(tables).is_some(),
+        unsafe { Wake::test_from_raw(tables.get()) }.is_some(),
         // SAFETY: as above.
-        unsafe { Wake::from_raw(&raw_tables) }.is_some()
+        unsafe { Wake::test_from_raw(&raw_tables) }.is_some()
     );
 }
 
@@ -536,8 +536,8 @@ fn a_kept_handle_is_named_by_its_static_alias() {
     use crate::abi::mechanism::ticket::Ticket;
     use crate::abi::mechanism::ticket::{HostCtx, HostTables};
     use crate::abi::sdk::auth_door::{StaticVerifyOp, VerifyOp};
-    use crate::abi::sdk::conn::{Host, StaticHost};
-    use crate::abi::sdk::services::{StaticServices, StaticWake};
+
+    use crate::abi::sdk::services::StaticWake;
 
     struct Kept {
         host: StaticHost,
@@ -559,17 +559,19 @@ fn a_kept_handle_is_named_by_its_static_alias() {
     };
     let tables = lend(&raw_tables);
     let kept = Kept {
-        host: Host::of(tables),
-        services: Host::of(tables).services(),
-        wake: crate::abi::sdk::services::Wake::of(tables),
+        host: unsafe { Host::test_from_raw(tables.get()) },
+        services: unsafe { Host::test_from_raw(tables.get()) }.services(),
+        wake: unsafe { crate::abi::sdk::services::Wake::test_from_raw(tables.get()) },
     };
     assert_eq!(
         format!("{:?}", kept.host),
-        format!("{:?}", Host::of(tables))
+        format!("{:?}", unsafe { Host::test_from_raw(tables.get()) })
     );
     assert_eq!(
         kept.services.is_some(),
-        Host::of(tables).services().is_some()
+        unsafe { Host::test_from_raw(tables.get()) }
+            .services()
+            .is_some()
     );
     assert_eq!(kept.wake.is_some(), raw_tables.wake.is_some());
     let op: StaticVerifyOp = VerifyOp::new(kept.services, Ticket::NONE);
@@ -621,7 +623,7 @@ fn lifecycle_host_loan_reads_an_outer_table_without_the_appended_io_field() {
     use crate::abi::host::conn::connector::ConnectorSlots;
     use crate::abi::host::service::HostSlots;
     use crate::abi::mechanism::ticket::{HostCtx, HostTables, WakeFn};
-    use crate::abi::sdk::conn::Host;
+
     #[repr(C)]
     struct LegacyHostTables {
         size: u32,
@@ -648,8 +650,20 @@ fn lifecycle_host_loan_reads_an_outer_table_without_the_appended_io_field() {
     let loan = unsafe { Lent::new(&input) }
         .host()
         .expect("the base table is complete");
-    let host = Host::of(loan);
+    let host = crate::abi::sdk::conn::Host::<crate::plugin::markers::TransportKind>::of(
+        crate::abi::sdk::lent::KindHostLoan::bind(loan),
+    );
     assert!(!host.lends_connector());
     assert!(host.services().is_none());
     assert!(!host.io(crate::abi::mechanism::ticket::Ticket::NONE).armed());
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type StaticHost = crate::abi::sdk::conn::StaticHost<FixtureKind>;
+
+type StaticServices = crate::abi::sdk::services::StaticServices<FixtureKind>;
+
+type Services = crate::abi::sdk::services::Services<FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::AuthKind;

@@ -35,7 +35,10 @@ fn runtime() -> &'static tokio::runtime::Handle {
 fn dispatcher() -> &'static Arc<Dispatcher> {
     static DISPATCHER: OnceLock<Arc<Dispatcher>> = OnceLock::new();
     DISPATCHER.get_or_init(|| {
-        let dispatcher = Dispatcher::new(DispatchConfig::default());
+        let dispatcher = Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        );
         dispatcher.install_runtime(runtime().clone());
         dispatcher.install_io(busbar_core_connector::hostio::process());
         Arc::new(dispatcher)

@@ -3,6 +3,7 @@
 
 //! THE HOST TABLES EVERY KIND SHARES: the services a host hands a plugin of any kind, lowered to
 
+pub mod access;
 pub mod conn;
 pub mod hook;
 pub mod io;

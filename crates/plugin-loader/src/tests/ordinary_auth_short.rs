@@ -220,7 +220,10 @@ fn opened(
             door,
         )])
         .unwrap();
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
     let rows = AuthRows::new(Arc::new(registry), dispatcher.clone());
     let auth = rows
         .open("short-pin", "short-pin", &serde_json::json!({}))
@@ -360,7 +363,10 @@ fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     VERIFIES.store(0, Ordering::SeqCst);
     RELEASES.store(0, Ordering::SeqCst);
     JUDGMENTS.store(0, Ordering::SeqCst);
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let row = LinkedRow::of(retained_door).unwrap();
     let plugin = load_linked::<Auth>(
         &row,

@@ -3,6 +3,10 @@
 
 //! THE AUTH KIND'S VERIFY DOOR, FOR A SAFE PLUGIN (`abi::auth`, THE DESIGN, sections 11.4 and 11.6): the auth
 
+type Host = KindGenericHost<crate::plugin::markers::AuthKind>;
+type Instance<'a, T> = KindGenericInstance<'a, T, crate::plugin::markers::AuthKind>;
+type Services = KindGenericServices<crate::plugin::markers::AuthKind>;
+
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::marker::PhantomData;
@@ -18,13 +22,13 @@ use crate::abi::mechanism::call::{AbiStr, Blob, Outcome, Span, BLOB_ABSENT};
 use crate::abi::mechanism::door::{KindTailHead, MarkWord, Statement, MARK_WORD_CARRIER};
 use crate::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use crate::abi::sdk::auth_outbound::Diags;
-use crate::abi::sdk::conn::Host;
+use crate::abi::sdk::conn::Host as KindGenericHost;
 use crate::abi::sdk::door::{AbiIn, AbiOut};
 use crate::abi::sdk::lent::{HostBuf, Lent};
 use crate::abi::sdk::life::{Counted, Held, Leases, Life, Refreshed, Refusal};
 use crate::abi::sdk::out::Out;
-use crate::abi::sdk::safe::{Instance, SafeSlot};
-use crate::abi::sdk::services::{CredentialSecret, Pend, Services};
+use crate::abi::sdk::safe::{Instance as KindGenericInstance, SafeSlot};
+use crate::abi::sdk::services::{CredentialSecret, Pend, Services as KindGenericServices};
 pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
@@ -377,6 +381,7 @@ impl<T> Verifier<T> {
 }
 
 impl<T: VerifyPlugin> Life for Verifier<T> {
+    type Kind = crate::plugin::markers::AuthKind;
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
 
@@ -408,6 +413,7 @@ impl<T: VerifyPlugin> Life for Verifier<T> {
 #[derive(Debug)]
 pub struct Verify<T>(PhantomData<T>);
 impl<T: VerifyPlugin> SafeSlot for Verify<T> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = VerifyIn;
     type Out = IdentifyOut;
     type State = Held<Verifier<T>>;
@@ -707,6 +713,7 @@ pub(crate) const NOT_SERVED: &str =
 #[derive(Debug)]
 pub struct NotServed<T, I, O>(PhantomData<(T, I, O)>);
 impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
+    type Kind = crate::plugin::markers::AuthKind;
     type In = I;
     type Out = O;
     type State = Held<Verifier<T>>;

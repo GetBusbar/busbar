@@ -159,11 +159,10 @@ pub(crate) fn facts() -> InstanceFacts {
     }
 }
 pub(crate) fn caller() -> Caller {
-    Caller {
-        instance: INSTANCE.into(),
-        plugin: "plugin".into(),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    }
+    Caller::for_test(
+        INSTANCE.into(),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    )
 }
 
 pub(crate) struct Rig {

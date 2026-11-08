@@ -16,7 +16,7 @@ use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 fn current_abi_generations_are_explicit() {
     assert_eq!(busbar_contract::abi::ABI_MAJOR, 1);
     assert_eq!(busbar_contract::abi::ABI_MINOR, 0);
-    assert_eq!(MECHANISM_VERSION, 2);
+    assert_eq!(MECHANISM_VERSION, 3);
     assert_eq!(store::ABI_VERSION, 3);
     assert_eq!(secret::ABI_VERSION, 2);
     assert_eq!(auth::ABI_VERSION, 3);
@@ -87,6 +87,7 @@ extern "C" fn a_sealed_door() -> &'static Door {
 mod static_door {
     struct Life;
     impl busbar_contract::abi::sdk::life::Life for Life {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         const CANCEL: u32 = 0;
         fn open(
             _: &[u8],

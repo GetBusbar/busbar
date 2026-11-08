@@ -401,6 +401,8 @@ fn groups<'a>(
     }
 }
 
+impl crate::dispatch::kind_seal::Validated for Auth {}
+
 impl Kind for Auth {
     const CODE: KindCode = KindCode::Auth;
     type Ops = auth::Ops;

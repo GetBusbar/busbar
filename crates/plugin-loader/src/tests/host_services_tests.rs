@@ -46,7 +46,7 @@ impl Provider {
         self.scoped
             .lock()
             .unwrap()
-            .push((c.instance.to_string(), what, arg.to_vec()));
+            .push((c.namespace().to_string(), what, arg.to_vec()));
     }
 }
 
@@ -185,6 +185,7 @@ impl HostServices for Provider {
     fn trust_decide(
         &self,
         c: &Caller,
+        _ticket: busbar_contract::abi::mechanism::ticket::Ticket,
         key: busbar_contract::services::TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
@@ -441,6 +442,10 @@ struct Route {
 }
 
 impl WakeRoute for Route {
+    fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
+        panic!("forbidden I/O must not consult a provider");
+    }
+
     fn wake(&self, t: Ticket, _supplier: Option<&'static InstanceWake>) {
         self.wakes.lock().unwrap().push(t);
     }
@@ -460,9 +465,15 @@ impl WakeRoute for Route {
 struct Double {
     route: Arc<Route>,
     ctx: HostCtx,
+    wake: &'static InstanceWake,
+    _invocation: crate::dispatch::access::Invocation,
 }
 
 fn double() -> Double {
+    double_for(busbar_contract::abi::mechanism::KindCode::Plane)
+}
+
+fn double_for(kind: busbar_contract::abi::mechanism::KindCode) -> Double {
     let route = Arc::new(Route {
         store: Arc::default(),
         provider: Arc::default(),
@@ -474,15 +485,15 @@ fn double() -> Double {
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake
         .caller
-        .set(Caller {
-            instance: Arc::from("double"),
-            plugin: Arc::from("double-plugin"),
-            kind: busbar_contract::abi::mechanism::KindCode::Plane,
-        })
+        .set(Caller::for_test(Arc::from("double"), kind))
         .is_ok());
     Double {
         route,
         ctx: crate::dispatch::handle::mint(wake).expect("the host mints a handle"),
+        wake,
+        _invocation: crate::dispatch::access::enter(
+            busbar_contract::abi::mechanism::lifecycle::slot::READY,
+        ),
     }
 }
 
@@ -596,47 +607,19 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 0);
     assert!(unsafe { check_dest_judge(&judge_in("", Ticket::NONE, 0, 0), ret, &o) }.is_ok());
 
-    let slots = [
-        HOST_SLOTS.clock_now,
-        HOST_SLOTS.records_get,
-        HOST_SLOTS.records_list,
-        HOST_SLOTS.records_claim,
-        HOST_SLOTS.dest_judge,
-        HOST_SLOTS.sign,
-        HOST_SLOTS.unit_nest,
-        HOST_SLOTS.work_open,
-        HOST_SLOTS.work_find,
-        HOST_SLOTS.work_settle,
-        HOST_SLOTS.work_resume,
-        HOST_SLOTS.trust_sight,
-        HOST_SLOTS.trust_due,
-        HOST_SLOTS.verify_lookup,
-        HOST_SLOTS.verify_store,
-        HOST_SLOTS.entitlement_check,
-        HOST_SLOTS.content_scan,
-        HOST_SLOTS.hook_call,
-        HOST_SLOTS.random_fill,
-        HOST_SLOTS.need_admit,
-        HOST_SLOTS.trust_verify,
-        HOST_SLOTS.records_secret,
-        HOST_SLOTS.disk_append,
-        HOST_SLOTS.snapshot_read,
-        HOST_SLOTS.trust_sight_item,
-        HOST_SLOTS.trust_serves,
-        HOST_SLOTS.trust_decide,
-        HOST_SLOTS.trust_state,
-        HOST_SLOTS.session_emit,
-        HOST_SLOTS.auth_call,
-        HOST_SLOTS.unit_hand_in,
-        HOST_SLOTS.unit_refuse,
-        HOST_SLOTS.ticket_mint,
-        HOST_SLOTS.ticket_take,
-        HOST_SLOTS.work_status,
-    ];
+    let slots = slots_of(&HOST_SLOTS);
     assert_eq!(slots.len(), SERVICES as usize);
 
     let (mut read_buf, mut read_spans) = ([0u8; 64], [NO_SPAN; 4]);
     for (service, f) in (0..SERVICES).zip(slots) {
+        use busbar_contract::abi::mechanism::KindCode;
+        let kind = match service {
+            op::RECORDS_SECRET => KindCode::Auth,
+            op::DISK_APPEND | op::SNAPSHOT_READ => KindCode::Export,
+            op::AUTH_CALL | op::UNIT_HAND_IN | op::UNIT_REFUSE => KindCode::Transport,
+            _ => KindCode::Plane,
+        };
+        let d = double_for(kind);
         let mut raw = [0u64; 32];
         let h = head(service, Ticket::NONE, 0, size_of_val(&raw));
         // SAFETY: the head fits the buffer's start.
@@ -1052,7 +1035,19 @@ fn the_sdk_dest_judge_pends_and_its_reissue_reads_the_stored_verdict() {
     assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
 }
 
-fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
+fn sdk(
+    d: &Double,
+) -> busbar_contract::abi::sdk::Services<busbar_contract::plugin::markers::PlaneKind> {
+    typed_sdk(d)
+}
+fn export_sdk(
+    d: &Double,
+) -> busbar_contract::abi::sdk::Services<busbar_contract::plugin::markers::ExportKind> {
+    typed_sdk(d)
+}
+fn typed_sdk<K: busbar_contract::plugin::KindMarker>(
+    d: &Double,
+) -> busbar_contract::abi::sdk::Services<K> {
     use busbar_contract::abi::mechanism::ticket::HostTables;
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
@@ -1064,7 +1059,8 @@ fn sdk(d: &Double) -> busbar_contract::abi::sdk::Services {
         io: std::ptr::null(),
     };
     /* SAFETY: the harness owns these live tables and callback context. */
-    unsafe { busbar_contract::abi::sdk::Services::from_raw(&tables) }.expect("the table is handed")
+    unsafe { busbar_contract::abi::sdk::Services::test_from_raw(&tables) }
+        .expect("the table is handed")
 }
 
 const fn ticketed(seq: u32) -> CompletionHandle {
@@ -1665,7 +1661,10 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
 
 #[test]
 fn a_recycled_ticket_drops_its_stored_service_results() {
-    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let d = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let t = d.mint(0).expect("a ticket");
     let store = d.service_store();
     let runs = AtomicUsize::new(0);
@@ -1734,7 +1733,7 @@ fn call_secret(ctx: HostCtx, i: &RecordsSecretIn) -> (RawOutcome, ServiceOut) {
 
 #[test]
 fn records_secret_serves_only_a_declared_kind() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Auth);
     let (mut buf, mut spans) = (
         [0u8; 16],
         [ItemSpan {
@@ -1750,6 +1749,12 @@ fn records_secret_serves_only_a_declared_kind() {
     assert!(d.route.provider.secrets.lock().unwrap().is_empty());
 
     let wake: &'static InstanceWake = Box::leak(Box::default());
+    wake.caller
+        .set(Caller::for_test(
+            "double".into(),
+            busbar_contract::abi::mechanism::KindCode::Auth,
+        ))
+        .unwrap();
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake
@@ -1957,7 +1962,7 @@ fn blank_written() -> svc::DiskWritten {
 
 #[test]
 fn disk_append_writes_only_to_a_granted_bound_destination() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
     let mut w = blank_written();
 
     let i = disk_in("path", b"line\n", 0, &mut w);
@@ -1972,6 +1977,12 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     assert!(d.route.provider.appended.lock().unwrap().is_empty());
 
     let wake: &'static InstanceWake = Box::leak(Box::default());
+    wake.caller
+        .set(Caller::for_test(
+            "double".into(),
+            busbar_contract::abi::mechanism::KindCode::Export,
+        ))
+        .unwrap();
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
@@ -2185,13 +2196,13 @@ fn snapshot_families() -> Vec<busbar_contract::export_calls::Family> {
 fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
     use busbar_contract::abi::host::service::{SNAPSHOT_SCOPE_HOOKS, SNAPSHOT_SCOPE_WHOLE};
     use busbar_contract::abi::sdk::ServiceError;
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
     let none = CompletionHandle {
         ticket: TICKET,
         seq: 0,
         _reserved: 0,
     };
-    let services = sdk(&d);
+    let services = export_sdk(&d);
     let mut small = [0u64; 4];
     let needed = match service_ready(services.snapshot_read(none, SNAPSHOT_SCOPE_HOOKS, &mut small))
     {
@@ -2232,7 +2243,7 @@ fn snapshot_read_lays_the_families_out_in_the_callers_buffer() {
 #[test]
 fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
     use busbar_contract::abi::host::service::{SnapshotReadIn, SNAPSHOT_SCOPES};
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
     let mut words = [0u64; 512];
     let at = words.as_mut_ptr().cast::<u8>();
     let call = |scope: u32, buf: *mut u8, cap: usize| {
@@ -2474,7 +2485,7 @@ fn an_auth_ref_minted_for_another_owner_is_refused() {
 
 #[test]
 fn an_auth_ref_of_an_older_generation_is_refused() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let stale = mint_auth_ref(owner(&d), generation().wrapping_sub(1), 5).expect("minted");
     let mut slot = answer_slot();
     let (ret, o) = call_auth(d.ctx, &auth_call_in(stale, &mut slot));
@@ -2490,7 +2501,7 @@ fn an_auth_ref_of_an_older_generation_is_refused() {
 
 #[test]
 fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     assert_eq!(verify_auth_ref(owner(&d), generation(), &r), Ok(5));
     for bit in 0..64 {
@@ -2526,7 +2537,7 @@ fn an_auth_ref_with_one_mac_bit_flipped_is_refused() {
 
 #[test]
 fn an_auth_handle_in_one_field_short_is_refused() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     let mut slot = answer_slot();
     let exact = size_of::<AuthCallIn>() as u32;
@@ -2657,7 +2668,7 @@ fn an_auth_call_whose_view_declares_no_scheme_is_refused_by_name() {
     use busbar_contract::abi::host::service::{
         SCHEME_PLAIN, SCHEME_UNDECLARED, SCHEME_UNDECLARED_REFUSED,
     };
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let r = mint_auth_ref(owner(&d), generation(), 5).expect("minted");
     let mut slot = answer_slot();
     let mut i = auth_call_in(r, &mut slot);
@@ -2805,11 +2816,10 @@ fn beside(d: &Double, name: &str) -> HostCtx {
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake
         .caller
-        .set(Caller {
-            instance: Arc::from(name),
-            plugin: Arc::from("double-plugin"),
-            kind: busbar_contract::abi::mechanism::KindCode::Plane,
-        })
+        .set(Caller::for_test(
+            Arc::from(name),
+            busbar_contract::abi::mechanism::KindCode::Plane
+        ))
         .is_ok());
     crate::dispatch::handle::mint(wake).expect("the host mints a handle")
 }
@@ -3004,7 +3014,7 @@ impl AuthHandleHost for KernelSide {
 }
 
 fn served_double() -> (Double, Arc<KernelSide>) {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let side = Arc::new(KernelSide::default());
     let host: Arc<dyn AuthHandleHost> = side.clone();
     assert!(d.route.auth.set(host).is_ok());
@@ -3406,7 +3416,10 @@ fn an_auth_call_names_the_host_framing_instead_of_its_operation_ticket() {
 
 #[test]
 fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let side = Arc::new(KernelSide::default());
     let host: Arc<dyn AuthHandleHost> = side.clone();
     assert!(dispatcher.install_auth_handle(host));
@@ -3437,7 +3450,7 @@ fn retiring_operation_tickets_does_not_end_the_live_host_framing() {
 
 #[test]
 fn a_hand_in_on_a_lent_none_line_mints_its_unit_and_continues() {
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Transport);
     let lent = crate::dispatch::auth_handle::lend_none_line(owner(&d), 0x6e6f_6e65)
         .expect("the host lends the line");
     let hand_in = |auth: AuthRef| {
@@ -3564,12 +3577,12 @@ fn pending_snapshot_reuses_owned_families_and_rebases_short_delivery() {
     use busbar_contract::abi::host::service::SNAPSHOT_SCOPE_HOOKS;
     use busbar_contract::abi::sdk::ServiceError;
     use std::task::Poll;
-    let d = double();
+    let d = double_for(busbar_contract::abi::mechanism::KindCode::Export);
     d.route
         .provider
         .snapshot_pending
         .store(true, Ordering::SeqCst);
-    let sdk = sdk(&d);
+    let sdk = export_sdk(&d);
     let mut initial = [0u64; 1];
     assert!(matches!(
         sdk.snapshot_read(ticketed(0), SNAPSHOT_SCOPE_HOOKS, &mut initial),
@@ -3598,4 +3611,166 @@ fn pending_snapshot_reuses_owned_families_and_rebases_short_delivery() {
             .count(),
         1
     );
+}
+
+fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
+    [
+        slots.clock_now,
+        slots.records_get,
+        slots.records_list,
+        slots.records_claim,
+        slots.dest_judge,
+        slots.sign,
+        slots.unit_nest,
+        slots.work_open,
+        slots.work_find,
+        slots.work_settle,
+        slots.work_resume,
+        slots.trust_sight,
+        slots.trust_due,
+        slots.verify_lookup,
+        slots.verify_store,
+        slots.entitlement_check,
+        slots.content_scan,
+        slots.hook_call,
+        slots.random_fill,
+        slots.need_admit,
+        slots.trust_verify,
+        slots.records_secret,
+        slots.disk_append,
+        slots.snapshot_read,
+        slots.trust_sight_item,
+        slots.trust_serves,
+        slots.trust_decide,
+        slots.trust_state,
+        slots.session_emit,
+        slots.auth_call,
+        slots.unit_hand_in,
+        slots.unit_refuse,
+        slots.ticket_mint,
+        slots.ticket_take,
+        slots.work_status,
+    ]
+}
+
+#[test]
+fn cached_callbacks_cannot_cross_kind_boundaries_including_exact_and_unticketed_paths() {
+    use busbar_contract::abi::{host::access, mechanism::KindCode};
+    for kind in [
+        KindCode::Store,
+        KindCode::Secret,
+        KindCode::Auth,
+        KindCode::Hook,
+        KindCode::Export,
+        KindCode::Plane,
+        KindCode::Transport,
+    ] {
+        let d = double_for(kind);
+        let advertised = slots_of(host_slots(kind));
+        for (service, callback) in slots_of(&HOST_SLOTS).into_iter().enumerate() {
+            let policy = access::service(service as u32).unwrap();
+            assert_eq!(
+                advertised[service].is_some(),
+                policy.admits(kind),
+                "{kind:?} {} mask",
+                policy.name
+            );
+            if policy.admits(kind) {
+                continue;
+            }
+            for ticket in [TICKET, Ticket::NONE] {
+                let mut input = [0u64; 64];
+                let header = head(service as u32, ticket, 0, size_of_val(&input));
+                // SAFETY: initialized aligned storage covers every service frame. Forbidden
+                // kind calls must refuse before reading payloads or invoking any provider.
+                unsafe {
+                    input.as_mut_ptr().cast::<ServiceHead>().write(header);
+                }
+                let mut out = blank();
+                let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+                assert_eq!(
+                    result.outcome(),
+                    Outcome::Refused,
+                    "{kind:?} {} {ticket:?}",
+                    policy.name
+                );
+            }
+        }
+        assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 0);
+        assert_eq!(d.route.provider.filled.load(Ordering::SeqCst), 0);
+        assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+        assert!(d.route.provider.secrets.lock().unwrap().is_empty());
+        assert!(d.route.provider.appended.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn retirement_cannot_acquire_fresh_authority_but_does_not_disable_the_replacement_generation() {
+    use busbar_contract::abi::mechanism::lifecycle::slot as life;
+    let d = double();
+    let input = judge_in("now:peer", TICKET, 0, DEST_RESOLVE);
+    {
+        let _phase = crate::dispatch::access::enter(life::RETIRE);
+        assert_eq!(call_judge(&d, &input).0.outcome(), Outcome::Refused);
+    }
+    assert_eq!(
+        call_judge(&d, &input).0.outcome(),
+        Outcome::Ready,
+        "retiring an old generation does not retire the live binding"
+    );
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let clock = svc::ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<svc::ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let mut out = blank();
+    // SAFETY: exact initialized clock input and writable output, with the fixture's live context.
+    let call = |out: &mut ServiceOut| unsafe {
+        HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&clock).cast(), out)
+    };
+    assert_eq!(call(&mut out).outcome(), Outcome::Ready);
+    d.wake.revoked.store(true, Ordering::Release);
+    assert_eq!(call(&mut out).outcome(), Outcome::Refused);
+    assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn cached_io_callbacks_refuse_nontransport_kinds_before_provider_lookup() {
+    use busbar_contract::abi::mechanism::KindCode;
+    let io = &crate::dispatch::io_slots::IO_SLOTS;
+    let slots = [
+        io.open, io.listen, io.accept, io.read, io.write, io.ready, io.shut, io.close, io.spawn,
+        io.ends,
+    ];
+    for kind in [
+        KindCode::Store,
+        KindCode::Secret,
+        KindCode::Auth,
+        KindCode::Hook,
+        KindCode::Export,
+        KindCode::Plane,
+    ] {
+        let d = double_for(kind);
+        for (operation, callback) in slots.into_iter().enumerate() {
+            let mut input = [0u64; 64];
+            let header = head(operation as u32, TICKET, 0, size_of_val(&input));
+            // SAFETY: the initialized storage covers the advertised frame. No forbidden
+            // callback may consult the fixture's I/O provider or consume payload fields.
+            unsafe {
+                input.as_mut_ptr().cast::<ServiceHead>().write(header);
+            }
+            let mut out = blank();
+            let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+            assert_eq!(
+                result.outcome(),
+                Outcome::Refused,
+                "{kind:?} I/O {operation}"
+            );
+        }
+    }
 }

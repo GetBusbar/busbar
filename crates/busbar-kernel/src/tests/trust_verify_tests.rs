@@ -42,11 +42,10 @@ fn entry(root_key: Option<String>, root: bool) -> TrustEntry {
 }
 
 fn caller(instance: &str) -> Caller {
-    Caller {
-        instance: Arc::from(instance),
-        plugin: Arc::from("plugin"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    }
+    Caller::for_test(
+        Arc::from(instance),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    )
 }
 
 fn host() -> KernelServices {

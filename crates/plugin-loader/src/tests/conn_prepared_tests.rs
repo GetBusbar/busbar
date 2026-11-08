@@ -235,7 +235,10 @@ fn prepared_request_pending_member_auth_commits_on_the_prepared_connection() {
         .lock()
         .unwrap()
         .push_back((piece(PieceKind::Fields, Some(200), None, 0), Vec::new()));
-    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let dispatcher = crate::dispatch::Dispatcher::new(
+        crate::dispatch::DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    );
     let p = bound_over_by(&table, dispatcher.adopter());
     let stream = opened_stream(&p, 0).value;
     assert!(ready(&facts(&p, 1, stream).0));

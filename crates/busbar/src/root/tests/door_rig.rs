@@ -52,7 +52,10 @@ pub(crate) fn door_breaker(statement_name: &str) -> Result<Option<BreakerDecl>, 
 }
 
 fn declared_section(door: DoorFn, instance: &str) -> Option<&'static str> {
-    let dispatcher = Dispatcher::new(DispatchConfig::default());
+    let dispatcher = Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    );
     let row = LinkedRow::of(door).ok()?;
     let plane = load_linked::<Plane>(
         &row,
@@ -102,7 +105,11 @@ pub(crate) fn folded_door(
     instance: &str,
 ) -> Result<&'static busbar_kernel::plane_driver::registry::PlaneDecl, String> {
     use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-    busbar_kernel::plane_driver::door::fold(registration(linked_probe(door, instance))?)
+    busbar_kernel::plane_driver::door::fold(registration(linked_probe(
+        door,
+        instance,
+        busbar_kernel::host_services::caller_binding(),
+    ))?)
 }
 
 pub(crate) fn register_door(door: DoorFn, instance: &str) -> Result<(), String> {
@@ -241,7 +248,10 @@ impl DoorStore {
 
 pub(crate) async fn open_ephemeral_store(instance: &str) -> Result<DoorStore, String> {
     let axis = crate::root::loader::store_v4::DoorPersistenceAxis {
-        dispatcher: Arc::new(Dispatcher::new(DispatchConfig::default())),
+        dispatcher: Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_kernel::host_services::caller_binding(),
+        )),
         logs: crate::root::boot::plugin_logs().clone(),
         conns: ConnTable::NoNeeds,
         limits: crate::root::loader::store_v4::Limits {

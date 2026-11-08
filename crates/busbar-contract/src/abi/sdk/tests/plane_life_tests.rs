@@ -40,7 +40,10 @@ impl PlaneLife for Echo {
         &self.generations
     }
 
-    fn open(input: &Lent<'_, PlaneOpenIn>) -> Result<Opened<Self>, Refusal> {
+    fn open(
+        input: &Lent<'_, PlaneOpenIn>,
+        _host: Option<crate::abi::sdk::lent::KindHostLoan<'_, FixtureKind>>,
+    ) -> Result<Opened<Self>, Refusal> {
         let settings = input.open().settings().bytes().to_vec();
         if settings == b"refuse" {
             return Err(Refusal::refused("the echo plane refuses"));
@@ -110,6 +113,7 @@ mod plugin {
 struct EchoMigration;
 
 impl crate::abi::sdk::migrate::Migrate for EchoMigration {
+    type Kind = crate::plugin::markers::PlaneKind;
     fn migrate(mut settings: serde_json::Value, _: &str) -> crate::abi::sdk::migrate::Migrated {
         if let Some(v) = settings.as_object_mut().and_then(|m| m.remove("old")) {
             settings["new"] = v;
@@ -426,6 +430,7 @@ macro_rules! answers {
     ($name:ident, $in:ty, $out:ty, $outcome:expr) => {
         struct $name;
         impl crate::abi::sdk::door::RawSlot for $name {
+            type Kind = crate::plugin::markers::PlaneKind;
             type In = $in;
             type Out = $out;
             unsafe fn call(_: *mut c_void, _: &$in, _: &mut $out) -> Outcome {
@@ -515,3 +520,7 @@ fn the_plane_arm_keeps_the_ops_a_plane_names() {
     assert_eq!(gen_op(t.start, START), Outcome::Ready);
     assert_eq!(serve_op(t.serve), Outcome::Ready);
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::PlaneKind;

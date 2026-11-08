@@ -9,7 +9,7 @@ use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use crate::abi::sdk::door::statement;
 use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
 use crate::abi::sdk::test_support::zeroed;
-use crate::abi::sdk::{Instance, Safe, SafeSlot};
+use crate::abi::sdk::{Safe, SafeSlot};
 
 #[derive(serde::Deserialize, Debug)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +68,7 @@ fn a_decode_error_withholds_the_decoders_text() {
 struct Probe;
 
 impl Life for Probe {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
 
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -92,6 +93,7 @@ fn principal() -> Principal {
 struct Complete;
 
 impl SafeSlot for Complete {
+    type Kind = FixtureKind;
     type In = CompleteLoginIn;
     type Out = IdentifyOut;
     type State = Held<Probe>;
@@ -122,6 +124,7 @@ thread_local! {
 struct Outage;
 
 impl SafeSlot for Outage {
+    type Kind = FixtureKind;
     type In = CompleteLoginIn;
     type Out = IdentifyOut;
     type State = Held<Probe>;
@@ -305,3 +308,7 @@ fn a_login_outage_carries_the_idps_retry_after_in_the_hosts_buffer() {
     assert_eq!((outcome, out.verdict), (Outcome::Ready, LOGIN_OUTAGE));
     assert!(bytes.iter().all(|b| *b == 0));
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::AuthKind;

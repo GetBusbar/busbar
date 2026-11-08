@@ -10,6 +10,7 @@ use crate::abi::mechanism::lifecycle::slot;
 /// A stub plugin's migration: renames `signing-secret` to `signing_secret`, and asks core to allow
 struct Stub;
 impl Migrate for Stub {
+    type Kind = FixtureKind;
     fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
         let mut report = Vec::new();
         let mut needs = Vec::new();
@@ -167,13 +168,15 @@ fn the_needs_are_one_closed_vocabulary_on_the_wire() {
 
 /// A door that states `migrate` over [`Stub`], and the same plugin's door stating none.
 mod witness {
+    use super::{FixtureKind, Instance};
     use crate::abi::mechanism::call::Outcome;
     use crate::abi::sdk::life::{Held, Life, Refreshed, Refusal};
-    use crate::abi::sdk::{Instance, Lent, Out, SafeSlot};
+    use crate::abi::sdk::{Lent, Out, SafeSlot};
     use crate::abi::secret::{ResolveIn, ResolveOut};
 
     pub struct L;
     impl Life for L {
+        type Kind = FixtureKind;
         const CANCEL: u32 = 0;
         fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Self)
@@ -185,6 +188,7 @@ mod witness {
 
     pub struct Resolve;
     impl SafeSlot for Resolve {
+        type Kind = FixtureKind;
         type In = ResolveIn;
         type Out = ResolveOut;
         type State = Held<L>;
@@ -299,3 +303,7 @@ fn secret_externalization_need_contains_only_the_relative_path() {
         need
     );
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::SecretKind;

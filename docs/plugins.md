@@ -173,29 +173,16 @@ read it, and referencing a plugin store (`store.module: valkey`) fails boot with
 
 ## Building a store plugin
 
-A store plugin in Rust is small. Implement `busbar_contract::abi::sdk::store::StoreSlots` (which
-extends `busbar_contract::records::RecordStore`) for your type, declare what it keeps, and let the
-SDK emit the door:
+A store plugin implements `busbar_contract::abi::sdk::store::v4::Backend`. Core prepares
+reads, scans and atomic commits; the plugin translates those operations into its database's
+native requests. Accounting arithmetic, credential rules and plane relationships remain in core.
+The backend also provides its clock and native bootstrap/inspection operations for automatic
+startup migration.
 
-```rust
-// Cargo.toml:
-//   [lib]
-//   crate-type = ["rlib", "cdylib"]
-//   [dependencies]
-//   busbar-contract = { .. }   # the plugin contract: shapes, ABI and door macros
-
-// `open(settings)` receives the store's own `settings` map.
-busbar_contract::store_door!(MyStore, "my-store", "1.0.0", 64);
-```
-
-The `cdylib` then invokes `busbar_contract::export_door!` once to emit the one exported symbol,
-`busbar_plugin_door`; gate it behind a cargo feature so a build that merely links your crate does not
-also export it. A host that links your crate registers the same door as a compiled-in row, and a host
-that loads your tarball calls the exported symbol: both reach the same table through the same checks.
-The in-tree `store-memory` crate is the worked example, and
-[Rebuilding a 1.5.5 plugin against the 1.6.0 SDK](plugin-sdk-migration-1.6.md#store) has the full
-recipe. The store sits off the request hot path (write-behind), and a store call is a typed slot
-crossing, not a serialization.
+Start with `busbar-release plugin new store <name>`. The canonical scaffold supplies the typed
+kind, lifecycle, narrow ABI entry, export wrapper and linked/dropped conformance tests. Keep
+runtime modules private. The maintained `busbar-store-memory` repository is a worked example.
+See [SDK migration and authoring](plugin-sdk-migration-1.6.md#one-entry-seven-kinds).
 
 Build per target:
 
@@ -213,33 +200,11 @@ form, `{ module: <secret-plugin>, settings: {...} }`, so a reference resolves fr
 secrets backend (a vault, a cloud secret manager) through the same signed-plugin trust pipeline.
 This is the plugin you reach for when key material must never sit in an env var or an on-disk file.
 
-A secret plugin implements `busbar_contract::secret::SecretModule` (`resolve(&self, settings: &Map<String,
-Value>) -> SecretResult<Vec<u8>>`). Note it is `settings`, not a single `key`. `resolve` is
-STATELESS per call: one module instance serves every reference naming it, each carrying its own
-`settings` map (the `{ module: vault, settings: {...} }` shape above), not a value baked in at
-`open` time. Busbar resolves every reference **once at boot** (and on each hot config-apply), before
-the value crosses any other ABI, so a raw secret is never logged and never written back to the
-overlay. Only the reference is persisted. An unresolvable reference is a fatal boot / config-apply
-error naming the reference.
-
-```rust
-// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
-use busbar_contract::secret::{SecretModule, SecretModuleError, SecretResult};
-
-struct MyVault { /* connection state built once at `open` */ }
-
-impl SecretModule for MyVault {
-    fn resolve(&self, settings: &serde_json::Map<String, serde_json::Value>) -> SecretResult<Vec<u8>> {
-        let path = settings.get("path").and_then(|v| v.as_str())
-            .ok_or_else(|| SecretModuleError::invalid("missing `path` in secret reference settings"))?;
-        self.fetch(path).map_err(|e| SecretModuleError::internal(e.to_string()))
-    }
-}
-
-// The module's own open-time `settings:` map (e.g. the vault address + auth) reaches `open`, and is
-// distinct from the per-REFERENCE `settings` `resolve` receives above. The door is built with
-// `plugin_door!` over `abi::secret::Ops`; see the SDK migration note for the exact form.
-```
+A secret plugin implements the secret kind's typed lifecycle and `resolve`/`check` slots under
+`busbar_contract::abi`. Per-reference settings describe the requested secret; instance settings
+configure the backend. Use the shared credential SDK for guarded response bodies, selected JSON
+values and opaque held results. Readable secret bytes must not escape into logs, persisted
+configuration or unrelated plugin state. An unresolved reference fails boot or config apply.
 
 A complete, real reference implementation is the HashiCorp Vault plugin
 ([GetBusbar/busbar-secret-vault](https://github.com/GetBusbar/busbar-secret-vault)): the Vault KV v2 client
@@ -288,36 +253,11 @@ surface as a distinct, specific error, never collapsed into a generic failure.
 
 ## Auth plugins (`kind: auth`)
 
-A `kind: auth` plugin is a first-class **identity provider**: it implements the same
-`busbar_contract::auth::AuthModule` trait the built-in modules do (`name()` + `authenticate()` returning
-`Identify(principal)` / `Reject` / `Pass`), and the engine loads it **in-process** at boot over the
-signed memory ABI, exactly like a store or secret plugin, same trust posture, same loader. It runs
-in the data-plane **`auth.chain`**: name it there and the engine resolves it against the plugins
-directory, loads it, and boxes it into the chain.
-
-```rust
-// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
-use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
-
-struct MyIdp { /* … */ }
-impl AuthModule for MyIdp {
-    fn name(&self) -> &'static str { "myidp" }             // the RUNTIME module identity
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict {
-        match verify(candidate) {
-            Some((id, groups)) => {
-                let mut p = Principal::from_id(id);
-                p.roles = groups;                            // roles/groups the IdP asserts
-                AuthVerdict::Identify(p)
-            }
-            None => AuthVerdict::Pass,                        // not my credential, so defer
-        }
-    }
-    fn cacheable(&self) -> bool { true }                     // per-call I/O ⇒ opt into the cred cache
-}
-
-// The chain entry's own `settings:` map reaches `open`. The door is built with `auth_verify_door!`
-// (see the SDK migration note for the exact form).
-```
+An auth plugin uses `abi::sdk::auth_door` and the auth kind's typed slots. It may declare inbound
+verification, hosted login or outbound credential preparation. `auth_verify_door!` lowers a
+`VerifyPlugin` implementation into the same validated entry used by a dropped library; other
+capabilities use the corresponding auth SDK helpers. Core retains the policy decisions and
+credential authority. See [SDK authoring](plugin-sdk-migration-1.6.md).
 
 An identity provider returns **identity only**: who the caller is (`id` + `roles`). Policy (which
 pools, which group's limits, which admin scope) is resolved by Busbar from
@@ -352,70 +292,12 @@ the auth kind's login capability (the `begin_login`/`complete_login` slots of au
 can mint a self-serve key via `/auth/token`; a verify-only auth plugin still loads for chain use, but
 hosted login needs a plugin that declares the login capability.
 
-## What a plugin reports back: the observability envelope
+## What a plugin reports back
 
-Every plugin response carries the same three-part shape, whatever its kind:
-
-```json
-{"result": {"…": "the kind's own answer"}, "metrics": [], "diagnostics": []}
-```
-
-`result` is what the kind has always answered. `metrics` and `diagnostics` are the back-channel: what
-the plugin OBSERVED while producing that answer. **The plugin reports; Busbar validates, bounds and
-decides.** There is no symbol a plugin can call to move a Busbar counter, raise a Busbar diagnostic
-or perform any other host-owned effect. It says what happened, and Busbar decides what that means.
-
-A `metrics` entry is Prometheus-shaped and is the same entry a hook has reported through its
-`status` reply since 1.5.0:
-
-```json
-{"name": "logs_rotated_total", "type": "counter", "value": 1,
- "labels": {"sink": "audit"}, "help": "log files rotated"}
-```
-
-`type` is `counter`, `gauge` or `histogram`. A counter is a **delta** — what happened since your last
-response, not a running total. Everything beyond `name` and `type` is optional.
-
-A `diagnostics` entry names a code from Busbar's own catalogue:
-
-```json
-{"code": "BUSBAR-1234", "level": "warn", "message": "rename failed",
- "fields": {"path": "/var/log/x.jsonl"}}
-```
-
-What Busbar refuses, so you do not discover it by watching a series never appear:
-
-- **`busbar_`-prefixed metric names.** Reserved, so no plugin can impersonate a first-party series.
-- **A code the catalogue does not hold.** A `BUSBAR-NNNN` code is a promise that an operator can
-  paste it into the docs and land on an entry telling them what to do. Only Busbar can make that
-  promise, so an unknown code is dropped.
-- **An escalated severity.** The catalogue decides whether a condition is worth an operator's
-  attention; your `level` cannot raise it above that.
-- **Anything out of bounds.** At most 64 metric entries and 16 diagnostics per response, 8 labels
-  per metric, `^[a-z][a-z0-9_]{0,63}$` on every name and label key, finite numbers only, every string
-  sanitised and length-capped. A malformed entry is dropped whole; its siblings survive, and your
-  `result` is never at risk because of a telemetry line.
-
-**Never put request content in a metric label, a diagnostic message or a diagnostic field.** They go
-to the operator's log and to anyone scraping Busbar.
-
-In the Rust SDK this is one defaulted method — implement it only if you have something to say:
-
-```rust
-fn drain_observations(&self) -> Observations {
-    let rotated = self.rotated.swap(0, Ordering::Relaxed);
-    if rotated == 0 { return Observations::none(); }
-    Observations::none().metric(PluginMetric::counter("logs_rotated_total", rotated as f64))
-}
-```
-
-It is a **drain**: Busbar calls it once per call and puts the result on that call's
-response, so hand over what has accumulated and reset. Report a running total instead and the folded
-counter climbs quadratically against a flat workload.
-
-Three kinds carry the observability envelope: `kind: export` (`abi_version: 3`), `kind: auth`
-(`abi_version: 3`) and `kind: hook` (`abi_version: 2`). A plugin in another language fills the same
-typed slots through the door; the SDK crate `busbar-contract` is the source of truth for the layout.
+Observations cross the validated ABI under the current call's host-issued identity. A plugin
+reports its declared metrics and diagnostics through its kind-bound SDK. Core validates the
+series, labels and bounded retained storage before exposing an observation. Plugins do not
+mutate a shared recorder or create another instance's identity.
 
 ## Hook plugins (`kind: hook`)
 
@@ -428,32 +310,14 @@ first-party `busbar-hook-webrequest` plugin forwards the decision to an HTTPS si
 retired the standalone built-in `socket`/`webhook` transports; a hook is now always a signed
 plugin).
 
-A hook plugin answers the hook kind's slots (`decide`, `transform`, `notify`, `configure`, `status`,
-`describe`, `serve`), each receiving the op's payload as the projection the engine built and returning the
-reply object the engine parses through its existing fail-closed normalizers. A trivial hook fills
-only the ops it cares about (a ranking gate implements just `decide`; a compressor just `transform`).
-The sketch below shows the logic of a `decide` slot:
+A Rust hook implements `abi::sdk::hook::{Hook, HookOpen}` and uses `hook_door!`. It receives a
+typed projection and returns typed decisions or rewrites. The SDK's `projection_json` and
+`lower_transform_reply` support integrations that need JSON without creating a second ABI.
+Configuration acknowledgement uses `Result` and the existing checkpoint contract.
 
-```rust
-// crate-type = ["cdylib"]; deps: busbar-contract, serde_json
-// `decide`: rank candidates / return a verdict. Return `{}` to abstain.
-fn decide(payload: &serde_json::Value) -> serde_json::Value {
-    let too_big = payload["request"]["total_chars"].as_u64().unwrap_or(0) > 100_000;
-    if too_big {
-        serde_json::json!({ "reject": { "status": 413, "message": "prompt too large" } })
-    } else {
-        serde_json::json!({})
-    }
-}
-// The door is built with `plugin_door!` over `abi::hook::Ops`, naming the slots you fill
-// (see the SDK migration note for the exact form).
-```
-
-The engine parses every reply through the ONE `hooks::wire` fail-closed normalizer, so the
-dropped-in and out-of-process seams can never diverge on reject-precedence, the status clamp, or
-restrict/rewrite parsing. A hook never sees `prompt`/`user` content it was not granted: the engine
-projects those keys into `payload` only when BOTH the operator grant and the signed-manifest `needs`
-allow it.
+Core grants prompt/user access only when both operator configuration and the signed declaration
+allow it. Core validates the returned decision and applies its policy. The plugin cannot widen
+its own view or call another plugin directly.
 
 A hook is packed and signed like any other plugin (see [Signing and packaging](#signing-and-packaging)),
 with one hook-specific addition: `--needs-prompt` / `--needs-user` declare the plugin's grant intent

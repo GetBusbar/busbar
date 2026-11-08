@@ -54,6 +54,7 @@ pub const MAX_INFLIGHT: u32 = 8;
 pub struct Gate(AtomicU64, u64, Option<Vec<u8>>, bool, String);
 
 impl Life for Gate {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     const CANCEL: u32 = cancel::ABORTED;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
@@ -139,12 +140,13 @@ impl Drop for BlockedCalls {
 pub struct Decide;
 
 impl SafeSlot for Decide {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = DecideIn;
     type Out = DecideOut;
     type State = Held<Gate>;
 
     fn call(
-        instance: Instance<'_, Held<Gate>>,
+        instance: Instance<'_, Held<Gate>, Self::Kind>,
         input: Lent<'_, DecideIn>,
         mut out: Out<'_, DecideOut>,
     ) -> Outcome {
@@ -176,12 +178,13 @@ impl SafeSlot for Decide {
 pub struct DecideBroken;
 
 impl SafeSlot for DecideBroken {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = DecideIn;
     type Out = DecideOut;
     type State = Held<Gate>;
 
     fn call(
-        _: Instance<'_, Held<Gate>>,
+        _: Instance<'_, Held<Gate>, Self::Kind>,
         _: Lent<'_, DecideIn>,
         mut out: Out<'_, DecideOut>,
     ) -> Outcome {
@@ -193,12 +196,13 @@ impl SafeSlot for DecideBroken {
 pub struct DecideOrders;
 
 impl SafeSlot for DecideOrders {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = DecideIn;
     type Out = DecideOut;
     type State = Held<Gate>;
 
     fn call(
-        _: Instance<'_, Held<Gate>>,
+        _: Instance<'_, Held<Gate>, Self::Kind>,
         _: Lent<'_, DecideIn>,
         mut out: Out<'_, DecideOut>,
     ) -> Outcome {
@@ -210,11 +214,16 @@ impl SafeSlot for DecideOrders {
 pub struct DecidePanics;
 
 impl SafeSlot for DecidePanics {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = DecideIn;
     type Out = DecideOut;
     type State = Held<Gate>;
 
-    fn call(_: Instance<'_, Held<Gate>>, _: Lent<'_, DecideIn>, _: Out<'_, DecideOut>) -> Outcome {
+    fn call(
+        _: Instance<'_, Held<Gate>, Self::Kind>,
+        _: Lent<'_, DecideIn>,
+        _: Out<'_, DecideOut>,
+    ) -> Outcome {
         panic!("the panicking hook fixture's decide panics")
     }
 }
@@ -224,12 +233,13 @@ pub struct Configure;
 pub struct Serve;
 
 impl SafeSlot for Serve {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = busbar_contract::abi::hook::ServeIn;
     type Out = busbar_contract::abi::hook::ServeOut;
     type State = Held<Gate>;
 
     fn call(
-        instance: Instance<'_, Held<Gate>>,
+        instance: Instance<'_, Held<Gate>, Self::Kind>,
         input: Lent<'_, Self::In>,
         mut out: Out<'_, Self::Out>,
     ) -> Outcome {
@@ -309,12 +319,13 @@ impl SafeSlot for Serve {
 }
 
 impl SafeSlot for Configure {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = ConfigureIn;
     type Out = ConfigureOut;
     type State = Held<Gate>;
 
     fn call(
-        instance: Instance<'_, Held<Gate>>,
+        instance: Instance<'_, Held<Gate>, Self::Kind>,
         input: Lent<'_, ConfigureIn>,
         mut out: Out<'_, ConfigureOut>,
     ) -> Outcome {
@@ -337,11 +348,12 @@ impl SafeSlot for Configure {
 pub struct Refuse<I, O>(PhantomData<(I, O)>);
 
 impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
+    type Kind = busbar_contract::plugin::markers::HookKind;
     type In = I;
     type Out = O;
     type State = Held<Gate>;
 
-    fn call(_: Instance<'_, Held<Gate>>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
+    fn call(_: Instance<'_, Held<Gate>, Self::Kind>, _: Lent<'_, I>, _: Out<'_, O>) -> Outcome {
         Outcome::Refused
     }
 }

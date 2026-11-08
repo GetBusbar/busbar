@@ -10,18 +10,89 @@ use crate::abi::host::service::ItemSpan;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::KindCode;
 
-/// Who called a service: the opened instance, by the label the host configured for it, the plugin
-/// it is an instance of, and its kind. The loader states it at bind. The kernel keys every
-/// per-instance fact it holds by `instance`, never by `plugin`: two instances of one plugin share a
-/// Statement name and never a registry.
+/// Opaque process-local incarnation. Cloning preserves identity; reopening never does.
+/// This value is never serialized as a persistence key.
+#[derive(Clone)]
+pub struct Incarnation(Arc<()>);
+impl PartialEq for Incarnation {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for Incarnation {}
+impl std::hash::Hash for Incarnation {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&Arc::as_ptr(&self.0), state);
+    }
+}
+impl std::fmt::Debug for Incarnation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Incarnation")
+    }
+}
+
+/// Core-issued authority for one validated kind binding. Implementation metadata stays
+/// in the loader. The namespace retains its existing durable byte encoding.
+///
+/// ```compile_fail,E0451
+/// use busbar_contract::services::Caller;
+/// use busbar_contract::abi::mechanism::KindCode;
+/// fn forge(existing: &Caller) {
+///     let caller = Caller { namespace: "forged".into(), kind: KindCode::Plane, ..existing.clone() };
+/// }
+/// ```
+/// Ordinary stage passes cannot issue callers.
+/// ```compile_fail,E0308
+/// use busbar_contract::{caps::{Grant, Sign}, services::Caller, abi::mechanism::KindCode};
+/// fn forged(pass: &Grant<Sign>) { let _ = Caller::issue(pass, "forged".into(), KindCode::Plane); }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caller {
-    /// The host's label for this opened instance, unique per instance.
-    pub instance: Arc<str>,
-    /// The plugin's Statement name.
-    pub plugin: Arc<str>,
-    /// Its kind.
-    pub kind: KindCode,
+    namespace: Arc<str>,
+    kind: KindCode,
+    incarnation: Incarnation,
+}
+impl Caller {
+    /// Issue authority from the concrete kernel root, after descriptor validation.
+    pub fn issue(_root: &crate::caps::KernelSeal, namespace: Arc<str>, kind: KindCode) -> Self {
+        Self {
+            namespace,
+            kind,
+            incarnation: Incarnation(Arc::new(())),
+        }
+    }
+    /// Configured durable namespace; never a plugin implementation name.
+    pub fn namespace(&self) -> &Arc<str> {
+        &self.namespace
+    }
+    /// The validated kind at issuance.
+    pub const fn kind(&self) -> KindCode {
+        self.kind
+    }
+    /// Identity for transient authority maps, never persistent key encoding.
+    pub fn incarnation(&self) -> &Incarnation {
+        &self.incarnation
+    }
+    /// Whether both handles name the very same opened binding.
+    pub fn same_incarnation(&self, other: &Self) -> bool {
+        self.incarnation == other.incarnation
+    }
+    /// Isolated test fixture issuer; absent from production builds.
+    #[cfg(any(test, feature = "test-seal"))]
+    pub fn for_test(namespace: Arc<str>, kind: KindCode) -> Self {
+        Self {
+            namespace,
+            kind,
+            incarnation: Incarnation(Arc::new(())),
+        }
+    }
+}
+
+/// Host-only binding provider wired by the composition root. No plugin receives it.
+/// An implementation cannot manufacture a Caller without the concrete root seal.
+pub trait CallerBinding: Send + Sync {
+    /// Called only after kind and descriptor validation. Each call issues a fresh incarnation.
+    fn bind(&self, namespace: Arc<str>, kind: KindCode) -> Caller;
 }
 
 /// The error text of a service this host does not serve.
@@ -133,6 +204,7 @@ pub trait HostServices: Send + Sync {
     fn trust_decide(
         &self,
         caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
         key: TrustKeyRef<'_>,
         expected: Option<&str>,
         approve: bool,
@@ -549,3 +621,15 @@ pub fn chain_key_parts(key: &[u8]) -> Option<(&[u8], u64)> {
 #[cfg(test)]
 #[path = "tests/services_tests.rs"]
 mod tests;
+
+/// Isolated host fixture provider, absent from production dependencies.
+#[cfg(feature = "test-seal")]
+pub fn test_caller_binding() -> Arc<dyn CallerBinding> {
+    struct Fixture;
+    impl CallerBinding for Fixture {
+        fn bind(&self, namespace: Arc<str>, kind: KindCode) -> Caller {
+            Caller::for_test(namespace, kind)
+        }
+    }
+    Arc::new(Fixture)
+}

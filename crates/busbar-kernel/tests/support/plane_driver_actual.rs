@@ -1606,11 +1606,7 @@ fn host_over(store: Arc<busbar_kernel::persistence::facade::CoreStore>) -> Kerne
 }
 
 fn instance() -> Instance {
-    Instance {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("the-plane"),
-        kind: KindCode::Plane,
-    }
+    Instance::for_test(Arc::from("inst"), KindCode::Plane)
 }
 
 async fn records() -> Arc<KernelServices> {

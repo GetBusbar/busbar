@@ -43,6 +43,7 @@ struct ProbeSettings {
 struct Probe;
 
 impl Life for Probe {
+    type Kind = FixtureKind;
     const CANCEL: u32 = 0;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
@@ -61,6 +62,7 @@ const DELIVERED: &str = "delivered one batch";
 struct Deliver;
 
 impl SafeSlot for Deliver {
+    type Kind = FixtureKind;
     type In = DeliverIn;
     type Out = crate::abi::mechanism::call::OutHead;
     type State = Held<Probe>;
@@ -485,3 +487,7 @@ fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
     assert_eq!(refused.outcome(), Outcome::Refused);
     assert_eq!(refused.text(), Some(NOT_REFRESHED));
 }
+
+type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::ExportKind;

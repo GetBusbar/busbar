@@ -1394,11 +1394,10 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         .await
         .len();
     let reads_before = the_operators_rows_for(&node, "/api/v1/admin/trust").await;
-    let caller = Caller {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("the-plane"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
     let sight = |hash: &str| {
         let later: Later = Box::new(|_| {});
         let _ = kernel.trust_sight(&caller, "peer", hash, later);
@@ -1566,11 +1565,10 @@ async fn a_rejected_approval_is_audited() {
         let node = node.clone();
         async move { over_as(&node, "POST", "/api/v1/admin/trust/approve", body, op).await }
     };
-    let caller = Caller {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("the-plane"),
-        kind: busbar_contract::abi::mechanism::KindCode::Plane,
-    };
+    let caller = Caller::for_test(
+        Arc::from("inst"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
     let later: Later = Box::new(|_| {});
     let _ = kernel.trust_sight(&caller, "peer", "unverified", later);
 

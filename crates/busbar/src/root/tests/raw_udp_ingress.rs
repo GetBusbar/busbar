@@ -244,11 +244,11 @@ async fn closing_a_busy_real_association_cancels_unaccepted_writes_and_retires_i
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admitted_real_srtp_line_reaches_the_real_upstream_framer_once() {
+    use crate::root::serve::serve_datagram::peer::FIRST_AUDIO_STREAM as MEDIA_BASE;
     use busbar_contract::conn::PieceKind;
     use busbar_contract::transport::wire::WireStatusClass;
     use busbar_core_connector::datagram::DatagramFraming;
     use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
-    use busbar_transport_webrtc::framing::MEDIA_BASE;
     use tokio::net::UdpSocket;
 
     const OPUS: &[u8] = &[0xF8, 1, 2, 3, 4];

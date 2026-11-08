@@ -8,6 +8,7 @@ use crate::dispatch::load::raw;
 
 pub(crate) struct Stub;
 impl Migrate for Stub {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     fn migrate(mut settings: serde_json::Value, from: &str) -> Migrated {
         let mut report = Vec::new();
         let mut needs = Vec::new();
@@ -42,6 +43,7 @@ mod witness {
     pub static OPENS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     pub struct L;
     impl Life for L {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         const CANCEL: u32 = 0;
         fn validate(settings: &[u8]) -> Result<(), Refusal> {
             let settings: serde_json::Value = serde_json::from_slice(settings).unwrap();
@@ -61,11 +63,12 @@ mod witness {
 
     pub struct Resolve;
     impl SafeSlot for Resolve {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         type In = ResolveIn;
         type Out = ResolveOut;
         type State = Held<L>;
         fn call(
-            _: Instance<'_, Held<L>>,
+            _: Instance<'_, Held<L>, Self::Kind>,
             _: Lent<'_, ResolveIn>,
             _: Out<'_, ResolveOut>,
         ) -> Outcome {
@@ -77,6 +80,7 @@ mod witness {
 
     pub struct Refuse;
     impl RawSlot for Refuse {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
         type In = ValidateIn;
         type Out = OutHead;
 

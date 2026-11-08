@@ -13,6 +13,7 @@ pub const BROKEN_NAME: &str = "both-ways-secret-broken";
 pub struct Nothing;
 
 impl Life for Nothing {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     const CANCEL: u32 = cancel::ABORTED;
 
     fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
@@ -27,12 +28,13 @@ impl Life for Nothing {
 pub struct ResolveBroken;
 
 impl SafeSlot for ResolveBroken {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = ResolveIn;
     type Out = ResolveOut;
     type State = Held<Nothing>;
 
     fn call(
-        _: Instance<'_, Held<Nothing>>,
+        _: Instance<'_, Held<Nothing>, Self::Kind>,
         _: Lent<'_, ResolveIn>,
         mut out: Out<'_, ResolveOut>,
     ) -> Outcome {
@@ -57,12 +59,13 @@ pub const NOT_ABSOLUTE: &str = "settings.path: must name an absolute path";
 pub struct CheckPath;
 
 impl SafeSlot for CheckPath {
+    type Kind = busbar_contract::plugin::markers::SecretKind;
     type In = CheckIn;
     type Out = OutHead;
     type State = Held<Nothing>;
 
     fn call(
-        _: Instance<'_, Held<Nothing>>,
+        _: Instance<'_, Held<Nothing>, Self::Kind>,
         input: Lent<'_, CheckIn>,
         mut out: Out<'_, OutHead>,
     ) -> Outcome {

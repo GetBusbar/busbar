@@ -89,7 +89,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
     let export = busbar_kernel::config::resolve_export(&defs, &mut errors);
     assert_eq!(
         errors,
-        busbar_export_prometheus::check_limits(&["one".to_string(), "two".to_string()]),
+        ["export.two: a second `module: prometheus` instance (already defined as 'one'). Prometheus serves the ONE well-known /metrics route, so a second instance could only be silently ignored — keep a single instance."],
         "the module's own words, verbatim"
     );
     assert_eq!(

@@ -1,186 +1,107 @@
-# Rebuilding a 1.5.5 plugin against the 1.6.0 SDK
+# Rebuilding a plugin against the 1.6.0 SDK
 
-1.6.0 does not load a plugin built for 1.5.5. Every first-party plugin was rewritten, and a third-party
-plugin is rebuilt against the 1.6.0 SDK. Your source keeps its logic: the traits you implemented
-(`RecordStore`, `HookHandler`, `ExportHandler`) and the plugin settings you parse are still yours. What
-changes is the door your crate exports, the version the host checks, and the manifest the packer signs.
+Plugins must be rebuilt against the SDK revision used by the host. Busbar 1.6.0 uses one
+validated memory ABI for linked and dynamically loaded plugins. An incompatible mechanism or
+kind version is refused before the plugin opens. Product version 1.6.0 does not mean that every
+unreleased development SDK revision is binary compatible.
 
-This page is for plugin authors. Operators have nothing to migrate unless they run a third-party plugin
-(see [Plugins](plugins.md) and [Migrating from 1.5.x](migration-1.6.md)).
+The current mechanism is **3**. Rebuild every linked or dropped plugin against the
+current immutable SDK pin. A mechanism-2 bundle is rejected before loading its library
+or calling OPEN; it cannot obtain the new host authority through a compatibility alias.
+This change does not change the seven kind wire layouts or customer persistence formats.
 
-## What changed, in one paragraph
+Operators keep the normal startup migration path. Rebuilding a plugin is an author task; it
+does not introduce a separate operator migration tool. See [migration](migration-1.6.md).
 
-A 1.5.5 plugin exported six C symbols (`busbar_abi`, `busbar_plugin_kind`, `busbar_open`,
-`busbar_call`, `busbar_free`, `busbar_close`) and spoke JSON through `busbar_call`. A 1.6.0 plugin
-exports ONE symbol, `busbar_plugin_door`, which answers a table of typed slots. Every kind uses the same
-door, the same call shape and the same lifecycle; a kind adds only its own operations. The door carries
-a Statement: the plugin's name, its kind, its kind's ABI version and the facts the host reads without
-running the plugin. The host compares that Statement with the one signed into the manifest, byte for
-byte, before it calls any slot.
+## One entry, seven kinds
 
-All of it lives in the `busbar-contract` crate, under `busbar_contract::abi`: the shared mechanism in
-`abi::mechanism`, one module per kind (`abi::store`, `abi::secret`, `abi::auth`, `abi::hook`,
-`abi::export`, `abi::plane`, `abi::transport`), and the plugin side in `abi::sdk`.
+The boundary is:
 
-## The build: one door, compiled in or dropped in
-
-A plugin is two crate roles, in one package if you like (`crate-type = ["rlib", "cdylib"]`):
-
-1. The logic crate invokes `busbar_contract::plugin_door!` once (or a kind's wrapper over it, below). It
-   expands to `pub extern "C" fn door()`, which answers the `'static` door. It exports no symbol, so
-   several plugins can be linked into one binary.
-2. The `cdylib` invokes `busbar_contract::export_door!(path::to::door)` once. It emits the one exported
-   symbol, `busbar_plugin_door`. Gate it behind a cargo feature (the first-party crates call it
-   `dropped-in`) so a build that links your crate does not also export the symbol.
-
-A host that links your crate registers the same `door` function as a compiled-in row
-(`LinkedRow::of(door)`); a host that loads your tarball calls the exported symbol. Both reach the same
-table through the same checks. There is no separate "built-in" shape to maintain.
-
-Build with `panic = "unwind"`: both macros refuse to compile under `panic = "abort"`, because every slot
-is a `catch_unwind` trampoline that answers FAULT when a panic unwinds. A slot is `extern "C"`, never
-`extern "C-unwind"`; a panic that escaped would abort, and the trampoline stops that.
-
-## Per kind
-
-The "1.5.5 entry" column is what your crate called; the "1.6.0 door" column replaces it.
-
-| kind | 1.5.5 entry | 1.6.0 door | kind ABI version |
-|---|---|---|---|
-| store | `export_store_plugin!(open)`, `RecordStore` | `store_door!(MyStore, "name", "version", max_inflight)`, `StoreSlots: RecordStore` | `abi::store::ABI_VERSION` (3) |
-| secret | `export_secret_plugin!` | `plugin_door!` over `abi::secret::Ops`, `lifecycle: life(L)` | `abi::secret::ABI_VERSION` (2) |
-| auth | `export_auth_plugin!`, `export_login_plugin!` | `auth_verify_door!(MyPlugin, STATEMENT)`, `VerifyPlugin` | `abi::auth::ABI_VERSION` (3) |
-| hook | `export_hook_plugin!`, `HookHandler` | `plugin_door!` over `abi::hook::Ops` | `abi::hook::ABI_VERSION` (2) |
-| export | `export_export_plugin!`, `ExportHandler` | `plugin_door!` over `abi::export::Ops` | `abi::export::ABI_VERSION` (3) |
-| plane | none: planes were compiled in | `plugin_door!` over `abi::plane::Ops` | `abi::plane::ABI_VERSION` (1) |
-| transport | none: transports were compiled in | `plugin_door!` over `abi::transport::Ops` | `abi::transport::ABI_VERSION` (1) |
-
-The mechanism has its own version, `abi::mechanism::MECHANISM_VERSION` (2), stamped in every door. The
-host accepts exactly one version of each: older and newer are both refused. `KindCode::abi_version()`
-answers the number for a kind, and `plugin_door!` stamps it, so you never write a version by hand.
-
-### store
-
-Implement `StoreSlots` (`abi::sdk::store`) for your type. It extends `RecordStore`, so the 1.5.5 methods
-keep their meaning; the additions are `open(settings)`, the `op_id`-carrying writes (a repeated `op_id`
-with the same fields answers what the first call answered, durably for a durable store), the ledger and
-money operations, and `window_caps`. Declare what the store keeps in `TAIL` (`Tail`: ephemeral, durable
-plane records, fork refusal). Then `store_door!(MyStore, "my-store", "1.0.0", 64)`; the fourth argument
-bounds in-flight calls. The in-tree `store-memory` crate is the worked example.
-
-### secret
-
-Implement `Life` (`abi::sdk::life`) for the instance state: `open(settings, secrets, generation)`, and
-override `validate` to keep your own refusal text. Write one `resolve` slot, then
-`plugin_door!` with `ops: busbar_contract::abi::secret::Ops`, `lifecycle: life(YourType)` and
-`kind_ops: { resolve: ... }`. The doc example on `abi::sdk::life` is a complete secret plugin.
-
-### auth
-
-Implement `VerifyPlugin` (`abi::sdk::auth_door`): `open(settings, secrets)` and `verify(request)`
-answering `Verdict::Identity`, `Reject` or `Pass`. The inbound verdict cache lives inside your plugin;
-`refresh` drops it. Build the Statement with `abi::sdk::door::statement(name, version, max_inflight)`,
-add the tail with `with_tail(.., &TAIL)` where `TAIL = verify_tail(facts)`, and name each header you read
-with `carrier("x-name")` in `mark_words`. Then `auth_verify_door!(MyPlugin, STATEMENT)`. A `verify` that
-reads a host-held credential implements `verify_ticketed(request, op)` instead of `verify`: declare the
-kind with `with_credential_kinds(tail, KINDS)`, read the secret with `op.records_secret(kind, id)`
-(a `CredentialSecret`: the bytes in a zeroizing holder, and whether the credential is live; an unknown
-id answers the host's dummy, not live), and answer `Poll::Pending` whenever it does. The kit answers
-PENDING, the host re-enters `verify` on the same ticket when the read completes, and the re-issued
-read answers the stored secret. A verify door
-refuses the login and outbound operations; a plugin that serves them writes its own `plugin_door!` over
-`abi::auth::Ops`.
-
-### hook, export, plane, transport
-
-These four have no wrapper macro on top of `plugin_door!`. You write `plugin_door!` with the kind's `Ops`
-table: the nine lifecycle slots (`lifecycle: life(L)` where the kind does not widen them; the plane kind states its own), and `kind_ops` naming the kind's slots by field
-name. A slot wired to another operation's `in`/`out` structs does not compile.
-
-- hook: `decide`, `transform`, `notify`, `configure`, `status`, `describe` (`abi::hook::Ops`). 
-- export: `deliver`, `scrape`, `status`, `check`, `serve` (`abi::export::Ops`). A scrape's families are
-  the whole snapshot, in the order the host's recorder gives them.
-- plane: `arrive`, `on_piece`, `refusal`, `serve`, `hydrate`, `start`, `project` (`abi::plane::Ops`).
-- transport: `listen`, `accept`, `dial`, `read`, `write`, `flush`, `shut`, `arrival`, `locate`, `begin`,
-  `ingest` (`abi::transport::Ops`). The `busbar-transport-tcp` crate is the worked example. A carrier or
-  framer written against the transport traits can instead be lowered with `export_carrier!` or
-  `export_framer!`.
-
-## What the host checks, and what you see when it fails
-
-The host checks before it calls anything, and refuses at boot, naming the plugin. A refusal reads
-`plugin '<name>' (<instance>): <reason>`; a dropped-in transport reads
-`transport plugin '<name>' refused at its door: <reason>`. `busbar --validate` runs the manifest checks
-without opening the library.
-
-From the signed manifest, before `dlopen`:
-
-- `the manifest states mechanism version {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK`
-- `the manifest states kind ABI {stated}; this host speaks {host} — rebuild the plugin against the 1.6.0 SDK`
-- `the manifest states kind {stated:?}, not {want:?}`
-
-From the door, after `dlopen`:
-
-- `the library exports no busbar_plugin_door: {error}`: a 1.5.5 library, which exports the six old
-  symbols and no door.
-- `the door's magic {value} is not BUSBARPL`
-- `the door's mechanism version {door} is not this host's {host} — rebuild the plugin against the 1.6.0 SDK`
-- `the door's {kind:?} ABI version {door} is not this host's {host} — rebuild the plugin against the 1.6.0 SDK`
-- `the plugin's Statement is not the one its manifest states — repack the plugin`: the door and the
-  signed manifest disagree, or the manifest states no Statement at all.
-- structural refusals: a door, table or Statement smaller than the host's, a NULL slot (there is no
-  "unsupported" answer; every slot is filled), a kind other than the one asked for.
-
-A manifest that states a newer version than the host speaks is refused the same way: the host accepts
-only the current version of each kind.
-
-## Testing against host services
-
-A test that runs your plugin under the loader hands it the host's services as a
-`busbar_contract::services::HostServices`. Don't implement that trait by hand: the host adds services,
-and a hand-written double stops compiling at the next busbar pin. Use the test kit's double
-(`busbar-test-kit`, already a dev-dependency for the conformance suite).
-
-Implement `busbar_test_kit::services_double::ServicesDouble` and override only the services your test
-serves. Every other service answers the way a host that does not serve it answers: REFUSED with
-`services::UNSERVED`, at once. The clock reads zero. Wrap it in `Double` to hand it to the host:
-
-```rust
-use busbar_test_kit::services_double::{Double, ServicesDouble};
-struct Clock;
-impl ServicesDouble for Clock {
-    fn now(&self) -> Reading { Reading { wall_ns: 7, mono_ns: 7 } }
-}
-let services: Arc<dyn HostServices> = Arc::new(Double(Clock));
+```text
+plugin ↔ typed kind SDK ↔ validated ABI ↔ core ↔ validated ABI ↔ typed kind SDK ↔ plugin
 ```
 
-`Double` derefs to your type, so the test still reads its own state through the `Arc`. If you need a
-double that serves nothing, use `Double(Unserved)`. A test written against the pre-release
-`busbar_contract::services::double` switches to these paths and drops `"services-double"` from its
-`busbar-contract` dev-dependency features (the feature is gone).
+A plugin depends on `busbar-contract` and external libraries. It cannot depend on another
+plugin implementation, the loader, kernel, migrations or a core adapter in its shipping graph.
+The same repository may contain an implementation rlib and a thin cdylib wrapper. The wrapper
+exports the implementation's `door` through `busbar_contract::export_door!`; it does not expose
+implementation types or constructors. A combined rlib/cdylib follows the same boundary.
 
-## Packaging and signing
+`busbar_contract::plugin_door!` generates the kind table, lifecycle, `door` and `MACRO_DOOR`.
+The exported native symbol is `busbar_plugin_door`. Registration supplies that entry and its
+metadata; it never obtains an implementation object. Both loading modes validate the signed
+Statement, kind, layouts and operations before adopting the instance.
 
-Unchanged in shape: one tarball holding the cdylib and a signed `manifest.json`, packed with
-`busbar-plugin-pack pack`, signed with the same ed25519 key (`BUSBAR_SIGN_KEY`), trusted through the same
-`plugins.trust` policy. Keys you already allowlist keep working.
+Build with `panic = "unwind"`. The SDK trampolines contain panics and report faults.
 
-One step is new and automatic. `pack` opens your library on the packing machine, reads its door, renders
-the Statement and signs it into the manifest as the `statement` field. The host reads the facts it needs
-(kind, name, aliases, claimed schemes, connection needs) from that rendering, so `--validate` never runs your code. Two consequences:
+## Start from the canonical scaffold
 
-- Pack on a machine that can load the library (its own target). If it cannot, `pack` warns that the
-  manifest states no Statement, and the host will refuse the plugin at admit.
-- Rebuild, then repack. A new build changes the Statement; an old tarball's manifest no longer matches.
+Use `busbar-release plugin new <kind> <name>` from the shared `busbar-release` generator.
+Add `--enterprise` for private BusbarInc source. The command creates a local repository; its
+package identities must enter the trusted admission policy before publication through GitLab.
+Public mirrors follow qualified canonical dev publication. Private repositories and artifacts
+never enter a public mirror.
 
-Leave `--abi-version` unset. The packer stamps the current version for the kind, and the version the
-host enforces is the one in the Statement.
+The generated implementation initially refuses configuration and operations. Implement the
+kind's behavior before offering it to users. The skeleton has a working build, a narrow entry,
+and linked/dropped loading, wrong-kind and refusal checks. There is no second enterprise generator.
 
-## Checklist
+| Kind | SDK ownership | Plugin responsibility |
+|---|---|---|
+| Store | `abi::sdk::store::v4`, `Backend` | Translate prepared reads, scans, atomic commits, clocks and native bootstrap operations into backend operations. |
+| Secret | `abi::sdk::life`, `abi::sdk::secret`, guarded credential helpers | Resolve a reference and return a protected value through the secret ABI. |
+| Auth | `abi::sdk::auth_door` | Verify identities, conduct declared login exchanges or prepare outbound authorization. Core owns grants and policy. |
+| Hook | `abi::sdk::hook`, `Hook`, `HookOpen` | Decide, transform or observe the permitted projection. Configuration uses the SDK checkpoint contract. |
+| Export | `abi::sdk::export` | Deliver or render the observations core provides. |
+| Plane | `abi::sdk::plane_life`, `PlaneLife` | Interpret its protocol and publish bounded declarations and answers. |
+| Transport | `abi::sdk::life`, typed transport slots | Frame or carry bytes using the host's granted I/O facilities. |
 
-1. Depend on `busbar-contract` at the 1.6.0 release; drop the 1.5.5 plugin-SDK and plugin-ABI crates.
-2. Replace the six-symbol export macro with the table above.
-3. Set `panic = "unwind"` and add `rlib` beside `cdylib` if you want a linked build too.
-4. Rebuild, then `busbar-plugin-pack pack` on the target.
-5. `busbar --validate` with the plugin selected: a stale or mismatched plugin is refused there, by name,
-   before the library is opened.
+The kind's `Ops` and its `ABI_VERSION` live under `abi::<kind>`; the current store wire is
+`abi::store::v4`. Use SDK constants and generated headers rather than copying numeric versions.
+
+## Kind-bound access
+
+`Life` declares its associated `Kind`. `Instance`, host services, connector access and lifecycle
+loans retain that kind in their types. `SafeSlot` must match the table's kind and exact input/output
+layout. A Secret instance cannot become a Plane service client, even through an alias or generic
+helper. There is no unrestricted safe host-services conversion.
+
+The host issues caller identity. Plugins cannot construct its namespace/incarnation authority or
+mint a kernel seal. Runtime callbacks check the actual bound kind, lifecycle phase and instance
+before entering the provider. Compile-time access does not replace runtime checking: C and raw ABI
+callers meet the same host checks. Revoked or stale handles do not regain authority on reopen.
+
+Keep internal modules and runtime constructors private. Tests needing internal algorithms belong
+inside the implementation crate under `cfg(test)`. External tests exercise the actual door through
+the loader. A `compiled_in::door` alias is permitted only when it exposes that same entry.
+
+## Preserve custody and domain ownership
+
+Secret-bearing buffers must use the existing guarded credential SDK. Return opaque held values
+and release readable material as soon as the operation permits. Do not duplicate readable token
+storage or turn secrets into ordinary request headers when the host's credential mechanism applies.
+
+A store implements native persistence primitives, not accounting, credential revocation or plane
+rules. Core prepares operations and owns replay, arithmetic and domain relationships. Plugins do
+not know which other plugin consumes their output. Automatic migration coordination belongs to
+core's migration path; a store supplies its native inspection and bootstrap adapter.
+
+## Build and qualification
+
+Pin all first-party SDK dependencies to one immutable revision. Keep `.busbar-ref`, manifests,
+lockfiles, assembly pins and generated C headers coherent. Do not use sibling checkout overrides
+in committed plugin manifests. Test-only SDK features (`test-seal`, `test-support`) are permitted
+only in approved test graphs and must not enter the shipping dependency closure.
+
+Locally run formatting, clippy/build and the targeted regressions for the change. Full suites and
+native assembled-product qualification run in CI. Build the real cdylib before a dropped-loading
+test and supply `BUSBAR_PLUGIN_CDYLIB`; a missing library is a failure, not a skipped success.
+
+Trusted admission checks resolved Cargo identities, normal/build and inactive declarations,
+shipping features, source pins, public surfaces and forbidden-use fixtures. The candidate cannot
+approve its own broader policy or replace the trusted checker. The exact candidate revision must
+pass required checks against the current target before protected admission.
+
+These boundaries prevent accidental architectural coupling in maintained Rust code and enforce
+runtime authority at the ABI. Native plugins remain trusted native code; this is not a sandbox for
+intentionally hostile machine code.

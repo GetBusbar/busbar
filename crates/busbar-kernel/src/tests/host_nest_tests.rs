@@ -59,11 +59,7 @@ impl NestRoute for Seam {
 }
 
 fn caller() -> Caller {
-    Caller {
-        instance: Arc::from("inst"),
-        plugin: Arc::from("the-plugin"),
-        kind: KindCode::Plane,
-    }
+    Caller::for_test(Arc::from("inst"), KindCode::Plane)
 }
 
 fn services(seam: Arc<Seam>) -> KernelServices {
@@ -163,10 +159,7 @@ fn a_nest_with_no_unit_in_flight_or_past_the_cap_is_refused_before_the_root_sees
         NEST_TOO_DEEP,
     );
 
-    let stranger = Caller {
-        instance: Arc::from("stranger"),
-        ..caller()
-    };
+    let stranger = Caller::for_test(Arc::from("stranger"), (caller()).kind());
     refused(
         run(|l| s.unit_nest(&stranger, Some(9), ask(b""), l)),
         NOT_ADMITTED,

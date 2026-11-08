@@ -18,6 +18,7 @@ macro_rules! c_entry {
     };
 }
 
+pub(crate) mod access;
 pub mod answer;
 pub mod auth_handle;
 pub mod auth_outbound;
@@ -84,7 +85,24 @@ pub use worker::{
     DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
 };
 
-pub trait Kind: Send + Sync + 'static {
+pub(crate) mod kind_seal {
+    pub trait Validated {}
+}
+
+/// Only the seven loader-owned kind adapters can validate and dispatch a plugin.
+/// An external adapter cannot replace wire admission with a no-op.
+///
+/// ```compile_fail,E0277
+/// use busbar_plugin_loader::dispatch::Kind;
+/// use busbar_contract::abi::mechanism::{KindCode, call::Outcome};
+/// struct Unchecked;
+/// impl Kind for Unchecked {
+///     const CODE: KindCode = KindCode::Plane;
+///     type Ops = busbar_contract::abi::plane::PlaneOps;
+///     const TIMEOUT: Outcome = Outcome::Failed;
+/// }
+/// ```
+pub trait Kind: kind_seal::Validated + Send + Sync + 'static {
     const CODE: KindCode;
 
     /// Exact wire version admitted by this typed binding.

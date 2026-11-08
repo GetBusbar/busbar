@@ -144,7 +144,7 @@ mod door {
             self.seen
                 .lock()
                 .unwrap()
-                .push((caller.instance.to_string(), unit, target.to_owned()));
+                .push((caller.namespace().to_string(), unit, target.to_owned()));
             crate::dispatch::Stored::ready(busbar_contract::abi::host::service::ENTITLED)
         }
     }
@@ -154,7 +154,7 @@ mod door {
         use crate::dispatch::{DispatchConfig, Dispatcher};
         for is_dropped in [false, true] {
             let provider = Arc::new(crate::services_double::Double(ProjectScope::default()));
-            let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone());
+            let dispatcher = Dispatcher::with_services(DispatchConfig::default(), provider.clone(), busbar_contract::services::test_caller_binding());
             let binding = Bind {
                 dispatcher: dispatcher.adopter(),
                 ..bind()
@@ -315,8 +315,7 @@ mod door {
         ));
         let dispatcher = crate::dispatch::Dispatcher::with_services(
             crate::dispatch::DispatchConfig::default(),
-            services.clone(),
-        );
+            services.clone(), busbar_contract::services::test_caller_binding());
         let binding = Bind {
             dispatcher: dispatcher.adopter(),
             ..bind()

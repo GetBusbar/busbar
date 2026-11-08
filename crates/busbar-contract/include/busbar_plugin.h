@@ -101,7 +101,7 @@ extern "C" {
 #define BB_MECH_KIND_EXPORT "export" /* `abi/export/`. */
 #define BB_MECH_KIND_PLANE "plane" /* `abi/plane/`. */
 #define BB_MECH_KIND_TRANSPORT "transport" /* `abi/transport/`. */
-#define BB_MECH_MECHANISM_VERSION UINT32_C(2) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION` */
+#define BB_MECH_MECHANISM_VERSION UINT32_C(3) /* The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`. */
 #define BB_MECH_DOOR_MAGIC UINT64_C(0x4c50524142535542) /* ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired */
 #define BB_MECH_DOOR_SYMBOL "busbar_plugin_door" /* The ONE symbol a plugin exports, NUL-terminated for `dlsym`. */
 

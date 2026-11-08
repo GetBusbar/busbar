@@ -14,7 +14,6 @@ use crate::abi::host::conn::connector::{
 use crate::abi::host::service::{ServiceHead, ServiceOut};
 use crate::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use crate::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
-use crate::abi::sdk::conn::Host;
 
 /// One scripted reply piece: `(kind, code, reason, fields, body)`.
 type Scripted = (u32, u32, &'static [u8], &'static [u8], &'static [u8]);
@@ -1567,3 +1566,11 @@ fn exchange_value_debug_retains_length_and_status_information() {
     ack.code = 500;
     assert_ne!(format!("{ack:?}"), before);
 }
+
+type Host = crate::abi::sdk::conn::Host<FixtureKind>;
+
+type Connector<'a> = crate::abi::sdk::conn::Connector<'a, FixtureKind>;
+
+type Op<'a> = crate::abi::sdk::exchange::Op<'a, FixtureKind>;
+
+type FixtureKind = crate::plugin::markers::PlaneKind;

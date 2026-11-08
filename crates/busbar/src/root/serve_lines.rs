@@ -256,6 +256,7 @@ where
         .clone();
     let audience = served.planes[plane].snapshot.audience.clone();
     let kernel = Arc::clone(&served.planes[plane].kernel);
+    let driver = Arc::clone(&served.planes[plane].driver);
     let credential = std::env::var(env_credential(&instance, carrier))
         .ok()
         .filter(|c| !c.is_empty());
@@ -295,11 +296,14 @@ where
             |k| k.id.clone(),
         );
         let sink_out = caller.out.clone();
-        let session = std::num::NonZeroU64::new(kernel.open_carrier_session(
-            &instance,
-            &principal,
-            Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
-        ))
+        let session = std::num::NonZeroU64::new(
+            driver
+                .open_carrier_session(
+                    &principal,
+                    Arc::new(move |bytes: &[u8]| sink_out.send(terminated(bytes)).is_ok()),
+                )
+                .expect("served plane holds its core caller binding"),
+        )
         .expect("kernel carrier sessions are minted above zero");
         let answer = move |line: Vec<u8>| {
             let headers = axum::http::HeaderMap::new();
