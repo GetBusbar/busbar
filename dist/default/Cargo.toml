@@ -1213,7 +1213,7 @@ busbar-contract = { path = "../../crates/busbar-contract" }
 # Exact release-line fixes submitted upstream: h2 sensitive indexed fields and WebSocket 1014.
 [patch.crates-io]
 # Dependency patches are effective only at the consuming workspace root.
-mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "cc1ab8df87a42610f3c85594f7cce72dccab9893" }
+mysql_common = { git = "https://github.com/GetBusbar/busbar-store-mysql", rev = "92119d6850947e220202518a09e844d87692b770" }
 postgres-protocol = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "d9cd181d2676cf40785dbc62173eea3c44ac9908" }
 aws-lc-sys = { git = "https://github.com/MattJackson/aws-lc-sys", rev = "3469edb189e0cc2fab40e88f551713a828a5d867" }
 jobserver = { git = "https://github.com/MattJackson/jobserver-rs", rev = "fbe3efc1acc11add04854cc093f97876e439e129" }
