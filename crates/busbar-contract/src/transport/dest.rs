@@ -35,9 +35,10 @@ use core::fmt;
 /// Each arm still carries exactly what its SHAPE needs to dial without guessing; what it needs
 /// beyond that, it declares.
 ///
-/// The `Program` arm's environment is the one secret-carrying field on this type, so neither the
-/// `Debug` nor the serialization is derived: both say which names are set and how long each value
-/// was, and neither says a value. The extras are not that: they are declared wire facts — a method
+/// The `Program` arm's environment is the one secret-carrying field on this type, so `Debug`
+/// is written by hand and `Serialize` routes `env` through `env_names_only`: `Debug` says which
+/// names are set and how long each value was, serialization says only the names, and neither says
+/// a value. The extras are not that: they are declared wire facts — a method
 /// path, a stream group — that a transport author's log line is read to check, so they print whole.
 /// A transport author's log line and a configuration dump are the two places an upstream address is
 /// formatted, and both are outside this tree's reading.

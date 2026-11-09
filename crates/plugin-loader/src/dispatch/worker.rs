@@ -69,7 +69,7 @@ impl Budgets {
 /// A dispatcher's shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchConfig {
-    /// How many workers (clamped to `1..=4096`).
+    /// How many workers (clamped to `1..=4095`: one index is reserved for inline tickets).
     pub workers: u32,
     /// The watchdog's budgets.
     pub budgets: Budgets,
@@ -633,7 +633,8 @@ impl Drop for Meta {
     }
 }
 
-/// The submitting host's context, never a parent supplied by a plugin. Shared so selecting a
+/// The submitting host's context, never a parent supplied by a plugin. Shared (`Arc`) so every step of
+/// one submission runs under the same context.
 struct TraceContext {
     dispatch: tracing::Dispatch,
     span: tracing::Span,
@@ -1366,12 +1367,15 @@ impl Worker {
             }
         }
         let mut cur = cur;
+        let write_behind = cur.meta.class == DeadlineClass::WriteBehind;
         cur.meta.give_back();
         if let Some(job) = cur.job {
             let short = e.short_reply.as_ref().and_then(|owner| owner.0.clone());
             if !job.finish(c, short) {
                 e.short_reply = None;
-                env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
+                if write_behind {
+                    env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
+                }
             }
         }
         drop(cur.meta);
@@ -1407,7 +1411,7 @@ impl Worker {
                 }
                 e.queue.push_back((meta, job));
             }
-            let owed = !matches!(e.next, Some(Action::Resume));
+            let owed = !matches!(e.next, Some(Action::Resume | Action::Cancel));
             if let Some(c) = e.current.as_mut().filter(|c| c.pending) {
                 let (class, deadline) = (c.meta.class, c.meta.deadline_ns);
                 if deadline != 0 && class != DeadlineClass::WriteBehind {
@@ -1421,7 +1425,8 @@ impl Worker {
                 if deadline != 0 && class == DeadlineClass::WriteBehind && !c.detached {
                     if now >= deadline {
                         without_wake += u64::from(owed);
-                        c.detached = c.meta.reply.settle(c.meta.instance.timeout, true);
+                        c.meta.reply.settle(c.meta.instance.timeout, true);
+                        c.detached = true;
                     } else {
                         next = next.min(deadline);
                     }

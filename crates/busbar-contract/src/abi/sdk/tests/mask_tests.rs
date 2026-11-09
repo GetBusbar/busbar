@@ -62,6 +62,18 @@ fn secret_looking_query_and_fragment_values_are_masked() {
     );
 }
 
+/// A raw `;` or `?` inside a secret value does not let its tail through; `&` and `#` still end it.
+#[test]
+fn codeaudit_a_masked_value_with_a_raw_separator_leaks_no_tail() {
+    let a = mask_url("https://h/x?token=ab;cd");
+    assert!(!a.contains("cd") && !a.contains("ab"), "{a}");
+    let b = mask_url("https://h/x?sig=ab?cd&page=2");
+    assert!(
+        !b.contains("cd") && !b.contains("ab") && b.contains("page=2"),
+        "{b}"
+    );
+}
+
 /// An `@` in the query is over-cut, and what follows it is still read as pairs, so no value that
 #[test]
 fn an_at_in_the_query_is_over_cut_never_a_leak() {

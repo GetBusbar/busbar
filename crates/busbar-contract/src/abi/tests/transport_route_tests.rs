@@ -23,6 +23,13 @@ fn every_method_has_its_own_bit_and_any_holds_them_all() {
 }
 
 #[test]
+fn a_prefix_with_a_trailing_slash_matches_like_its_slashless_form() {
+    assert!(path_matches(PATH_PREFIX, "/v1/", "/v1/x"));
+    assert!(path_matches(PATH_PREFIX, "/", "/a"));
+    assert!(!path_matches(PATH_PREFIX, "/", "/a/b"));
+}
+
+#[test]
 fn each_path_form_matches_what_it_names() {
     assert!(path_matches(PATH_EXACT, "/v1/models", "/v1/models"));
     assert!(!path_matches(PATH_EXACT, "/v1/models", "/v1/models/x"));
@@ -89,6 +96,30 @@ fn pattern_syntax_is_whole_segments_and_a_last_tail() {
     );
     assert!(pattern_segments("/a/{}").is_none(), "a variable has a name");
     assert!(pattern_segments("/a/{*}").is_none(), "a tail has a name");
+}
+
+#[test]
+fn a_plus_variable_is_one_or_more_segments_and_at_most_one_per_pattern() {
+    assert!(pattern_segments("/model/{id+}/converse").is_some());
+    assert!(
+        pattern_segments("/a/{x+}/{y+}").is_none(),
+        "a pattern holds at most one plus variable"
+    );
+    assert!(pattern_segments("/a/{+}").is_none(), "a plus has a name");
+    let mut i = Interner::default();
+    assert_eq!(
+        i.intern_pattern("/model/{id+}/converse").unwrap(),
+        &[
+            PathSeg::Lit("model"),
+            PathSeg::Plus,
+            PathSeg::Lit("converse")
+        ][..]
+    );
+    let p = "/model/{id+}/converse";
+    assert!(path_matches(PATH_PATTERN, p, "/model/a/converse"));
+    assert!(path_matches(PATH_PATTERN, p, "/model/a/b/c/converse"));
+    assert!(!path_matches(PATH_PATTERN, p, "/model/converse"));
+    assert!(!path_matches(PATH_PATTERN, "/a/{x+}/{y+}", "/a/b/c/d"));
 }
 
 #[test]

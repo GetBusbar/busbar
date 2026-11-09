@@ -273,8 +273,8 @@ pub struct AdmitRejected {
 
 /// The in-flight table's slot for one unit's hold.
 ///
-/// Two states and one transition: an arrival hold goes in when the unit enters the table, the door
-/// swaps it for the admitted hold, and either state is takeable exactly once. The swap and the take
+/// Three states: arrival, admitted, taken. An arrival hold goes in when the unit enters the table,
+/// the door swaps it for the admitted hold, and either hold state is takeable exactly once. The swap and the take
 /// are compare-and-set: two racing callers cannot both win, and the loser is told so rather than
 /// silently overwriting.
 #[derive(Debug)]

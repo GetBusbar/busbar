@@ -101,7 +101,21 @@ impl SealedValue {
 
     /// Concatenate public and protected inputs without exposing the result.
     pub fn compose(parts: &[CredentialPart<'_>]) -> Self {
-        let mut bytes = Zeroizing::new(Vec::new());
+        // Reserve before copying any credential: growing a populated Vec can retire an
+        // allocation without zeroizing its credential bytes.
+        let total = parts
+            .iter()
+            .try_fold(0_usize, |total, part| {
+                let length = match part {
+                    CredentialPart::Public(value) => value.len(),
+                    CredentialPart::Credential(value) => value.len(),
+                    CredentialPart::Value(value) => value.len(),
+                    CredentialPart::Sealed(value) => value.wire().len(),
+                };
+                total.checked_add(length)
+            })
+            .expect("sealed composition length exceeds address space");
+        let mut bytes = Zeroizing::new(Vec::with_capacity(total));
         let mut secure = false;
         for part in parts {
             match part {

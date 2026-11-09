@@ -655,7 +655,9 @@ fn write_answer(
     )
 }
 
-/// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`,
+/// Write `id` into the host's identity buffer under `verdict` (`VERDICT_IDENTITY` for `verify`),
+/// including its credential when it carries one. For `verify` only: `complete_login` must carry no
+/// credential (the host faults it), so it answers with `auth_kit::login_identity` instead.
 pub fn write_identity(
     id: &VerifiedIdentity,
     buf: Lent<'_, IdentityBuf>,
@@ -853,10 +855,13 @@ macro_rules! auth_verify_door {
     ($plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            // SAFETY: the door macro requires the Statement's pointers to name live const data.
-            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
-                $statement, $crate::abi::auth::CAP_INBOUND,
-            ) },
+            statement: {
+                let statement = $statement;
+                // SAFETY: the door macro requires the Statement's pointers to name live const data.
+                unsafe { $crate::abi::sdk::auth_door::check_shape(
+                    statement, $crate::abi::auth::CAP_INBOUND,
+                ) }
+            },
             lifecycle: life($crate::abi::sdk::auth_door::Verifier<$plugin>),
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Verify<$plugin>>,

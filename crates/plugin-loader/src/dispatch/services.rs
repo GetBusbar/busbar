@@ -1025,7 +1025,9 @@ service! {
         let Some(dest) = (unsafe { super::validate::lent_str(i.dest) }) else {
             return Answered::fault();
         };
-        let dest = String::from_utf8_lossy(dest).into_owned();
+        let Ok(dest) = std::str::from_utf8(dest).map(str::to_owned) else {
+            return Answered::fault();
+        };
         let provider = served.provider;
         // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
         unsafe {
@@ -1716,7 +1718,7 @@ fn lent_text(s: AbiStr) -> Option<String> {
     // SAFETY: a range of the caller's, live for the call, its length capped before the slice is
     // formed; copied before any pend.
     let bytes = unsafe { super::validate::lent_str(s) }?;
-    Some(String::from_utf8_lossy(bytes).into_owned())
+    String::from_utf8(bytes.to_vec()).ok()
 }
 
 fn head_copy(v: &svc::HeadView) -> Option<HeadCopy> {
@@ -1724,8 +1726,9 @@ fn head_copy(v: &svc::HeadView) -> Option<HeadCopy> {
         Vec::new()
     } else {
         // SAFETY: the caller's field list, checked non-NULL with its count by `check_head_view`
-        // and at most `MAX_SPANS` long; copied before any pend.
-        let lent = unsafe { std::slice::from_raw_parts(v.fields, v.fields_len) };
+        // and at most `MAX_SPANS` long; `lent` also refuses a misaligned pointer; copied before
+        // any pend.
+        let lent = unsafe { super::validate::lent(v.fields, v.fields_len) }?;
         lent.iter()
             .map(|f| {
                 // SAFETY: a range of the caller's, as `lent_text`.

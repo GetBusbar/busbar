@@ -13,6 +13,24 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use super::{data_framer, DataFramer, DATA_SCHEME};
 
 #[test]
+fn operator_request_refuses_a_block_with_a_separatorless_line() {
+    let head = busbar_core_connector::framer::Head {
+        method: Some(b"GET".to_vec()),
+        target: Some(b"/".to_vec()),
+        ..Default::default()
+    };
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let body = super::InboundBody {
+        pieces: rx,
+        ended: false,
+    };
+    let block = b"x:y\r\nauthorization: Bearer t\r\n";
+    let request =
+        super::operator::request(&head, block, false, body, std::time::Duration::from_secs(1));
+    assert!(request.is_none(), "later headers must not silently vanish");
+}
+
+#[test]
 fn neutral_head_decoding_preserves_the_shared_abi_without_http_parsing() {
     let head = busbar_core_connector::framer::Head {
         method: Some(b"READ OBJECT".to_vec()),

@@ -37,6 +37,7 @@ fn coherent_read_well_formed_and_time_failure_have_distinct_payload_rules() {
     out.code = READ_TIME_GUARD_FAILED;
     assert!(check::read(Outcome::Ready, &input, &out).is_err());
     out.items_written = 0;
+    assert!(check::read(Outcome::Ready, &input, &out).is_err());
     out.bytes_written = 0;
     assert!(check::read(Outcome::Ready, &input, &out).is_ok());
 }
@@ -159,6 +160,11 @@ fn commit_reserved_capacity_and_failed_short_rules_are_checked() {
     assert!(check::commit(Outcome::Refused, &input, &out).is_err());
     out.needed = 4;
     assert!(check::commit(Outcome::Failed, &input, &out).is_err());
+    out.needed = 0;
+    out.written = 1;
+    for outcome in [Outcome::Failed, Outcome::Refused, Outcome::Pending] {
+        assert!(check::commit(outcome, &input, &out).is_err());
+    }
 }
 
 #[test]

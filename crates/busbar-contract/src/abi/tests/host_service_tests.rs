@@ -510,6 +510,37 @@ fn the_services_that_never_pend_are_exactly_the_stated_fourteen() {
 }
 
 #[test]
+fn session_emit_names_a_session_and_writes_something() {
+    let byte = 0_u8;
+    let mut i = SessionEmitIn {
+        head: head(
+            op::SESSION_EMIT,
+            TICKET,
+            core::mem::size_of::<SessionEmitIn>(),
+        ),
+        session: 1,
+        bytes: Blob {
+            ptr: &byte,
+            len: 1,
+            fmt: 0,
+            flags: 0,
+        },
+    };
+    assert_eq!(check_session_emit_in(&i), Ok(()));
+    i.session = 0;
+    assert_eq!(
+        check_session_emit_in(&i),
+        Err(fault(Rule::Missing, "session_emit.session"))
+    );
+    i.session = 1;
+    i.bytes.len = 0;
+    assert_eq!(
+        check_session_emit_in(&i),
+        Err(fault(Rule::Missing, "session_emit.bytes"))
+    );
+}
+
+#[test]
 fn the_table_holds_one_slot_per_service() {
     let slots = (core::mem::size_of::<HostSlots>() - 8) / core::mem::size_of::<usize>();
     assert_eq!(slots, SERVICES as usize);
@@ -1021,7 +1052,7 @@ fn a_disk_append_answer_lands_whole_or_names_its_failed_step() {
 }
 
 #[test]
-fn trust_decide_answers_a_verdict_or_an_undecided_code_and_never_pends() {
+fn trust_decide_answers_a_verdict_or_an_undecided_code_and_may_pend() {
     let i = TrustDecideIn {
         head: head(
             op::TRUST_DECIDE,

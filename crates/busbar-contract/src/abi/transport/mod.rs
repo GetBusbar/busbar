@@ -725,7 +725,8 @@ pub struct FaultRow {
     pub lo: u32,
     /// The highest code, inclusive.
     pub hi: u32,
-    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD` | `FAULT_HEALTHY`).
+    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD` | `FAULT_HEALTHY` |
+    /// `FAULT_RATE_LIMIT`).
     pub fault: u32,
 }
 
@@ -739,7 +740,7 @@ impl FaultRow {
     };
 }
 
-/// One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to
+/// One operator setting the transport reads, at its 1.5.5 path (the connector deals the value to
 /// the plugin's `validate`/`open`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -804,7 +805,7 @@ pub struct TransportTail {
     pub status_rows: *const StatusRow,
     /// How many.
     pub status_rows_len: usize,
-    /// The customer settings it reads.
+    /// The operator settings it reads.
     pub settings: *const SettingDecl,
     /// How many.
     pub settings_len: usize,

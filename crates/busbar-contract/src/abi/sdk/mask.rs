@@ -48,28 +48,39 @@ fn mask_pairs(s: &str, open: bool) -> String {
     let mut out = String::with_capacity(s.len());
     out.push_str(&s[..start]);
     let mut pair = String::new();
+    // A raw `;` or `?` is legal inside a value (RFC 3986 3.4): a keyless segment they split off
+    // right after a masked value is that value's tail, and is dropped with it.
+    let mut masked = false;
+    let mut after = None;
     for ch in s[start..].chars() {
         if matches!(ch, '?' | '#' | '&' | ';') {
-            push_pair(&mut out, &pair);
+            masked = push_pair(&mut out, &pair, masked && matches!(after, Some('?' | ';')));
             pair.clear();
             out.push(ch);
+            after = Some(ch);
         } else {
             pair.push(ch);
         }
     }
-    push_pair(&mut out, &pair);
+    push_pair(&mut out, &pair, masked && matches!(after, Some('?' | ';')));
     out
 }
 
-/// `pair` onto `out`, its value masked when its key looks like a secret.
-fn push_pair(out: &mut String, pair: &str) {
+/// `pair` onto `out`, its value masked when its key looks like a secret; whether the value that
+/// ends here is masked (`continued`: `pair` is the keyless tail of a masked value, so it is dropped).
+fn push_pair(out: &mut String, pair: &str, continued: bool) -> bool {
     match pair.split_once('=') {
         Some((key, value)) if !value.is_empty() && secret_looking(key) => {
             out.push_str(key);
             out.push('=');
             out.push_str(MASK);
+            true
         }
-        _ => out.push_str(pair),
+        None if continued => true,
+        _ => {
+            out.push_str(pair);
+            false
+        }
     }
 }
 

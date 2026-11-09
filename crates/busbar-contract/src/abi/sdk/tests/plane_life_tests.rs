@@ -104,7 +104,10 @@ mod plugin {
     use super::*;
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
-        statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("plane-life-echo", "0", 1)
+        },
         lifecycle: plane_life(Echo),
         kind_ops: {
             arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project,
@@ -131,7 +134,10 @@ mod migrating {
     use super::*;
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
-        statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("plane-life-echo", "0", 1)
+        },
         lifecycle: plane_life(Echo),
         migrate: crate::abi::sdk::migrate::Migrator<super::EchoMigration>,
         kind_ops: {
@@ -465,7 +471,10 @@ mod defaulted {
     use super::*;
     crate::export_plugin! {
         plane: Echo,
-        statement: crate::abi::sdk::door::statement("plane-arm-defaults", "0", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("plane-arm-defaults", "0", 1)
+        },
         kind_ops: { arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project },
     }
 }
@@ -475,7 +484,10 @@ mod named {
     use super::*;
     crate::export_plugin! {
         plane: Echo,
-        statement: crate::abi::sdk::door::statement("plane-arm-named", "0", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("plane-arm-named", "0", 1)
+        },
         kind_ops: {
             arrive: Arrive, on_piece: OnPiece, refusal: Refuse, serve: Served,
             hydrate: Hydrated, project: Project,

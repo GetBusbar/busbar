@@ -52,6 +52,23 @@ fn a_fact_map_is_last_write_wins() {
     assert_eq!(facts.get("lane"), Some(FactValue::Str("second")));
 }
 
+/// Updating an existing key of a full map succeeds: the ceiling bounds distinct keys, not writes.
+#[test]
+fn a_full_fact_map_still_replaces_an_existing_key() {
+    let keys: Vec<String> = (0..MAX_KEYS).map(|i| format!("key-{i}")).collect();
+    let mut facts = Facts::new();
+    for key in &keys {
+        facts
+            .set(key.as_str(), FactValue::Int(1))
+            .expect("accepted");
+    }
+    facts
+        .set("key-0", FactValue::Int(2))
+        .expect("replacing an existing key in a full map is accepted");
+    assert_eq!(facts.len(), MAX_KEYS);
+    assert_eq!(facts.get("key-0"), Some(FactValue::Int(2)));
+}
+
 /// Labels are bounded the same way, because an unbounded label set is an unbounded time series.
 #[test]
 fn labels_are_bounded_like_facts() {

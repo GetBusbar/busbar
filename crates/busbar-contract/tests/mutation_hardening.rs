@@ -94,6 +94,11 @@ fn a_surrogate_pairs_second_escape_needs_both_the_backslash_and_the_u() {
         Resolved::Missing,
         "a second escape spelled \\x instead of \\u is not a low surrogate"
     );
+    assert_eq!(
+        resolve_pointer(b"{\"\\uD800\\xDC00\":1}", "/\u{10000}"),
+        Resolved::Missing,
+        "a mutant that reads \\x as a low-surrogate escape would find U+10000 here"
+    );
 }
 
 /// The position after decoding a full surrogate-pair character must land exactly on the byte that

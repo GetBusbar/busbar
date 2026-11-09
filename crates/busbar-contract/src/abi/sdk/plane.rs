@@ -104,17 +104,17 @@ impl UnitCancel {
         if self.ticket == Ticket::NONE {
             return false;
         }
-        units.with_all(|map| {
-            let on = |u: &V| ticket_of(u) == Some(self.ticket);
-            let mut any = false;
-            for u in map.values_mut().filter(|u| on(u)) {
-                any |= answered(u);
+        // Shard by shard: a cancel that names no live unit is a normal finish race, and must not
+        // stall every other unit's op behind a drain of the whole table.
+        let mut any = false;
+        units.retain(|_, u| {
+            if ticket_of(u) != Some(self.ticket) {
+                return true;
             }
-            if ending == Ending::Remove {
-                map.retain(|_, u| !on(u));
-            }
-            any
-        })
+            any |= answered(u);
+            ending == Ending::Keep
+        });
+        any
     }
 }
 

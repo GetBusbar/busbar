@@ -290,6 +290,9 @@ fn identity(
         return Err(fault(Rule::Contradiction, a.count_mismatch));
     }
     span(id.subject, cap, false, a)?;
+    if id.subject.len == 0 {
+        return Err(fault(Rule::Missing, a.missing));
+    }
     for s in [
         id.key_id,
         id.key_name,

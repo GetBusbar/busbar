@@ -23,6 +23,10 @@ impl Conns for Echo {
             self.0.check_need(caller, need)?;
             return Err(ConnError::Refused);
         }
+        if desc.target == "timeout.test" && desc.timeout_ms != 5 {
+            self.0.check_need(caller, need)?;
+            return Err(ConnError::Refused);
+        }
         let mut first = [desc.method, desc.head_target, &desc.body[..]].concat();
         for (name, value) in desc.fields {
             first.extend_from_slice(name.as_bytes());
@@ -190,6 +194,22 @@ fn every_operation_crosses_the_lowering() {
         ),
         Err(ConnError::Refused)
     );
+}
+
+/// The open's `timeout_ms` crosses the lowering both ways: the host observes exactly what the
+/// plugin's descriptor stated.
+#[test]
+fn the_open_timeout_crosses_the_lowering() {
+    let (_a, _b, pa, _) = two();
+    let conn = pa.open(
+        NEED,
+        &OpenDesc {
+            target: "timeout.test",
+            timeout_ms: 5,
+            ..OpenDesc::default()
+        },
+    );
+    assert!(conn.is_ok(), "the host must observe timeout_ms 5: {conn:?}");
 }
 
 /// RED ARM — CROSS-INSTANCE: a connection one instance opened is refused to another on every
@@ -474,6 +494,49 @@ fn a_descriptor_without_the_head_words_states_none() {
         unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(),
         Err(ConnError::Fault)
     );
+}
+
+/// RED: a descriptor whose size covers `method` but stops before `head_target` states its method
+/// and no head target: each appended word is gated on its own size.
+#[test]
+fn a_descriptor_ending_between_the_head_words_states_only_the_method() {
+    let echo = Echo::default();
+    echo.0.declare(InstanceId(1), NEED);
+    let host = Box::new(ConnHost::new(Arc::new(echo), InstanceId(1)));
+    let slots = host_slots();
+    let open = slots.open.unwrap();
+    let d = WireOpenDesc {
+        size: core::mem::offset_of!(WireOpenDesc, head_target) as u32,
+        _reserved: 0,
+        target: DeclStr {
+            ptr: b"echo.test".as_ptr(),
+            len: 9,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        body: b"b".as_ptr(),
+        body_len: 1,
+        timeout_ms: 0,
+        method: DeclStr {
+            ptr: b"GET".as_ptr(),
+            len: 3,
+        },
+        head_target: DeclStr {
+            ptr: b"/ignored".as_ptr(),
+            len: 8,
+        },
+    };
+    let mut conn = 0_u64;
+    // SAFETY: host and the initialized descriptor/nested bytes remain live; conn is exclusive.
+    assert_eq!(
+        unsafe { open(host.ctx(), 0, &d, &mut conn) }.result(),
+        Ok(())
+    );
+    // SAFETY: the host's own table over the context `host` keeps alive.
+    let pa = unsafe { HostConns::new(slots, host.ctx()) };
+    let mut buf = [0_u8; 16];
+    let piece = pa.read(ConnId(conn), 0, &mut buf).unwrap();
+    assert_eq!(&buf[..piece.len], b"GETb");
 }
 
 /// The appended head words sit after every field a headless descriptor states, in order.

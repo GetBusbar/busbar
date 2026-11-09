@@ -72,13 +72,25 @@ pub fn public_settings_of_statement(
 
 struct Resolution<'a> {
     defs: &'a serde_json::Map<String, serde_json::Value>,
+    definitions: &'a serde_json::Map<String, serde_json::Value>,
     resolving: HashSet<String>,
 
     memo: HashMap<(serde_json::Value, u32), serde_json::Map<String, serde_json::Value>>,
     scanned: HashSet<(serde_json::Value, Position, u32)>,
 }
 
-impl Resolution<'_> {
+impl<'a> Resolution<'a> {
+    /// The `$ref` target in the table its own prefix names (`#/$defs/` or `#/definitions/`).
+    /// `Some(None)` is a local reference whose name is missing; `None` is not a local table reference.
+    fn target(&self, reference: &str) -> Option<Option<&'a serde_json::Value>> {
+        if let Some(name) = reference.strip_prefix("#/$defs/") {
+            return Some(self.defs.get(name));
+        }
+        reference
+            .strip_prefix("#/definitions/")
+            .map(|name| self.definitions.get(name))
+    }
+
     fn effective(
         &mut self,
         schema: &serde_json::Value,
@@ -101,19 +113,14 @@ impl Resolution<'_> {
         };
         let mut merged = obj.clone();
         if let Some(r) = obj.get("$ref").and_then(|v| v.as_str()) {
-            let name = r
-                .strip_prefix("#/$defs/")
-                .or_else(|| r.strip_prefix("#/definitions/"));
-            if let Some(name) = name {
-                if !self.resolving.insert(name.to_string()) {
+            if let Some(target) = self.target(r) {
+                if !self.resolving.insert(r.to_string()) {
                     return Err(format!("cyclic $ref in settings_schema: '{r}'"));
                 }
-                let defs = self.defs;
-                let target = defs
-                    .get(name)
-                    .ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
+                let target =
+                    target.ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
                 let base = self.effective(target, depth + 1)?;
-                self.resolving.remove(name);
+                self.resolving.remove(r);
                 merged = base;
                 for (k, v) in obj {
                     if k != "$ref" {
@@ -214,11 +221,15 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
     let defs = root
         .get("$defs")
         .and_then(|v| v.as_object())
-        .or_else(|| root.get("definitions").and_then(|v| v.as_object()))
+        .unwrap_or(&empty);
+    let definitions = root
+        .get("definitions")
+        .and_then(|v| v.as_object())
         .unwrap_or(&empty);
     let public = busbar_contract::settings_public::public_settings(root);
     let mut resolution = Resolution {
         defs,
+        definitions,
         resolving: HashSet::new(),
         memo: HashMap::new(),
         scanned: HashSet::new(),
@@ -243,6 +254,23 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
             return Ok(());
         }
         let eff = resolution.effective(schema, depth)?;
+        // The merged view lets a `$ref` sibling replace the target's `properties` and keeps one
+        // value per allOf keyword, so the target and every allOf branch are also walked on their own.
+        if let Some(target) = schema
+            .as_object()
+            .filter(|obj| obj.len() > 1)
+            .and_then(|obj| obj.get("$ref"))
+            .and_then(|r| r.as_str())
+            .and_then(|r| resolution.target(r))
+            .flatten()
+        {
+            scan(target, resolution, public, at, depth + 1)?;
+        }
+        if let Some(branches) = eff.get("allOf").and_then(|v| v.as_array()) {
+            for branch in branches {
+                scan(branch, resolution, public, at, depth + 1)?;
+            }
+        }
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
                 return Err(format!(
@@ -297,7 +325,10 @@ pub fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
             }
         }
         if let Some(items) = eff.get("items") {
-            scan(items, resolution, public, Position::Nested, depth + 1)?;
+            // Draft-07 tuple form: `items` is an array of schemas, like `prefixItems`.
+            for item in items.as_array().map_or(std::slice::from_ref(items), |a| a) {
+                scan(item, resolution, public, Position::Nested, depth + 1)?;
+            }
         }
 
         for combinator in ["oneOf", "anyOf"] {
@@ -510,7 +541,14 @@ fn validate_public_fields(root: &serde_json::Value) -> Result<(), String> {
                         || (at == Position::Root
                             && !self.public.is_empty()
                             && matches!(keyword, "additionalProperties" | "unevaluatedProperties"));
-                    self.scan(child, Position::Nested, child_exposed, false, depth + 1)?;
+                    // Draft-07 tuple form: `items` is an array of schemas.
+                    let children = match child.as_array() {
+                        Some(tuple) if keyword == "items" => tuple.as_slice(),
+                        _ => std::slice::from_ref(child),
+                    };
+                    for child in children {
+                        self.scan(child, Position::Nested, child_exposed, false, depth + 1)?;
+                    }
                 }
             }
             if let Some(items) = obj.get("prefixItems") {

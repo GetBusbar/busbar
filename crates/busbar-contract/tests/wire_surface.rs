@@ -151,4 +151,21 @@ fn the_method_comparison_ignores_case() {
 fn the_bar_reads_off_every_arm() {
     let open = resolve_target(&SURFACE, "/open", "GET").expect("declared");
     assert_eq!(open.1.bar(), Bar::Open);
+    let one = SURFACE.operations[0].dispatch;
+    assert!(matches!(one[1], Dispatch::Document { .. }));
+    assert!(matches!(one[2], Dispatch::Service { .. }));
+    assert_eq!(one[1].bar(), Bar::Credential);
+    assert_eq!(one[2].bar(), Bar::Credential);
+}
+
+/// A template may declare at most eight captures; a ninth never matches.
+#[test]
+fn a_ninth_capture_never_matches() {
+    let eight = "/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}";
+    let nine = "/{a}/{b}/{c}/{d}/{e}/{f}/{g}/{h}/{i}";
+    assert_eq!(
+        match_target(eight, "/1/2/3/4/5/6/7/8").map(|c| c.len()),
+        Some(8)
+    );
+    assert!(match_target(nine, "/1/2/3/4/5/6/7/8/9").is_none());
 }

@@ -67,8 +67,8 @@ pub enum Billing {
     Duration { seconds: Count },
     /// Character count (an operation whose upstream carries no usage object in the body; the
     /// count is derived from the request input instead).
-    /// Modelled by the IR (constructed by the character-metered billing path) but not yet priced;
-    /// the shipped 1.5.0 pricing path only prices `Billing::Tokens`.
+    /// Modelled by the IR but not yet constructed outside tests or priced; the shipped 1.5.0
+    /// pricing path only prices `Billing::Tokens`.
     #[cfg_attr(not(test), allow(dead_code))]
     Characters { count: u64 },
     /// Per-item count, tiered by size/quality (an image-generation-style operation with no usage

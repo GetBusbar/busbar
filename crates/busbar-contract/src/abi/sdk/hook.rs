@@ -17,7 +17,7 @@ use std::task::Poll;
 use crate::abi::hook::validate::{check_notify_in, check_prompt_view};
 use crate::abi::hook::{
     cancel, ConfigureIn, ConfigureOut, DecideIn, DecideOut, DescribeOut, NotifyIn, PromptView,
-    ServeIn, ServeOut, SignalEntry, StatusOut, Tail, TransformOut, BUDGET_HAS_REMAINING_MICROS,
+    SignalEntry, StatusOut, Tail, TransformOut, BUDGET_HAS_REMAINING_MICROS,
     CANDIDATE_HAS_BUDGET_REMAINING, CANDIDATE_HAS_CONTEXT_MAX, CANDIDATE_HAS_COST_PER_MTOK,
     CANDIDATE_HAS_LATENCY_MS, CANDIDATE_HAS_RATE_HEADROOM, CANDIDATE_HAS_TIER,
     REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM, SIGNAL_TAG_BOOL, SIGNAL_TAG_F64,
@@ -701,7 +701,11 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
         let Some(tags) = r.get("tags_any").and_then(serde_json::Value::as_array) else {
             return Verdict::Failed(INVALID_RESTRICTION.into());
         };
-        if tags.iter().any(|tag| !tag.is_string()) {
+        // A NUL is the wire's tag separator: a tag holding one would split into two on the host.
+        if tags
+            .iter()
+            .any(|tag| tag.as_str().is_none_or(|t| t.contains('\0')))
+        {
             return Verdict::Failed(INVALID_RESTRICTION.into());
         }
         return Verdict::Restrict(
@@ -1164,8 +1168,9 @@ hook_op!(
     Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
         let bytes = input.field(|i| &i.settings).bytes();
         let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
-        let Ok(settings) = serde_json::from_slice::<JsonValue>(bytes) else {
-            return out.fail(Refusal::failed("settings: must be a JSON object"));
+        let settings = match serde_json::from_slice::<JsonValue>(bytes) {
+            Ok(settings) => settings,
+            Err(e) => return out.fail(Refusal::failed(format!("settings: not valid JSON: {e}"))),
         };
         let Some(map) = settings.0.as_object() else {
             return out.fail(Refusal::failed("settings: must be a JSON object"));
@@ -1218,14 +1223,6 @@ hook_op!(
     }
 );
 
-hook_op!(
-    /// `serve`: this SDK declares no routes, so no request reaches it; answers 404.
-    Serve, ServeIn, ServeOut, |_held, _i, _input, out| {
-        out.raw().status_code = 404;
-        Outcome::Ready
-    }
-);
-
 /// The hook door under its old name, kept one release so plugins re-pin at leisure:
 /// [`export_plugin!`](crate::export_plugin)'s `hook` arm.
 ///
@@ -1241,7 +1238,10 @@ hook_op!(
 /// }
 /// busbar_contract::hook_door! {
 ///     open: Open,
-///     statement: busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
+///     statement: busbar_contract::abi::sdk::hook::statement_with_tail(
+///         busbar_contract::abi::sdk::door::statement("my-hook", "1.0.0", 64),
+///         &busbar_contract::abi::sdk::hook::tail(busbar_contract::abi::hook::CLASS_GATE, 0, 0),
+///     ),
 /// }
 /// # fn main() { let _ = door(); }
 /// ```

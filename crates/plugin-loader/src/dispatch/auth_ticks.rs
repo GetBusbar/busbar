@@ -24,7 +24,15 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
         let done = dispatcher.tick_copy(plugin, driver, super::now_ns()).await;
         match (done.outcome, done.frame.map(|f| f.out.next_tick_ns)) {
             (Outcome::Ready | Outcome::Pending, Some(next)) if next != 0 => at = next,
-            _ => return,
+            (Outcome::Ready | Outcome::Pending, _) => return,
+            (outcome, _) => {
+                tracing::warn!(
+                    instance = plugin.name(),
+                    ?outcome,
+                    "auth tick failed: the refresh schedule for this instance has stopped"
+                );
+                return;
+            }
         }
     }
 }

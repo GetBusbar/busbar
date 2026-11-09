@@ -148,3 +148,23 @@ fn batch_fit_accounts_for_full_echo_reply_capability_and_existing_extensions() {
         }
     }
 }
+
+#[test]
+fn carrier_batch_bound_is_exact_on_encode_and_decode() {
+    let max = max_carrier_sessions(0);
+    assert!(max > 0);
+    let mut request = work();
+    request.query = InspectionQuery::CarrierSessions {
+        sessions: (1..=max as u64).collect(),
+    };
+    let encoded = encode_request(&request).expect("a batch at the bound encodes");
+    assert_eq!(decode_request(&encoded), Ok(request.clone()));
+    let mut over = encoded;
+    over.extend_from_slice(&(max as u64 + 1).to_le_bytes());
+    over[26..30].copy_from_slice(&(max as u32 + 1).to_le_bytes());
+    assert_eq!(decode_request(&over), Err(InspectionError::Invalid));
+    request.query = InspectionQuery::CarrierSessions {
+        sessions: (1..=max as u64 + 1).collect(),
+    };
+    assert_eq!(encode_request(&request), Err(InspectionError::Invalid));
+}

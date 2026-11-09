@@ -324,7 +324,7 @@ pub mod op {
 /// How many services [`HostSlots`] holds.
 pub const SERVICES: u32 = 35;
 
-/// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
+/// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
 pub const fn may_pend(service: u32) -> bool {
     !matches!(

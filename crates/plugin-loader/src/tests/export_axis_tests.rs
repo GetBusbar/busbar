@@ -365,3 +365,23 @@ fn a_check_on_a_row_that_will_not_load_answers_why() {
         "{findings:?}"
     );
 }
+
+extern "C" fn pl_src_1_unopened_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+#[test]
+fn a_linked_row_of_another_kind_is_not_a_linked_export() {
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::auth_door_named_raw(
+            "busbar-auth-pl-src-1",
+            "pl-src-1-not-export",
+            pl_src_1_unopened_door,
+        )])
+        .expect("the auth row registers");
+    let rows = ExportRows::new(&registry, dispatcher());
+    assert!(
+        !rows.linked("pl-src-1-not-export"),
+        "a linked auth row must not answer as a linked export"
+    );
+}

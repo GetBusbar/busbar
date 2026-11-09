@@ -732,10 +732,6 @@ fn actual_file_streams_match_its_product_statement() {
     drop(plugin);
 }
 
-/// The loader compares ingested envelopes. Rendering the resulting exposition
-#[test]
-fn the_rendered_exposition_equivalence_is_owed_at_the_composition_root() {}
-
 #[test]
 fn a_sink_validates_its_settings_the_same_through_either_door() {
     let name = "s2-sink";

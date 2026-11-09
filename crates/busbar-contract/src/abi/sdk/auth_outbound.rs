@@ -616,10 +616,20 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     const DRIVE: Outcome = Outcome::Refused;
 
     fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        <T as VerifyPlugin>::validate(settings)?;
         <T as OutboundPlugin>::validate(settings)
     }
 
     fn validate_with_extensions(settings: &[u8], extensions: &[u8]) -> Result<(), Refusal> {
+        // An outbound settings check judges a binding's settings, not the plugin's own.
+        if crate::abi::mechanism::extensions::get(
+            extensions,
+            crate::abi::auth::EXT_OUTBOUND_SETTINGS_CHECK,
+        )
+        .is_none()
+        {
+            <T as VerifyPlugin>::validate(settings)?;
+        }
         validate_outbound::<T>(settings, extensions)
     }
 
@@ -637,8 +647,12 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
         secrets: &[&[u8]],
         generation: u64,
     ) -> Result<Refreshed, Refusal> {
-        OutboundPlugin::refresh(&self.0, settings, secrets, generation)?;
+        // The refusing step runs first: a refused refresh must leave the outbound half unchanged.
         let dropped = VerifyPlugin::reload(&self.0, settings, secrets)?;
+        if let Err(refusal) = OutboundPlugin::refresh(&self.0, settings, secrets, generation) {
+            OutboundPlugin::retire(&self.0, generation);
+            return Err(refusal);
+        }
         Ok(Refreshed {
             counted: <T as VerifyPlugin>::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -919,10 +933,13 @@ macro_rules! auth_outbound_door {
     ($plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            // SAFETY: the Statement points to the const data required by the door macro.
-            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
-                $statement, $crate::abi::auth::CAP_OUTBOUND,
-            ) },
+            statement: {
+                let statement = $statement;
+                // SAFETY: the Statement points to the const data required by the door macro.
+                unsafe { $crate::abi::sdk::auth_door::check_shape(
+                    statement, $crate::abi::auth::CAP_OUTBOUND,
+                ) }
+            },
             lifecycle: {
                 validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
@@ -977,10 +994,13 @@ macro_rules! auth_door {
     (verify_and_outbound: $plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            // SAFETY: the Statement points to the const data required by the door macro.
-            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
-                $statement, $crate::abi::auth::CAP_INBOUND | $crate::abi::auth::CAP_OUTBOUND,
-            ) },
+            statement: {
+                let statement = $statement;
+                // SAFETY: the Statement points to the const data required by the door macro.
+                unsafe { $crate::abi::sdk::auth_door::check_shape(
+                    statement, $crate::abi::auth::CAP_INBOUND | $crate::abi::auth::CAP_OUTBOUND,
+                ) }
+            },
             lifecycle: {
                 validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
                     $crate::abi::sdk::auth_outbound::Both<$plugin>>>,

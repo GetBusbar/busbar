@@ -250,3 +250,11 @@ fn routing_policy_status_default_is_none() {
     let out: Option<HookStatus> = block_on(p.status(std::time::Duration::from_millis(10)));
     assert_eq!(out, None);
 }
+
+/// A `restrict` with any non-string tag is malformed and fails closed, not narrowed.
+#[test]
+fn parse_restrict_refuses_a_non_string_tag() {
+    use busbar_contract::hook_wire::parse_restrict;
+    assert!(parse_restrict(&serde_json::json!({"tags_any": ["gpu", 7]})).is_none());
+    assert!(parse_restrict(&serde_json::json!({"tags_any": ["gpu", " b "]})).is_some());
+}

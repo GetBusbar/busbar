@@ -384,7 +384,10 @@ extern "C" fn judges(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
     unsafe {
         let i = input.cast::<DestJudgeIn>().read_unaligned();
         let dest = std::slice::from_raw_parts(i.dest.ptr, i.dest.len);
-        let verdict = if dest.starts_with(b"http://169.254.169.254") {
+        let verdict = if dest == b"probe:flags" {
+            // Echo the flags the host received, so a test can see what crossed.
+            u64::from(i.flags)
+        } else if dest.starts_with(b"http://169.254.169.254") {
             DEST_METADATA
         } else if i.flags & DEST_RESOLVE != 0 && !i.head.handle.ticket.is_none() {
             return answer(out, Outcome::Pending, 0, 0, 0);
@@ -411,6 +414,10 @@ extern "C" fn sights(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) 
         let hash = std::slice::from_raw_parts(i.catalogue_hash.ptr, i.catalogue_hash.len);
         if who == b"slow" {
             return answer(out, Outcome::Pending, 0, 0, 0);
+        }
+        if who == b"probe:outcome" {
+            // Echo the outcome received as a valid verdict (outcome + 1), so a test sees what crossed.
+            return answer(out, Outcome::Ready, u64::from(i.outcome) + 1, 0, 0);
         }
         answer(
             out,
@@ -2498,4 +2505,49 @@ fn transport_services(t: &HostSlots) -> super::Services<crate::plugin::markers::
 }
 fn auth_services(t: &HostSlots) -> super::Services<crate::plugin::markers::AuthKind> {
     typed_services(t)
+}
+
+/// The caller's flags reach the host; only DEST_RESOLVE is derived from `resolve`.
+#[test]
+fn dest_judge_as_passes_the_callers_flags_and_derives_only_resolve() {
+    use crate::abi::host::service::DEST_REFUSE_PRIVATE;
+    let t = HostSlots {
+        dest_judge: Some(judges),
+        ..table(None)
+    };
+    let s = services(&t);
+    assert_eq!(
+        verdict_of(s.dest_judge_as(handle(), "probe:flags", 0, DEST_REFUSE_PRIVATE, None)),
+        Poll::Ready(Ok(u64::from(DEST_REFUSE_PRIVATE)))
+    );
+    // A caller-set DEST_RESOLVE is not honoured when no room is lent.
+    assert_eq!(
+        verdict_of(s.dest_judge_as(
+            handle(),
+            "probe:flags",
+            0,
+            DEST_REFUSE_PRIVATE | DEST_RESOLVE,
+            None
+        )),
+        Poll::Ready(Ok(u64::from(DEST_REFUSE_PRIVATE)))
+    );
+}
+
+/// `trust_unreachable` reports UNREACHABLE, `trust_sight` REACHED.
+#[test]
+fn trust_unreachable_and_trust_sight_report_their_own_outcome() {
+    use crate::abi::host::service::{TRUST_REACHED, TRUST_UNREACHABLE};
+    let t = HostSlots {
+        trust_sight: Some(sights),
+        ..table(None)
+    };
+    let s = services(&t);
+    assert_eq!(
+        s.trust_unreachable(ticketed(0), "probe:outcome"),
+        Poll::Ready(Ok(u64::from(TRUST_UNREACHABLE) + 1))
+    );
+    assert_eq!(
+        s.trust_sight(ticketed(1), "probe:outcome", "h"),
+        Poll::Ready(Ok(u64::from(TRUST_REACHED) + 1))
+    );
 }

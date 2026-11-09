@@ -924,3 +924,13 @@ fn the_root_key_list_names_its_algorithm_per_key() {
         assert!(parse_release_keys(&bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn a_clock_before_the_epoch_reads_as_the_far_future_so_expiry_fails_closed() {
+    let before = std::time::UNIX_EPOCH - std::time::Duration::from_secs(1);
+    assert_eq!(clock_secs(before), u64::MAX);
+    assert_eq!(
+        clock_secs(std::time::UNIX_EPOCH + std::time::Duration::from_secs(5)),
+        5
+    );
+}

@@ -216,14 +216,16 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
             }
         };
         let mut take = cut(frame.cap() - frame_len - head_len);
-        if take == 0 && !bytes.is_empty() && frame_len == 0 {
-            send_head = false;
+        // The head fills an empty frame with no room left for its body: hand the head alone this
+        // round (its body follows next fill) rather than dropping it.
+        let head_alone = take == 0 && !bytes.is_empty() && frame_len == 0 && send_head;
+        if take == 0 && !bytes.is_empty() && frame_len == 0 && !send_head {
             take = cut(frame.cap());
             if take == 0 {
                 take = bytes.len().min(frame.cap());
             }
         }
-        if take == 0 && !bytes.is_empty() {
+        if take == 0 && !bytes.is_empty() && !head_alone {
             break;
         }
         if let Some(words) = piece.head.take() {
@@ -248,6 +250,9 @@ pub fn fill<B: AsRef<[u8]>, F: Owed<B>>(
                 head_slots.push(slots);
                 heads += 1;
             }
+        }
+        if head_alone {
+            break;
         }
         let whole = take == bytes.len();
         let mut flags = if piece.writable {

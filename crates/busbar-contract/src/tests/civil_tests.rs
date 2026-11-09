@@ -12,6 +12,11 @@ fn civil_from_days_maps_known_epochs() {
     assert_eq!(civil_from_days(18_321), (2020, 2, 29));
     assert_eq!(civil_from_days(18_322), (2020, 3, 1));
 
+    assert_eq!(civil_from_days(11_016), (2000, 2, 29));
+    assert_eq!(civil_from_days(11_017), (2000, 3, 1));
+    assert_eq!(civil_from_days(364), (1970, 12, 31));
+    assert_eq!(civil_from_days(365), (1971, 1, 1));
+
     assert_eq!(civil_from_days(47_540), (2100, 2, 28));
     assert_eq!(civil_from_days(47_541), (2100, 3, 1));
 }

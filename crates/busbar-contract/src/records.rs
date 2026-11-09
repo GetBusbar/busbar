@@ -629,9 +629,9 @@ pub struct MeteringDelta {
     pub tokens_input: i128,
     pub tokens_output: i128,
     pub tokens_cache_read: i128,
-    /// Renamed from `tokens_cache_creation`: the identical concept as `TierTokens::cache_write`
-    /// above, just named differently because this type was added later without matching its
-    /// sibling. Renamed to match while everything on this seam is still unreleased.
+    /// Renamed from `tokens_cache_creation`: the same concept as the `cache_write` unit
+    /// of the per-model token usage, named to match while everything on this seam is still
+    /// unreleased.
     pub tokens_cache_write: i128,
     /// The number of completed responses this delta accumulates. On the wire (not derivable by the
     /// store) because a delta produced by a write-behind flush can coalesce more than one response

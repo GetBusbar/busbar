@@ -1440,6 +1440,26 @@ fn configured<P: HookOpen>(p: *mut c_void, raw: &[u8], version: u64) -> (Outcome
 }
 
 #[test]
+fn codeaudit_p07_restrict_tag_holding_a_nul_is_refused_not_split() {
+    assert_eq!(
+        lower_decide_reply(Ok(json!({"restrict": {"tags_any": ["prod\0dev"]}}))),
+        Verdict::Failed(INVALID_RESTRICTION.into())
+    );
+}
+
+#[test]
+fn codeaudit_p07_malformed_settings_json_is_named_apart_from_a_non_object() {
+    let instance = opened_with::<OpenPickyConfigure>(&zeroed());
+    let (outcome, _, why) = configured::<OpenPickyConfigure>(instance, b"{\"a\":1,}", 2);
+    assert_eq!(outcome, Outcome::Failed);
+    assert_ne!(why, "settings: must be a JSON object");
+    assert!(why.starts_with("settings: not valid JSON"), "{why}");
+    let (_, _, why) = configured::<OpenPickyConfigure>(instance, b"[1]", 2);
+    assert_eq!(why, "settings: must be a JSON object");
+    closed::<OpenPickyConfigure>(instance);
+}
+
+#[test]
 fn configure_sdk_leases_the_atomic_checkpoint_and_preserves_the_pushed_ack_version() {
     struct Checkpoint;
     impl Hook for Checkpoint {

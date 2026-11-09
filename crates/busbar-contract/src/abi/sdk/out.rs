@@ -112,16 +112,48 @@ impl ReplyKey {
     }
 }
 
-/// Storage indexed by host slot, retaining its full ticket identity. A host cannot
-pub(crate) struct Replies<T>(Mutex<HashMap<ReplySlot, (ReplyKey, T)>>);
+type ReplyMap<T> = Mutex<HashMap<ReplySlot, (ReplyKey, T)>>;
 
-impl<T> Default for Replies<T> {
-    fn default() -> Self {
-        Self(Mutex::new(HashMap::new()))
+/// A table a thread that crossed unticketed must clear its entry from when it exits.
+trait Forget {
+    fn forget(&self, thread: std::thread::ThreadId);
+}
+
+impl<T> Forget for ReplyMap<T> {
+    fn forget(&self, thread: std::thread::ThreadId) {
+        let retired = lock(self).remove(&ReplySlot::Thread(thread));
+        drop(retired);
     }
 }
 
-impl<T> Replies<T> {
+/// The tables this thread holds an unticketed reply in; on the thread's exit each live one drops
+/// that reply, so a retired pool thread does not strand it until its instance drops.
+#[derive(Default)]
+struct Crossed(Vec<Weak<dyn Forget>>);
+
+impl Drop for Crossed {
+    fn drop(&mut self) {
+        let thread = std::thread::current().id();
+        for table in self.0.drain(..).filter_map(|t| t.upgrade()) {
+            table.forget(thread);
+        }
+    }
+}
+
+thread_local! {
+    static CROSSED: RefCell<Crossed> = RefCell::new(Crossed::default());
+}
+
+/// Storage indexed by host slot, retaining its full ticket identity. A host cannot
+pub(crate) struct Replies<T>(Arc<ReplyMap<T>>);
+
+impl<T> Default for Replies<T> {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(HashMap::new())))
+    }
+}
+
+impl<T: 'static> Replies<T> {
     pub(crate) fn take(&self, key: ReplyKey) -> Option<T> {
         let retired = lock(&self.0).remove(&key.slot());
         retired.map(|(_, value)| value)
@@ -130,6 +162,17 @@ impl<T> Replies<T> {
     pub(crate) fn insert(&self, key: ReplyKey, value: T) {
         let retired = lock(&self.0).insert(key.slot(), (key, value));
         drop(retired);
+        if key.thread.is_some() {
+            let table: Weak<dyn Forget> = Arc::downgrade(&self.0) as Weak<dyn Forget>;
+            // `try_with`: a reply kept while the thread is already exiting stays until its instance drops.
+            let _ = CROSSED.try_with(|crossed| {
+                let mut crossed = crossed.borrow_mut();
+                crossed.0.retain(|t| t.strong_count() > 0);
+                if !crossed.0.iter().any(|t| Weak::ptr_eq(t, &table)) {
+                    crossed.0.push(table);
+                }
+            });
+        }
     }
 
     #[cfg(test)]

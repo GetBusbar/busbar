@@ -1923,6 +1923,41 @@ fn the_pack_time_rendering_of_a_library_is_its_door_s() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_library_without_a_door_is_unloaded_on_the_worker_by_the_pack_time_probes() {
+    #[cfg(target_os = "macos")]
+    let libc = "/usr/lib/libSystem.B.dylib";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let libc = "libc.so.6";
+    let unloads = || crate::dispatch::load::UNLOADS.load(std::sync::atomic::Ordering::SeqCst);
+    let reaped = |before: u64| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while unloads() <= before && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        unloads() > before
+    };
+    let before = unloads();
+    assert_eq!(
+        crate::dispatch::rendering_of_library(std::path::Path::new(libc)).unwrap(),
+        None
+    );
+    assert!(
+        reaped(before),
+        "rendering_of_library did not reap the library"
+    );
+    let before = unloads();
+    assert_eq!(
+        crate::dispatch::load::door_addresses_of_library(std::path::Path::new(libc)).unwrap(),
+        None
+    );
+    assert!(
+        reaped(before),
+        "door_addresses_of_library did not reap the library"
+    );
+}
+
 fn panic_child(origin: &str) {
     let p = if origin == "dropped" {
         dropped(quiet())
@@ -2531,34 +2566,45 @@ fn red_a_hanging_unload_holds_back_no_other_unload() {
 
 #[test]
 fn red_a_hung_unload_is_warned_of_and_counted_live() {
-    use crate::dispatch::load::{reap_within, HUNG_WARNED};
-    use std::sync::atomic::Ordering::SeqCst;
-    let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
-    let warned0 = HUNG_WARNED.load(SeqCst);
-    let (release, hold) = std::sync::mpsc::channel::<()>();
-    let (entered, inside) = std::sync::mpsc::channel::<()>();
-    let (returned, back) = std::sync::mpsc::channel::<()>();
-    reap_within(
-        Box::new(move || {
-            let _ = entered.send(());
-            let _ = hold.recv();
-            let _ = returned.send(());
-        }),
-        Duration::from_millis(1),
+    // Its own process: LIVE_REAPERS is process-global and sibling tests park hung reapers.
+    assert_child_passes(
+        "red_a_hung_unload_is_warned_of_and_counted_live",
+        "the hung unload was not counted live",
+        || {
+            use crate::dispatch::load::{reap_within, HUNG_WARNED};
+            use std::sync::atomic::Ordering::SeqCst;
+            let d = Dispatcher::new(config(), busbar_contract::services::test_caller_binding());
+            let warned0 = HUNG_WARNED.load(SeqCst);
+            let (release, hold) = std::sync::mpsc::channel::<()>();
+            let (entered, inside) = std::sync::mpsc::channel::<()>();
+            let (returned, back) = std::sync::mpsc::channel::<()>();
+            reap_within(
+                Box::new(move || {
+                    let _ = entered.send(());
+                    let _ = hold.recv();
+                    let _ = returned.send(());
+                }),
+                Duration::from_millis(1),
+            );
+            inside
+                .recv_timeout(WAIT)
+                .expect("the unload runs, and hangs");
+            assert_eq!(
+                d.stats().live_reapers,
+                1,
+                "a hung unload's reaper is counted live"
+            );
+            until("the watch warned of the hung unload", || {
+                HUNG_WARNED.load(SeqCst) > warned0
+            });
+            release.send(()).unwrap();
+            back.recv_timeout(WAIT)
+                .expect("the released unload returns");
+            until("the released reaper is no longer counted live", || {
+                d.stats().live_reapers == 0
+            });
+        },
     );
-    inside
-        .recv_timeout(WAIT)
-        .expect("the unload runs, and hangs");
-    assert!(
-        d.stats().live_reapers >= 1,
-        "a hung unload's reaper is counted live"
-    );
-    until("the watch warned of the hung unload", || {
-        HUNG_WARNED.load(SeqCst) > warned0
-    });
-    release.send(()).unwrap();
-    back.recv_timeout(WAIT)
-        .expect("the released unload returns");
 }
 
 #[test]
@@ -4864,6 +4910,31 @@ fn a_path_both_secret_and_reference_capable_is_refused_at_load() {
     assert!(
         matches!(with(br#"{"url": true}"#), Some(LoadError::BadStatement(_))),
         "a malformed list is refused"
+    );
+}
+
+#[test]
+fn a_garbled_extensions_blob_is_refused_at_load() {
+    use busbar_contract::abi::mechanism::extensions::{
+        encode, statement_blob, EXT_REFERENCE_FIELDS,
+    };
+    // SAFETY: the real door is `'static`.
+    let real: Door = unsafe { *plug::busbar_plugin_door() };
+    let st = unsafe { *real.statement() };
+    let mut blob = vec![0xff, 0xff, 0x00];
+    blob.extend(encode(&[(EXT_REFERENCE_FIELDS, br#"["url"]"# as &[u8])]));
+    let ext: &'static [u8] = Box::leak(blob.into_boxed_slice());
+    let stated: &'static Statement = Box::leak(Box::new(Statement {
+        extensions: statement_blob(ext),
+        ..st
+    }));
+    let mut d = real.parts();
+    d.statement = stated;
+    // SAFETY: a copy of the real door with its Statement replaced by a `'static` one.
+    let refused = validate_door::<TestKind>(Box::leak(Box::new(unsafe { Door::__from_parts(d) })));
+    assert!(
+        matches!(refused.err(), Some(LoadError::BadStatement(_))),
+        "an extensions blob that is not whole entries is refused"
     );
 }
 

@@ -46,7 +46,8 @@ pub const MAX_UNITS: u64 = 64;
 pub const MAX_FIELDS: u64 = 1024;
 /// The most record writes one answer may carry.
 pub const MAX_RECORDS: u64 = 1024;
-/// The most claims or admin routes one snapshot may carry.
+/// The most claims, admin routes or listed names one snapshot may carry, and the most admin routes
+/// a plane tail may state.
 pub const MAX_ROUTES: u64 = 1024;
 /// The most ready sessions one `drive` answer may name.
 pub const MAX_SESSIONS: u64 = 1024;

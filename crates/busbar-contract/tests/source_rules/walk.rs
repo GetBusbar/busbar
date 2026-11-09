@@ -35,7 +35,7 @@ pub fn is_test_path(rel: &str) -> bool {
         || rel.contains("/examples/")
 }
 
-/// `#[cfg(test)]` (alone, or inside `all(..)` without `not`).
+/// `#[cfg(test)]` (alone, or as its own top-level ident directly inside `all(..)`).
 pub fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         if !a.path().is_ident("cfg") {
@@ -44,9 +44,29 @@ pub fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
         let syn::Meta::List(list) = &a.meta else {
             return false;
         };
-        let s = list.tokens.to_string();
-        s == "test" || (s.starts_with("all") && s.contains("test") && !s.contains("not"))
+        let mut toks = list.tokens.clone().into_iter();
+        match (toks.next(), toks.next(), toks.next()) {
+            (Some(TokenTree::Ident(i)), None, _) => i == "test",
+            (Some(TokenTree::Ident(all)), Some(TokenTree::Group(g)), None) if all == "all" => g
+                .stream()
+                .into_iter()
+                .any(|t| matches!(t, TokenTree::Ident(i) if i == "test")),
+            _ => false,
+        }
     })
+}
+
+#[test]
+fn is_cfg_test_reads_the_test_ident_not_a_substring() {
+    let cfg = |src: &str| {
+        let item: syn::ItemFn = syn::parse_str(&format!("#[cfg({src})] fn f() {{}}")).unwrap();
+        is_cfg_test(&item.attrs)
+    };
+    assert!(cfg("test"));
+    assert!(cfg("all(test, unix)"));
+    assert!(!cfg("all(unix, feature = \"attestation\")"));
+    assert!(!cfg("all(unix, not(test))"));
+    assert!(!cfg("not(test)"));
 }
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

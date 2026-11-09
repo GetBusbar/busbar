@@ -1,4 +1,5 @@
 //! The plane kind: what bytes mean. A plane names a transport only as a claim, never holds a
+//! connection.
 
 use crate::bounded::{Facts, Ir, ScratchBytes};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
@@ -458,9 +459,11 @@ pub struct MetricFamily {
 pub const COUNTER: &str = "counter";
 
 /// The reserved first-party metric namespace. A plane's family in it is admitted only when the
+/// host's metric validator allows it (a first-party family a plane adds samples to).
 pub const RESERVED_METRIC_PREFIX: &str = "busbar_";
 
 /// The most label keys one family may declare — the cap the host's metric validator holds every
+/// plane's families to.
 pub const MAX_FAMILY_LABELS: usize = 8;
 
 /// A series name or label key a scrape can carry: `^[a-z][a-z0-9_]{0,63}$`.

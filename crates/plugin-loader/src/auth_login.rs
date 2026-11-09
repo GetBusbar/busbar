@@ -32,6 +32,14 @@ fn overloaded(shared: &Shared) -> bool {
     p.max_inflight() != 0 && p.inflight() >= p.max_inflight()
 }
 
+/// A sign-in the host could not start (the plugin is at `max_inflight`, or no ticket could be
+/// minted): not a declined credential.
+fn unavailable() -> LoginOutcome {
+    LoginOutcome::Outage {
+        retry_after_secs: None,
+    }
+}
+
 struct BeginHeld {
     redirect_uri: String,
     state: String,
@@ -136,10 +144,10 @@ pub fn begun(out: &BeginLoginOut) -> Option<LoginOutcome> {
 
 pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginCall> {
     if overloaded(shared) {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
+        return Box::new(LoginSettled(Some(unavailable())));
     }
     let Some(mut call) = shared.call() else {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
+        return Box::new(LoginSettled(Some(unavailable())));
     };
     let held = BeginHeld::new(request);
     let lent: crate::dispatch::Lent = held.clone();
@@ -338,10 +346,10 @@ fn completed(
 
 pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn LoginCall> {
     if overloaded(shared) {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
+        return Box::new(LoginSettled(Some(unavailable())));
     }
     let Some(mut call) = shared.call() else {
-        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
+        return Box::new(LoginSettled(Some(unavailable())));
     };
 
     let seal = shared.dispatcher.seal();

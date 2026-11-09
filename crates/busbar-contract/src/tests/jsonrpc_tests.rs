@@ -622,3 +622,12 @@ fn a_notification_is_the_bytes_the_planes_json_sites_write() {
         br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()
     );
 }
+
+#[test]
+fn bc2_non_object_error_keeps_upstream_text() {
+    let body = serde_json::json!({"jsonrpc":"2.0","id":1,"error":"boom"});
+    match read_response(&body, &serde_json::json!(1)).unwrap() {
+        Reply::Error { message, .. } => assert!(message.contains("boom"), "got {message:?}"),
+        other => panic!("expected error, got {other:?}"),
+    }
+}

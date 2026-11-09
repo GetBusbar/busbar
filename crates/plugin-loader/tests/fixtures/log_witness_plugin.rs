@@ -24,6 +24,10 @@ pub const FLOOD: &[u8] = b"flood";
 
 pub const FLOOD_RECORDS: usize = 300;
 
+pub const FLOOD_BYTES: &[u8] = b"flood_bytes";
+
+pub const FLOOD_BYTES_RECORDS: usize = 24;
+
 pub const OUTSIDE: &[u8] = b"outside";
 
 pub const NEST: &[u8] = b"nest";
@@ -206,6 +210,10 @@ pub mod a {
                 ),
                 FLOOD => {
                     (0..FLOOD_RECORDS).for_each(|i| tracing::info!(target: TARGET, i, "flood"))
+                }
+                FLOOD_BYTES => {
+                    let text = "x".repeat(20_000);
+                    (0..FLOOD_BYTES_RECORDS).for_each(|_| tracing::info!(target: TARGET, "{text}"))
                 }
                 OUTSIDE => log_outside(),
                 NEST => {

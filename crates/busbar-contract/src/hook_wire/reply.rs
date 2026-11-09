@@ -246,11 +246,10 @@ pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     if messages.is_empty() {
         return None;
     }
-    let tools = value
-        .get("tools")
-        .and_then(|t| t.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let tools = match value.get("tools") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(t) => t.as_array()?.clone(),
+    };
     Some(RewriteReply { messages, tools })
 }
 
@@ -277,5 +276,17 @@ pub fn sanitize_reject_message(raw: &str) -> String {
         REJECT_MESSAGE_DEFAULT.to_string()
     } else {
         message
+    }
+}
+
+#[cfg(test)]
+mod bc2_rewrite_tests {
+    use super::*;
+
+    #[test]
+    fn non_array_tools_is_refused() {
+        let v = serde_json::json!({"messages":[{}],"tools":"x"});
+        assert!(parse_rewrite(&v).is_none());
+        assert!(parse_rewrite(&serde_json::json!({"messages":[{}],"tools":null})).is_some());
     }
 }

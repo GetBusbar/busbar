@@ -11,6 +11,7 @@ use std::task::{Context, Poll, Waker};
 
 use busbar_contract::auth_calls::FieldsRequest;
 use busbar_contract::services::Stored;
+use busbar_contract::Secret;
 use zeroize::Zeroizing;
 
 thread_local! {
@@ -141,12 +142,20 @@ fn outbound_auth_inputs_wipe_on_success_failure_cancel_unwind_and_last_owner_dro
         "header-name",
         "header-value",
         "extensions",
+        "caller-credential",
     ] {
         for exit in [
             "return", "failure", "cancel", "unwind", "shared", "transfer",
         ] {
             let mut request = fields_request();
-            watch(input_bytes(&request, field));
+            if field == "caller-credential" {
+                // The sealed credential's bytes are watched before they move into the `Secret`.
+                let credential = b"private-caller-credential".to_vec();
+                watch(&credential);
+                request.caller_credential = Some(Secret::new(credential));
+            } else {
+                watch(input_bytes(&request, field));
+            }
             match exit {
                 "cancel" => cancel(request),
                 "unwind" => {

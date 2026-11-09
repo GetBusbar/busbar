@@ -18,19 +18,6 @@ pub struct SigningContext<'a> {
     pub upstream_creds: crate::config::UpstreamCreds,
 }
 
-/// WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
-/// verification itself stays in the auth layer, which has the governance key lookup and the shared
-/// signing helpers. This replaces a reader-vtable predicate that was the same
-/// fact answered through a vtable — and answering it through a vtable meant allocating a reader to
-/// ask a `&'static` question.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum IngressAuth {
-    /// A bearer token / API key in a header (every protocol but the request-signing one).
-    Bearer,
-    /// A SigV4 request signature (the request-signing protocol's ingress shape).
-    SigV4,
-}
-
 /// A protocol's declared egress credential-header builder: the resolved per-request credential
 pub type EgressAuthHeaders = fn(&str, &SigningContext) -> Vec<(String, Vec<u8>)>;
 

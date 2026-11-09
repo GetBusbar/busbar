@@ -115,7 +115,7 @@ pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
     let mut start = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
-        match terminator_len(bytes, i) {
+        match terminator_len(bytes, i).or((bytes[i] == b'\r').then_some(1)) {
             Some(len) => {
                 spans.push((start, i));
                 i += len;

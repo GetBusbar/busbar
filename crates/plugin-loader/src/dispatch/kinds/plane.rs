@@ -147,7 +147,7 @@ pub struct ServedFacts {
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
     /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
     /// [`Self::dialects`] (`0` for a dialect with no line): whether a provider may name it
-    ///.
+    /// as its dialect.
     pub dialect_flags: Vec<u32>,
     /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
     /// the plane and one registration by).
@@ -665,7 +665,7 @@ pub fn linked_probe(
     ));
     let instance: Arc<str> = Arc::from(instance);
     Arc::new(move || {
-        let row = crate::dispatch::LinkedRow::of(door).map_err(|e| format!("{e:?}"))?;
+        let row = crate::dispatch::LinkedRow::of(door).map_err(|e| e.to_string())?;
         crate::dispatch::load_linked::<Plane>(
             &row,
             crate::dispatch::Bind {
@@ -676,7 +676,7 @@ pub fn linked_probe(
                 conns: crate::dispatch::ConnTable::Probe,
             },
         )
-        .map_err(|e| format!("{e:?}"))
+        .map_err(|e| e.to_string())
     })
 }
 
@@ -687,8 +687,8 @@ pub fn linked_cli_help(
         crate::dispatch::load::enter_door(crate::dispatch::load::raw(door)),
         Some(KindCode::Plane),
     )
-    .map_err(|e| format!("{e:?}"))?;
-    let st = crate::dispatch::load::statement(&door).map_err(|e| format!("{e:?}"))?;
+    .map_err(|e| e.to_string())?;
+    let st = crate::dispatch::load::statement(&door).map_err(|e| e.to_string())?;
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
     let tail: PlaneTail =
@@ -1065,10 +1065,10 @@ pub fn refresh_door_on(
     let done = futures::executor::block_on(&mut call);
     let _lease = lifecycle::AnswerLease::new(plugin, done.lease);
     if done.outcome != Outcome::Ready {
-        return Err(format!(
-            "plane `{}` did not refresh: {:?}",
+        return Err(refresh_failure(
             plugin.name(),
-            done.outcome
+            done.outcome,
+            done.error.as_deref(),
         ));
     }
     // Copy before dropping the lifecycle ticket/answer lease. The caller serializes config
@@ -1078,6 +1078,18 @@ pub fn refresh_door_on(
         done.frame
             .and_then(|frame| copy_snapshot(frame.out.snapshot, plugin.dialects())),
     )
+}
+
+/// A refresh that did not come back READY, with the plugin's own error text when it gave one.
+pub(crate) fn refresh_failure(name: &str, outcome: Outcome, error: Option<&[u8]>) -> String {
+    match error.filter(|e| !e.is_empty()) {
+        Some(e) => format!(
+            "plane `{name}` did not refresh: {:?}: {}",
+            outcome,
+            String::from_utf8_lossy(e)
+        ),
+        None => format!("plane `{name}` did not refresh: {outcome:?}"),
+    }
 }
 
 fn refreshed(
@@ -1121,10 +1133,10 @@ fn refreshed(
     );
     let (called, snapshot) = plugin.refresh(&mut frame);
     if called.outcome != Outcome::Ready {
-        return Err(format!(
-            "plane `{}` did not refresh: {:?}",
+        return Err(refresh_failure(
             plugin.name(),
-            called.outcome
+            called.outcome,
+            called.error.as_deref(),
         ));
     }
     Ok(snapshot)
@@ -1166,7 +1178,7 @@ fn facing(
         snapshot
     } else {
         let next = *current + 1;
-        let snapshot = refreshed(plugin, settings, &[], next)?;
+        let snapshot = refreshed(plugin, settings, owned, next)?;
         retire_door(plugin, *current);
         *current = next;
         snapshot
@@ -1559,6 +1571,8 @@ impl CancelFrame for PlaneCancel {
             (self.frame.out.records_written as usize).min(self.records.len()),
             &self.arena[..arena],
         )
+        // A malformed span refuses the whole answer: drop the writes rather than invent empty ones.
+        .unwrap_or_default()
     }
 }
 

@@ -470,7 +470,9 @@ use serde_json::{value::RawValue, Value};
 /// their last value. This is for public JSON; decoded strings are ordinary owned strings.
 pub fn parse_value(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     if crate::spans::exceeds_max_depth(bytes, MAX_JSON_DEPTH) {
-        return serde_json::from_slice::<ExactValue>(b"").map(|value| value.0);
+        return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+            "JSON nesting exceeds {MAX_JSON_DEPTH}"
+        )));
     }
     serde_json::from_slice::<ExactValue>(bytes).map(|value| value.0)
 }
@@ -534,5 +536,18 @@ mod exact_value_tests {
         let body = |depth| format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
         assert!(parse_value(body(MAX_JSON_DEPTH - 1).as_bytes()).is_ok());
         assert!(parse_value(body(MAX_JSON_DEPTH + 1).as_bytes()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod bc2_depth_error_tests {
+    use super::*;
+
+    #[test]
+    fn over_depth_error_is_not_eof_and_names_depth() {
+        let doc = "[".repeat(MAX_JSON_DEPTH + 1) + &"]".repeat(MAX_JSON_DEPTH + 1);
+        let err = parse_value(doc.as_bytes()).unwrap_err();
+        assert!(!err.is_eof(), "got {err}");
+        assert!(err.to_string().contains("nesting"), "got {err}");
     }
 }

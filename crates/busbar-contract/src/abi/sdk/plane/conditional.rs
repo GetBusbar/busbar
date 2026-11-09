@@ -407,13 +407,14 @@ pub fn required_kinds(bytes: &[u8]) -> Result<Vec<u32>, &'static str> {
     let n = r.u32()?;
     let mut kinds = Vec::new();
     for _ in 0..n {
-        let k = r.u32()?;
-        if kinds.contains(&k) {
-            return Err(INVALID);
-        }
-        kinds.push(k);
+        kinds.push(r.u32()?);
     }
     r.end()?;
+    let mut sorted = kinds.clone();
+    sorted.sort_unstable();
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err(INVALID);
+    }
     Ok(kinds)
 }
 /// Encode the Statement's protocol support and guarded kind set together.
@@ -508,7 +509,7 @@ pub(crate) fn encode_request_held(request: &Request) -> Result<Zeroizing<Vec<u8>
             }
         }
     }
-    if out.len() > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
+    if extensions::entry_len(INTENT, &out) > crate::abi::mechanism::check::HARD_MAX_BYTES as usize {
         return Err(INVALID);
     }
 

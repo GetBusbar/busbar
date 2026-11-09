@@ -198,20 +198,36 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
 fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
-    let logs = log_config();
-    let entries = registry
-        .open_transport_entries(&bind(), &uses(&["tcp"]), &logs)
-        .expect("the door opens");
-    assert_eq!(entries.doors.len(), 1);
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-transport-plugin-log-own-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a scratch directory");
+    let logs = crate::dispatch::PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves");
     let path = logs.path_for(
         &manifest().name,
         busbar_contract::abi::mechanism::KindCode::Transport,
     );
+    assert!(!path.exists(), "the log file must not pre-exist");
+    let entries = registry
+        .open_transport_entries(&bind(), &uses(&["tcp"]), &logs)
+        .expect("the door opens");
+    assert_eq!(entries.doors.len(), 1);
     assert!(
         path.is_file(),
         "the transport instance's plugin log file {} was not opened at its bind",
         path.display()
     );
+    drop(entries);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[path = "transport_receive_tests.rs"]

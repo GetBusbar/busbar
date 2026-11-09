@@ -82,7 +82,10 @@ where
 mod plugin {
     crate::plugin_door! {
         ops: super::Ops,
-        statement: super::statement("probe-transport", "0.0.1", 4),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::transport::TransportTail::EMPTY).cast(),
+            ..super::statement("probe-transport", "0.0.1", 4)
+        },
         lifecycle: life(super::Probe),
         kind_ops: {
             listen: super::RefusedTransport<{ crate::abi::transport::slot::LISTEN }>,

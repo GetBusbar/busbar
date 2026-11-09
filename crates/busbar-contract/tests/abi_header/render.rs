@@ -291,12 +291,24 @@ fn doc_line(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// Whether `word` appears as an ident that is not under a `not(..)`.
 fn has_ident(ts: TokenStream, word: &str) -> bool {
-    ts.into_iter().any(|tt| match tt {
-        TokenTree::Ident(i) => i == word,
-        TokenTree::Group(g) => has_ident(g.stream(), word),
-        _ => false,
-    })
+    let mut prev_not = false;
+    for tt in ts {
+        match tt {
+            TokenTree::Ident(i) => {
+                if i == word {
+                    return true;
+                }
+                prev_not = i == "not";
+                continue;
+            }
+            TokenTree::Group(g) if !prev_not && has_ident(g.stream(), word) => return true,
+            _ => {}
+        }
+        prev_not = false;
+    }
+    false
 }
 
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
@@ -737,7 +749,26 @@ impl ConstTable<'_> {
             },
             syn::Expr::Paren(p) => self.eval(&p.expr, kind, scope, depth + 1),
             syn::Expr::Group(g) => self.eval(&g.expr, kind, scope, depth + 1),
-            syn::Expr::Cast(c) => self.eval(&c.expr, kind, scope, depth + 1),
+            syn::Expr::Cast(c) => {
+                let v = self.eval(&c.expr, kind, scope, depth + 1)?;
+                let bits = match &*c.ty {
+                    syn::Type::Path(p) => {
+                        match p.path.get_ident().map(|i| i.to_string()).as_deref() {
+                            Some("u8" | "i8") => 8,
+                            Some("u16" | "i16") => 16,
+                            Some("u32" | "i32") => 32,
+                            Some("u64" | "i64" | "usize" | "isize") => 64,
+                            _ => 128,
+                        }
+                    }
+                    _ => 128,
+                };
+                Ok(if bits == 128 {
+                    v
+                } else {
+                    v & ((1u128 << bits) - 1)
+                })
+            }
             syn::Expr::Path(p) if p.qself.is_none() => {
                 let segs: Vec<String> = p
                     .path

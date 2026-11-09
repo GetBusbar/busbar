@@ -622,6 +622,9 @@ const _: () = assert!(one_bit_each(&[
     PIECE_HAS_STATUS,
     PIECE_FIELDS,
     PIECE_CATALOGUE_MOVED,
+    PIECE_REFUSED,
+    PIECE_CUT,
+    PIECE_FINAL,
 ]));
 const _: () = assert!(one_bit_each(&[
     EMIT_TO_FAR_END,
@@ -1613,7 +1616,8 @@ pub const MAX_METRIC_LANES: usize = 16;
 pub const EXT_OWNED: &str = "owned";
 
 /// One path the built plane answers on. One route — a verb, a target and whether the target is
-/// matched exactly or as a prefix — is claimed at most once in a snapshot.
+/// matched exactly or as a prefix — should be claimed once; a duplicate within one snapshot is not
+/// refused, and the registry's precedence decides between them.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Claim {
@@ -1623,8 +1627,9 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
-    /// refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_CATALOG`] |
+    /// [`CLAIM_SIGNED_INGRESS`] | [`CLAIM_RAW_AFFIX`] | [`CLAIM_TICKET`] | [`CLAIM_ENTRY`]; any other
+    /// bit refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
@@ -1678,7 +1683,9 @@ pub struct PlaneSnapshot {
     pub claims: *const Claim,
     /// How many.
     pub claims_len: usize,
-    /// Its admin routes.
+    /// Its admin routes. Each must match, exactly (verb, target, flags, audit verb), a route the
+    /// Statement tail's `admin_routes` states, and a snapshot with any route needs the plane to
+    /// export `serve`; the loader refuses the snapshot otherwise.
     pub admin_routes: *const AdminRoute,
     /// How many.
     pub admin_routes_len: usize,

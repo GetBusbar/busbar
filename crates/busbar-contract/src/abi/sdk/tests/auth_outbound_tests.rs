@@ -21,7 +21,7 @@ use crate::abi::mechanism::call::{
 };
 use crate::abi::mechanism::call::{Diag, SEVERITY_INFO, SEVERITY_WARN};
 use crate::abi::mechanism::door::{Door, DoorFn};
-use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, RefreshIn};
 use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::sdk::auth_door::{with_tail, Answer, Verdict, VerifiedIdentity, VerifyView};
@@ -731,7 +731,23 @@ fn verify_on_an_outbound_only_door_is_refused() {
     let mut out: IdentifyOut = unsafe { std::mem::zeroed() };
     out.head = out_head(size_of::<IdentifyOut>());
     assert_eq!(cross(t.verify, inst, &input, &mut out), Outcome::Refused);
-    assert!(t.begin_login.is_some() && t.complete_login.is_some());
+    {
+        use crate::abi::auth::{BeginLoginIn, BeginLoginOut, CompleteLoginIn};
+        // SAFETY: plain C data; all-zero is valid.
+        let mut b: BeginLoginIn = unsafe { std::mem::zeroed() };
+        b.head = head::<BeginLoginIn>(slot::BEGIN_LOGIN);
+        // SAFETY: as above.
+        let mut bo: BeginLoginOut = unsafe { std::mem::zeroed() };
+        bo.head = out_head(size_of::<BeginLoginOut>());
+        assert_eq!(cross(t.begin_login, inst, &b, &mut bo), Outcome::Refused);
+        // SAFETY: as above.
+        let mut c: CompleteLoginIn = unsafe { std::mem::zeroed() };
+        c.head = head::<CompleteLoginIn>(slot::COMPLETE_LOGIN);
+        // SAFETY: as above.
+        let mut co: IdentifyOut = unsafe { std::mem::zeroed() };
+        co.head = out_head(size_of::<IdentifyOut>());
+        assert_eq!(cross(t.complete_login, inst, &c, &mut co), Outcome::Refused);
+    }
 
     // SAFETY: the door's `'static` Statement and tail.
     let st = unsafe { &*plugin::door().statement };
@@ -931,7 +947,6 @@ mod both {
 #[test]
 fn combined_door_leases_instance_carriers_on_open_and_refresh() {
     use crate::abi::mechanism::extensions;
-    use crate::abi::mechanism::lifecycle::RefreshIn;
     let t = ops_of(both::door);
     let opened = open_answer(t);
 
@@ -946,6 +961,7 @@ fn combined_door_leases_instance_carriers_on_open_and_refresh() {
             .to_vec()
     };
     assert_eq!(selected(&opened.head), br#"["x-sig"]"#);
+    assert_eq!(selected(&other.head), br#"["x-sig"]"#);
     release_reply(t, opened.instance, &opened.head);
     release_reply(t, other.instance, &other.head);
     let refresh = RefreshIn {
@@ -1437,3 +1453,100 @@ fn red_every_outbound_refusal_says_why() {
 type SdkHost = crate::abi::sdk::conn::Host<FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::AuthKind;
+
+/// A combined plugin whose verifier half refuses `{"bad":true}` (validate and reload) and whose
+/// outbound half records the generation it adopted.
+struct Gated(AtomicU64);
+
+impl crate::abi::sdk::auth_door::SyncVerifyPlugin for Gated {
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        if settings == BAD {
+            return Err(Refusal::refused("verifier: bad"));
+        }
+        Ok(())
+    }
+    fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
+        Ok(Gated(AtomicU64::new(1)))
+    }
+    fn verify(&self, _: &VerifyView<'_>) -> Answer {
+        Verdict::Pass.into()
+    }
+    fn reload(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+        <Self as crate::abi::sdk::auth_door::VerifyPlugin>::validate(settings).map(|()| 0)
+    }
+}
+
+impl OutboundPlugin for Gated {
+    fn open(_: &[u8], _: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        Ok(Gated(AtomicU64::new(generation)))
+    }
+    fn open_outbound(
+        &self,
+        _: &str,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
+    ) -> Result<u64, OpenRefusal> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+    fn fields(
+        &self,
+        _: &FieldsView<'_>,
+        _: &mut FieldsWriter<'_>,
+        _: &Op<'_>,
+    ) -> Poll<FieldsAnswer> {
+        Poll::Ready(FieldsAnswer::Ready)
+    }
+    fn outbound_ready(&self, _: u64) -> bool {
+        true
+    }
+    fn refresh(&self, _: &[u8], _: &[&[u8]], generation: u64) -> Result<(), Refusal> {
+        self.0.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+mod gated {
+    use super::*;
+    crate::auth_door!(verify_and_outbound: Gated, with_tail(statement("gated", "1.0.0", 8), BOTH));
+}
+
+#[test]
+fn a_combined_door_asks_the_verifier_half_and_a_refused_refresh_changes_nothing() {
+    let t = ops_of(gated::door);
+
+    let mut buf = vec![0_u8; 64];
+    let input = crate::abi::mechanism::lifecycle::ValidateIn {
+        head: head::<crate::abi::mechanism::lifecycle::ValidateIn>(life::VALIDATE),
+        settings: blob(BAD, BLOB_JSON, 0),
+        err_buf: buf.as_mut_ptr(),
+        err_cap: buf.len(),
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.validate, ptr::null_mut(), &input, &mut out),
+        Outcome::Refused,
+        "the verifier half's validate is consulted"
+    );
+    assert_eq!(error_text(&out), "verifier: bad");
+
+    let inst = opened(t);
+    let refresh = RefreshIn {
+        head: head::<RefreshIn>(life::REFRESH),
+        generation: 5,
+        settings: blob(BAD, BLOB_JSON, 0),
+        secrets: ptr::null(),
+        secrets_len: 0,
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.refresh, inst, &refresh, &mut out),
+        Outcome::Refused
+    );
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        1,
+        "a refused refresh must not adopt the new generation"
+    );
+}

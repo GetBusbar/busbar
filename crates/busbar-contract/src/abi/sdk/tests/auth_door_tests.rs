@@ -625,15 +625,55 @@ fn a_bad_setting_fails_open_with_the_plugins_text_and_no_instance() {
 #[test]
 fn the_ops_it_does_not_serve_are_refused_and_the_tail_states_inbound_only() {
     let t = ops();
-    for op in [
-        t.begin_login,
-        t.complete_login,
-        t.open_outbound,
-        t.outbound_ready,
-        t.fields,
-    ] {
-        assert!(op.is_some());
+    let (_, opened) = open(b"\"ok\"");
+    {
+        use crate::abi::auth::{
+            BeginLoginIn, BeginLoginOut, CompleteLoginIn, OpenOutboundIn, OpenOutboundOut,
+            OutboundReadyIn, OutboundReadyOut,
+        };
+        fn refused<I, O>(op: Option<Op>, inst: *mut std::ffi::c_void, slot: u32, name: &str) {
+            // SAFETY: plain C data; all-zero is valid.
+            let mut input: I = unsafe { std::mem::zeroed() };
+            // SAFETY: every auth input frame starts with its `InHead`.
+            unsafe { *(&mut input as *mut I).cast::<InHead>() = head::<I>(slot) };
+            // SAFETY: as above.
+            let mut out: O = unsafe { std::mem::zeroed() };
+            // SAFETY: every auth output frame starts with its `OutHead`.
+            unsafe { *(&mut out as *mut O).cast::<OutHead>() = out_head(size_of::<O>()) };
+            assert_eq!(
+                cross(op, inst, &input, &mut out),
+                Outcome::Refused,
+                "{name}"
+            );
+            // SAFETY: as above.
+            let h = unsafe { &*(&out as *const O).cast::<OutHead>() };
+            assert!(
+                !h.error.ptr.is_null() && h.error.len > 0,
+                "{name} refused saying nothing"
+            );
+        }
+        let i = opened.instance;
+        refused::<BeginLoginIn, BeginLoginOut>(t.begin_login, i, slot::BEGIN_LOGIN, "begin_login");
+        refused::<CompleteLoginIn, IdentifyOut>(
+            t.complete_login,
+            i,
+            slot::COMPLETE_LOGIN,
+            "complete_login",
+        );
+        refused::<OpenOutboundIn, OpenOutboundOut>(
+            t.open_outbound,
+            i,
+            slot::OPEN_OUTBOUND,
+            "open_outbound",
+        );
+        refused::<OutboundReadyIn, OutboundReadyOut>(
+            t.outbound_ready,
+            i,
+            slot::OUTBOUND_READY,
+            "outbound_ready",
+        );
     }
+    assert!(t.fields.is_some());
     // SAFETY: the door's `'static` Statement and tail.
     let st = unsafe { &*plugin::door().statement };
     // SAFETY: as above.

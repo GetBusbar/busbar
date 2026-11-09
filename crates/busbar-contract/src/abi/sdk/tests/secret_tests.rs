@@ -111,6 +111,15 @@ fn a_references_settings_are_an_object() {
     }
 }
 
+#[test]
+fn malformed_settings_json_for_a_no_settings_source_names_the_parse_position() {
+    let e = takes_no_settings(b"{,}", "env", NAMES).unwrap_err();
+    assert!(
+        e.contains("line 1 column 2"),
+        "the serde position must be reported: {e}"
+    );
+}
+
 /// A source that takes no settings opens on empty bytes or `{}`, and refuses a setting naming it,
 #[test]
 fn a_source_that_takes_no_settings_refuses_one_naming_it() {

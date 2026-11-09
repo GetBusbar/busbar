@@ -128,11 +128,21 @@ fn compress(state: &mut [u32; 8], block: &[u8; BLOCK]) {
 /// SHA-256 of `prefix` (one whole block, or none) followed by `data`. The chaining state and the
 pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizing<[u8; 32]> {
     let mut state = Zeroizing::new(SHA256_IV);
-    let mut total = data.len() as u64;
+    let mut consumed = 0;
     if let Some(p) = prefix {
         compress(&mut state, p);
-        total += BLOCK as u64;
+        consumed = BLOCK as u64;
     }
+    sha256_resume(state, consumed, data)
+}
+
+/// SHA-256 finished from a chaining `state` that has already absorbed `consumed` bytes (whole blocks).
+fn sha256_resume(
+    mut state: Zeroizing<[u32; 8]>,
+    consumed: u64,
+    data: &[u8],
+) -> Zeroizing<[u8; 32]> {
+    let total = data.len() as u64 + consumed;
     let (blocks, rest) = data.as_chunks::<BLOCK>();
     for c in blocks {
         compress(&mut state, c);
@@ -154,6 +164,41 @@ pub(crate) fn sha256_wiped(prefix: Option<&[u8; BLOCK]>, data: &[u8]) -> Zeroizi
         *o = w.to_be_bytes();
     }
     out
+}
+
+/// An HMAC-SHA256 key with its ipad/opad blocks already compressed, for many MACs under one key
+/// (PBKDF2): two compressions per MAC instead of four. The states are wiped on drop.
+pub(crate) struct HmacSha256Key {
+    inner: Zeroizing<[u32; 8]>,
+    outer: Zeroizing<[u32; 8]>,
+}
+
+impl HmacSha256Key {
+    pub(crate) fn new(key: &[u8]) -> Self {
+        let mut k0 = Zeroizing::new([0_u8; BLOCK]);
+        if key.len() > BLOCK {
+            k0[..32].copy_from_slice(&sha256_wiped(None, key)[..]);
+        } else {
+            k0[..key.len()].copy_from_slice(key);
+        }
+        let mut pad = Zeroizing::new([0_u8; BLOCK]);
+        let mut inner = Zeroizing::new(SHA256_IV);
+        for (p, k) in pad.iter_mut().zip(k0.iter()) {
+            *p = k ^ 0x36;
+        }
+        compress(&mut inner, &pad);
+        let mut outer = Zeroizing::new(SHA256_IV);
+        for (p, k) in pad.iter_mut().zip(k0.iter()) {
+            *p = k ^ 0x5c;
+        }
+        compress(&mut outer, &pad);
+        Self { inner, outer }
+    }
+
+    pub(crate) fn mac(&self, data: &[u8]) -> Zeroizing<[u8; 32]> {
+        let inner = sha256_resume(self.inner.clone(), BLOCK as u64, data);
+        sha256_resume(self.outer.clone(), BLOCK as u64, &inner[..])
+    }
 }
 
 /// HMAC-SHA256 of `data` under `key` (RFC 2104; a key past the block size is hashed first). HMAC

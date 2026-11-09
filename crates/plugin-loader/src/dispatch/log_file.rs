@@ -13,11 +13,14 @@
 //! ```
 //!
 //! — the time, the level, the instance, the kind, then the text. The file is
-//! `<dir>/<instance>.log`, the instance name with every byte outside `[A-Za-z0-9._-]` written as
+//! `<dir>/<section>.<instance>.log` (the section is omitted when the instance already carries it),
+//! the instance name with every byte outside `[A-Za-z0-9._-]` written as
 //! `_`. Lines under the instance's configured level are not written. A declared diagnostic is a
 //! line too, its id before its text. The records one reply could not carry are one line saying how
-//! many. Every control character in a text is escaped, so a record is one line and nothing raw
-//! reaches a terminal: a line break is `\n`, a carriage return `\r`, any other `\u{..}`.
+//! many. Every control character in a text, and every line separator or bidirectional
+//! control (U+2028, U+2029, U+200E, U+200F, U+202A-U+202E, U+2066-U+2069), is escaped, so a record is
+//! one line and nothing raw reaches a terminal: a line break is `\n`, a carriage return `\r`, any
+//! other `\u{..}`.
 //!
 //! BUSBAR'S OWN LOG keeps a copy of every WARN and ERROR record, written when the record is handed
 //! over, so it lands among the host's own lines in the order 1.5.5 printed it ([`mirror`]); those
@@ -52,7 +55,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 
@@ -431,6 +434,8 @@ struct Lane {
 struct Over {
     lines: AtomicU64,
     at: AtomicU64,
+    /// The writer is gone and the host has been told so.
+    gone: AtomicBool,
 }
 
 enum Job {
@@ -468,6 +473,12 @@ impl PluginLogSink {
     }
 
     #[cfg(test)]
+    #[must_use]
+    fn with_lane(self, lane: Arc<Lane>) -> Self {
+        Self { lane, ..self }
+    }
+
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -497,9 +508,14 @@ impl PluginLogSink {
             level,
             text,
         };
-        if let Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) =
-            self.lane.queue.try_send(job)
-        {
+        if let Err(e) = self.lane.queue.try_send(job) {
+            if matches!(e, TrySendError::Disconnected(_)) && !over.gone.swap(true, Ordering::AcqRel)
+            {
+                tracing::warn!(
+                    plugin = %self.tag.instance,
+                    "the plugin log writer is gone; this plugin's log lines are lost"
+                );
+            }
             over.at.store(at, Ordering::Release);
             over.lines.fetch_add(1, Ordering::AcqRel);
 
@@ -667,7 +683,13 @@ fn escape_into(line: &mut String, text: &[u8]) {
         match c {
             '\n' => line.push_str("\\n"),
             '\r' => line.push_str("\\r"),
-            c if c.is_control() => {
+            c if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}' | '\u{2029}' | '\u{200E}' | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+                ) =>
+            {
                 let _ = write!(line, "\\u{{{:x}}}", u32::from(c));
             }
             c => line.push(c),
@@ -806,7 +828,17 @@ impl FileSlot {
             }
         }
         if st.file.is_none() {
-            st.file = Some(self.opened()?);
+            match self.opened() {
+                Ok(file) => st.file = Some(file),
+                Err(e) => {
+                    if report.is_some() {
+                        // The report dies with this error: let a later append build it again.
+                        st.failing = false;
+                        st.retry_at = 0;
+                    }
+                    return Err(e);
+                }
+            }
         }
         let Some((f, held)) = st.file.as_mut() else {
             return Ok(report);

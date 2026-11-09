@@ -72,6 +72,20 @@ fn sealed_composition_preserves_bytes_and_all_inputs_security_requirements() {
 }
 
 #[test]
+fn sealed_composition_never_reallocates_a_buffer_containing_credentials() {
+    use crate::alloc_counter::AllocationLifetimeProbe;
+    let secret = credential(&[0x5a; 4099]);
+    let suffix = [0x61; 4099];
+    let probe = AllocationLifetimeProbe::start_exact_size(8198);
+    let combined = SealedValue::compose(&[Part::Credential(&secret), Part::Public(&suffix)]);
+    drop(combined);
+    let observed = probe.finish();
+    assert_eq!(observed.allocations, 1);
+    assert_eq!(observed.deallocations, 1);
+    assert_eq!(observed.reallocations, 0);
+}
+
+#[test]
 fn every_transform_preserves_secure_requirement_including_secondary_inputs() {
     let original = credential(b"a b").require_secure();
     let key = original.sealed_value();

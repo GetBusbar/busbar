@@ -118,11 +118,11 @@ impl Drop for Staged {
     }
 }
 
-fn random_hex(n: usize) -> String {
+fn random_hex(n: usize) -> Result<String, String> {
     let mut buf = vec![0u8; n];
 
-    let _ = getrandom::fill(&mut buf);
-    buf.iter().map(|b| format!("{b:02x}")).collect()
+    getrandom::fill(&mut buf).map_err(|e| format!("cannot gather staging randomness: {e}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 struct StagingState {
@@ -141,7 +141,7 @@ fn ensure_staging_dir(state: &mut StagingState) -> Result<PathBuf, String> {
             return Ok(dir.clone());
         }
     }
-    let name = format!("{STAGING_PREFIX}{}-{}", std::process::id(), random_hex(8));
+    let name = format!("{STAGING_PREFIX}{}-{}", std::process::id(), random_hex(8)?);
     let dir = ensure_staging_parent(&std::env::temp_dir())?.join(name);
 
     #[cfg_attr(not(unix), allow(unused_mut))]
@@ -192,15 +192,28 @@ fn stage_temp_file(bytes: &[u8]) -> Result<(PathBuf, std::fs::File), String> {
     let mut state = staging_state().lock().unwrap_or_else(|p| p.into_inner());
     let dir = ensure_staging_dir(&mut state)?;
     let path = dir.join(format!("lib-{}{}", next_seq(), dylib_suffix()));
-    let f = create_staged(&path)
-        .map_err(|e| format!("cannot create staged plugin file {}: {e}", path.display()))?;
-
-    let pin = pin_staged(f, &path, bytes).map_err(|e| {
-        let _ = std::fs::remove_file(&path);
-        format!("cannot stage plugin file {}: {e}", path.display())
-    })?;
-    state.live += 1;
-    Ok((path, pin))
+    let staged = create_staged(&path)
+        .map_err(|e| format!("cannot create staged plugin file {}: {e}", path.display()))
+        .and_then(|f| {
+            pin_staged(f, &path, bytes).map_err(|e| {
+                let _ = std::fs::remove_file(&path);
+                format!("cannot stage plugin file {}: {e}", path.display())
+            })
+        });
+    match staged {
+        Ok(pin) => {
+            state.live += 1;
+            Ok((path, pin))
+        }
+        Err(e) => {
+            if state.live == 0 {
+                if let Some(dir) = state.dir.take() {
+                    let _ = std::fs::remove_dir(&dir);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 #[cfg(unix)]

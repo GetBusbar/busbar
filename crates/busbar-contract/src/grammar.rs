@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! The closed grammars: claims, selectors, arrival locations and locations.
 
 use core::fmt;
@@ -411,7 +414,9 @@ impl Selector {
             (Self::ExactPath(x), Self::ExactPath(y)) => x == y,
             (Self::ExactPath(p), Self::PrefixOneLevel(q))
             | (Self::PrefixOneLevel(q), Self::ExactPath(p)) => one_level_under(q, p),
-            (Self::PrefixOneLevel(x), Self::PrefixOneLevel(y)) => x == y,
+            (Self::PrefixOneLevel(x), Self::PrefixOneLevel(y)) => {
+                x.trim_end_matches('/') == y.trim_end_matches('/')
+            }
             (Self::ExactPath(p), Self::PathPattern(pat))
             | (Self::PathPattern(pat), Self::ExactPath(p)) => pattern_matches(pat, p),
             (Self::PathPattern(x), Self::PathPattern(y)) => patterns_overlap(x, y),
@@ -481,7 +486,10 @@ impl Selector {
 /// Whether a path is exactly one segment under a prefix.
 #[must_use]
 pub fn one_level_under(prefix: &str, path: &str) -> bool {
-    let Some(rest) = path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) else {
+    let Some(rest) = path
+        .strip_prefix(prefix.trim_end_matches('/'))
+        .and_then(|r| r.strip_prefix('/'))
+    else {
         return false;
     };
     !rest.is_empty() && !rest.contains('/')
@@ -521,36 +529,51 @@ fn next_seg(path: &str) -> Option<(&str, &str)> {
 }
 
 /// [`segs_match`]'s walk over the pattern's remaining segments and the path's remaining bytes.
-fn walk<'a>(mut pattern: impl Iterator<Item = SegRef<'a>> + Clone, mut path: &str) -> bool {
-    while let Some(seg) = pattern.next() {
-        match seg {
-            SegRef::Tail => return true,
-            SegRef::Lit(lit) => match next_seg(path) {
-                Some((s, rest)) if s == lit => path = rest,
-                _ => return false,
+/// A mismatch backtracks only to the most recent `Plus`: an earlier one can never do better, so the
+/// cost stays linear in the pattern times the path however many `Plus` segments there are.
+fn walk<'a, I>(mut pattern: I, mut path: &str) -> bool
+where
+    I: Iterator<Item = SegRef<'a>> + Clone,
+{
+    // The pattern after the latest `Plus` and the path after the segments that `Plus` has taken.
+    let mut retry: Option<(I, &str)> = None;
+    loop {
+        match pattern.next() {
+            Some(SegRef::Tail) => return true,
+            None if next_seg(path).is_none() => return true,
+            Some(SegRef::Lit(lit)) => match next_seg(path) {
+                Some((s, rest)) if s == lit => {
+                    path = rest;
+                    continue;
+                }
+                _ => {}
             },
-            SegRef::Var => match next_seg(path) {
-                Some((_, rest)) => path = rest,
-                None => return false,
-            },
-
-            SegRef::Plus => {
-                let Some((_, mut rest)) = next_seg(path) else {
-                    return false;
-                };
-                loop {
-                    if walk(pattern.clone(), rest) {
-                        return true;
-                    }
-                    match next_seg(rest) {
-                        Some((_, more)) => rest = more,
-                        None => return false,
-                    }
+            Some(SegRef::Var) => {
+                if let Some((_, rest)) = next_seg(path) {
+                    path = rest;
+                    continue;
                 }
             }
+            Some(SegRef::Plus) => {
+                if let Some((_, rest)) = next_seg(path) {
+                    path = rest;
+                    retry = Some((pattern.clone(), rest));
+                    continue;
+                }
+            }
+            None => {}
         }
+        // This arm failed: let the latest `Plus` take one more segment, or give up.
+        let Some((after, taken)) = retry.take() else {
+            return false;
+        };
+        let Some((_, more)) = next_seg(taken) else {
+            return false;
+        };
+        pattern = after.clone();
+        path = more;
+        retry = Some((after, more));
     }
-    next_seg(path).is_none()
 }
 
 /// Whether two patterns can match one path.

@@ -9,6 +9,10 @@ use super::{Signal, SignalBag, SignalValue};
 #[path = "route_cost_tests.rs"]
 mod tests;
 
+/// A legacy integer price is encoded in thousandths of a routing micro-unit; [`append`] never
+/// emits it, and [`decode`] divides by this to reach [`Term::price_per_unit`]'s unit.
+const LEGACY_U64_PRICE_SCALE: f64 = 1_000.0;
+
 /// One term of a plane's declared routing-cost recipe, priced for one candidate lane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Term<'a> {
@@ -63,7 +67,7 @@ pub fn visit<'a>(
             return Err("empty routing-cost class");
         }
         let price_per_unit = match values.next() {
-            Some(SignalValue::U64(price)) => Some(*price as f64 / 1_000.0),
+            Some(SignalValue::U64(price)) => Some(*price as f64 / LEGACY_U64_PRICE_SCALE),
             Some(SignalValue::F64(price)) if price.is_finite() && *price >= 0.0 => Some(*price),
             Some(SignalValue::Bool(false)) => None,
             _ => return Err("invalid routing-cost price"),

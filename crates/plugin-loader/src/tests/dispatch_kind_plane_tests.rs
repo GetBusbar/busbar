@@ -246,24 +246,35 @@ fn plane_context_bounds_fee_text_before_the_fee_validator_reads_it() {
                 len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
             };
             let class = busbar_contract::abi::plane::BillableClass {
-                class: fee,
+                class: AbiStr {
+                    ptr: b"fee".as_ptr(),
+                    len: 3,
+                },
                 family: AbiStr {
                     ptr: b"money".as_ptr(),
                     len: 5,
                 },
             };
-            assert!(bounded_tail_context(|tail| {
+            let refused = bounded_tail_context(|tail| {
                 tail.billable_classes = &class;
                 tail.billable_classes_len = 1;
                 tail.fee_units = &fee;
                 tail.fee_units_len = 1;
             })
-            .is_err());
-            assert!(bounded_tail_context(|tail| {
+            .unwrap_err();
+            assert!(
+                refused.contains("OverMax") && refused.contains("tail.fee_units"),
+                "{refused}"
+            );
+            let refused = bounded_tail_context(|tail| {
                 tail.fee_units = &fee;
                 tail.fee_units_len = 1;
             })
-            .is_err());
+            .unwrap_err();
+            assert!(
+                refused.contains("OverMax") && refused.contains("tail.fee_units"),
+                "{refused}"
+            );
         },
     );
 }
@@ -278,11 +289,15 @@ fn plane_context_bounds_metric_text_before_the_metric_validator_reads_it() {
                 ptr: b"lane".as_ptr(),
                 len: busbar_contract::abi::mechanism::check::HARD_MAX_BYTES as usize + 1,
             };
-            assert!(bounded_tail_context(|tail| {
+            let refused = bounded_tail_context(|tail| {
                 tail.metric_lanes = &lane;
                 tail.metric_lanes_len = 1;
             })
-            .is_err());
+            .unwrap_err();
+            assert!(
+                refused.contains("OverMax") && refused.contains("tail.metric_lanes"),
+                "{refused}"
+            );
         },
     );
 }
@@ -1698,6 +1713,9 @@ fn snapshot_registration_admin_routes_require_serve_and_preserve_declared_securi
     check_published_registration(&snapshot, &facts, &operations, Ok(()));
     // Disabling all routes in a later generation remains valid.
     snapshot.admin_routes_len = 0;
+    check_published_registration(&snapshot, &facts, &operations, Ok(()));
+    // With no published routes, serve is not needed either.
+    operations[slot::SERVE as usize] = false;
     check_published_registration(&snapshot, &facts, &operations, Ok(()));
 }
 

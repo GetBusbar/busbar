@@ -131,16 +131,18 @@ impl AuthRows {
         Ok(Door::Memory(plugin, sink))
     }
 
-    fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
+    fn stated_read(&self, row: &LoadablePlugin) -> Result<Option<AuthFacts>, String> {
         match row.door() {
-            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).ok(),
-            None => row
-                .manifest
-                .stated_rendering()
-                .ok()
-                .flatten()
-                .and_then(|r| crate::dispatch::kinds::auth::rendered_facts(&r).ok()),
+            Some(door) => crate::dispatch::kinds::auth::stated_facts_raw(door).map(Some),
+            None => match row.manifest.stated_rendering()? {
+                Some(r) => crate::dispatch::kinds::auth::rendered_facts(&r).map(Some),
+                None => Ok(None),
+            },
         }
+    }
+
+    fn stated(&self, row: &LoadablePlugin) -> Option<AuthFacts> {
+        self.stated_read(row).ok().flatten()
     }
 
     #[must_use]
@@ -278,8 +280,17 @@ impl AuthRows {
             .chain(self.registry.loadable());
         let alias = &row.manifest.alias;
         for other in rows.filter(|p| p.manifest.kind == AUTH && p.manifest.alias != *alias) {
-            let Some(f) = self.stated(other) else {
-                continue;
+            let f = match self.stated_read(other) {
+                Ok(Some(f)) => f,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        plugin = %other.manifest.alias,
+                        error = %e,
+                        "an auth plugin's Statement does not read back; the one-reader check skips it"
+                    );
+                    continue;
+                }
             };
             if let Some(kind) = mine.iter().find(|k| f.credential_kinds.contains(k)) {
                 return Err(format!(
@@ -343,9 +354,14 @@ impl AuthRows {
             .linked()
             .iter()
             .chain(self.registry.loadable());
+        let mut unloaded = None;
         for row in rows.filter(|p| p.manifest.kind == AUTH) {
-            let Ok(Door::Memory(plugin, _)) = self.load(row, &row.manifest.alias, true) else {
-                continue;
+            let plugin = match self.load(row, &row.manifest.alias, true) {
+                Ok(Door::Memory(plugin, _)) => plugin,
+                Err(e) => {
+                    unloaded.get_or_insert(e);
+                    continue;
+                }
             };
             let Some(decl) = outbound_styles(&plugin)
                 .into_iter()
@@ -362,7 +378,7 @@ impl AuthRows {
                 points: decl.points,
             }));
         }
-        Ok(None)
+        unloaded.map_or(Ok(None), Err)
     }
 }
 

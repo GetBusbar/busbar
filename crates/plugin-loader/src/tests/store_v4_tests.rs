@@ -704,3 +704,16 @@ fn commit_keeps_exact_candidate_on_growth_and_rejects_changed_receipt_bytes() {
         Err(ResponseError::Malformed)
     ));
 }
+
+#[test]
+fn fitting_read_buffers_are_presized_p29_performance_0() {
+    let items = presized(3, limits(), 0u64);
+    assert_eq!(
+        items.len(),
+        3,
+        "a 3-address read must start with 3 descriptors"
+    );
+    let bytes = presized_bytes(3 * INITIAL_VALUE_BYTES, limits());
+    assert_eq!(bytes.len(), 3 * INITIAL_VALUE_BYTES);
+    assert!(presized_bytes(usize::MAX, limits()).len() <= limits().output_bytes);
+}

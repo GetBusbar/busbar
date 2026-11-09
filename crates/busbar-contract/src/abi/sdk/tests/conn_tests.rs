@@ -307,6 +307,55 @@ fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
     );
 }
 
+/// Whether [`faulting_reply`] answers a fault (else the refused ack naming `CAUSE_AUTH_REFUSED`).
+static FAULT_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `read_reply`: the refused ack naming `CAUSE_AUTH_REFUSED`, or a fault once [`FAULT_NEXT`] is set.
+extern "C" fn faulting_reply(_: HostCtx, _: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the SDK's `out`, live for the call.
+    let out = unsafe { &mut *o };
+    let verdict = if FAULT_NEXT.load(std::sync::atomic::Ordering::SeqCst) {
+        Outcome::Fault
+    } else {
+        out.value = crate::abi::host::conn::connector::CAUSE_AUTH_REFUSED;
+        Outcome::Refused
+    };
+    out.outcome = RawOutcome::of(verdict);
+    RawOutcome::of(verdict)
+}
+
+static FAULTING: ConnectorSlots = ConnectorSlots {
+    read_reply: Some(faulting_reply),
+    ..REFUSING
+};
+
+/// `cause` names the stage of the last service that failed: after a fault, none, not the stage of an
+/// earlier refusal.
+#[test]
+fn a_fault_clears_the_cause_an_earlier_failure_named() {
+    use crate::abi::host::conn::connector::{CAUSE_AUTH_REFUSED, CAUSE_NONE};
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    FAULT_NEXT.store(false, std::sync::atomic::Ordering::SeqCst);
+    let h = host(&FAULTING);
+    let mut buf = [0_u8; 8];
+    let mut slot = ReplyPiece::default();
+    let mut c = h.connector(TICKET);
+    assert!(matches!(
+        c.read_reply(1, &mut buf, &mut slot),
+        Poll::Ready(Err(ConnFailure::Refused(_)))
+    ));
+    assert_eq!(c.cause(), CAUSE_AUTH_REFUSED);
+    FAULT_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        c.read_reply(1, &mut buf, &mut slot),
+        Poll::Ready(Err(ConnFailure::Fault))
+    );
+    FAULT_NEXT.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(c.cause(), CAUSE_NONE);
+}
+
 static REQUEST_SECURITY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static SEALED_REQUESTS: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 

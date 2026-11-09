@@ -76,7 +76,10 @@ impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Judge {
                 Verdict::Pass
             }
             Some(b"slow") => {
-                std::thread::sleep(Duration::from_millis(200));
+                let (held, released) = &*SLOW_GATE;
+                let _ = released
+                    .wait_timeout_while(held.lock().unwrap(), Duration::from_secs(10), |h| *h)
+                    .unwrap();
                 Verdict::Pass
             }
             Some(b"body")
@@ -398,6 +401,19 @@ fn the_body_reaches_the_plugin_at_head_body_only() {
     }
 }
 
+/// Holds the `slow` verdict until the test releases it (no fixed sleep to race).
+static SLOW_GATE: std::sync::LazyLock<(std::sync::Mutex<bool>, std::sync::Condvar)> =
+    std::sync::LazyLock::new(|| (std::sync::Mutex::new(false), std::sync::Condvar::new()));
+
+fn hold_slow() {
+    *SLOW_GATE.0.lock().unwrap() = true;
+}
+
+fn release_slow() {
+    *SLOW_GATE.0.lock().unwrap() = false;
+    SLOW_GATE.1.notify_all();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     use crate::auth_door::{AuthInstance, AuthSink};
@@ -423,9 +439,11 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
     })
     .await
     .expect("the tick schedule ends");
+    hold_slow();
     let slow = a.verify(request(Some("slow"), None));
     let mut over = a.verify(request(Some("good"), None));
     let answer = over.settled().expect("answered before any crossing");
+    release_slow();
     assert_eq!(answer, VerifyAnswer::from(Verified::Overloaded));
     assert_eq!(answer.decision, Decision::Stop);
     assert!(answer.strips.is_empty());
@@ -439,6 +457,62 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
         Box::into_pin(a.verify(request(Some("good"), None))).await,
         alice()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sign_in_past_max_inflight_is_an_outage_not_a_rejected_credential() {
+    use crate::auth_door::{AuthInstance, AuthSink};
+    use crate::dispatch::{load_linked, Bind, LinkedRow};
+    use busbar_contract::auth::LoginOutcome;
+    let d = dispatcher();
+    let sink = AuthSink::new("judge");
+    let bind = Bind {
+        instance: Arc::from("pl-src-1-login-1"),
+        max_inflight_cap: 1,
+        sink: sink.bind(),
+        dispatcher: d.adopter(),
+        conns: crate::dispatch::ConnTable::NoNeeds,
+    };
+    let row = LinkedRow::of(judge::door).unwrap();
+    let p = load_linked::<crate::dispatch::kinds::auth::Auth>(&row, bind).unwrap();
+    let a = AuthInstance::open(
+        p,
+        sink,
+        d.clone(),
+        "pl-src-1-login-1",
+        b"\"ok\"",
+        Vec::new(),
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !a.ticks_ended() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the tick schedule ends");
+    let slow = a.verify(request(Some("slow"), None));
+    let mut over = a.complete_login(busbar_contract::auth_calls::LoginCallback::default());
+    assert_eq!(
+        over.settled(),
+        Some(LoginOutcome::Outage {
+            retry_after_secs: None
+        })
+    );
+    let mut begin = a.begin_login(busbar_contract::auth::BeginLogin {
+        redirect_uri: String::new(),
+        state: String::new(),
+        code_challenge: String::new(),
+        nonce: None,
+        scopes: Vec::new(),
+    });
+    assert_eq!(
+        begin.settled(),
+        Some(LoginOutcome::Outage {
+            retry_after_secs: None
+        })
+    );
+    let _ = Box::into_pin(slow).await;
 }
 
 struct Keyed;
@@ -1828,4 +1902,41 @@ fn a_login_outages_retry_after_is_read_only_from_the_hosts_identity_buffer() {
     };
     assert_eq!(held.retry_after(huge), None);
     assert_eq!(held.retry_after(Blob::ABSENT), None);
+}
+
+extern "C" fn pl_src_1_unread_door() -> *const busbar_contract::abi::mechanism::door::Door {
+    std::ptr::null()
+}
+
+#[test]
+fn a_row_that_fails_to_load_is_the_serving_error_not_no_plugin() {
+    let registry = PluginRegistry::empty()
+        .link(vec![LinkedPlugin::auth_door_named_raw(
+            "busbar-auth-pl-src-1-unread",
+            "pl-src-1-unread",
+            pl_src_1_unread_door,
+        )])
+        .expect("the null-door row registers");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    let refused = rows
+        .serving("pl-src-1-style", &serde_json::json!({}))
+        .expect_err("the load error is returned, not Ok(None)");
+    assert!(refused.contains("pl-src-1-unread"), "{refused}");
+}
+
+#[test]
+fn a_peer_row_whose_statement_does_not_read_back_does_not_block_a_healthy_row() {
+    let registry = PluginRegistry::empty()
+        .link(vec![
+            LinkedPlugin::auth_door("reader-a", readers::a::door),
+            LinkedPlugin::auth_door_named_raw(
+                "busbar-auth-pl-src-1-unread",
+                "pl-src-1-unread",
+                pl_src_1_unread_door,
+            ),
+        ])
+        .expect("the linked doors register");
+    let rows = AuthRows::new(Arc::new(registry), dispatcher());
+    rows.open("reader-a", "reader-a", &serde_json::json!("ok"))
+        .expect("an unreadable, never-serving peer does not block a healthy row");
 }

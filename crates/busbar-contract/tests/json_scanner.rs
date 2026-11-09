@@ -33,7 +33,10 @@ fn a_truncated_document_asks_for_more_rather_than_answering() {
     let whole = br#"{"a": {"b": "value"}, "lane": "gold"}"#;
     for cut in 1..whole.len() - 1 {
         match resolve_pointer(&whole[..cut], "/lane") {
-            Resolved::NeedMore | Resolved::Missing => {}
+            Resolved::NeedMore => {}
+            Resolved::Missing => {
+                panic!("a prefix that never closes the object called missing at {cut} bytes")
+            }
             Resolved::Found(span) => panic!("resolved at {cut} bytes to {:?}", span),
             Resolved::Malformed => panic!("a prefix of valid JSON called malformed at {cut}"),
         }

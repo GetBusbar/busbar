@@ -69,6 +69,9 @@ impl Life for Echo {
         _: Ticket,
         parked: Option<Box<dyn std::any::Any + Send + Sync>>,
     ) -> Opening {
+        if self.0 == b"codeaudit-fresh-opening-fails" {
+            return Opening::Failed(Refusal::failed("opening failed"));
+        }
         if self.0 != b"pending-owned-failure" && self.0 != b"pending-owned-refusal" {
             return Opening::Ready;
         }
@@ -1048,6 +1051,98 @@ fn a_resumed_open_failure_keeps_its_owned_reason_in_the_hosts_buffer() {
         assert_eq!(&buffer[..out.err_len], settings);
         assert_eq!(text(out.head.error).as_bytes(), settings);
     }
+}
+
+fn codeaudit_closes_of(settings: &[u8]) -> usize {
+    CLOSED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|(s, _)| s == settings)
+        .count()
+}
+
+#[test]
+fn codeaudit_a_failed_opening_closes_the_instance_it_built() {
+    // Fresh open: `opening` fails at once.
+    let fresh = &b"codeaudit-fresh-opening-fails"[..];
+    let mut buffer = [0_u8; 64];
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    input.settings = blob(fresh);
+    input.err_buf = buffer.as_mut_ptr();
+    input.err_cap = buffer.len();
+    let mut out: OpenOut = zeroed();
+    out.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(table().head.open, ptr::null_mut(), &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(
+        codeaudit_closes_of(fresh),
+        1,
+        "fresh failed open closes once"
+    );
+
+    // Pending, then resumed Failed.
+    let pending = &b"pending-owned-failure"[..];
+    let before = codeaudit_closes_of(pending);
+    let mut input: OpenIn = zeroed();
+    input.head = in_head::<OpenIn>(slot::OPEN);
+    input.head.ticket = Ticket {
+        slot: 72,
+        generation: 1,
+    };
+    input.settings = blob(pending);
+    input.err_buf = buffer.as_mut_ptr();
+    input.err_cap = buffer.len();
+    let mut out: OpenOut = zeroed();
+    out.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(table().head.open, ptr::null_mut(), &input, &mut out),
+        Outcome::Pending
+    );
+    let partial = out.instance;
+    input.head.flags = FLAG_RESUME;
+    out = zeroed();
+    out.head = out_head::<OpenOut>();
+    assert_eq!(
+        call(table().head.open, partial, &input, &mut out),
+        Outcome::Failed
+    );
+    assert_eq!(
+        codeaudit_closes_of(pending) - before,
+        1,
+        "resumed failed open closes once"
+    );
+}
+
+#[test]
+fn codeaudit_settings_as_does_not_echo_a_mistyped_value() {
+    #[derive(Debug, serde::Deserialize)]
+    struct Typed {
+        #[allow(dead_code)]
+        n: u64,
+    }
+    let refusal = settings_as::<Typed>(br#"{"n":"s3cr3t-value"}"#).unwrap_err();
+    let reason = refusal.text().unwrap();
+    assert!(!reason.contains("s3cr3t-value"), "{reason}");
+    assert!(reason.contains("expected u64"), "{reason}");
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "lowercase")]
+    enum Mode {
+        Fast,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    struct Moded {
+        #[allow(dead_code)]
+        mode: Mode,
+    }
+    let refusal = settings_as::<Moded>(br#"{"mode":"s3cr3t-variant"}"#).unwrap_err();
+    let reason = refusal.text().unwrap();
+    assert!(!reason.contains("s3cr3t-variant"), "{reason}");
+    assert!(reason.contains("unknown variant"), "{reason}");
 }
 
 type Host = crate::abi::sdk::conn::Host<FixtureKind>;

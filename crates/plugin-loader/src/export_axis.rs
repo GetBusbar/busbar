@@ -298,6 +298,7 @@ impl<'r> ExportRows<'r> {
         self.registry
             .linked()
             .iter()
+            .filter(|p| p.manifest.kind == busbar_contract::abi::mechanism::kind::EXPORT)
             .any(|p| p.manifest.config_names().any(|n| n == module))
     }
 

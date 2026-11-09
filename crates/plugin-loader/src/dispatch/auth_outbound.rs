@@ -93,23 +93,24 @@ impl OutboundInstance {
         settings: &[u8],
     ) -> Result<Self, String> {
         use busbar_contract::abi::mechanism::lifecycle::slot as lc;
-        let named = |what: &str, outcome: Outcome| {
+        let named = |what: &str, outcome: Outcome, error: Option<Vec<u8>>| {
             format!(
-                "`{}` did not {what} for its outbound styles: {outcome:?}",
-                plugin.name()
+                "`{}` did not {what} for its outbound styles: {}",
+                plugin.name(),
+                super::lifecycle::why(outcome, error)
             )
         };
         let called = validate_call(&plugin, blob(settings, BLOB_JSON, 0));
         let validated = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
-            return Err(named("validate", called.outcome));
+            return Err(named("validate", called.outcome, called.error));
         }
         drop(validated);
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         let called = plugin.call(lc::OPEN, &mut f);
         let opened = AnswerLease::new(&plugin, called.lease);
         if called.outcome != Outcome::Ready {
-            return Err(named("open", called.outcome));
+            return Err(named("open", called.outcome, called.error));
         }
         drop(opened);
         Ok(Self::new(plugin, dispatcher, worker))

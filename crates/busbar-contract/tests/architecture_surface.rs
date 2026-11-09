@@ -425,6 +425,11 @@ fn public_surface_rejects_constructors_aliases_and_cfg_escape() {
         "pub use private::*;",
         "pub use private::Runtime as door;",
         "#[cfg(any(test, feature = \"ordinary\"))] pub fn new() {}",
+        "pub static RUNTIME: u8 = 0;",
+        "pub enum Runtime { New }",
+        "#[cfg(not(test))] pub fn new() {}",
+        "#[macro_export] macro_rules! leak { () => {} }",
+        "unapproved_root_macro!{}",
     ] {
         let mut errors = Vec::new();
         surface(&syn::parse_file(code).unwrap().items, &mut errors);

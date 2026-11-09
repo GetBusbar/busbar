@@ -87,22 +87,23 @@ impl CancelWrite {
         records: &[crate::abi::plane::RecordWrite],
         written: usize,
         arena: &[u8],
-    ) -> Vec<CancelWrite> {
+    ) -> Option<Vec<CancelWrite>> {
         let bytes = |s: crate::abi::mechanism::call::Span| {
             let start = s.offset as usize;
             arena
                 .get(start..start.saturating_add(s.len as usize))
-                .unwrap_or_default()
-                .to_vec()
+                .map(<[u8]>::to_vec)
         };
         records
             .iter()
             .take(written)
-            .map(|w| CancelWrite {
-                kind: w.kind,
-                op: w.op,
-                key: bytes(w.key),
-                value: bytes(w.value),
+            .map(|w| {
+                Some(CancelWrite {
+                    kind: w.kind,
+                    op: w.op,
+                    key: bytes(w.key)?,
+                    value: bytes(w.value)?,
+                })
             })
             .collect()
     }
@@ -468,4 +469,21 @@ pub trait PlaneCalls: Send + Sync {
         out: ServeOut,
         lent: Lent,
     ) -> Box<dyn ServeInFlight>;
+}
+
+#[cfg(test)]
+mod bc2_cancel_write_tests {
+    use super::*;
+    use crate::abi::mechanism::call::Span;
+
+    #[test]
+    fn owned_refuses_span_outside_arena() {
+        let arena = [1u8, 2, 3, 4];
+        let mut w = crate::abi::plane::RecordWrite::ZERO;
+        w.key = Span {
+            offset: arena.len() as _,
+            len: 4,
+        };
+        assert!(CancelWrite::owned(&[w], 1, &arena).is_none());
+    }
 }

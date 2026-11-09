@@ -875,12 +875,14 @@ fn open_ready<K: crate::dispatch::Kind>(
     i.generation = 1;
     let mut f = crate::dispatch::Frame::new(i, blank_out::<OpenOut>());
     let opened = plugin.call(slot::OPEN, &mut f);
+    let lease = crate::dispatch::lifecycle::AnswerLease::new(plugin, opened.lease);
 
     drop(blobs);
     drop(held);
     if opened.outcome != Outcome::Ready {
         return Err(opened.open_failure(plugin.name()));
     }
+    drop(lease);
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
 }
 

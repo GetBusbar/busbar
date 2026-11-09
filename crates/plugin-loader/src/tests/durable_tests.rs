@@ -13,8 +13,6 @@ const EIO: i32 = 5;
 
 const EINVAL: i32 = 22;
 
-static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 struct Scratch {
     dir: PathBuf,
 }
@@ -130,28 +128,33 @@ fn holding_dir_resolves_a_relative_path_to_dot() {
 
 #[test]
 fn success_relative_path_fsyncs_dot() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Its own process: the working-directory change cannot leak into other tests.
+    crate::dispatch_tests::assert_child_passes(
+        "success_relative_path_fsyncs_dot",
+        "the relative path did not fsync \".\"",
+        || {
+            let sc = Scratch::new("rel");
+            let prev = std::env::current_dir().unwrap();
+            std::env::set_current_dir(&sc.dir).unwrap();
+            fault_reset();
 
-    let sc = Scratch::new("rel");
-    let prev = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&sc.dir).unwrap();
-    fault_reset();
+            let r = write(Path::new("relative.json"), b"rel-payload");
+            let fsynced = fault_parent_fsynced();
+            std::env::set_current_dir(&prev).unwrap();
 
-    let r = write(Path::new("relative.json"), b"rel-payload");
-    let fsynced = fault_parent_fsynced();
-    std::env::set_current_dir(&prev).unwrap();
-
-    r.unwrap();
-    assert_eq!(
-        fsynced.as_deref(),
-        Some(Path::new(".")),
-        "a relative path must fsync the parent resolved to \".\""
+            r.unwrap();
+            assert_eq!(
+                fsynced.as_deref(),
+                Some(Path::new(".")),
+                "a relative path must fsync the parent resolved to \".\""
+            );
+            assert_eq!(
+                std::fs::read(sc.path("relative.json")).unwrap(),
+                b"rel-payload"
+            );
+            assert!(!sc.has_durable_temp("relative.json"));
+        },
     );
-    assert_eq!(
-        std::fs::read(sc.path("relative.json")).unwrap(),
-        b"rel-payload"
-    );
-    assert!(!sc.has_durable_temp("relative.json"));
 }
 
 #[test]

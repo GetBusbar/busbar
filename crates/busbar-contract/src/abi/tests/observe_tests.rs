@@ -174,3 +174,15 @@ fn a_diagnostics_attach_order_rides_the_wire_only_when_it_is_not_key_order() {
         .is_none());
     assert_eq!(sorted.ordered_fields().len(), 2);
 }
+
+/// An unrecognized level is clamped to the default rather than failing the entry.
+#[test]
+fn an_unrecognized_diagnostic_level_reads_as_the_default() {
+    let d: PluginDiagnostic =
+        serde_json::from_value(json!({"code": "BUSBAR-0001", "level": "trace"}))
+            .expect("an unknown level must not fail the entry");
+    assert_eq!(d.level, DiagLevel::Warn);
+    let d: PluginDiagnostic =
+        serde_json::from_value(json!({"code": "BUSBAR-0001", "level": "info"})).unwrap();
+    assert_eq!(d.level, DiagLevel::Info);
+}

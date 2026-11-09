@@ -40,7 +40,7 @@ pub use busbar_contract::config::UpstreamCreds;
 
 pub use busbar_contract::auth::CallerToken;
 
-pub use busbar_contract::auth::{AuthModule, AuthVerdict, Principal};
+pub use busbar_contract::auth::{AuthVerdict, Principal};
 
 /// The whole CHAIN's verdict for one request: admitted-with-identity, admitted-anonymously (the
 /// empty-chain open front door), or denied. Distinct from the per-module [`AuthVerdict`] so the

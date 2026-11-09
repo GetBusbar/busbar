@@ -23,6 +23,7 @@ type Completion = Box<dyn FnOnce(ConditionalResult) + Send>;
 #[derive(Default)]
 struct Provider {
     accepted: Mutex<Vec<(ConditionalCandidate, Completion)>>,
+    oversize_observation: std::sync::atomic::AtomicBool,
 }
 impl busbar_contract::services::HostServices for Provider {
     fn now(&self) -> busbar_contract::services::Reading {
@@ -293,6 +294,11 @@ impl busbar_contract::services::HostServices for Provider {
         _: &[u8],
         done: Box<dyn FnOnce(Result<Expected, &'static str>) + Send>,
     ) -> Result<(), &'static str> {
+        if self.oversize_observation.load(Ordering::SeqCst) {
+            // Lazily zeroed pages: the encoder refuses on length before touching them.
+            done(Ok(Expected::Bytes(vec![0_u8; u32::MAX as usize + 1])));
+            return Ok(());
+        }
         done(Ok(Expected::Bytes(7_u64.to_le_bytes().to_vec())));
         Ok(())
     }
@@ -1330,12 +1336,22 @@ fn new_ticket_generation_and_current_epoch_do_not_steal_old_settlement() {
     assert_ne!(old.capability.ticket, next_generation.capability.ticket);
     let mut driver = driver();
     assert!(settlement(wake, &mut driver).is_none());
+    assert_eq!(
+        tick_answer(wake, &origin, None, &next_epoch, Outcome::Pending),
+        Err(()),
+        "a candidate from a stale epoch is refused"
+    );
+    assert_eq!(
+        tick_answer(wake, &origin, None, &next_generation, Outcome::Pending),
+        Ok(true)
+    );
+    assert_eq!(route.provider.accepted.lock().unwrap().len(), 2);
     complete(&route, Ok(Decision::Applied));
     let receipt = settlement(wake, &mut driver).unwrap();
     assert!(receipt.matches(&old).unwrap());
     assert!(!receipt.matches(&next_epoch).unwrap());
     assert!(!receipt.matches(&next_generation).unwrap());
-    assert_eq!(route.provider.accepted.lock().unwrap().len(), 0);
+    assert_eq!(route.provider.accepted.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -1750,6 +1766,21 @@ fn lend_conditional_receipt(wake: &'static InstanceWake, input: &mut InHead) {
         .unwrap()
         .unwrap();
     drop(loan);
+}
+
+#[test]
+fn an_unencodable_observation_still_finishes_and_wakes_the_ticket() {
+    let (route, wake, mut input) = rig();
+    route
+        .provider
+        .oversize_observation
+        .store(true, Ordering::SeqCst);
+    observed_exchange(&route, wake, &mut input, 1);
+    assert_eq!(
+        route.wakes.load(Ordering::SeqCst),
+        1,
+        "an observation whose result cannot be encoded must still wake the ticket"
+    );
 }
 
 #[test]

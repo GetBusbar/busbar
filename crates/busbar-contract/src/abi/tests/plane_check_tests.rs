@@ -3973,3 +3973,18 @@ fn exact_unit_count_wire_keeps_legacy_whole_semantics_and_checks_scale_range() {
         f(Rule::Contradiction, "on_piece.fault_reason_unread")
     );
 }
+
+/// RED: a request-field pin with an empty entry is refused (`None`), like the establish pin; only a
+/// wholly empty value is "no pin".
+#[test]
+fn a_within_pin_with_an_empty_entry_is_refused() {
+    use crate::abi::host::conn::connector::within_of;
+    assert_eq!(within_of(b","), None);
+    assert_eq!(within_of(b"10.0.0.1,"), None);
+    assert_eq!(within_of(b" , "), None);
+    assert_eq!(within_of(b""), Some(Vec::new()));
+    assert_eq!(
+        within_of(b"10.0.0.1"),
+        Some(vec!["10.0.0.1".parse().unwrap()])
+    );
+}

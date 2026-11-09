@@ -1055,12 +1055,16 @@ impl PlaneDriver {
         let written = (o.records_written as usize).min(records.len());
         if written != 0 {
             let arena_written = (o.arena_written as usize).min(arena.len());
-            let writes = busbar_contract::plane_calls::CancelWrite::owned(
+            match busbar_contract::plane_calls::CancelWrite::owned(
                 &records,
                 written,
                 &arena[..arena_written],
-            );
-            self.fold_writes(&writes, principal);
+            ) {
+                Some(writes) => self.fold_writes(&writes, principal),
+                None => tracing::warn!(
+                    "plane returned a record write span outside its arena; writes dropped"
+                ),
+            }
         }
         let span = |s: Span| {
             let start = s.offset as usize;

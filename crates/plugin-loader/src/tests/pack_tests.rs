@@ -136,6 +136,20 @@ fn pack_cli_respects_allow_unsigned_and_returns_the_right_exit_code() {
         "--allow-unsigned must produce an UNSIGNED manifest"
     );
 
+    {
+        use std::os::unix::ffi::OsStringExt;
+        let bad_out = dir.join("bad-key.tar.gz");
+        std::env::set_var(SIGN_KEY_ENV, std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
+        let code = pack(&args(&bad_out, &["--allow-unsigned"]));
+        std::env::remove_var(SIGN_KEY_ENV);
+        assert_eq!(
+            code,
+            ExitCode::FAILURE,
+            "a set-but-unreadable signing key must not fall back to an unsigned tarball"
+        );
+        assert!(!bad_out.exists(), "no tarball for an unreadable key");
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1839,4 +1853,56 @@ fn statement_schema_privacy_checks_resource_scope_along_pointer_ancestors() {
             .into_iter()
             .collect()
     );
+}
+
+#[test]
+fn ref_sibling_properties_do_not_hide_the_targets_secret_looking_field() {
+    let schema = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "$defs": {"c": {"properties": {"password": {"type": "string"}}}},
+        "$ref": "#/$defs/c",
+        "properties": {"region": {}},
+    });
+    let err = validate_secret_fields(&schema).unwrap_err();
+    assert!(err.contains("password"), "got {err}");
+}
+
+#[test]
+fn all_of_branch_versions_of_a_property_are_scanned_on_their_own() {
+    let schema = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "properties": {"conn": {}},
+        "allOf": [{"properties": {"conn": {"properties": {"api_key": {"type": "string"}}}}}],
+    });
+    let err = validate_secret_fields(&schema).unwrap_err();
+    assert!(err.contains("api_key"), "got {err}");
+}
+
+#[test]
+fn a_ref_may_name_a_definitions_entry_when_defs_also_exists() {
+    let schema = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "$defs": {"a": {"type": "string"}},
+        "definitions": {"b": {"type": "integer"}},
+        "properties": {"count": {"$ref": "#/definitions/b"}},
+    });
+    validate_secret_fields(&schema).unwrap();
+}
+
+#[test]
+fn a_tuple_form_items_array_is_scanned_element_by_element() {
+    let ok = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "properties": {"pair": {"type": "array", "items": [{"type": "string"}, {"type": "integer"}]}},
+    });
+    validate_secret_fields(&ok).unwrap();
+    let bad = serde_json::json!({
+        "$schema": SCHEMA_2020_12, "type": "object",
+        "properties": {"pair": {"type": "array", "items": [
+            {"type": "string"},
+            {"type": "object", "properties": {"token": {"type": "string"}}},
+        ]}},
+    });
+    let err = validate_secret_fields(&bad).unwrap_err();
+    assert!(err.contains("token"), "got {err}");
 }

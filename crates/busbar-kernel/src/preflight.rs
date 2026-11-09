@@ -358,7 +358,13 @@ pub(crate) fn ranking_settings_from(
     let settings = serde_json::json!({"policy":name});
     let (facts, problems) =
         probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
-    let facts = facts.ok_or_else(|| format!("ranking strategy '{name}' has no hook metadata"))?;
+    let Some(facts) = facts else {
+        return Err(if problems.is_empty() {
+            format!("ranking strategy '{name}' has no hook metadata")
+        } else {
+            format!("ranking strategy '{name}': {}", problems.join("; "))
+        });
+    };
     if facts.class != busbar_contract::abi::hook::CLASS_GATE
         || !facts.words.iter().any(|word| word == name)
     {

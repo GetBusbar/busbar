@@ -55,6 +55,12 @@ fn hold_waits_for_the_op_that_holds_it() {
     let mut held = table.reach(a).expect("reach a");
     std::thread::scope(|s| {
         let waiter = s.spawn(|| table.hold(a).map(|h| h.0));
+        // While the op still holds the framing the waiter must stay parked in `hold`.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !waiter.is_finished(),
+            "hold returned while the framing was held"
+        );
         held.0 = 7;
         drop(held);
         assert_eq!(waiter.join().expect("waiter"), Ok(7));

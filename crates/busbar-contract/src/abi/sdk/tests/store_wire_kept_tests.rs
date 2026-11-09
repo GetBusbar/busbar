@@ -775,6 +775,7 @@ mod waiting {
         wake_locked: bool,
         read_ready: bool,
         now: u64,
+        no_clock: bool,
         established: u64,
         cancel_on_wake: Option<Parked>,
     }
@@ -826,7 +827,14 @@ mod waiting {
     }
 
     extern "C" fn clock(_: HostCtx, input: *const c_void, _: *mut ServiceOut) -> RawOutcome {
-        let now = SCRIPT.lock().unwrap().as_ref().unwrap().now;
+        let (now, no_clock) = {
+            let script = SCRIPT.lock().unwrap();
+            let script = script.as_ref().unwrap();
+            (script.now, script.no_clock)
+        };
+        if no_clock {
+            return RawOutcome::of(Outcome::Pending);
+        }
         // SAFETY: the SDK lends a ClockNowIn and writable reading for this call.
         unsafe { (*(*input.cast::<ClockNowIn>()).reading).mono_ns = now };
         RawOutcome::of(Outcome::Ready)
@@ -1017,6 +1025,40 @@ mod waiting {
         drop(done);
         drop(holder);
         assert!(wakes().is_empty());
+    }
+
+    #[test]
+    fn a_waiting_channel_driver_is_woken_when_the_claim_is_released_on_a_host_without_a_clock() {
+        use crate::abi::sdk::store::wire::{drive_channels, Channels};
+        let _serial = serial();
+        let pool = Pool::new(1);
+        let host = host(&pool);
+        SCRIPT.lock().unwrap().as_mut().unwrap().no_clock = true;
+        let channels = Channels::new(1);
+        let mut holder = Op::enter(HOLDER, Some(&host), None, None);
+        assert!(matches!(
+            drive_channels(&mut holder, &channels, |wires| Box::pin(async move {
+                wires[0].connect(0, None).await?;
+                wires[0].fill().await?;
+                Ok::<_, ConnFailure>(())
+            })),
+            Step::Pending { .. }
+        ));
+        let mut second = Op::enter(FIRST, Some(&host), None, None);
+        assert!(matches!(
+            drive_channels(&mut second, &channels, |_| Box::pin(async {})),
+            Step::<()>::Pending {
+                wake_at_ns: u64::MAX
+            }
+        ));
+        let waiting = second.into_parked();
+        drop(holder.into_parked());
+        assert_eq!(wakes(), vec![FIRST], "the waiter was never woken");
+        let mut second = Op::enter(FIRST, Some(&host), Some(waiting), None);
+        assert_eq!(
+            drive_channels(&mut second, &channels, |_| Box::pin(async {})),
+            Step::Ready(())
+        );
     }
 }
 

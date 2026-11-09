@@ -340,6 +340,9 @@ pub fn served(
     if headers_out_len as u64 > max_headers {
         return Err(fault(Rule::OverMax, "serve.headers_out_len"));
     }
+    if !headers_out_len.is_multiple_of(2) {
+        return Err(fault(Rule::Contradiction, "serve.headers_out_len"));
+    }
     blob(body, "serve.body", "serve.body.len")?;
     lease(
         head.outcome,
@@ -585,6 +588,11 @@ pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
     // SAFETY (each `list`): the caller's contract.
     let families = unsafe { list(st.families, st.families_len, "statement.families") }?;
     for f in families {
+        listed(
+            f.label_keys,
+            f.label_keys_len,
+            "statement.family.label_keys",
+        )?;
         bounded(
             f.label_keys,
             f.label_keys_len,

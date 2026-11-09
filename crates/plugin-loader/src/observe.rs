@@ -151,17 +151,37 @@ impl Observing {
                 std::thread::Builder::new()
                     .name("busbar-plugin-observe".into())
                     .spawn(move || {
-                        for o in rx {
-                            #[cfg(test)]
-                            testing::OBSERVING.store(o.scope, Ordering::SeqCst);
-                            observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
+                        // A drop can land after the last queued item was handled, so the count is
+                        // also reported when the wait for the next item times out.
+                        loop {
+                            let received = rx.recv_timeout(std::time::Duration::from_secs(1));
+                            let disconnected = matches!(
+                                received,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+                            );
+                            if let Ok(o) = &received {
+                                #[cfg(test)]
+                                testing::OBSERVING.store(o.scope, Ordering::SeqCst);
+                                observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
+                            }
 
                             let lost = c.dropped.swap(0, Ordering::AcqRel);
                             if lost > 0 {
                                 observer.dropped(lost);
                             }
-                            c.done.fetch_add(1, Ordering::Release);
+                            if received.is_ok() {
+                                c.done.fetch_add(1, Ordering::Release);
+                            }
+                            if disconnected {
+                                break;
+                            }
                         }
+                    })
+                    .map_err(|e| {
+                        tracing::warn!(
+                            error = %e,
+                            "the plugin observation worker could not start; plugin metrics and diagnostics are lost"
+                        );
                     })
                     .ok()?;
                 #[cfg(test)]

@@ -436,8 +436,12 @@ impl Kind for Transport {
                 a.out::<AcceptOut>()?,
                 a.input::<AcceptIn>()?.peer_cap as u64,
             ),
-            slot::READ => check_io(a.out::<IoOut>()?, a.input::<ReadIn>()?.cap as u64),
-            slot::WRITE => check_io(a.out::<IoOut>()?, a.input::<WriteIn>()?.len as u64),
+            slot::READ => check_io(
+                a.out::<IoOut>()?,
+                a.input::<ReadIn>()?.cap as u64,
+                busbar_contract::abi::transport::READ_END_OF_FRAME,
+            ),
+            slot::WRITE => check_io(a.out::<IoOut>()?, a.input::<WriteIn>()?.len as u64, 0),
             slot::ARRIVAL => check_arrival(
                 a.outcome,
                 a.out::<ArrivalOut>()?,

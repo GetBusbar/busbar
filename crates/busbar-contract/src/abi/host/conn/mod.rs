@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE CONNECTION TABLE, lowered: [`crate::conn::Conns`] as a `#[repr(C)]` table of
+//! THE CONNECTION TABLE, lowered: [`crate::conn::Conns`] as a `#[repr(C)]` table of host slots.
 
 use std::collections::{HashMap, HashSet};
 use std::os::raw::c_void;
@@ -160,7 +160,7 @@ impl Headless {
 
 const _: () = assert!(core::mem::size_of::<Headless>() == OPEN_DESC_HEADLESS);
 
-/// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended
+/// How much of a [`WireOpenDesc`] a sized descriptor must state: everything before the appended `method` and `head_target` words.
 pub const OPEN_DESC_HEADLESS: usize = core::mem::offset_of!(WireOpenDesc, method);
 
 /// [`Piece`], written by the host into the caller's slot.
@@ -267,7 +267,7 @@ struct Held {
 }
 
 impl Held {
-    /// `s` as an exposed range that stays valid until this connection's close: the interned copy
+    /// `s` as an exposed range that stays valid until this connection's close: the interned copy is kept.
     fn keep(&mut self, s: &str) -> DeclStr {
         if let Some(kept) = self.retention.get(s) {
             return range(kept);
@@ -278,7 +278,7 @@ impl Held {
             .map_or(DeclStr::NONE, |kept| range(kept))
     }
 
-    /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches
+    /// [`Self::keep`] where the string is stated; an absent one is the NULL range and touches nothing.
     fn keep_opt(&mut self, s: Option<&str>) -> DeclStr {
         s.map_or(DeclStr::NONE, |s| self.keep(s))
     }
@@ -305,7 +305,7 @@ impl ConnHost {
         }
     }
 
-    /// The context the host hands `self`'s instance: a pointer to the heap-stable state, valid
+    /// The context the host hands `self`'s instance: a pointer to the heap-stable state, valid for as long as `self` lives.
     #[must_use]
     pub fn ctx(&self) -> ConnCtx {
         ConnCtx {
@@ -322,6 +322,7 @@ impl HostState {
     }
 
     /// Begin a `read`/`facts` operation on `conn`: capture the epoch of its retention (an empty
+    /// retention when the connection has none yet).
     fn begin(&self, conn: ConnId) -> Operation<'_> {
         let epoch = Arc::clone(&self.held().entry(conn).or_default().epoch);
         Operation {
@@ -481,7 +482,11 @@ unsafe extern "C" fn host_open(
             let d = if size >= core::mem::size_of::<WireOpenDesc>() {
                 core::ptr::read_unaligned(desc)
             } else {
-                core::ptr::read_unaligned(desc.cast::<Headless>()).into_wire()
+                let mut d = core::ptr::read_unaligned(desc.cast::<Headless>()).into_wire();
+                if size >= core::mem::offset_of!(WireOpenDesc, head_target) {
+                    d.method = core::ptr::read_unaligned(core::ptr::addr_of!((*desc).method));
+                }
+                d
             };
             if d.fields.is_null() && d.fields_len != 0 {
                 return Err(ConnError::Fault);

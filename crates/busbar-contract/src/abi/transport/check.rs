@@ -66,8 +66,8 @@ pub const fn check_arrival(outcome: Outcome, out: &ArrivalOut, peer_cap: u64) ->
 }
 
 /// `read`/`write`: no short path; at most the buffer's capacity or the bytes offered. Partial I/O
-pub const fn check_io(out: &IoOut, cap: u64) -> Result<(), Fault> {
-    if out.flags & !super::READ_END_OF_FRAME != 0 {
+pub const fn check_io(out: &IoOut, cap: u64, flags_allowed: u32) -> Result<(), Fault> {
+    if out.flags & !flags_allowed != 0 {
         return Err(fault(Rule::UnknownCode, "io.flags"));
     }
     within(out.len, cap, "io.len")
@@ -932,10 +932,10 @@ abi_answers! {
         check_accept(o, i.peer_cap as u64)
     }
     slot::READ => read(out IoOut, in ReadIn) |_, i, o, _| {
-        check_io(o, i.cap as u64)
+        check_io(o, i.cap as u64, crate::abi::transport::READ_END_OF_FRAME)
     }
     slot::WRITE => write(out IoOut, in WriteIn) |_, i, o, _| {
-        check_io(o, i.len as u64)
+        check_io(o, i.len as u64, 0)
     }
     slot::ARRIVAL => arrival(out ArrivalOut, in ArrivalIn) |outcome, i, o, _| {
         check_arrival(outcome, o, i.peer_cap as u64)
