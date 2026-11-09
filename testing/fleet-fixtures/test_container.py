@@ -49,10 +49,14 @@ if a and a[0] == "run":
 if a and a[0] == "exec":
     if obj(a[1]) is None: sys.exit(1)
     if a[2:] == ["cat", "/var/lib/mysql/public_key.pem"]:
-        print("-----BEGIN PUBLIC KEY-----\nYWJj\n-----END PUBLIC KEY-----"); sys.exit(0)
+        print("-----BEGIN PUBLIC KEY-----\nZmlsZQ==\n-----END PUBLIC KEY-----"); sys.exit(0)
     if a[2] == "mysql":
         if "-uroot" not in a: sys.exit(1)
         sql = a[a.index("-e") + 1]
+        if sql == "SHOW STATUS LIKE 'Caching_sha2_password_rsa_public_key'":
+            if "--raw" not in a: sys.exit(1)
+            print("Caching_sha2_password_rsa_public_key\t-----BEGIN PUBLIC KEY-----\nYWJj\n-----END PUBLIC KEY-----")
+            sys.exit(0)
         if sql.startswith("CREATE DATABASE "):
             db = sql.split()[2].rstrip(";")
             if "IF NOT EXISTS" in sql or db in s.get("databases", []): sys.exit(1)
