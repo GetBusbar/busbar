@@ -974,8 +974,10 @@ fn actual_operator_requests_keep_credentials_out_of_core_logs() {
 
 #[test]
 fn a_slow_admin_door_does_not_stall_healthz() {
+    use base64::Engine as _;
+    use ring::signature::KeyPair as _;
     use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener, TcpStream};
+    use std::net::TcpListener;
     use std::time::{Duration, Instant};
     crate::dist_root_install::install();
     let library_path = crate::root::test_plugins::application_store_library();
@@ -1012,35 +1014,61 @@ fn a_slow_admin_door_does_not_stall_healthz() {
         .name;
     common::credentials::install_auth_plugin(&directory, &oidc_module, "test-scope-module", true);
     let mut oidc_settings = common::credentials::settings("api://auth-admin-pending");
-    let target = oidc_settings["jwks_url"]
-        .as_str()
+    // READY sees an empty (valid) key set. Only VERIFY's missing-key rotation
+    // needs the second fetch, so a background refresh cannot satisfy this gate.
+    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let signing_key = ring::signature::EcdsaKeyPair::from_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_FIXED_SIGNING,
+        &certificate.signing_key.serialize_der(),
+        &ring::rand::SystemRandom::new(),
+    )
+    .unwrap();
+    let point = signing_key.public_key().as_ref();
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let jwks = serde_json::json!({"keys": [{
+        "kty": "EC", "crv": "P-256", "kid": "held-verifier", "alg": "ES256", "use": "sig",
+        "x": b64.encode(&point[1..33]), "y": b64.encode(&point[33..65]),
+    }]})
+    .to_string();
+    let tls = Arc::new(
+        rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
         .unwrap()
-        .strip_prefix("https://")
-        .expect("the existing issuer uses real TLS")
-        .split_once('/')
-        .unwrap()
-        .0
-        .parse()
-        .expect("the issuer endpoint is an actual loopback socket");
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the one-connection external peer");
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.cert.der().clone()],
+            rustls_pki_types::PrivateKeyDer::Pkcs8(rustls_pki_types::PrivatePkcs8KeyDer::from(
+                certificate.signing_key.serialize_der(),
+            )),
+        )
+        .unwrap(),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind the actual TLS issuer");
     listener.set_nonblocking(true).unwrap();
-
-    oidc_settings.insert("jwks_ttl_secs".into(), serde_json::json!(1));
+    oidc_settings.insert(
+        "ca_cert_pem".into(),
+        serde_json::json!(certificate.cert.pem()),
+    );
+    oidc_settings.insert("jwks_ttl_secs".into(), serde_json::json!(3600));
     oidc_settings.insert("jwks_min_refetch_secs".into(), serde_json::json!(1));
     oidc_settings.insert(
         "jwks_url".into(),
         serde_json::json!(format!("https://{}/jwks", listener.local_addr().unwrap())),
     );
-    let mut token =
-        common::credentials::token_for("alice", &["minters"], "api://auth-admin-pending");
+    let valid = common::credentials::token_for("alice", &["minters"], "api://auth-admin-pending");
+    let claims = valid.split('.').nth(1).unwrap();
+    let header = b64.encode(br#"{"alg":"ES256","typ":"JWT","kid":"held-verifier"}"#);
+    let signed = format!("{header}.{claims}");
+    let mut signature = signing_key
+        .sign(&ring::rand::SystemRandom::new(), signed.as_bytes())
+        .unwrap()
+        .as_ref()
+        .to_vec();
+    signature[0] ^= 1;
+    let token = format!("{signed}.{}", b64.encode(signature));
 
-    let signature = token.rfind('.').unwrap() + 1;
-    let replacement = if token.as_bytes()[signature] == b'A' {
-        "B"
-    } else {
-        "A"
-    };
-    token.replace_range(signature..signature + 1, replacement);
     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1048,136 +1076,72 @@ fn a_slow_admin_door_does_not_stall_healthz() {
 
     std::thread::scope(|peers| {
         let wire = peers.spawn(move || {
-            std::thread::scope(|connections| {
-                let mut gate = Some((entered_tx, release_rx));
-                let mut transfers = Vec::new();
-                loop {
-                    let accept_deadline = Instant::now() + Duration::from_secs(10);
-                    let mut downstream = loop {
-                        match listener.accept() {
-                            Ok((socket, _)) => break socket,
-                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                                assert!(
-                                    Instant::now() < accept_deadline,
-                                    "the actual verifier must connect"
-                                );
-                                std::thread::sleep(Duration::from_millis(2));
-                            }
-                            Err(error) => panic!("actual peer accept failed: {error}"),
+            struct Wire {
+                socket: std::net::TcpStream,
+                read: u64,
+                written: u64,
+            }
+            impl Read for Wire {
+                fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                    let count = self.socket.read(bytes)?;
+                    self.read += count as u64;
+                    assert!(self.read < 64 * 1024, "client wire overflow is a failure");
+                    Ok(count)
+                }
+            }
+            impl Write for Wire {
+                fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                    let count = self.socket.write(bytes)?;
+                    self.written += count as u64;
+                    assert!(self.written <= 64 * 1024, "issuer wire overflow is a failure");
+                    Ok(count)
+                }
+                fn flush(&mut self) -> std::io::Result<()> { self.socket.flush() }
+            }
+            loop {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let socket = loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => break socket,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < deadline, "the actual verifier must connect");
+                            std::thread::sleep(Duration::from_millis(2));
                         }
-                    };
-
-                    let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
-                    let gate = if gated { gate.take() } else { None };
-                    transfers.push(connections.spawn(move || {
-                        downstream.set_nonblocking(false).unwrap();
-                        downstream
-                            .set_read_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        downstream
-                            .set_write_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        let mut first = [0u8; 1];
-                        downstream
-                            .read_exact(&mut first)
-                            .expect("the actual verifier starts TLS");
-                        let held = if let Some((entered_tx, release_rx)) = gate {
-                            let entered = Instant::now();
-                            entered_tx.send(entered).unwrap();
-                            release_rx.recv_timeout(Duration::from_secs(10)).expect(
-                                "release the actual pending VERIFY after the unrelated probe",
-                            );
-                            if let Some(remaining) =
-                                Duration::from_millis(800).checked_sub(entered.elapsed())
-                            {
-                                std::thread::sleep(remaining);
-                            }
-                            entered.elapsed()
-                        } else {
-                            Duration::ZERO
-                        };
-                        let mut upstream =
-                            TcpStream::connect_timeout(&target, Duration::from_secs(5))
-                                .expect("connect the existing actual TLS/JWKS issuer");
-                        upstream
-                            .set_read_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        upstream
-                            .set_write_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        upstream
-                            .write_all(&first)
-                            .expect("forward the held TLS byte unchanged");
-                        let mut downstream_read = downstream.try_clone().unwrap();
-                        let mut upstream_write = upstream.try_clone().unwrap();
-                        let (client_bytes, issuer_bytes) = std::thread::scope(|copies| {
-                            let forward = copies.spawn(move || {
-                                let count = std::io::copy(
-                                    &mut (&mut downstream_read).take(64 * 1024),
-                                    &mut upstream_write,
-                                )
-                                .expect("forward actual client TLS bytes");
-                                let _ = upstream_write.shutdown(Shutdown::Write);
-                                assert!(count < 64 * 1024, "client wire overflow is a failure");
-                                count + 1
-                            });
-                            // The verifier can finish consuming JWKS and close while the
-                            // issuer still writes TLS shutdown bytes. Count only bytes the
-                            // real verifier accepted. The wire, Pending, health and
-                            // authentication assertions below still apply.
-                            let mut count = 0u64;
-                            let mut bytes = [0u8; 8192];
-                            'issuer: while count <= 64 * 1024 {
-                                let cap = bytes.len().min((64 * 1024 + 1 - count) as usize);
-                                let read = match upstream.read(&mut bytes[..cap]) {
-                                    Ok(read) => read,
-                                    Err(error)
-                                        if error.kind() == std::io::ErrorKind::Interrupted =>
-                                    {
-                                        continue
-                                    }
-                                    Err(error) => panic!("read actual issuer TLS bytes: {error}"),
-                                };
-                                if read == 0 {
-                                    break;
-                                }
-                                let mut written = 0;
-                                while written < read {
-                                    match downstream.write(&bytes[written..read]) {
-                                        Ok(0) => panic!("the verifier accepted no TLS bytes"),
-                                        Ok(n) => {
-                                            written += n;
-                                            count += n as u64;
-                                        }
-                                        Err(error)
-                                            if error.kind() == std::io::ErrorKind::Interrupted => {}
-                                        Err(error)
-                                            if error.kind() == std::io::ErrorKind::BrokenPipe =>
-                                        {
-                                            break 'issuer
-                                        }
-                                        Err(error) => {
-                                            panic!("forward actual issuer TLS bytes: {error}")
-                                        }
-                                    }
-                                }
-                            }
-                            let _ = downstream.shutdown(Shutdown::Both);
-                            assert!(count <= 64 * 1024, "issuer wire overflow is a failure");
-                            (forward.join().expect("the owned forwarder joins"), count)
-                        });
-                        (held, client_bytes, issuer_bytes)
-                    }));
-                    if gated {
-                        break;
+                        Err(error) => panic!("actual issuer accept failed: {error}"),
                     }
+                };
+                socket.set_nonblocking(false).unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                socket.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+                let connection = rustls::ServerConnection::new(tls.clone()).unwrap();
+                let mut stream = rustls::StreamOwned::new(connection,
+                    Wire { socket, read: 0, written: 0 });
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).expect("read actual TLS JWKS request");
+                    request.push(byte[0]);
+                    assert!(request.len() <= 8192, "bounded actual JWKS request");
                 }
-                let verify = transfers.pop().unwrap().join().expect("VERIFY relay joins");
-                for transfer in transfers {
-                    transfer.join().expect("READY relay joins");
-                }
-                verify
-            })
+                assert!(request.starts_with(b"GET /jwks HTTP/1.1\r\n"));
+                let gated = peer_armed.load(std::sync::atomic::Ordering::Acquire);
+                let held = if gated {
+                    let entered = Instant::now();
+                    entered_tx.send(entered).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(10))
+                        .expect("release actual pending VERIFY after the unrelated probe");
+                    if let Some(remaining) = Duration::from_millis(800).checked_sub(entered.elapsed()) {
+                        std::thread::sleep(remaining);
+                    }
+                    entered.elapsed()
+                } else { Duration::ZERO };
+                let body = if gated { jwks.as_str() } else { r#"{"keys":[]}"# };
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                stream.flush().unwrap();
+                stream.conn.send_close_notify();
+                let _ = stream.flush();
+                if gated { return (held, stream.sock.read, stream.sock.written); }
+            }
         });
         let signing = directory.join("signing-key");
         std::fs::write(&signing, hex::encode([9u8; 32]))

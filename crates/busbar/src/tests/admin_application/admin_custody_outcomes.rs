@@ -510,6 +510,15 @@ async fn abandoned_mint_queued_behind_config_write_still_settles() {
             .len(),
         1
     );
+    // Durable replay settlement does not imply that the separate native audit
+    // drain has accepted its queued event into the live ring yet.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        busbar_kernel::audit::auditlog::flush_pending(),
+    )
+    .await
+    .expect("the queued mint audit settles within its bound")
+    .expect("the queued mint audit is durably accepted");
     assert_eq!(audit_rows("custody:queued", "key.create", "applied"), 1);
     println!("custody assertions completed");
 }
