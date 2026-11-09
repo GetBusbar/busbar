@@ -4,6 +4,7 @@ This reads the upstream judge's VALID/ILLEGAL/UNKNOWN classifications; it does
 not classify HTTP responses. It is not a scanner or a certification verdict.
 Use one operation per report: v13's reporter collapses methods sharing a URI.
 """
+
 from html.parser import HTMLParser
 
 
@@ -37,8 +38,12 @@ class Report(HTMLParser):
         elif tag in ("td", "th"):
             if self.row is None or self.cell is not None:
                 raise Refused("malformed report cell")
-            self.cell = {"text": "", "class": attrs.get("class"),
-                         "colspan": attrs.get("colspan"), "tag": tag}
+            self.cell = {
+                "text": "",
+                "class": attrs.get("class"),
+                "colspan": attrs.get("colspan"),
+                "tag": tag,
+            }
 
     def handle_data(self, data):
         if self.cell is not None:
@@ -64,8 +69,8 @@ class Report(HTMLParser):
             self.depth = 0
 
 
-def assess(html, method, uri, principals):
-    """Require exactly the declared operation×principal roster, all upstream VALID.
+def read_cells(html, method, uri, principals):
+    """Decode exactly the declared operation×principal roster and upstream enums.
 
     `principals` is the ordered roster exported by the prepared ZAP context,
     including its actual upstream unauthenticated-user label when applicable.
@@ -95,11 +100,21 @@ def assess(html, method, uri, principals):
         raise Refused("upstream operation mismatch (possibly collapsed HTTP methods)")
     results = []
     for i, principal in enumerate(principals):
-        authorization, verdict = row[2 + 2*i:4 + 2*i]
+        authorization, verdict = row[2 + 2 * i : 4 + 2 * i]
         if verdict["class"] not in ("VALID", "ILLEGAL", "UNKNOWN"):
             raise Refused("missing upstream classification")
-        results.append({"principal": principal, "upstream_result": verdict["class"],
-                        "authorization_label": authorization["text"]})
+        results.append(
+            {
+                "principal": principal,
+                "upstream_result": verdict["class"],
+                "authorization_label": authorization["text"],
+            }
+        )
+    return results
+
+
+def assess(html, method, uri, principals):
+    results = read_cells(html, method, uri, principals)
     if any(r["upstream_result"] != "VALID" for r in results):
         raise Refused(f"upstream rejected or could not judge a cell: {results}")
     return results
@@ -128,5 +143,7 @@ def assess_all(reports, roster):
         found[key] = assess(html, method, uri, expected[key])
     if found.keys() != expected.keys():
         raise Refused("missing expected operation reports")
-    return [{"method": method, "uri": uri, "cells": found[(method, uri)]}
-            for method, uri in expected]
+    return [
+        {"method": method, "uri": uri, "cells": found[(method, uri)]}
+        for method, uri in expected
+    ]

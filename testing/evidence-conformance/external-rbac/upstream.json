@@ -1,5 +1,5 @@
 {
-  "status": "applicability-researched-report-adapter-only-not-integrated-not-executed",
+  "status": "integrated-CI-execution-required-no-local-subject-verdict",
   "upstream": {
     "repository": "https://github.com/zaproxy/zap-extensions",
     "addon": "accessControl",
@@ -30,8 +30,8 @@
       }
     }
   },
-  "executable_pin": null,
-  "runtime_dependencies_pin": null,
+  "executable_pin": "runtime.lock.json: ZAP 2.17.0 and AccessControl 13",
+  "runtime_dependencies_pin": "runtime.lock.json: Common Library 1.40.0, bundled GraalJS/scripts/pscan/network and Temurin JRE 21.0.13+9",
   "criteria": [
     "https://wstg.owasp.org/v4.2/4-Web_Application_Security_Testing/05-Authorization_Testing/02-Testing_for_Bypassing_Authorization_Schema/",
     "https://wstg.owasp.org/v4.2/4-Web_Application_Security_Testing/05-Authorization_Testing/03-Testing_for_Privilege_Escalation/"
@@ -48,5 +48,5 @@
     "required_adapter_strategy": "one operation per upstream scan/report, full principal roster, exact full-operation accounting"
   },
   "claims_supported": [],
-  "local_validation": "7 targeted report-accounting unit tests; no protocol or actual subject execution"
+  "local_validation": "targeted adapter tests only; no actual ZAP/Busbar matrix execution locally"
 }

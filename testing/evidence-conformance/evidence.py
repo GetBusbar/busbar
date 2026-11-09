@@ -884,7 +884,11 @@ def suite_rbac(work, log):
     ca_file, _ = ca.write(pkidir, "ca")
     issuer = Issuer(pkidir, ca)
     rogue = pki.RsaKey()
+    external = None
     try:
+        bins = build_subject(log, oidc=True)
+        zap = _load("external_rbac", os.path.join(HERE, "external-rbac", "zap.py"))
+        external = zap.ExternalRBAC(work, os.environ["CONFORMANCE_OUT"]).__enter__()
         # control and negative: the reference admin surface, correct and broken
         ref_verbs = {"get_keys", "delete_groups_by_name"}
         for leg, broken in (("control", False), ("negative", True)):
@@ -895,6 +899,9 @@ def suite_rbac(work, log):
                 ref = ReferenceAdmin(REFERENCE_OPS, issuer, broken=broken, capped=capped)
                 ref.verbs = sorted(ref_verbs)
                 try:
+                    external.matrix(f"{leg}-{'capped' if capped else 'full'}", ref.port,
+                                    REFERENCE_OPS, principals(issuer, rogue, ref_verbs, capped),
+                                    concrete=concrete, negative=broken)
                     f_, n_ = matrix(ref.port, REFERENCE_OPS, principals(issuer, rogue, ref_verbs, capped))
                 finally:
                     ref.stop()
@@ -911,7 +918,6 @@ def suite_rbac(work, log):
 
         # subject
         say("=== leg 3: subject (busbar, its OIDC module dropped in)")
-        bins = build_subject(log, oidc=True)
         plugins = pack_oidc(bins, work, log)
         skf = os.path.join(work, "signing.key")
         with open(skf, "w") as f:
@@ -958,6 +964,8 @@ def suite_rbac(work, log):
             prins = dict(list(prins.items())[:-1]) | {
                 "a data-plane virtual key": (lambda: {"authorization": f"Bearer {vkey}"}, lambda s, v: "deny"),
                 "a full role": prins["a full role"]}
+            external.matrix("subject-full", admin, ops, prins, concrete=concrete,
+                            subject_binary=bins["busbar"], subject_config=b.cfg)
             found, n = matrix(admin, ops, prins)
             say(f"subject: {n} admin cells, {len(found)} findings")
             why += [f"subject: {f}" for f in found]
@@ -967,6 +975,10 @@ def suite_rbac(work, log):
                 ("an admin full-role token", full(), 401),
                 ("a live virtual key", {"authorization": f"Bearer {vkey}"}, 200),
             ]
+            external.matrix("subject-data", data, [("GET", "/stats", "full", "data_stats")],
+                            {name: (lambda h=h: h, lambda s, v, want=want: "admit" if want == 200 else "deny")
+                             for name, h, want in cells}, concrete=concrete,
+                            subject_binary=bins["busbar"], subject_config=b.cfg)
             for name, h, want in cells:
                 st, body = request(data, "GET", "/stats", headers=h)
                 if st != want:
@@ -980,12 +992,29 @@ def suite_rbac(work, log):
                 elif st not in (401, 404):
                     why.append(f"subject: the data route /stats on the admin listener answered {name} {st}")
                 say(f"subject: GET /stats on the admin listener with {name}: {st}")
+            external.matrix("subject-admin-isolation", admin, [("GET", "/stats", "full", "data_stats")],
+                            {"a live virtual key": (lambda: {"authorization": f"Bearer {vkey}"}, lambda s, v: "deny"),
+                             "the full role": (full, lambda s, v: "deny")}, concrete=concrete,
+                            denied_statuses=(401, 403, 404), subject_binary=bins["busbar"], subject_config=b.cfg)
+            isolation_principals = {
+                "no credential": (lambda: {}, lambda s, v: "deny"),
+                "an invalid credential": (lambda: {"authorization": "Bearer invalid-isolation-probe"}, lambda s, v: "deny"),
+                "an admin-only credential": (full, lambda s, v: "deny"),
+                "a live data-plane key": (lambda: {"authorization": f"Bearer {vkey}"}, lambda s, v: "deny"),
+            }
+            external.matrix("subject-data-isolation", data,
+                            [(m, ADMIN + "/keys", "full", m.lower() + "_keys") for m in ("GET", "POST")],
+                            isolation_principals, concrete=concrete, denied_statuses=(401, 403, 404),
+                            subject_binary=bins["busbar"], subject_config=b.cfg)
             why += judge_data_admin_isolation(data, admin, full, vkey, minted["id"])
             st, body = request(admin, "POST", ADMIN + f"/keys/{minted.get('id')}/revoke", headers=full(), body={})
             if st >= 300:
                 why.append(f"subject: revoking the virtual key answered {st} {str(body)[:120]}")
             else:
                 st, body = request(data, "GET", "/stats", headers={"authorization": f"Bearer {vkey}"})
+                external.matrix("subject-revoked", data, [("GET", "/stats", "full", "data_stats")],
+                                {"a revoked virtual key": (lambda: {"authorization": f"Bearer {vkey}"}, lambda s, v: "deny")},
+                                concrete=concrete, subject_binary=bins["busbar"], subject_config=b.cfg)
                 if st != 401:
                     why.append(f"subject: data plane GET /stats with a revoked key: wanted 401, got {st}")
             if issuer.hits == 0:
@@ -1000,13 +1029,20 @@ def suite_rbac(work, log):
             capped = principals(issuer, rogue, verb_names, capped=True)
             reader = capped["a full role capped read-only by its provider"][0]
             b.wait(lambda: request(admin, "GET", ADMIN + "/audit/head", headers=reader()))
+            external.matrix("subject-capped", admin, ops, capped, concrete=concrete,
+                            subject_binary=bins["busbar"], subject_config=b.cfg)
             found, n = matrix(admin, ops, capped)
             say(f"subject (provider ceiling read-only): {n} admin cells, {len(found)} findings")
             why += [f"subject (provider ceiling read-only): {f}" for f in found]
         finally:
             b.stop()
+        external.complete()
     finally:
-        issuer.stop()
+        try:
+            if external is not None:
+                external.__exit__(None, None, None)
+        finally:
+            issuer.stop()
     return why
 
 
