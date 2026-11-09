@@ -18,6 +18,23 @@ spec.loader.exec_module(evidence)
 
 
 class IsolationAuditTests(unittest.TestCase):
+    def test_rbac_bootstrap_pin_tracks_the_installed_archive_and_missing_archive_refuses(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            archive = pathlib.Path(directory) / 'oidc.tar.gz'
+            issuer = mock.Mock(url='https://localhost/jwks')
+            def config():
+                return evidence.rbac_config(10001, 10002, directory, issuer, 'fixture-ca',
+                                            '/fixture/signing-key', {'get_keys'}, 'full')
+            with self.assertRaises(FileNotFoundError):
+                config()
+            archive.write_bytes(b'first test archive')
+            first = config()
+            archive.write_bytes(b'replacement test archive')
+            second = config()
+            self.assertNotEqual(first['plugins']['fetch'], second['plugins']['fetch'])
+            self.assertEqual(first['auth'], second['auth'])
+            self.assertNotIn('*', second['auth']['role_bindings']['rig'])
+
     def setUp(self):
         observer = dict(op_class="admin_read", outcome="Completed", step="", finish="Complete",
                         subject_tag="principal", subject_value="observer", destination="",

@@ -576,7 +576,13 @@ def subject_config(*, fapi2, data, admin, issuer, pki, plugins, jwks_url, client
                              "ca_cert_pem": ca_pem},
             },
         },
-        "plugins": {"enabled": True, "dir": plugins, "trust": {"allow_unsigned": True}},
+        "plugins": {
+            "enabled": True, "dir": plugins, "trust": {"allow_unsigned": True},
+            # The local fixture archive is already installed. Its exact base pin
+            # authorizes native Store bootstrap before Store-owned policy is readable.
+            "fetch": [{"url": "https://plugins.example/oidc.tar.gz",
+                       "sha256": sha256_file(os.path.join(plugins, "oidc.tar.gz"))}],
+        },
         "advanced": {"allow_destinations": ["127.0.0.1"]},
         "auth": {"chain": [IDP], "admin_auth": [], "role_bindings": {IDP: {SCOPE: {}}}},
     }
