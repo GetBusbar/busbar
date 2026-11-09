@@ -7,10 +7,10 @@
 #![cfg(unix)]
 
 use std::{
-    io,
+    io::{self, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -20,8 +20,9 @@ use sha2::{Digest, Sha256};
 
 const ADMIN: &str = "released-sqlite-startup-admin";
 // Native CI records new keys and timestamps on each invocation. Pin the writer
-// and recorder, then verify the actual transcript's files rather than one old DB.
-const RECORDER: &str = "83acfa89d93afda0e3c319a1d17c246d5e933e7a";
+// and this source revision's recorder, then verify the actual transcript's files
+// rather than one old DB. The recorder identifies itself with a Git blob digest.
+const RECORDER_SOURCE: &[u8] = include_bytes!("../../../scripts/store-migration-fixture.sh");
 
 fn released_source(fixture: &Path) -> io::Result<(Vec<u8>, Value)> {
     let manifest = std::fs::read_to_string(fixture.join("MANIFEST.tsv"))?;
@@ -48,7 +49,6 @@ fn released_source(fixture: &Path) -> io::Result<(Vec<u8>, Value)> {
         }
     }
     assert_eq!(rows["backend"], "sqlite");
-    assert_eq!(rows["recorder"], RECORDER);
     assert_eq!(rows["requests"], "200 200 200 503 200 200 ");
     let writer: Vec<_> = rows["busbar"].split_whitespace().collect();
     assert_eq!(writer.len(), 3);
@@ -83,9 +83,12 @@ fn released_source(fixture: &Path) -> io::Result<(Vec<u8>, Value)> {
         );
     }
     let original = std::fs::read(fixture.join("governance.db"))?;
-    let output = Command::new(std::env::var_os("BUSBAR_TEST_PYTHON").unwrap_or_else(|| "python3".into()))
+    let mut observer = Command::new(std::env::var_os("BUSBAR_TEST_PYTHON").unwrap_or_else(|| "python3".into()))
         .args(["-I", "-c", r#"
-import json,pathlib,sqlite3,sys
+import hashlib,json,pathlib,sqlite3,sys
+recorder=sys.stdin.buffer.read()
+blob=b'blob '+str(len(recorder)).encode()+b'\0'+recorder
+assert hashlib.sha1(blob).hexdigest()==sys.argv[2], 'fixture recorder differs from compiled source revision'
 p=pathlib.Path(sys.argv[1]).resolve()
 c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True)
 assert c.execute('pragma user_version').fetchone()[0]==6
@@ -98,7 +101,15 @@ source=c.execute('select sum(requests),sum(billable_requests),sum(tokens_input),
 assert source==(5,5,47,35,8),source
 assert set(k[0] for k in keys)==set(r[0] for r in c.execute('select distinct key_id from usage_metering'))
 print(json.dumps({'keys':keys,'bucket':int(buckets[0][0])}))
-"#]).arg(fixture.join("governance.db")).output()?;
+"#])
+        .arg(fixture.join("governance.db"))
+        .arg(rows["recorder"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    observer.stdin.take().unwrap().write_all(RECORDER_SOURCE)?;
+    let output = observer.wait_with_output()?;
     assert!(
         output.status.success(),
         "released SQLite observation failed: {}",
