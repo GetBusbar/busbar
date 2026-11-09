@@ -45,7 +45,9 @@ class Services:
         self.store_script = qualification.trusted / 'testing/fleet-fixtures/store-services.sh'
 
     def store(self, verb, service, *args):
-        return subprocess.check_output(['bash', str(self.store_script), verb, service, *args], env=self.q.env, text=True).strip()
+        output = self.q.run('fixture-' + service + '-' + verb,
+            ['bash', str(self.store_script), verb, service, *args], timeout=300)
+        return output.read_text().strip()
 
     def container(self, service, port, options=(), command=()):
         name = 'busbar-' + self.tag + '-' + service
