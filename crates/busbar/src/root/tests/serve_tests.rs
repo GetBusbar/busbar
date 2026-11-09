@@ -1919,6 +1919,7 @@ pub(super) mod session_door {
         upstream_model: Option<&'static str>,
         /// The deployment configures no media listener (`media.listen`): no claim door is bound.
         no_media: bool,
+        oauth_admin: Option<bool>,
     }
 
     fn session_door(
@@ -2403,7 +2404,7 @@ pub(super) mod session_door {
                 )
             })
             .collect();
-        let deploy = busbar_kernel::config::deploy_from_deserializer(serde_json::json!({
+        let mut document = serde_json::json!({
             "providers": {},
             "models": {},
             "groups": groups,
@@ -2417,8 +2418,23 @@ pub(super) mod session_door {
             "auth": { "chain": ["keys"], "admin_auth": [], "signing_key": {"file": signing_file} },
             "store": { "module": module, "settings": settings },
             "advanced": { "allow_destinations": ["127.0.0.1"] },
-        }))
-        .expect("the session deployment parses");
+        });
+        if let Some(guarded) = opts.oauth_admin {
+            document["oauth_as"] = serde_json::json!({
+                "issuer": "http://127.0.0.1:9999", "default_grant": ["read"],
+            });
+            if guarded {
+                let operator = busbar_kernel::config::operator_provider();
+                let credential = directory.join("consent-operator");
+                std::fs::write(&credential, "consent-operator-credential").unwrap();
+                document["identity-providers"] = serde_json::json!({
+                    (operator): {"module": operator, "token": {"file": credential}},
+                });
+                document["auth"]["admin_auth"] = serde_json::json!([operator]);
+            }
+        }
+        let deploy = busbar_kernel::config::deploy_from_deserializer(document)
+            .expect("the session deployment parses");
         let mut config = busbar_kernel::config::resolve(&deploy, &Default::default())
             .expect("the session deployment resolves");
         if budget.is_some() {
@@ -2552,11 +2568,15 @@ pub(super) mod session_door {
             .iter()
             .map(|name| (name.clone(), app.auth.position_points(name)))
             .collect();
+        let core = opts
+            .oauth_admin
+            .map(|_| busbar_kernel::base_data_core_lines(&app))
+            .unwrap_or_default();
         let mounts = crate::root::serve::door_mounts(
             served,
             || CARD.pin(),
             &data_chain,
-            &[],
+            &core,
             &upgrades,
             &offers,
         )
@@ -2621,6 +2641,82 @@ pub(super) mod session_door {
             Some(framer),
         )
         .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn physical_core_consent_uses_admin_auth_without_opening_data_auth() {
+        const TEST: &str = concat!(
+            module_path!(),
+            "::physical_core_consent_uses_admin_auth_without_opening_data_auth"
+        );
+        let Some(case) = super::independent_cases(TEST, &["open", "operator"]) else {
+            return;
+        };
+        let _one = PUBLISHING.lock().await;
+        let s = session_with(
+            "core-consent-auth",
+            Opts {
+                oauth_admin: Some(case == "operator"),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the distribution links the actual physical session fixture");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(serve_listener(listener, s.router.clone(), s.framer.clone()));
+        let client = reqwest::Client::builder()
+            .timeout(ANSWER_BOUND)
+            .build()
+            .unwrap();
+        let registered = client
+            .post(format!("{origin}/register"))
+            .json(
+                &serde_json::json!({"redirect_uris":["http://127.0.0.1:9998/callback"],
+                "token_endpoint_auth_method":"none", "response_types":["code"],
+                "grant_types":["authorization_code"], "scope":"read"}),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(registered.status(), 201);
+        let client_id = registered.json::<serde_json::Value>().await.unwrap()["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let consent = reqwest::Url::parse_with_params(
+            &format!("{origin}/consent"),
+            &[(
+                "return",
+                format!("/authorize?client_id={client_id}&scope=read"),
+            )],
+        )
+        .unwrap();
+        let absent = if case == "open" { 200 } else { 401 };
+        let stats = format!("{origin}/stats");
+        for (url, token, expected) in [
+            (consent.as_str(), None, absent),
+            (consent.as_str(), Some("incorrect-operator"), absent),
+            (consent.as_str(), Some("consent-operator-credential"), 200),
+            (stats.as_str(), None, 401),
+            (stats.as_str(), Some("incorrect-operator"), 401),
+            (stats.as_str(), Some("consent-operator-credential"), 401),
+        ] {
+            let mut request = client.get(url);
+            if let Some(token) = token {
+                request = request.bearer_auth(token);
+            }
+            let response = request.send().await.unwrap();
+            assert_eq!(response.status(), expected, "{case}: {url}");
+            let body = response.text().await.unwrap();
+            assert_eq!(
+                body.contains("id=approve") && body.contains("id=deny"),
+                expected == 200
+            );
+        }
+        server.abort();
+        let _ = server.await;
+        super::independent_case_done(TEST, &case);
     }
 
     impl SessionDoor {

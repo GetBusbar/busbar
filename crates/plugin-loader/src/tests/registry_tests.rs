@@ -47,12 +47,27 @@ fn discovery_reports_unreadable_archive_entries_without_hiding_them() {
     use std::os::unix::fs::symlink;
     let dir = tmpdir("discover-unreadable-entry");
     let unrelated = dir.join(std::ffi::OsString::from_vec(b"notes-\xff.txt".to_vec()));
-    std::fs::write(&unrelated, b"not a plugin").unwrap();
-    assert!(discover(&dir).unwrap().is_empty());
     let non_utf8 = dir.join(std::ffi::OsString::from_vec(b"plugin-\xff.tar.gz".to_vec()));
-    std::fs::write(&non_utf8, b"archive bytes").unwrap();
-    assert!(discover(&dir).unwrap_err().contains("UTF-8"));
-    std::fs::remove_file(non_utf8).unwrap();
+    // Exercise the production filename classifier even on filesystems (including APFS)
+    // which refuse malformed UTF-8 names before directory discovery can see them.
+    assert!(archive_filename(&unrelated).is_none());
+    assert!(archive_filename(&non_utf8)
+        .unwrap()
+        .unwrap_err()
+        .contains("UTF-8"));
+    match std::fs::write(&unrelated, b"not a plugin") {
+        Ok(()) => {
+            assert!(discover(&dir).unwrap().is_empty());
+            std::fs::write(&non_utf8, b"archive bytes").unwrap();
+            assert!(discover(&dir).unwrap_err().contains("UTF-8"));
+            std::fs::remove_file(non_utf8).unwrap();
+        }
+        Err(error) => {
+            assert_eq!(error.raw_os_error(), Some(libc::EILSEQ), "{error}");
+            assert!(!unrelated.exists());
+            assert!(discover(&dir).unwrap().is_empty());
+        }
+    }
     let dangling = dir.join("missing.tgz");
     symlink(dir.join("absent"), &dangling).unwrap();
     let error = discover(&dir).unwrap_err();

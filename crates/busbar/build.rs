@@ -49,6 +49,9 @@ use std::env;
 include!("src/build_stamp.rs");
 include!("src/linked_gen.rs");
 
+#[path = "src/link_policy.rs"]
+mod link_policy;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
@@ -71,6 +74,13 @@ fn main() {
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
     let opt_level = env::var("OPT_LEVEL").unwrap_or_else(|_| "unknown".into());
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".into());
+    for argument in link_policy::arguments(&target) {
+        println!("cargo:rustc-link-arg={argument}");
+    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/link_policy.rs").display()
+    );
     let encoded_flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
     let flags: Vec<&str> = encoded_flags
         .split('\u{1f}')

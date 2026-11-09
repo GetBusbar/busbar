@@ -4014,9 +4014,10 @@ impl ListenerPlan {
                     claimant: Claimant::Clean(CORE_CLAIMANT.into()),
                     dialect: 0,
                     auth: match auth {
-                        RouteAuth::None => LineAuth::None,
+                        // Core Admin routes use the operator adapter's admin chain;
+                        // the data chain must not authenticate them first.
+                        RouteAuth::None | RouteAuth::Admin => LineAuth::None,
                         RouteAuth::Key => inherited_data_auth(&chain, data_mode),
-                        RouteAuth::Admin => chain_auth(&chain),
                     },
                     upgrade: None,
                     offered: crate::root::doors::offers_unstated(),
@@ -4550,8 +4551,8 @@ fn door_mounts_planned(
             claimant: Claimant::Clean(CORE_CLAIMANT.to_string()),
             dialect: 0,
             auth: match auth {
-                RouteAuth::None => LineAuth::None,
-                _ => chain_auth(data_chain),
+                RouteAuth::None | RouteAuth::Admin => LineAuth::None,
+                RouteAuth::Key => chain_auth(data_chain),
             },
             upgrade: None,
 
