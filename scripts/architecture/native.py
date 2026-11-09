@@ -97,7 +97,11 @@ class Qualification:
         # credentials. The short-lived job token is used only by the trusted source fetcher.
         self.env = {key: value for key, value in os.environ.items() if key in
             ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'CARGO_HOME', 'RUSTUP_HOME')}
+        # Keep native test libraries free of embedded debug-symbol bulk. Rust assertions
+        # and optimization settings are unchanged; archive admission still hashes the
+        # actual complete library used by every runtime and custody witness.
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
+            CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
             CARGO_BUILD_JOBS=str(min(os.cpu_count() or 4, 16)), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')
@@ -212,6 +216,12 @@ class Qualification:
             path = envfile.read_text().strip()
             raw = subprocess.check_output(['bash', '-c', 'source "$1"; env -0', 'product-inputs', path], env=self.env)
             self.env.update(dict(value.decode().split('=', 1) for value in raw.split(b'\0') if value))
+            self.receipt['product_input_bytes'] = {
+                key: Path(value).stat().st_size for key, value in self.env.items()
+                if key.startswith('BUSBAR_') and key.endswith(('_CDYLIB', '_PLUGIN'))
+                and Path(value).is_file()
+            }
+            self.save()
             vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             witness = vector['c_witness']
             if witness['sdk'] != vector['sdk']:
