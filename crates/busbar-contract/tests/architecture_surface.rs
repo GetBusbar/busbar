@@ -267,6 +267,7 @@ fn child_file(file: &Path, root: bool, module: &syn::ItemMod) -> Result<PathBuf,
 fn source_tree(
     path: &Path,
     root: bool,
+    generated_root: Option<&Path>,
     seen: &mut BTreeSet<PathBuf>,
     errors: &mut Vec<String>,
     policy_names: Option<&BTreeSet<String>>,
@@ -274,6 +275,9 @@ fn source_tree(
     let path = path
         .canonicalize()
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let generated_root = generated_root
+        .map(Path::to_path_buf)
+        .or_else(|| generated_directory(&path));
     if !seen.insert(path.clone()) {
         return;
     }
@@ -321,23 +325,55 @@ fn source_tree(
             let key = format!("{}|{}", path.display(), include.tokens);
             if let Some(generated) = mapping.get(&key) {
                 generated.clone()
-            } else if let Some(generated) = generated_include(&path, &include) {
+            } else if let Some(generated) =
+                generated_include(&path, &include, generated_root.as_deref())
+            {
                 generated
             } else {
                 errors.push(format!("unresolved generated Rust include: {key}"));
                 continue;
             }
         };
-        source_tree(&child, root, seen, errors, policy_names);
+        source_tree(
+            &child,
+            root,
+            generated_root.as_deref(),
+            seen,
+            errors,
+            policy_names,
+        );
     }
-    child_modules(&parsed.items, &path, root, seen, errors, policy_names);
+    child_modules(
+        &parsed.items,
+        &path,
+        root,
+        generated_root.as_deref(),
+        seen,
+        errors,
+        policy_names,
+    );
 }
 
-fn generated_include(source: &Path, include: &syn::Macro) -> Option<PathBuf> {
+fn generated_directory(source: &Path) -> Option<PathBuf> {
     let env = std::env::var_os("BUSBAR_ARCHITECTURE_GENERATED_DIRS")?;
     let directories: std::collections::BTreeMap<PathBuf, PathBuf> =
         serde_json::from_slice(&std::fs::read(env).expect("generated directories readable"))
             .expect("generated directories");
+    directories
+        .iter()
+        .filter(|(root, _)| source.starts_with(root))
+        .max_by_key(|(root, _)| root.components().count())
+        .map(|(_, output)| output.clone())
+}
+
+fn generated_include(
+    source: &Path,
+    include: &syn::Macro,
+    inherited: Option<&Path>,
+) -> Option<PathBuf> {
+    let directory = inherited
+        .map(Path::to_path_buf)
+        .or_else(|| generated_directory(source))?;
     let concat = syn::parse2::<syn::ExprMacro>(include.tokens.clone()).ok()?;
     if !concat.mac.path.is_ident("concat") {
         return None;
@@ -370,16 +406,14 @@ fn generated_include(source: &Path, include: &syn::Macro) -> Option<PathBuf> {
     if !suffix.starts_with('/') || suffix.contains("..") {
         return None;
     }
-    directories
-        .iter()
-        .find(|(root, _)| source.starts_with(root))
-        .map(|(_, output)| output.join(&suffix[1..]))
+    Some(directory.join(&suffix[1..]))
 }
 
 fn child_modules(
     items: &[Item],
     file: &Path,
     root: bool,
+    generated_root: Option<&Path>,
     seen: &mut BTreeSet<PathBuf>,
     errors: &mut Vec<String>,
     policy_names: Option<&BTreeSet<String>>,
@@ -404,6 +438,7 @@ fn child_modules(
                     nested,
                     &base.join(module.ident.to_string()).join("mod.rs"),
                     false,
+                    generated_root,
                     seen,
                     errors,
                     policy_names,
@@ -412,6 +447,7 @@ fn child_modules(
                 source_tree(
                     &child_file(file, root, module).expect("module path"),
                     false,
+                    generated_root,
                     seen,
                     errors,
                     policy_names,
@@ -546,6 +582,7 @@ fn core_policy_checks_follow_included_rust() {
     source_tree(
         &root,
         false,
+        None,
         &mut BTreeSet::new(),
         &mut errors,
         Some(&["fixture-owner".into()].into()),
@@ -579,6 +616,7 @@ fn core_policy_does_not_select_implementations() {
         source_tree(
             Path::new(path),
             roots.contains(path),
+            None,
             &mut seen,
             &mut errors,
             Some(&names),
@@ -600,7 +638,7 @@ fn candidate_plugin_surfaces_follow_the_trusted_inventory() {
     assert!(!paths.is_empty(), "no source candidates");
     let mut errors = Vec::new();
     for path in paths {
-        source_tree(&path, true, &mut BTreeSet::new(), &mut errors, None);
+        source_tree(&path, true, None, &mut BTreeSet::new(), &mut errors, None);
     }
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
@@ -621,6 +659,41 @@ fn policy_follows_custom_crate_root_and_nonshipping_modules() {
     source_tree(
         &root,
         true,
+        None,
+        &mut BTreeSet::new(),
+        &mut errors,
+        Some(&["fixture-owner".into()].into()),
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("implementation selector fixture-owner"));
+}
+
+#[test]
+fn included_source_uses_the_compiling_crates_generated_directory() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("included-output-policy-{}", std::process::id()));
+    let outside = directory.join("shared");
+    let output = directory.join("out");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(&output).unwrap();
+    let root = directory.join("root.rs");
+    std::fs::write(&root, "include!(\"shared/part.rs\");").unwrap();
+    std::fs::write(
+        outside.join("part.rs"),
+        "include!(concat!(env!(\"OUT_DIR\"), \"/generated.rs\"));",
+    )
+    .unwrap();
+    std::fs::write(
+        output.join("generated.rs"),
+        "fn f(n: &str) { if n == \"fixture-owner\" {} }",
+    )
+    .unwrap();
+    let mut errors = Vec::new();
+    source_tree(
+        &root,
+        true,
+        Some(&output),
         &mut BTreeSet::new(),
         &mut errors,
         Some(&["fixture-owner".into()].into()),

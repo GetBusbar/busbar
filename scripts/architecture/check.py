@@ -401,6 +401,29 @@ def core_source_inventory(policy, checkout):
     return sorted(paths)
 
 
+def core_target_roots(policy, checkout, metadata):
+    """Use the actual workspace targets, never binary-only resolution stubs."""
+    checkout = checkout.resolve()
+    roots = set()
+    found = set()
+    for package in metadata['packages']:
+        name = package['name']
+        if name not in policy.data['core']:
+            continue
+        expected = (checkout / policy.data['core'][name]['manifest']).resolve()
+        if Path(package['manifest_path']).resolve() != expected:
+            raise Violation(f'core target metadata does not name its actual manifest: {name}')
+        found.add(name)
+        for target in package['targets']:
+            path = Path(target['src_path']).resolve()
+            if not path.is_relative_to(checkout) or not path.is_file():
+                raise Violation(f'core target source escapes or is missing: {path}')
+            roots.add(str(path))
+    if found != set(policy.data['core']):
+        raise Violation(f'missing actual core target metadata: {sorted(set(policy.data["core"]) - found)}')
+    return sorted(roots)
+
+
 def check_sources(policy, repository, checkout, metadata, trusted, scratch):
     """Run trusted syn checks as a small test harness, independent of candidate tests."""
     roots = []
@@ -433,14 +456,25 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         inventory.write_text(json.dumps(sorted(set(roots))))
         env['BUSBAR_ARCHITECTURE_SOURCES'] = str(inventory)
     mapping = {}
+    source_metadata = metadata
+    if repository == 'GetBusbar/busbar':
+        # Shipping resolution substitutes empty libraries for binary-only crates. Those
+        # stubs cannot identify real custom binary roots or produce their generated Rust.
+        source_metadata = json.loads(subprocess.check_output(
+            ['cargo', 'metadata', '--no-deps', '--format-version', '1',
+             '--manifest-path', str(checkout / 'Cargo.toml')], cwd=checkout, text=True))
+        crate_roots = core_target_roots(policy, checkout, source_metadata)
     if roots or repository == 'GetBusbar/busbar':
         # Resolve generated OUT_DIR includes from this exact candidate build. Never use
         # a candidate-supplied map or a stale build output selected by filename search.
-        build = subprocess.check_output(['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml'), '--message-format=json'], cwd=scratch, text=True)
+        build_command = (['cargo', 'build', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
+            if repository == 'GetBusbar/busbar' else
+            ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
+        build = subprocess.check_output(build_command + ['--message-format=json'], cwd=checkout, text=True)
         for line in build.splitlines():
             row = json.loads(line)
             if row.get('reason') == 'build-script-executed':
-                for package in metadata['packages']:
+                for package in source_metadata['packages']:
                     if package['id'] == row['package_id'] and package['name'] in policy.packages:
                         mapping[str(Path(package['manifest_path']).parent)] = row['out_dir']
         generated = scratch / 'generated-directories.json'
@@ -451,8 +485,6 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         paths = set(core_source_inventory(policy, checkout))
         for output in mapping.values():
             paths.update(str(path.resolve()) for path in Path(output).rglob('*.rs'))
-        crate_roots = sorted({t['src_path'] for package in metadata['packages']
-            if package['name'] in policy.data['core'] for t in package['targets']})
         inventory.write_text(json.dumps({'paths': sorted(paths), 'roots': crate_roots,
             'names': sorted({r.split('/', 1)[1].split('-', 2)[2] for r in policy.data['repositories']})}))
         env['BUSBAR_ARCHITECTURE_POLICY_SOURCES'] = str(inventory)
