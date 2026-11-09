@@ -216,6 +216,8 @@ fn actual_http_target_and_request_path_reach_the_same_real_peer() {
                 other => panic!("actual HTTP peer not reached: {other:?}"),
             }
         };
+        // Accepted sockets inherit nonblocking mode on macOS; this peer uses bounded reads.
+        socket.set_nonblocking(false).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
