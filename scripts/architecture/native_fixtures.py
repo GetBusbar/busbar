@@ -93,6 +93,21 @@ class Services:
                         self.q.env['BUSBAR_TEST_POSTGRES_IMPORT_URL'] = url
                     if service == 'mysql':
                         self.q.env['BUSBAR_TEST_MYSQL_ROOT_PASSWORD'] = 'busbar'
+                    if service == 'valkey':
+                        self.q.env.update(VALKEY_URL=url, BUSBAR_V4_TRANSPORT_URL=url)
+                        if self.q.repository == 'GetBusbar/busbar-store-valkey':
+                            # The required ignored witnesses launch their own servers,
+                            # including Unix sockets and crash/restart lifecycles. Use
+                            # the same pinned image as the live fixture, never a
+                            # runner-installed executable of an unknown version.
+                            fixture = self.q.work / 'valkey-native'
+                            fixture.mkdir()
+                            server = fixture / 'valkey-server'
+                            name = 'busbar-store-qa-valkey-' + self.tag
+                            self.q.run('fixture-valkey-server', ['docker', 'cp',
+                                name + ':/usr/local/bin/valkey-server', str(server)], timeout=60)
+                            self.q.run('fixture-valkey-server-check', [str(server), '--version'], timeout=30)
+                            self.q.env.update(BUSBAR_V4_TEST_TMP=str(fixture), BUSBAR_VALKEY_SERVER=str(server))
                 elif service == 'vault':
                     _, port = self.container(service, 8200,
                         ['-e', 'VAULT_DEV_ROOT_TOKEN_ID=busbar-fixture', '-e', 'VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200'], ['server', '-dev'])
