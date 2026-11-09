@@ -1534,21 +1534,6 @@
       "fields": {},
       "kind": "struct"
     },
-    "PrometheusSettings": {
-      "deny_unknown_fields": true,
-      "fields": {
-        "buffer_seconds": {
-          "optional": false,
-          "type": "u64"
-        },
-        "key_gauge_limit": {
-          "optional": true,
-          "type": "usize"
-        }
-      },
-      "kind": "struct",
-      "transparent": false
-    },
     "PromptAccess": {
       "deny_unknown_fields": false,
       "kind": "enum",

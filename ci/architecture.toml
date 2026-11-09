@@ -1,7 +1,6 @@
 # Architecture-controlled admission policy. Changes require owner approval.
 version = 1
 forbidden_shipping_features = ["test-seal", "test-support"]
-policy_sources = ["crates/busbar-kernel/src/host_services.rs", "crates/busbar-kernel/src/governance/mod.rs", "crates/busbar-kernel/src/persistence/mod.rs", "crates/busbar-kernel/src/plane_driver/serve.rs"]
 
 [core."busbar"]
 manifest = "crates/busbar/Cargo.toml"
@@ -879,3 +878,8 @@ count = 1
 source = "crates/busbar-contract/src/abi/sdk/registration.rs"
 markers = ["SDK_REGISTRATION_WITNESS"]
 count = 17
+
+[[compiler_witnesses]]
+source = "crates/busbar-contract/src/abi/sdk/auth_outbound.rs"
+markers = ["SDK_COMBINED_AUTH_WITNESS"]
+count = 2

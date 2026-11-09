@@ -593,7 +593,7 @@ impl<T: OutboundPlugin> HoldsOutbound<T> for Outbound<T> {
     }
 }
 
-/// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents (the SigV4 shape):
+/// THE AUTH KIND'S [`Life`] over a plugin `T` that both verifies and presents credentials:
 pub struct Both<T>(T);
 
 impl<T> std::fmt::Debug for Both<T> {
@@ -610,7 +610,38 @@ impl<T> Both<T> {
     }
 }
 
-impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
+/// A combined verifier and outbound signer owns one atomic lifecycle transition.
+///
+/// Implementing the two operation families does not supply a combined lifecycle. All fallible
+/// preparation must finish before either half becomes visible; a refused refresh retains both
+/// halves and their previous generation. The returned count is the inbound cache entries dropped.
+///
+/// ```compile_fail
+/// // SDK_COMBINED_AUTH_WITNESS missing combined lifecycle
+/// use busbar_contract::abi::sdk::{auth_door::VerifyPlugin, auth_outbound::{Both, OutboundPlugin}, life::Life};
+/// fn require_life<T: Life>() {}
+/// fn incomplete<T: VerifyPlugin + OutboundPlugin>() { require_life::<Both<T>>(); }
+/// ```
+/// ```
+/// // SDK_COMBINED_AUTH_WITNESS explicit combined lifecycle
+/// use busbar_contract::abi::sdk::{auth_outbound::{Both, CombinedPlugin}, life::Life};
+/// fn require_life<T: Life>() {}
+/// fn complete<T: CombinedPlugin>() { require_life::<Both<T>>(); }
+/// ```
+pub trait CombinedPlugin: VerifyPlugin + OutboundPlugin {
+    /// Construct both families from the same accepted settings and secrets.
+    fn open_combined(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal>;
+
+    /// Prepare and atomically commit both families, or leave both unchanged on refusal.
+    fn refresh_combined(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<u64, Refusal>;
+}
+
+impl<T: CombinedPlugin> Life for Both<T> {
     type Kind = crate::plugin::markers::AuthKind;
     const CANCEL: u32 = crate::abi::auth::CANCEL_ABANDONED;
     const DRIVE: Outcome = Outcome::Refused;
@@ -634,7 +665,8 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     }
 
     fn open(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
-        <T as OutboundPlugin>::open(settings, secrets, generation).map(Both)
+        Self::validate(settings)?;
+        T::open_combined(settings, secrets, generation).map(Both)
     }
 
     fn extensions(&self) -> Vec<u8> {
@@ -647,12 +679,7 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
         secrets: &[&[u8]],
         generation: u64,
     ) -> Result<Refreshed, Refusal> {
-        // The refusing step runs first: a refused refresh must leave the outbound half unchanged.
-        let dropped = VerifyPlugin::reload(&self.0, settings, secrets)?;
-        if let Err(refusal) = OutboundPlugin::refresh(&self.0, settings, secrets, generation) {
-            OutboundPlugin::retire(&self.0, generation);
-            return Err(refusal);
-        }
+        let dropped = self.0.refresh_combined(settings, secrets, generation)?;
         Ok(Refreshed {
             counted: <T as VerifyPlugin>::CACHE_FAMILY.map(|family| Counted {
                 family,
@@ -666,7 +693,7 @@ impl<T: VerifyPlugin + OutboundPlugin> Life for Both<T> {
     }
 }
 
-impl<T: VerifyPlugin + OutboundPlugin> HoldsOutbound<T> for Both<T> {
+impl<T: CombinedPlugin> HoldsOutbound<T> for Both<T> {
     fn outbound(&self) -> &T {
         &self.0
     }
@@ -880,7 +907,7 @@ impl<T: OutboundPlugin, L: HoldsOutbound<T>> SafeSlot for OutboundCancel<T, L> {
 /// the verify door writes it; PENDING while a service it made pends.
 #[derive(Debug)]
 pub struct VerifyBoth<T>(PhantomData<T>);
-impl<T: VerifyPlugin + OutboundPlugin> SafeSlot for VerifyBoth<T> {
+impl<T: CombinedPlugin> SafeSlot for VerifyBoth<T> {
     type Kind = crate::plugin::markers::AuthKind;
     type In = VerifyIn;
     type Out = IdentifyOut;

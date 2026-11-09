@@ -377,6 +377,30 @@ def resolve_shipping(checkout, entries, scratch, cargo_config=None, assembly=Fal
     return metadata
 
 
+def core_source_inventory(policy, checkout):
+    """Every Rust source in each trusted core member, including SDK, tests and build scripts.
+
+    A short hand-maintained list of policy files cannot establish core neutrality.
+    The candidate cannot remove a member from this inventory by editing its own policy.
+    """
+    checkout = checkout.resolve()
+    paths = set()
+    for entry in policy.data['core'].values():
+        root = (checkout / entry['manifest']).parent.resolve()
+        if not root.is_relative_to(checkout) or not root.is_dir():
+            raise Violation(f'invalid core source root: {root}')
+        member = set()
+        for path in root.rglob('*.rs'):
+            resolved = path.resolve()
+            if not resolved.is_relative_to(checkout):
+                raise Violation(f'core source escapes candidate checkout: {path}')
+            member.add(str(resolved))
+        if not member:
+            raise Violation(f'core member has no Rust sources: {root}')
+        paths.update(member)
+    return sorted(paths)
+
+
 def check_sources(policy, repository, checkout, metadata, trusted, scratch):
     """Run trusted syn checks as a small test harness, independent of candidate tests."""
     roots = []
@@ -408,10 +432,11 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         inventory = scratch / 'source-roots.json'
         inventory.write_text(json.dumps(sorted(set(roots))))
         env['BUSBAR_ARCHITECTURE_SOURCES'] = str(inventory)
+    mapping = {}
+    if roots or repository == 'GetBusbar/busbar':
         # Resolve generated OUT_DIR includes from this exact candidate build. Never use
         # a candidate-supplied map or a stale build output selected by filename search.
         build = subprocess.check_output(['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml'), '--message-format=json'], cwd=scratch, text=True)
-        mapping = {}
         for line in build.splitlines():
             row = json.loads(line)
             if row.get('reason') == 'build-script-executed':
@@ -423,11 +448,17 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         env['BUSBAR_ARCHITECTURE_GENERATED_DIRS'] = str(generated)
     if repository == 'GetBusbar/busbar':
         inventory = scratch / 'policy-sources.json'
-        inventory.write_text(json.dumps({'paths': [str(checkout / p) for p in policy.data['policy_sources']],
+        paths = set(core_source_inventory(policy, checkout))
+        for output in mapping.values():
+            paths.update(str(path.resolve()) for path in Path(output).rglob('*.rs'))
+        crate_roots = sorted({t['src_path'] for package in metadata['packages']
+            if package['name'] in policy.data['core'] for t in package['targets']})
+        inventory.write_text(json.dumps({'paths': sorted(paths), 'roots': crate_roots,
             'names': sorted({r.split('/', 1)[1].split('-', 2)[2] for r in policy.data['repositories']})}))
         env['BUSBAR_ARCHITECTURE_POLICY_SOURCES'] = str(inventory)
     subprocess.run(['cargo', 'test', '--manifest-path', str(harness / 'Cargo.toml'), '--test', 'architecture_surface'], cwd=scratch, env=env, check=True)
-    return {'source_roots': len(set(roots)), 'trusted_source_check': True}
+    return {'source_roots': len(set(roots)), 'core_source_files': len(paths) if repository == 'GetBusbar/busbar' else 0,
+            'trusted_source_check': True}
 
 
 def check_c(policy, repository, checkout, sdk, scratch):
