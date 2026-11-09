@@ -62,6 +62,7 @@ fn ready<T: std::fmt::Debug>(
 
 #[test]
 fn the_real_host_reaches_an_immediate_reply_with_independent_declared_and_caller_bounds() {
+    let _invocation = crate::dispatch::access::enter(slot::TICK);
     for (need_ms, establish_ms, request_ms, expected_dial) in [
         (700, 0, 0, 700),
         (700, 123, 0, 123),

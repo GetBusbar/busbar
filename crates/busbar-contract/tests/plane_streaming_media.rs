@@ -46,10 +46,13 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     // SAFETY: old's allocation is exactly its declared size; no appended pointer exists.
     let legacy_bytes = unsafe { rendering::render(&st) }.unwrap();
 
-    assert_eq!(
-        legacy_bytes,
-        include_bytes!("fixtures/plane-before-streaming.bbstmt")
-    );
+    // The historical fixture pins the old allocation's payload. Rendering uses
+    // the current mechanism header even when the tail has its historical size.
+    let mut historical = include_bytes!("fixtures/plane-before-streaming.bbstmt").to_vec();
+    assert_eq!(&historical[8..12], &2_u32.to_le_bytes());
+    historical[8..12]
+        .copy_from_slice(&busbar_contract::abi::mechanism::MECHANISM_VERSION.to_le_bytes());
+    assert_eq!(legacy_bytes, historical);
     let legacy = rendering::read(&legacy_bytes).unwrap();
     let empty = PlaneTail {
         ingress: INGRESS_RESPONSE_STREAM,
