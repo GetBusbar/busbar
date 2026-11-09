@@ -1,0 +1,46 @@
+{
+  "runtime": {
+    "version": "2.17.0",
+    "url": "https://github.com/zaproxy/zaproxy/releases/download/v2.17.0/ZAP_2.17.0_Crossplatform.zip",
+    "sha256": "94c8f767b1c2e94f0db66b3ae56514d5e3f5a728ee1b6c798e0c8fe2d61fbff0"
+  },
+  "bundled_plugins": {
+    "graaljs-alpha-0.12.0.zap": "09eef48f9d59da168ca6be03935001ceb927f3f71990ef617c4a53509bdb7757",
+    "network-beta-0.25.0.zap": "bf32c4d2c40c76171efa29da1987375a312cc09595ece29d67018e7ae54d6cf3",
+    "scripts-release-45.17.0.zap": "ea5302741955b00f0432fdcaea17c4ae68e13ca0ff3086006283a298b6a537ff",
+    "pscan-alpha-0.6.0.zap": "269ff66f0d8a8012f156e90e13238606a8d503b99521170649b62c9aa7295927"
+  },
+  "addons": [
+    {
+      "name": "accessControl-alpha-13.zap",
+      "url": "https://github.com/zaproxy/zap-extensions/releases/download/accessControl-v13/accessControl-alpha-13.zap",
+      "sha256": "4c3cad240fc797f8e5a013236fd98e1256a03938fc31eb621e0bedf367760f07"
+    },
+    {
+      "name": "commonlib-release-1.40.0.zap",
+      "url": "https://github.com/zaproxy/zap-extensions/releases/download/commonlib-v1.40.0/commonlib-release-1.40.0.zap",
+      "sha256": "ed7640d2e439438e012ffc2ca0237e2027d136c80180025396ef052e6fdeff0f"
+    }
+  ],
+  "jre": {
+    "version": "Temurin-21.0.13+9",
+    "platforms": {
+      "Darwin-arm64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_aarch64_mac_hotspot_21.0.13_9.tar.gz",
+        "sha256": "225bab0a09491ef06835488cd942f5d2befa9a0410a2484f0c8bbcf7506ec09a"
+      },
+      "Darwin-x86_64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_mac_hotspot_21.0.13_9.tar.gz",
+        "sha256": "c909674b1c10c261b9a3fb7e9c0efebd303e33f88a4fe84be7135b5e2d711f89"
+      },
+      "Linux-aarch64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_aarch64_linux_hotspot_21.0.13_9.tar.gz",
+        "sha256": "b1734db7ade49c3f6acc6ae06233b8c2dd90e3e2f00f67000ae1c972aaa64d8c"
+      },
+      "Linux-x86_64": {
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.13%2B9/OpenJDK21U-jre_x64_linux_hotspot_21.0.13_9.tar.gz",
+        "sha256": "a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd"
+      }
+    }
+  }
+}
