@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Runtime closure of the pinned TLSfuzzer CertificateVerify application.
+tlslite-ng==0.9.0b2 --hash=sha256:d69afaa207972506fcdad4362de09a422f0c8b780f370ec881cf7e789e858aa1
+ecdsa==0.19.1 --hash=sha256:30638e27cf77b7e15c4c4cc1973720149e1033827cfd00661ca5c8cc0cdb24c3
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274

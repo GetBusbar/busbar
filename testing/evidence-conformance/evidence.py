@@ -1102,7 +1102,7 @@ def testssl_leg(work, log):
     return []
 
 
-def suite_tls(work, log):
+def suite_tls(work, log, output=None):
     why = []
     pkidir = os.path.join(work, "pki")
     os.makedirs(pkidir, exist_ok=True)
@@ -1113,11 +1113,16 @@ def suite_tls(work, log):
     admin_leaf = pki.Cert("localhost", issuer=ca, server=True, dns=["localhost"], ips=["127.0.0.1"]).write(pkidir, "admin-leaf", chain=True)
     good = pki.Cert("evidence client", issuer=ca, client=True).write(pkidir, "client")
     rogue = pki.Cert("evidence client", issuer=rogue_ca, client=True).write(pkidir, "rogue-client")
+    external = _load("tlsfuzzer", os.path.join(REPO, "testing", "tls-conformance", "tlsfuzzer.py"))
+    bins = build_subject(log)
+    official = external.Profile(work, output or os.environ["CONFORMANCE_OUT"], REPO, bins["busbar"])
 
     say("=== leg 1: control (OpenSSL server, client certificates required)")
     s = OpenSslServer(leaf, ca_file, required=True)
     try:
         why += judge_mtls("control", s.port, ca_file, good, rogue)
+        why += official.run("control", s.port, good)
+        why += official.run("invalid-client", s.port, rogue, negative=True)
     finally:
         s.stop()
     say("=== leg 2: negative control (OpenSSL server, client certificates optional)")
@@ -1132,7 +1137,6 @@ def suite_tls(work, log):
         s.stop()
 
     say("=== leg 3: subject (busbar: tls.client_ca on the data listener, admin_tls.client_ca on admin)")
-    bins = build_subject(log)
     data, admin = free_port(), free_port()
     cfg = base_config(data, admin,
                       tls={"cert": {"file": leaf[0]}, "key": {"file": leaf[1]}, "client_ca": {"file": ca_file}},
@@ -1147,9 +1151,12 @@ def suite_tls(work, log):
         b.wait(up)
         why += judge_mtls("subject data listener", data, ca_file, good, rogue)
         why += judge_mtls("subject admin listener", admin, ca_file, good, rogue, path="/api/v1/admin/audit/head")
+        why += official.run("subject-data", data, good)
+        why += official.run("subject-admin", admin, good)
     finally:
         b.stop()
     why += testssl_leg(work, log)
+    why += official.finish()
     return why
 
 
@@ -1167,7 +1174,10 @@ def main():
     log = os.path.join(out, "build.log")
     why = []
     try:
-        why = {"audit": suite_audit, "rbac": suite_rbac, "tls": suite_tls}[which](work, log)
+        if which == "tls":
+            why = suite_tls(work, log, out)
+        else:
+            why = {"audit": suite_audit, "rbac": suite_rbac}[which](work, log)
     except Refused as e:
         why = [str(e)]
     except Exception as e:  # a rig fault is a fail, named, never a pass
@@ -1185,6 +1195,9 @@ def main():
         shutil.rmtree(work, ignore_errors=True)
     v = {"suite": suite, "status": "fail" if why else "pass", "armed": True, "standard": standard, "plan": plan,
          "spec_version": "busbar dist/default from this checkout"}
+    if which == "tls":
+        v["plan"] += "; upstream TLSfuzzer mandatory-client-auth RSA-PSS CertificateVerify profile"
+        v["spec_version"] += "; TLSfuzzer 5eebc4464e5197a7f7392fb9acda99cfc32441f7 application version 9"
     if why:
         v["reason"] = "; ".join(why)[:4000]
     with open(os.path.join(out, "verdict.json"), "w") as f:
