@@ -151,7 +151,7 @@ PY
 # Each bounded command owns a process group; argv stays separate from shell syntax.
 run_bounded() {
   python3 -I - "$@" <<'PYTIMEOUT'
-import ctypes, os, signal, subprocess, sys, time
+import ctypes, errno, os, signal, subprocess, sys, time
 budget, label, *command = sys.argv[1:]
 # Linux can adopt and reap orphaned grandchildren after their process group is terminated.
 if sys.platform.startswith("linux"):
@@ -159,6 +159,31 @@ if sys.platform.startswith("linux"):
     if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
         raise OSError(ctypes.get_errno(), "cannot supervise command descendants")
 process, pending_signal = None, 0
+
+def signal_owned_group(signum):
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        # XNU killpg1 excludes SZOMB members and returns EPERM if a retained
+        # group has no signalable members. A reaped leader alone is not proof:
+        # refuse to suppress denied cleanup if any live descendant remains.
+        # https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sig.c
+        if (sys.platform != "darwin" or error.errno != errno.EPERM
+                or process.poll() is None):
+            raise
+        table = subprocess.check_output(
+            ["/bin/ps", "-axo", "pgid=,stat="], text=True, timeout=1)
+        rows = [line.split() for line in table.splitlines() if line.strip()]
+        if not rows:
+            raise RuntimeError("cannot establish completed process-group state")
+        for row in rows:
+            if len(row) != 2 or not row[0].isdigit() or not row[1]:
+                raise RuntimeError("cannot parse process-group state")
+            if int(row[0]) == process.pid and not row[1].startswith("Z"):
+                raise
+
 def interrupted(signum, frame):
     global pending_signal
     pending_signal = signum
@@ -183,18 +208,12 @@ finally:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     if process is not None:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        signal_owned_group(signal.SIGTERM)
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        signal_owned_group(signal.SIGKILL)
         process.wait(timeout=1)
         deadline = time.monotonic() + 1
         while True:
