@@ -83,7 +83,7 @@ def qualify_generator(q):
     q.receipt.update(host_revision=git(host, 'rev-parse', 'HEAD'), sdk_revision=pin)
     q.run('fmt', ['cargo', 'fmt', '--all', '--check'])
     q.run('clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--locked', '--', '-D', 'warnings'])
-    q.run('tooling-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked',
+    q.run('tooling-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', '--no-fail-fast',
         '--tool-config-file', 'admission:' + str(q.trusted / 'ci/native-nextest.toml')])
     q.run('tooling-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked'])
     q.run('render-canonical', ['cargo', 'test', '--locked', '-p', 'busbar-release-plugin', '--test', 'boundary_scaffold',

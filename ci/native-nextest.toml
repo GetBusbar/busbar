@@ -4,3 +4,9 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 
 [profile.default.junit]
 path = "native.xml"
+
+# These existing end-to-end fixtures compile and boot the complete release product.
+# Cold compilation is part of the test; retain the five-minute limit for other tests.
+[[profile.default.overrides]]
+filter = 'test(/^live_e2e::/) | test(=github_get_flow_mints_key_via_core_executed_hops) | test(=install_oidc_plugin_via_admin_api_and_authenticate)'
+slow-timeout = { period = "60s", terminate-after = 20 }
