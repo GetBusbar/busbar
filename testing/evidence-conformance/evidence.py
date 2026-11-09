@@ -1091,10 +1091,9 @@ class OpenSslServer:
 
         class H(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                self.send_response(200)
-                self.send_header("content-length", "3")
-                self.end_headers()
-                self.wfile.write(b"ok\n")
+                # Upstream consumes one application record before sending close_notify.
+                # Keep this tiny response in one SSL write, including its HTTP headers.
+                self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nok\n")
 
             def log_message(self, *a):
                 pass
@@ -1102,7 +1101,31 @@ class OpenSslServer:
         class S(http.server.ThreadingHTTPServer):
             def get_request(self):
                 sock, addr = self.socket.accept()
-                return ctx.wrap_socket(sock, server_side=True), addr
+                secure = ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False)
+                secure.settimeout(5)
+                try:
+                    secure.do_handshake()
+                    return secure, addr
+                except ssl.SSLError:
+                    # OpenSSL has sent its real fatal alert. A close with unread peer
+                    # records can replace it with a TCP reset while TLSfuzzer is still
+                    # sending Finished. Preserve the alert, without accepting the peer.
+                    transport = socket.socket(fileno=secure.detach())
+                    try:
+                        transport.shutdown(socket.SHUT_WR)
+                        deadline = time.monotonic() + 1
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            transport.settimeout(remaining)
+                            if not transport.recv(65536):
+                                break
+                    except OSError:
+                        pass
+                    finally:
+                        transport.close()
+                    raise
 
             def handle_error(self, request, client_address):
                 pass
@@ -1113,6 +1136,7 @@ class OpenSslServer:
 
     def stop(self):
         self.server.shutdown()
+        self.server.server_close()
 
 
 def testssl_leg(work, log):

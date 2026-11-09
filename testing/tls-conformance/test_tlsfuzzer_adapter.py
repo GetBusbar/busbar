@@ -12,6 +12,11 @@ spec = importlib.util.spec_from_file_location("adapter", Path(__file__).with_nam
 adapter = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(adapter)
 
+evidence_spec = importlib.util.spec_from_file_location(
+    "evidence", Path(__file__).parents[1] / "evidence-conformance" / "evidence.py")
+evidence = importlib.util.module_from_spec(evidence_spec)
+evidence_spec.loader.exec_module(evidence)
+
 ALGORITHMS = ["rsa_pkcs1_sha512", "rsa_pkcs1_sha384", "rsa_pkcs1_sha256", "rsa_pkcs1_sha224",
               "rsa_pkcs1_sha1", "(1, 1)", "rsa_pss_rsae_sha256", "rsa_pss_rsae_sha384",
               "rsa_pss_rsae_sha512", "rsa_pss_pss_sha256", "rsa_pss_pss_sha384", "rsa_pss_pss_sha512"]
@@ -90,6 +95,61 @@ class AdapterChecks(unittest.TestCase):
                 adapter.bounded(["upstream"], "upstream.log", 1)
         self.assertEqual(kill.call_args_list, [mock.call(123, adapter.signal.SIGTERM),
                                               mock.call(123, adapter.signal.SIGKILL)])
+
+
+class OpenSslControlChecks(unittest.TestCase):
+    def control(self):
+        class Server:
+            def __init__(self, address, handler):
+                self.handler = handler
+                self.socket = mock.Mock()
+                self.server_address = ("127.0.0.1", 1234)
+
+            def serve_forever(self):
+                pass
+
+        context = mock.Mock()
+        with mock.patch.object(evidence.ssl, "SSLContext", return_value=context), \
+                mock.patch.object(evidence.http.server, "ThreadingHTTPServer", Server), \
+                mock.patch.object(evidence.threading, "Thread"):
+            control = evidence.OpenSslServer(("leaf", "key"), "ca")
+        return control, context
+
+    def test_http_response_is_one_complete_tls_application_write(self):
+        control, _ = self.control()
+        handler = object.__new__(control.server.handler)
+        handler.wfile = mock.Mock()
+        handler.do_GET()
+        handler.wfile.write.assert_called_once_with(
+            b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nok\n")
+
+    def test_real_openssl_handshake_still_decides_client_admission(self):
+        control, context = self.control()
+        raw, addr = mock.Mock(), ("127.0.0.1", 4321)
+        control.server.socket.accept.return_value = raw, addr
+        self.assertEqual(control.server.get_request(), (context.wrap_socket.return_value, addr))
+        self.assertEqual(context.verify_mode, evidence.ssl.CERT_REQUIRED)
+        context.wrap_socket.assert_called_once_with(
+            raw, server_side=True, do_handshake_on_connect=False)
+        context.wrap_socket.return_value.do_handshake.assert_called_once_with()
+
+    def test_rejected_handshake_preserves_alert_and_drain_has_a_total_deadline(self):
+        control, context = self.control()
+        control.server.socket.accept.return_value = mock.Mock(), ("127.0.0.1", 4321)
+        secure = context.wrap_socket.return_value
+        secure.do_handshake.side_effect = evidence.ssl.SSLError("certificate verify failed")
+        secure.detach.return_value = 42
+        transport = mock.Mock()
+        transport.recv.return_value = b"pending peer records"
+        with mock.patch.object(evidence.socket, "socket", return_value=transport) as opened, \
+                mock.patch.object(evidence.time, "monotonic", side_effect=[10, 10, 10.5, 11]), \
+                self.assertRaises(evidence.ssl.SSLError):
+            control.server.get_request()
+        opened.assert_called_once_with(fileno=42)
+        transport.shutdown.assert_called_once_with(evidence.socket.SHUT_WR)
+        self.assertEqual(transport.recv.call_count, 2)
+        self.assertEqual(transport.settimeout.call_args_list, [mock.call(1), mock.call(.5)])
+        transport.close.assert_called_once_with()
 
 
 if __name__ == "__main__":
