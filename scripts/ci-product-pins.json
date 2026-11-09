@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "fb31412782aa7f461b5f43b4da46d60cc9157c52",
+      "commit": "08f3eaee93784b45fa147b9512843db4ec61076f",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
