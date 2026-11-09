@@ -5,7 +5,7 @@
 
 use zeroize::Zeroize;
 
-/// JSON list of declared route paths requesting a first-party snapshot consumer's
+/// JSON list of declared route paths requesting the admitted recorder consumer's
 pub const EXT_PUBLIC_ROUTES: &str = "listener.public_routes";
 
 /// JSON list of public route paths retained by the boot instance after config removal.
@@ -257,6 +257,11 @@ pub enum Delivered {
 
 /// ONE EXPORT INSTANCE'S CALLS, as the kernel makes them.
 pub trait ExportCalls: Send + Sync {
+    /// Validated immutable startup requirements, absent for exporters needing no recorder.
+    fn recorder_requirements(&self) -> Option<RecorderRequirements> {
+        None
+    }
+
     /// Apply settings to this instance. A refusal retains its current settings and bindings.
     fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
         let _ = (settings, generation);
@@ -269,7 +274,7 @@ pub trait ExportCalls: Send + Sync {
     /// The routes this instance serves (its Statement tail's `routes[]`), in the route vocabulary
     fn routes(&self) -> &[crate::abi::mechanism::route::Route];
 
-    /// Declared routes outside the instance namespace, granted only to the first-party
+    /// Declared routes outside the instance namespace, granted only to the admitted recorder consumer
     fn public_routes(&self) -> &[String] {
         &[]
     }
@@ -316,8 +321,52 @@ pub trait ExportCalls: Send + Sync {
     fn shed(&self) {}
 }
 
-/// What [`ExportAxis::probe`] answers of a module: the streams its sink declares (`None` when it
-pub type Probed = (Option<Vec<u8>>, Vec<String>);
+/// Config probe result: declared streams, validation problems, and the explicit
+/// recorder requirements obtained from the validated probe instance, if advertised.
+pub type Probed = (Option<Vec<u8>>, Vec<String>, Option<RecorderRequirements>);
+
+/// Opt-in Statement extension. Its JSON value must be version `1`; advertised exporters
+/// must answer `CHECK_PHASE_RECORDER` after validated OPEN, including during config probes.
+pub const EXT_RECORDER_REQUIREMENTS: &str = "recorder.requirements";
+
+/// Immutable startup requirements for the host-owned metrics recorder. These are a
+/// kind declaration, never the exporter's opaque operator settings. The host retains
+/// its fixed series/bucket bounds and applies the declared per-key projection limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecorderRequirements {
+    /// Positive rolling observation retention window, in seconds.
+    pub retention_seconds: u64,
+    /// Maximum per-key gauges included in a scrape; zero includes none.
+    pub key_gauge_limit: usize,
+}
+
+impl RecorderRequirements {
+    /// Validate the declaration without interpreting implementation settings.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.retention_seconds == 0 {
+            return Err("recorder retention_seconds must be positive".into());
+        }
+        Ok(())
+    }
+}
+
+/// Validate the admitted declaration protocol version. Absence opts out.
+pub fn recorder_protocol(extensions: &[u8]) -> Result<bool, String> {
+    use crate::abi::mechanism::extensions;
+    let mut declarations = extensions::entries(extensions)
+        .filter(|(key, _)| *key == EXT_RECORDER_REQUIREMENTS.as_bytes());
+    let Some((_, value)) = declarations.next() else {
+        return Ok(false);
+    };
+    if declarations.next().is_some() {
+        return Err("repeated recorder.requirements declaration".into());
+    }
+    if value != b"1" {
+        return Err("unsupported recorder.requirements declaration version".into());
+    }
+    Ok(true)
+}
 
 /// THE EXPORT AXIS, as the kernel asks it: every `kind: export` row the composition root admitted
 pub trait ExportAxis: Send + Sync {

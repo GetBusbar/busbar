@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1.1) to a server's public key: MySQL's
+//! RSA-OAEP (SHA-1, MGF1-SHA-1; RFC 8017 7.1.1) with a public RSA key.
 
 use base64::Engine as _;
 use num_bigint::BigUint;
@@ -82,7 +82,7 @@ fn mgf1_sha1(seed: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
     out
 }
 
-/// The SHA-256 of the PEM key's DER body: what `server_public_key_sha256` pins.
+/// The SHA-256 of the PEM key's DER body.
 pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
     let der = pem_body(pem).ok_or(BAD_KEY)?;
     rsa_public_key(&der).ok_or(BAD_KEY)?;

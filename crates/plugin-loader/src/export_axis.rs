@@ -144,14 +144,22 @@ impl<'r> ExportRows<'r> {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
                 let text = zeroize::Zeroizing::new(settings.to_string());
-                let problems = match export_door::validate(&p, text.as_bytes()) {
-                    Ok(()) => Vec::new(),
-                    Err(text) => refusal_lines(SECTION, instance, &text),
+                let declaration = export_door::validate(&p, text.as_bytes()).and_then(|()| {
+                    if p.context::<ExportFacts>().is_some_and(|f| f.recorder) {
+                        ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())
+                            .map(|opened| opened.recorder_requirements())
+                    } else {
+                        Ok(None)
+                    }
+                });
+                let (recorder, problems) = match declaration {
+                    Ok(recorder) => (recorder, Vec::new()),
+                    Err(text) => (None, refusal_lines(SECTION, instance, &text)),
                 };
-                Some((streams, problems))
+                Some((streams, problems, recorder))
             }
 
-            Err(_) => Some((None, Vec::new())),
+            Err(error) => Some((None, refusal_lines(SECTION, instance, &error), None)),
         }
     }
 

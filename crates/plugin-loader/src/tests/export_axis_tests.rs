@@ -84,11 +84,11 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
             .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
         let good = serde_json::json!({ "buffer_seconds": 60 });
-        let (streams, clean) = rows.probe(module, "metrics", &good).expect("an export row");
+        let (streams, clean, _) = rows.probe(module, "metrics", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Metrics as u8]));
         assert!(clean.is_empty(), "{clean:?}");
         let bad = serde_json::json!({ "buffer_seconds": 60, "bogus": 1 });
-        let (_, refused) = rows.probe(module, "metrics", &bad).expect("an export row");
+        let (_, refused, _) = rows.probe(module, "metrics", &bad).expect("an export row");
         assert_eq!(
             refused,
             vec![
@@ -98,7 +98,7 @@ fn the_scrape_sink_answers_the_same_through_either_door() {
             ]
         );
         let zero = serde_json::json!({ "buffer_seconds": 0 });
-        let (_, zero) = rows.probe(module, "metrics", &zero).expect("an export row");
+        let (_, zero, _) = rows.probe(module, "metrics", &zero).expect("an export row");
         assert!(
             zero.len() == 1 && zero[0].starts_with("the `module: prometheus` export instance"),
             "the whole sentence, unprefixed: {zero:?}"
@@ -131,11 +131,11 @@ fn the_trace_sink_answers_the_same_through_either_door() {
             .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
-        let (streams, clean) = rows.probe(module, "trace", &good).expect("an export row");
+        let (streams, clean, _) = rows.probe(module, "trace", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Traces as u8]));
         assert!(clean.is_empty(), "{clean:?}");
         let bad = serde_json::json!({ "url": "http://127.0.0.1:4318", "bogus": 1 });
-        let (_, refused) = rows.probe(module, "trace", &bad).expect("an export row");
+        let (_, refused, _) = rows.probe(module, "trace", &bad).expect("an export row");
         assert_eq!(
             refused,
             vec!["export.trace.settings: unknown field `bogus`, expected `url`".to_string()]
@@ -161,11 +161,11 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
             .with_conns(Arc::new(crate::needs_restated::Inert));
         let module = row;
         let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
-        let (streams, clean) = rows.probe(module, "audit", &good).expect("an export row");
+        let (streams, clean, _) = rows.probe(module, "audit", &good).expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
         assert!(clean.is_empty(), "{clean:?}");
         let bad = serde_json::json!({ "url": "https://collector.example.com", "bogus": 1 });
-        let (_, refused) = rows.probe(module, "audit", &bad).expect("an export row");
+        let (_, refused, _) = rows.probe(module, "audit", &bad).expect("an export row");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(
             refused[0].starts_with("export.audit.settings: unknown field `bogus`"),

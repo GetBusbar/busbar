@@ -119,6 +119,19 @@ pub fn check(
     phase: u32,
     instances: &[(String, Vec<u8>)],
 ) -> Result<Vec<String>, String> {
+    let bytes = check_bytes(plugin, phase, instances)?;
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice::<Vec<String>>(&bytes)
+        .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"))
+}
+
+fn check_bytes(
+    plugin: &Plugin<Export>,
+    phase: u32,
+    instances: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, String> {
     let list: Vec<CheckInstance> = instances
         .iter()
         .map(|(name, settings)| CheckInstance {
@@ -140,16 +153,33 @@ pub fn check(
         },
     );
     let called = plugin.call(slot::CHECK, &mut f);
+    let _lease = AnswerLease::new(plugin, called.lease);
     if called.outcome != Outcome::Ready {
         return Err(why(called.outcome, called.error));
     }
-    let bytes = copy_blob(f.out.findings);
-    release(plugin, called.lease);
-    if bytes.is_empty() {
-        return Ok(Vec::new());
+    if phase == busbar_contract::abi::export::CHECK_PHASE_RECORDER
+        && (f.out.findings.fmt != BLOB_JSON || f.out.findings.len > 1024)
+    {
+        return Err("recorder declaration must be JSON of at most 1024 bytes".into());
     }
-    serde_json::from_slice::<Vec<String>>(&bytes)
-        .map_err(|e| format!("export plugin check findings are not a JSON list of strings: {e}"))
+    Ok(copy_blob(f.out.findings))
+}
+
+fn recorder_requirements(
+    plugin: &Plugin<Export>,
+) -> Result<Option<busbar_contract::export_calls::RecorderRequirements>, String> {
+    if !plugin.context::<ExportFacts>().is_some_and(|f| f.recorder) {
+        return Ok(None);
+    }
+    let bytes = check_bytes(
+        plugin,
+        busbar_contract::abi::export::CHECK_PHASE_RECORDER,
+        &[],
+    )?;
+    let requirements: busbar_contract::export_calls::RecorderRequirements =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid recorder declaration: {e}"))?;
+    requirements.validate()?;
+    Ok(Some(requirements))
 }
 
 struct Line {
@@ -162,6 +192,7 @@ struct Shared {
     plugin: Plugin<Export>,
     dispatcher: Arc<Dispatcher>,
     facts: ExportFacts,
+    recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     queue: Mutex<VecDeque<Line>>,
 
     flusher: Mutex<Option<Waker>>,
@@ -378,11 +409,20 @@ impl ExportInstance {
             return Err(called.open_failure(plugin.name()));
         }
         drop(opened);
+        let recorder = match recorder_requirements(&plugin) {
+            Ok(recorder) => recorder,
+            Err(error) => {
+                let closed = plugin.call(lc::CLOSE, &mut Frame::new(in_head(), out_head()));
+                release(&plugin, closed.lease);
+                return Err(error);
+            }
+        };
         let facts = plugin.context::<ExportFacts>().cloned().unwrap_or_default();
         let shared = Arc::new(Shared {
             plugin,
             dispatcher,
             facts,
+            recorder,
             queue: Mutex::new(VecDeque::new()),
             flusher: Mutex::new(None),
             stop: AtomicBool::new(false),
@@ -520,6 +560,10 @@ fn lower(families: &[Family]) -> Lowered {
 }
 
 impl ExportCalls for ExportInstance {
+    fn recorder_requirements(&self) -> Option<busbar_contract::export_calls::RecorderRequirements> {
+        self.shared.recorder
+    }
+
     fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
         let settings = Arc::new(zeroize::Zeroizing::new(
             serde_json::to_vec(settings).map_err(|error| error.to_string())?,
@@ -723,3 +767,7 @@ fn fold_shed_lines(observing: &crate::observe::Observing, name: &str, lines: usi
 #[cfg(test)]
 #[path = "tests/export_door_tests.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "tests/export_recorder_tests.rs"]
+mod recorder_tests;

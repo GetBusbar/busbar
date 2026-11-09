@@ -748,6 +748,11 @@ pub struct StatusOut {
 pub const CHECK_PHASE_LIMITS: u32 = 0;
 /// [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD
 pub const CHECK_PHASE_INSTANCES: u32 = 1;
+/// Immutable recorder declaration after validated OPEN. Only called when Statement
+/// advertises `export_calls::EXT_RECORDER_REQUIREMENTS` version 1. `findings` must
+/// contain exactly one JSON `export_calls::RecorderRequirements` object; empty,
+/// malformed or refused answers reject the instance. The host lends no instances.
+pub const CHECK_PHASE_RECORDER: u32 = 2;
 
 /// One sink-module instance visible during [`CHECK_PHASE_INSTANCES`].
 /// Checks in this phase may inspect every instance of the module.
@@ -766,7 +771,7 @@ pub struct CheckInstance {
 pub struct CheckIn {
     /// The head.
     pub head: InHead,
-    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`].
+    /// [`CHECK_PHASE_LIMITS`] | [`CHECK_PHASE_INSTANCES`] | [`CHECK_PHASE_RECORDER`].
     pub phase: u32,
     /// Alignment padding.
     pub _reserved: u32,
@@ -786,7 +791,7 @@ pub struct CheckOut {
     pub head: OutHead,
     /// The sink's check findings, as a [`super::mechanism::call::BLOB_JSON`] blob, under
     /// `head.lease` (so they keep their place among the configuration's other errors, the
-    /// [`CheckPhase`] ordering).
+    /// [`CheckPhase`] ordering). At [`CHECK_PHASE_RECORDER`], the JSON recorder declaration instead.
     pub findings: Blob,
 }
 

@@ -8,9 +8,7 @@
 //!   `abi::sdk::chip`) and gets a [`Seal`] back.
 //! * [`Seal`] is a recipe's output (a whole auth message, a header value, a signature). It has no
 //!   getter either; it reaches the wire only through [`SealedWrite`].
-//! * [`CredUrl`] is a URL or DSN setting split at parse: the plugin reads the public text, and the
-//!   password inside it is a [`Cred`].
-//! * [`settings`] parses a plugin's settings so every `Cred`/`CredUrl` field is sealed as it is read,
+//! * [`settings`] parses a plugin's settings so every `Cred` field is sealed as it is read,
 //!   the parse tree is wiped, and no error text quotes a settings value.
 //! * [`record`] is a `Cred`'s one serde path: a field a plane keeps in a host record it writes
 //!   ([`record::to_vec`]) and reads back. Serialized anywhere else it refuses.
@@ -48,23 +46,21 @@
 //! let _: &[u8] = s.as_ref();
 //! ```
 
-mod floor;
-mod form;
 mod form_body;
 pub(crate) mod protected_json;
 pub mod record;
+mod redact;
 mod resolved;
 mod settings;
 pub(crate) mod write;
 
 use zeroize::{Zeroize, Zeroizing};
 
-pub use floor::{AuthFloor, PgAuth, RequireAuth};
-pub use form::{CredUrl, MysqlUrl, PasswordAt, PostgresUrl, UserinfoUrl, ValkeyUrl};
 pub use form_body::{FormBody, FormValue};
 pub use protected_json::{
     json_text_members, select_json, settings_document, SelectedJson, SettingsValue,
 };
+pub use redact::redact_encoded_echoes;
 pub use resolved::{resolved, EMPTY_VALUE};
 pub use settings::{settings, SettingsError};
 pub use settings::{settings_lent, SECRET_MARKER};
@@ -121,7 +117,6 @@ type Bytes = Zeroizing<Vec<u8>>;
 pub struct Cred {
     held: std::sync::Arc<Held<Bytes>>,
     secure: bool,
-    floor: AuthFloor,
 }
 
 impl Cred {
@@ -130,7 +125,6 @@ impl Cred {
         Self {
             held: std::sync::Arc::new(Held::new(bytes)),
             secure: false,
-            floor: AuthFloor::STRICT,
         }
     }
 
@@ -138,17 +132,6 @@ impl Cred {
     #[must_use]
     pub fn secure_required(&self) -> bool {
         self.secure
-    }
-
-    /// THE AUTH FLOOR (rulings S4, S5): the auth methods weaker than a protocol's best that the
-    #[must_use]
-    pub fn floor(&self) -> AuthFloor {
-        self.floor
-    }
-
-    pub(crate) fn with_floor(mut self, floor: AuthFloor) -> Self {
-        self.floor = floor;
-        self
     }
 
     /// This credential, required to go out secured.
@@ -255,17 +238,11 @@ impl Seal {
     pub fn secure_required(&self) -> bool {
         self.secure
     }
-
-    /// This seal, required to go out secured (a recipe whose output the operator did not allow in
-    pub(crate) fn require_secure(mut self) -> Self {
-        self.secure = true;
-        self
-    }
 }
 
 /// The refusal a credential that must go out secured meets on a connection that is not.
-pub const NOT_SECURE: &str = "a credential the operator's URL requires a secure connection \
-     for was not sent: the host connector reports this connection is not secured";
+pub const NOT_SECURE: &str = "a credential requiring a secure connection \
+     was not sent: the host connector reports this connection is not secured";
 
 mod json;
 #[cfg(test)]

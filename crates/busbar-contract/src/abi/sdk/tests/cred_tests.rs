@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-
+use super::{settings, Cred, FormBody, Parts, SealedWrite};
 use serde::Deserialize;
-
-use super::{settings, Cred, CredUrl, FormBody, Parts, SealedWrite};
 
 const CANARY: &str = "CANARY-cred-5f3a9c";
 
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct Settings {
-    dsn: CredUrl,
+    dsn: Cred,
     key: Cred,
     #[serde(default)]
     port: u16,
@@ -25,27 +23,56 @@ enum Mode {
     Safe,
 }
 
-fn split(s: &str) -> CredUrl {
-    CredUrl::split(s).expect("splits")
-}
-
-fn pw(u: &CredUrl) -> Option<Vec<u8>> {
-    u.password().map(|c| c.wire().to_vec())
+#[test]
+fn settings_capture_credential_fields_without_interpreting_their_contents() {
+    let doc =
+        format!(r#"{{"dsn":"opaque-secret","key":"{CANARY}","port":7,"name":"n","mode":"safe"}}"#);
+    let settings: Settings = super::settings(doc.as_bytes()).expect("parses");
+    assert!(settings.dsn.verify_eq(b"opaque-secret"));
+    assert_eq!(settings.key.wire(), CANARY.as_bytes());
+    assert_eq!(
+        (settings.port, settings.name.as_str(), settings.mode),
+        (7, "n", Some(Mode::Safe))
+    );
 }
 
 #[test]
-fn settings_seal_declared_fields_and_keep_the_rest() {
-    let doc = format!(
-        r#"{{"dsn":"postgres://app:{CANARY}@db:5432/x?sslmode=require","key":"{CANARY}","port":7,"name":"n","mode":"safe"}}"#
-    );
-    let s: Settings = settings(doc.as_bytes()).expect("parses");
-    assert_eq!(s.dsn.public(), "postgres://app@db:5432/x?sslmode=require");
-    assert_eq!(pw(&s.dsn).as_deref(), Some(CANARY.as_bytes()));
-    assert_eq!(s.key.wire(), CANARY.as_bytes());
-    assert_eq!(
-        (s.port, s.name.as_str(), s.mode),
-        (7, "n", Some(Mode::Safe))
-    );
+fn take_wipes_the_credential_setting_where_it_was() {
+    let mut doc = serde_json::json!({"key":"k","n":1});
+    let key = Cred::take(&mut doc["key"]).expect("string");
+    assert_eq!(key.wire(), b"k");
+    assert!(doc["key"].is_null());
+    assert!(Cred::take(&mut doc["n"]).is_none());
+    assert_eq!(doc["n"], 1);
+}
+
+#[test]
+fn captured_and_rejected_owned_settings_buffers_wipe_before_free() {
+    use crate::alloc_counter::InitializedPayloadProbe;
+    // This probe covers the shared SDK's settings buffers. Native parsing and its scratch
+    // allocations are owned by each plugin and are not exercised by this custody test.
+    // SAFETY: instrumented allocations are created and destroyed on this thread.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    let credential: Cred = settings(br#""configured credential""#).unwrap();
+    // SAFETY: the initialized credential allocation stays live on this thread until drop.
+    unsafe {
+        crate::alloc_counter::watch_initialized_payload(credential.wire());
+    }
+    drop(credential);
+    assert!(super::settings_lent::<u16>(br#"{"$secret":0}"#, &[b"wrong type secret"]).is_err());
+    let observations = probe.finish();
+    assert!(!observations.reentered);
+    assert!(!observations.payloads.is_empty());
+    for record in observations.payloads {
+        assert!(record.freed, "owned capture payload freed: {record:?}");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(record.read_error, None);
+            assert!(record.complete_read);
+            assert_eq!(record.bytes_read, record.len);
+            assert!(record.wiped, "capture payload wiped: {record:?}");
+        }
+    }
 }
 
 #[test]
@@ -56,7 +83,6 @@ fn a_settings_error_never_quotes_a_value() {
         format!(r#"{{"dsn":"x","key":7,"name":"{CANARY}"}}"#),
         format!(r#"{{"dsn":"x","key":"k","name":"n","mode":{{"{CANARY}":1}}}}"#),
         format!(r#"{{"dsn":"x","key":"k","name":"{CANARY}" "#),
-        format!(r#"{{"dsn":"a://u:{CANARY}@h?password={CANARY}","key":"k","name":"n"}}"#),
         format!(r#"{{"key":"{CANARY}","name":"n"}}"#),
     ];
     for doc in cases {
@@ -85,99 +111,6 @@ fn a_settings_error_names_the_path() {
 }
 
 #[test]
-fn url_userinfo_and_query_passwords_are_split_out() {
-    let u = split("redis://:p%40ss@cache:6379/0");
-    assert_eq!(u.public(), "redis://@cache:6379/0");
-    assert_eq!(pw(&u).as_deref(), Some(&b"p@ss"[..]));
-
-    let u = split("mysql://root@h:3306/db?password=pw&ssl-mode=required");
-    assert_eq!(u.public(), "mysql://root@h:3306/db?ssl-mode=required");
-    assert_eq!(pw(&u).as_deref(), Some(&b"pw"[..]));
-
-    let u = split("mysql://u:12?abc@h/db");
-    assert_eq!(u.public(), "mysql://u@h/db");
-    assert_eq!(pw(&u).as_deref(), Some(&b"12?abc"[..]));
-    assert_eq!(u.password_at(), Some(super::PasswordAt::UserinfoUnencoded));
-
-    let u = split("valkey+unix:///run/v.sock?db=2&pass=s%3Dc+ret");
-    assert_eq!(u.public(), "valkey+unix:///run/v.sock?db=2");
-    assert_eq!(pw(&u).as_deref(), Some(&b"s=c ret"[..]));
-    assert_eq!(u.password_at(), Some(super::PasswordAt::Query("pass")));
-    assert_eq!(
-        split("redis://:x@h").password_at(),
-        Some(super::PasswordAt::Userinfo)
-    );
-
-    let u = split("https://h/path?email=a@b.c");
-    assert_eq!(u.public(), "https://h/path?email=a@b.c");
-    assert!(u.password().is_none());
-
-    assert!(CredUrl::split("a://u:x@h?password=y").is_err());
-    let u = split("https://u:123/x@siem.example/p");
-    assert_eq!(u.public(), "https://u@siem.example/p");
-    assert_eq!(u.password_at(), Some(super::PasswordAt::UserinfoUnencoded));
-    assert!(split("redis://:a@h") == split("redis://:a@h"));
-    assert!(split("redis://:a@h") != split("redis://:b@h"));
-}
-
-#[test]
-fn keyword_connection_strings_are_split_out() {
-    let u = split(r"host=db port=5432 password='x y' user=app");
-    assert_eq!(u.public(), "host=db port=5432 user=app");
-    let u2 = split(r"host=db password='a \'b\' c' user=app");
-    assert_eq!(pw(&u2).as_deref(), Some(&b"a 'b' c"[..]));
-    let u4 = split("host = db port=5433 user=u password = 'se cret' dbname=x");
-    assert_eq!(u4.public(), "host = db port=5433 user=u dbname=x");
-    assert_eq!(pw(&u4).as_deref(), Some(&b"se cret"[..]));
-    let u3 = split("host=db password=plain user=app");
-    assert_eq!(u3.public(), "host=db user=app");
-    assert_eq!(pw(&u3).as_deref(), Some(&b"plain"[..]));
-    let _ = u;
-}
-
-#[test]
-fn keyword_tls_policy_uses_the_password_parsers_spacing_and_escaping() {
-    for parameters in [
-        "host = db sslmode = require",
-        "host=db sslmode= 'verify-full'",
-        r"host=db sslmode = requ\ire",
-        "host=db application_name='sslmode=disable with spaces' sslmode = require",
-        "host=db sslmode=prefer sslmode = require",
-    ] {
-        for password in ["", " password = 'p a\\'ss'"] {
-            let text = format!("{parameters}{password}");
-            let parsed = CredUrl::parse(&text).expect("valid keyword DSN");
-            assert_eq!(parsed.public(), parameters);
-            assert!(parsed.credential().secure_required(), "{text}");
-            if !password.is_empty() {
-                assert_eq!(pw(&parsed).as_deref(), Some(&b"p a'ss"[..]));
-            }
-        }
-    }
-    for parameters in [
-        "host = '/var/run/postgresql' sslmode = require",
-        r"host = \/var/run/postgresql sslmode = require",
-        "host=db sslmode = prefer",
-        "host=db application_name='sslmode=require'",
-    ] {
-        assert!(
-            !CredUrl::parse(parameters)
-                .expect("valid keyword DSN")
-                .credential()
-                .secure_required(),
-            "{parameters}"
-        );
-    }
-}
-
-#[test]
-fn plain_text_passes_through() {
-    let u = split("/var/run/sock");
-    assert_eq!(u.public(), "/var/run/sock");
-    assert!(u.password().is_none());
-}
-
-#[test]
 fn a_sealed_write_assembles_in_order() {
     let c = Cred::captured(zeroize::Zeroizing::new(b"k".to_vec()));
     let w = Parts::new()
@@ -188,41 +121,6 @@ fn a_sealed_write_assembles_in_order() {
     let s = SealedWrite::new(w);
     assert_eq!(&s.buf[..], b"authorization: Bearer k\r\n");
     assert!(!s.finished());
-}
-
-#[test]
-fn take_wipes_the_setting_where_it_was() {
-    let mut doc = serde_json::json!({"url": "redis://:pw@h", "key": "k", "n": 1});
-    let u = CredUrl::take(&mut doc["url"])
-        .expect("string")
-        .expect("splits");
-    assert_eq!(u.public(), "redis://@h");
-    assert!(doc["url"].is_null());
-    let k = Cred::take(&mut doc["key"]).expect("string");
-    assert_eq!(k.wire(), b"k");
-    assert!(doc["key"].is_null());
-    assert!(Cred::take(&mut doc["n"]).is_none());
-    assert_eq!(doc["n"], 1);
-}
-
-#[test]
-fn a_userinfo_only_split_leaves_the_query_as_written() {
-    let u = CredUrl::parse_userinfo("https://bot:t0k@h/hook?password=part-of-the-target")
-        .expect("splits");
-    assert_eq!(u.public(), "https://bot@h/hook?password=part-of-the-target");
-    assert_eq!(pw(&u).as_deref(), Some(&b"t0k"[..]));
-    let doc = br#"{"u": "https://:x@h/p?pass=keep"}"#;
-    #[derive(serde::Deserialize)]
-    struct S {
-        u: super::UserinfoUrl,
-    }
-    let s: S = settings(doc).expect("parses");
-    assert_eq!(s.u.public(), "https://@h/p?pass=keep");
-    let c = Cred::captured(zeroize::Zeroizing::new(b"a\x01b".to_vec()));
-    assert!(!c.is_field_value());
-    assert!(c.is_text());
-    let c = Cred::captured(zeroize::Zeroizing::new(vec![0xff]));
-    assert!(c.is_field_value() && !c.is_text());
 }
 
 #[test]
@@ -413,41 +311,6 @@ fn jws_preserves_pkcs8_algorithm_and_optional_attribute_rules() {
 
 /// SECURE_REQUIRED (CHIP-DESIGN v4.1 change 4): the operator's URL decides. A secure scheme or a
 #[test]
-fn the_operators_url_decides_whether_the_password_goes_out_secured() {
-    let required = |text: &str| {
-        CredUrl::parse(text)
-            .expect("parses")
-            .password()
-            .expect("a password")
-            .secure_required()
-    };
-    for yes in [
-        "rediss://:pw@cache:6380",
-        "https://u:pw@hook.example/x",
-        "ldaps://u:pw@dir.example",
-        "postgres://u:pw@db/app?sslmode=require",
-        "postgres://u:pw@db/app?sslmode=verify-full",
-        "mysql://u:pw@db/app?ssl-mode=REQUIRED",
-        "host=db sslmode=verify-ca password=pw",
-    ] {
-        assert!(required(yes), "{yes}");
-    }
-    for no in [
-        "redis://:pw@cache:6379",
-        "http://u:pw@hook.example/x",
-        "postgres://u:pw@db/app",
-        "postgres://u:pw@db/app?sslmode=prefer",
-        "postgres://u:pw@%2Fvar%2Frun%2Fpostgresql/app?sslmode=require",
-        "postgres://u:pw@/app?host=/tmp&sslmode=require",
-        "host=/tmp sslmode=require password=pw",
-        "mysql://u:pw@db/app?ssl-mode=PREFERRED",
-    ] {
-        assert!(!required(no), "{no}");
-    }
-}
-
-/// The requirement travels with everything the credential makes, and is never relaxed.
-#[test]
 fn the_requirement_travels_with_every_seal() {
     let c = Cred::captured(zeroize::Zeroizing::new(b"pw".to_vec()));
     assert!(!c.secure_required() && !c.bearer().secure_required());
@@ -455,7 +318,7 @@ fn the_requirement_travels_with_every_seal() {
     assert!(c.secure_required());
     let c = c.require_secure_if(false);
     assert!(c.secure_required(), "never relaxed");
-    for s in [c.field(), c.bearer(), c.basic("u"), c.resp_auth(None)] {
+    for s in [c.field(), c.bearer(), c.basic("u")] {
         assert!(s.secure_required());
     }
     assert!(!Parts::new().public(b"a").sealed(c.field()).is_empty());

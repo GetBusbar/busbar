@@ -23,21 +23,30 @@ pub(super) fn axis() -> Option<&'static dyn ExportAxis> {
 pub(crate) fn scrape_instance(
     projection: Projection,
     declared: Option<&[ExportStream]>,
-    first_party: bool,
+    recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     already_scraping: bool,
-    settings: serde_json::Value,
-) -> (bool, Option<crate::config::PrometheusSettings>) {
-    let metrics = ExportStream::Metrics;
-    let scrape = declared.is_some_and(|streams| streams.contains(&metrics))
-        && first_party
-        && projection.wants_stream(metrics)
-        && !already_scraping;
-    let recorder = if scrape {
-        serde_json::from_value(settings).ok()
-    } else {
-        None
+) -> Result<
+    (
+        bool,
+        Option<busbar_contract::export_calls::RecorderRequirements>,
+    ),
+    String,
+> {
+    let Some(recorder) = recorder else {
+        return Ok((false, None));
     };
-    (scrape, recorder)
+    recorder.validate()?;
+    let metrics = ExportStream::Metrics;
+    if !declared.is_some_and(|streams| streams.contains(&metrics)) {
+        return Err("a recorder declaration requires the metrics stream".into());
+    }
+    if !projection.wants_stream(metrics) {
+        return Ok((false, None));
+    }
+    if already_scraping {
+        return Err("only one export instance may request the host recorder".into());
+    }
+    Ok((true, Some(recorder)))
 }
 
 pub(crate) fn configured_instance(
@@ -71,22 +80,28 @@ pub(crate) fn configured_instance(
     }
 }
 
+type Probed = (
+    Option<Vec<ExportStream>>,
+    Vec<String>,
+    Option<busbar_contract::export_calls::RecorderRequirements>,
+);
+
 pub(crate) fn probe(
     name: &str,
     module: &str,
     settings: &serde_json::Map<String, Value>,
-) -> Option<(Option<Vec<ExportStream>>, Vec<String>)> {
+) -> Option<Probed> {
     let axis = axis()?;
-    let (streams, problems) = match sink_settings(axis, module, settings) {
+    let (streams, problems, recorder) = match sink_settings(axis, module, settings) {
         Ok(cfg) => axis.probe(module, name, cfg.as_value())?,
         Err(e) => {
             let written = ResolvedSettings::from_map(settings.clone());
-            let (streams, _) = axis.probe(module, name, written.as_value())?;
-            (streams, vec![format!("export.{name}.settings: {e}")])
+            let (streams, _, _) = axis.probe(module, name, written.as_value())?;
+            (streams, vec![format!("export.{name}.settings: {e}")], None)
         }
     };
     let streams = streams.map(|b| streams_of(&b));
-    Some((streams, problems))
+    Some((streams, problems, recorder))
 }
 
 pub(crate) fn sink_settings(
@@ -137,10 +152,6 @@ fn streams_of(bytes: &[u8]) -> Vec<ExportStream> {
 
 pub(crate) fn linked_modules() -> Vec<String> {
     axis().map(|axis| axis.linked_modules()).unwrap_or_default()
-}
-
-pub(crate) fn first_party(module: &str) -> bool {
-    axis().is_some_and(|axis| axis.first_party(module))
 }
 
 pub(crate) fn one_instance(module: &str) -> bool {
@@ -283,11 +294,33 @@ pub(super) fn sinks() -> impl Iterator<Item = &'static PluginSink> {
     SINKS.get().into_iter().flatten()
 }
 
+/// Once OPEN completes, reloads cannot resize the live recorder's projection budget.
+/// Outer None means startup admission has not happened yet; inner None means no recorder.
+pub(crate) fn boot_recorder_requirements(
+) -> Option<Option<busbar_contract::export_calls::RecorderRequirements>> {
+    SINKS.get().map(|sinks| {
+        sinks
+            .iter()
+            .find(|sink| sink.scrape)
+            .and_then(|sink| sink.sink.recorder_requirements())
+    })
+}
+
 pub fn requires_restart(name: &str, def: Option<&crate::config::ExportDefCfg>) -> bool {
-    let boot = sinks()
-        .find(|sink| sink.name == name)
-        .map(|sink| (sink.module.as_str(), sink.projection, sink.sink.streams()));
-    definition_requires_restart(name, boot, def)
+    let sink = sinks().find(|sink| sink.name == name);
+    let boot = sink.map(|sink| (sink.module.as_str(), sink.projection, sink.sink.streams()));
+    if definition_requires_restart(name, boot, def) {
+        return true;
+    }
+    match (sink, def) {
+        (Some(sink), Some(def)) => match probe(name, def.module.trim(), &def.settings) {
+            Some((_, errors, recorder)) => {
+                !errors.is_empty() || recorder != sink.sink.recorder_requirements()
+            }
+            None => true,
+        },
+        _ => false,
+    }
 }
 
 fn definition_requires_restart(
@@ -345,6 +378,18 @@ pub fn open(cfg: &ExportCfg) -> Result<(), String> {
             false,
             &mut errors,
         );
+        let expected_recorder = if p.scrape { cfg.recorder } else { None };
+        let opened_recorder = if projection.wants_stream(ExportStream::Metrics) {
+            sink.recorder_requirements()
+        } else {
+            None
+        };
+        if opened_recorder != expected_recorder {
+            errors.push(format!(
+                "export.{name}: recorder declaration changed since configuration admission"
+            ));
+            continue;
+        }
         let span_record = sink.takes_span_records();
         opened.push(PluginSink {
             name: name.clone(),
@@ -427,7 +472,7 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
         if requires_restart(name, defs.get(name)) {
             tracing::warn!(
                 instance = %name,
-                "export instance membership, module or projection differs from boot; restart is required for push delivery"
+                "export instance membership, module, projection or recorder requirements differ from boot; restart is required for push delivery"
             );
         }
     }
@@ -438,6 +483,9 @@ fn refresh(defs: &crate::config::ExportDefs, generation: u64) {
         else {
             continue;
         };
+        if requires_restart(&sink.name, Some(def)) {
+            continue;
+        }
         let refreshed = sink_settings(axis, &sink.module, &def.settings)
             .and_then(|settings| sink.sink.refresh(settings.as_value(), generation));
         if let Err(error) = refreshed {
@@ -643,7 +691,7 @@ fn project_routes(
                     instance = %p.name,
                     path = %route.path,
                     "an export instance that is not the scrape sink declares a well-known \
-                     exposition path; it is not mounted (only the first-party scrape sink serves it)"
+                     exposition path; it is not mounted (only the admitted recorder consumer serves it)"
                 );
                 continue;
             }

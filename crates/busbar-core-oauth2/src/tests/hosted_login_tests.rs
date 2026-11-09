@@ -4,74 +4,31 @@
 use super::*;
 
 #[test]
-fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
-    static ROWS: std::sync::Once = std::sync::Once::new();
-    ROWS.call_once(|| {
-        let frozen: serde_yaml::Value = serde_yaml::from_str(include_str!(
-            "../../../busbar-kernel/src/tests/fixtures/frozen_customer_text.yaml"
-        ))
-        .expect("the frozen customer migration rows parse");
-        let rows: Vec<(&'static str, &'static str)> = frozen["migration_rows"]
-            .as_mapping()
-            .expect("the frozen migration rows are a map")
-            .iter()
-            .map(|(key, value)| {
-                let key = key.as_str().expect("a migration row name").to_owned();
-                let value = value.as_str().expect("a migration row value").to_owned();
-                (
-                    &*Box::leak(key.into_boxed_str()),
-                    &*Box::leak(value.into_boxed_str()),
-                )
-            })
-            .collect();
-        busbar_kernel::config::declared_vocabulary::install(Box::leak(rows.into_boxed_slice()));
-    });
-    let row = busbar_kernel::config::declared_vocabulary::text("login_brands");
-    let brands: Vec<(&str, &str, &str)> = row
-        .split(" | ")
-        .map(|b| {
-            let f: Vec<&str> = b.split(" : ").collect();
-            assert_eq!(f.len(), 3, "`<tokens> : <label> : <icon ref>`: {b}");
-            (f[0].split(' ').next().expect("a match token"), f[1], f[2])
-        })
-        .collect();
-    assert_eq!(brands.len(), 3, "1.5.5 branded three providers: {row}");
-    for (token, label, icon_ref) in &brands {
-        let icon = BRAND_ICONS
-            .iter()
-            .find(|(r, _)| r == icon_ref)
-            .map(|(_, svg)| *svg)
-            .unwrap_or_else(|| panic!("no icon asset for `{icon_ref}`"));
-        assert_eq!(button_brand(token, None), ((*label).to_string(), icon));
-        assert_eq!(
-            button_brand("corp-sso", Some(&format!("https://{token}.example"))),
-            ((*label).to_string(), icon),
-            "the issuer host matches as the name does"
-        );
-        let body = render_chooser(
-            &[((*token).to_string(), button_brand(token, None))],
-            "https://busbar.example.com",
-        );
-        assert!(
-            body.contains(&format!(
-                "aria-label=\"Continue with {label}\">{icon}<span class=\"plabel\">Continue with {label}</span>"
-            )),
-            "{token}: {body}"
-        );
-    }
-
+fn chooser_renders_declared_inert_presentation_and_generic_instance_names() {
+    use busbar_contract::auth_calls::{LoginIcon, LoginIconPath, LoginPresentation};
+    let presentation = LoginPresentation {
+        label: "Example <identity>".into(),
+        icon: Some(LoginIcon {
+            view_box: [16, 16],
+            paths: vec![LoginIconPath {
+                data: "M0 0L8 8z".into(),
+                fill: "#123456".into(),
+            }],
+        }),
+    };
+    presentation.validate().unwrap();
+    let button = button_presentation("unrelated-name", Some(&presentation));
+    assert_eq!(button.0, presentation.label);
+    assert!(button
+        .1
+        .contains("<path d=\"M0 0L8 8z\" fill=\"#123456\"/>"));
+    let body = render_chooser(&[("unrelated-name".into(), button)], "https://host.example");
+    assert!(body.contains("Continue with Example &lt;identity&gt;"));
+    assert!(!body.contains("<identity>"));
     assert_eq!(
-        button_brand("corp-sso", None),
-        ("Corp Sso".to_string(), GENERIC_ICON)
+        button_presentation("corp-sso", None),
+        ("Corp Sso".into(), GENERIC_ICON.into())
     );
-
-    for (token, _, _) in &brands {
-        assert_eq!(
-            brand_from("", token, None),
-            (titlecase(token), GENERIC_ICON),
-            "{token} without the row"
-        );
-    }
 }
 
 #[test]
@@ -95,7 +52,8 @@ fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
         "https://idp.example.com/authorize?x=\u{7f}",
     ] {
         let resp = begin_outcome(
-            "microsoft",
+            "provider",
+            None,
             "https://busbar.example.com",
             "verifier".into(),
             "state".into(),
@@ -155,7 +113,7 @@ fn key_page_injects_base_url_verbatim() {
         "user:sam",
         "bb_live_7Qm2",
         "https://busbar.example.com",
-        "microsoft",
+        "provider",
     );
     assert!(
         page.contains("https://busbar.example.com"),
@@ -168,7 +126,7 @@ fn key_page_injects_base_url_verbatim() {
     assert!(page.contains("bb_live_7Qm2"), "the key is shown");
 
     assert!(page.contains("Refresh key"));
-    assert!(page.contains("/auth/token?method=microsoft"));
+    assert!(page.contains("/auth/token?method=provider"));
     assert!(!page.contains("won't see this key again"));
 }
 
@@ -179,7 +137,7 @@ fn key_page_has_copy_buttons_wired_to_clipboard() {
         "user:sam",
         "bb_live_7Qm2",
         "https://busbar.example.com",
-        "microsoft",
+        "provider",
     );
 
     assert!(
@@ -258,6 +216,7 @@ fn door_cookie() -> LoginCookie {
 fn a_door_login_begins_with_the_plugins_authorize_url() {
     let resp = begin_outcome(
         "idp",
+        None,
         "https://busbar.example.com",
         "verifier".into(),
         "state".into(),
@@ -380,6 +339,7 @@ fn an_outage_sends_the_idps_retry_after_clamped() {
 fn a_rejected_begin_callback_and_credential_keep_their_original_response_statuses() {
     let begun = begin_outcome(
         "idp",
+        None,
         "https://busbar.example.com",
         "verifier".into(),
         "state".into(),
@@ -456,4 +416,38 @@ fn login_cookie_fields_keep_first_match_and_existing_pair_grammar() {
     req.headers_mut()
         .append(header::COOKIE, "busbar_login=later".parse().unwrap());
     assert_eq!(read_cookie(&req), None);
+}
+
+#[test]
+fn credential_prompt_uses_declared_label_and_keeps_private_form_transport() {
+    use busbar_contract::auth::{FieldKind, LoginField, LoginForm};
+    let presentation = busbar_contract::auth_calls::LoginPresentation {
+        label: "Example <directory>".into(),
+        icon: None,
+    };
+    let response = begin_outcome(
+        "unrelated-instance",
+        Some(&presentation),
+        "https://host.example",
+        String::new(),
+        "state\"value".into(),
+        String::new(),
+        false,
+        LoginOutcome::Prompt(LoginForm {
+            fields: vec![LoginField {
+                name: "password".into(),
+                label: "Password".into(),
+                kind: FieldKind::Password,
+                required: true,
+            }],
+        }),
+    );
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Lax"));
+    let html = body_of(response);
+    assert!(html.contains("Example &lt;directory&gt; credentials"));
+    assert!(html.contains("method=\"post\" action=\"/auth/token\""));
+    assert!(html.contains("type=\"password\""));
+    assert!(html.contains("state&quot;value"));
 }

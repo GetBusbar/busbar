@@ -3,6 +3,10 @@
 
 //! THE AUTH KIND'S CALLS, AS THE HOST'S TWO HALVES SHARE THEM (`BUSBAR-1.6.0.md` THE DESIGN,
 
+/// Inert provider-owned login presentation carried by the auth lifecycle.
+pub mod presentation;
+pub use presentation::{LoginIcon, LoginIconPath, LoginPresentation};
+
 use std::borrow::Cow;
 use std::future::Future;
 
@@ -335,6 +339,12 @@ pub trait AuthCalls: Send + Sync {
 
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
     fn refresh(&self) -> Result<u64, String>;
+
+    /// Validated presentation from the current successful lifecycle generation.
+    /// Absence uses the configured instance name and the host's generic icon.
+    fn login_presentation(&self) -> Option<LoginPresentation> {
+        None
+    }
 
     /// How the plugin's login starts, as its tail states it (`abi::auth::LOGIN_KIND_*`); `None` =
     fn login_kind(&self) -> Option<LoginKind> {
