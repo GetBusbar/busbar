@@ -4,43 +4,59 @@
 use std::sync::{Arc, OnceLock};
 
 use busbar_contract::abi::export::ExportStream;
-use busbar_contract::export_calls::{parse_families, ServeRequest};
+use busbar_contract::export_calls::ServeRequest;
 
 use super::*;
 use crate::dispatch::{load_linked, Bind, DispatchConfig, LinkedRow, NoSink};
 
-pub(crate) const SCRAPE_DOOR: busbar_contract::abi::mechanism::door::DoorFn = scrape_door;
+pub(crate) const TEST_EXPORT_DOOR: busbar_contract::abi::mechanism::door::DoorFn = metadata_door;
 
-extern "C" fn scrape_door() -> &'static busbar_contract::abi::mechanism::door::Door {
-    use busbar_contract::abi::mechanism::DOOR_SYMBOL;
-    use busbar_contract::abi::sdk::door::RawDoorFn;
-    static IMAGE: OnceLock<(libloading::Library, RawDoorFn)> = OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let path = std::env::var_os("BUSBAR_TEST_EXPORT_PROMETHEUS_CDYLIB")
-            .map(std::path::PathBuf::from)
-            .expect(
-                "BUSBAR_TEST_EXPORT_PROMETHEUS_CDYLIB must name the fresh actual Prometheus image",
-            );
-        assert!(
-            path.is_absolute() && path.is_file(),
-            "the actual Prometheus image must be an absolute file: {}",
-            path.display()
-        );
-        let library = crate::dlopen_on_worker(path.as_os_str())
-            .expect("the actual Prometheus image loads on the plugin thread");
-        // SAFETY: the selected product image exports the mechanism's typed symbol.
-        // IMAGE retains the library while its immutable descriptor and code are used.
-        let entry = unsafe {
-            *library
-                .get::<RawDoorFn>(DOOR_SYMBOL)
-                .expect("the actual Prometheus door")
-        };
-        (library, entry)
-    });
-    let door = crate::dispatch::load::enter_door(image.1);
-    crate::dispatch::load::validate_door::<Export>(door)
-        .expect("the actual Prometheus descriptor validates");
-    // SAFETY: the validated descriptor is immutable and IMAGE keeps its library alive.
+// This synthetic kind declaration exercises host metadata/lifetime handling. It
+// has no concrete exporter grammar, destination, or product image dependency.
+extern "C" fn metadata_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::export::{Route, ROUTE_AUTH_KEY};
+    use busbar_contract::abi::mechanism::door::{Door, KindTailHead};
+    use busbar_contract::abi::sdk::door::abi_str;
+    const ROUTES: &[Route] = &[
+        Route {
+            path: abi_str("/capture"),
+            method: abi_str("GET"),
+            auth: ROUTE_AUTH_KEY,
+            _reserved: 0,
+        },
+        Route {
+            path: abi_str("/retained"),
+            method: abi_str("GET"),
+            auth: ROUTE_AUTH_KEY,
+            _reserved: 0,
+        },
+    ];
+    const TAIL: busbar_contract::abi::export::Tail =
+        busbar_contract::abi::sdk::export::tail(&[ExportStream::Logs as u8], ROUTES);
+    busbar_contract::statement_extensions!(EXTENSIONS: [
+        (busbar_contract::export_calls::EXT_PUBLIC_ROUTES, br#"["/capture","/retained"]"#),
+        (busbar_contract::export_calls::EXT_PERSISTENT_ROUTES, br#"["/retained"]"#),
+    ]);
+    static DOOR: OnceLock<std::sync::atomic::AtomicPtr<Door>> = OnceLock::new();
+    let door = DOOR
+        .get_or_init(|| {
+            let base = leaky::door();
+            // SAFETY: the synthetic SDK declaration is immutable process-lived data.
+            let mut statement = unsafe { *base.statement() };
+            statement.name = abi_str("metadata-export-witness");
+            statement.kind_tail =
+                (&TAIL as *const busbar_contract::abi::export::Tail).cast::<KindTailHead>();
+            statement.extensions = EXTENSIONS;
+            let statement = Box::leak(Box::new(statement));
+            let mut parts = base.parts();
+            parts.statement = statement;
+            // SAFETY: metadata remains process-lived; the complete typed SDK table is unchanged.
+            std::sync::atomic::AtomicPtr::new(Box::into_raw(Box::new(unsafe {
+                Door::__from_parts(parts)
+            })))
+        })
+        .load(Ordering::Acquire);
+    // SAFETY: OnceLock publishes this one immutable allocation, retained for the process.
     unsafe { &*door }
 }
 
@@ -49,13 +65,13 @@ fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
         DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
     ));
-    let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
+    let row = LinkedRow::of(TEST_EXPORT_DOOR).expect("the door states itself");
     let bind = Bind {
         instance: Arc::from("export.metrics"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: crate::dispatch::ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
+        conns: crate::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
     (plugin, dispatcher)
@@ -65,7 +81,7 @@ fn linked() -> (Plugin<Export>, Arc<Dispatcher>) {
 fn the_tail_is_read_at_bind() {
     let (plugin, _) = linked();
     let facts = plugin.context::<ExportFacts>().expect("an export tail");
-    assert_eq!(facts.streams, vec![ExportStream::Metrics as u8]);
+    assert_eq!(facts.streams, vec![ExportStream::Logs as u8]);
     let routes: Vec<String> = facts
         .routes
         .iter()
@@ -73,8 +89,8 @@ fn the_tail_is_read_at_bind() {
         .collect();
     assert_eq!(
         routes,
-        ["GET /metrics Key", "GET /metrics/hooks Key"],
-        "the scrape sink declares its own two well-known routes"
+        ["GET /capture Key", "GET /retained Key"],
+        "the kind declaration carries both synthetic routes"
     );
 }
 
@@ -82,11 +98,11 @@ fn the_tail_is_read_at_bind() {
 fn listener_policy_is_copied_from_the_statement_into_the_opened_sink() {
     let (plugin, dispatcher) = linked();
     let facts = plugin.context::<ExportFacts>().unwrap();
-    assert_eq!(facts.public_routes, ["/metrics", "/metrics/hooks"]);
-    assert_eq!(facts.persistent_routes, ["/metrics/hooks"]);
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#).unwrap();
-    assert_eq!(sink.public_routes(), ["/metrics", "/metrics/hooks"]);
-    assert_eq!(sink.persistent_routes(), ["/metrics/hooks"]);
+    assert_eq!(facts.public_routes, ["/capture", "/retained"]);
+    assert_eq!(facts.persistent_routes, ["/retained"]);
+    let sink = ExportInstance::open(plugin, dispatcher, b"{}").unwrap();
+    assert_eq!(sink.public_routes(), ["/capture", "/retained"]);
+    assert_eq!(sink.persistent_routes(), ["/retained"]);
 }
 
 #[test]
@@ -101,25 +117,25 @@ fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
             .into_boxed_slice(),
         );
         // SAFETY: the fixture door's Statement lives for the process.
-        let mut statement = unsafe { *SCRAPE_DOOR().statement() };
+        let mut statement = unsafe { *TEST_EXPORT_DOOR().statement() };
         statement.extensions = statement_blob(bytes);
         <Export as crate::dispatch::Kind>::context(&statement)
     };
     // Positive control: the same construction with declared, consistent paths is accepted.
     assert!(
-        context(br#"["/metrics"]"#, br#"[]"#).is_ok(),
+        context(br#"["/capture"]"#, br#"[]"#).is_ok(),
         "a declared public route must be accepted"
     );
     for (public, persistent) in [
         (br#"["/not-declared"]"#.as_slice(), br#"[]"#.as_slice()),
-        (br#"[]"#.as_slice(), br#"["/metrics/hooks"]"#.as_slice()),
+        (br#"[]"#.as_slice(), br#"["/retained"]"#.as_slice()),
     ] {
         let err = context(public, persistent).expect_err("refused");
         assert!(err.contains("listener route policy"), "{err}");
     }
     for (public, persistent) in [
         (
-            br#"["/metrics","/metrics"]"#.as_slice(),
+            br#"["/capture","/capture"]"#.as_slice(),
             br#"[]"#.as_slice(),
         ),
         (br#"false"#.as_slice(), br#"[]"#.as_slice()),
@@ -129,109 +145,9 @@ fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
 }
 
 #[test]
-fn settings_the_sink_refuses_never_open() {
-    let (plugin, dispatcher) = linked();
-    let refused = ExportInstance::open(plugin, dispatcher, br#"{"bogus":1}"#)
-        .expect_err("refused settings do not open");
-    assert!(
-        refused.starts_with("settings: unknown field `bogus`"),
-        "{refused}"
-    );
-}
-
-#[test]
-fn a_scrape_renders_the_snapshot_and_a_short_answer_is_re_called_once() {
-    let (plugin, dispatcher) = linked();
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-        .expect("the sink opens");
-
-    let mut text = String::from("# TYPE busbar_big counter\n");
-    for i in 0..4000 {
-        text.push_str(&format!("busbar_big{{n=\"{i:020}\"}} {i}\n"));
-    }
-    text.push('\n');
-    assert!(text.len() > SCRAPE_BUF);
-    let families = parse_families(&text).expect("the snapshot reads");
-    let body = sink.scrape(&families).expect("the sink renders");
-    assert_eq!(body, text.as_bytes());
-    assert_eq!(sink.scrape(&[]).expect("an empty snapshot"), b"");
-}
-
-#[test]
-fn a_hook_scrape_carries_its_flag_through_the_call_and_the_re_call() {
-    let (plugin, dispatcher) = linked();
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-        .expect("the sink opens");
-    let mut big = String::from("# TYPE big_total counter\n");
-    for i in 0..4000 {
-        big.push_str(&format!("big_total{{hook=\"h\",n=\"{i:020}\"}} {i}\n"));
-    }
-    let small = "# TYPE small gauge\nsmall{hook=\"h\"} 1\n";
-    let text = format!("{big}{small}");
-    assert!(text.len() > SCRAPE_BUF);
-    let mut families = parse_families(&format!("{big}\n{small}\n")).expect("the families read");
-    families.reverse();
-    let body = sink
-        .scrape_hooks(&families)
-        .expect("the sink renders hook families");
-    assert_eq!(String::from_utf8_lossy(&body), text);
-    let plain = sink
-        .scrape(&families)
-        .expect("the sink renders the snapshot");
-    assert!(
-        String::from_utf8_lossy(&plain).contains("\n\n"),
-        "without the flag: /metrics' layout"
-    );
-}
-
-#[test]
-fn the_ops_the_sink_does_not_serve_are_answered_as_such() {
-    let (plugin, dispatcher) = linked();
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-        .expect("the sink opens");
-    assert_eq!(sink.status(), None);
-    let req = ServeRequest {
-        method: "GET",
-        path: "/metrics",
-        query: None,
-        headers: &[],
-        body: &[],
-    };
-    assert!(
-        sink.serve(&req).is_err(),
-        "with no host services bound the snapshot read is declined: an error, never bytes"
-    );
-    assert!(check(sink.plugin(), 1, &[])
-        .expect("check answers")
-        .is_empty());
-}
-
-#[test]
-fn refresh_refusal_and_success_leave_the_opened_export_usable() {
-    let (plugin, dispatcher) = linked();
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-        .expect("the sink opens");
-    for settings in [
-        serde_json::json!({"bogus": 1}),
-        serde_json::json!({"buffer_seconds": 0}),
-        serde_json::json!({"buffer_seconds": "thirty"}),
-    ] {
-        assert!(sink.refresh(&settings, 2).is_err(), "{settings}");
-        assert!(sink.plugin().is_open());
-    }
-    sink.refresh(&serde_json::json!({"buffer_seconds": 30}), 3)
-        .expect("valid settings refresh the existing export");
-    let text = "# TYPE private_counter counter\nprivate_counter{pool=\"private\"} 1\n\n";
-    let families = parse_families(text).unwrap();
-    assert_eq!(sink.scrape(&families).unwrap(), text.as_bytes());
-    assert!(sink.plugin().is_open());
-}
-
-#[test]
 fn a_dropped_instance_is_closed() {
     let (plugin, dispatcher) = linked();
-    let sink = ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-        .expect("the sink opens");
+    let sink = ExportInstance::open(plugin, dispatcher, b"{}").expect("the sink opens");
     let instance = Arc::clone(&sink.plugin().inner);
     assert!(instance.is_open());
     drop(sink);
@@ -240,7 +156,7 @@ fn a_dropped_instance_is_closed() {
 
 extern "C" fn stop_accounting_door() -> &'static busbar_contract::abi::mechanism::door::Door {
     use busbar_contract::abi::mechanism::door::{Door, DoorParts};
-    let door = SCRAPE_DOOR();
+    let door = TEST_EXPORT_DOOR();
     // SAFETY: the real fixture publishes an immutable Statement for the process.
     let mut statement = unsafe { *door.statement() };
     statement.name = busbar_contract::abi::sdk::door::abi_str("export-stop-accounting");
@@ -283,16 +199,11 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::dispatch::ConnTable::Host(
-                crate::actual_exports::prometheus_inbound::table(),
-            ),
+            conns: crate::dispatch::ConnTable::NoNeeds,
         },
     )
     .unwrap();
-    let opened = plugin.call(
-        lc::OPEN,
-        &mut open_frame(blob(br#"{"buffer_seconds":60}"#, BLOB_JSON)),
-    );
+    let opened = plugin.call(lc::OPEN, &mut open_frame(blob(b"{}", BLOB_JSON)));
     assert_eq!(opened.outcome, Outcome::Ready);
     let mut series = busbar_contract::abi::mechanism::observe::SeriesDecl::new(
         "busbar_export_stop_test_shed",
@@ -324,7 +235,7 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
     for line in [br#"{"line":1}"#.to_vec(), br#"{"line":2}"#.to_vec()] {
         assert_eq!(
             sink.deliver(
-                ExportStream::Metrics as u8,
+                ExportStream::Logs as u8,
                 line,
                 Box::new(QueueRelease {
                     shared: Arc::downgrade(&shared),
@@ -456,13 +367,13 @@ fn an_instance_let_go_has_its_io_handles_reaped() {
     ));
     let io = Arc::new(Reaps::default());
     assert!(dispatcher.install_io(io.clone()));
-    let row = LinkedRow::of(SCRAPE_DOOR).expect("the door states itself");
+    let row = LinkedRow::of(TEST_EXPORT_DOOR).expect("the door states itself");
     let bind = Bind {
         instance: Arc::from("export.metrics"),
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: crate::dispatch::ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
+        conns: crate::dispatch::ConnTable::NoNeeds,
     };
     let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
     let owner = plugin.inner.ctx().handle;
@@ -478,7 +389,7 @@ extern "C" fn span_records_door() -> &'static busbar_contract::abi::mechanism::d
     static DOOR: AtomicPtr<Door> = AtomicPtr::new(std::ptr::null_mut());
     let mut door = DOOR.load(Ordering::Acquire);
     if door.is_null() {
-        let real: &'static Door = SCRAPE_DOOR();
+        let real: &'static Door = TEST_EXPORT_DOOR();
         // SAFETY: the real door's Statement is `'static` plugin data.
         let st = unsafe { *real.statement() };
         // SAFETY: as above; its extensions blob holds its stated length.
@@ -520,16 +431,13 @@ fn a_door_that_states_span_records_takes_them() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::dispatch::ConnTable::Host(
-                crate::actual_exports::prometheus_inbound::table(),
-            ),
+            conns: crate::dispatch::ConnTable::NoNeeds,
         };
         let plugin = load_linked::<Export>(&row, bind).expect("the linked door loads");
-        ExportInstance::open(plugin, dispatcher, br#"{"buffer_seconds":60}"#)
-            .expect("the sink opens")
+        ExportInstance::open(plugin, dispatcher, b"{}").expect("the sink opens")
     };
     assert!(open(span_records_door).takes_span_records());
-    assert!(!open(SCRAPE_DOOR).takes_span_records());
+    assert!(!open(TEST_EXPORT_DOOR).takes_span_records());
 }
 
 mod leaky {
