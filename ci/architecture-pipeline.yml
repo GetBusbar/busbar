@@ -31,7 +31,9 @@ native-qualification:
       python3 - <<'PY'
       import base64, os, pathlib, re, shutil, subprocess
       uri = os.environ['CI_CONFIG_REF_URI']
-      match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + r'/GetBusbar/busbar//ci/architecture-pipeline\.yml@([0-9a-f]{40})', uri)
+      # GitLab identifies the consumer project/ref around the full external
+      # configuration setting. The trusted revision is the SHA after its colon.
+      match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + '/' + re.escape(os.environ['CI_PROJECT_PATH']) + r'//ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})@refs/heads/[^\s]+', uri)
       if not match:
           raise SystemExit('CI configuration must select the approved immutable core revision: ' + uri)
       base = pathlib.Path(os.environ['BUSBAR_NATIVE_SCRATCH']).resolve()
