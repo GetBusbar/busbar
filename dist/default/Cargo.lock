@@ -4155,7 +4155,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=cc1ab8df87a42610f3c85594f7cce72dccab9893#cc1ab8df87a42610f3c85594f7cce72dccab9893"
+source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=92119d6850947e220202518a09e844d87692b770#92119d6850947e220202518a09e844d87692b770"
 
 [[patch.unused]]
 name = "postgres-protocol"
