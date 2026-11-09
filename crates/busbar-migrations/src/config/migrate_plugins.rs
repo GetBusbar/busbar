@@ -134,6 +134,26 @@ struct Site {
     settings: serde_json::Value,
 
     read_only: Vec<String>,
+    browser_client_id: Option<String>,
+}
+
+impl Site {
+    fn validate(&self, host: &dyn MigrateHost, settings: &serde_json::Value) -> Result<(), String> {
+        let Some(client_id) = &self.browser_client_id else {
+            return host.validate_migrated(&self.kind, &self.module, settings);
+        };
+        // Match login opening: browser configuration supplies a fallback only.
+        // Keep this projection out of authored settings and migration write-back.
+        let mut effective = settings.clone();
+        if effective.is_null() {
+            effective = serde_json::json!({});
+        }
+        if let Some(map) = effective.as_object_mut() {
+            map.entry("client_id")
+                .or_insert_with(|| client_id.clone().into());
+        }
+        host.validate_migrated(&self.kind, &self.module, &effective)
+    }
 }
 
 pub(super) struct PlaneFacts {
@@ -170,10 +190,7 @@ pub(super) fn migrate_recognized(
         {
             continue;
         }
-        if host
-            .validate_migrated(&site.kind, &site.module, &site.settings)
-            .is_ok()
-        {
+        if site.validate(host, &site.settings).is_ok() {
             continue;
         }
         match host.migrate(&site.kind, &site.module, &site.settings, &from) {
@@ -208,10 +225,7 @@ pub(super) fn migrate_over(
         wanted.push((site.kind.clone(), site.module.clone()));
         match host.migrate(&site.kind, &site.module, &site.settings, &from) {
             Ok(None) => {
-                if host
-                    .validate_migrated(&site.kind, &site.module, &site.settings)
-                    .is_err()
-                {
+                if site.validate(host, &site.settings).is_err() {
                     ledger.failures.push(format!("{}: current plugin validation refused unchanged settings; install the current plugin or resolve its migration prerequisites before retrying", site.path));
                 }
             }
@@ -296,6 +310,7 @@ fn sites(
                     module: module.to_string(),
                     settings,
                     read_only: Vec::new(),
+                    browser_client_id: None,
                 });
             }
             continue;
@@ -327,6 +342,15 @@ fn sites(
                 module: module.to_string(),
                 settings,
                 read_only: Vec::new(),
+                browser_client_id: (kind == Kind::Auth)
+                    .then(|| {
+                        entry
+                            .get(Value::from(field::BROWSER_LOGIN))
+                            .and_then(|login| login.get("client_id"))
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .flatten(),
             });
         }
     }
@@ -384,6 +408,7 @@ fn sites(
             module: plane.key.to_string(),
             settings: serde_json::Value::Object(sections),
             read_only,
+            browser_client_id: None,
         });
     }
     out
@@ -482,10 +507,7 @@ fn apply(
             return;
         }
     }
-    if host
-        .validate_migrated(&site.kind, &site.module, &settings)
-        .is_err()
-    {
+    if site.validate(host, &settings).is_err() {
         ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
         return;
     }

@@ -914,3 +914,111 @@ fn authored_secret_substitutions_keep_live_environment_bindings() {
         assert!(!output.yaml.contains("runtime-secret"));
     }
 }
+
+struct BrowserProjection;
+impl MigrateHost for BrowserProjection {
+    fn validate_migrated(
+        &self,
+        kind: &str,
+        _: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), String> {
+        assert_eq!(kind, "auth");
+        if settings
+            .get("client_id")
+            .and_then(serde_json::Value::as_str)
+            == Some("expected")
+        {
+            Ok(())
+        } else {
+            Err("missing effective client identifier".into())
+        }
+    }
+    fn migrate(
+        &self,
+        _: &str,
+        _: &str,
+        settings: &serde_json::Value,
+        _: &str,
+    ) -> Result<Option<(String, Migrated)>, String> {
+        let mut settings = settings.clone();
+        if settings
+            .as_object_mut()
+            .is_some_and(|m| m.remove("old").is_some())
+        {
+            Ok(Some((
+                "neutral".into(),
+                Migrated {
+                    settings,
+                    report: Vec::new(),
+                    needs: Vec::new(),
+                },
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+    fn repin(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn browser_client_id_validation_matches_open_without_rewriting_authored_settings() {
+    for historical in [false, true] {
+        for (browser, settings) in [
+            ("expected", "{}"),
+            ("fallback", "{client_id: expected}"),
+            ("expected", "{old: true}"),
+        ] {
+            let raw = format!("identity-providers:\n  neutral:\n    module: neutral\n    browser_login: {{client_id: {browser}}}\n    settings: {settings}\n");
+            let mut root = yaml(&raw).as_mapping().unwrap().clone();
+            let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
+            let mut ledger = Ledger {
+                changes: &mut changes,
+                todos: &mut todos,
+                failures: &mut failures,
+            };
+            if historical {
+                migrate_over(&mut root, &BrowserProjection, &mut ledger, &[]);
+            } else {
+                super::migrate_recognized(&mut root, &BrowserProjection, &mut ledger);
+            }
+            assert!(
+                todos.is_empty() && failures.is_empty(),
+                "{todos:?} {failures:?}"
+            );
+            let result = serde_yaml::Value::Mapping(root);
+            let authored = &result["identity-providers"]["neutral"];
+            assert_eq!(
+                authored["browser_login"]["client_id"].as_str(),
+                Some(browser)
+            );
+            assert_eq!(
+                authored["settings"]["client_id"].as_str(),
+                (browser == "fallback").then_some("expected")
+            );
+        }
+    }
+}
+
+#[test]
+fn browser_client_id_projection_does_not_override_an_explicit_invalid_setting() {
+    let raw = "identity-providers:\n  neutral:\n    module: neutral\n    browser_login: {client_id: expected}\n    settings: {client_id: invalid}\n";
+    let mut root = yaml(raw).as_mapping().unwrap().clone();
+    let (mut changes, mut todos, mut failures) = (Vec::new(), Vec::new(), Vec::new());
+    super::migrate_recognized(
+        &mut root,
+        &BrowserProjection,
+        &mut Ledger {
+            changes: &mut changes,
+            todos: &mut todos,
+            failures: &mut failures,
+        },
+    );
+    assert_eq!(todos.len(), 1);
+    assert_eq!(serde_yaml::Value::Mapping(root), yaml(raw));
+}
