@@ -544,43 +544,6 @@ pub fn metrics_sink_cdylib() -> Option<Vec<u8>> {
     })
 }
 
-pub fn render_snapshot(
-    lib: &[u8],
-    name: &str,
-    settings: &str,
-    exposition: &str,
-) -> Result<Vec<u8>, String> {
-    use busbar_contract::export_calls::ExportCalls as _;
-    let families =
-        busbar_contract::export_calls::parse_families(exposition).expect("the snapshot reads");
-    let path = std::env::temp_dir().join(format!(
-        "busbar-render-{}-{name}{}",
-        std::process::id(),
-        std::env::consts::DLL_SUFFIX
-    ));
-    std::fs::write(&path, lib).expect("stage the library");
-    let stated = rendering_of_library(&path)
-        .expect("the library loads")
-        .expect("the library states itself");
-    let d = std::sync::Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_kernel::host_services::caller_binding(),
-    ));
-    let bind = Bind {
-        instance: std::sync::Arc::from(name),
-        max_inflight_cap: 64,
-        sink: std::sync::Arc::new(NoSink),
-        dispatcher: d.adopter(),
-        conns: busbar_plugin_loader::dispatch::ConnTable::Probe,
-    };
-    let plugin = load_dropped::<Export>(&path, &stated, bind).expect("the sink loads");
-    let _ = std::fs::remove_file(&path);
-    let sink =
-        busbar_plugin_loader::export_door::ExportInstance::open(plugin, d, settings.as_bytes())
-            .expect("the sink opens");
-    sink.scrape(&families)
-}
-
 pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
     let file = plugin_library_filename("neutral_frame_door");
     libraries()

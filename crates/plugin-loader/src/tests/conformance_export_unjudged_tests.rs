@@ -101,7 +101,7 @@ impl FaultingDoor {
             // SAFETY: SLOT owns an immutable leaked descriptor.
             return unsafe { &*have };
         }
-        let real: Door = *crate::export_door::tests::SCRAPE_DOOR();
+        let real: Door = *crate::export_door::tests::TEST_EXPORT_DOOR();
         // SAFETY: the real sink's door and its export table are `'static`.
         let ops: Ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops: &'static Ops = Box::leak(Box::new(Ops {
@@ -117,7 +117,7 @@ impl FaultingDoor {
             })
         }));
         SLOT.store(door, Ordering::SeqCst);
-        // SAFETY: the descriptor is leaked and its real-image code remains loaded.
+        // SAFETY: the descriptor is leaked and its synthetic SDK table remains live.
         unsafe { &*door }
     }
 }
@@ -136,11 +136,11 @@ fn red_a_fault_answers_garbage_and_the_script_reads_none_of_it() {
             max_inflight_cap: 16,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
-            conns: ConnTable::Host(crate::actual_exports::prometheus_inbound::table()),
+            conns: ConnTable::NoNeeds,
         },
     )
     .expect("the restated actual door loads");
-    let opened = ExportInstance::open(p, d, br#"{ "buffer_seconds": 60 }"#);
+    let opened = ExportInstance::open(p, d, b"{}");
     assert!(
         opened.is_ok(),
         "the real Prometheus open must answer READY: {opened:?}"
