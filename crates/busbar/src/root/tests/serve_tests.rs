@@ -8312,6 +8312,9 @@ mod pools_door_walk_and_breaker {
             Some(1),
             "the unknown part is dropped, not replaced: {rebuilt}"
         );
+        busbar_kernel::audit::auditlog::flush_pending()
+            .await
+            .expect("the native audit stream confirms both degraded wire-field rows");
         for resource in [
             format!("logit_bias on {far_dialect}"),
             format!("messages[].content[].type=x_future_part on {far_dialect}"),

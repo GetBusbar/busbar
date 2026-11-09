@@ -4,7 +4,7 @@ workflow:
   auto_cancel:
     on_new_commit: conservative
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
     - when: never
@@ -60,6 +60,8 @@ native-qualification:
           command = ['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
           if os.environ['CI_JOB_NAME'] == 'core-conformance':
               command.append('--conformance-only')
+          elif os.environ['CI_JOB_NAME'] == 'external-conformance':
+              command.append('--external-conformance')
           elif os.environ['CI_JOB_NAME'] != 'native-qualification':
               raise SystemExit('unrecognized trusted native job')
           subprocess.run(command, check=True)
@@ -80,6 +82,15 @@ core-conformance:
   tags: [busbar-conformance]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - when: never
+
+# External endpoint judges keep their own failures and unmet prerequisites.
+# These receipts are evaluations, never a substitute for native qualification.
+external-conformance:
+  extends: native-qualification
+  tags: [busbar-conformance]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
     - when: never
 
 # Every qualified assembled-product dev change refreshes current website evidence.

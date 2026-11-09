@@ -20,3 +20,11 @@ test(/^live_e2e::/)
 | test(=admin_api_installs_headroom_and_a_real_request_is_compressed_upstream)
 '''
 slow-timeout = { period = "60s", terminate-after = 20 }
+
+# This aggregate executes ten isolated deployment drivers serially. Native1317
+# measured 427s in six of those same drivers when tested separately; their
+# combined runtime cannot fit the ordinary five-minute per-test limit. Keep
+# every driver and its request/assertion deadlines, with a ten-minute outer cap.
+[[profile.default.overrides]]
+filter = 'test(=distribution::admin_cross_plane::keys::every_admin_error_surface_answers_its_declared_status)'
+slow-timeout = { period = "60s", terminate-after = 10 }
