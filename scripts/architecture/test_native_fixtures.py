@@ -1,7 +1,9 @@
-"""Fixture readiness excludes the LDAP image's temporary bootstrap daemon."""
+"""Native fixture readiness, server options and backend witness environments."""
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -30,6 +32,31 @@ class Readiness(unittest.TestCase):
 
 
 class StoreEnvironment(unittest.TestCase):
+    def test_mysql_server_allows_scoped_trigger_installation_with_binary_logging(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            calls = root / 'docker-calls.jsonl'
+            docker = root / 'docker'
+            docker.write_text('#!' + sys.executable + '\n'
+                'import json, os, sys\n'
+                'with open(os.environ["DOCKER_CALLS"], "a") as output:\n'
+                '    output.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                '# Refuse inspection, then stop at creation; no live container.\n'
+                'sys.exit(1)\n')
+            docker.chmod(0o755)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
+                       DOCKER_CALLS=str(calls), BUSBAR_STORE_QA_TAG='native-contract')
+            env.pop('SERVICE_IMAGES_TSV', None)
+            script = Path(__file__).resolve().parents[2] / 'testing/fleet-fixtures/store-services.sh'
+            result = subprocess.run(['bash', str(script), 'up', 'mysql'], env=env,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            command = next(args for args in map(json.loads, calls.read_text().splitlines())
+                           if args[0] == 'run')
+            self.assertEqual(command[-1], '--log-bin-trust-function-creators=1')
+            self.assertIn('@sha256:', command[-2])
+            self.assertNotIn('--skip-log-bin', command)
+
     def qualification(self, root, repository):
         trusted, work = root / 'trusted', root / 'work'
         table = trusted / 'testing/fleet-fixtures/service-images.tsv'
