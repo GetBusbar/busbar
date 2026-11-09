@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+from contextlib import contextmanager
 import datetime
 import hashlib
 import json
@@ -18,8 +19,93 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 
 from check import Policy, Violation, read
+
+
+class Interrupted(BaseException):
+    def __init__(self, signum):
+        self.signum = signum
+        super().__init__(f'native qualification interrupted by signal {signum}')
+
+
+class Interruptions:
+    def __init__(self):
+        self.pending = None
+        self.deferred = False
+
+    def handle(self, signum, _frame):
+        self.pending = signum
+        # A second cancellation must not interrupt command, service or receipt cleanup.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, signal.SIG_IGN)
+        if not self.deferred:
+            self.check()
+
+    def check(self):
+        if self.pending is not None:
+            raise Interrupted(self.pending)
+
+
+INTERRUPTIONS = None
+
+
+@contextmanager
+def interruption_signals():
+    global INTERRUPTIONS
+    previous = INTERRUPTIONS
+    state = INTERRUPTIONS = Interruptions()
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        for sig in handlers:
+            signal.signal(sig, state.handle)
+        yield
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        INTERRUPTIONS = previous
+
+
+@contextmanager
+def deferred_interruptions():
+    state = INTERRUPTIONS
+    previous = state.deferred if state is not None else False
+    if state is not None:
+        state.deferred = True
+    try:
+        yield
+    finally:
+        if state is not None:
+            state.deferred = previous
+    if state is not None and not previous:
+        state.check()
+
+
+def stop_process_group(process, grace=10):
+    """Let nested supervisors finish their TERM/finally cleanup before forcing the group."""
+    with deferred_interruptions():
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            process.wait()
+            return
+        deadline = time.monotonic() + grace
+        while True:
+            process.poll()  # Reap the group leader when it exits.
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                break
+            time.sleep(min(0.05, remaining))
+        process.wait(timeout=1)
 
 
 def git(root, *args):
@@ -129,26 +215,29 @@ class Qualification:
             junit = workspace / 'target/nextest/default/native.xml'
             junit.unlink(missing_ok=True)
         with (self.evidence / (name + '.stdout')).open('wb') as out, (self.evidence / (name + '.stderr')).open('wb') as err:
-            process = subprocess.Popen(argv, cwd=cwd or self.root, env=self.env, stdout=out, stderr=err, start_new_session=True)
+            process = None
             try:
+                with deferred_interruptions():
+                    process = subprocess.Popen(argv, cwd=cwd or self.root, env=self.env, stdout=out, stderr=err, start_new_session=True)
                 code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
                 row.update(status='timeout', finished_at=now())
                 self.save()
                 raise
+            except Interrupted as error:
+                row.update(status='interrupted', signal=error.signum, finished_at=now())
+                self.save()
+                raise
             finally:
-                # Tests may have started fixture servers. Never leave descendants on
-                # a shared runner after their owning command has finished.
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                # TERM gives nested conformance supervisors time to reap their own
+                # independent sessions; KILL remains bounded for unresponsive commands.
+                if process is not None:
+                    try:
+                        stop_process_group(process)
+                    except Interrupted as error:
+                        row.update(status='interrupted', signal=error.signum, finished_at=now())
+                        self.save()
+                        raise
         row.update(status='pass' if code == 0 else 'fail', exit_code=code, finished_at=now())
         for stream in ('stdout', 'stderr'):
             row[stream + '_sha256'] = digest(self.evidence / (name + '.' + stream))
@@ -305,7 +394,7 @@ class Qualification:
         shutil.copytree(self.evidence, destination)
 
 
-def main():
+def qualify():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--trusted', required=True, type=Path)
     parser.add_argument('--checkout', required=True, type=Path)
@@ -313,8 +402,10 @@ def main():
     args = parser.parse_args()
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
         raise Violation('full native qualification runs in GitLab CI only')
-    qualification = Qualification(args)
+    qualification = None
     try:
+        with deferred_interruptions():
+            qualification = Qualification(args)
         if qualification.repository == 'GetBusbar/busbar-plane-llm':
             from native_oracle import prepare as prepare_oracle
             prepare_oracle(qualification)
@@ -341,12 +432,19 @@ def main():
             raise Violation('could not bind the qualified source archive')
         qualification.finish('pass')
     except BaseException as error:
-        qualification.finish('fail', error)
+        if qualification is not None:
+            qualification.finish('fail', error)
         raise
     finally:
         # Only the unique job workspace created by the trusted bootstrap is disposable.
-        if qualification.work.name == 'boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID']:
-            shutil.rmtree(qualification.work)
+        work = qualification.work if qualification is not None else args.work.resolve()
+        if work.name == 'boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID']:
+            shutil.rmtree(work)
+
+
+def main():
+    with interruption_signals():
+        qualify()
 
 
 if __name__ == '__main__':
