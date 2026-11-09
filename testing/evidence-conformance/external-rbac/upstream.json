@@ -1,0 +1,52 @@
+{
+  "status": "applicability-researched-report-adapter-only-not-integrated-not-executed",
+  "upstream": {
+    "repository": "https://github.com/zaproxy/zap-extensions",
+    "addon": "accessControl",
+    "release": 13,
+    "tag": "accessControl-v13",
+    "annotated_tag_object": "98814863a04c224858f1dfe1bcb82f5a3433059e",
+    "commit": "e7aaf9014287478da76bdbd56316ea171ee840d3",
+    "inspected_files": {
+      "AccessControlScannerThread.java": {
+        "sha256": "e5bfe51ca71382f3460e0e6bb24fa29b135ab7db1d3ff0082d06272cc5ed7eaf",
+        "url": "https://github.com/zaproxy/zap-extensions/blob/e7aaf9014287478da76bdbd56316ea171ee840d3/addOns/accessControl/src/main/java/org/zaproxy/zap/extension/accessControl/AccessControlScannerThread.java"
+      },
+      "ExtensionAccessControl.java": {
+        "sha256": "30375c361d6ed2cbc03e79186da62ee12f6e48573c7fe6906b7253e500a6a029",
+        "url": "https://github.com/zaproxy/zap-extensions/blob/e7aaf9014287478da76bdbd56316ea171ee840d3/addOns/accessControl/src/main/java/org/zaproxy/zap/extension/accessControl/ExtensionAccessControl.java"
+      },
+      "ContextAccessRulesManager.java": {
+        "sha256": "ebfa9046dd228bfe14033aef0a8d2764ec83dc9cb724903f412909a4e96ff7e0",
+        "url": "https://github.com/zaproxy/zap-extensions/blob/e7aaf9014287478da76bdbd56316ea171ee840d3/addOns/accessControl/src/main/java/org/zaproxy/zap/extension/accessControl/ContextAccessRulesManager.java"
+      },
+      "AccessControlAPI.java": {
+        "sha256": "fe25e610d084c0d21283c4b201ea52c4e3f4873e82a5809b98193972b850dce1",
+        "url": "https://github.com/zaproxy/zap-extensions/blob/e7aaf9014287478da76bdbd56316ea171ee840d3/addOns/accessControl/src/main/java/org/zaproxy/zap/extension/accessControl/AccessControlAPI.java"
+      },
+      "reportAccessControl.html.xsl": {
+        "sha256": "a71ccc93a7bf9ab9a0f180c4ec71ece5b8669c4d38cb4adb8d7bdda246b34c1d",
+        "url": "https://github.com/zaproxy/zap-extensions/blob/e7aaf9014287478da76bdbd56316ea171ee840d3/addOns/accessControl/src/main/zapHomeFiles/xml/reportAccessControl.html.xsl"
+      }
+    }
+  },
+  "executable_pin": null,
+  "runtime_dependencies_pin": null,
+  "criteria": [
+    "https://wstg.owasp.org/v4.2/4-Web_Application_Security_Testing/05-Authorization_Testing/02-Testing_for_Bypassing_Authorization_Schema/",
+    "https://wstg.owasp.org/v4.2/4-Web_Application_Security_Testing/05-Authorization_Testing/03-Testing_for_Privilege_Escalation/"
+  ],
+  "upstream_report_limitation": {
+    "source": "ExtensionAccessControl.java",
+    "lines": [
+      415,
+      441
+    ],
+    "group_key": "result.getUri()",
+    "same_user_comparator_returns": 0,
+    "effect": "same URI and user results for later HTTP methods omitted",
+    "required_adapter_strategy": "one operation per upstream scan/report, full principal roster, exact full-operation accounting"
+  },
+  "claims_supported": [],
+  "local_validation": "7 targeted report-accounting unit tests; no protocol or actual subject execution"
+}
