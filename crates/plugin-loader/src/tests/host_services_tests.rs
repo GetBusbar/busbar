@@ -1270,7 +1270,11 @@ fn a_caller_scoped_service_with_no_caller_is_refused() {
     let ret =
         unsafe { HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o) };
     assert_eq!(ret.outcome(), Outcome::Refused);
-    assert_eq!(error(&o), NO_CALLER);
+    // No caller also means no kind authority; admission refuses before delegation.
+    assert_eq!(
+        error(&o),
+        "this kind or lifecycle phase has no authority for the host operation"
+    );
     assert!(d.route.provider.scoped.lock().unwrap().is_empty());
 }
 
@@ -2462,7 +2466,10 @@ fn call_auth(ctx: HostCtx, i: &AuthCallIn) -> (RawOutcome, ServiceOut) {
 
 #[test]
 fn an_auth_ref_minted_for_another_owner_is_refused() {
-    let (a, b) = (double(), double());
+    let (a, b) = (
+        double_for(busbar_contract::abi::mechanism::KindCode::Transport),
+        double_for(busbar_contract::abi::mechanism::KindCode::Transport),
+    );
     assert_ne!(owner(&a), owner(&b));
     let r = mint_auth_ref(owner(&a), generation(), 5).expect("minted");
     let mut slot = answer_slot();

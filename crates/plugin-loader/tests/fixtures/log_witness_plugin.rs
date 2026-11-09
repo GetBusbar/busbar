@@ -160,6 +160,26 @@ ready!(Cancel, CancelIn, CancelOut);
 ready!(Release, ReleaseIn, OutHead);
 ready!(Close, InHead, OutHead);
 
+// Logging exercises lifecycle calls, but its Export door still carries the
+// complete kind table required by the same loader in linked and dropped mode.
+ready!(Deliver, busbar_contract::abi::export::DeliverIn, OutHead);
+ready!(
+    Scrape,
+    busbar_contract::abi::export::ScrapeIn,
+    busbar_contract::abi::export::ScrapeOut
+);
+ready!(Status, InHead, busbar_contract::abi::export::StatusOut);
+ready!(
+    Check,
+    busbar_contract::abi::export::CheckIn,
+    busbar_contract::abi::export::CheckOut
+);
+ready!(
+    Serve,
+    busbar_contract::abi::export::ServeIn,
+    busbar_contract::abi::export::ServeOut
+);
+
 pub mod a {
     use super::*;
 
@@ -196,6 +216,9 @@ pub mod a {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
         },
+        kind_ops: {
+            deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve,
+        },
     }
 }
 
@@ -221,6 +244,9 @@ pub mod b {
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: {
+            deliver: Deliver, scrape: Scrape, status: Status, check: Check, serve: Serve,
         },
     }
 }

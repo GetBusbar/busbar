@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::log_witness_plugin as witness;
 use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
-use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, OpsHead, TickIn, TickOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot, OpenIn, OpenOut, TickIn, TickOut};
 use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::{
@@ -19,7 +19,7 @@ struct WitnessKind;
 impl crate::dispatch::kind_seal::Validated for WitnessKind {}
 impl Kind for WitnessKind {
     const CODE: KindCode = witness::KIND;
-    type Ops = OpsHead;
+    type Ops = witness::Ops;
     const TIMEOUT: busbar_contract::abi::mechanism::call::Outcome =
         busbar_contract::abi::mechanism::call::Outcome::Failed;
 }

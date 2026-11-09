@@ -2792,7 +2792,16 @@ mod creating_authority_tests {
 
     #[test]
     fn published_refresh_keeps_raw_held_and_pending_dials_on_their_creating_authority() {
+        let _invocation =
+            super::super::access::enter(busbar_contract::abi::mechanism::lifecycle::slot::TICK);
         let wake = Box::leak(Box::<InstanceWake>::default());
+        assert!(wake
+            .caller
+            .set(busbar_contract::services::Caller::for_test(
+                Arc::from("creating-authority"),
+                busbar_contract::abi::mechanism::KindCode::Export,
+            ))
+            .is_ok());
         let ctx = super::super::handle::mint(wake).unwrap();
         let old_owner = super::super::handle::instance_id(ctx);
         let new_owner = InstanceId(u64::MAX - 1);
@@ -3199,7 +3208,16 @@ mod creating_authority_tests {
 
     #[test]
     fn retained_framed_requests_keep_old_auth_while_new_requests_rotate_remove_and_add_it() {
+        let _invocation =
+            super::super::access::enter(busbar_contract::abi::mechanism::lifecycle::slot::TICK);
         let wake = Box::leak(Box::<InstanceWake>::default());
+        assert!(wake
+            .caller
+            .set(busbar_contract::services::Caller::for_test(
+                Arc::from("creating-authority"),
+                busbar_contract::abi::mechanism::KindCode::Export,
+            ))
+            .is_ok());
         let ctx = super::super::handle::mint(wake).unwrap();
         let owners = [
             super::super::handle::instance_id(ctx),
