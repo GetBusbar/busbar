@@ -1,0 +1,71 @@
+"""C qualification preserves sanitizer checks while bounding Linux startup layout."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+from native_plugins import qualify_plugin
+
+
+class CQualification(unittest.TestCase):
+    def qualification(self, directory):
+        root = Path(directory)
+        work, evidence = root / 'work', root / 'evidence'
+        (work / 'architecture').mkdir(parents=True)
+        evidence.mkdir()
+        library = work / 'architecture/plugin.so'
+        library.write_bytes(b'actual library supplied by architecture check')
+        return SimpleNamespace(
+            root=root / 'candidate', work=work, evidence=evidence,
+            repository='GetBusbar/busbar-secret-c',
+            policy=SimpleNamespace(data={'repositories': {
+                'GetBusbar/busbar-secret-c': {'language': 'c'},
+            }}), env={}, receipt={}, run=Mock(),
+        )
+
+    def test_linux_only_tsan_process_has_fixed_layout_and_instrumentation(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            q = self.qualification(directory)
+            with patch('native_plugins.sys.platform', 'linux'):
+                qualify_plugin(q, Path(directory) / 'host', Path(directory) / 'sdk')
+            calls = {call.args[0]: call.args[1] for call in q.run.call_args_list}
+            self.assertEqual(calls['c-unit'], [str(q.work / 'unit')])
+            self.assertEqual(calls['c-unit-tsan'], [
+                'setarch', '--addr-no-randomize', str(q.work / 'unit-tsan'),
+            ])
+            self.assertIn('-fsanitize=thread', calls['c-build-unit-tsan'])
+            self.assertIn('-pthread', calls['c-build-unit-tsan'])
+            self.assertEqual(q.env['TSAN_OPTIONS'], 'halt_on_error=1')
+            self.assertIn('c-native-loader', calls)
+            self.assertIn('c-schema', calls)
+
+    def test_other_platform_retains_direct_sanitizer_execution(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            q = self.qualification(directory)
+            (q.work / 'architecture/plugin.so').rename(q.work / 'architecture/plugin.dylib')
+            with patch('native_plugins.sys.platform', 'darwin'):
+                qualify_plugin(q, Path(directory) / 'host', Path(directory) / 'sdk')
+            q.run.assert_any_call('c-unit-tsan', [str(q.work / 'unit-tsan')])
+
+    def test_sanitizer_or_setarch_failure_stops_qualification(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            q = self.qualification(directory)
+
+            def run(name, argv, **_kwargs):
+                if name == 'c-unit-tsan':
+                    raise subprocess.CalledProcessError(66, argv)
+
+            q.run.side_effect = run
+            with patch('native_plugins.sys.platform', 'linux'):
+                with self.assertRaises(subprocess.CalledProcessError) as caught:
+                    qualify_plugin(q, Path(directory) / 'host', Path(directory) / 'sdk')
+            self.assertEqual(caught.exception.returncode, 66)
+            self.assertNotIn('c-schema', [call.args[0] for call in q.run.call_args_list])
+            self.assertEqual(q.receipt, {})
+
+
+if __name__ == '__main__':
+    unittest.main()
