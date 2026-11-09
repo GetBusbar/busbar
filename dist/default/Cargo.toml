@@ -813,7 +813,6 @@ required-features = ["auth-admin-tokens", "plane-llm"]
 "gov14_db_path" = "busbar-governance.db"
 "gov14_module" = "sqlite"
 "hook_1x_url_transport" = "webhook"
-"login_brands" = "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
 "metrics_type_key" = "prometheus"
 "module_examples" = "sqlite | postgres | valkey"
 "name_1_5_5.busbar-auth-github" = "busbar-auth-github-plugin"

@@ -6,9 +6,44 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions
+from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions, core_source_inventory
 
 ROOT = Path('/candidate')
+
+
+class CoreSourceInventoryTests(unittest.TestCase):
+    def test_sdk_nested_sources_tests_and_build_scripts_are_all_in_scope(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            expected = ['crates/contract/src/lib.rs', 'crates/contract/src/abi/sdk/hidden.rs',
+                        'crates/contract/tests/fixture.rs', 'crates/contract/build.rs',
+                        'crates/kernel/src/lib.rs']
+            for relative in expected:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('fn fixture() {}')
+            # Candidate/legacy file subsets cannot narrow the trusted member inventory.
+            p = policy()
+            p.data['policy_sources'] = ['crates/kernel/src/lib.rs']
+            self.assertEqual(core_source_inventory(p, root), sorted(str((root / path).resolve()) for path in expected))
+
+    def test_a_missing_core_member_is_not_silently_unchecked(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            with self.assertRaisesRegex(Violation, 'invalid core source root'):
+                core_source_inventory(policy(), Path(directory))
+
+    def test_symlinked_source_cannot_escape_the_candidate(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory) / 'candidate'
+            for member in ['contract', 'kernel']:
+                path = root / 'crates' / member / 'src'
+                path.mkdir(parents=True)
+                (path / 'lib.rs').write_text('fn fixture() {}')
+            outside = Path(directory) / 'outside.rs'
+            outside.write_text('fn fixture() {}')
+            (root / 'crates/contract/src/escape.rs').symlink_to(outside)
+            with self.assertRaisesRegex(Violation, 'escapes candidate'):
+                core_source_inventory(policy(), root)
 
 
 class VectorTests(unittest.TestCase):

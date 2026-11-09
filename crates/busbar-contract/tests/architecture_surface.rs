@@ -232,7 +232,7 @@ impl<'ast> Visit<'ast> for Imports {
     }
 }
 
-fn child_file(file: &Path, module: &syn::ItemMod) -> Result<PathBuf, String> {
+fn child_file(file: &Path, root: bool, module: &syn::ItemMod) -> Result<PathBuf, String> {
     for attr in &module.attrs {
         if attr.path().is_ident("path") {
             if let Meta::NameValue(n) = &attr.meta {
@@ -247,10 +247,11 @@ fn child_file(file: &Path, module: &syn::ItemMod) -> Result<PathBuf, String> {
         }
     }
     let parent = file.parent().unwrap();
-    let base = if matches!(
-        file.file_name().and_then(|n| n.to_str()),
-        Some("lib.rs" | "mod.rs" | "main.rs")
-    ) {
+    let base = if root
+        || matches!(
+            file.file_name().and_then(|n| n.to_str()),
+            Some("lib.rs" | "mod.rs" | "main.rs")
+        ) {
         parent.to_path_buf()
     } else {
         parent.join(file.file_stem().unwrap())
@@ -290,20 +291,20 @@ fn source_tree(
                 .into_iter()
                 .map(|e| format!("{}: implementation selector {e}", path.display())),
         );
-        child_modules(&parsed.items, &path, seen, errors, policy_names);
-        return;
     }
-    if root {
+    if root && policy_names.is_none() {
         surface(&parsed.items, errors);
     }
     let mut imports = Imports::default();
     imports.visit_file(&parsed);
-    errors.extend(
-        imports
-            .errors
-            .into_iter()
-            .map(|e| format!("{}: {e}", path.display())),
-    );
+    if policy_names.is_none() {
+        errors.extend(
+            imports
+                .errors
+                .into_iter()
+                .map(|e| format!("{}: {e}", path.display())),
+        );
+    }
     for include in imports.includes {
         let child = if let Ok(literal) = syn::parse2::<syn::LitStr>(include.tokens.clone()) {
             path.parent().unwrap().join(literal.value())
@@ -327,9 +328,9 @@ fn source_tree(
                 continue;
             }
         };
-        source_tree(&child, root, seen, errors, None);
+        source_tree(&child, root, seen, errors, policy_names);
     }
-    child_modules(&parsed.items, &path, seen, errors, None);
+    child_modules(&parsed.items, &path, root, seen, errors, policy_names);
 }
 
 fn generated_include(source: &Path, include: &syn::Macro) -> Option<PathBuf> {
@@ -378,21 +379,23 @@ fn generated_include(source: &Path, include: &syn::Macro) -> Option<PathBuf> {
 fn child_modules(
     items: &[Item],
     file: &Path,
+    root: bool,
     seen: &mut BTreeSet<PathBuf>,
     errors: &mut Vec<String>,
     policy_names: Option<&BTreeSet<String>>,
 ) {
     for item in items {
         if let Item::Mod(module) = item {
-            if !shipping(&module.attrs) {
+            if policy_names.is_none() && !shipping(&module.attrs) {
                 continue;
             }
             if let Some((_, nested)) = &module.content {
                 let parent = file.parent().unwrap();
-                let base = if matches!(
-                    file.file_name().and_then(|n| n.to_str()),
-                    Some("lib.rs" | "mod.rs" | "main.rs")
-                ) {
+                let base = if root
+                    || matches!(
+                        file.file_name().and_then(|n| n.to_str()),
+                        Some("lib.rs" | "mod.rs" | "main.rs")
+                    ) {
                     parent.to_path_buf()
                 } else {
                     parent.join(file.file_stem().unwrap())
@@ -400,13 +403,14 @@ fn child_modules(
                 child_modules(
                     nested,
                     &base.join(module.ident.to_string()).join("mod.rs"),
+                    false,
                     seen,
                     errors,
                     policy_names,
                 );
             } else {
                 source_tree(
-                    &child_file(file, module).expect("module path"),
+                    &child_file(file, root, module).expect("module path"),
                     false,
                     seen,
                     errors,
@@ -463,11 +467,6 @@ struct Selectors {
 }
 
 impl<'ast> Visit<'ast> for Selectors {
-    fn visit_item(&mut self, item: &'ast Item) {
-        if shipping(item_attrs(item)) {
-            visit::visit_item(self, item);
-        }
-    }
     fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
         self.inspect(&expr.cond);
         visit::visit_expr_if(self, expr);
@@ -519,6 +518,48 @@ fn implementation_selection_is_rejected_but_diagnostics_are_not_selectors() {
 }
 
 #[test]
+fn selector_checks_cannot_be_disabled_by_test_or_platform_attributes() {
+    for code in [
+        "#[cfg(test)] fn f(n: &str) { if n == \"fixture-owner\" {} }",
+        "#[cfg(windows)] fn f(n: &str) { match n { \"fixture-owner\" => (), _ => () } }",
+        "#[cfg(feature = \"test-support\")] fn f(n: &str) { if n == \"fixture-owner\" {} }",
+    ] {
+        let mut check = Selectors {
+            names: ["fixture-owner".into()].into(),
+            ..Default::default()
+        };
+        check.visit_file(&syn::parse_file(code).unwrap());
+        assert_eq!(check.errors, ["fixture-owner"], "unchecked code: {code}");
+    }
+}
+
+#[test]
+fn core_policy_checks_follow_included_rust() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("core-included-policy-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let root = directory.join("root.rs");
+    let included = directory.join("included.rs");
+    std::fs::write(&root, "include!(\"included.rs\");").unwrap();
+    std::fs::write(&included, "fn f(n: &str) { if n == \"fixture-owner\" {} }").unwrap();
+    let mut errors = Vec::new();
+    source_tree(
+        &root,
+        false,
+        &mut BTreeSet::new(),
+        &mut errors,
+        Some(&["fixture-owner".into()].into()),
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(
+        errors.len(),
+        1,
+        "included source was not judged: {errors:?}"
+    );
+    assert!(errors[0].contains("implementation selector fixture-owner"));
+}
+
+#[test]
 fn core_policy_does_not_select_implementations() {
     let Some(inventory) = std::env::var_os("BUSBAR_ARCHITECTURE_POLICY_SOURCES") else {
         return;
@@ -530,11 +571,15 @@ fn core_policy_does_not_select_implementations() {
     let names: BTreeSet<String> = rows["names"].iter().cloned().collect();
     assert!(!rows["paths"].is_empty());
     let mut errors = Vec::new();
-    for path in &rows["paths"] {
+    let mut seen = BTreeSet::new();
+    // Visit actual Cargo target roots first: custom binary/test names have the
+    // same sibling-module resolution as lib.rs, not foo/bar.rs resolution.
+    let roots: BTreeSet<String> = rows["roots"].iter().cloned().collect();
+    for path in roots.iter().chain(rows["paths"].iter()) {
         source_tree(
             Path::new(path),
-            false,
-            &mut BTreeSet::new(),
+            roots.contains(path),
+            &mut seen,
             &mut errors,
             Some(&names),
         );
@@ -558,4 +603,29 @@ fn candidate_plugin_surfaces_follow_the_trusted_inventory() {
         source_tree(&path, true, &mut BTreeSet::new(), &mut errors, None);
     }
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[test]
+fn policy_follows_custom_crate_root_and_nonshipping_modules() {
+    let directory = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("custom-root-policy-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let root = directory.join("custom-binary.rs");
+    std::fs::write(&root, "#[cfg(test)] mod sibling;").unwrap();
+    std::fs::write(
+        directory.join("sibling.rs"),
+        "fn f(n: &str) { if n == \"fixture-owner\" {} }",
+    )
+    .unwrap();
+    let mut errors = Vec::new();
+    source_tree(
+        &root,
+        true,
+        &mut BTreeSet::new(),
+        &mut errors,
+        Some(&["fixture-owner".into()].into()),
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains("implementation selector fixture-owner"));
 }

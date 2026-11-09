@@ -1550,3 +1550,109 @@ fn a_combined_door_asks_the_verifier_half_and_a_refused_refresh_changes_nothing(
         "a refused refresh must not adopt the new generation"
     );
 }
+
+struct Transactional(std::sync::Mutex<(u64, u64)>);
+
+impl crate::abi::sdk::auth_door::SyncVerifyPlugin for Transactional {
+    fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
+        Ok(Self(std::sync::Mutex::new((1, 1))))
+    }
+    fn verify(&self, _: &VerifyView<'_>) -> Answer {
+        Verdict::Pass.into()
+    }
+    fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+        self.0.lock().unwrap().0 = 2;
+        Ok(0)
+    }
+}
+
+impl OutboundPlugin for Transactional {
+    fn open(_: &[u8], _: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        Ok(Self(std::sync::Mutex::new((generation, generation))))
+    }
+    fn open_outbound(
+        &self,
+        _: &str,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
+    ) -> Result<u64, OpenRefusal> {
+        Ok(self.0.lock().unwrap().1)
+    }
+    fn fields(
+        &self,
+        _: &FieldsView<'_>,
+        _: &mut FieldsWriter<'_>,
+        _: &Op<'_>,
+    ) -> Poll<FieldsAnswer> {
+        Poll::Ready(FieldsAnswer::Ready)
+    }
+    fn outbound_ready(&self, _: u64) -> bool {
+        true
+    }
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], generation: u64) -> Result<(), Refusal> {
+        if settings == BAD {
+            return Err(Refusal::refused("outbound refused"));
+        }
+        self.0.lock().unwrap().1 = generation;
+        Ok(())
+    }
+}
+
+#[test]
+fn outbound_refresh_refusal_cannot_commit_the_verifier_half() {
+    use crate::abi::sdk::life::Life;
+    let both = super::Both::<Transactional>::open(b"{}", &[], 1).unwrap();
+    assert!(Life::refresh(&both, BAD, &[], 2).is_err());
+    assert_eq!(
+        *both.0 .0.lock().unwrap(),
+        (1, 1),
+        "a refused refresh retains both old halves"
+    );
+    Life::refresh(&both, b"{}", &[], 2).unwrap();
+    assert_eq!(*both.0 .0.lock().unwrap(), (2, 2));
+}
+
+impl super::CombinedPlugin for Sig {
+    fn open_combined(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        <Self as OutboundPlugin>::open(settings, secrets, generation)
+    }
+    fn refresh_combined(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<u64, Refusal> {
+        Ok(0)
+    }
+}
+
+impl super::CombinedPlugin for Gated {
+    fn open_combined(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        <Self as OutboundPlugin>::open(settings, secrets, generation)
+    }
+    fn refresh_combined(
+        &self,
+        settings: &[u8],
+        secrets: &[&[u8]],
+        generation: u64,
+    ) -> Result<u64, Refusal> {
+        <Self as crate::abi::sdk::auth_door::VerifyPlugin>::validate(settings)?;
+        <Self as OutboundPlugin>::refresh(self, settings, secrets, generation)?;
+        Ok(0)
+    }
+}
+
+impl super::CombinedPlugin for Transactional {
+    fn open_combined(settings: &[u8], secrets: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        <Self as OutboundPlugin>::open(settings, secrets, generation)
+    }
+    fn refresh_combined(
+        &self,
+        settings: &[u8],
+        _: &[&[u8]],
+        generation: u64,
+    ) -> Result<u64, Refusal> {
+        if settings == BAD {
+            return Err(Refusal::refused("outbound refused"));
+        }
+        *self.0.lock().unwrap() = (generation, generation);
+        Ok(0)
+    }
+}
