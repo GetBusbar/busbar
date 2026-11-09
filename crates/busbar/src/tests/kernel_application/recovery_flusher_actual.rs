@@ -493,18 +493,55 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     .expect(
         "the single Tokio reactor continues while the native recovery acknowledgment is suspended",
     );
+    let mut checkpoint = journal.current(original.operation_id);
+    assert_eq!(checkpoint.revision, unknown.revision + 1);
+    assert_eq!(checkpoint.state, RecoveryState::VerdictNotLanded);
+    let mut checkpoint_waits = Vec::with_capacity(3);
     release_tx.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if journal.current(original.operation_id).state == RecoveryState::Settled { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    }).await.unwrap_or_else(|elapsed| {
-        let states: Vec<_> = journal.selected.lock().unwrap().iter()
-            .map(|event| (hex::encode(event.operation_id), event.kind, event.revision, event.state))
-            .collect();
-        panic!("the actual periodic flusher resumes the durable verdict without another resolve or restart: {elapsed}; native checkpoints={states:?}; recovery diagnostics={:?}", diagnostics.0.lock().unwrap());
-    });
+    // The native journal must select the raw cut, the successor authorization, and settlement.
+    // Bound each of these three advances, rather than charging every native Store round trip
+    // in all three stages to one five-second timer. A stalled stage still fails in five seconds.
+    for expected_state in [
+        RecoveryState::VerdictNotLanded,
+        RecoveryState::VerdictNotLanded,
+        RecoveryState::Settled,
+    ] {
+        let revision = checkpoint.revision + 1;
+        let started = std::time::Instant::now();
+        checkpoint = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let next = journal
+                    .selected
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|event| {
+                        event.operation_id == original.operation_id && event.revision == revision
+                    })
+                    .cloned();
+                if let Some(next) = next {
+                    break next;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|elapsed| {
+            let states: Vec<_> = journal.selected.lock().unwrap().iter()
+                .map(|event| (hex::encode(event.operation_id), event.kind, event.revision, event.state))
+                .collect();
+            panic!("the actual periodic flusher resumes the durable verdict without another resolve or restart: {elapsed}; native checkpoints={states:?}; recovery diagnostics={:?}", diagnostics.0.lock().unwrap());
+        });
+        assert_eq!(checkpoint.kind, RecoveryKind::Correction);
+        assert_eq!(checkpoint.revision, revision);
+        assert_eq!(checkpoint.state, expected_state);
+        checkpoint_waits.push((revision, started.elapsed()));
+    }
+    assert_eq!(
+        checkpoint.state,
+        RecoveryState::Settled,
+        "the three native parent checkpoints settle the correction without another resolve or restart"
+    );
     shutdown_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), flusher)
         .await
@@ -524,5 +561,5 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
         100,
         "the previous model's raw month-window debt is recorded, not corrected under stale configuration"
     );
-    println!("actual recovery flusher completed");
+    println!("actual recovery flusher completed; native checkpoint waits={checkpoint_waits:?}");
 }
