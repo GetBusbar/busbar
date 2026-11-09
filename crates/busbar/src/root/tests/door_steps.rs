@@ -8963,19 +8963,25 @@ done
         unsolicited["params"]["inputResponses"] = serde_json::json!({ "srv-ask-1": draft() });
         assert!(unsolicited["params"].get("requestState").is_none());
         let (status, body) = call(&rig.router, &rig.bound_token(), &unsolicited.to_string()).await;
+        // Initial inputResponses is ordinary upstream input when no local ask is
+        // configured. It cannot resume the spent exchange or answer a new child
+        // request: the child must issue its next ask and receive a sealed retry.
         assert_eq!(
             status,
-            StatusCode::FORBIDDEN,
-            "an unsolicited answer: {body}"
+            StatusCode::OK,
+            "ordinary initial input starts a new exchange: {body}"
         );
-        assert_eq!(body["error"]["code"], -32000, "{body}");
+        assert_eq!(body["result"]["resultType"], "input_required", "{body}");
+        assert!(body["result"].get("content").is_none(), "{body}");
         assert_eq!(
-            body["error"]["data"]["reason"], "ask_unsolicited_state",
-            "{body}"
+            body["result"]["inputRequests"]["srv-ask-2"],
+            serde_json::json!({"method": "sampling/createMessage", "params": {"messages": [{"role": "user", "content": {"type": "text", "text": "Draft it."}}], "maxTokens": 64}}),
+            "the new child request is still required, verbatim: {body}"
         );
-
-        let (status, body) = call(&rig.router, &rig.bound_token(), CALL).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_ne!(
+            body["result"]["requestState"].as_str(),
+            Some(state.as_str())
+        );
         let state = body["result"]["requestState"]
             .as_str()
             .expect("busbar's sealed state")
