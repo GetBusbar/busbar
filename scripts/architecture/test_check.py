@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions, core_source_inventory
+from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions, core_source_inventory, core_target_roots
 
 ROOT = Path('/candidate')
 
@@ -44,6 +44,35 @@ class CoreSourceInventoryTests(unittest.TestCase):
             (root / 'crates/contract/src/escape.rs').symlink_to(outside)
             with self.assertRaisesRegex(Violation, 'escapes candidate'):
                 core_source_inventory(policy(), root)
+
+
+class CoreTargetRootTests(unittest.TestCase):
+    def test_actual_custom_binary_and_test_targets_are_retained(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            p = policy()
+            packages = []
+            expected = []
+            for name, entry in p.data['core'].items():
+                manifest = root / entry['manifest']
+                targets = []
+                for relative in ['src/custom-binary.rs', 'tests/custom-test.rs', 'build.rs']:
+                    path = manifest.parent / relative
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('fn main() {}')
+                    expected.append(str(path.resolve()))
+                    targets.append(dict(src_path=str(path)))
+                packages.append(dict(name=name, manifest_path=str(manifest), targets=targets))
+            self.assertEqual(core_target_roots(p, root, dict(packages=packages)), sorted(expected))
+            # A copied graph-resolution manifest with the same package name is insufficient.
+            packages[0]['manifest_path'] = str(root / 'resolution-stub/Cargo.toml')
+            with self.assertRaisesRegex(Violation, 'actual manifest'):
+                core_target_roots(p, root, dict(packages=packages))
+
+    def test_missing_core_target_metadata_refuses(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            with self.assertRaisesRegex(Violation, 'missing actual core target metadata'):
+                core_target_roots(policy(), Path(directory), dict(packages=[]))
 
 
 class VectorTests(unittest.TestCase):
