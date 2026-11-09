@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Normal-command upgrade of the exact published-writer SQLite fixture. The
-//! database is portable; its manifest truthfully identifies its Darwin producer.
+//! recorder runs the pinned native release and supplies its own provenance and rows.
 //! No migration command, source export, fence helper or preinitialized App runs.
 #![cfg(unix)]
 
@@ -19,9 +19,93 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const ADMIN: &str = "released-sqlite-startup-admin";
-const SOURCE_SHA256: &str = "662326a043082b2fc95d9759144d633ea602f6997fc79f431ef98bb1d1fdd1a7";
-const SOURCE_MANIFEST: &str =
-    include_str!("../../../crates/busbar-migrations/src/legacy/fixtures/sqlite-1.5.5-MANIFEST.tsv");
+// Native CI records new keys and timestamps on each invocation. Pin the writer
+// and recorder, then verify the actual transcript's files rather than one old DB.
+const RECORDER: &str = "83acfa89d93afda0e3c319a1d17c246d5e933e7a";
+
+fn released_source(fixture: &Path) -> io::Result<(Vec<u8>, Value)> {
+    let manifest = std::fs::read_to_string(fixture.join("MANIFEST.tsv"))?;
+    let mut rows = std::collections::BTreeMap::new();
+    let mut files = std::collections::BTreeSet::new();
+    for line in manifest.lines().filter(|line| !line.starts_with('#')) {
+        let (kind, value) = line.split_once('\t').expect("manifest TSV row");
+        if kind == "file" {
+            let (name, digest) = value.split_once(' ').expect("manifest file digest");
+            assert!(Path::new(name)
+                .components()
+                .all(|part| matches!(part, std::path::Component::Normal(_))));
+            assert!(files.insert(name), "duplicate fixture file");
+            assert_eq!(
+                hex::encode(Sha256::digest(std::fs::read(fixture.join(name))?)),
+                digest,
+                "released fixture file changed: {name}"
+            );
+        } else {
+            assert!(
+                rows.insert(kind, value).is_none(),
+                "duplicate provenance row"
+            );
+        }
+    }
+    assert_eq!(rows["backend"], "sqlite");
+    assert_eq!(rows["recorder"], RECORDER);
+    assert_eq!(rows["requests"], "200 200 200 503 200 200 ");
+    let writer: Vec<_> = rows["busbar"].split_whitespace().collect();
+    assert_eq!(writer.len(), 3);
+    assert_eq!(writer[0], "v1.5.5");
+    let triple = writer[1]
+        .strip_prefix("busbar-")
+        .expect("published busbar asset");
+    assert!(
+        include_str!("../../../testing/shadow-oracle/golden-digests.tsv")
+            .lines()
+            .any(|line| line == format!("1.5.5\t{}\t{}", writer[1], writer[2]))
+    );
+    let plugin = rows["plugin"];
+    assert!(
+        include_str!("../../../testing/shadow-oracle/plugin-digests.tsv")
+            .lines()
+            .any(|line| line == format!("store-sqlite\t{}", plugin.replace(' ', "\t")))
+    );
+    assert!(plugin.starts_with(&format!(
+        "v1.0.6 busbar-store-sqlite-1.0.6-{triple}.tar.gz "
+    )));
+    for name in [
+        "governance.db",
+        "rows.json",
+        "readback/usage.json",
+        "readback/key-fixture-grouped.json",
+        "readback/key-fixture-ungrouped.json",
+    ] {
+        assert!(
+            files.contains(name),
+            "missing released recorder output: {name}"
+        );
+    }
+    let original = std::fs::read(fixture.join("governance.db"))?;
+    let output = Command::new(std::env::var_os("BUSBAR_TEST_PYTHON").unwrap_or_else(|| "python3".into()))
+        .args(["-I", "-c", r#"
+import json,pathlib,sqlite3,sys
+p=pathlib.Path(sys.argv[1]).resolve()
+c=sqlite3.connect(p.as_uri()+'?mode=ro',uri=True)
+assert c.execute('pragma user_version').fetchone()[0]==6
+assert c.execute("select count(*) from sqlite_master where name='__busbar_upgrade'").fetchone()[0]==0
+keys=c.execute('select id,name,key_group from keys order by name').fetchall()
+assert len(keys)==2 and [(k[1],k[2]) for k in keys]==[('fixture-grouped','fixture'),('fixture-ungrouped',None)],keys
+buckets=c.execute('select distinct bucket from usage_metering').fetchall()
+assert len(buckets)==1,buckets
+source=c.execute('select sum(requests),sum(billable_requests),sum(tokens_input),sum(tokens_output),sum(tokens_cache_read) from usage_metering').fetchone()
+assert source==(5,5,47,35,8),source
+assert set(k[0] for k in keys)==set(r[0] for r in c.execute('select distinct key_id from usage_metering'))
+print(json.dumps({'keys':keys,'bucket':int(buckets[0][0])}))
+"#]).arg(fixture.join("governance.db")).output()?;
+    assert!(
+        output.status.success(),
+        "released SQLite observation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok((original, serde_json::from_slice(&output.stdout)?))
+}
 
 struct Workspace(PathBuf);
 impl Drop for Workspace {
@@ -163,7 +247,14 @@ fn boot(work: &Path, ordinal: u8) -> Server {
     )
 }
 
-async fn ready(server: &mut Server, work: &Path, ordinal: u8, listen: u16, admin: u16) -> Value {
+async fn ready(
+    server: &mut Server,
+    work: &Path,
+    ordinal: u8,
+    listen: u16,
+    admin: u16,
+    source: &Value,
+) -> Value {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -194,7 +285,8 @@ async fn ready(server: &mut Server, work: &Path, ordinal: u8, listen: u16, admin
     }
     let usage = client
         .get(format!(
-            "http://127.0.0.1:{admin}/api/v1/admin/usage?window=1791936000"
+            "http://127.0.0.1:{admin}/api/v1/admin/usage?window={}",
+            source["bucket"].as_i64().unwrap()
         ))
         .bearer_auth(ADMIN)
         .send()
@@ -223,11 +315,11 @@ async fn ready(server: &mut Server, work: &Path, ordinal: u8, listen: u16, admin
         status.is_success(),
         "healthy server's admin keys refused {status}: {keys}"
     );
-    for id in [
-        "vk_45010f94f904c12dce69439b6666065f",
-        "vk_cd8bfd65ca29882ad05db3956223bddb",
-    ] {
-        assert!(keys.contains(id), "released key missing: {keys}");
+    for key in source["keys"].as_array().unwrap() {
+        assert!(
+            keys.contains(key[0].as_str().unwrap()),
+            "released key missing: {keys}"
+        );
     }
     usage["total"].clone()
 }
@@ -238,12 +330,8 @@ async fn ordinary_startup_upgrades_released_sqlite_and_restart_does_not_reapply(
     let fixture = PathBuf::from(std::env::var_os("BUSBAR_TEST_SQLITE_155_FIXTURE").expect(
         "BUSBAR_TEST_SQLITE_155_FIXTURE supplies the actual published-writer fixture directory",
     ));
-    assert_eq!(
-        std::fs::read_to_string(fixture.join("MANIFEST.tsv"))?,
-        SOURCE_MANIFEST
-    );
-    let original = std::fs::read(fixture.join("governance.db"))?;
-    assert_eq!(hex::encode(Sha256::digest(&original)), SOURCE_SHA256);
+    let (original, source) = released_source(&fixture)?;
+    let source_sha256 = hex::encode(Sha256::digest(&original));
     let root = PathBuf::from(
         std::env::var_os("BUSBAR_TEST_TMP_ROOT")
             .expect("BUSBAR_TEST_TMP_ROOT explicitly selects disposable native-test output"),
@@ -308,7 +396,7 @@ advanced:
         "fixture-openai:\n  protocol: openai\n  base_url: http://127.0.0.1:9\n",
     )?;
     let mut first = boot(&work.0, 1);
-    let first_usage = ready(&mut first, &work.0, 1, listen, admin).await;
+    let first_usage = ready(&mut first, &work.0, 1, listen, admin, &source).await;
     first.stop().await;
     let checkpoint = snapshot(&work.0.join("governance.db"));
     assert_eq!(checkpoint["legacy_user_version"], 6);
@@ -326,7 +414,7 @@ advanced:
     );
     let mut second = boot(&work.0, 2);
     assert_eq!(
-        ready(&mut second, &work.0, 2, listen, admin).await,
+        ready(&mut second, &work.0, 2, listen, admin, &source).await,
         first_usage
     );
     second.stop().await;
@@ -340,7 +428,7 @@ advanced:
         hex::encode(Sha256::digest(std::fs::read(
             fixture.join("governance.db")
         )?)),
-        SOURCE_SHA256,
+        source_sha256,
         "the immutable published fixture was mutated"
     );
     Ok(())
