@@ -248,10 +248,14 @@ do_ns() {
       printf 'postgres://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
     mysql)
       need_docker; verify_service "$svc"
-      docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
-        -e "CREATE DATABASE IF NOT EXISTS ${db}" >/dev/null 2>&1 \
-        || die "could not create namespace database ${db} on mysql"
-      printf 'mysql://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
+      # The image grants busbar access only to MYSQL_DATABASE. Namespace creation
+      # belongs to the owned fixture administrator; clients retain database-scoped access.
+      docker exec "$(container "$svc")" mysql -uroot -pbusbar \
+        -e "CREATE DATABASE ${db}; GRANT ALL ON ${db}.* TO 'busbar'@'%'" >/dev/null \
+        || die "could not create fresh namespace database ${db} on mysql"
+      local url
+      url="$(do_url mysql)" || return 1
+      printf '%s\n' "${url/\/busbar_store_qa?/\/${db}?}" ;;
     valkey)
       need_docker
       local name ref
@@ -276,7 +280,7 @@ do_ns_drop() {
   case "$svc" in
     postgres) docker exec "$(container "$svc")" psql -U busbar -d busbar_store_qa \
                 -c "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
-    mysql)    docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
+    mysql)    docker exec "$(container "$svc")" mysql -uroot -pbusbar \
                 -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 || true ;;
     valkey)   fixture_remove_container "$(ns_container "$token")" \
                 || die "Valkey namespace teardown ownership could not be verified" ;;

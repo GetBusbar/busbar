@@ -47,7 +47,19 @@ if a and a[0] == "run":
     print(s["containers"][name]["Id"])
     sys.exit(0)
 if a and a[0] == "exec":
-    sys.exit(0 if obj(a[1]) is not None else 1)
+    if obj(a[1]) is None: sys.exit(1)
+    if a[2:] == ["cat", "/var/lib/mysql/public_key.pem"]:
+        print("-----BEGIN PUBLIC KEY-----\nYWJj\n-----END PUBLIC KEY-----"); sys.exit(0)
+    if a[2] == "mysql":
+        if "-uroot" not in a: sys.exit(1)
+        sql = a[a.index("-e") + 1]
+        if sql.startswith("CREATE DATABASE "):
+            db = sql.split()[2].rstrip(";")
+            if "IF NOT EXISTS" in sql or db in s.get("databases", []): sys.exit(1)
+            if f"GRANT ALL ON {db}.* TO 'busbar'@'%'" not in sql: sys.exit(1)
+            s.setdefault("databases", []).append(db)
+            with open(p, "w") as f: json.dump(s, f)
+    sys.exit(0)
 if a and a[0] == "rm":
     o = obj(a[-1])
     if o is None: sys.exit(1)
@@ -154,6 +166,23 @@ class FixtureIdentity(unittest.TestCase):
         repeated = subprocess.run(["bash", str(HERE / "store-services.sh"), "ns", "valkey", tokens[0]],
                                   env=self.env, capture_output=True, text=True)
         self.assertNotEqual(repeated.returncode, 0, "an existing namespace must not count as fresh evidence")
+
+    def test_mysql_namespace_is_fresh_accessible_and_keeps_the_server_pin(self):
+        import hashlib
+        image = next(line.split("\t") for line in (HERE / "service-images.tsv").read_text().splitlines()
+                     if line.startswith("mysql\t"))
+        ref = image[1] + "@" + image[2]
+        name = "busbar-store-qa-mysql"
+        obj = container(name)
+        obj["NetworkSettings"]["Ports"] = {"3306/tcp": [{"HostIp": "127.0.0.1", "HostPort": image[5]}]}
+        self.state = {"images": {ref: {"Id": IMAGE_ID}}, "containers": {name: obj}}
+        self.state_path.write_text(json.dumps(self.state))
+        command = ["bash", str(HERE / "store-services.sh"), "ns", "mysql", "boundary_1_v4"]
+        out = subprocess.run(command, env=self.env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout, f"mysql://busbar:busbar@127.0.0.1:{image[5]}/busbar_oracle_boundary_1_v4?server_public_key_sha256={hashlib.sha256(b'abc').hexdigest()}\n")
+        again = subprocess.run(command, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(again.returncode, 0, "existing namespace is not fresh evidence")
 
     def test_sourced_oracle_preparation_failure_exports_no_urls(self):
         self.state["containers"] = {}
