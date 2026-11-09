@@ -1167,3 +1167,73 @@ fn a_dropped_listener_binding_selects_its_exact_declared_claim_without_a_url() {
     assert!(read_candidate(br#"[{"slot":"listen","claim":"undeclared"}]"#).is_err());
     assert!(read_candidate(br#"[{"slot":"listen","claim":"foreign-wire","priority":0}]"#).is_err());
 }
+
+mod pl_src_1_open_lease {
+    use super::*;
+    use crate::dispatch::ready::ready_plugins::auth::{with_ready, NAME};
+    use busbar_contract::abi::auth::Ops;
+    use busbar_contract::abi::mechanism::call::{OutHead, Outcome, RawOutcome};
+    use busbar_contract::abi::mechanism::door::Door;
+    use busbar_contract::abi::mechanism::lifecycle::{OpenOut, ReleaseIn};
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const FAKE: u64 = 0xFA00_0001;
+    static RELEASED: AtomicU64 = AtomicU64::new(0);
+
+    fn base() -> &'static Ops {
+        // SAFETY: the SDK door and its complete auth table have static storage.
+        unsafe { &*Door::read_parts(with_ready::door()).ops.cast::<Ops>() }
+    }
+
+    extern "C" fn open(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+        // SAFETY: forwards the loader's live OPEN frames to the original SDK slot unchanged.
+        let result = unsafe { base().head.open.unwrap()(i, input, out) };
+        if result.outcome() == Outcome::Ready {
+            // SAFETY: the OPEN crossing lends a complete exclusive OpenOut; the lease is a host
+            // fixture the RELEASE wrapper below recognises and consumes.
+            unsafe { (*out.cast::<OpenOut>()).head.lease = FAKE };
+        }
+        result
+    }
+
+    extern "C" fn release(i: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+        // SAFETY: RELEASE's input is a complete ReleaseIn for this crossing.
+        if unsafe { (*input.cast::<ReleaseIn>()).lease } != FAKE {
+            // SAFETY: forwards a real SDK lease to the instance that issued it.
+            return unsafe { base().head.release.unwrap()(i, input, out) };
+        }
+        RELEASED.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: the host's RELEASE output is an exclusive OutHead.
+        unsafe { (*out.cast::<OutHead>()).outcome = RawOutcome::of(Outcome::Ready) };
+        RawOutcome::of(Outcome::Ready)
+    }
+
+    extern "C" fn door() -> &'static Door {
+        static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let address = *DOOR.get_or_init(|| {
+            let mut ops = *base();
+            ops.head.open = Some(open);
+            ops.head.release = Some(release);
+            // SAFETY: the SDK door is static; the copied table keeps every other slot.
+            unsafe {
+                let mut parts = Door::read_parts(with_ready::door());
+                parts.ops = std::ptr::from_ref(Box::leak(Box::new(ops))).cast();
+                Box::into_raw(Box::new(Door::__from_parts(parts))) as usize
+            }
+        });
+        // SAFETY: the descriptor and copied table were permanently retained.
+        unsafe { &*(address as *const Door) }
+    }
+
+    #[test]
+    fn a_boot_opened_auth_instance_releases_its_ready_open_answer_lease() {
+        RELEASED.store(0, Ordering::SeqCst);
+        assert_eq!(boot_auth(door, NAME, r#""ok""#), Ok(1));
+        assert_eq!(
+            RELEASED.load(Ordering::SeqCst),
+            1,
+            "the lease on the boot OPEN answer is released"
+        );
+    }
+}

@@ -32,8 +32,8 @@ pub struct Envelope<R> {
     /// The kind-specific answer.
     pub result: R,
     /// Metrics the plugin OBSERVED while producing `result`. Raw entries, each shaped like
-    /// [`PluginMetric`]; the host validates and bounds them (see this module's doc for why the wire
-    /// is not `Vec<PluginMetric>`).
+    /// [`PluginMetric`]; the host validates and bounds them. Entries stay raw so one malformed
+    /// entry is dropped by the host per entry instead of failing the whole envelope parse.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<serde_json::Value>,
     /// Diagnostics the plugin RAISED while producing `result`. Raw entries, each shaped like
@@ -219,7 +219,7 @@ pub struct PluginDiagnostic {
     pub code: String,
     /// How loud it is. Defaults to [`DiagLevel::Warn`], which is the level the overwhelming majority
     /// of the catalogue sits at, so a minimal entry is `{"code":"BUSBAR-1234"}`.
-    #[serde(default = "default_level")]
+    #[serde(default = "default_level", deserialize_with = "level_or_default")]
     pub level: DiagLevel,
     /// The operator-facing line. Bounded and sanitized by the host.
     #[serde(default)]
@@ -241,6 +241,19 @@ pub struct PluginDiagnostic {
 /// The level an entry that omits `level` is read at. A free function because `#[serde(default = …)]`
 fn default_level() -> DiagLevel {
     DiagLevel::Warn
+}
+
+/// Reads a level token; one this build does not know reads as the default, so a newer plugin's
+/// entry is clamped by the host instead of dropped.
+fn level_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DiagLevel, D::Error> {
+    let token = String::deserialize(d)?;
+    Ok(match token.as_str() {
+        "error" => DiagLevel::Error,
+        "warn" => DiagLevel::Warn,
+        "info" => DiagLevel::Info,
+        "debug" => DiagLevel::Debug,
+        _ => default_level(),
+    })
 }
 
 impl PluginDiagnostic {

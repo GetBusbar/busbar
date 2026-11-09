@@ -160,7 +160,27 @@ pub fn settings_value(bytes: &[u8]) -> Result<serde_json::Value, Refusal> {
 /// A settings blob's bytes as the plugin's settings type `T`, read from their JSON value (as the
 pub fn settings_as<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Refusal> {
     serde_json::from_value(settings_value(bytes)?)
-        .map_err(|e| Refusal::failed(format!("settings: {e}")))
+        .map_err(|e| Refusal::failed(format!("settings: {}", elide_quoted_value(&e.to_string()))))
+}
+
+/// A serde type error quotes the offending string (`invalid type: string "<value>", expected u64`);
+/// a literal secret typed into the wrong field must not ride the reason into the logs.
+fn elide_quoted_value(message: &str) -> String {
+    // `string "<value>", expected ...` and, for an enum field, ``unknown variant `<value>`, expected ...``.
+    for (lead, tail) in [
+        ("string \"", "\", expected"),
+        ("unknown variant `", "`, expected"),
+    ] {
+        if let Some(open) = message.find(lead) {
+            let from = open + lead.len();
+            if let Some(close) = message.rfind(tail) {
+                if close >= from {
+                    return format!("{}***{}", &message[..from], &message[close..]);
+                }
+            }
+        }
+    }
+    message.to_owned()
 }
 
 /// What one lease holds: bytes, zeroized on drop when secret.
@@ -675,8 +695,15 @@ life_slot!(
                     instance.park(parked);
                     Outcome::Pending
                 }
-                Opening::Failed(r) => out.fail(r),
-                Opening::Fault => Outcome::Fault,
+                // The host never sends CLOSE for a failed open: the instance lets go here.
+                Opening::Failed(r) => {
+                    h.life.close(h.host());
+                    out.fail(r)
+                }
+                Opening::Fault => {
+                    h.life.close(h.host());
+                    Outcome::Fault
+                }
             };
         }
         let settings = input.field(|i| &i.settings).bytes();
@@ -704,8 +731,14 @@ life_slot!(
                 Outcome::Pending
             }
             // Nothing installed: the reason goes into the host's lent reason buffer.
-            Opening::Failed(r) => out.fail(r),
-            Opening::Fault => Outcome::Fault,
+            Opening::Failed(r) => {
+                held.life.close(held.host());
+                out.fail(r)
+            }
+            Opening::Fault => {
+                held.life.close(held.host());
+                Outcome::Fault
+            }
         }
     }
 );

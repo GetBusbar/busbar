@@ -185,3 +185,37 @@ fn an_unflagged_intent_and_rejected_repeats_keep_wiping_custody_until_release() 
     drop(leases);
     wiped(observer, 8);
 }
+
+#[test]
+fn a_candidate_whose_entry_exceeds_the_hard_cap_is_refused_at_encode() {
+    let one = |len: usize| {
+        let mut r = request();
+        r.candidate.predicates.clear();
+        r.candidate.chains.clear();
+        r.candidate.mutations = vec![RecordMutation::Put {
+            kind: 0,
+            key: b"k".to_vec(),
+            value: vec![7; len],
+        }];
+        r
+    };
+    let small = Zeroizing::new(encode_request(&one(1)).unwrap());
+    let max = crate::abi::mechanism::check::HARD_MAX_BYTES as usize;
+    // The body (the entry's value) is 10 bytes under the cap; the entry's own header is not.
+    let body_small = small.len() - (2 + INTENT.len() + 4);
+    let len = 1 + (max - 10 - body_small);
+    assert_eq!(
+        encode_request(&one(len)),
+        Err(INVALID),
+        "encoded bytes past the cap that read_request refuses"
+    );
+}
+
+#[test]
+fn required_kinds_refuses_duplicates_wherever_they_sit() {
+    for kinds in [vec![1, 2, 1], vec![5, 5], vec![3, 9, 4, 8, 3]] {
+        assert_eq!(statement(&kinds), Err(INVALID), "{kinds:?}");
+    }
+    let st = statement(&[9, 2, 7]).unwrap();
+    assert_eq!(required_kinds(&st).unwrap(), vec![9, 2, 7]);
+}

@@ -66,7 +66,10 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
             let sink = self
                 .logs
                 .sink(label, KindCode::Store, Arc::new(crate::dispatch::NoSink))
-                .map_err(|_| owned::lifecycle::Error::Unavailable)?;
+                .map_err(|e| {
+                    eprintln!("store prepare '{label}': log sink unavailable: {e}");
+                    owned::lifecycle::Error::Unavailable
+                })?;
             let bind = crate::dispatch::Bind {
                 instance: Arc::from(label),
                 max_inflight_cap: u32::MAX,
@@ -83,7 +86,10 @@ impl owned::axis::PersistenceAxis for DoorPersistenceAxis {
                     stated,
                 } => crate::dispatch::load_dropped_bytes::<StoreV4>(&bytes, &file, &stated, bind),
             }
-            .map_err(|_| owned::lifecycle::Error::Unavailable)?;
+            .map_err(|e| {
+                eprintln!("store prepare '{label}': plugin load refused: {e}");
+                owned::lifecycle::Error::Unavailable
+            })?;
             Ok(Arc::new(LoadedPrepared::new(
                 plugin,
                 self.dispatcher.clone(),
@@ -217,12 +223,15 @@ impl LoadedPersistence {
             ));
         }
         if done.outcome != Outcome::Ready {
-            let code = match done.outcome {
-                Outcome::Refused => owned::lifecycle::Error::Refused,
-                Outcome::Fault => owned::lifecycle::Error::Corrupt,
-                _ => owned::lifecycle::Error::Unknown,
+            let (code, name) = match done.outcome {
+                Outcome::Refused => (owned::lifecycle::Error::Refused, "refused"),
+                Outcome::Fault => (owned::lifecycle::Error::Corrupt, "fault"),
+                _ => (owned::lifecycle::Error::Unknown, "unknown"),
             };
-            return Err(OpenFailure::new(code, "primitive store open failed"));
+            return Err(OpenFailure::new(
+                code,
+                format!("primitive store open failed: plugin answered {name}"),
+            ));
         }
         let info = done
             .frame
@@ -398,12 +407,21 @@ impl PersistenceBackend for LoadedPersistence {
             if request.addresses.len() > self.limits.output_items {
                 return Err(Failure::Overloaded);
             }
+            let request_len = request.addresses.len();
             let source = sdk::Read::new(request, self.limits.descriptor_bytes)
                 .map_err(|_| Failure::Overloaded)?;
             self.submit(ReadRequest {
                 source,
-                items: Vec::new(),
-                bytes: zeroize::Zeroizing::new(Vec::new()),
+                items: presized(
+                    request_len,
+                    self.limits,
+                    wire::ReadValue {
+                        found: 0,
+                        _reserved: 0,
+                        value: Blob::ABSENT,
+                    },
+                ),
+                bytes: presized_bytes(request_len.saturating_mul(INITIAL_VALUE_BYTES), self.limits),
             })
             .await
         })
@@ -422,9 +440,19 @@ impl PersistenceBackend for LoadedPersistence {
                 return Err(Failure::Refused);
             }
             self.submit(ScanRequest {
+                items: presized(
+                    request.max_items,
+                    self.limits,
+                    wire::ScanRow {
+                        key: wire::Bytes {
+                            ptr: std::ptr::null(),
+                            len: 0,
+                        },
+                        value: Blob::ABSENT,
+                    },
+                ),
+                bytes: presized_bytes(request.max_bytes, self.limits),
                 source: request,
-                items: Vec::new(),
-                bytes: zeroize::Zeroizing::new(Vec::new()),
             })
             .await
         })
@@ -569,6 +597,20 @@ fn grow<T: Copy>(
     *items = new_items;
     *bytes = new_bytes;
     Ok(())
+}
+/// Initial per-address value budget for a read; larger values take the Short retry.
+const INITIAL_VALUE_BYTES: usize = 4096;
+
+/// Zeroed output bytes sized up front, capped by the output byte limit.
+fn presized_bytes(want: usize, limits: Limits) -> zeroize::Zeroizing<Vec<u8>> {
+    zeroize::Zeroizing::new(allocate(want.min(limits.output_bytes), 0).unwrap_or_default())
+}
+/// Descriptor array sized up front so a fitting answer needs one plugin crossing, not a Short retry.
+fn presized<T: Copy>(count: usize, limits: Limits, zero: T) -> Vec<T> {
+    if count == 0 || count > limits.output_items {
+        return Vec::new();
+    }
+    allocate(count, zero).unwrap_or_default()
 }
 fn wipe_items<T>(items: &mut [T]) {
     // SAFETY: every use is a zero-valid C output descriptor. Volatile writes ensure

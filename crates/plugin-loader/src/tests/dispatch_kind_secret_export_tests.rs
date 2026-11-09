@@ -187,6 +187,49 @@ fn export_every_slot_is_named_and_reaches_its_check() {
         )),
         Err(fault(Rule::NullWithCount, "deliver.error"))
     );
+
+    // A Ready answer must carry a well-formed payload on every other op too.
+    let counted = Blob {
+        ptr: std::ptr::null(),
+        len: 3,
+        fmt: BLOB_ABSENT,
+        flags: 0,
+    };
+    let status = StatusOut {
+        head: head(Outcome::Ready),
+        status: counted,
+    };
+    let r = Export::check(&answer(
+        export::slot::STATUS,
+        Outcome::Ready,
+        &input,
+        &status,
+    ));
+    assert_eq!(r, Err(fault(Rule::NullWithCount, "status.status")), "{r:?}");
+    let check = CheckOut {
+        head: head(Outcome::Ready),
+        findings: counted,
+    };
+    let r = Export::check(&answer(export::slot::CHECK, Outcome::Ready, &input, &check));
+    assert_eq!(
+        r,
+        Err(fault(Rule::NullWithCount, "check.findings")),
+        "{r:?}"
+    );
+    let serve = ServeOut {
+        head: head(Outcome::Ready),
+        status_code: 0,
+        _reserved: [0; 6],
+        headers_out: std::ptr::null(),
+        headers_out_len: 2,
+        body: NO_BLOB,
+    };
+    let r = Export::check(&answer(export::slot::SERVE, Outcome::Ready, &input, &serve));
+    assert_eq!(
+        r,
+        Err(fault(Rule::NullWithCount, "serve.headers_out")),
+        "{r:?}"
+    );
 }
 
 #[test]

@@ -773,6 +773,53 @@ fn a_panicking_open_answers_fault_and_hands_back_no_instance() {
     );
 }
 
+/// A faulted OPEN or CLOSE retires the capture owner `begin` made for its host context, as a failed
+/// one does.
+#[test]
+fn a_panicking_open_retires_its_capture_owner() {
+    use crate::abi::sdk::capture::{CaptureHome, CaptureRetention, CaptureSlot};
+    struct Probe;
+    impl CaptureHome for Probe {
+        fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R {
+            std::thread_local! {
+                static SLOT: std::cell::RefCell<CaptureSlot> =
+                    std::cell::RefCell::new(CaptureSlot::new());
+            }
+            SLOT.with(|slot| f(&mut slot.borrow_mut()))
+        }
+        fn retention() -> &'static CaptureRetention {
+            static RETENTION: std::sync::OnceLock<CaptureRetention> = std::sync::OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
+    }
+    let mut head = in_head::<OpenIn>(slot::OPEN, Ticket::NONE);
+    head.host = HostCtx { handle: 77 };
+    let input = OpenIn {
+        head,
+        host: ptr::null(),
+        settings: absent(),
+        secrets: ptr::null(),
+        secrets_len: 0,
+        generation: PANIC_GEN,
+        err_buf: ptr::null_mut(),
+        err_cap: 0,
+    };
+    let mut out = OpenOut {
+        head: prefilled_head(size_of::<OpenOut>()),
+        instance: ptr::null_mut(),
+        err_len: 0,
+    };
+    // SAFETY: `input` and `out` are whole initialized `OpenIn`/`OpenOut` frames.
+    let got = unsafe {
+        crate::abi::sdk::door::enter::<Open, Probe>(slot::OPEN, ptr::null_mut(), &input, &mut out)
+    };
+    assert_eq!(got, Outcome::Fault);
+    assert!(
+        !Probe::retention().holds_host(77),
+        "a faulted OPEN left its capture owner behind"
+    );
+}
+
 mod auth_plugin {
     //! A REAL kind table: every auth kind op wired to the structs `abi::auth` states for it.
     use super::*;
@@ -1440,7 +1487,10 @@ mod plane_plugin {
 
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
-        statement: crate::abi::sdk::door::statement("sdk-door-plane", "0.0.1", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("sdk-door-plane", "0.0.1", 1)
+        },
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
@@ -1625,7 +1675,10 @@ mod transport_plugin {
 
     crate::plugin_door! {
         ops: crate::abi::transport::Ops,
-        statement: crate::abi::sdk::door::statement("sdk-door-transport", "0.0.1", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::transport::TransportTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("sdk-door-transport", "0.0.1", 1)
+        },
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,

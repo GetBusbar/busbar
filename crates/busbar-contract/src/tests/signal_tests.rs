@@ -113,6 +113,35 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
     );
 }
 
+/// A signal pushed more than once serializes as one key holding all its values in push order.
+#[test]
+fn a_repeated_signal_serializes_as_one_array_in_push_order() {
+    let mut bag = SignalBag::new();
+    bag.push(Signal::RequestedModel, SignalValue::Bool(true));
+    super::route_cost::append(
+        &mut bag,
+        [
+            super::route_cost::Term {
+                class: "a",
+                price_per_unit: Some(1.0),
+                expected_units: 2.0,
+            },
+            super::route_cost::Term {
+                class: "b",
+                price_per_unit: None,
+                expected_units: 3.0,
+            },
+        ],
+    );
+    let v = serde_json::to_value(&bag).unwrap();
+    let arr = v["candidate_route_cost"].as_array().expect("array");
+    assert_eq!(arr.len(), 7, "{v}");
+    assert_eq!(arr[0], serde_json::json!(true));
+    assert_eq!(arr[1], serde_json::json!("a"));
+    assert_eq!(arr[4], serde_json::json!("b"));
+    assert_eq!(v["requested_model"], serde_json::json!(true));
+}
+
 /// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
 #[test]
 fn a_bag_of_up_to_four_signals_never_spills_onto_the_heap() {

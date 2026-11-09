@@ -144,6 +144,52 @@ fn helper(m: &Table, t: Ticket, unit: u64, ending: Ending) -> (bool, Table) {
     (answered, units.with_all(std::mem::take))
 }
 
+/// A cancel naming no live unit sweeps by ticket one shard at a time: while it runs over one
+/// unit, another shard's units stay reachable (it never holds every shard at once).
+#[test]
+fn codeaudit_a_ticket_sweep_holds_one_shard_at_a_time() {
+    let units: Keyed<u64, Unit> = Keyed::sharded();
+    let idle = Unit {
+        ticket: None,
+        answered: false,
+        over: false,
+    };
+    for k in 1..=64 {
+        units.insert(
+            k,
+            Unit {
+                ticket: (k == 1).then(|| ticket(9)),
+                ..idle
+            },
+        );
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reached = std::thread::scope(|s| {
+        let units = &units;
+        UnitCancel {
+            ticket: ticket(9),
+            unit: 0,
+        }
+        .end(
+            units,
+            Ending::Remove,
+            |u| u.ticket,
+            |_| {
+                let tx = tx.clone();
+                s.spawn(move || {
+                    for k in 2..=64 {
+                        let _ = units.contains_key(&k);
+                        let _ = tx.send(());
+                    }
+                });
+                rx.recv_timeout(std::time::Duration::from_millis(1500))
+                    .is_ok()
+            },
+        )
+    });
+    assert!(reached, "another shard stayed reachable during the sweep");
+}
+
 /// Every table of up to three units, each with no ticket or one of three, each answered or not.
 fn tables() -> Vec<Table> {
     let slots: Vec<Option<Unit>> = std::iter::once(None)

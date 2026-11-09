@@ -13,7 +13,7 @@ mod scheme;
 pub use operations::{rsa_public_key_sha256, CredentialPart, Digest, SealedValue};
 
 use crate::abi::sdk::cred::{Cred, Seal};
-use crate::abi::sdk::hmac::hmac_sha256;
+use crate::abi::sdk::hmac::HmacSha256Key;
 use base64::Engine as _;
 use zeroize::Zeroizing;
 
@@ -42,10 +42,11 @@ fn b64(bytes: &[u8]) -> Bytes {
 fn pbkdf2_sha256(password: &[u8], salt: &[u8], iterations: u32) -> Zeroizing<[u8; 32]> {
     let mut first = Zeroizing::new(salt.to_vec());
     first.extend_from_slice(&1_u32.to_be_bytes());
-    let mut u = hmac_sha256(password, &first);
+    let key = HmacSha256Key::new(password);
+    let mut u = key.mac(&first);
     let mut acc = Zeroizing::new(*u);
     for _ in 1..iterations {
-        u = hmac_sha256(password, &u[..]);
+        u = key.mac(&u[..]);
         for (a, b) in acc.iter_mut().zip(u.iter()) {
             *a ^= b;
         }

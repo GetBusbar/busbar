@@ -3781,3 +3781,62 @@ fn cached_io_callbacks_refuse_nontransport_kinds_before_provider_lookup() {
         }
     }
 }
+
+fn head_view_over(
+    target: &[u8],
+    fields: *const busbar_contract::abi::mechanism::call::Field,
+    n: usize,
+) -> svc::HeadView {
+    let s = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    svc::HeadView {
+        method: s(b"GET"),
+        target: over(target),
+        authority: s(b"a"),
+        query: AbiStr {
+            ptr: std::ptr::null(),
+            len: 0,
+        },
+        fields,
+        fields_len: n,
+        scheme: svc::SCHEME_PLAIN,
+        _scheme_reserved: [0; 7],
+    }
+}
+
+#[test]
+fn head_copy_refuses_a_non_utf8_target_instead_of_judging_a_lossy_one() {
+    let v = head_view_over(&[b'/', 0xff], std::ptr::null(), 0);
+    assert!(
+        head_copy(&v).is_none(),
+        "a non-UTF-8 target was decoded lossily"
+    );
+}
+
+#[test]
+fn head_copy_refuses_a_misaligned_field_list() {
+    let words = [0u64; 16];
+    let at = (words.as_ptr() as *const u8).wrapping_add(1)
+        as *const busbar_contract::abi::mechanism::call::Field;
+    let v = head_view_over(b"/", at, 1);
+    assert!(head_copy(&v).is_none(), "a misaligned field list was read");
+}
+
+#[test]
+fn dest_judge_faults_a_non_utf8_destination() {
+    let d = double();
+    let mut i = judge_in("x", TICKET, 0, DEST_RESOLVE);
+    let bad: &'static [u8] = &[0xff];
+    i.dest = AbiStr {
+        ptr: bad.as_ptr(),
+        len: 1,
+    };
+    let (ret, _) = call_judge(&d, &i);
+    assert_eq!(
+        ret.outcome(),
+        Outcome::Fault,
+        "a non-UTF-8 destination was judged"
+    );
+}

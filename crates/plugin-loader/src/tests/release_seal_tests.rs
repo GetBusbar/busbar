@@ -453,3 +453,10 @@ fn permanently_retired_delegated_signers_remain_hard_policy_vetoes() {
     };
     assert_eq!(hard_seal_refusal(&refusal), Some(RejectKind::RetiredKey));
 }
+
+#[test]
+fn malformed_release_key_spec_surfaces_its_parse_error_p29_craft_0() {
+    assert!(release_key_parse_error(None).is_none());
+    let msg = release_key_parse_error(Some("not-a-key")).expect("bad spec yields its error");
+    assert!(!msg.is_empty());
+}

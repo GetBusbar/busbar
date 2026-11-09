@@ -335,6 +335,11 @@ impl<'de> de::Deserializer<'de> for Node {
                 let key = Key(s);
                 visitor.visit_enum(key.into_deserializer())
             }
+            Value::Object(map) if map.len() != 1 => {
+                let n = map.len();
+                drop(self.take());
+                Err(de::Error::invalid_length(n, &"a map with a single key"))
+            }
             Value::Object(_) => {
                 let entries = self.entries();
                 visitor.visit_enum(MapAccessDeserializer::new(MapDeserializer::new(

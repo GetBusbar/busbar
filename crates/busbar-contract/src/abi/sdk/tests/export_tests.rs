@@ -491,3 +491,13 @@ fn a_sink_that_states_no_refresh_is_answered_by_the_sdk() {
 type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::ExportKind;
+
+/// The `one_instance` check fires from the second instance, not the third.
+#[test]
+fn one_instance_reason_fires_at_two_instances() {
+    let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert!(one_instance_reason(&names(&[]), WHY).is_empty());
+    assert!(one_instance_reason(&names(&["a"]), WHY).is_empty());
+    assert_eq!(one_instance_reason(&names(&["a", "b"]), WHY), [WHY]);
+    assert_eq!(one_instance_reason(&names(&["a", "b", "c"]), WHY), [WHY]);
+}

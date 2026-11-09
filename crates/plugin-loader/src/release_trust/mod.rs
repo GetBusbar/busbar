@@ -14,9 +14,13 @@ pub const PLUGIN_TARGET: &str = env!("BUSBAR_PLUGIN_TARGET");
 
 #[must_use]
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    clock_secs(std::time::SystemTime::now())
+}
+
+/// Seconds since the epoch; a clock before the epoch reads as the far future so every expiry check fails closed.
+fn clock_secs(at: std::time::SystemTime) -> u64 {
+    at.duration_since(std::time::UNIX_EPOCH)
+        .map_or(u64::MAX, |d| d.as_secs())
 }
 
 /// A public key a root or a release signer holds.
@@ -58,21 +62,6 @@ impl ReleaseKey {
                     .filter(|retired| retired == key)
                     .map(|_| *why)
             })
-    }
-
-    pub fn p256_from_hex(s: &str) -> Result<Self, String> {
-        let bytes =
-            hex::decode(s.trim()).map_err(|e| format!("p256 public key not valid hex: {e}"))?;
-        let point: [u8; 65] = bytes.as_slice().try_into().map_err(|_| {
-            format!(
-                "p256 public key must be the 65-byte uncompressed SEC1 point, got {} bytes",
-                bytes.len()
-            )
-        })?;
-        if point[0] != 0x04 {
-            return Err("p256 public key is not an uncompressed SEC1 point (04 || x || y)".into());
-        }
-        Ok(ReleaseKey::P256(point))
     }
 }
 

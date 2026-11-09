@@ -239,6 +239,29 @@ fn a_failure_names_its_text_where_its_instance_keeps_it() {
 }
 
 #[test]
+fn codeaudit_a_retired_thread_does_not_strand_its_unticketed_reply() {
+    let kept = Kept::default();
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope
+                .spawn(|| {
+                    let reporting: Reporting = std::cell::Cell::new(None);
+                    let mut o: CancelOut = zeroed();
+                    let _ = Out::kept(&mut o, &kept, &reporting, holders())
+                        .fail(Refusal::failed(String::from("owned")));
+                    kept.keep(
+                        ReplyKey::of(Ticket::NONE),
+                        reporting.take().expect("owned reply"),
+                    );
+                })
+                .join()
+                .unwrap();
+        }
+    });
+    assert_eq!(kept.held(), (0, 0), "no exited thread's reply is held");
+}
+
+#[test]
 fn unrelated_tickets_cannot_evict_owned_texts_and_one_reply_keeps_all_of_its_texts() {
     let kept = Kept::default();
     let first_key = ReplyKey::of(Ticket {

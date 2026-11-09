@@ -784,3 +784,11 @@ fn judged_host_refuses_a_percent_outside_an_ipv6_zone_id() {
         assert_eq!(judged_host(zoned).as_deref(), Ok(judged), "{zoned:?}");
     }
 }
+
+#[test]
+fn bc2_private_or_loopback_zoned_and_alternate_spellings() {
+    assert!(host_is_private_or_loopback("fe80::1%eth0"));
+    assert!(!host_is_private_or_loopback("0x08080808"));
+    assert!(!host_is_private_or_loopback("8.8.8"));
+    assert!(host_is_private_or_loopback("0x7f000001"));
+}

@@ -191,6 +191,36 @@ fn size_cap_constants_have_the_documented_concrete_values() {
 }
 
 #[test]
+fn read_entry_bounded_refuses_a_member_one_byte_over_the_cap() {
+    let build = |len: usize| -> Vec<u8> {
+        let mut t = tar::Builder::new(Vec::new());
+        let mut h = tar::Header::new_gnu();
+        h.set_size(len as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        t.append_data(&mut h, "lib.so", vec![b'x'; len].as_slice())
+            .unwrap();
+        t.into_inner().unwrap()
+    };
+    let at_cap = build(16);
+    let mut archive = tar::Archive::new(at_cap.as_slice());
+    let mut entry = archive.entries().unwrap().next().unwrap().unwrap();
+    assert_eq!(
+        read_entry_bounded(&mut entry, 16, "library").unwrap().len(),
+        16
+    );
+
+    let over = build(17);
+    let mut archive = tar::Archive::new(over.as_slice());
+    let mut entry = archive.entries().unwrap().next().unwrap().unwrap();
+    let err = read_entry_bounded(&mut entry, 16, "library").unwrap_err();
+    assert!(
+        err.contains("library") && err.contains("exceeding the 16-byte cap"),
+        "{err}"
+    );
+}
+
+#[test]
 fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
     let mut m_padded = manifest();
     let base_len = serde_json::to_vec(&m_padded).unwrap().len() as u64;
@@ -229,4 +259,14 @@ fn manifest_member_at_exactly_the_cap_is_accepted_one_byte_over_is_refused() {
         "must name it as the specific declared/read-size cap violation, not just any error \
              containing \"cap\": got {err}"
     );
+}
+
+#[test]
+fn package_refuses_a_library_name_that_collides_or_escapes_p29_craft_4() {
+    for bad in ["", MANIFEST_FILE, "a/b.so", "a\\b.so"] {
+        assert!(
+            package(&manifest(), bad, b"x").is_err(),
+            "lib name {bad:?} must be refused at package time"
+        );
+    }
 }

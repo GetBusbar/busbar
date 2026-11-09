@@ -27,9 +27,11 @@ pub const READ_CHUNK: usize = 16 * 1024;
 pub const REPLY_MAX: usize = 16 * 1024 * 1024;
 
 /// The failure text of a reply whose body passed [`REPLY_MAX`]: a driver that words that case its
+/// own way may compare against it.
 pub const REPLY_OVER_BOUND: &str = "the reply passed the exchange's bound";
 
 /// A sealed request field: before which of the request's fields it goes (their count: last), its
+/// name, and its sealed value.
 pub type SealedField = (usize, Vec<u8>, crate::abi::sdk::cred::Seal);
 
 /// ONE REQUEST, as [`exchange`] sends it through a framed need.
@@ -157,6 +159,7 @@ impl Zeroize for Ack {
 }
 
 /// What is sent: a framed request's head bytes and descriptors, or raw bytes. The bytes wipe on
+/// drop.
 enum Sending {
     Framed {
         /// The head's method, target and field block, one after another.
@@ -220,8 +223,6 @@ pub struct Exchange {
     applied: u32,
     /// The handle of the read that answered the terminal piece, once one has.
     ended: Option<u32>,
-    /// The handle of the read whose piece the exchange refused, and why: a replay of that read
-    refused_at: Option<(u32, &'static str)>,
     /// The address set the dial must land on ([`Exchange::landing_within`]); empty = no pin.
     within: String,
     /// The registration the exchange reaches ([`Exchange::as_member`]); `None` = none.
@@ -290,7 +291,6 @@ impl Exchange {
             head_seen: false,
             applied: 0,
             ended: None,
-            refused_at: None,
             within: String::new(),
             member: None,
             observe: false,
@@ -330,6 +330,7 @@ impl Exchange {
     }
 
     /// The original absolute expiry for a pending exchange. Propagate the earliest nonzero wake
+    /// of the entry's exchanges to the host.
     #[must_use]
     pub const fn wake_at_ns(&self) -> Option<u64> {
         self.expires_at_ns
@@ -455,7 +456,8 @@ impl Exchange {
         self.head_seen.then_some(self.reply.fields.as_slice())
     }
 
-    /// Land this exchange's dial only on an address of `within`, the set the plugin's
+    /// Land this exchange's dial only on an address of `within`, the set the plugin's policy names
+    /// (empty = no pin).
     #[must_use]
     pub fn landing_within(mut self, within: String) -> Self {
         self.within = within;
@@ -498,6 +500,14 @@ impl Exchange {
             if name.first() == Some(&b':') || name.iter().any(|b| *b == b'\r' || *b == b'\n') {
                 return Err(ConnFailure::Refused(format!(
                     "the sealed request field `{}` is a pseudo-field or carries a line break",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+        for (_, name, seal) in &sealed {
+            if seal.wire().iter().any(|b| matches!(b, b'\r' | b'\n' | 0)) {
+                return Err(ConnFailure::Refused(format!(
+                    "the sealed request field `{}` carries a line break or NUL",
                     String::from_utf8_lossy(name)
                 )));
             }
@@ -856,10 +866,7 @@ fn read_to_end<K: KindMarker>(
             state.applied = this + 1;
         }
         let p = got.piece;
-        let applied = match state.refused_at {
-            Some((at, text)) if at == this => Err(text),
-            _ => apply(state, p, got.len, fresh),
-        };
+        let applied = apply(state, p, got.len, fresh);
 
         if fresh {
             if let Some(used) = state.buf.get_mut(..got.len) {
@@ -943,6 +950,7 @@ fn observe<K: KindMarker>(c: &mut Connector<'_, K>, state: &mut Exchange, stream
 }
 
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
+/// own target).
 pub fn exchange<K: KindMarker>(
     c: &mut Connector<'_, K>,
     state: &mut Exchange,
@@ -1091,6 +1099,7 @@ impl std::error::Error for ExchangeFailure {
 }
 
 /// ONE OP'S EXCHANGE ON ITS TICKET (THE DESIGN, the plugin ABI: every call is Ready or
+/// Pending, resumed on the same ticket).
 pub struct Op<'a, K: KindMarker> {
     on: &'a dyn Parks,
     host: Option<&'a Host<K>>,
@@ -1110,6 +1119,7 @@ impl<K: KindMarker> std::fmt::Debug for Op<'_, K> {
 
 impl<'a, K: KindMarker> Op<'a, K> {
     /// The op `instance` runs, over the host tables `open` handed it (`None`: every exchange
+    /// fails as unarmed).
     #[must_use]
     pub fn new<'b: 'a, T: Send + Sync + 'static>(
         instance: &'a Instance<'b, T, K>,
@@ -1130,6 +1140,7 @@ impl<'a, K: KindMarker> Op<'a, K> {
     }
 
     /// Opt newly built exchanges into a complete wall-clock bound. A resumed exchange keeps its
+    /// original expiry.
     #[must_use]
     pub fn with_timeout_ms(self, timeout_ms: u64) -> Self {
         self.set_timeout_ms(timeout_ms);
@@ -1142,6 +1153,7 @@ impl<'a, K: KindMarker> Op<'a, K> {
     }
 
     /// Clamp new explicitly timed exchanges to the operation's known absolute deadline on the
+    /// host's clock.
     #[must_use]
     pub fn with_deadline_ns(self, deadline_ns: u64) -> Self {
         self.set_deadline_ns(deadline_ns);

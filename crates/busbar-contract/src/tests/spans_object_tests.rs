@@ -29,7 +29,7 @@ fn an_equal_value_is_no_change() {
         None
     );
     assert_eq!(
-        run(r#"{"model":"m","a":1}"#, &[set("model", "\"m\"")]),
+        run(r#"{"model":"\u006d","a":1}"#, &[set("model", "\"m\"")]),
         None,
         "the same string in another spelling is the same value"
     );

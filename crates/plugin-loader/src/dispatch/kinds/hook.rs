@@ -15,7 +15,9 @@ pub use busbar_contract::hook_calls::HookFacts;
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
 fn owned(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
+    crate::dispatch::plugin::str_bytes(s)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(str::to_owned)
 }
 
 const HOOK_TAIL_FROZEN: usize = std::mem::size_of::<Tail>();
@@ -226,5 +228,20 @@ impl Kind for Hook {
                 .is_ok_and(|o| o.reject_message_needed != 0 || o.rewrite_needed != 0),
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod owned_tests {
+    use super::*;
+
+    #[test]
+    fn a_declared_text_that_is_not_utf8_is_refused_not_repaired() {
+        let bad: &'static [u8] = b"/\xff";
+        let s = busbar_contract::abi::mechanism::call::AbiStr {
+            ptr: bad.as_ptr(),
+            len: bad.len(),
+        };
+        assert_eq!(owned(s), None, "a lossy U+FFFD text must not load");
     }
 }

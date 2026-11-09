@@ -48,9 +48,12 @@ mod plugin {
         }
 
         fn open_refusing(
-            _: &[u8],
+            settings: &[u8],
             _: &[&[u8]],
         ) -> Result<Self, busbar_contract::abi::sdk::life::Refusal> {
+            if settings == b"\"bad x\"" {
+                return Err(busbar_contract::abi::sdk::life::Refusal::refused("bad x"));
+            }
             Ok(Outbound)
         }
         fn verify(&self, _: &VerifyView<'_>) -> Answer {
@@ -407,6 +410,28 @@ fn bearer() -> Fields {
         query: false,
         require_secure: false,
     }])
+}
+
+#[test]
+fn open_with_names_the_plugin_error_text_when_validate_refuses() {
+    let d = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
+    let row = LinkedRow::of(plugin::door).expect("the test auth door states its Statement");
+    let p = load_linked::<Auth>(
+        &row,
+        Bind {
+            instance: Arc::from("the-instance-refusing"),
+            max_inflight_cap: 64,
+            sink: Arc::new(Quiet),
+            dispatcher: Adopter::unwatched(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .expect("the test auth door loads");
+    let err = OutboundInstance::open_with(p, d, 0, b"\"bad x\"").unwrap_err();
+    assert!(err.contains("bad x"), "{err}");
 }
 
 #[test]

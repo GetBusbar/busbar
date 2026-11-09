@@ -293,18 +293,15 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
     {
         return true;
     }
-    if is_alternate_ipv4_encoding(host) {
-        return true;
-    }
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => {
+    match host_ip(host) {
+        Some(IpAddr::V4(v4)) => {
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
                 || is_cgnat_shared_v4(&v4)
         }
-        Ok(IpAddr::V6(v6)) => {
+        Some(IpAddr::V6(v6)) => {
             let embedded = embedded_ipv4(&v6);
             v6.is_loopback()
                 || v6.is_unspecified()
@@ -318,7 +315,8 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
                         || is_cgnat_shared_v4(&m)
                 })
         }
-        Err(_) => false,
+        // An alternate spelling that does not expand stays refused-as-internal (fail closed).
+        None => is_alternate_ipv4_encoding(host),
     }
 }
 

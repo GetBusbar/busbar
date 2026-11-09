@@ -63,7 +63,13 @@ pub(crate) fn settings() -> Vec<u8> {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        let candidate = std::env::temp_dir().join(format!(
+        // Under the test binary's own directory in the target tree: removed with `cargo clean`.
+        let root = std::env::current_exe()
+            .expect("test binary path")
+            .parent()
+            .expect("test binary directory")
+            .to_path_buf();
+        let candidate = root.join(format!(
             "busbar-loader-real-sqlite-{}-{nanos}-{}",
             std::process::id(),
             mint().counter()

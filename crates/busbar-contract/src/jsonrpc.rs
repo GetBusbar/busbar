@@ -285,11 +285,11 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
         ),
         (_, Some(err)) => Ok(Reply::Error {
             code: err.get("code").cloned(),
-            message: err
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            message: match err.get("message").and_then(Value::as_str) {
+                Some(m) => m.to_string(),
+                // Non-conforming upstream: keep its text (bounded) rather than dropping it.
+                None => err.to_string().chars().take(512).collect(),
+            },
         }),
         (Some(result), None) => Ok(Reply::Result(result.clone())),
     }

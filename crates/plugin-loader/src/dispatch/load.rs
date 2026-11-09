@@ -103,10 +103,6 @@ impl LinkedRow {
 
 /// A door the loader may enter: either a [`MacroDoor`] built by the contract macro, or a door restated explicitly by a test or harness through unsafe [`LoadedDoor::from_raw`]. A hand-built door reaches a linked row through `LinkedRow::of_loaded(unsafe { LoadedDoor::from_raw(door) })`.
 ///
-///
-///
-///
-///
 /// [`MacroDoor`]: busbar_contract::abi::sdk::door::MacroDoor
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedDoor {
@@ -282,7 +278,10 @@ pub fn rendering_of_library(path: &Path) -> Result<Option<Vec<u8>>, LoadError> {
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
         Ok(door) => door,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            drop(Lib(Some(lib), None));
+            return Ok(None);
+        }
     };
     let rendering = rendering_of_raw(door);
     drop(Lib(Some(lib), None));
@@ -295,7 +294,10 @@ pub fn door_addresses_of_library(path: &Path) -> Result<Option<(usize, usize)>, 
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` outlives every use of it.
     let door = match unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) } {
         Ok(door) => door,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            drop(Lib(Some(lib), None));
+            return Ok(None);
+        }
     };
     let at = enter_door(door);
     let ops = if at.is_null() {
@@ -392,7 +394,7 @@ pub enum LoadError {
         /// The host's.
         host: u32,
     },
-    /// A slot is NULL (there is no "unsupported").
+    /// A mandatory slot (not optional for the kind or by the Statement) is NULL.
     NullSlot(u32),
     /// The door's Statement is NULL.
     NullStatement,
@@ -819,7 +821,7 @@ pub(crate) fn load_staged<K: Kind>(
     // fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
     let door = unsafe { lib.get::<RawDoorFn>(DOOR_SYMBOL).map(|s| *s) };
     let Ok(door) = door else {
-        drop((lib, staged));
+        drop(Lib(Some(lib), Some(staged)));
         return Ok(Staging::NotADoor);
     };
     let stated = stated.ok_or(LoadError::StatementMismatch)?;
@@ -1043,6 +1045,16 @@ fn statement_with_layout(
     unsafe { check_statement(&st) }
         .map_err(|f| LoadError::BadStatement(format!("{} breaks {:?}", f.field, f.rule)))?;
     kind_layout(door, &st, expected_layout)?;
+    // SAFETY: as for `reference_fields`: the blob holds its stated length (a NULL one reads as none).
+    let ext = unsafe { super::plugin::blob_bytes(st.extensions) };
+    let whole: usize = busbar_contract::abi::mechanism::extensions::entries(ext)
+        .map(|(k, v)| 2 + k.len() + 4 + v.len())
+        .sum();
+    if whole != ext.len() {
+        return Err(LoadError::BadStatement(
+            "extensions is not a whole number of entries".into(),
+        ));
+    }
     reference_fields(&st)?;
     for i in 0..st.families_len {
         // SAFETY: `families` holds `families_len` `'static` entries, at most STATEMENT_LIST_MAX.

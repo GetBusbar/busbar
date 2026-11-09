@@ -93,7 +93,8 @@ pub unsafe trait KindOps: table_seal::Sealed + Copy + 'static {
     const ABI_VERSION: u32 = Self::KIND.abi_version();
     /// Exact layout of this table; defaults to the currently admitted kind.
     const LAYOUT_FINGERPRINT: u64 = Self::KIND.layout_fingerprint();
-    /// The `in`/`out` of each of the nine LIFECYCLE slots, stated as [`KindSlot`]s at the slot's
+    /// The `in`/`out` of every LIFECYCLE slot (the nine [`OpsHead`] slots, then READY and MIGRATE),
+    /// stated as [`KindSlot`]s at the slot's index.
     type Lifecycle: 'static;
 }
 
@@ -236,7 +237,7 @@ bound_table!(crate::abi::plane::Ops, crate::abi::plane::PlaneLifecycle);
 impl table_seal::For<crate::abi::plane::Ops, { lc::slot::READY }> for Lifecycle {}
 impl table_seal::For<crate::abi::plane::Ops, { lc::slot::MIGRATE }> for Lifecycle {}
 
-// SAFETY (all seven): each kind's `Ops` is `#[repr(C)]`, leads with `head: OpsHead`, and appends
+// SAFETY (all six): each kind's `Ops` is `#[repr(C)]`, leads with `head: OpsHead`, and appends
 // only `Option<Op>` slots (`abi/<kind>/`).
 unsafe impl KindOps for crate::abi::secret::Ops {
     type Marker = crate::plugin::markers::SecretKind;
@@ -351,7 +352,7 @@ pub unsafe trait Entry {
     type In: AbiIn;
     /// The slot's `out`.
     type Out: AbiOut;
-    /// Whether this entry reads the instance as the SDK's typed state
+    /// Whether this entry reads the instance as the SDK's typed state (see the trait's note).
     const SAFE: bool = false;
     /// The body.
     ///
@@ -521,6 +522,13 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
         Err(payload) => {
             drop(payload);
             H::with(|slot| slot.discard());
+            // A faulted OPEN or CLOSE retires its owner like a failed one: the host does not close
+            // an instance whose open faulted.
+            H::retention().keep(
+                captured,
+                index == lc::slot::OPEN || index == lc::slot::CLOSE,
+                None,
+            );
             // SAFETY: the host's `out` holds at least a whole `OutHead` (checked above).
             unsafe { write_fault(out_head) };
             Outcome::Fault
@@ -528,7 +536,8 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
     }
 }
 
-/// A `T` table with every kind-op slot NULL (its head is the caller's to replace): the base
+/// A `T` table with every kind-op slot NULL (its head is the caller's to replace): the base a door
+/// fills in by naming only the slots it serves.
 #[must_use]
 pub const fn absent_table<T: KindOps>() -> T {
     // SAFETY: `T: KindOps` is `#[repr(C)]` with `head: OpsHead` first and only `Option<Op>` slots
@@ -547,6 +556,7 @@ unsafe fn write_fault(head: *mut OutHead) {
 }
 
 /// The index of the table slot at byte `offset` of a [`KindOps`] table (the mechanism's SLOT
+/// numbering: the head's own slots first, then the kind's).
 #[must_use]
 pub const fn slot_at(offset: usize) -> u32 {
     ((offset - offset_of!(OpsHead, validate)) / size_of::<Option<Op>>()) as u32
@@ -559,6 +569,7 @@ pub const fn slot_count<T: KindOps>() -> u32 {
 }
 
 /// A table entry: the `trampoline` over `S` at `INDEX` under the call capture `H` keeps, refusing
+/// (as a fault) a call whose `in.op` names another slot.
 #[must_use]
 pub const fn kind_op<O, T, S, H, const INDEX: u32>() -> Option<Op>
 where
@@ -571,6 +582,7 @@ where
 }
 
 /// The [`OpsHead`] of a `T` table: its `size` and `slots` stamped from `T`, the nine lifecycle
+/// slots as given.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub const fn ops_head<T: KindOps>(
@@ -608,7 +620,8 @@ pub const fn abi_str(s: &'static str) -> AbiStr {
     }
 }
 
-/// The module name `from` an operator may write for the plugin, as the Statement's
+/// The module name `from` an operator may write for the plugin, as the Statement's rewrite table
+/// states it.
 #[must_use]
 pub const fn alias(from: &'static str) -> Rewrite {
     Rewrite {
@@ -619,6 +632,7 @@ pub const fn alias(from: &'static str) -> Rewrite {
 }
 
 /// A Statement naming the plugin, with no families, no diagnostic ids, no kind tail, no
+/// rewrites, sections, needs or claims: the caller adds what the plugin declares.
 #[must_use]
 pub const fn statement(name: &'static str, version: &'static str, max_inflight: u32) -> Statement {
     Statement {
@@ -647,6 +661,7 @@ pub const fn statement(name: &'static str, version: &'static str, max_inflight: 
 const ABSENT: AbiStr = AbiStr::ZERO;
 
 /// `statement` with `size`, `kind` and `kind_abi` stamped from `T`, so the Statement and the door
+/// agree on the kind and its ABI.
 #[must_use]
 pub const fn stamp<T: KindOps>(statement: Statement) -> Statement {
     Statement {
@@ -1058,12 +1073,12 @@ impl MacroDoor {
 ///   refuses the load, so all nine are named.
 /// * `kind_ops` — one [`RawSlot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
-///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is NULL
-///   (absent); the loader admits a NULL only where the kind states the op optional. APPENDING AN
-///   OP TO A KIND'S TABLE IS A KIND ABI BUMP: the host loads exactly its own `ABI_VERSION`, slot
-///   count and table size, so a door built before the append is refused at load and must be
-///   rebuilt. Rebuilt unchanged, its source still compiles: the new op is left NULL, which loads
-///   only when the kind states that op optional.
+///   that index ([`KindSlot`]; a mismatch does not compile). A kind op the kind states optional
+///   may be left unnamed and is then NULL (absent); a mandatory kind op left unnamed does not
+///   compile (the registration check). APPENDING AN OP TO A KIND'S TABLE IS A KIND ABI BUMP: the
+///   host loads exactly its own `ABI_VERSION`, slot count and table size, so a door built before
+///   the append is refused at load and must be rebuilt. Rebuilt unchanged, its source no longer
+///   compiles unless the new op is one the kind states optional, which is then left NULL.
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
@@ -1315,9 +1330,10 @@ macro_rules! plugin_door {
 /// [`plugin_door!`](crate::plugin_door) over the one trampoline. Anything else is a `plugin_door!`
 /// door, spelled as there (`ops:`, `statement:`, `lifecycle:`, ...).
 ///
-/// * `hook: P, statement: S` — a hook plugin over its
+/// * `hook: P, statement: S [, serve: V]` — a hook plugin over its
 ///   [`HookOpen`](crate::abi::sdk::hook::HookOpen) `P`, every slot the SDK's own
-///   ([`abi::sdk::hook`](crate::abi::sdk::hook)).
+///   ([`abi::sdk::hook`](crate::abi::sdk::hook)) except `serve`: it is absent unless `serve: V`
+///   names it, and a statement that declares routes does not compile without it.
 ///
 /// * `plane: P, statement: S, [ready: R,] kind_ops: { .. }` — a plane over its
 ///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`lifecycle: plane_life(P)`; its

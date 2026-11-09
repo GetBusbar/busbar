@@ -182,7 +182,7 @@ pub struct ClaimSpec {
     pub target: String,
     /// The transport claim it arrives over.
     pub carrier: String,
-    /// `CLAIM_OPEN` | `CLAIM_EXACT`.
+    /// `CLAIM_OPEN`, and `CLAIM_PATTERN` or `CLAIM_EXACT` (see [`ServedRoute::claim_flags`]).
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (see
     /// [`Claim::refusal_dialect`]); `0` for a plane with no dialects.
@@ -511,6 +511,29 @@ impl<K, V> Keyed<K, V> {
     }
 }
 
+/// A reservation of one slot of a [`Keyed`]'s count, given back on drop unless forgotten.
+struct Unreserve<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for Unreserve<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
+/// The one shard of an unsharded map, as [`Keyed::with_all`] hands it out; on drop (a panic in the
+/// closure included) the count is brought to what the map now holds.
+struct Recount<'a, K: Ord, V> {
+    keyed: &'a Keyed<K, V>,
+    map: std::sync::MutexGuard<'a, BTreeMap<K, V>>,
+    before: usize,
+}
+
+impl<K: Ord, V> Drop for Recount<'_, K, V> {
+    fn drop(&mut self) {
+        self.keyed.recount(self.before, self.map.len());
+    }
+}
+
 /// The whole of a sharded map, as [`Keyed::with_all`] hands it out, every shard held; on drop (a
 struct AllShards<'a, K: Ord, V> {
     keyed: &'a Keyed<K, V>,
@@ -605,7 +628,11 @@ impl<K: Ord, V> Keyed<K, V> {
         self.len
             .fetch_update(AcqRel, Acquire, |n| (n < bound).then_some(n + 1))
             .ok()?;
-        Some(f(map.entry(key).or_insert_with(make)))
+        // `make` is the caller's code: if it panics, the reservation is given back.
+        let reserved = Unreserve(&self.len);
+        let made = make();
+        std::mem::forget(reserved);
+        Some(f(map.entry(key).or_insert(made)))
     }
 
     /// Keep only the entries `keep` answers `true` for, one shard at a time.
@@ -621,11 +648,14 @@ impl<K: Ord, V> Keyed<K, V> {
     /// Run `f` over the whole map, under every lock. `f` must not reach this same `Keyed` again.
     pub fn with_all<R>(&self, f: impl FnOnce(&mut BTreeMap<K, V>) -> R) -> R {
         if let [one] = &*self.shards {
-            let mut map = keyed_lock(one);
+            let map = keyed_lock(one);
             let before = map.len();
-            let r = f(&mut map);
-            self.recount(before, map.len());
-            return r;
+            let mut counted = Recount {
+                keyed: self,
+                map,
+                before,
+            };
+            return f(&mut counted.map);
         }
         let mut whole = AllShards {
             keyed: self,

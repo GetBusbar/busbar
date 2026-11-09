@@ -60,6 +60,13 @@ fn one_of_each() -> Vec<Selector> {
 
 /// Every form has a representative, so the walk really is over the whole cross-product.
 #[test]
+fn a_trailing_slash_prefix_overlaps_like_its_slashless_form() {
+    let slash = Selector::PrefixOneLevel("/v1/");
+    assert!(slash.overlaps(&Selector::ExactPath("/v1/x")));
+    assert!(slash.overlaps(&Selector::PrefixOneLevel("/v1")));
+}
+
+#[test]
 fn the_walk_covers_every_form() {
     let forms: Vec<SelectorForm> = one_of_each().iter().map(Selector::form).collect();
     assert_eq!(forms.len(), ALL_FORMS.len());
@@ -523,12 +530,67 @@ fn matches_path(selector: &Selector, path: &str) -> bool {
         Selector::PrefixOneLevel(prefix) => busbar_contract::grammar::one_level_under(prefix, path),
         Selector::PathSuffix(s) => path.ends_with(s),
         Selector::PathContains(s) => path.contains(s),
-        Selector::PathPattern(_) => selector.overlaps(&Selector::ExactPath(leak(path))),
+        Selector::PathPattern(pattern) => {
+            let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+            pattern_matches_segments(pattern, &segs)
+        }
         _ => false,
     }
 }
 
-/// A corpus path as the `'static` string the exact-path form takes.
-fn leak(path: &str) -> &'static str {
-    Box::leak(path.to_owned().into_boxed_str())
+/// An independent segment-wise evaluation of a path pattern (it does not call `overlaps`).
+fn pattern_matches_segments(pattern: &[PathSeg], segs: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => segs.is_empty(),
+        Some((PathSeg::Tail, _)) => true,
+        Some((PathSeg::Lit(l), rest)) => {
+            segs.first() == Some(l) && pattern_matches_segments(rest, &segs[1..])
+        }
+        Some((PathSeg::Var, rest)) => {
+            !segs.is_empty() && pattern_matches_segments(rest, &segs[1..])
+        }
+        Some((PathSeg::Plus, rest)) => {
+            (1..=segs.len()).any(|n| pattern_matches_segments(rest, &segs[n..]))
+        }
+    }
+}
+
+/// Matching a pattern with several `+` segments against a long path that cannot match stays
+/// polynomial, not exponential in the number of `+` segments.
+#[test]
+fn many_plus_segments_do_not_blow_up_on_a_failing_path() {
+    use busbar_contract::grammar::pattern_matches;
+    let pattern = [
+        PathSeg::Plus,
+        PathSeg::Plus,
+        PathSeg::Plus,
+        PathSeg::Lit("x"),
+    ];
+    let path = "/a".repeat(600);
+    let start = std::time::Instant::now();
+    assert!(!pattern_matches(&pattern, &path));
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "matching took {:?}",
+        start.elapsed()
+    );
+    assert!(pattern_matches(&pattern, &format!("{path}/x")));
+    assert!(!pattern_matches(&pattern, "/a/b/x/y"));
+    assert!(pattern_matches(&pattern, "/a/b/c/x"));
+}
+
+/// Backtracking across a literal between two `+` segments still finds the later match.
+#[test]
+fn plus_backtracks_across_literals() {
+    use busbar_contract::grammar::pattern_matches;
+    let pattern = [
+        PathSeg::Plus,
+        PathSeg::Lit("a"),
+        PathSeg::Plus,
+        PathSeg::Lit("b"),
+    ];
+    assert!(pattern_matches(&pattern, "/x/a/a/y/b"));
+    assert!(pattern_matches(&pattern, "/a/a/a/b"));
+    assert!(!pattern_matches(&pattern, "/x/a/b/c"));
+    assert!(!pattern_matches(&pattern, "/a/b"));
 }

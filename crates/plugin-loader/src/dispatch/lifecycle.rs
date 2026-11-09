@@ -149,10 +149,16 @@ pub(crate) fn release<K: Kind>(plugin: &Plugin<K>, lease: u64) {
         },
         out_head(),
     );
-    let _ = plugin.call(life::RELEASE, &mut f);
+    let called = plugin.call(life::RELEASE, &mut f);
+    if called.outcome != Outcome::Ready {
+        tracing::warn!(plugin = plugin.name(), outcome = ?called.outcome, "plugin lease did not release");
+    }
 }
 
 pub(crate) fn close<K: Kind>(plugin: &Plugin<K>) {
     let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
-    let _ = plugin.call(life::CLOSE, &mut f);
+    let called = plugin.call(life::CLOSE, &mut f);
+    if called.outcome != Outcome::Ready {
+        tracing::warn!(plugin = plugin.name(), outcome = ?called.outcome, "plugin did not close");
+    }
 }

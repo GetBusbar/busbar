@@ -124,3 +124,33 @@ fn the_wiped_sha256_matches_sha256_at_every_padding_boundary() {
         }
     }
 }
+
+/// Keys exactly one block long are used as-is; one byte more is hashed first (RFC 2104). Values
+/// from an independent implementation.
+#[test]
+fn block_sized_and_one_over_keys_are_split_at_the_block_boundary() {
+    let msg = b"block-size key witness";
+    let cases: [(usize, &str, &str); 2] = [
+        (
+            64,
+            "19c87957e10d8439278bb991929d316723e9103cb812e446bdee7fac0e1902ab",
+            "fa7873e27a2b16cacd63559ab27c89fe82ea5f51",
+        ),
+        (
+            65,
+            "40f06f91a6d477fba88304053b37886e1d903c2e078a25e5ddb6a8bde522e93a",
+            "0f9b26eae0e456368355be046eda9e4c2910db77",
+        ),
+    ];
+    for (n, sha256, sha1) in cases {
+        let key = vec![0xaa_u8; n];
+        assert_eq!(
+            hex::encode(&hmac_sha256(&key, msg)[..]),
+            sha256,
+            "sha256, {n}-byte key"
+        );
+        let cred = Cred::captured(Zeroizing::new(key));
+        let d: Zeroizing<[u8; 20]> = hmac_sha1(&cred, &[msg]);
+        assert_eq!(hex::encode(&d[..]), sha1, "sha1, {n}-byte key");
+    }
+}

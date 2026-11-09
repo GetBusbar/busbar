@@ -92,15 +92,7 @@ fn listener_policy_is_copied_from_the_statement_into_the_opened_sink() {
 #[test]
 fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
     use busbar_contract::abi::mechanism::extensions::{encode, statement_blob};
-    for (public, persistent) in [
-        (br#"["/not-declared"]"#.as_slice(), br#"[]"#.as_slice()),
-        (br#"[]"#.as_slice(), br#"["/metrics/hooks"]"#.as_slice()),
-        (
-            br#"["/metrics","/metrics"]"#.as_slice(),
-            br#"[]"#.as_slice(),
-        ),
-        (br#"false"#.as_slice(), br#"[]"#.as_slice()),
-    ] {
+    let context = |public: &[u8], persistent: &[u8]| {
         let bytes = Box::leak(
             encode(&[
                 ("listener.public_routes", public),
@@ -111,7 +103,28 @@ fn listener_policy_rejects_undeclared_and_non_public_persistent_paths() {
         // SAFETY: the fixture door's Statement lives for the process.
         let mut statement = unsafe { *SCRAPE_DOOR().statement() };
         statement.extensions = statement_blob(bytes);
-        assert!(<Export as crate::dispatch::Kind>::context(&statement).is_err());
+        <Export as crate::dispatch::Kind>::context(&statement)
+    };
+    // Positive control: the same construction with declared, consistent paths is accepted.
+    assert!(
+        context(br#"["/metrics"]"#, br#"[]"#).is_ok(),
+        "a declared public route must be accepted"
+    );
+    for (public, persistent) in [
+        (br#"["/not-declared"]"#.as_slice(), br#"[]"#.as_slice()),
+        (br#"[]"#.as_slice(), br#"["/metrics/hooks"]"#.as_slice()),
+    ] {
+        let err = context(public, persistent).expect_err("refused");
+        assert!(err.contains("listener route policy"), "{err}");
+    }
+    for (public, persistent) in [
+        (
+            br#"["/metrics","/metrics"]"#.as_slice(),
+            br#"[]"#.as_slice(),
+        ),
+        (br#"false"#.as_slice(), br#"[]"#.as_slice()),
+    ] {
+        assert!(context(public, persistent).is_err());
     }
 }
 
@@ -782,4 +795,120 @@ fn a_push_sink_may_leave_scrape_and_serve_unstated() {
         refused.to_string(),
         crate::dispatch::LoadError::NullSlot(slot::SERVE).to_string()
     );
+}
+
+mod pl_src_1_failing {
+    use busbar_contract::abi::export::{
+        CheckIn, CheckOut, DeliverIn, ExportStream, ScrapeIn, ScrapeOut, ServeIn, ServeOut,
+        StatusOut, Tail,
+    };
+    use busbar_contract::abi::mechanism::call::{InHead, OutHead, Outcome};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
+
+    use super::leaky::{Leaky, Ready};
+    use busbar_contract::abi::sdk::life::Held;
+
+    pub struct Fails;
+    impl SafeSlot for Fails {
+        type Kind = busbar_contract::plugin::markers::ExportKind;
+        type In = DeliverIn;
+        type Out = OutHead;
+        type State = Held<Leaky>;
+        fn call(
+            _: Instance<'_, Held<Leaky>, Self::Kind>,
+            _: Lent<'_, DeliverIn>,
+            _: Out<'_, OutHead>,
+        ) -> Outcome {
+            Outcome::Failed
+        }
+    }
+
+    const STREAMS: &[u8] = &[ExportStream::Logs as u8];
+    const TAIL: Tail = Tail {
+        head: KindTailHead {
+            size: std::mem::size_of::<Tail>() as u32,
+            ..KindTailHead::ZERO
+        },
+        streams: STREAMS.as_ptr(),
+        streams_len: STREAMS.len(),
+        ..Tail::ZERO
+    };
+    const STATEMENT: Statement = Statement {
+        kind_tail: (&TAIL as *const Tail).cast::<KindTailHead>(),
+        ..busbar_contract::abi::sdk::door::statement("pl-src-1-failing-export", "0", 4)
+    };
+
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::export::Ops,
+        statement: STATEMENT,
+        lifecycle: life(Leaky),
+        kind_ops: {
+            deliver: Safe<Fails>,
+            scrape: Safe<Ready<ScrapeIn, ScrapeOut>>,
+            status: Safe<Ready<InHead, StatusOut>>,
+            check: Safe<Ready<CheckIn, CheckOut>>,
+            serve: Safe<Ready<ServeIn, ServeOut>>,
+        },
+    }
+}
+
+#[test]
+fn a_batch_dropped_after_failed_delivery_is_counted_as_shed() {
+    let guard = crate::observe::testing::exclusive();
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_contract::services::test_caller_binding(),
+    ));
+    let plugin = load_linked::<Export>(
+        &LinkedRow::of(pl_src_1_failing::door).unwrap(),
+        Bind {
+            instance: Arc::from("export.pl-src-1-failing"),
+            max_inflight_cap: 4,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: crate::dispatch::ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let opened = plugin.call(lc::OPEN, &mut open_frame(blob(b"{}", BLOB_JSON)));
+    assert_eq!(opened.outcome, Outcome::Ready);
+    let mut series = busbar_contract::abi::mechanism::observe::SeriesDecl::new(
+        "busbar_export_pl_src_1_failing_shed",
+        "counter",
+    );
+    series.shed = true;
+    let _grant =
+        crate::observe::grant_series(dispatcher.observing(), plugin.name(), true, &[series])
+            .unwrap();
+    let shared = Arc::new(Shared {
+        facts: plugin.context::<ExportFacts>().unwrap().clone(),
+        recorder: None,
+        plugin,
+        dispatcher,
+        queue: Mutex::default(),
+        flusher: Mutex::default(),
+        stop: AtomicBool::new(false),
+        abandon: AtomicBool::new(false),
+        node: node_id(),
+        minted: AtomicU64::new(0),
+    });
+    crate::observe::testing::clear(&guard);
+    let lines = (0..3)
+        .map(|i| Line {
+            stream: ExportStream::Logs as u8,
+            bytes: zeroize::Zeroizing::new(format!("{{\"line\":{i}}}").into_bytes()),
+            _hold: Box::new(()),
+        })
+        .collect();
+    futures::executor::block_on(Arc::clone(&shared).deliver(0, ExportStream::Logs as u8, lines));
+    let shed: u64 = crate::observe::testing::folds()
+        .iter()
+        .flat_map(|(_, _, metrics, _)| metrics)
+        .filter(|metric| metric["name"] == "busbar_export_pl_src_1_failing_shed")
+        .map(|metric| metric["value"].as_u64().unwrap())
+        .sum();
+    assert_eq!(shed, 3, "every line lost to a failed delivery is counted");
+    let mut close = Frame::new(in_head(), out_head());
+    let _ = shared.plugin.call(lc::CLOSE, &mut close);
 }

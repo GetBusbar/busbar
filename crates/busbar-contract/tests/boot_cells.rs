@@ -132,9 +132,9 @@ fn every_rung_of_the_ladder_routes() {
     }
 }
 
-/// Every rung is a well-formed claim, and every claim's selector overlaps itself (whether two CLAIMS
+/// Every rung builds as a claim, and every claim's selector overlaps itself (no boot validation runs here) (whether two CLAIMS
 #[test]
-fn every_rung_is_a_claim_that_a_boot_would_check() {
+fn every_rung_builds_as_a_claim_whose_selector_overlaps_itself() {
     for rung in ladder() {
         let claim = Claim {
             transport: "carrier",

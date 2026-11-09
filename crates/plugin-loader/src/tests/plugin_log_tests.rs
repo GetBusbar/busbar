@@ -193,6 +193,43 @@ fn a_linked_and_a_dropped_plugin_write_byte_identical_log_files() {
     let _ = (std::fs::remove_dir_all(&ld), std::fs::remove_dir_all(&dd));
 }
 
+const _: () = assert!(witness::FLOOD_BYTES_RECORDS < MAX_LOG_RECORDS);
+
+#[test]
+fn a_few_large_records_past_the_byte_bound_are_dropped_and_counted() {
+    for (tag, load) in [("bytes-linked", true), ("bytes-dropped", false)] {
+        let dir = scratch(tag);
+        let s = sink(&dir, LogLevel::Trace);
+        let p = if load {
+            linked(s.clone())
+        } else {
+            dropped(s.clone())
+        };
+        std::thread::spawn(move || {
+            open(&p);
+            tick(&p, witness::FLOOD_BYTES);
+        })
+        .join()
+        .expect("the script runs");
+        let text = read(&dir, &s);
+        let kept = text
+            .matches(" INFO  log-witness export log_witness: x")
+            .count();
+        assert!(
+            kept > 0 && kept < witness::FLOOD_BYTES_RECORDS,
+            "{tag}: the byte bound keeps some and drops the rest, kept {kept}"
+        );
+        let dropped = witness::FLOOD_BYTES_RECORDS - kept;
+        assert!(
+            text.contains(&format!(
+                " WARN  log-witness export busbar: {dropped} log records of one reply were dropped over the bound"
+            )),
+            "{tag}: the overflow is one counted line ({dropped} dropped)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[test]
 fn a_write_outside_the_capture_never_reaches_the_plugin_log() {
     for (tag, load) in [("outside-linked", true), ("outside-dropped", false)] {
@@ -871,4 +908,80 @@ fn the_busbar_log_copy_carries_no_diag_field() {
         "a detail=\"high\""
     );
     assert_eq!(super::without_diag_field("no field here"), "no field here");
+}
+
+#[test]
+fn bidi_and_line_separator_characters_in_a_record_are_written_escaped() {
+    let dir = scratch("escape-bidi");
+    let s = sink(&dir, LogLevel::Trace);
+    info(
+        &s,
+        "a\u{2028}b\u{2029}c\u{202e}d\u{2066}e\u{200f}".as_bytes(),
+    );
+    let text = read(&dir, &s);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        text.ends_with(
+            " INFO  log-witness export a\\u{2028}b\\u{2029}c\\u{202e}d\\u{2066}e\\u{200f}\n"
+        ),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn a_gone_log_writer_is_one_host_warning() {
+    let host = HostLog::installed();
+    let dir = scratch("writer-gone");
+    let (queue, jobs) = std::sync::mpsc::sync_channel(4);
+    drop(jobs);
+    let lane = Arc::new(super::Lane {
+        queue,
+        over: Default::default(),
+    });
+    let s = config(&dir, LogLevel::Info)
+        .sink("writer-gone-witness", witness::KIND, Arc::new(NoSink))
+        .expect("the sink opens")
+        .with_clock(fixed_clock)
+        .with_lane(lane);
+    info(&s, b"one");
+    info(&s, b"two");
+    let _ = std::fs::remove_dir_all(&dir);
+    let n = host
+        .lines()
+        .iter()
+        .filter(|(_, level, plugin, message)| {
+            *level == tracing::Level::WARN
+                && plugin == "writer-gone-witness"
+                && message.contains("log writer is gone")
+        })
+        .count();
+    assert_eq!(n, 1, "one warning per lane");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rotation_report_lost_to_a_failed_reopen_is_built_again_on_a_later_append() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = scratch("report-lost");
+    let path = dir.join("slot.log");
+    std::fs::write(&path, [b'x'; 64]).expect("a file at the limit");
+    std::fs::create_dir_all(dir.join("slot.log.1").join("held")).expect("a blocked archive");
+    let slot = super::FileSlot::of(&path).expect("a slot");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::File::open(&path).is_ok() {
+        let _ = std::fs::remove_dir_all(&dir);
+        return; // permissions are not enforced (root)
+    }
+    assert!(
+        slot.append(b"a\n", Some(10), 1).is_err(),
+        "the reopen fails"
+    );
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let again = slot.append(b"b\n", Some(10), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        matches!(again, Ok(Some(_))),
+        "the rotation failure is reported on a later append: {:?}",
+        again.map(|r| r.is_some())
+    );
 }

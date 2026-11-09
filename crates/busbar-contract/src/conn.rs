@@ -466,8 +466,12 @@ pub trait DeclaredConns: Conns {
 /// THE ORIGIN of a URL, `scheme://authority`: what a member's route is sealed at and its binding
 #[must_use]
 pub fn origin_of(url: &str) -> &str {
-    let after = url.find("://").map_or(0, |at| at + 3);
-    url[after..].find('/').map_or(url, |at| &url[..after + at])
+    let before_query = url.find(['?', '#']).unwrap_or(url.len());
+    let after = url[..before_query].find("://").map_or(0, |at| at + 3);
+    let end = url[after..]
+        .find(['/', '?', '#'])
+        .unwrap_or(url.len() - after);
+    &url[..after + end]
 }
 
 /// THE FRAMER'S OWN HEAD, located at a target ([`PollConns::head_defaults`]).
@@ -554,14 +558,14 @@ impl HeadDefaults {
         body_len: usize,
     ) -> Result<CompletedHead, ConnError> {
         let defaults = self.completing(carried, body_len);
-        let breaks = |bytes: &[u8]| bytes.iter().any(|b| matches!(b, b'\r' | b'\n' | b'\0'));
+        let legal_value = |bytes: &[u8]| {
+            bytes
+                .iter()
+                .all(|&b| (b >= 0x20 && b != 0x7F) || b == b'\t')
+        };
         for (index, (name, value)) in defaults.iter().enumerate() {
-            if name.is_empty()
-                || name
-                    .iter()
-                    .any(|b| b.is_ascii_whitespace() || b.is_ascii_control() || *b == b':')
-                || breaks(name)
-                || breaks(value)
+            if !crate::header::is_header_name_token(name)
+                || !legal_value(value)
                 || name.eq_ignore_ascii_case(b"transfer-encoding")
                 || defaults[..index]
                     .iter()
@@ -913,6 +917,9 @@ enum Entry<T> {
 /// THE OWNERSHIP BOOK of a host's connections: which needs each instance declared, and which
 pub struct ConnSlab<T> {
     entries: Mutex<Vec<Entry<T>>>,
+    /// Indices of `Entry::Free` slots, so an insert reuses one without scanning. Locked only while
+    /// `entries` is held.
+    free: Mutex<Vec<usize>>,
     declared: Mutex<std::collections::BTreeSet<(InstanceId, NeedId)>>,
 }
 
@@ -920,6 +927,7 @@ impl<T> Default for ConnSlab<T> {
     fn default() -> Self {
         Self {
             entries: Mutex::new(Vec::new()),
+            free: Mutex::new(Vec::new()),
             declared: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
@@ -969,7 +977,11 @@ impl<T> ConnSlab<T> {
         tests::insert_admitted();
         let mut entries = self.lock();
         let state = Arc::new(state);
-        let free = entries.iter().position(|e| matches!(e, Entry::Free { .. }));
+        let free = self
+            .free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop();
         let (index, generation) = match free {
             Some(i) => {
                 let Entry::Free { generation } = entries[i] else {
@@ -1025,7 +1037,13 @@ impl<T> ConnSlab<T> {
                 generation: generation.wrapping_add(1),
             },
         ) {
-            Entry::Live { state, .. } => Ok(state),
+            Entry::Live { state, .. } => {
+                self.free
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(index);
+                Ok(state)
+            }
             Entry::Free { .. } => unreachable!("checked live above"),
         }
     }

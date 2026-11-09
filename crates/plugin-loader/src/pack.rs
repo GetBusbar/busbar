@@ -895,6 +895,11 @@ fn pack(args: &[String]) -> ExitCode {
                     .map_err(|_| format!("{SIGN_KEY_ENV} must be 32 bytes (64 hex chars)"))?;
                 sign(&SigningKey::from_bytes(&seed), manifest, &lib_bytes)
             }
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(format!(
+                    "{SIGN_KEY_ENV} is set but is not valid UTF-8 hex (the seed itself is withheld)"
+                ));
+            }
             Err(_) if allow_unsigned => {
                 let mut m = manifest;
                 m.sha256 = busbar_plugin_loader::sign::sha256_hex(&lib_bytes);

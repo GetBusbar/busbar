@@ -161,12 +161,8 @@ fn duplicate_native_identity_and_column_names_are_refused() {
     writer
         .write_row(0, b"same", raw.expose_own(&Own::here()))
         .unwrap();
-    writer
-        .write_row(0, b"same", raw.expose_own(&Own::here()))
-        .unwrap();
-    let bytes = writer.finish().unwrap().0;
     assert!(matches!(
-        read(Cursor::new(bytes), limits()),
+        writer.write_row(0, b"same", raw.expose_own(&Own::here())),
         Err(Error::Integrity)
     ));
     let mut h = header();
@@ -217,4 +213,19 @@ fn seeked_row_cannot_change_after_the_full_stream_was_verified() {
     let at = verified.index[0].offset as usize + 4 + 8;
     state.lock().unwrap().get_mut()[at] ^= 1;
     assert!(matches!(verified.read_row(0), Err(Error::Integrity)));
+}
+#[test]
+fn writer_refuses_a_row_the_reader_index_budget_would_refuse() {
+    let raw = row();
+    let mut bound = limits();
+    let metadata = index_metadata(&header(), bound).unwrap();
+    bound.index_bytes = metadata + std::mem::size_of::<RowIndex>() + std::mem::size_of::<usize>();
+    let mut writer = Writer::new(Vec::new(), header(), bound).unwrap();
+    writer
+        .write_row(0, b"one", raw.expose_own(&Own::here()))
+        .unwrap();
+    assert!(matches!(
+        writer.write_row(0, b"two", raw.expose_own(&Own::here())),
+        Err(Error::Budget)
+    ));
 }

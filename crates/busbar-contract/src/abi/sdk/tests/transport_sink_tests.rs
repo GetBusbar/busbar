@@ -325,3 +325,19 @@ fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
     assert_eq!(got.pieces[0].len, 0);
     assert!(f.pieces.is_empty());
 }
+
+/// A head that nearly fills an empty frame is still handed to the host, never dropped.
+#[test]
+fn a_head_that_leaves_no_room_for_its_body_is_still_handed_over() {
+    let mut f = Framing::default();
+    f.pieces.push_back(Piece {
+        head: Some(HeadWords::reason(b"0123456789abcdef".to_vec())),
+        ..Piece::fields(7, b"x: v\r\n".to_vec())
+    });
+    let mut heads = 0;
+    for _ in 0..4 {
+        heads += fill_into(&mut f, 0, 16, 4, 2).heads.len();
+    }
+    assert_eq!(heads, 1, "the head was lost");
+    assert!(f.pieces.is_empty());
+}

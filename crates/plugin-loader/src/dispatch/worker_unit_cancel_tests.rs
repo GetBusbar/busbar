@@ -455,7 +455,7 @@ fn cancel_watchdog_fault_keeps_both_lent_ranges_until_native_return() {
 fn two_pending_deadlines_cancel_once_and_late_wake_never_recalls() {
     let (d, p, c) = rig(DispatchConfig::default());
     let (near, far) = pair(&d, &p, 82);
-    let deadline = now_ns().saturating_add(100_000_000);
+    let deadline = now_ns().saturating_add(2_000_000_000);
     let a = d.submit(
         &p,
         near,

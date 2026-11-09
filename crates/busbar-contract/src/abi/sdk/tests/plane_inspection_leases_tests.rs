@@ -91,7 +91,10 @@ mod plugin {
     };
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
-        statement: crate::abi::sdk::door::statement("inspection-plane-leases", "0", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::plane::PlaneTail::EMPTY).cast(),
+            ..crate::abi::sdk::door::statement("inspection-plane-leases", "0", 1)
+        },
         lifecycle: plane_life(Leasing),
         kind_ops: {
             arrive: Refuse<ArriveIn, ArriveOut>,

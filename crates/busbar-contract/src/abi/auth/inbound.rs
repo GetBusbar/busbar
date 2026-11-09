@@ -86,8 +86,8 @@ pub struct IdentityOut {
     /// refuses the request (replay). Absent or empty = no claim. The plane never sees it. Appended
     /// last (a pre-tag layout edit).
     pub replay_key: Span,
-    /// How long the replay claim stands, seconds. Read only when [`Self::replay_key`] is present
-    /// and non-empty.
+    /// How long the replay claim stands, seconds. A nonzero value requires a present, non-empty
+    /// [`Self::replay_key`] (else the answer is a FAULT); zero means no claim.
     pub replay_ttl_secs: u64,
     /// The credential the identity was verified from, as the kernel holds it on the unit for the
     /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
@@ -171,7 +171,8 @@ pub struct VerifyIn {
 /// decision is in its vocabulary, `strip_len <= strip_cap`, every strip name is present and in
 /// bounds with a known `place`, and a `credential` span is present only with an identity; for
 /// `complete_login` the decision, `strip_len` and `credential` are `0`/absent;
-/// for an identity, `subject` is present, every present [`Span`] has `off + len <= buf_cap`, an
+/// for an identity, `subject` is present and non-empty, a nonzero `replay_ttl_secs` comes with a
+/// present, non-empty `replay_key`, every present [`Span`] has `off + len <= buf_cap`, an
 /// absent one ([`super::SPAN_ABSENT`]) has `len == 0`, `groups_len <= groups_cap`, every group
 /// span is present and in bounds, and `flags` holds only [`super::IDENTITY_HAS_TTL`]. On FAILED,
 /// `needed_bytes <= u32::MAX`, `needed_groups <=` [`super::IDENTITY_GROUPS_HARD_MAX`] and

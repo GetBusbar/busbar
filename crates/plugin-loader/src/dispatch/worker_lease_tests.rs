@@ -383,9 +383,14 @@ fn close_host_callback_keeps_the_submitted_framing_scope_outside_both_locks() {
     let locks_available = Arc::new(AtomicBool::new(false));
     let unlocked = locks_available.clone();
     *host.probe.lock().unwrap() = Some(Arc::new(move || {
-        if let (Ok(reply), Ok(worker)) = (slot.v.try_lock(), worker.state.try_lock()) {
-            drop((reply, worker));
-            unlocked.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(200) {
+            if let (Ok(reply), Ok(worker)) = (slot.v.try_lock(), worker.state.try_lock()) {
+                drop((reply, worker));
+                unlocked.store(true, Ordering::SeqCst);
+                break;
+            }
+            std::thread::yield_now();
         }
     }));
     release.send(()).unwrap();
@@ -830,5 +835,53 @@ fn completion_waker_and_lent_destructor_can_reenter_after_worker_unlocks() {
     assert!(wake_unlocked.load(Ordering::SeqCst));
     release_done(&p, &done);
     assert_eq!(state.released.load(Ordering::SeqCst), 1);
+    d.recycle(ticket);
+}
+
+#[test]
+fn dropped_writebehind_past_deadline_counts_without_wake_once() {
+    let (d, p, _) = rig();
+    let ticket = d.mint(0).unwrap();
+    let reply = d.submit(
+        &p,
+        ticket,
+        slot::TICK,
+        frame(2),
+        DeadlineClass::WriteBehind,
+        now_ns() + 20_000_000,
+    );
+    until(|| d.is_pending(ticket));
+    drop(reply);
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.stats().deadline_without_wake, 1);
+    wake(&p, ticket);
+    d.recycle(ticket);
+}
+
+#[test]
+fn expired_pending_calls_each_count_without_wake_once() {
+    let (d, p, _) = rig();
+    let (a, b) = (d.mint(0).unwrap(), d.mint(0).unwrap());
+    let deadline = now_ns() + 50_000_000;
+    let ra = d.submit(&p, a, slot::TICK, frame(2), DeadlineClass::Call, deadline);
+    let rb = d.submit(&p, b, slot::TICK, frame(2), DeadlineClass::Call, deadline);
+    drop((ra.wait(WAIT), rb.wait(WAIT)));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.stats().deadline_without_wake, 2);
+    d.recycle(a);
+    d.recycle(b);
+}
+
+#[test]
+fn dropped_call_does_not_count_as_late_writebehind() {
+    let (d, p, ptr) = rig();
+    let state = unsafe { &*ptr };
+    let ticket = d.mint(0).unwrap();
+    let reply = d.submit(&p, ticket, slot::TICK, frame(2), DeadlineClass::Call, 0);
+    until(|| d.is_pending(ticket));
+    drop(reply);
+    until(|| state.released.load(Ordering::SeqCst) == 1);
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(d.stats().write_behind_late, 0);
     d.recycle(ticket);
 }

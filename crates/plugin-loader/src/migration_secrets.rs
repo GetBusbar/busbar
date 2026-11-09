@@ -213,7 +213,7 @@ pub(crate) mod unix {
             .read_to_end(&mut stored)
             .map_err(|error| failure("existing artifact read", error))?;
         private(&file, false)?;
-        if stored.as_slice() != bytes {
+        if !busbar_contract::redacted::constant_time_eq(stored.as_slice(), bytes) {
             return Err(failure(
                 "existing artifact",
                 "this site already has different credential bytes; no file was overwritten; provision a separate private file and use an explicit file SecretRef",

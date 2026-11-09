@@ -907,7 +907,14 @@ async fn test_civil_from_days_and_days_from_civil_known_dates() {
         (-1_000_000, (-768, 2, 4)),
     ];
     for &(z, ymd) in cases {
-        assert_eq!(civil_from_days(z), ymd, "civil_from_days({z})");
+        assert_eq!(
+            {
+                let (y, m, d) = busbar_contract::civil::civil_from_days(z);
+                (y, i64::from(m), i64::from(d))
+            },
+            ymd,
+            "civil_from_days({z})"
+        );
         assert_eq!(
             days_from_civil(ymd.0, ymd.1, ymd.2),
             z,

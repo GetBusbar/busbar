@@ -526,6 +526,23 @@ fn a_pseudo_field_in_a_request_is_refused() {
     ));
 }
 
+/// RED: a sealed value carrying a line break or NUL would split the outbound head; it is refused
+/// before anything is sent, naming the field and never the value.
+#[test]
+fn a_sealed_value_with_a_line_break_or_nul_is_refused() {
+    use crate::abi::sdk::cred::Cred;
+    for bad in [&b"tok\r\nx-evil: 1"[..], &b"tok\nx"[..], &b"tok\0x"[..]] {
+        let key = Cred::captured(zeroize::Zeroizing::new(bad.to_vec()));
+        let refused =
+            Exchange::request_sealed(post(), vec![(0, b"x-api-key".to_vec(), key.field())]);
+        assert!(
+            matches!(&refused, Err(ConnFailure::Refused(t))
+                if t.contains("x-api-key") && !t.contains("tok")),
+            "{refused:?}"
+        );
+    }
+}
+
 /// RED: a pure-send transport's ack FAILURE (a code and the peer's text) reaches the plugin
 #[test]
 fn a_pure_send_acks_its_failure_with_a_code_and_the_peers_text() {

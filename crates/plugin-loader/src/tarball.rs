@@ -39,6 +39,13 @@ pub fn package(manifest: &Manifest, lib_name: &str, lib_bytes: &[u8]) -> Result<
         tar.append_data(&mut header, name, bytes)
             .map_err(|e| format!("tar append '{name}' failed: {e}"))
     };
+    if lib_name.is_empty()
+        || lib_name == MANIFEST_FILE
+        || lib_name.contains('/')
+        || lib_name.contains('\\')
+    {
+        return Err(format!("invalid library file name '{lib_name}'"));
+    }
     add(MANIFEST_FILE, &manifest_json)?;
     add(lib_name, lib_bytes)?;
     let gz = tar

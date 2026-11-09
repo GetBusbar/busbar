@@ -71,8 +71,9 @@ abi_struct! {
         /// In [`CheckIn`], out [`OutHead`]. READY: the reference is well-formed. FAILED: why, in
         /// `CheckIn::err_buf`, under the lifecycle `validate` refusal rule
         /// ([`check_validate_refusal`](super::mechanism::lifecycle::check_validate_refusal)); the host
-        /// renders each line as `<config path of the reference>: <line>`. REFUSED: the plugin does not
-        /// serve `check` (the SDK's answer for a door that wires none): every reference passes.
+        /// renders each line as `<config path of the reference>: <line>`. An absent (NULL)
+        /// `check` slot, which is what the SDK leaves for a door that wires none, or a REFUSED answer,
+        /// means every reference passes.
         pub check: Option<Op>,
     }
 

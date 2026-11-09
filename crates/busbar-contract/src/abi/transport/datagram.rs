@@ -11,6 +11,7 @@ pub const LANE_CLEAR: u32 = 1;
 /// [`DatagramLane::lane`] / [`DatagramRoute::lane`]: plaintext of the host's secure layer.
 pub const LANE_SECURED: u32 = 2;
 /// [`DatagramLane::lane`]: the far end's session description, from the signalling unit. Never a
+/// route lane.
 pub const LANE_RENDEZVOUS: u32 = 3;
 
 /// [`DatagramYield::request`]: no path request.

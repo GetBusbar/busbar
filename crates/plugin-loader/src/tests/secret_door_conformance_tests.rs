@@ -166,6 +166,14 @@ fn the_secret_door_is_not_another_kinds_door() {
     let row = LinkedRow::of(secret_fixture::door).expect("the linked row states");
     let err = load_linked::<Export>(&row, both::bind(&dispatcher))
         .expect_err("a secret door is not an export door");
-    let said = format!("{err:?}");
-    assert!(said.contains("Secret") || said.contains("Kind"), "{said}");
+    assert!(
+        matches!(
+            err,
+            crate::dispatch::LoadError::ManifestKind {
+                stated: busbar_contract::abi::mechanism::KindCode::Secret,
+                want: busbar_contract::abi::mechanism::KindCode::Export,
+            }
+        ),
+        "{err:?}"
+    );
 }

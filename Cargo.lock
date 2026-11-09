@@ -330,12 +330,10 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "smallvec",
- "stringprep",
  "syn 2.0.117",
  "tracing",
  "tracing-core",
  "tracing-log",
- "unicode-normalization",
  "zeroize",
 ]
 
@@ -2763,16 +2761,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stringprep"
-version = "0.1.5"
-source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"
-dependencies = [
- "unicode-bidi",
- "unicode-normalization",
- "unicode-properties",
-]
-
-[[package]]
 name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3198,12 +3186,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unicode-properties"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
-
-[[package]]
 name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3605,3 +3587,8 @@ source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=bed6617588e364
 name = "postgres-protocol"
 version = "0.6.12"
 source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=ba55637630fb38de6382e8dd7370b3c2d45da57b#ba55637630fb38de6382e8dd7370b3c2d45da57b"
+
+[[patch.unused]]
+name = "stringprep"
+version = "0.1.5"
+source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"

@@ -37,7 +37,9 @@ pub struct ExportFacts {
 }
 
 fn owned(s: AbiStr) -> Option<String> {
-    crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())
+    crate::dispatch::plugin::str_bytes(s)
+        .and_then(|b| std::str::from_utf8(b).ok())
+        .map(str::to_owned)
 }
 
 /// A `'static` Statement list of `len` entries at `ptr`, which the caller's check bounded and
@@ -214,5 +216,28 @@ impl Kind for Export {
         a.slot == slot::SCRAPE
             && a.outcome == Outcome::Failed
             && a.out::<ScrapeOut>().is_ok_and(|o| o.needed != 0)
+    }
+}
+
+#[cfg(test)]
+mod owned_tests {
+    use super::*;
+
+    #[test]
+    fn a_route_path_that_is_not_utf8_is_refused_not_repaired() {
+        let bad: &'static [u8] = b"/\xff";
+        let r = export::Route {
+            path: AbiStr {
+                ptr: bad.as_ptr(),
+                len: bad.len(),
+            },
+            method: AbiStr {
+                ptr: b"GET".as_ptr(),
+                len: 3,
+            },
+            auth: export::ROUTE_AUTH_NONE,
+            _reserved: 0,
+        };
+        assert!(route(&r).is_err(), "a lossy U+FFFD path must not load");
     }
 }

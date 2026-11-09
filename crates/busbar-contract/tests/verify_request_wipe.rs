@@ -54,7 +54,7 @@ fn request() -> VerifyRequest {
         conn: 7,
         unit: 8,
         credential: None,
-        lines: Vec::new(),
+        lines: vec![("private-header".to_string(), b"v".to_vec().into())],
         peer: Some(b"private-peer".to_vec()),
         body: Some(b"private-body".to_vec()),
         method: "POST".to_string(),
@@ -75,7 +75,15 @@ fn returned(_request: VerifyRequest, fail: bool) -> Result<(), ()> {
 
 #[test]
 fn verifier_owned_buffers_are_wiped_on_return_failure_and_pending_cancellation() {
-    for field in ["body", "path", "query", "peer", "authority"] {
+    for field in [
+        "body",
+        "path",
+        "query",
+        "peer",
+        "authority",
+        "method",
+        "line",
+    ] {
         for exit in ["return", "failure", "cancel"] {
             let request = request();
             let bytes = match field {
@@ -84,6 +92,8 @@ fn verifier_owned_buffers_are_wiped_on_return_failure_and_pending_cancellation()
                 "query" => request.query.as_deref().unwrap().as_bytes(),
                 "peer" => request.peer.as_deref().unwrap(),
                 "authority" => request.authority.as_bytes(),
+                "method" => request.method.as_bytes(),
+                "line" => request.lines[0].0.as_bytes(),
                 _ => unreachable!(),
             };
             WATCH.with(|watch| watch.set(Some((bytes.as_ptr().cast_mut(), bytes.len()))));

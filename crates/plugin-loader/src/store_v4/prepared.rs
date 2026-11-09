@@ -557,13 +557,14 @@ async fn finish_response(
                 let Some(Response::Begun(begun)) = state.begun.as_deref() else {
                     return Err(native::Error::Corrupt);
                 };
-                if ready.upgrade != upgrade.id
-                    || ready.target != begun.target.dataset
-                    || !session
-                        .plugin
-                        .advance_store_phase(native::Phase::RecoveryReady)
-                {
+                if ready.upgrade != upgrade.id || ready.target != begun.target.dataset {
                     return Err(native::Error::SourceChanged);
+                }
+                if !session
+                    .plugin
+                    .advance_store_phase(native::Phase::RecoveryReady)
+                {
+                    return Err(native::Error::Unavailable);
                 }
                 state.recovery = Some(ready.clone());
                 None

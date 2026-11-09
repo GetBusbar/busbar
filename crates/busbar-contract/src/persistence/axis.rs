@@ -10,6 +10,7 @@ use std::sync::Arc;
 use super::PersistenceBackend;
 
 /// Where one store's door comes from: a compiled-in row's door, or a dropped-in plugin's verified
+/// tarball bytes and the signed Statement it is admitted against.
 pub enum StoreDoor {
     /// A compiled-in row's door.
     Linked(crate::abi::mechanism::door::DoorFn),

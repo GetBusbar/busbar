@@ -620,7 +620,11 @@ pub struct Channels {
     pools: Vec<Arc<Pool>>,
     wires: Vec<Wire>,
     active: Arc<AtomicBool>,
+    /// Ops waiting for the claim, woken when it is released.
+    waiting: Waiting,
 }
+
+type Waiting = Arc<Mutex<Vec<(Host, Ticket)>>>;
 
 impl Channels {
     /// Reserve `count` independent channels. At least one is required.
@@ -631,6 +635,7 @@ impl Channels {
             pools: (0..count).map(|_| Pool::new(1)).collect(),
             wires: (0..count).map(|_| Wire::default()).collect(),
             active: Arc::new(AtomicBool::new(false)),
+            waiting: Arc::default(),
         }
     }
 }
@@ -646,29 +651,59 @@ pub fn drive_channels<T: 'static>(
     let _ = cx.resume::<WaitingChannels>();
     // A resumed driver already holds the claim. A waiting request must acquire it.
     let resumed = cx.resume::<Running<T>>();
-    if let Some(running) = resumed {
+    let claim = if let Some(running) = resumed {
         cx.park(running);
+        None
     } else if channels.active.swap(true, Ordering::AcqRel) {
+        if let Some(host) = cx.host().copied() {
+            let mut waiting = channels
+                .waiting
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let entry = (host, cx.ticket());
+            if !waiting.iter().any(|w| w.1 == entry.1) {
+                waiting.push(entry);
+            }
+        }
+        // The claim may have been released between the swap and the registration.
+        if !channels.active.load(Ordering::Acquire) {
+            ChannelClaim::wake(&channels.waiting);
+        }
         cx.park(WaitingChannels);
         return Step::Pending {
             wake_at_ns: later(cx, RETRY_NS),
         };
-    }
+    } else {
+        Some(ChannelClaim(
+            channels.active.clone(),
+            channels.waiting.clone(),
+        ))
+    };
     run_channels(
         cx,
         channels.pools.iter().cloned().map(Some).collect(),
         Some(&channels.wires),
-        Some(channels.active.clone()),
+        claim,
         start,
     )
 }
 
 struct WaitingChannels;
 
-struct ChannelClaim(Arc<AtomicBool>);
+struct ChannelClaim(Arc<AtomicBool>, Waiting);
+impl ChannelClaim {
+    /// Wake every op waiting for the claim, outside the lock.
+    fn wake(waiting: &Waiting) {
+        let woken = std::mem::take(&mut *waiting.lock().unwrap_or_else(PoisonError::into_inner));
+        for (host, ticket) in woken {
+            host.wake(ticket);
+        }
+    }
+}
 impl Drop for ChannelClaim {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+        Self::wake(&self.1);
     }
 }
 
@@ -750,7 +785,7 @@ fn run_channels<T: 'static>(
     cx: &mut Op<'_>,
     pools: Vec<Option<Arc<Pool>>>,
     wires: Option<&[Wire]>,
-    claim: Option<Arc<AtomicBool>>,
+    claim: Option<ChannelClaim>,
     start: impl FnOnce(Vec<Wire>) -> Body<T>,
 ) -> Step<T> {
     let mut running = match cx.resume::<Running<T>>() {
@@ -775,7 +810,7 @@ fn run_channels<T: 'static>(
             let wires = channels.iter().map(|c| c.wire.clone()).collect();
             Running {
                 body: Mutex::new(start(wires)),
-                _claim: claim.map(ChannelClaim),
+                _claim: claim,
                 channels,
                 active: 0,
                 buf: Mutex::new(None),

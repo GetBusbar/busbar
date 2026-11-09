@@ -632,8 +632,20 @@ pub(crate) unsafe fn answer(
                 correlation: completion.correlation,
                 result: result.map_err(ConditionalFailure::Refused),
             };
-            let Ok(bytes) = wire::encode_observed(&completion, &result) else {
-                return;
+            let (result, bytes) = match wire::encode_observed(&completion, &result) {
+                Ok(bytes) => (result, bytes),
+                Err(reason) => {
+                    // The value cannot be encoded: finish with a refusal, whose encoding carries
+                    // no provider bytes, so the exchange never hangs.
+                    let result = wire::ObservationResult {
+                        correlation: completion.correlation,
+                        result: Err(ConditionalFailure::Refused(reason)),
+                    };
+                    let Ok(bytes) = wire::encode_observed(&completion, &result) else {
+                        return;
+                    };
+                    (result, bytes)
+                }
             };
             if store.observation_complete(
                 caller(wake),

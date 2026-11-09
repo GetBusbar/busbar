@@ -77,7 +77,9 @@ impl Backend for Fake {
         use crate::persistence::lifecycle::{
             Error, Inspection, InspectionState, NativeCapability, Request, Response,
         };
-        BOOTSTRAPS.fetch_add(1, Ordering::SeqCst);
+        if !matches!(request, Request::Inspect { bounds } if bounds.items == 99) {
+            BOOTSTRAPS.fetch_add(1, Ordering::SeqCst);
+        }
         if !matches!(request, Request::Inspect { .. }) {
             return Step::Ready(Err(Error::MissingCapability));
         }
@@ -90,7 +92,16 @@ impl Backend for Fake {
             state: InspectionState::Empty,
             source: None,
             admission_marker: None,
-            catalogue: vec![],
+            // items == 99 asks for a catalogue larger than the instance's input budget.
+            catalogue: if matches!(request, Request::Inspect { bounds } if bounds.items == 99) {
+                vec![crate::persistence::archive::Table {
+                    name: "big".into(),
+                    columns: vec![],
+                    native_layout: vec![0; 2_000_000],
+                }]
+            } else {
+                vec![]
+            },
             capabilities: vec![NativeCapability::CurrentOpen],
         })))
     }
@@ -650,4 +661,53 @@ fn bootstrap_pending_short_and_prepared_open_retain_exactly_one_instance() {
         call(table().head.close, instance, &close, &mut out),
         Outcome::Ready
     );
+}
+
+#[test]
+fn bootstrap_answer_too_large_to_encode_is_an_error_answer_and_does_not_advance_phase() {
+    use crate::abi::sdk::store::v4::bootstrap::Bootstrap;
+    use crate::persistence::lifecycle::{self as native, Request};
+    let bounds = native::Bounds {
+        items: 99,
+        bytes: 1_048_576,
+    };
+    let request = Bootstrap::new(std::sync::Arc::new(Request::Inspect { bounds }), bounds).unwrap();
+    let mut instance = core::ptr::null_mut();
+    for n in 0..2_u32 {
+        let ticket = Ticket {
+            slot: 40 + n,
+            generation: 1,
+        };
+        let mut input: wire::BootstrapIn = blank_in();
+        input.head = head::<wire::BootstrapIn>(wire::slot::BOOTSTRAP, ticket);
+        input.request = request.blob();
+        let mut output: wire::BootstrapOut = blank_out();
+        assert_eq!(
+            call(table().bootstrap, instance, &input, &mut output),
+            Outcome::Pending
+        );
+        instance = output.instance;
+        input.head.flags = FLAG_RESUME;
+        let mut bytes = vec![0; 64];
+        input.result = crate::abi::store::HostBuf {
+            ptr: bytes.as_mut_ptr(),
+            cap: bytes.len(),
+        };
+        assert_eq!(
+            call(table().bootstrap, instance, &input, &mut output),
+            Outcome::Ready,
+            "an oversize answer must still reach the caller as an error"
+        );
+        let answer = native::codec::decode_response(
+            &bytes[..output.written as usize],
+            native::Bounds {
+                items: 99,
+                bytes: 1_048_576,
+            },
+        );
+        assert!(
+            matches!(answer, Err(native::Error::Bounds)),
+            "round {n}: unexpected answer"
+        );
+    }
 }

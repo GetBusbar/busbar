@@ -658,13 +658,13 @@ impl<'u> Unit<'u> {
         self.correlates
     }
 
-    /// Bytes in, bytes out, as the kernel counted them.
+    /// Bytes in, bytes out. Not yet populated: nothing writes it, so it is always `(0, 0)`.
     #[must_use]
     pub fn byte_counts(&self) -> (u64, u64) {
         self.byte_counts
     }
 
-    /// Frames in, frames out, as the kernel counted them.
+    /// Frames in, frames out. Not yet populated: nothing writes it, so it is always `(0, 0)`.
     #[must_use]
     pub fn frame_counts(&self) -> (u32, u32) {
         self.frame_counts

@@ -1440,3 +1440,13 @@ fn only_reject_refuses_a_failed_call() {
         &PolicyOnError::First
     ));
 }
+
+#[test]
+fn plugin_strategy_bind_refusal_reaches_the_preflight_error() {
+    let error = crate::preflight::ranking_settings_from(
+        EXTRA_STRATEGY,
+        Some((None, vec!["pl-src-1 bind refused".into()])),
+    )
+    .expect_err("a strategy that did not bind is refused");
+    assert!(error.contains("pl-src-1 bind refused"), "{error}");
+}

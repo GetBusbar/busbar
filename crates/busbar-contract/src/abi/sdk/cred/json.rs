@@ -190,7 +190,7 @@ impl SealedJson {
 
     /// Hand the encoding to `put`, piece by piece. A credential's piece is encoded into a buffer
     fn write(&self, put: &mut dyn FnMut(&[u8])) -> Result<(), NotJsonText> {
-        let json = |v: &dyn erased::Json| Zeroizing::new(v.to_json());
+        let json = |v: &dyn erased::Json| v.to_json();
         put(b"{");
         for (i, (name, member)) in self.members.iter().enumerate() {
             if i > 0 {
@@ -215,12 +215,39 @@ impl SealedJson {
 
 /// One JSON-serializable value, encoded whole.
 mod erased {
+    use zeroize::Zeroizing;
+
+    /// A write buffer that grows by moving into a new wiped allocation, so a credential is never
+    /// left in a freed, unwiped block (`serde_json::to_vec` reallocates past 128 bytes).
+    struct Wiping(Zeroizing<Vec<u8>>);
+
+    impl std::io::Write for Wiping {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.0.capacity() - self.0.len() < buf.len() {
+                let mut grown = Zeroizing::new(Vec::with_capacity(
+                    (self.0.len() + buf.len()).max(self.0.capacity() * 2),
+                ));
+                grown.extend_from_slice(&self.0);
+                self.0 = grown;
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     pub(super) trait Json {
-        fn to_json(&self) -> Vec<u8>;
+        fn to_json(&self) -> Zeroizing<Vec<u8>>;
     }
     impl<T: serde::Serialize + ?Sized> Json for T {
-        fn to_json(&self) -> Vec<u8> {
-            serde_json::to_vec(self).unwrap_or_default()
+        fn to_json(&self) -> Zeroizing<Vec<u8>> {
+            let mut out = Wiping(Zeroizing::new(Vec::with_capacity(128)));
+            if serde_json::to_writer(&mut out, self).is_err() {
+                out.0.clear();
+            }
+            out.0
         }
     }
 }

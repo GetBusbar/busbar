@@ -10,7 +10,7 @@ pub const HIGH_WATER_FILE: &str = "plugin-highwater.json";
 
 /// The per-plugin-name high-water marks: `name` -> the highest version of that name this deployment
 /// has seen and loaded. Persisted under the fleet data dir when one is configured, memory-only
-/// otherwise (see the module docs).
+/// otherwise (`persist` is a no-op without a `data_dir`).
 #[derive(Debug, Clone, Default)]
 pub struct HighWaterMarks {
     /// The data-dir file backing these marks, or `None` for a memory-only store (no `data_dir`).

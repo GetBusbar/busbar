@@ -452,6 +452,11 @@ fn a_need_over_an_unserved_scheme_refuses_the_load_naming_plugin_and_scheme() {
         "{text}"
     );
     assert!(unserved.declared.lock().unwrap().is_empty());
+    assert_eq!(
+        unserved.forgotten.lock().unwrap().len(),
+        1,
+        "a bind that fails after the table was in hand forgets the instance"
+    );
 
     let served = Arc::new(Recording::default());
     assert!(bind_over(Box::leak(Box::new(NEEDS)), &served).is_ok());
@@ -681,6 +686,30 @@ fn an_open_whose_settings_ca_the_table_refuses_fails_naming_it() {
 
     let good = bound(Box::leak(Box::new(TRUSTING)), &table);
     assert_eq!(open_with(&good, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+}
+
+const TARGETED_TRUSTING: [Need; 1] = [Need {
+    target_from: abi_str("settings.upstream"),
+    trust_from: abi_str("settings.ca"),
+    ..NEEDS[0]
+}];
+
+#[test]
+fn an_unresolved_target_with_a_valid_ca_is_a_need_refusal_not_a_ca_failure() {
+    let label = "bind-audit-target-unresolved-valid-ca";
+    let table = Arc::new(Recording::default());
+    let p = bound_labelled(Box::leak(Box::new(TARGETED_TRUSTING)), &table, label);
+    assert_eq!(open_with(&p, br#"{"ca":"PEM-A"}"#), Outcome::Ready);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "target_unresolved"
+            }
+        )]
+    );
 }
 
 const OWNED_TRUSTING: [Need; 1] = [Need {
@@ -1682,6 +1711,113 @@ fn a_failed_reply_names_the_stage_and_the_underlying_error() {
     assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
     assert_eq!(o.value, CAUSE_CONNECT);
     assert_eq!(error_text(&o), "Connection refused (os error 111)");
+}
+
+#[test]
+fn an_empty_trailer_fields_piece_after_the_head_never_emits_a_second_reply_head() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (
+            piece(PieceKind::Fields, Some(201), Some(6..16), 6),
+            b"x: y\r\nFine By Me".to_vec(),
+        ),
+        (piece(PieceKind::Body, None, None, 3), b"abc".to_vec()),
+        (piece(PieceKind::Fields, None, None, 0), Vec::new()),
+        (piece(PieceKind::Completion, None, None, 0), Vec::new()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut buf = [0_u8; 64];
+    let kinds: Vec<u32> = (1..=3)
+        .map(|seq| read_reply(&p, seq, stream, &mut buf).1.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [REPLY_HEAD, REPLY_BODY, REPLY_END],
+        "an empty trailer block is skipped, not a second head"
+    );
+}
+
+#[test]
+fn reading_a_closed_held_stream_is_refused_closed_and_leaves_no_entry() {
+    use busbar_contract::abi::host::conn::connector::StreamIn;
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let c = StreamIn {
+        head: head_of::<StreamIn>(service::CLOSE, 1),
+        stream,
+    };
+    assert!(ready(&call(&p, CONN_SLOTS.close, &c)));
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 2, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Failed));
+    assert_eq!(error_text(&o), ConnError::Closed.text());
+    assert!(
+        !streams_of(p.instance()).contains_key(&stream),
+        "a closed held stream is not resurrected by a read"
+    );
+}
+
+#[test]
+fn establish_refuses_a_target_or_member_that_is_not_utf8_and_dials_nothing() {
+    let table = Arc::new(Scripted::default());
+    let p = bound_over(&table);
+    let bad: &'static [u8] = b"a\xffb";
+    let raw = |b: &'static [u8]| AbiStr {
+        ptr: b.as_ptr(),
+        len: b.len(),
+    };
+    for (target, member) in [(raw(bad), abi_str("")), (abi_str("127.0.0.1:9"), raw(bad))] {
+        let i = EstablishIn {
+            head: head_of::<EstablishIn>(service::ESTABLISH, 0),
+            need: 0,
+            timeout_ms: 0,
+            target,
+            within: abi_str(""),
+            member,
+        };
+        let out = call(&p, CONN_SLOTS.establish, &i);
+        assert_eq!(
+            out.outcome,
+            RawOutcome::of(Outcome::Refused),
+            "a malformed declaration is refused, not repaired"
+        );
+    }
+    assert!(
+        table.opened.lock().unwrap().is_empty(),
+        "nothing was dialled"
+    );
+}
+
+#[test]
+fn a_request_body_grows_its_buffer_geometrically() {
+    let table = Arc::new(Scripted {
+        framed: true,
+        ..Scripted::default()
+    });
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    let chunk = [7_u8; 4096];
+    let mut capacities = std::collections::BTreeSet::new();
+    for n in 0..(16 * 1024 * 1024 / chunk.len()) {
+        let o = request(&p, 2 + n as u32, stream, &kind_piece(REQUEST_BODY), &chunk);
+        assert!(ready(&o), "chunk {n}");
+        if let Some(s) = streams_of(p.instance()).get(&stream) {
+            if let super::Conn::Held { body, .. } = &s.conn {
+                capacities.insert(body.capacity());
+            }
+        }
+    }
+    assert!(
+        capacities.len() <= 32,
+        "{} distinct capacities for 4096 writes",
+        capacities.len()
+    );
 }
 
 #[test]

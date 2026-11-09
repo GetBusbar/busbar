@@ -263,7 +263,9 @@ pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
         .get("tags_any")?
         .as_array()?
         .iter()
-        .filter_map(|t| t.as_str())
+        .map(|t| t.as_str())
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)

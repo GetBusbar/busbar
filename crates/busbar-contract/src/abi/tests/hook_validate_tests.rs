@@ -145,6 +145,18 @@ fn transform_two_verbs_faults() {
     );
 }
 
+/// RED: a verb only `decide` has (RESTRICT) is not a verb of `transform`. (`VERB_REWRITE` shares
+/// `VERB_PREFER`'s bit, so no `transform`-only verb exists to offer `decide`.)
+#[test]
+fn a_decide_only_verb_is_not_a_transform_verb() {
+    let mut out = transform_out();
+    out.verbs = VERB_RESTRICT;
+    assert_eq!(
+        check_transform(&out, 0, 0),
+        red(Rule::NotExactlyOne, "transform.verbs")
+    );
+}
+
 /// RED: a `transform` `verbs` bit outside the known set is FAULT.
 #[test]
 fn transform_unknown_verb_bit_faults() {
@@ -459,6 +471,28 @@ fn serve_headers_out_len_exceeds_cap_faults() {
     );
 }
 
+/// RED: `serve`'s `headers_out` is name/value pairs: an odd count is FAULT.
+#[test]
+fn serve_headers_out_unpaired_faults() {
+    let list = [AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    }; 3];
+    let mut out = ServeOut {
+        head: head(Outcome::Ready),
+        status_code: 200,
+        _reserved: [0; 6],
+        headers_out: list.as_ptr(),
+        headers_out_len: 3,
+        body: blob_absent(),
+    };
+    out.head.lease = 7;
+    assert_eq!(
+        check_serve(&out),
+        red(Rule::Contradiction, "serve.headers_out_len")
+    );
+}
+
 /// RED: `serve`'s headers are null-checked.
 #[test]
 fn serve_headers_null_with_len_faults() {
@@ -523,6 +557,33 @@ fn serve_ready_material_without_lease_faults() {
     out.body.ptr = &byte as *const u8;
     out.body.len = 1;
     assert_eq!(check_serve(&out), red(Rule::Missing, "serve.lease"));
+}
+
+/// A READY `serve` answer whose only material is a header needs a lease (the headers term of
+/// the material test), and passes once it has one.
+#[test]
+fn serve_ready_headers_only_material_needs_a_lease() {
+    let pair = [
+        AbiStr {
+            ptr: b"k".as_ptr(),
+            len: 1,
+        },
+        AbiStr {
+            ptr: b"v".as_ptr(),
+            len: 1,
+        },
+    ];
+    let mut out = ServeOut {
+        head: head(Outcome::Ready),
+        status_code: 200,
+        _reserved: [0; 6],
+        headers_out: pair.as_ptr(),
+        headers_out_len: 2,
+        body: blob_absent(),
+    };
+    assert_eq!(check_serve(&out), red(Rule::Missing, "serve.lease"));
+    out.head.lease = 7;
+    assert_eq!(check_serve(&out), Ok(()));
 }
 
 /// RED: a READY `serve` answer with no headers and no body but a lease is FAULT (the

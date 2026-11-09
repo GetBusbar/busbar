@@ -484,3 +484,43 @@ fn completion_markers_preserve_phase_address_and_reject_invalid_framing() {
         );
     }
 }
+#[test]
+fn writer_grows_geometrically_so_secret_bytes_are_not_recopied_per_field() {
+    let mut w = Writer::new(
+        Bounds {
+            items: 8,
+            bytes: 4096,
+        },
+        1,
+        1,
+    )
+    .unwrap();
+    let mut grows = 0;
+    let mut cap = w.out.0.capacity();
+    for _ in 0..200 {
+        w.put(&[7u8; 4]).unwrap();
+        if w.out.0.capacity() != cap {
+            grows += 1;
+            cap = w.out.0.capacity();
+        }
+    }
+    assert!(grows <= 8, "{grows} reallocations for 200 small puts");
+}
+
+#[test]
+fn inspect_allocation_bound_reads_the_declared_bytes_of_an_encoded_inspect() {
+    let inspect = encode_request(&Request::<Kernel>::Inspect { bounds: BOUNDS }, BOUNDS).unwrap();
+    assert_eq!(
+        inspect_allocation_bound(&inspect.0),
+        Some(BOUNDS.bytes as usize)
+    );
+    let target = encode_request(
+        &Request::<Kernel>::Target {
+            upgrade: reference(),
+        },
+        BOUNDS,
+    )
+    .unwrap();
+    assert_eq!(inspect_allocation_bound(&target.0), None);
+    assert_eq!(inspect_allocation_bound(&inspect.0[..23]), None);
+}

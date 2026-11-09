@@ -91,18 +91,6 @@ pub enum AuthVerdict {
     Pass,
 }
 
-/// One authentication module — a swappable implementation of the fixed `auth` engine stage. The
-pub trait AuthModule: Send + Sync {
-    /// Stable module name for config references, metrics, and audit (e.g. `"tokens"`).
-    fn name(&self) -> &'static str;
-    /// Judge the presented candidate credential. Constant-time and side-effect-free.
-    fn authenticate(&self, candidate: Option<&str>) -> AuthVerdict;
-    /// Whether the engine may CACHE this module's verdicts (the credential cache). Default
-    fn cacheable(&self) -> bool {
-        false
-    }
-}
-
 /// `begin_login` input — everything is CORE-generated or public; there is NO secret
 /// field, structurally keeping the confidential-client secret off the begin path.
 #[derive(Debug, Clone, PartialEq)]

@@ -13,10 +13,6 @@ pub const MAX_ERROR_LEN: usize = super::plugin::MAX_TEXT;
 /// What was wrong with an answer. Every violation is FAULT.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Violation {
-    /// The kind's own `check_<op>` refused the answer.
-    Kind,
-    /// A second SHORT answer on the one re-call.
-    ShortTwice,
     /// `OutHead.size` is smaller than the head or larger than the host's `out`.
     OutSize {
         /// The size the plugin wrote back.

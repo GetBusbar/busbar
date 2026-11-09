@@ -5,7 +5,8 @@
 
 use crate::caps::*;
 
-/// Every flag `PostingFlags` declares. Hand-kept, so the cell below holds it to the type's own
+/// Every flag `PostingFlags` declares. Hand-kept and not checked against the type's declaration:
+/// a new flag must be added here by hand to be covered by the distinct-bit test below.
 const FLAGS: &[PostingFlags] = &[
     PostingFlags::ESTIMATED,
     PostingFlags::METER_DISPUTED,

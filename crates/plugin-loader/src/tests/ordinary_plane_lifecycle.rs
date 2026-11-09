@@ -150,6 +150,22 @@ fn the_hosts_snapshot_copy_survives_the_actual_plugins_next_refresh() {
             first, published,
             "generation1 owned copy outlives its retire"
         );
+        assert_eq!(first.generation, 1);
+        assert!(first.claims.is_empty());
+        let routes: Vec<_> = first
+            .admin_routes
+            .iter()
+            .map(|r| (r.verb.as_str(), r.target.as_str(), r.audit_verb.as_str()))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("POST", "/tools/{name}/connect", "connect"),
+                ("GET", "/tools/{name}/changes", ""),
+                ("GET", "/tools/{name}/health", ""),
+            ],
+            "generation 1 still reads the literal routes the plugin published"
+        );
     }
 }
 #[test]

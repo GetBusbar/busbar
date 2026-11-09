@@ -254,6 +254,7 @@ impl Shared {
                 plugin = %self.plugin.name(),
                 "no ticket could be minted for an export batch; it is dropped"
             );
+            fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), lines.len());
             return;
         };
         let mut batch = zeroize::Zeroizing::new(Vec::with_capacity(
@@ -294,6 +295,7 @@ impl Shared {
                         error = %why(o, done.error),
                         "an export batch was not delivered and is dropped"
                     );
+                    fold_shed_lines(self.dispatcher.observing(), self.plugin.name(), lines.len());
                     break;
                 }
             }
@@ -438,7 +440,11 @@ impl ExportInstance {
                 flusher.flush();
                 let _ = flushed.send(());
             })
-            .map_err(|e| format!("the export flusher did not start: {e}"))?;
+            .map_err(|e| {
+                let mut f = Frame::new(in_head(), out_head());
+                let _ = shared.plugin.call(lc::CLOSE, &mut f);
+                format!("the export flusher did not start: {e}")
+            })?;
         Ok(Self {
             shared,
             flusher: Mutex::new(Some((flusher, done))),

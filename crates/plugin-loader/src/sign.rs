@@ -150,6 +150,12 @@ pub fn embedded_release_keys() -> Vec<FirstPartyKey> {
         .unwrap_or_default()
 }
 
+/// The parse error of a malformed build-time release-key spec (`None` when absent or valid).
+fn release_key_parse_error(spec: Option<&str>) -> Option<String> {
+    spec.and_then(|s| parse_release_keys(s).err())
+        .map(|e| e.to_string())
+}
+
 pub fn embedded_release_pubkey() -> Option<VerifyingKey> {
     embedded_release_keys()
         .into_iter()
@@ -226,7 +232,7 @@ pub struct Manifest {
     pub publisher: String,
     /// Which version of busbar's C plugin ABI (for this `kind`) the cdylib was built against.
     pub abi_version: u32,
-    /// Lowercase hex SHA-256 of the library bytes - binds this manifest to that exact binary.
+    /// Hex SHA-256 of the library bytes (case-insensitive) - binds this manifest to that exact binary.
     pub sha256: String,
     /// Lowercase hex ed25519 signature over [`canonical_manifest_bytes`] (every field but this one).
     #[serde(default)]
@@ -1636,7 +1642,10 @@ fn evaluate_against_with_crypto(
         if roots.is_empty() {
             Err(Untrusted::Unsigned {
                 reason: format!(
-                    "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this build embeds no busbar release key, so it cannot be verified"
+                    "manifest claims first-party publisher '{FIRST_PARTY_PUBLISHER}' but this build embeds no busbar release key, so it cannot be verified{}",
+                    release_key_parse_error(option_env!("BUSBAR_RELEASE_PUBKEY"))
+                        .map(|e| format!(" (the embedded release key spec is malformed: {e})"))
+                        .unwrap_or_default()
                 ),
                 tampered: false,
             })

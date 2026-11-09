@@ -27,6 +27,17 @@ fn recipes_distinguish_legacy_empty_unknown_and_zero() {
 }
 
 #[test]
+fn a_legacy_u64_price_decodes_in_thousandths() {
+    let mut bag = SignalBag::new();
+    bag.push(Signal::CandidateRouteCost, SignalValue::Bool(true));
+    bag.push(Signal::CandidateRouteCost, SignalValue::Str("s".into()));
+    bag.push(Signal::CandidateRouteCost, SignalValue::U64(2_500));
+    bag.push(Signal::CandidateRouteCost, SignalValue::F64(1.0));
+    let terms = decode(&bag).unwrap().unwrap();
+    assert_eq!(terms[0].price_per_unit, Some(2.5));
+}
+
+#[test]
 fn malformed_or_truncated_terms_never_become_legacy() {
     let s = Signal::CandidateRouteCost;
     for values in [

@@ -1517,3 +1517,34 @@ fn an_old_build_beside_its_successor_is_skipped_with_a_warning_not_refused() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_linked_row_with_an_unreadable_statement_does_not_claim_it_states_no_version() {
+    let reg = linked_in(renamed("hook", "busbar-hook-cadaudit", "cadaudit", &[]));
+    let row = reg.resolve("busbar-hook-cadaudit").expect("the row links");
+    let err = row.plugin_version().expect_err("no statement to read");
+    assert!(
+        err.contains("statement cannot be read") && !err.contains("states no version"),
+        "got {err}"
+    );
+}
+
+#[test]
+fn an_inventory_row_lists_every_conflict_it_is_in() {
+    let release = key(1);
+    let dir = tmpdir("conflictboth");
+    let a = sign(&release, manifest("dupx", "alias-x", "busbar"), b"a");
+    let b = sign(&release, manifest("dupx", "alias-x", "busbar"), b"b");
+    write_tarball(&dir, "a.tar.gz", &a, b"a");
+    write_tarball(&dir, "b.tar.gz", &b, b"b");
+
+    let rows = inventory(&dir, &policy(&release));
+    let status = &rows.iter().find(|r| r.file == "a.tar.gz").unwrap().status;
+    assert!(
+        status.starts_with("CONFLICT:")
+            && status.contains("plugin name conflict")
+            && status.contains("plugin alias conflict"),
+        "both the name and the alias conflict must be listed: {status}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

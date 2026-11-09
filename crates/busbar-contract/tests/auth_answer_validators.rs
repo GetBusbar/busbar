@@ -106,6 +106,19 @@ fn a_span_whose_end_overflows_u32_is_out_of_bounds() {
 
 #[test]
 fn a_span_one_past_the_capacity_is_out_of_bounds() {
+    let mut at = identity();
+    at.identity.name = sp(CAP as u32 - 4, 4);
+    assert_eq!(
+        ready_identity(&at, &[]),
+        Ok(()),
+        "a span ending exactly at cap"
+    );
+    let mut at = field();
+    at.value = sp(CAP as u32 - 4, 4);
+    assert_eq!(
+        check_fields(Outcome::Ready, &fields_out(1), CAP, FIELDS_CAP, &[at]),
+        Ok(())
+    );
     let mut o = identity();
     o.identity.name = sp(CAP as u32 - 3, 4);
     assert_eq!(
@@ -134,6 +147,16 @@ fn an_absent_span_with_a_length_is_fault() {
 fn an_identity_without_a_subject_is_fault() {
     let mut o = identity();
     o.identity.subject = ABSENT;
+    assert_eq!(
+        ready_identity(&o, &[]),
+        red(Rule::Missing, "verify.missing")
+    );
+}
+
+#[test]
+fn an_identity_with_an_empty_subject_is_fault() {
+    let mut o = identity();
+    o.identity.subject = sp(0, 0);
     assert_eq!(
         ready_identity(&o, &[]),
         red(Rule::Missing, "verify.missing")

@@ -124,9 +124,16 @@ fn traversal_filename_is_refused_at_both_sites() {
             err[0].contains("unsafe target filename"),
             "filename {evil:?} must be refused as unsafe, got {err:?}"
         );
+        if !evil.is_empty() && evil != "." {
+            assert!(
+                !dir.join(evil).exists(),
+                "{evil:?} must not be written before it is refused"
+            );
+        }
     }
 
     assert!(!dir.parent().unwrap().join("evil").exists());
+    assert!(!dir.parent().unwrap().join("evil.tar.gz").exists());
     let leftovers: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())

@@ -239,8 +239,10 @@ mod platform {
                 if security(&f)?.as_slice() != &saved[16..] {
                     return Ok(DocumentReplace::Changed);
                 }
-                if f.try_lock().is_err() {
-                    return Ok(DocumentReplace::ReadOnly);
+                match f.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => return Ok(DocumentReplace::ReadOnly),
+                    Err(std::fs::TryLockError::Error(e)) => return Err(e),
                 }
                 Some(f)
             }
@@ -852,8 +854,10 @@ mod platform {
             Ok(mut file) => {
                 // Check operator exclusion before reading through a different handle's
                 // byte-range lock, which Windows would reject as a read I/O failure.
-                if file.try_lock().is_err() {
-                    return Ok(DocumentReplace::ReadOnly);
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => return Ok(DocumentReplace::ReadOnly),
+                    Err(std::fs::TryLockError::Error(e)) => return Err(e),
                 }
                 let bytes = bounded_read(
                     &mut file,

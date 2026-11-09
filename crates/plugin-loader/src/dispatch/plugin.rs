@@ -558,12 +558,19 @@ pub(crate) fn quarantine_crossing() -> bool {
     true
 }
 
-struct Unbound(Option<&'static InstanceWake>);
+struct Unbound(
+    Option<&'static InstanceWake>,
+    /// What the host table was told about the instance, forgotten again if the bind fails.
+    Option<(Arc<dyn busbar_contract::conn::DeclaredConns>, InstanceId)>,
+);
 
 impl Drop for Unbound {
     fn drop(&mut self) {
         if let Some(wake) = self.0 {
             wake.revoked.store(true, Ordering::Release);
+        }
+        if let Some((table, instance)) = self.1.take() {
+            table.forget(instance);
         }
     }
 }
@@ -1200,7 +1207,9 @@ impl Instance {
                         crate::observe::conn_reason(e)
                     }
                 });
-            if let (Err(reason), Some(_), None) = (answer, &trust, &trust_refused) {
+            if let (Err(reason), Some(_), None, false) =
+                (answer, &trust, &trust_refused, unresolved)
+            {
                 trust_refused = Some(format!(
                     "{}: the host refused the CA certificate it names for need {i} ({reason}); \
                      it must be PEM that parses into a trust anchor",
@@ -2595,7 +2604,7 @@ impl<K: Kind> Plugin<K> {
 
         let ctx = super::handle::mint(wake)?;
 
-        let mut unbound = Unbound(Some(wake));
+        let mut unbound = Unbound(Some(wake), None);
 
         let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
@@ -2610,6 +2619,7 @@ impl<K: Kind> Plugin<K> {
                     });
                 }
                 (ConnTable::Host(table), n) if n > 0 => {
+                    unbound.1 = Some((Arc::clone(table), instance));
                     if v.kind == KindCode::Auth {
                         table.hold_authority(instance);
                     }
@@ -2638,7 +2648,6 @@ impl<K: Kind> Plugin<K> {
                         let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
 
                         if let Err(e) = table.declare(instance, id, need, None, None) {
-                            table.forget(instance);
                             return Err(LoadError::NeedRefused {
                                 plugin: str_bytes(st.name)
                                     .map(|n| String::from_utf8_lossy(n).into_owned())
@@ -2757,6 +2766,7 @@ impl<K: Kind> Plugin<K> {
             .set(Arc::downgrade(&plugin.inner));
         bind.dispatcher.adopt(&plugin.inner);
         unbound.0 = None;
+        unbound.1 = None;
         Ok(plugin)
     }
 
@@ -3036,6 +3046,13 @@ impl<K: Kind> Plugin<K> {
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
+        }
+        if lifecycle {
+            // The first check ran before the lifecycle was ours: a concurrent open may have won.
+            if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+                inst.leave_lifecycle();
+                return Called::from(Crossed::host(o));
+            }
         }
         let admission = if resume {
             inst.binding_resume_admission(s, ticket)

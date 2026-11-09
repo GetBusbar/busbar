@@ -244,3 +244,23 @@ fn a_credential_answers_whether_it_starts_with_a_marker() {
     assert!(!m.value.starts_with(b"sk-"));
     assert!(!cred("ek").starts_with(b"ek_"));
 }
+
+#[test]
+fn a_long_sealed_credential_is_never_freed_unwiped_while_encoding() {
+    use crate::alloc_counter::InitializedPayloadProbe;
+    let token = "tok_LONG-json-wipe-".repeat(20);
+    // SAFETY: all instrumented buffers are owned and destroyed synchronously on this thread.
+    let probe = unsafe { InitializedPayloadProbe::start().expect("open memory observer") };
+    let w = SealedJson::new()
+        .sealed("t", &cred(&token))
+        .encoded()
+        .expect("text");
+    drop(w);
+    let observations = probe.finish();
+    assert!(!observations.reentered);
+    for record in observations.payloads {
+        assert!(record.freed, "payload freed: {record:?}");
+        #[cfg(target_os = "linux")]
+        assert!(record.wiped, "payload wiped: {record:?}");
+    }
+}

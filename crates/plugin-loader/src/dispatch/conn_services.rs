@@ -319,7 +319,9 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let Some(target) = (unsafe { bytes(i.target.ptr.cast_mut(), i.target.len) }) else {
                 return Answered::fault();
             };
-            let target = String::from_utf8_lossy(target);
+            let Ok(target) = std::str::from_utf8(target) else {
+                return Answered::bare(Outcome::Refused, "the dial's target is not text");
+            };
             // SAFETY: a checked range of the caller's, live for the call.
             let Some(within) = (unsafe { bytes(i.within.ptr.cast_mut(), i.within.len) }) else {
                 return Answered::fault();
@@ -334,7 +336,9 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let Some(member) = (unsafe { bytes(i.member.ptr.cast_mut(), i.member.len) }) else {
                 return Answered::fault();
             };
-            let member = String::from_utf8_lossy(member).into_owned();
+            let Ok(member) = std::str::from_utf8(member).map(str::to_owned) else {
+                return Answered::bare(Outcome::Refused, "the dial's registration is not text");
+            };
             let need_timeout_ms = st.need_timeout(NeedId(i.need));
             let dial_timeout_ms = if i.timeout_ms == 0 {
                 need_timeout_ms
@@ -350,7 +354,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
                         authority: Authority::capture(id, table),
                         conn: Conn::Held {
                             need: NeedId(i.need),
-                            target: target.into_owned(),
+                            target: target.to_owned(),
                             within,
                             member,
                             dial_timeout_ms,
@@ -370,7 +374,7 @@ extern "C" fn establish(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
             let ticket = head.handle.ticket;
             let wanted = (
                 NeedId(i.need),
-                target.into_owned(),
+                target.to_owned(),
                 within,
                 member,
                 dial_timeout_ms,
@@ -482,7 +486,8 @@ impl ConnState {
             .map(|d| d.authority.clone())
     }
 
-    /// Detach only the candidate's resources. Dropping the returned owner closes connections
+    /// Detach only the candidate's resources. Dropping the returned owner closes connections,
+    /// so drop it outside the state locks.
     pub(crate) fn retire_binding(
         &self,
         binding: &Arc<super::export_bindings::Generation>,
@@ -1432,13 +1437,15 @@ fn filter_reply_head(
     if let Some(policy) = policy {
         let kept: Vec<&str> = policy.kept.iter().map(String::as_str).collect();
         let denied: Vec<&str> = policy.denied.iter().map(String::as_str).collect();
+        let nominations: Vec<_> = fields::lines(block)
+            .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
+            .map(|(_, v)| v)
+            .collect();
         for (name, value) in fields::lines(block) {
             let lower = std::str::from_utf8(name)
                 .map_err(|_| Answered::fault())?
                 .to_ascii_lowercase();
-            let nominated = fields::lines(block)
-                .filter(|(n, _)| n.eq_ignore_ascii_case(b"connection"))
-                .map(|(_, v)| v);
+            let nominated = nominations.iter().copied();
             if busbar_contract::abi::host::conn::connector::keeps_response_field(
                 policy.mode,
                 &kept,
@@ -1828,8 +1835,11 @@ extern "C" fn write_request(
                         );
                     }
                     if body.len().saturating_add(bytes.len()) > body.capacity() {
+                        let needed = body.len().saturating_add(bytes.len());
                         let mut grown = Zeroizing::new(Vec::with_capacity(
-                            body.len().saturating_add(bytes.len()),
+                            needed
+                                .max(body.capacity().saturating_mul(2))
+                                .min(REQUEST_HELD_MAX),
                         ));
                         grown.extend_from_slice(body);
                         *body = grown;
@@ -2361,16 +2371,23 @@ fn reply(
     }
     {
         let mut all = st.streams();
-        let s = all.entry(stream).or_insert(Stream {
-            need: NeedId(u32::MAX),
-            authority: Authority::capture(id, table),
-            conn: Conn::Open(ConnId(stream)),
-            reply_timeout_ms: 0,
-            prepared: None,
-            preparing: false,
-            headed: false,
-            ended: false,
-        });
+        let s = if stream & HELD != 0 {
+            let Some(s) = all.get_mut(&stream) else {
+                return (None, refusal(ConnError::Closed));
+            };
+            s
+        } else {
+            all.entry(stream).or_insert(Stream {
+                need: NeedId(u32::MAX),
+                authority: Authority::capture(id, table),
+                conn: Conn::Open(ConnId(stream)),
+                reply_timeout_ms: 0,
+                prepared: None,
+                preparing: false,
+                headed: false,
+                ended: false,
+            })
+        };
         if s.ended {
             return (None, refusal(ConnError::Closed));
         }
@@ -2423,7 +2440,7 @@ fn reply(
         };
         return match got {
             Ok(p) => match p.kind {
-                PieceKind::Fields if s.headed && p.len > 0 => {
+                PieceKind::Fields if s.headed => {
                     drop(all);
                     continue;
                 }

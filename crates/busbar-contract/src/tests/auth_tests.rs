@@ -33,21 +33,6 @@ fn caller_token_debug_redacts_and_shows_presence_only() {
     );
 }
 
-/// `AuthModule::cacheable` DEFAULTS to `false` — an in-process module is microseconds, and caching
-#[test]
-fn auth_module_cacheable_defaults_to_false() {
-    struct Minimal;
-    impl AuthModule for Minimal {
-        fn name(&self) -> &'static str {
-            "minimal"
-        }
-        fn authenticate(&self, _candidate: Option<&str>) -> AuthVerdict {
-            AuthVerdict::Pass
-        }
-    }
-    assert!(!Minimal.cacheable());
-}
-
 /// Login debug never prints a credential.
 #[test]
 fn login_debug_never_prints_a_credential() {

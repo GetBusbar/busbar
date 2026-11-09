@@ -20,7 +20,7 @@ pub struct Ticket {
 }
 
 impl Ticket {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// Every field zero; the same value as [`Ticket::NONE`] (no ticket).
     pub const ZERO: Self = Self {
         slot: 0,
         generation: 0,
@@ -54,7 +54,7 @@ pub struct CompletionHandle {
 }
 
 impl CompletionHandle {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
+    /// Every field zero: no ticket ([`Ticket::NONE`]), sequence zero.
     pub const ZERO: Self = Self {
         ticket: Ticket::ZERO,
         seq: 0,

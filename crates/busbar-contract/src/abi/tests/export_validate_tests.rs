@@ -226,6 +226,23 @@ fn serve_headers_out_len_exceeds_cap_faults() {
     );
 }
 
+/// RED: `serve`'s `headers_out` is name/value pairs: an odd count is FAULT.
+#[test]
+fn serve_headers_out_unpaired_faults() {
+    let list = [AbiStr {
+        ptr: std::ptr::null(),
+        len: 0,
+    }; 3];
+    let mut out = serve_out(Outcome::Ready);
+    out.headers_out = list.as_ptr();
+    out.headers_out_len = 3;
+    out.head.lease = 7;
+    assert_eq!(
+        check_serve(&out),
+        red(Rule::Contradiction, "serve.headers_out_len")
+    );
+}
+
 /// RED: `serve`'s `headers_out_len > 0` with a NULL pointer.
 #[test]
 fn serve_headers_null_with_len_faults() {

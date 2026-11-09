@@ -125,7 +125,18 @@ fn arrival_follows_m_sb() {
 fn a_read_above_its_buffer_is_fault() {
     let mut o: IoOut = z();
     o.len = 65;
-    assert_eq!(check_io(&o, 64), f(Rule::OverCap, "io.len"));
+    assert_eq!(
+        check_io(&o, 64, READ_END_OF_FRAME),
+        f(Rule::OverCap, "io.len")
+    );
+}
+
+#[test]
+fn a_write_answer_carries_no_end_of_frame_flag() {
+    let mut o: IoOut = z();
+    o.flags = READ_END_OF_FRAME;
+    assert_eq!(check_io(&o, 64, READ_END_OF_FRAME), Ok(()));
+    assert_eq!(check_io(&o, 64, 0), f(Rule::UnknownCode, "io.flags"));
 }
 
 #[test]

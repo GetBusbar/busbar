@@ -212,9 +212,24 @@ impl Serialize for SignalBag {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (signal, value) in &self.0 {
-            map.serialize_entry(signal.name(), value)?;
+        // A signal pushed more than once (the routing-cost recipe) is one key whose value is the
+        // array of its values in push order, so a last-wins JSON reader loses nothing.
+        let first = |i: usize| !self.0[..i].iter().any(|(s, _)| *s == self.0[i].0);
+        let distinct = (0..self.0.len()).filter(|&i| first(i)).count();
+        let mut map = serializer.serialize_map(Some(distinct))?;
+        for i in (0..self.0.len()).filter(|&i| first(i)) {
+            let (signal, value) = &self.0[i];
+            if self.0[i + 1..].iter().any(|(s, _)| s == signal) {
+                let values: Vec<&SignalValue> = self
+                    .0
+                    .iter()
+                    .filter(|(s, _)| s == signal)
+                    .map(|(_, v)| v)
+                    .collect();
+                map.serialize_entry(signal.name(), &values)?;
+            } else {
+                map.serialize_entry(signal.name(), value)?;
+            }
         }
         map.end()
     }

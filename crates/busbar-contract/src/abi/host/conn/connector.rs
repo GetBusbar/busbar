@@ -156,7 +156,9 @@ pub fn keeps_response_field<'a>(
 /// The most response head fields one need may keep.
 pub const KEEP_RESPONSE_HEADERS_MAX: usize = 32;
 
-/// The response head fields no need may keep: hop-by-hop fields (the connection's, not the
+/// The response head fields no `KEEP_NAMED` keep list may name: hop-by-hop fields (the connection's, not the
+/// message's) and the like. The caller-side request strip uses this set unconditionally;
+/// `KEEP_ALL_EXCEPT_DENIED` strips hop-by-hop fields, `ALWAYS_DENIED` and the plugin's deny list instead.
 pub const NEVER_KEPT: &[&str] = &[
     "connection",
     "keep-alive",
@@ -254,12 +256,15 @@ pub fn is_within_field(name: &[u8]) -> bool {
 }
 
 /// The address set a [`WITHIN_REQUEST_FIELD`] value states: `None` when an entry is not an IP
+/// literal (an empty entry included); an empty value is `Some` of an empty set (no pin).
 #[must_use]
 pub fn within_of(value: &[u8]) -> Option<Vec<std::net::IpAddr>> {
     let text = std::str::from_utf8(value).ok()?;
+    if text.trim().is_empty() {
+        return Some(Vec::new());
+    }
     text.split(WITHIN_SEPARATOR)
         .map(str::trim)
-        .filter(|a| !a.is_empty())
         .map(|a| a.parse().ok())
         .collect()
 }

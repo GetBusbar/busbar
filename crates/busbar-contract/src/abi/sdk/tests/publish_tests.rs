@@ -196,6 +196,40 @@ fn keyed_one_unit_held_never_holds_another() {
     assert_eq!((units.get(&1), units.get(&other)), (Some(1), Some(1)));
 }
 
+/// A panicking `make` leaves no reservation behind, so repeated panics never fill the bound.
+#[test]
+fn codeaudit_a_panicking_make_does_not_consume_the_bound() {
+    let units: Keyed<u64, u32> = Keyed::sharded();
+    for unit in 0..3 {
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            units.with_or_insert_within(unit, 3, || panic!("make"), |_| ());
+        }));
+        assert!(panicked.is_err());
+    }
+    assert_eq!(units.len(), 0);
+    assert_eq!(
+        units.with_or_insert_within(9, 3, u32::default, |_| 1),
+        Some(1)
+    );
+}
+
+/// A panic in `with_all`'s closure leaves the single-shard count equal to the map.
+#[test]
+fn codeaudit_a_panicking_with_all_keeps_the_single_shard_bound_true() {
+    let units: Keyed<u64, u32> = Keyed::new();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        units.with_all(|m| {
+            m.extend([(1, 0), (2, 0), (3, 0)]);
+            panic!("f");
+        });
+    }));
+    // The bound is read from the count: three held entries fill a bound of three.
+    assert_eq!(
+        units.with_or_insert_within(9, 3, u32::default, |_| ()),
+        None
+    );
+}
+
 /// An arrival keeps its unit only while fewer than the bound are live: a live unit is never
 #[test]
 fn keyed_arrivals_keep_their_unit_within_the_bound() {

@@ -14,11 +14,11 @@
 //! `u64`, `str`, `blob`, `list`); an `f64` is its IEEE bits as a `u64`, and a byte list is a `str`.
 //! The head and every padding field are not rendered, every pointer is followed and no address is
 //! rendered. Each kind's tail is destructured whole, with no rest pattern: a field appended to a
-//! tail does not compile until it is rendered here. A secret Statement states no tail fields, so
-//! its facts are empty.
+//! tail does not compile until it is rendered here. A store and a secret Statement state no tail
+//! fields, so their facts are empty.
 //!
 //! ```text
-//! store      durable_plane u8, fork_refusal u8
+//! store      (no tail fields; empty facts)
 //! auth       caps u32, facts u32, login_kind u32, inbound_points u32,
 //!            styles list of { name str, flags u32, points u32 },
 //!            operator_principal str, credential_kinds list of str

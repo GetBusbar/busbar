@@ -456,3 +456,18 @@ fn every_struct_is_pinned_by_its_module_path_or_alias_and_an_unpinned_one_fails(
         "a synthetic fragment may pin only what it tests"
     );
 }
+
+#[test]
+fn a_cfg_not_test_item_is_emitted_and_a_narrowing_cast_truncates() {
+    let h = render(
+        &[(
+            "store",
+            "#[cfg(not(test))]\n#[repr(C)]\npub struct Live { pub a: u8 }\n#[cfg(test)]\n#[repr(C)]\npub struct Dead { pub a: u8 }\npub const NARROW: u8 = (0x100 | 3) as u8;\n",
+        )],
+        "",
+    )
+    .expect("renders");
+    assert!(h.contains("struct bb_store_Live {"), "{h}");
+    assert!(!h.contains("Dead"), "{h}");
+    assert!(h.contains("BB_STORE_NARROW UINT8_C(3)"), "{h}");
+}

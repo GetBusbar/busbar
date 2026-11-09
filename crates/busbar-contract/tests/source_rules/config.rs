@@ -55,22 +55,43 @@ fn rename_all(rule: &str, field: &str) -> String {
     }
 }
 
-/// Every string literal inside the `#[serde(..)]` attributes of `attrs`.
-fn serde_strings(attrs: &[syn::Attribute]) -> Vec<String> {
-    attrs
-        .iter()
-        .filter(|a| a.path().is_ident("serde"))
-        .flat_map(|a| walk::tokens(&a.meta))
-        .filter_map(|t| match t {
-            TokenTree::Literal(l) => {
-                let s = l.to_string();
-                s.strip_prefix('"')
-                    .and_then(|s| s.strip_suffix('"'))
-                    .map(str::to_string)
+/// The key names a field's `#[serde(..)]` adds or replaces: the values of `rename` and `alias` (and
+/// whether a field-level `rename` replaces the field's own name), not every string literal such as a
+/// `default = "path"` or `with = "module"`.
+fn serde_names(attrs: &[syn::Attribute]) -> (bool, Vec<String>) {
+    let mut renamed = false;
+    let mut names = Vec::new();
+    for a in attrs.iter().filter(|a| a.path().is_ident("serde")) {
+        let toks = walk::tokens(&a.meta);
+        for (i, t) in toks.iter().enumerate() {
+            let TokenTree::Ident(id) = t else { continue };
+            let is_rename = id == "rename";
+            if !is_rename && id != "alias" {
+                continue;
             }
-            _ => None,
-        })
-        .collect()
+            for j in i + 1..(i + 6).min(toks.len()) {
+                match &toks[j] {
+                    TokenTree::Punct(p) if p.as_char() == ',' => break,
+                    TokenTree::Literal(l)
+                        if matches!(&toks[j - 1], TokenTree::Punct(p) if p.as_char() == '=')
+                            && !matches!(toks.get(j - 2), Some(TokenTree::Ident(w)) if w == "serialize") =>
+                    {
+                        if let Some(s) = l
+                            .to_string()
+                            .strip_prefix('"')
+                            .and_then(|s| s.strip_suffix('"'))
+                        {
+                            renamed |= is_rename;
+                            names.push(s.to_string());
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    (renamed, names)
 }
 
 /// The `rename_all` rule of a struct's `#[serde(..)]`, if any.
@@ -104,12 +125,14 @@ fn accepted_keys(sources: &[walk::Source]) -> BTreeMap<String, BTreeSet<String>>
                 let Some(id) = &f.ident else { continue };
                 let rust = id.to_string();
                 let rust = rust.strip_prefix("r#").unwrap_or(&rust).to_string();
-                keys.insert(match &rule {
-                    Some(r) => rename_all(r, &rust),
-                    None => rust.clone(),
-                });
-                keys.insert(rust);
-                keys.extend(serde_strings(&f.attrs));
+                let (renamed, names) = serde_names(&f.attrs);
+                if !renamed {
+                    keys.insert(match &rule {
+                        Some(r) => rename_all(r, &rust),
+                        None => rust,
+                    });
+                }
+                keys.extend(names);
             }
         }
     }
@@ -293,6 +316,28 @@ fn removed_config_keys(
         }
     }
     removed
+}
+
+#[test]
+fn a_renamed_field_does_not_keep_its_old_name_accepted() {
+    let types: serde_json::Value = serde_json::json!({
+        "S": {"kind": "struct", "fields": {"timeout_ms": {}}},
+        "A": {"kind": "struct", "fields": {"old": {}}},
+    });
+    let src = r#"
+        #[serde(rename_all = "kebab-case")]
+        struct S { timeout_ms: u64 }
+        struct A { #[serde(alias = "old", default = "other")] new: u64 }
+    "#;
+    let file = syn::parse_file(src).unwrap();
+    let sources = [walk::Source {
+        rel: "planted.rs".to_string(),
+        text: src.to_string(),
+        file,
+    }];
+    let declared = accepted_keys(&sources);
+    let removed = removed_config_keys(types.as_object().unwrap(), &declared, &BTreeMap::new());
+    assert_eq!(removed, vec!["S.timeout_ms".to_string()]);
 }
 
 #[test]

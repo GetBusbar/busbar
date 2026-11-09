@@ -635,3 +635,20 @@ fn the_issued_credential_shape_marks_are_known_distinct_classes() {
     ];
     assert_eq!(check_marks(0, &shape), Ok(()));
 }
+
+/// A family's label keys are a list like any other: a count with a NULL pointer is refused.
+#[test]
+fn a_family_with_null_label_keys_and_a_count_is_refused() {
+    let mut family = crate::abi::mechanism::door::MetricFamily::ZERO;
+    family.label_keys = core::ptr::null();
+    family.label_keys_len = 3;
+    let families = [family];
+    let mut st = statement("p", "1.0.0", 1);
+    st.families = families.as_ptr();
+    st.families_len = families.len();
+    // SAFETY: `families` is a live array of its stated count.
+    assert_eq!(
+        unsafe { check_statement(&st) },
+        Err(fault(Rule::NullWithCount, "statement.family.label_keys"))
+    );
+}

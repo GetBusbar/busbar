@@ -59,8 +59,10 @@ fn sweep_removes_dead_pid_dirs_only() {
 
     let mut proven = false;
     for _ in 0..5 {
-        let dead = staging_parent_in(&std::env::temp_dir())
-            .join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+        let dead = staging_parent_in(&std::env::temp_dir()).join(format!(
+            "{STAGING_PREFIX}4294967294-{}",
+            random_hex(8).unwrap()
+        ));
         std::fs::create_dir_all(dead.join("sub")).unwrap();
         std::fs::write(dead.join("sub/lib.so"), b"junk").unwrap();
 
@@ -89,7 +91,7 @@ fn sweep_removes_dead_pid_dirs_only() {
 
 #[cfg(unix)]
 fn private_root(tag: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("busbar-sweep-{tag}-{}", random_hex(8)));
+    let root = std::env::temp_dir().join(format!("busbar-sweep-{tag}-{}", random_hex(8).unwrap()));
     std::fs::create_dir_all(&root).unwrap();
     root
 }
@@ -107,7 +109,10 @@ fn sweep_skips_symlinked_dead_pid_entry() {
     let canary = victim.join("canary");
     std::fs::write(&canary, b"do not delete").unwrap();
 
-    let link = parent.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+    let link = parent.join(format!(
+        "{STAGING_PREFIX}4294967294-{}",
+        random_hex(8).unwrap()
+    ));
     symlink(&victim, &link).unwrap();
 
     let removed = sweep_dead_staging_under(&root, &mut list_dir_names);
@@ -132,7 +137,10 @@ fn sweep_lists_only_the_staging_parent_not_the_temp_root() {
         std::fs::write(root.join(format!("unrelated-{i}")), b"").unwrap();
     }
     let parent = ensure_staging_parent(&root).expect("parent");
-    let dead = parent.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+    let dead = parent.join(format!(
+        "{STAGING_PREFIX}4294967294-{}",
+        random_hex(8).unwrap()
+    ));
     std::fs::create_dir_all(dead.join("sub")).unwrap();
 
     let mut listed_dirs: Vec<PathBuf> = Vec::new();
@@ -165,13 +173,16 @@ fn sweep_lists_only_the_staging_parent_not_the_temp_root() {
 fn sweep_in_parent_removes_dead_keeps_live() {
     let root = private_root("liveness");
     let parent = ensure_staging_parent(&root).expect("parent");
-    let dead = parent.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+    let dead = parent.join(format!(
+        "{STAGING_PREFIX}4294967294-{}",
+        random_hex(8).unwrap()
+    ));
     std::fs::create_dir_all(dead.join("sub")).unwrap();
     std::fs::write(dead.join("sub/lib.so"), b"junk").unwrap();
     let own = parent.join(format!(
         "{STAGING_PREFIX}{}-{}",
         std::process::id(),
-        random_hex(8)
+        random_hex(8).unwrap()
     ));
     std::fs::create_dir_all(&own).unwrap();
     let live_pid = std::os::unix::process::parent_id();
@@ -179,9 +190,15 @@ fn sweep_in_parent_removes_dead_keeps_live() {
         pid_alive(live_pid),
         "precondition: our parent process is alive"
     );
-    let live = parent.join(format!("{STAGING_PREFIX}{live_pid}-{}", random_hex(8)));
+    let live = parent.join(format!(
+        "{STAGING_PREFIX}{live_pid}-{}",
+        random_hex(8).unwrap()
+    ));
     std::fs::create_dir_all(&live).unwrap();
-    let legacy = root.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+    let legacy = root.join(format!(
+        "{STAGING_PREFIX}4294967294-{}",
+        random_hex(8).unwrap()
+    ));
     std::fs::create_dir_all(&legacy).unwrap();
 
     let removed = sweep_dead_staging_under(&root, &mut list_dir_names);
@@ -200,7 +217,10 @@ fn symlinked_staging_parent_is_refused_and_not_swept() {
     use std::os::unix::fs::symlink;
     let root = private_root("parentlink");
     let elsewhere = root.join("elsewhere");
-    let victim = elsewhere.join(format!("{STAGING_PREFIX}4294967294-{}", random_hex(8)));
+    let victim = elsewhere.join(format!(
+        "{STAGING_PREFIX}4294967294-{}",
+        random_hex(8).unwrap()
+    ));
     std::fs::create_dir_all(&victim).unwrap();
     symlink(&elsewhere, staging_parent_in(&root)).unwrap();
 
@@ -586,7 +606,7 @@ fn an_embedding_host_guard_runs_before_any_native_staging() {
             .output()
             .unwrap();
         assert!(
-            output.status.success(),
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)

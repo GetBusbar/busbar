@@ -13,6 +13,9 @@ fn header_value_rule_rejects_control_bytes_but_a_tab() {
     assert!(!is_legal_header_value("has\na\nlf"));
     assert!(!is_legal_header_value("has\0a\0nul"));
     assert!(!is_legal_header_value("has\x7Fa\x7Fdel"));
+    for c in ['\x01', '\x0b', '\x1b', '\x1f'] {
+        assert!(!is_legal_header_value(&format!("a{c}b")), "{c:?}");
+    }
 }
 
 #[test]

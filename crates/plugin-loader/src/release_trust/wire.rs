@@ -545,7 +545,7 @@ pub fn parse_time(s: &str) -> Result<u64, String> {
 
 pub fn format_time(t: u64) -> String {
     let (days, rem) = (t / 86_400, t % 86_400);
-    let (y, m, d) = civil_from_days(days);
+    let (y, m, d) = busbar_contract::civil::civil_from_days(days as i64);
     format!(
         "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
         rem / 3600,
@@ -576,24 +576,6 @@ fn days_from_civil(y: u64, m: u64, d: u64) -> u64 {
         days += days_in_month(y, mm);
     }
     days + d - 1
-}
-
-fn civil_from_days(mut days: u64) -> (u64, u64, u64) {
-    let mut y = 1970;
-    loop {
-        let n = if leap(y) { 366 } else { 365 };
-        if days < n {
-            break;
-        }
-        days -= n;
-        y += 1;
-    }
-    let mut m = 1;
-    while days >= days_in_month(y, m) {
-        days -= days_in_month(y, m);
-        m += 1;
-    }
-    (y, m, days + 1)
 }
 
 pub const SEAL_PREFIX: &str = "seal:";

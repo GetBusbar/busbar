@@ -102,9 +102,21 @@ impl LoadablePlugin {
         if self.entry.is_none() {
             return stated_version(&self.manifest);
         }
-        self.statement()
-            .and_then(|s| busbar_contract::abi::mechanism::rendering::read(&s).ok())
-            .map(|r| r.version)
+        let name = &self.manifest.name;
+        let statement = match self.door() {
+            Some(door) => crate::dispatch::LinkedRow::of_raw(door)
+                .map(|row| row.statement)
+                .map_err(|e| format!("plugin '{name}': its statement cannot be read: {e}"))?,
+            None => return Err(unversioned(name)),
+        };
+        let rendering =
+            busbar_contract::abi::mechanism::rendering::read(&statement).map_err(|e| {
+                format!(
+                    "plugin '{name}': its statement cannot be read: expected {} at statement byte {}",
+                    e.what, e.at
+                )
+            })?;
+        Some(rendering.version)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| unversioned(&self.manifest.name))
     }
@@ -1331,7 +1343,10 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
     for conflict in conflicts(&loadable) {
         for row in rows.iter_mut() {
             if conflict.files.contains(&row.file) {
-                row.status = format!("CONFLICT: {}", conflict.message);
+                row.status = match row.status.strip_prefix("CONFLICT: ") {
+                    Some(earlier) => format!("CONFLICT: {earlier}; {}", conflict.message),
+                    None => format!("CONFLICT: {}", conflict.message),
+                };
             }
         }
     }

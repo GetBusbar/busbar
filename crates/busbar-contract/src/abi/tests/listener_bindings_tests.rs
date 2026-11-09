@@ -44,3 +44,38 @@ fn duplicate_and_malformed_bindings_are_refused() {
     assert!(read(&extension(&vec![b' '; 65537]), &["fixture-wire"]).is_err());
     assert!(read(&[], &[]).unwrap().is_empty());
 }
+
+fn rows(slots: impl Iterator<Item = String>) -> Vec<u8> {
+    let rows: Vec<String> = slots
+        .map(|slot| format!(r#"{{"slot":"{slot}","claim":"fixture-wire"}}"#))
+        .collect();
+    extension(format!("[{}]", rows.join(",")).as_bytes())
+}
+
+#[test]
+fn the_size_row_count_and_slot_length_bounds_are_each_enforced() {
+    let mut padded = br#"[{"slot":"listen","claim":"fixture-wire"}]"#.to_vec();
+    assert!(read(&extension(&padded), &["fixture-wire"]).is_ok());
+    padded.resize(64 * 1024, b' ');
+    assert!(read(&extension(&padded), &["fixture-wire"]).is_ok());
+    padded.push(b' ');
+    assert_eq!(
+        read(&extension(&padded), &["fixture-wire"]).unwrap_err(),
+        "listener-bindings exceeds its declaration bound"
+    );
+    assert_eq!(
+        read(&rows((0..64).map(|i| format!("s{i}"))), &["fixture-wire"])
+            .unwrap()
+            .len(),
+        64
+    );
+    assert_eq!(
+        read(&rows((0..65).map(|i| format!("s{i}"))), &["fixture-wire"]).unwrap_err(),
+        "listener-bindings contains too many records"
+    );
+    assert!(read(&rows(["a".repeat(128)].into_iter()), &["fixture-wire"]).is_ok());
+    assert_eq!(
+        read(&rows(["a".repeat(129)].into_iter()), &["fixture-wire"]).unwrap_err(),
+        "listener-bindings contains an invalid configuration slot"
+    );
+}

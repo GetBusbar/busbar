@@ -56,12 +56,17 @@ pub(super) fn request(
     let method = Method::from_bytes(head.method.as_deref()?).ok()?;
     let target = std::str::from_utf8(head.target.as_deref()?).ok()?;
     let mut headers = HeaderMap::new();
+    let mut read = 0;
     for (name, value) in fields::lines(block) {
+        read += name.len() + fields::SEPARATOR.len() + value.len() + fields::LINE_END.len();
         if let (Ok(name), Ok(value)) =
             (HeaderName::from_bytes(name), HeaderValue::from_bytes(value))
         {
             headers.append(name, value);
         }
+    }
+    if read != block.len() {
+        return None;
     }
     let authority = head
         .authority

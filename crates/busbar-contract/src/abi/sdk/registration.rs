@@ -377,7 +377,7 @@
 //! type Life = <Ops as KindOps>::Lifecycle;
 //! busbar_contract::plugin_door! {
 //!     ops: Ops,
-//!     statement: statement("registration-plane", "1", 1),
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::plane::PlaneTail::EMPTY).cast(), ..statement("registration-plane", "1", 1) },
 //!     lifecycle: {
 //!         validate: Operation<Life, 0>,
 //!         open: Operation<Life, 1>,
@@ -415,7 +415,7 @@
 //! type Life = <Ops as KindOps>::Lifecycle;
 //! busbar_contract::plugin_door! {
 //!     ops: Ops,
-//!     statement: statement("registration-plane", "1", 1),
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::plane::PlaneTail::EMPTY).cast(), ..statement("registration-plane", "1", 1) },
 //!     lifecycle: {
 //!         validate: Operation<Life, 0>,
 //!         open: Operation<Life, 1>,
@@ -452,7 +452,7 @@
 //! type Life = <Ops as KindOps>::Lifecycle;
 //! busbar_contract::plugin_door! {
 //!     ops: Ops,
-//!     statement: statement("registration-transport", "1", 1),
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::transport::TransportTail::EMPTY).cast(), ..statement("registration-transport", "1", 1) },
 //!     lifecycle: {
 //!         validate: Operation<Life, 0>,
 //!         open: Operation<Life, 1>,
@@ -502,6 +502,131 @@
 //! type Life = <Ops as KindOps>::Lifecycle;
 //! busbar_contract::plugin_door! {
 //!     ops: Ops,
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::transport::TransportTail::EMPTY).cast(), ..statement("registration-transport", "1", 1) },
+//!     lifecycle: {
+//!         validate: Operation<Life, 0>,
+//!         open: Operation<Life, 1>,
+//!         refresh: Operation<Life, 2>,
+//!         retire: Operation<Life, 3>,
+//!         tick: Operation<Life, 4>,
+//!         drive: Operation<Life, 5>,
+//!         cancel: Operation<Life, 6>,
+//!         release: Operation<Life, 7>,
+//!         close: Operation<Life, 8>,
+//!     },
+//!     kind_ops: {
+//!         accept: Operation<Ops, {slot::ACCEPT}>,
+//!         dial: Operation<Ops, {slot::DIAL}>,
+//!         read: Operation<Ops, {slot::READ}>,
+//!         write: Operation<Ops, {slot::WRITE}>,
+//!         flush: Operation<Ops, {slot::FLUSH}>,
+//!         shut: Operation<Ops, {slot::SHUT}>,
+//!         arrival: Operation<Ops, {slot::ARRIVAL}>,
+//!         locate: Operation<Ops, {slot::LOCATE}>,
+//!         begin: Operation<Ops, {slot::BEGIN}>,
+//!         ingest: Operation<Ops, {slot::INGEST}>,
+//!         emit: Operation<Ops, {slot::EMIT}>,
+//!         encode: Operation<Ops, {slot::ENCODE}>,
+//!         refuse: Operation<Ops, {slot::REFUSE}>,
+//!         finish: Operation<Ops, {slot::FINISH}>,
+//!         detach: Operation<Ops, {slot::DETACH}>,
+//!         adopt: Operation<Ops, {slot::ADOPT}>,
+//!         timer: Operation<Ops, {slot::TIMER}>,
+//!     },
+//! }
+//! fn main() { let _ = door(); }
+//! ```
+//!
+//! ```compile_fail,E0080
+//! // SDK_REGISTRATION_WITNESS hook null-tail
+//! use busbar_contract::abi::{mechanism::call::Outcome, sdk::door::{KindOps, KindSlot, RawSlot, statement}};
+//! use busbar_contract::abi::hook::{Ops, slot};
+//! struct Operation<T, const N: u32>(std::marker::PhantomData<T>);
+//! impl<T: KindSlot<N>, const N: u32> RawSlot for Operation<T, N> {
+//!     type Kind = <Ops as KindOps>::Marker;
+//!     type In = <T as KindSlot<N>>::In;
+//!     type Out = <T as KindSlot<N>>::Out;
+//!     unsafe fn call(_: *mut std::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome { Outcome::Refused }
+//! }
+//! type Life = <Ops as KindOps>::Lifecycle;
+//! busbar_contract::plugin_door! {
+//!     ops: Ops,
+//!     statement: statement("registration-hook", "1", 1),
+//!     lifecycle: {
+//!         validate: Operation<Life, 0>,
+//!         open: Operation<Life, 1>,
+//!         refresh: Operation<Life, 2>,
+//!         retire: Operation<Life, 3>,
+//!         tick: Operation<Life, 4>,
+//!         drive: Operation<Life, 5>,
+//!         cancel: Operation<Life, 6>,
+//!         release: Operation<Life, 7>,
+//!         close: Operation<Life, 8>,
+//!     },
+//!     kind_ops: {
+//!         decide: Operation<Ops, {slot::DECIDE}>,
+//!         transform: Operation<Ops, {slot::TRANSFORM}>,
+//!         notify: Operation<Ops, {slot::NOTIFY}>,
+//!         configure: Operation<Ops, {slot::CONFIGURE}>,
+//!         status: Operation<Ops, {slot::STATUS}>,
+//!         describe: Operation<Ops, {slot::DESCRIBE}>,
+//!     },
+//! }
+//! fn main() { let _ = door(); }
+//! ```
+//!
+//! ```compile_fail,E0080
+//! // SDK_REGISTRATION_WITNESS plane null-tail
+//! use busbar_contract::abi::{mechanism::call::Outcome, sdk::door::{KindOps, KindSlot, RawSlot, statement}};
+//! use busbar_contract::abi::plane::{Ops, slot};
+//! struct Operation<T, const N: u32>(std::marker::PhantomData<T>);
+//! impl<T: KindSlot<N>, const N: u32> RawSlot for Operation<T, N> {
+//!     type Kind = <Ops as KindOps>::Marker;
+//!     type In = <T as KindSlot<N>>::In;
+//!     type Out = <T as KindSlot<N>>::Out;
+//!     unsafe fn call(_: *mut std::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome { Outcome::Refused }
+//! }
+//! type Life = <Ops as KindOps>::Lifecycle;
+//! busbar_contract::plugin_door! {
+//!     ops: Ops,
+//!     statement: statement("registration-plane", "1", 1),
+//!     lifecycle: {
+//!         validate: Operation<Life, 0>,
+//!         open: Operation<Life, 1>,
+//!         refresh: Operation<Life, 2>,
+//!         retire: Operation<Life, 3>,
+//!         tick: Operation<Life, 4>,
+//!         drive: Operation<Life, 5>,
+//!         cancel: Operation<Life, 6>,
+//!         release: Operation<Life, 7>,
+//!         close: Operation<Life, 8>,
+//!     },
+//!     kind_ops: {
+//!         arrive: Operation<Ops, {slot::ARRIVE}>,
+//!         on_piece: Operation<Ops, {slot::ON_PIECE}>,
+//!         refusal: Operation<Ops, {slot::REFUSAL}>,
+//!         hydrate: Operation<Ops, {slot::HYDRATE}>,
+//!         start: Operation<Ops, {slot::START}>,
+//!         project: Operation<Ops, {slot::PROJECT}>,
+//!     },
+//! }
+//! fn main() { let _ = door(); }
+//! ```
+//!
+//! ```compile_fail,E0080
+//! // SDK_REGISTRATION_WITNESS transport null-tail
+//! use busbar_contract::abi::{mechanism::call::Outcome, sdk::door::{KindOps, KindSlot, RawSlot, statement}};
+//! use busbar_contract::abi::transport::{Ops, slot};
+//! struct Operation<T, const N: u32>(std::marker::PhantomData<T>);
+//! impl<T: KindSlot<N>, const N: u32> RawSlot for Operation<T, N> {
+//!     type Kind = <Ops as KindOps>::Marker;
+//!     type In = <T as KindSlot<N>>::In;
+//!     type Out = <T as KindSlot<N>>::Out;
+//!     unsafe fn call(_: *mut std::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome { Outcome::Refused }
+//! }
+//! type Life = <Ops as KindOps>::Lifecycle;
+//! busbar_contract::plugin_door! {
+//!     ops: Ops,
 //!     statement: statement("registration-transport", "1", 1),
 //!     lifecycle: {
 //!         validate: Operation<Life, 0>,
@@ -515,6 +640,7 @@
 //!         close: Operation<Life, 8>,
 //!     },
 //!     kind_ops: {
+//!         listen: Operation<Ops, {slot::LISTEN}>,
 //!         accept: Operation<Ops, {slot::ACCEPT}>,
 //!         dial: Operation<Ops, {slot::DIAL}>,
 //!         read: Operation<Ops, {slot::READ}>,
@@ -660,18 +786,20 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                 );
                 let o = &*p.cast::<crate::abi::plane::Ops>();
                 require!(o; arrive, on_piece, refusal, hydrate, start, project);
-                if !st.kind_tail.is_null() {
-                    assert!(
-                        (*st.kind_tail).size as usize
-                            >= std::mem::size_of::<crate::abi::plane::PlaneTail>(),
-                        "plane registration tail is incomplete"
-                    );
-                    let t = &*st.kind_tail.cast::<crate::abi::plane::PlaneTail>();
-                    assert!(
-                        t.admin_routes_len == 0 || o.serve.is_some(),
-                        "plane admin routes require a serve implementation"
-                    );
-                }
+                assert!(
+                    !st.kind_tail.is_null(),
+                    "plane registration requires its kind tail"
+                );
+                assert!(
+                    (*st.kind_tail).size as usize
+                        >= std::mem::size_of::<crate::abi::plane::PlaneTail>(),
+                    "plane registration tail is incomplete"
+                );
+                let t = &*st.kind_tail.cast::<crate::abi::plane::PlaneTail>();
+                assert!(
+                    t.admin_routes_len == 0 || o.serve.is_some(),
+                    "plane admin routes require a serve implementation"
+                );
             }
             KindCode::Transport => {
                 assert!(
@@ -681,6 +809,15 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                 let o = &*p.cast::<crate::abi::transport::Ops>();
                 require!(o; listen, accept, dial, read, write, flush, shut, arrival, locate,
                     begin, ingest, emit, encode, refuse, finish, detach, adopt, timer);
+                assert!(
+                    !st.kind_tail.is_null(),
+                    "transport registration requires its kind tail"
+                );
+                assert!(
+                    (*st.kind_tail).size as usize
+                        >= std::mem::size_of::<crate::abi::transport::TransportTail>(),
+                    "transport registration tail is incomplete"
+                );
             }
         }
     }

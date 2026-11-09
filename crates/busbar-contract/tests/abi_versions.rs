@@ -108,10 +108,31 @@ mod static_door {
             Ok(busbar_contract::abi::sdk::life::Refreshed::default())
         }
     }
+    use busbar_contract::abi::{
+        mechanism::call::Outcome,
+        sdk::{life::Held, Instance, Lent, Out, SafeSlot},
+        secret,
+    };
+    struct Resolve;
+    impl SafeSlot for Resolve {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
+        type In = secret::ResolveIn;
+        type Out = secret::ResolveOut;
+        type State = Held<Life>;
+        fn call(
+            _: Instance<'_, Held<Life>, Self::Kind>,
+            _: Lent<'_, Self::In>,
+            mut out: Out<'_, Self::Out>,
+        ) -> Outcome {
+            out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+            Outcome::Failed
+        }
+    }
     busbar_contract::plugin_door! {
         ops: busbar_contract::abi::secret::Ops,
         statement: busbar_contract::abi::sdk::door::statement("a-door", "0", 1),
         lifecycle: life(Life),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
     }
 }
 extern "C" fn a_wake(_c: HostCtx, _t: Ticket) {}

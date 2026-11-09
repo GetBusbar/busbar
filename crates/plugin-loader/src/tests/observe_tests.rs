@@ -540,3 +540,32 @@ extern "C" fn actual_export_observer_door() -> &'static busbar_contract::abi::me
         &IMAGE,
     )
 }
+
+#[test]
+fn a_drop_after_the_last_handled_observation_is_still_reported() {
+    use std::sync::atomic::Ordering;
+    let _guard = exclusive();
+    let before = testing::DROPPED.load(Ordering::SeqCst);
+    fold_entries(
+        "late-drop-witness",
+        busbar_contract::abi::mechanism::kind::EXPORT,
+        &[serde_json::json!({ "name": "late_drop_total", "type": "counter" })],
+        &[],
+    );
+    testing::folds();
+    // A try_send that failed after the worker's last count check leaves a pending count.
+    let observing = testing::observing();
+    let intake = observing.intake().expect("the intake runs");
+    intake.counts.dropped.fetch_add(7, Ordering::AcqRel);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while testing::DROPPED.load(Ordering::SeqCst) - before < 7
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let reported = testing::DROPPED.load(Ordering::SeqCst) - before;
+    assert!(
+        reported >= 7,
+        "a pending drop count was never reported without a further observation: {reported}"
+    );
+}

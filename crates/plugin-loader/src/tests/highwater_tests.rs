@@ -108,13 +108,13 @@ fn without_a_data_dir_the_store_creates_no_file() {
 
 #[test]
 fn with_a_data_dir_the_floor_survives_a_restart() {
-    let dir = tmpdir();
-    let (mut marks, _) = HighWaterMarks::load(Some(&dir));
+    let dir = Directory(tmpdir());
+    let (mut marks, _) = HighWaterMarks::load(Some(&dir.0));
     assert!(is_persistent(&marks));
     assert!(marks.raise("busbar-store-gamma-plugin", "1.2.0"));
     marks.persist().unwrap();
 
-    let (reloaded, note) = HighWaterMarks::load(Some(&dir));
+    let (reloaded, note) = HighWaterMarks::load(Some(&dir.0));
     assert!(note.is_none(), "a file this store wrote reloads clean");
     assert_eq!(
         reloaded.marks().get("busbar-store-gamma-plugin").unwrap(),
@@ -139,13 +139,13 @@ fn the_mark_rises_and_never_falls() {
 
 #[test]
 fn unusable_entries_are_dropped_and_reported() {
-    let dir = tmpdir();
+    let dir = Directory(tmpdir());
     std::fs::write(
-        dir.join(HIGH_WATER_FILE),
+        dir.0.join(HIGH_WATER_FILE),
         br#"{"good-plugin":"1.2.0","bad-plugin":"v1.2","BAD NAME":"1.0.0"}"#,
     )
     .unwrap();
-    let (marks, note) = HighWaterMarks::load(Some(&dir));
+    let (marks, note) = HighWaterMarks::load(Some(&dir.0));
     let m = marks.marks();
     assert_eq!(m.len(), 1, "only the usable entry survives: {m:?}");
     assert_eq!(m.get("good-plugin").unwrap(), "1.2.0");
@@ -156,9 +156,9 @@ fn unusable_entries_are_dropped_and_reported() {
 
 #[test]
 fn a_corrupt_file_boots_with_no_floor_and_says_so() {
-    let dir = tmpdir();
-    std::fs::write(dir.join(HIGH_WATER_FILE), b"{ this is not json").unwrap();
-    let (marks, note) = HighWaterMarks::load(Some(&dir));
+    let dir = Directory(tmpdir());
+    std::fs::write(dir.0.join(HIGH_WATER_FILE), b"{ this is not json").unwrap();
+    let (marks, note) = HighWaterMarks::load(Some(&dir.0));
     assert!(marks.marks().is_empty());
     let note = note.expect("a corrupt floor must be reported");
     assert!(note.contains("NO first-party floor"), "{note}");
@@ -166,8 +166,8 @@ fn a_corrupt_file_boots_with_no_floor_and_says_so() {
 
 #[test]
 fn a_missing_file_is_a_clean_first_boot() {
-    let dir = tmpdir();
-    let (marks, note) = HighWaterMarks::load(Some(&dir));
+    let dir = Directory(tmpdir());
+    let (marks, note) = HighWaterMarks::load(Some(&dir.0));
     assert!(note.is_none());
     assert!(marks.marks().is_empty());
     assert!(is_persistent(&marks));
@@ -177,15 +177,15 @@ fn a_missing_file_is_a_clean_first_boot() {
 #[test]
 fn the_persisted_floor_is_private() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tmpdir();
-    let (mut marks, _) = HighWaterMarks::load(Some(&dir));
+    let dir = Directory(tmpdir());
+    let (mut marks, _) = HighWaterMarks::load(Some(&dir.0));
     marks.raise("p", "1.0.0");
     marks.persist().unwrap();
-    let mode = std::fs::metadata(dir.join(HIGH_WATER_FILE))
+    let mode = std::fs::metadata(dir.0.join(HIGH_WATER_FILE))
         .unwrap()
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600, "got {:o}", mode & 0o777);
 
-    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
 }

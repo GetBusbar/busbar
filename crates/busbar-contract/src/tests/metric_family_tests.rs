@@ -86,6 +86,26 @@ fn a_malformed_family_is_refused() {
 }
 
 #[test]
+fn the_label_and_name_bounds_admit_exactly_the_ceiling() {
+    const EIGHT: &[MetricFamily] = &[counter(
+        "p_total",
+        &["a", "b", "c", "d", "e", "f", "g", "h"],
+    )];
+    const NAME64: &[MetricFamily] = &[counter(
+        "p_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        &[],
+    )];
+    const NAME65: &[MetricFamily] = &[counter(
+        "p_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        &[],
+    )];
+    assert_eq!(NAME64[0].name.len(), 64);
+    assert_eq!(verdict(EIGHT), Ok(()));
+    assert_eq!(verdict(NAME64), Ok(()));
+    assert!(verdict(NAME65).is_err());
+}
+
+#[test]
 fn one_family_has_one_writer() {
     const F: &[MetricFamily] = &[counter("p_total", &[])];
     const TWICE: &[MetricFamily] = &[counter("p_total", &[]), counter("p_total", &[])];

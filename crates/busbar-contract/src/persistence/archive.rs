@@ -370,6 +370,28 @@ fn row_parts<'a>(bytes: &'a [u8], header: &Header) -> Result<(u32, &'a [u8], &'a
     Ok((table, key, value))
 }
 
+/// Owned catalogue metadata charged against `index_bytes` before any row index entry.
+fn index_metadata(header: &Header, limits: Limits) -> Result<usize, Error> {
+    let metadata = encode_header(header, limits)?
+        .len()
+        .checked_add(
+            header
+                .tables
+                .len()
+                .checked_mul(std::mem::size_of::<Table>())
+                .ok_or(Error::Budget)?,
+        )
+        .ok_or(Error::Budget)?;
+    header.tables.iter().try_fold(metadata, |n, t| {
+        n.checked_add(
+            t.columns
+                .len()
+                .checked_mul(std::mem::size_of::<String>())
+                .ok_or(Error::Budget)?,
+        )
+        .ok_or(Error::Budget)
+    })
+}
 /// Streaming writer; rows remain borrowed under their original wiping ownership.
 pub struct Writer<W> {
     output: W,
@@ -379,6 +401,8 @@ pub struct Writer<W> {
     rows: u64,
     bytes: u64,
     layout_digest: [u8; 32],
+    metadata: usize,
+    keys: std::collections::HashSet<(u32, [u8; 32])>,
     failed: bool,
 }
 impl<W> std::fmt::Debug for Writer<W> {
@@ -394,6 +418,7 @@ impl<W: Write> Writer<W> {
     pub fn new(output: W, header: Header, limits: Limits) -> Result<Self, Error> {
         let encoded = encode_header(&header, limits)?;
         let layout_digest = digest(&encoded);
+        let metadata = index_metadata(&header, limits)?;
         let mut writer = Self {
             output,
             header,
@@ -402,6 +427,8 @@ impl<W: Write> Writer<W> {
             rows: 0,
             bytes: 0,
             layout_digest,
+            metadata,
+            keys: std::collections::HashSet::new(),
             failed: false,
         };
         writer.put(MAGIC)?;
@@ -433,6 +460,19 @@ impl<W: Write> Writer<W> {
     /// Append one native identity and untouched validated physical row.
     pub fn write_row(&mut self, table: u32, native_key: &[u8], value: &[u8]) -> Result<(), Error> {
         if self.rows >= self.limits.rows {
+            return Err(Error::Budget);
+        }
+        // Same index admission the reader applies, so a written archive is always readable.
+        if self
+            .metadata
+            .checked_add(
+                (self.rows as usize + 1)
+                    .checked_mul(std::mem::size_of::<RowIndex>() + std::mem::size_of::<usize>())
+                    .ok_or(Error::Budget)?,
+            )
+            .ok_or(Error::Budget)?
+            > self.limits.index_bytes
+        {
             return Err(Error::Budget);
         }
         let layout = self
@@ -473,6 +513,11 @@ impl<W: Write> Writer<W> {
         {
             return Err(Error::Budget);
         }
+        // The reader refuses equal native identities; refuse at capture, before any bytes are written.
+        let identity = (table, digest(native_key));
+        if self.keys.contains(&identity) {
+            return Err(Error::Integrity);
+        }
         self.put(&[ROW])?;
         self.put(&(length as u64).to_le_bytes())?;
         self.put(&table.to_le_bytes())?;
@@ -480,6 +525,7 @@ impl<W: Write> Writer<W> {
         self.put(native_key)?;
         self.put(&(value.len() as u64).to_le_bytes())?;
         self.put(value)?;
+        self.keys.insert(identity);
         self.rows += 1;
         Ok(())
     }
@@ -702,30 +748,13 @@ pub fn read<R: Read + Seek + Send>(
     let encoded = get(&mut source, &mut hash, &mut bytes, size, limits)?;
     let header = decode_header(&encoded, limits)?;
     let layout_digest = digest(&encoded);
-    let metadata = encode_header(&header, limits)?
-        .len()
-        .checked_add(
-            header
-                .tables
-                .len()
-                .checked_mul(std::mem::size_of::<Table>())
-                .ok_or(Error::Budget)?,
-        )
-        .ok_or(Error::Budget)?;
-    let metadata = header.tables.iter().try_fold(metadata, |n, t| {
-        n.checked_add(
-            t.columns
-                .len()
-                .checked_mul(std::mem::size_of::<String>())
-                .ok_or(Error::Budget)?,
-        )
-        .ok_or(Error::Budget)
-    })?;
+    let metadata = index_metadata(&header, limits)?;
     let mut index: Vec<RowIndex> = Vec::new();
     loop {
-        let prefix: [u8; 32] = hash.clone().finalize().into();
+        let before = hash.clone();
         let tag = get(&mut source, &mut hash, &mut bytes, 1, limits)?[0];
         if tag == FOOTER {
+            let prefix: [u8; 32] = before.finalize().into();
             let footer = get(&mut source, &mut hash, &mut bytes, 40, limits)?;
             if u64::from_le_bytes(footer[..8].try_into().map_err(|_| Error::Malformed)?)
                 != index.len() as u64
@@ -809,7 +838,7 @@ pub fn read<R: Read + Seek + Send>(
         let offset = bytes;
         let frame = get(&mut source, &mut hash, &mut bytes, length, limits)?;
         let (table, key, _) = row_parts(&frame, &header)?;
-        index.try_reserve_exact(1).map_err(|_| Error::Allocation)?;
+        index.try_reserve(1).map_err(|_| Error::Allocation)?;
         index.push(RowIndex {
             table,
             offset,

@@ -822,6 +822,42 @@ fn distinct_tail_renderings<T>(kind: KindCode, cases: &[(&str, T)]) {
     }
 }
 
+/// Every scalar and string fact of a plane tail renders, each in its own place: a field rendered
+/// in another's position, or not at all, collides with the baseline or with another case.
+#[test]
+fn every_plane_tail_scalar_and_string_fact_renders_distinctly() {
+    use crate::abi::plane::PlaneTail;
+    let base: PlaneTail = zeroed_tail();
+    let mut cases: Vec<(&str, PlaneTail)> = vec![("baseline", base)];
+    macro_rules! scalar {
+        ($($f:ident = $v:expr),*) => {$(
+            cases.push((stringify!($f), PlaneTail { $f: $v, ..base }));
+        )*};
+    }
+    macro_rules! text {
+        ($($f:ident),*) => {$(
+            cases.push((stringify!($f), PlaneTail { $f: abi_str(concat!("v-", stringify!($f))), ..base }));
+        )*};
+    }
+    scalar!(
+        flags = 1,
+        ingress = 1,
+        dispatch_shape = 1,
+        answer_layout = 1
+    );
+    text!(
+        scope,
+        label,
+        subject_noun,
+        admin_noun,
+        audit_kind,
+        signing_domain,
+        signing_kid_prefix,
+        cli_help
+    );
+    distinct_tail_renderings(KindCode::Plane, &cases);
+}
+
 #[test]
 fn primitive_store_renders_its_abi_without_a_business_capability_tail() {
     let mut st = Statement {

@@ -390,3 +390,47 @@ fn a_programs_env_refsironment_is_held_as_its_reference() {
         );
     }
 }
+
+/// A target with a query or fragment and no path still has the origin its auth was bound under.
+#[test]
+fn origin_of_ends_the_authority_at_query_or_fragment() {
+    assert_eq!(origin_of("https://h?x=a/b"), "https://h");
+    assert_eq!(origin_of("https://h#f/x"), "https://h");
+    assert_eq!(origin_of("https://h:8443/p?q=1"), "https://h:8443");
+    assert_eq!(origin_of("https://h"), "https://h");
+}
+
+/// A framer default whose name is not an RFC 9110 token, or whose value has a control byte, is
+/// refused before it reaches the request head.
+#[test]
+fn completed_for_refuses_illegal_head_bytes() {
+    let head = |name: &[u8], value: &[u8]| HeadDefaults {
+        lines: vec![(name.to_vec(), value.to_vec())],
+        states_length: false,
+    };
+    let complete = |h: HeadDefaults| h.completed_for(A, NEED, "https://h", |_| false, 0);
+    assert!(complete(head(b"x-ok", b"v\tw")).is_ok());
+    assert_eq!(complete(head(b"a\"b", b"v")), Err(ConnError::Refused));
+    assert_eq!(complete(head(b"x(y", b"v")), Err(ConnError::Refused));
+    assert_eq!(complete(head(b"x\xc3\xa9", b"v")), Err(ConnError::Refused));
+    assert_eq!(complete(head(b"x", b"\x01")), Err(ConnError::Refused));
+    assert_eq!(complete(head(b"x", b"a\x7fb")), Err(ConnError::Refused));
+}
+
+/// A freed slot is reused by the next insert, with its generation advanced so the old id is dead.
+#[test]
+fn insert_reuses_a_freed_slot_with_a_new_generation() {
+    let s = slab();
+    let first = s.insert(A, NEED, "one").unwrap();
+    let second = s.insert(A, NEED, "two").unwrap();
+    s.remove(A, first).unwrap();
+    let third = s.insert(A, NEED, "three").unwrap();
+    assert_eq!(
+        ConnSlab::<&str>::index(third),
+        ConnSlab::<&str>::index(first)
+    );
+    assert_ne!(third, first);
+    assert_eq!(s.get(A, first), Err(ConnError::Closed));
+    assert_eq!(*s.get(A, third).unwrap().1, "three");
+    assert_eq!(*s.get(A, second).unwrap().1, "two");
+}

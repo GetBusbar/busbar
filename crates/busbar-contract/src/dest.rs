@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
 //! Destinations, the route plan, and what an outbound request looks like.
 
 use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};

@@ -387,6 +387,13 @@ fn run<B: Backend>(
                 }
                 Step::Ready(mut answer) => {
                     drop(op.into_parked());
+                    // An answer that cannot be encoded within the bounds is never committed:
+                    // the caller gets the error and the phase stays where it was.
+                    if answer.is_ok()
+                        && codec::encode_response(&answer, bounds(&served.backend)).is_err()
+                    {
+                        answer = Err(native::Error::Bounds);
+                    }
                     if let Ok(response) = &answer {
                         let mut preparation = served
                             .preparation
@@ -434,14 +441,10 @@ impl<B: Backend> SafeSlot for Bootstrap<B> {
             let Some(request) = (unsafe { bytes(raw.request) }) else {
                 return Outcome::Fault;
             };
-            if request.len() != 24
-                || request.get(..8) != Some(b"BBBOOT01".as_slice())
-                || request.get(8..12) != Some(native::VERSION.to_le_bytes().as_slice())
-                || request.get(12..16) != Some([1, 0, 0, 0].as_slice())
-            {
+            let Some(bound) = codec::inspect_allocation_bound(request) else {
                 return Outcome::Fault;
-            }
-            u32::from_le_bytes(request[20..24].try_into().expect("fixed Inspect header")) as usize
+            };
+            bound
         };
         let Some(loan) = (unsafe { preflight(raw, allocation_bytes) }) else {
             return Outcome::Fault;

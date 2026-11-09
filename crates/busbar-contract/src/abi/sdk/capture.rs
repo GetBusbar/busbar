@@ -121,6 +121,15 @@ impl CaptureRetention {
         CaptureReply { owner, key, reply }
     }
 
+    /// Whether an entry is held for the host context `handle` (the tests' view).
+    #[cfg(test)]
+    pub(crate) fn holds_host(&self, handle: u64) -> bool {
+        self.owners
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(&Owner::Host(handle))
+    }
+
     pub(crate) fn keep(
         &self,
         mut reply: CaptureReply,
@@ -323,7 +332,9 @@ impl CaptureSlot {
     }
 
     /// Fold what the capture holds into the reply's `envelope`: the plugin's own diagnostics first,
-    /// then the log records, then one [`DIAG_LOG_DROPPED`] entry if any record did not fit. A reply
+    /// then the log records, then one [`DIAG_LOG_DROPPED`] entry if any record did not fit and the
+    /// envelope has room for it (a plugin whose own diagnostics fill the envelope loses its log
+    /// records unmarked). A reply
     /// with nothing captured is left exactly as the plugin wrote it.
     ///
     /// # Safety

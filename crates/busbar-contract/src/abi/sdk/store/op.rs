@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE STORE OP'S CONTEXT (the plugin ABI: every call is Ready or Pending(wake), never a blocking
+//! wait): the ticket it runs on, the state it parks across a PENDING answer (a re-park replaces
+//! what was parked before), and the one connection it holds, which is closed when the op or its
+//! parked state is dropped.
 
 type Host = KindGenericHost<crate::plugin::markers::StoreKind>;
 type Connector<'a> = KindGenericConnector<'a, crate::plugin::markers::StoreKind>;
@@ -60,6 +63,7 @@ pub(crate) struct Parked {
 
 impl Drop for Parked {
     /// Parked state the SDK drops (a recycle, an instance that faulted and closed) closes the op's
+    /// connection, so a dropped park never leaks a stream.
     fn drop(&mut self) {
         if let (Some(c), Some(h)) = (self.checkout.take(), self.host) {
             let _ = h.connector_from(self.ticket, self.issued).close(c.stream);
@@ -98,6 +102,7 @@ impl std::fmt::Debug for Op<'_> {
 
 impl Op<'static> {
     /// An op on no ticket: the synchronous bridge's fallback on a dispatcher's only worker, a
+    /// context that can never answer PENDING.
     #[must_use]
     pub fn detached() -> Self {
         Self {
@@ -167,6 +172,7 @@ impl<'a> Op<'a> {
     }
 
     /// The wire driver is retrying the same pending logical service, rather than starting a
+    /// new one: the next connector service reuses the pending service's handle.
     pub(crate) fn replay_last_service(&mut self) {
         self.replay = Some(
             self.last_service
@@ -175,6 +181,7 @@ impl<'a> Op<'a> {
     }
 
     /// A terminal error or explicit close abandons the pending logical service. Future work
+    /// then starts a new logical service.
     pub(crate) fn abandon_pending_service(&mut self) {
         self.replay = None;
     }
@@ -192,6 +199,7 @@ impl<'a> Op<'a> {
     }
 
     /// Keep `state` across this op's PENDING answer: the op's own continuation. It replaces what
+    /// an earlier park kept (one state per op); a no-op on an op with no ticket.
     pub fn park<S: Send + Sync + 'static>(&mut self, state: S) {
         if self.can_pend() {
             self.state = Some(Box::new(state));
@@ -199,6 +207,7 @@ impl<'a> Op<'a> {
     }
 
     /// Take back what [`Op::park`] kept, in the op's RESUME; `None` in a fresh entry or when
+    /// the parked state is of another type.
     pub fn resume<S: Send + Sync + 'static>(&mut self) -> Option<S> {
         match self.state.take()?.downcast::<S>() {
             Ok(s) => Some(*s),
@@ -216,6 +225,7 @@ impl<'a> Op<'a> {
     }
 
     /// Make connector services for this entry, their handles counted on from what the op made
+    /// before, and recorded back on the op when the services drop.
     pub fn connector(&mut self) -> Result<Services<'_, 'a>, ConnFailure> {
         let host = self.host.ok_or(ConnFailure::Unarmed)?;
         if !self.can_pend() {
@@ -234,11 +244,13 @@ impl<'a> Op<'a> {
     }
 
     /// The op's ONE connection, for declared need `need` to `target`: established once (the answer
+    /// is its stream handle) and kept for the op's later calls; a different need or target is refused.
     pub fn checkout(&mut self, need: u32, target: Option<&str>) -> Answer<u64> {
         self.checkout_timed(need, target, 0)
     }
 
     /// [`Op::checkout`], its dial bounded by `timeout_ms` (`0` = the need's own timeout, else the
+    /// host's default).
     pub fn checkout_timed(
         &mut self,
         need: u32,
@@ -279,17 +291,20 @@ impl Op<'_> {
         self.ticket
     }
 
-    /// Take the op's connection out of its keeping: it is no longer closed when the op ends (a
+    /// Take the op's connection out of its keeping: it is no longer closed when the op ends (the caller
+    /// owns it now).
     pub(crate) fn take_checkout(&mut self) -> Option<Checkout> {
         self.checkout.take()
     }
 
     /// Make `c` the op's connection (one drawn from its instance's kept set): closed if the op
+    /// ends with it still held.
     pub(crate) fn adopt(&mut self, c: Checkout) {
         self.checkout = Some(c);
     }
 
     /// Close the op's connection now (it is not fit for reuse); the next [`Op::checkout`]
+    /// dials a new one.
     pub(crate) fn close_checkout(&mut self) {
         self.abandon_pending_service();
         if let Some(c) = self.checkout.take() {

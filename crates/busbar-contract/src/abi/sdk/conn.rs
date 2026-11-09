@@ -14,7 +14,7 @@ use crate::abi::host::io::IoSlots;
 use crate::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
     ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
-    CAUSE_CREDENTIAL_UNAVAILABLE,
+    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE,
 };
 use crate::abi::host::service::{
     op, ClockNowIn, ClockReading, DiskAppendIn, DiskWritten, HostSlots, NeedAdmitIn, ServiceFn,
@@ -530,7 +530,10 @@ impl<K: KindMarker> Connector<'_, K> {
                     ConnFailure::Refused(host_text(out.error))
                 }))
             }
-            Outcome::Fault => Poll::Ready(Err(ConnFailure::Fault)),
+            Outcome::Fault => {
+                self.cause.set(CAUSE_NONE);
+                Poll::Ready(Err(ConnFailure::Fault))
+            }
         }
     }
 

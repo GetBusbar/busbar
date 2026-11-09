@@ -195,3 +195,21 @@ fn route_metadata_returns_owned_routes_after_row_retirement() {
         assert_ne!(returned[0].path.as_ptr(), route.path.ptr);
     }
 }
+
+#[test]
+fn a_probe_whose_bind_fails_reports_the_bind_refusal_as_a_problem() {
+    let axis = rows(checkpoint_plugin::door, "hook_checkpoint_door", Way::Linked);
+    let (facts, problems) = {
+        let _entropy = EntropyFailure::new();
+        axis.probe(checkpoint_plugin::NAME, "hooks.pl-src-1-probe", &json!({}))
+            .expect("the hook row is admitted")
+    };
+    assert!(
+        facts.is_none(),
+        "a plugin that did not bind states no facts"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("entropy")),
+        "the bind refusal is a problem, not dropped: {problems:?}"
+    );
+}

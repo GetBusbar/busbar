@@ -48,7 +48,8 @@ pub fn takes_no_settings(bytes: &[u8], module: &str, names: &str) -> Result<(), 
                 k.escape_debug()
             )),
         },
-        _ => Err("settings: must be a JSON object".to_string()),
+        Err(e) => Err(format!("settings: {e}")),
+        Ok(_) => Err("settings: must be a JSON object".to_string()),
     }
 }
 

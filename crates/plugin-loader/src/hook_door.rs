@@ -1335,14 +1335,15 @@ impl HookAxis for HookRows {
     fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
         let c = self.find(module)?;
 
-        let Ok(p) = Self::bind(
+        let p = match Self::bind(
             c,
             &self.dispatcher,
             instance,
             Arc::new(NoSink),
             ConnTable::Probe,
-        ) else {
-            return Some((None, Vec::new()));
+        ) {
+            Ok(p) => p,
+            Err(refused) => return Some((None, vec![refused])),
         };
         let facts = p
             .context::<HookContext>()

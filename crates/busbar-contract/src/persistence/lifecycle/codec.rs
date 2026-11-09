@@ -3,13 +3,15 @@
 
 //! Strict version-one native bootstrap framing. Integers and lengths are little endian.
 //! The 16-byte header is magic, u32 version, kind, tag and two zero reserved bytes.
-//! Kinds 1/2/3 carry requests/responses/OPEN bindings; response tags 128..137
+//! Kinds 1/2/3 carry requests/responses/OPEN bindings; kind 4 (magic BBCOMP01 rather than
+//! the shared one) carries the completion marker. Response tags 128..137
 //! carry content-free typed failures. Blobs and vector counts use u32 lengths.
 
 use super::*;
 use crate::persistence::{Address, AttemptId, Durability};
 use crate::redacted::OwnerSeal;
 use std::mem::size_of;
+use zeroize::Zeroize;
 
 const MAGIC: &[u8; 8] = b"BBBOOT01";
 const COMPLETION_MAGIC: &[u8; 8] = b"BBCOMP01";
@@ -85,10 +87,17 @@ impl Writer {
         if n > self.budget.bounds.bytes as usize {
             return Err(Error::Bounds);
         }
-        self.out
-            .0
-            .try_reserve_exact(bytes.len())
-            .map_err(|_| Error::Bounds)?;
+        if self.out.0.capacity() - self.out.0.len() < bytes.len() {
+            // Grow into a fresh buffer and wipe the old one: a realloc would free it unwiped.
+            let want = n
+                .max(self.out.0.capacity().saturating_mul(2))
+                .min(self.budget.bounds.bytes as usize);
+            let mut grown = Vec::new();
+            grown.try_reserve_exact(want).map_err(|_| Error::Bounds)?;
+            grown.extend_from_slice(&self.out.0);
+            self.out.0.zeroize();
+            self.out.0 = grown;
+        }
         self.out.0.extend_from_slice(bytes);
         Ok(())
     }
@@ -574,6 +583,19 @@ impl<'a> Reader<'a> {
         inspection_valid(&i)?;
         Ok(i)
     }
+}
+
+/// The declared aggregate byte bound of an Inspect request header, read without decoding the
+/// rest; `None` unless `bytes` is exactly an Inspect request in this codec's layout.
+pub(crate) fn inspect_allocation_bound(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() != 24
+        || bytes.get(..8) != Some(MAGIC.as_slice())
+        || bytes.get(8..12) != Some(VERSION.to_le_bytes().as_slice())
+        || bytes.get(12..16) != Some([1, 0, 0, 0].as_slice())
+    {
+        return None;
+    }
+    Some(u32::from_le_bytes(bytes[20..24].try_into().ok()?) as usize)
 }
 
 /// Encode one exact request in protected ownership with aggregate allocation limits.

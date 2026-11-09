@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section: "No
+//! THE HOST'S I/O TABLE, `io.*` (`BUSBAR-1.6.0.md` THE DESIGN, the connections section), as a `#[repr(C)]` table of host slots.
 
 use crate::abi::mechanism::call::{AbiStr, Field};
 use crate::abi::mechanism::check::{self, fault, Fault, Rule};
@@ -45,7 +45,7 @@ pub const DIR_WRITE: u32 = 2;
 /// [`ShutIn::how`]: both directions.
 pub const DIR_BOTH: u32 = DIR_READ | DIR_WRITE;
 
-/// Whether a slot may answer PENDING, and so is callable only inside a ticketed op. `false` for an
+/// Whether a slot may answer PENDING, and so is callable only inside a ticketed op. `false` for an op that always answers at once.
 #[must_use]
 pub const fn may_pend(slot: u32) -> bool {
     matches!(slot, op::ACCEPT | op::READ | op::WRITE | op::READY)

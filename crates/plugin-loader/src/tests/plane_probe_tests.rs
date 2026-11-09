@@ -506,3 +506,146 @@ fn refused_probe_attempts_close_and_retry_with_a_fresh_instance() {
     drop(reg);
     assert!(held.lock().unwrap().iter().all(|p| !p.is_open()));
 }
+
+extern "C" fn owned_probe_refresh(
+    instance: *mut std::ffi::c_void,
+    input: *const std::ffi::c_void,
+    out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    // SAFETY: this entry occupies REFRESH; the host lends its typed input.
+    let input_ref = unsafe { &*input.cast::<RefreshIn>() };
+    if input_ref.head.extensions.len == 0 {
+        return busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Refused);
+    }
+    // SAFETY: the fixture's immutable table has this plane's exact shape.
+    let ops = unsafe { &*crate::plane_door_plugin::door().ops().cast::<plane::Ops>() };
+    // SAFETY: forward the same instance and complete host frames to their original SDK slot.
+    unsafe { ops.head.refresh.unwrap()(instance, input, out) }
+}
+
+extern "C" fn owned_probe_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    let door = crate::plane_door_plugin::door();
+    // SAFETY: the fixture states the plane kind's table.
+    let mut ops = unsafe { *door.ops().cast::<plane::Ops>() };
+    ops.head.refresh = Some(owned_probe_refresh);
+    let ops = Box::leak(Box::new(ops));
+    // SAFETY: only one entry changed, retaining its exact slot signature.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..door.parts()
+        })
+    }))
+}
+
+#[test]
+fn a_second_facing_with_the_same_owned_sections_refreshes_with_them() {
+    let reg = registration(linked_probe(
+        owned_probe_door,
+        "owned-refresh-probe",
+        busbar_contract::services::test_caller_binding(),
+    ))
+    .unwrap();
+    let first = (reg.facing)(b"{}", b"{}", None, &[]).unwrap();
+    let second = (reg.facing)(b"{}", b"{}", None, &[])
+        .expect("the refresh carries the same owned sections as the open");
+    assert_eq!(first, second);
+}
+
+extern "C" fn nul_close_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    let door = crate::plane_door_plugin::door();
+    // SAFETY: the fixture states the plane kind's table.
+    let mut ops = unsafe { *door.ops().cast::<plane::Ops>() };
+    ops.head.close = None;
+    let ops = Box::leak(Box::new(ops));
+    // SAFETY: the table keeps its shape; one mandatory slot is NULL on purpose.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..door.parts()
+        })
+    }))
+}
+
+#[test]
+fn a_probe_bind_refusal_reads_as_the_loader_s_text_not_its_variant() {
+    let bind = linked_probe(
+        nul_close_door,
+        "null-close-probe",
+        busbar_contract::services::test_caller_binding(),
+    );
+    let Err(e) = bind() else {
+        panic!("a door with a NULL mandatory slot bound")
+    };
+    assert!(e.contains("is NULL"), "{e}");
+    assert!(!e.contains("NullSlot("), "{e}");
+}
+
+#[test]
+fn a_refresh_failure_carries_the_plugin_s_error_text() {
+    let with = refresh_failure("p", Outcome::Failed, Some(b"disk full"));
+    assert!(with.contains("disk full"), "{with}");
+    let without = refresh_failure("p", Outcome::Failed, None);
+    assert_eq!(without, "plane `p` did not refresh: Failed");
+}
+
+extern "C" fn failing_close(
+    _: *mut std::ffi::c_void,
+    _: *const std::ffi::c_void,
+    _: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    busbar_contract::abi::mechanism::call::RawOutcome::of(Outcome::Failed)
+}
+
+extern "C" fn failing_close_door() -> &'static busbar_contract::abi::mechanism::door::Door {
+    use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+    let door = crate::plane_door_plugin::door();
+    // SAFETY: the fixture states the plane kind's table.
+    let mut ops = unsafe { *door.ops().cast::<plane::Ops>() };
+    ops.head.close = Some(failing_close);
+    let ops = Box::leak(Box::new(ops));
+    // SAFETY: only one entry changed, retaining its exact slot signature.
+    Box::leak(Box::new(unsafe {
+        Door::__from_parts(DoorParts {
+            ops: std::ptr::from_ref(ops).cast(),
+            ..door.parts()
+        })
+    }))
+}
+
+struct CloseWarnings(Arc<std::sync::Mutex<usize>>);
+
+impl tracing::Subscriber for CloseWarnings {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        if *event.metadata().level() == tracing::Level::WARN {
+            *self.0.lock().unwrap() += 1;
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+#[test]
+fn a_close_that_does_not_answer_ready_is_warned() {
+    let plugin = linked_probe(
+        failing_close_door,
+        "failing-close-probe",
+        busbar_contract::services::test_caller_binding(),
+    )()
+    .expect("the probe binds");
+    let seen = Arc::new(std::sync::Mutex::new(0));
+    tracing::subscriber::with_default(CloseWarnings(Arc::clone(&seen)), || {
+        crate::dispatch::lifecycle::close(&plugin);
+    });
+    assert_eq!(*seen.lock().unwrap(), 1, "no warning for a FAILED close");
+}

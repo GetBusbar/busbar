@@ -684,7 +684,7 @@ fn configure_refuses_invalid_utf8_instead_of_allocating_a_lossy_credential_copy(
     let (outcome, _, why) =
         configured::<OpenPickyConfigure>(instance, b"{\"url\":\"CANARY\xff\"}", 2);
     assert_eq!(outcome, Outcome::Failed);
-    assert_eq!(why, "settings: must be a JSON object");
+    assert!(why.starts_with("settings: not valid JSON"), "{why}");
     assert!(!why.contains("CANARY"));
     closed::<OpenPickyConfigure>(instance);
 }

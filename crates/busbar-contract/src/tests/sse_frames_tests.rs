@@ -168,3 +168,8 @@ fn compaction_wipes_only_the_known_initialized_vacated_tail_before_truncating() 
         assert_eq!(unsafe { byte.assume_init() }, 0);
     }
 }
+
+#[test]
+fn bc2_trailing_cr_blank_line_completes_frame() {
+    assert_eq!(sse_lines("data: x\r"), vec!["data: x"]);
+}
