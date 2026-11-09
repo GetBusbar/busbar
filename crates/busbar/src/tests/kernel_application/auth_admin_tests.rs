@@ -1075,6 +1075,9 @@ fn a_slow_admin_door_does_not_stall_healthz() {
     let peer_armed = armed.clone();
 
     std::thread::scope(|peers| {
+        // READY may connect during application construction. VERIFY is expected
+        // only after the serving fixture is built and its request is submitted.
+        let (verify_tx, verify_rx) = std::sync::mpsc::channel::<Instant>();
         let wire = peers.spawn(move || {
             struct Wire {
                 socket: std::net::TcpStream,
@@ -1098,13 +1101,25 @@ fn a_slow_admin_door_does_not_stall_healthz() {
                 }
                 fn flush(&mut self) -> std::io::Result<()> { self.socket.flush() }
             }
+            let mut verify_started = None;
             loop {
-                let deadline = Instant::now() + Duration::from_secs(10);
                 let socket = loop {
+                    match verify_rx.try_recv() {
+                        Ok(started) => verify_started = Some(started),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                        // The scope owner unwound before VERIFY; do not leave
+                        // a peer waiting forever while scoped threads join.
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            return (Duration::ZERO, 0, 0);
+                        }
+                    }
                     match listener.accept() {
                         Ok((socket, _)) => break socket,
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            assert!(Instant::now() < deadline, "the actual verifier must connect");
+                            if let Some(started) = verify_started {
+                                assert!(started.elapsed() < Duration::from_secs(10),
+                                    "the actual verifier must connect");
+                            }
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         Err(error) => panic!("actual issuer accept failed: {error}"),
@@ -1211,6 +1226,9 @@ fn a_slow_admin_door_does_not_stall_healthz() {
 
         std::thread::sleep(Duration::from_millis(1100));
         let admin_router = router.clone();
+        verify_tx
+            .send(Instant::now())
+            .expect("arm the actual VERIFY deadline");
         let admin = runtime.spawn(async move {
             let response = tokio::time::timeout(
                 Duration::from_secs(10),
