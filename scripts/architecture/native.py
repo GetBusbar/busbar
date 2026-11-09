@@ -239,12 +239,12 @@ class Qualification:
             commands = [
                 ('root-fmt', ['cargo', 'fmt', '--all', '--check']),
                 ('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check']),
+                ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast']),
                 ('root-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', *nextest]),
                 ('default-runtime', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', *nextest]),
                 ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
                 ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
                 ('root-clippy-nodefault', ['cargo', 'clippy', '--workspace', '--all-targets', '--no-default-features', '--locked', '--', '-D', 'warnings']),
-                ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast']),
                 ('selected-default', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', selected, *nextest]),
                 ('selected-errors', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', 'test(keys_error_surface_is_byte_stable) | test(every_admin_error_surface_answers_its_declared_status)', *nextest]),
                 ('timing-admin', ['cargo', 'nextest', 'run', '--locked', '-p', 'busbar-kernel', '-p', 'busbar-core-admin', '--features', 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema', '-E', 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))', *nextest]),
@@ -315,6 +315,9 @@ def main():
         raise Violation('full native qualification runs in GitLab CI only')
     qualification = Qualification(args)
     try:
+        if qualification.repository == 'GetBusbar/busbar-plane-llm':
+            from native_oracle import prepare as prepare_oracle
+            prepare_oracle(qualification)
         from native_sources import prepare
         prepare(qualification, qualification.host())
         if qualification.repository == 'GetBusbar/busbar':
