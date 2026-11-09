@@ -29,6 +29,22 @@ class Sources(unittest.TestCase):
                 'source="git+https://git.example/BusbarInc/private?rev=' + 'a' * 40 + '#' + 'a' * 40 + '"\n')
             self.assertEqual(inputs(root, root, {'repositories': {}}), {})
 
+    def test_unused_sdk_patches_are_prefetched_with_the_same_identity_checks(self):
+        # Cargo loads patched sources even when they do not enter the package
+        # graph. The immutable SDK lock records these as [[patch.unused]].
+        from native_sources import lock_inputs
+        repository = 'GetBusbar/busbar-store-mysql'
+        codec = '8407ab816c5606483549b13fc958054df837abd1'
+        policy = {'repositories': {repository: {'private': False}}}
+        source = 'git+https://github.com/' + repository + '?rev=' + codec + '#' + codec
+        template = '[[patch.unused]]\nname="mysql_common"\nversion="0.35.5"\nsource="{}"\n'
+        self.assertEqual(lock_inputs(template.format(source), policy), {repository: {codec}})
+        self.assertEqual(lock_inputs(template.format(source),
+                                     {'repositories': {repository: {'private': True}}}), {})
+        for wrong in (source.replace('rev=' + codec, 'rev=dev'), source[:-1] + '0'):
+            with self.assertRaisesRegex(ValueError, 'immutable'):
+                lock_inputs(template.format(wrong), policy)
+
     def test_standalone_product_lock_adds_its_historical_codec_pin(self):
         from unittest.mock import patch
         head, codec = 'a' * 40, 'b' * 40

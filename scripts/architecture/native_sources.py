@@ -20,7 +20,10 @@ SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?re
 def lock_inputs(text, policy):
     allowed = {'GetBusbar/busbar'} | {name for name, row in policy['repositories'].items() if not row['private']}
     sources = defaultdict(set)
-    for package in tomllib.loads(text).get('package', []):
+    lock = tomllib.loads(text)
+    # Cargo fetches unused patches while loading the workspace too. These exact
+    # revisions belong to this lock's inputs even without a resolved package.
+    for package in lock.get('package', []) + lock.get('patch', {}).get('unused', []):
         source = package.get('source', '')
         if not source.startswith('git+https://github.com/GetBusbar/'):
             continue
