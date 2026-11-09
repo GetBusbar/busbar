@@ -444,14 +444,13 @@ impl ServeTables {
         req: AdminServe<'_>,
         body: Bytes,
     ) -> Option<Result<Served, Unserved>> {
-        let (table, index) = {
+        let (table, index, name) = {
             let tables = self.0.now.load();
             tables.iter().find_map(|t| {
                 t.routes.iter().enumerate().find_map(|(i, r)| {
-                    (r.flags & ROUTE_PUBLIC == 0
-                        && r.verb.eq_ignore_ascii_case(req.method)
-                        && fill(&r.target, req.path).is_some())
-                    .then(|| (Arc::clone(t), i))
+                    let name = fill(&r.target, req.path)?;
+                    (r.flags & ROUTE_PUBLIC == 0 && r.verb.eq_ignore_ascii_case(req.method))
+                        .then(|| (Arc::clone(t), i, name))
                 })
             })
         }?;
@@ -459,14 +458,27 @@ impl ServeTables {
         let head = lent_head(req.headers, req.consumed);
         let target = target_of(req.path, req.query);
         let calls = &*table.calls;
-        let served = serve(
+        // This is the gated admin door's path. Lend the same live-ticket authority
+        // as `answer`; a plane's own request bytes cannot authorize a trust write.
+        let authority = matches!(
+            table.routes[index].verb.as_str(),
+            "POST" | "PUT" | "PATCH" | "DELETE"
+        )
+        .then(|| {
+            table
+                .records
+                .as_ref()
+                .map(|(services, caller)| (services.as_ref(), caller, name))
+        })
+        .flatten();
+        let served = serve_authorized(
             calls,
             table.caps,
-            table.routes.len(),
-            index as u32,
+            (table.routes.len(), index as u32),
             target.as_bytes(),
             head,
             body,
+            authority,
         )
         .await;
         let anonymous = AuthPrincipal(None);
