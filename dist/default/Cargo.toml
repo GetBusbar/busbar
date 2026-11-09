@@ -867,8 +867,8 @@ busbar-auth-admin-tokens = { git = "https://github.com/GetBusbar/busbar-auth-adm
 busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-auth-admin-tokens", rev = "a95f8e27b890be92936baa3b74c767649ffe27ae" }
 # auth-oidc dev a19d113327 (security item 3, #59 + #62): discovery and the JWKS in open-web, the
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
-busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "110affdea863cbfea5a6c70ae93f4fc5777c7d87" }
-busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "110affdea863cbfea5a6c70ae93f4fc5777c7d87" }
+busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "72ae6dc4df880a32fec858735af63d7ca5780d45" }
+busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "72ae6dc4df880a32fec858735af63d7ca5780d45" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "330e4aff5418208333b7be3e190e3437e270decd" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "330e4aff5418208333b7be3e190e3437e270decd" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d96a485590eb2603625c4deddc98e4444c95d044" }
