@@ -102,7 +102,9 @@ class Qualification:
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')
         self.env['CI_SERVER_HOST'] = os.environ['CI_SERVER_HOST']
-        Path(self.env['TMPDIR']).mkdir()
+        # Runner umasks can permit group/world writes. Custody requires a private
+        # temporary directory, independent of the runner's checkout permissions.
+        Path(self.env['TMPDIR']).mkdir(mode=0o700)
         self.save()
 
     def save(self):
