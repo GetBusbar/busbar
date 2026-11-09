@@ -30,8 +30,6 @@ pub(crate) struct LoginMethod {
     pub(crate) inbound_style: Option<busbar_contract::auth_calls::InboundStyle>,
     /// `true` ⇒ this method has a `browser_login` block and renders a button (and accepts `begin`).
     pub(crate) has_button: bool,
-    /// The OIDC issuer from the method's opaque settings, used only to infer a button icon/label.
-    pub(crate) issuer: Option<String>,
     /// The plugin's redirect-vs-credential classification, as its tail states it, read ONCE at
     /// build. Read by `credential_submit` to gate the credential POST to `Credential` methods only
     /// (a redirect method never completes via the form POST).
@@ -289,11 +287,6 @@ impl LoginMethods {
                 return Err(refused(super::auth_refusal(registry, &mc.module)));
             }
 
-            let issuer = mc
-                .settings
-                .get("issuer")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
             let has_button = mc.browser_login.is_some();
 
             lend_browser_login_secret(
@@ -343,7 +336,6 @@ impl LoginMethods {
                     module: calls,
                     inbound_style,
                     has_button,
-                    issuer,
                     login_kind,
                 },
             );
@@ -389,16 +381,15 @@ fn login_label(name: &str) -> String {
     format!("{name}#login")
 }
 
-/// One hosted-login method as the flow reads it: whether it renders a button, the issuer its
-/// settings name (for the button's brand), and how its login starts.
+/// One hosted-login method: its admitted presentation and login classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginMethodView {
     /// The provider name (`identity-providers.<name>`).
     pub name: String,
     /// `true` = it has a `browser_login` block: a button, and a `begin`.
     pub has_button: bool,
-    /// The OIDC issuer its opaque settings name, if any.
-    pub issuer: Option<String>,
+    /// Provider-owned inert presentation from the current successful lifecycle generation.
+    pub presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
     /// Redirect or credential, as its tail states it.
     pub login_kind: busbar_contract::auth::LoginKind,
 }
@@ -411,7 +402,7 @@ pub fn login_methods(app: &App) -> Vec<LoginMethodView> {
         .map(|(name, m)| LoginMethodView {
             name: name.clone(),
             has_button: m.has_button,
-            issuer: m.issuer.clone(),
+            presentation: m.module.login_presentation(),
             login_kind: m.login_kind,
         })
         .collect()

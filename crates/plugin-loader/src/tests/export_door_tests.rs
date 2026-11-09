@@ -290,6 +290,7 @@ fn stopping_counts_queued_lines_and_releases_their_holds_outside_the_queue_lock(
         crate::observe::grant_series(dispatcher.observing(), plugin.name(), true, &[series])
             .unwrap();
     let shared = Arc::new(Shared {
+        recorder: None,
         facts: plugin.context::<ExportFacts>().unwrap().clone(),
         plugin,
         dispatcher,

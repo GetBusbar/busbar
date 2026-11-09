@@ -475,7 +475,7 @@ fn name_and_alias_vs_name_conflicts_are_hard_errors() {
     );
     let b = sign(
         &release,
-        manifest("busbar-store-gamma-plugin", "valkey2", "busbar"),
+        manifest("busbar-store-gamma-plugin", "gamma-secondary", "busbar"),
         b"b",
     );
     write_tarball(&dir, "a.tar.gz", &a, b"a");

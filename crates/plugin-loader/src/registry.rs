@@ -17,7 +17,7 @@
 //!    `dlopen`ed). Anti-downgrade floors are hard rejects inside this phase.
 //! 3. **CONFLICT** (over the loadable set): no two plugins share a `name`, no two share an `alias`,
 //!    and no alias collides with another plugin's `name`. Any collision is a HARD error naming
-//!    both plugins - "you can't use valkey and a third-party valkey".
+//!    both claimants and the conflicting identity.
 //!
 //! Only after all three phases does a plugin enter the [`PluginRegistry`], addressable by BOTH its
 //! canonical name and its alias. Identity comes exclusively from the signed manifest - the tarball
@@ -1086,8 +1086,7 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
         if let Some(prev) = name_owner.get(p.manifest.name.as_str()) {
             errors.push(Conflict {
                 message: format!(
-                    "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
-                     (\"you can't use valkey and a third-party valkey\")", // noun-neutrality: frozen-literal pinned-by=crates/plugin-loader/tests/fixtures/conflict_messages.txt 1.5.5 operator boot and --validate refusal text, asserted byte for byte by registry_tests.rs
+                    "plugin name conflict: '{}' is claimed by both {} and {} - remove one",
                     p.manifest.name, prev.file, p.file
                 ),
                 files: vec![prev.file.clone(), p.file.clone()],

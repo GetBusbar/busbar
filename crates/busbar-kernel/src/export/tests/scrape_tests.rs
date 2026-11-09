@@ -4,9 +4,9 @@
 use super::*;
 use crate::config::{ExportCfg, ExportDefs};
 #[test]
-fn the_metrics_instance_is_the_scrape_sink() {
+fn an_explicit_neutral_declaration_selects_the_recorder_consumer() {
     let defs: ExportDefs = serde_yaml::from_str(
-        "metrics: { module: prometheus, settings: { buffer_seconds: 60, key_gauge_limit: 7 } }\n",
+        "metrics: { module: arbitrary-sink, settings: { vendor_option: opaque } }\n",
     )
     .expect("parses");
     let mut errors = Vec::new();
@@ -24,10 +24,13 @@ fn the_metrics_instance_is_the_scrape_sink() {
         let (scrape, recorder) = super::super::plugin::scrape_instance(
             projection,
             Some(&[busbar_contract::abi::export::ExportStream::Metrics]),
-            true,
+            Some(busbar_contract::export_calls::RecorderRequirements {
+                retention_seconds: 60,
+                key_gauge_limit: 7,
+            }),
             cfg.plugins.iter().any(|plugin| plugin.scrape),
-            serde_json::Value::Object(def.settings.clone()),
-        );
+        )
+        .expect("explicit declaration admits");
         if scrape {
             cfg.recorder = recorder;
         }
@@ -49,7 +52,7 @@ fn the_metrics_instance_is_the_scrape_sink() {
     assert_eq!(
         cfg.recorder
             .as_ref()
-            .map(|r| (r.buffer_seconds, r.key_gauge_limit)),
+            .map(|r| (r.retention_seconds, r.key_gauge_limit)),
         Some((60, 7)),
         "the recorder's settings ride on the scrape sink's instance"
     );
@@ -99,4 +102,55 @@ async fn nested_and_panicking_crossings_restore_the_prior_lend() {
     assert_eq!(unknown.await, Snapshot::Refused(UNKNOWN_SCOPE));
     assert_eq!(hooks.await, Snapshot::Families(Vec::new()));
     assert_eq!(read(0).await, Snapshot::Refused(NOT_GRANTED));
+}
+
+#[test]
+fn recorder_admission_needs_a_declaration_and_rejects_competing_or_invalid_requests() {
+    use busbar_contract::abi::export::ExportStream;
+    use busbar_contract::export_calls::RecorderRequirements;
+    let declared = [ExportStream::Metrics];
+    let mut errors = Vec::new();
+    let projection = crate::export::projection::resolve_projection(
+        "neutral",
+        "any-module",
+        Some(&declared),
+        None,
+        None,
+        false,
+        &mut errors,
+    );
+    assert!(errors.is_empty());
+    let admit = |recorder, already| {
+        super::super::plugin::scrape_instance(projection, Some(&declared), recorder, already)
+    };
+    assert_eq!(admit(None, false).unwrap(), (false, None));
+    let valid = RecorderRequirements {
+        retention_seconds: 60,
+        key_gauge_limit: 7,
+    };
+    assert_eq!(admit(Some(valid), false).unwrap(), (true, Some(valid)));
+    assert!(admit(Some(valid), true).is_err());
+    assert!(admit(
+        Some(RecorderRequirements {
+            retention_seconds: 0,
+            ..valid
+        }),
+        false
+    )
+    .is_err());
+    assert!(super::super::plugin::scrape_instance(projection, None, Some(valid), false).is_err());
+    let excluded = crate::export::projection::resolve_projection(
+        "neutral",
+        "any-module",
+        Some(&declared),
+        Some(&[]),
+        None,
+        false,
+        &mut errors,
+    );
+    assert_eq!(
+        super::super::plugin::scrape_instance(excluded, Some(&declared), Some(valid), false)
+            .unwrap(),
+        (false, None)
+    );
 }

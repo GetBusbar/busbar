@@ -964,7 +964,7 @@ async fn run(
         resolved_export
             .recorder
             .as_ref()
-            .map(|p| Duration::from_secs(p.buffer_seconds)),
+            .map(|p| Duration::from_secs(p.retention_seconds)),
     );
 
     let plugins_cfg = deploy.plugins.clone();

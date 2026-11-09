@@ -31,6 +31,19 @@ use crate::abi::sdk::safe::{Instance as KindGenericInstance, SafeSlot};
 use crate::abi::sdk::services::{CredentialSecret, Pend, Services as KindGenericServices};
 pub use crate::auth_calls::{Decision, Strip, StripPlace, VerifiedIdentity};
 
+/// Encode inert presentation for `Life::extensions`. Validation remains mandatory at
+/// the receiving host boundary. This shape contains only strings and integers, so JSON
+/// serialization cannot encounter unsupported numeric values or non-string object keys.
+#[must_use]
+pub fn presentation_extensions(presentation: &crate::auth_calls::LoginPresentation) -> Vec<u8> {
+    let json = serde_json::to_vec(presentation)
+        .expect("presentation consists of JSON strings and integers");
+    crate::abi::mechanism::extensions::encode(&[(
+        crate::auth_calls::presentation::EXT_LOGIN_PRESENTATION,
+        &json,
+    )])
+}
+
 /// One `verify`'s request, as a safe plugin reads it; lent for the call.
 #[derive(Debug, Clone, Copy)]
 pub struct VerifyView<'a> {

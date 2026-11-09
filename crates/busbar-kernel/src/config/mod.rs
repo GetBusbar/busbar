@@ -1374,7 +1374,7 @@ pub struct ExportCfg {
     /// The RECORDER's settings, read off the SCRAPE SINK's instance (see
     /// [`PluginExportSettings::scrape`]), if one is configured. `None` ⇒ no recorder installed,
     /// `/metrics` not mounted, every emit site a true no-op (the zero-config default).
-    pub recorder: Option<PrometheusSettings>,
+    pub recorder: Option<busbar_contract::export_calls::RecorderRequirements>,
     /// Every instance whose `module:` names an export module registered on the EXPORT AXIS
     /// ([`crate::export::plugin::register_module`]) — a plugin sink, compiled in or dropped in — in
     /// config order. Opened once at boot ([`crate::export::plugin::open`]).
@@ -1393,9 +1393,9 @@ pub struct PluginExportSettings {
     /// The instance's definition.
     pub def: ExportDefCfg,
     pub(crate) projection: crate::export::projection::Projection,
-    /// THE SCRAPE SINK: this instance's sink is granted first-party (linked, or signed by the release
-    /// key), carries the `metrics` stream, and the instance subscribes to it — the host serves the well-known `/metrics` (it holds the recorder) and has
-    /// this sink render the recorder's snapshot (`crate::export::scrape`). At most one instance.
+    /// The admitted recorder consumer: explicitly declares recorder requirements and
+    /// subscribes to metrics. Core grants snapshot access only to this instance.
+    /// At most one instance may consume the host recorder.
     pub(crate) scrape: bool,
 }
 
@@ -1407,27 +1407,13 @@ impl ExportCfg {
 
 impl From<&ExportCfg> for busbar_kernel::config::limits::ExportLimits {
     fn from(export: &ExportCfg) -> Self {
-        let key_gauge_limit = export
-            .recorder
+        let recorder =
+            crate::export::plugin::boot_recorder_requirements().unwrap_or(export.recorder);
+        let key_gauge_limit = recorder
             .as_ref()
             .map_or_else(default_key_gauge_limit, |p| p.key_gauge_limit);
         Self { key_gauge_limit }
     }
-}
-
-/// `settings:` of an `export.<name>.module: prometheus` instance — relocated from the retired
-/// `observability.metrics` block. They are the RECORDER's settings (the host holds the recorder):
-/// the sink validates them as it validates its instance, and the host reads them off the scrape
-/// sink's instance ([`ExportCfg::recorder`]).
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct PrometheusSettings {
-    /// Retention window (SECONDS) for the rolling quantile summary — REQUIRED, exactly as the retired
-    /// `observability.metrics.buffer_seconds` was (turning metrics on is a deliberate choice + a
-    /// memory cost the operator names).
-    pub buffer_seconds: u64,
-    #[serde(default = "default_key_gauge_limit")]
-    pub key_gauge_limit: usize,
 }
 
 pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg {
@@ -1437,11 +1423,10 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     let mut refused: Vec<&str> = Vec::new();
 
     for (name, def) in defs {
-        let settings = serde_json::Value::Object(def.settings.clone());
         let module = def.module.trim();
 
         let axis = crate::export::plugin::probe(name, module, &def.settings);
-        let declared = axis.as_ref().and_then(|(streams, _)| streams.as_deref());
+        let declared = axis.as_ref().and_then(|(streams, _, _)| streams.as_deref());
         let projection = crate::export::projection::resolve_projection(
             name,
             module,
@@ -1469,21 +1454,24 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             }
             seen_once.push(module);
         }
-        let first_party = axis
-            .as_ref()
-            .is_some_and(|_| crate::export::plugin::first_party(module));
-        let (scrape, recorder) = crate::export::plugin::scrape_instance(
+        let declared_recorder = axis.as_ref().and_then(|(_, _, recorder)| *recorder);
+        let (scrape, recorder) = match crate::export::plugin::scrape_instance(
             projection,
             declared,
-            first_party,
+            declared_recorder,
             out.plugins.iter().any(|p| p.scrape),
-            settings,
-        );
+        ) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                errors.push(format!("export.{name}: {error}"));
+                (false, None)
+            }
+        };
         if let Some(instance) = crate::export::plugin::configured_instance(
             name,
             def,
             projection,
-            axis.map(|(_, problems)| problems),
+            axis.map(|(_, problems, _)| problems),
             scrape,
             crate::export::plugin::linked_modules,
             errors,

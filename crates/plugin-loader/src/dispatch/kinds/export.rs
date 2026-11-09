@@ -18,11 +18,13 @@ use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 /// folded under). Read back through [`crate::dispatch::Plugin::context`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExportFacts {
+    /// The admitted immutable recorder declaration protocol is required after OPEN.
+    pub recorder: bool,
     /// The streams, as `ExportStream` bytes.
     pub streams: Vec<u8>,
     /// The routes, in the route vocabulary every kind declares in.
     pub routes: Vec<Route>,
-    /// Declared routes requesting the first-party public namespace grant.
+    /// Declared routes requesting the admitted recorder consumer namespace grant.
     pub public_routes: Vec<String>,
     /// Public routes retained by the boot instance across configuration removal.
     pub persistent_routes: Vec<String>,
@@ -127,7 +129,12 @@ fn facts(st: &Statement) -> Result<ExportFacts, String> {
                 .into(),
         );
     }
+    let recorder = busbar_contract::export_calls::recorder_protocol(ext)?;
+    if recorder && !streams.contains(&(ExportStream::Metrics as u8)) {
+        return Err("a recorder declaration requires the metrics stream".into());
+    }
     Ok(ExportFacts {
+        recorder,
         span_records,
         public_routes,
         persistent_routes,

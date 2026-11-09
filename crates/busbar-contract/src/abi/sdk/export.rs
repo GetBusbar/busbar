@@ -45,6 +45,30 @@ pub const fn tail(streams: &'static [u8], routes: &'static [Route]) -> Tail {
     }
 }
 
+/// Write the export kind's immutable recorder declaration under the instance's lease.
+/// Plugins parse their own settings before constructing these neutral requirements.
+pub fn declare_recorder<L: Life<Kind = crate::plugin::markers::ExportKind>>(
+    held: &Held<L>,
+    mut out: Out<'_, crate::abi::export::CheckOut>,
+    requirements: crate::export_calls::RecorderRequirements,
+) -> Outcome {
+    if let Err(error) = requirements.validate() {
+        return out.fail(Refusal::refused(error));
+    }
+    match serde_json::to_vec(&requirements) {
+        Ok(bytes) => {
+            out.lease(
+                |o| &o.findings,
+                held.leases(),
+                bytes,
+                crate::abi::mechanism::call::BLOB_JSON,
+            );
+            Outcome::Ready
+        }
+        Err(error) => out.fail(Refusal::failed(error.to_string())),
+    }
+}
+
 /// `scrape` on a sink of `L` that carries no `metrics` stream: REFUSED, [`NO_EXPOSITION`].
 #[derive(Debug)]
 pub struct NoScrape<L>(PhantomData<L>);

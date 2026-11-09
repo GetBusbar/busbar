@@ -546,18 +546,26 @@ impl Shared {
     }
 }
 
+#[derive(Clone)]
+struct InstanceMetadata {
+    carriers: Vec<String>,
+    presentation: Option<busbar_contract::auth_calls::LoginPresentation>,
+    generation: u64,
+    // An attempted epoch is never reused, even when the plugin's reply cannot be admitted.
+    attempted_generation: u64,
+}
+
 pub struct AuthInstance {
     shared: Arc<Shared>,
     sink: AuthSink,
     facts: AuthFacts,
-    carriers: Mutex<Vec<String>>,
+    metadata: Mutex<InstanceMetadata>,
     metadata_valid: AtomicBool,
 
     // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
     settings: Vec<u8>,
 
     secrets: KeptSecrets,
-    generation: AtomicU64,
     label: String,
     lifecycle: Mutex<()>,
 
@@ -678,10 +686,32 @@ fn instance_carriers(
     Ok(selection.unwrap_or_else(|| previous.to_vec()))
 }
 
+fn instance_metadata(
+    blob: Blob,
+    previous: &[String],
+    facts: &AuthFacts,
+    generation: u64,
+) -> Result<InstanceMetadata, String> {
+    let carriers = instance_carriers(blob, previous, facts)?;
+    // SAFETY: instance_carriers checked the envelope; the caller retains the READY reply lease.
+    let bytes = unsafe { crate::dispatch::plugin::blob_bytes(blob) };
+    let presentation = busbar_contract::auth_calls::presentation::login_presentation(bytes)
+        .map_err(str::to_string)?;
+    if presentation.is_some() && facts.caps & busbar_contract::abi::auth::CAP_LOGIN == 0 {
+        return Err("auth login presentation requires the login capability".into());
+    }
+    Ok(InstanceMetadata {
+        carriers,
+        presentation,
+        generation,
+        attempted_generation: generation,
+    })
+}
+
 impl AuthInstance {
     fn headers(&self, point: AuthPoint) -> Option<Headers> {
-        let carriers = self
-            .carriers
+        let metadata = self
+            .metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.metadata_valid.load(Ordering::Acquire) {
@@ -692,7 +722,7 @@ impl AuthInstance {
         } else if self.facts.facts & FACT_INBOUND_ALL_HEADERS != 0 {
             Headers::All
         } else {
-            Headers::Carriers(carriers.clone())
+            Headers::Carriers(metadata.carriers.clone())
         })
     }
 
@@ -723,10 +753,10 @@ impl AuthInstance {
         if called.outcome != Outcome::Ready {
             return Err(why(called.outcome, called.error));
         }
-        let carriers = instance_carriers(f.out.head.extensions, &facts.carriers, &facts);
+        let metadata = instance_metadata(f.out.head.extensions, &facts.carriers, &facts, 1);
         release(&plugin, called.lease);
-        let carriers = match carriers {
-            Ok(carriers) => carriers,
+        let metadata = match metadata {
+            Ok(metadata) => metadata,
             Err(error) => {
                 close(&plugin);
                 return Err(error);
@@ -750,11 +780,10 @@ impl AuthInstance {
             }),
             sink,
             facts,
-            carriers: Mutex::new(carriers),
+            metadata: Mutex::new(metadata),
             metadata_valid: AtomicBool::new(true),
             settings: settings.to_vec(),
             secrets,
-            generation: AtomicU64::new(1),
             label: label.to_string(),
             lifecycle: Mutex::new(()),
             schedule,
@@ -809,9 +838,10 @@ impl AuthCalls for AuthInstance {
     }
 
     fn carriers(&self) -> Vec<String> {
-        self.carriers
+        self.metadata
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .carriers
             .clone()
     }
 
@@ -913,7 +943,19 @@ impl AuthCalls for AuthInstance {
                 ));
             }
         };
-        let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let generation = {
+            let mut metadata = self
+                .metadata
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let generation = metadata
+                .generation
+                .max(metadata.attempted_generation)
+                .checked_add(1)
+                .ok_or("auth lifecycle generation exhausted")?;
+            metadata.attempted_generation = generation;
+            generation
+        };
         self.sink.0.flushed.store(0, Ordering::Release);
         let blobs = self.secrets.blobs();
         let mut f = Frame::new(
@@ -933,6 +975,7 @@ impl AuthCalls for AuthInstance {
 
         let was_valid = self.metadata_valid.load(Ordering::Acquire);
         let called = self.shared.plugin.call(lc::REFRESH, &mut f);
+        let _lease = AnswerLease::new(&self.shared.plugin, called.lease);
         if called.outcome != Outcome::Ready {
             self.metadata_valid.store(
                 was_valid && matches!(called.outcome, Outcome::Refused | Outcome::Failed),
@@ -941,14 +984,13 @@ impl AuthCalls for AuthInstance {
             return Err(why(called.outcome, called.error));
         }
         let current = self.carriers();
-        let carriers = instance_carriers(f.out.extensions, &current, &self.facts);
-        release(&self.shared.plugin, called.lease);
-        match carriers {
-            Ok(carriers) => {
+        let metadata = instance_metadata(f.out.extensions, &current, &self.facts, generation);
+        match metadata {
+            Ok(metadata) => {
                 *self
-                    .carriers
+                    .metadata
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = carriers;
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = metadata;
                 self.metadata_valid.store(true, Ordering::Release);
             }
             Err(error) => {
@@ -957,6 +999,14 @@ impl AuthCalls for AuthInstance {
             }
         }
         Ok(self.sink.0.flushed.load(Ordering::Acquire))
+    }
+
+    fn login_presentation(&self) -> Option<busbar_contract::auth_calls::LoginPresentation> {
+        self.metadata
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .presentation
+            .clone()
     }
 
     fn login_kind(&self) -> Option<busbar_contract::auth::LoginKind> {
@@ -976,6 +1026,11 @@ impl AuthCalls for AuthInstance {
         &self,
         request: busbar_contract::auth::BeginLogin,
     ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        if !self.metadata_valid.load(Ordering::Acquire) {
+            return Box::new(busbar_contract::auth_calls::LoginSettled(Some(
+                busbar_contract::auth::LoginOutcome::Reject,
+            )));
+        }
         login::begin(&self.shared, request)
     }
 
@@ -983,6 +1038,11 @@ impl AuthCalls for AuthInstance {
         &self,
         request: busbar_contract::auth_calls::LoginCallback,
     ) -> Box<dyn busbar_contract::auth_calls::LoginCall> {
+        if !self.metadata_valid.load(Ordering::Acquire) {
+            return Box::new(busbar_contract::auth_calls::LoginSettled(Some(
+                busbar_contract::auth::LoginOutcome::Reject,
+            )));
+        }
         login::complete(&self.shared, request)
     }
 }
@@ -1068,3 +1128,7 @@ mod instance_carriers_old_api_tests;
 #[cfg(test)]
 #[path = "tests/auth_header_boundary_tests.rs"]
 mod header_boundary_tests;
+
+#[cfg(test)]
+#[path = "tests/auth_presentation_tests.rs"]
+mod presentation_tests;
