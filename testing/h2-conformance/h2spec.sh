@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # The `h2` suite of testing/conformance/suites.tsv: h2spec (summerwind/h2spec, the HTTP/2 conformance
-# tester, RFC 9113 + RFC 7541) over TLS with ALPN h2 against busbar's `tls:` listener, in three legs
+# tester, RFC 7540 + RFC 7541) over TLS with ALPN h2 against busbar's `tls:` listener, in three legs
 # and one verdict:
 #   1. CONTROL           a known-good third-party HTTP/2 server: Caddy (Go's x/net/http2), digest-pinned.
 #                        No production server passes all 146 h2spec tests (measured 2026-10-29: nginx
@@ -62,8 +62,8 @@ final() {
 import json, sys
 out, ver, why = sys.argv[1], sys.argv[2], sys.argv[3:]
 v = {"suite": "h2", "status": "fail" if why else "pass", "armed": True,
-     "standard": "HTTP/2 (RFC 9113) and HPACK (RFC 7541)",
-     "plan": "h2spec over TLS (ALPN h2) against the tls: listener of the shipped busbar binary",
+     "standard": "HTTP/2 (RFC 7540) and HPACK (RFC 7541)",
+     "plan": "Full default h2spec case set over TLS (ALPN h2) against the shipped busbar listener; h2spec v2.6.0 targets RFC 7540/7541, not a complete RFC 9113 assessment",
      "spec_version": f"h2spec {ver}"}
 if why: v["reason"] = "; ".join(why)[:4000]
 json.dump(v, open(out, "w"), indent=2); open(out, "a").write("\n")

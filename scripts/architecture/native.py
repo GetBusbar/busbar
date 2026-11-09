@@ -23,6 +23,23 @@ import time
 
 from check import Policy, Violation, read
 
+EXTERNAL_EVALUATIONS = {
+    'GetBusbar/busbar-plane-llm': 'testing/conformance/external-openai.sh',
+    'GetBusbar/busbar-plane-decisions': 'testing/conformance/external-jev.sh',
+}
+
+
+def evaluation_job(repository, conformance_only, external_conformance):
+    if conformance_only and external_conformance:
+        raise Violation('evaluation modes are mutually exclusive')
+    if conformance_only and repository == 'GetBusbar/busbar':
+        return 'core-conformance'
+    if external_conformance and repository in EXTERNAL_EVALUATIONS:
+        return 'external-conformance'
+    if conformance_only or external_conformance:
+        raise Violation('no trusted evaluation command for this repository')
+    return None
+
 
 class Interrupted(BaseException):
     def __init__(self, signum):
@@ -147,6 +164,8 @@ def checkout(repository, revision, destination):
 class Qualification:
     def __init__(self, args):
         self.conformance_only = args.conformance_only
+        self.external_conformance = getattr(args, 'external_conformance', False)
+        self.evaluation_only = self.conformance_only or self.external_conformance
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.evidence = self.work / 'evidence'
         self.evidence.mkdir()
@@ -159,9 +178,11 @@ class Qualification:
             policy_sha256=digest(self.trusted / 'ci/architecture.toml'),
             config_uri=os.environ['CI_CONFIG_REF_URI'], pipeline_id=os.environ['CI_PIPELINE_ID'],
             job_id=os.environ['CI_JOB_ID'], job_url=os.environ['CI_JOB_URL'], steps=[])
-        if self.conformance_only:
-            if self.repository != 'GetBusbar/busbar' or os.environ.get('CI_JOB_NAME') != 'core-conformance':
-                raise Violation('standalone conformance requires the trusted core job')
+        if self.evaluation_only:
+            expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance)
+            if (os.environ.get('CI_JOB_NAME') != expected_job
+                    or os.environ.get('CI_PIPELINE_SOURCE') != 'api'):
+                raise Violation('standalone evaluation requires its trusted API job')
             # An evaluation receipt can never satisfy native admission.
             self.receipt['schema'] = 'busbar.protected-conformance/1'
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
@@ -181,7 +202,7 @@ class Qualification:
             if subprocess.run(['git', '-C', str(self.root), 'merge-base', '--is-ancestor', target, self.receipt['source']]).returncode:
                 raise Violation('candidate must be rebased on current dev and qualified again')
             self.receipt['target_revision'] = target
-        elif self.conformance_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
+        elif self.evaluation_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
             self.receipt['target_revision'] = None
         elif os.environ['CI_PIPELINE_SOURCE'] == 'push' and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
             self.receipt['target_revision'] = self.receipt['source']
@@ -404,6 +425,10 @@ class Qualification:
 
     def core_conformance(self):
         """Evaluate the registered core suites independently of product admission."""
+        # The full applicable upstream mTLS signature roster contains thousands
+        # of handshakes. Keep its three bounded legs inside this per-suite cap;
+        # the enclosing command retains its three-hour bound.
+        self.env['CONFORMANCE_TIMEOUT_SECONDS'] = '3600'
         failed = False
         try:
             self.conformance('core-native-conformance')
@@ -419,6 +444,31 @@ class Qualification:
             failed = True
         if failed:
             raise Violation('one or more conformance evaluations did not pass; inspect actual verdicts')
+
+    def external_endpoint_conformance(self):
+        """Retain external judges' results without granting native admission."""
+        sdk = self.sdk()
+        self.receipt['sdk_revision'] = git(sdk, 'rev-parse', 'HEAD')
+        self.architecture(sdk)
+        self.env['BUSBAR_PIN'] = self.receipt['host_revision']
+        self.env['CONFORMANCE_OUT'] = str(self.evidence / 'external')
+        command = self.root / EXTERNAL_EVALUATIONS[self.repository]
+        if not command.is_file() or command.is_symlink():
+            raise Violation('missing external evaluation entry point')
+        try:
+            self.run('external-endpoint-conformance', ['bash', str(command)], timeout=10800)
+        finally:
+            output = self.evidence / 'external'
+            files = {}
+            for path in sorted(output.rglob('*')):
+                if path.is_symlink():
+                    raise Violation('indirect external evaluation evidence')
+                if path.is_file():
+                    files[str(path.relative_to(output))] = digest(path)
+            self.receipt['external_evidence'] = files
+            self.save()
+            if 'evaluation.json' not in files:
+                raise Violation('external judge produced no evaluation record')
 
     def finish(self, status, error=None):
         self.receipt.update(status=status, finished_at=now())
@@ -436,7 +486,9 @@ def qualify():
     parser.add_argument('--trusted', required=True, type=Path)
     parser.add_argument('--checkout', required=True, type=Path)
     parser.add_argument('--work', required=True, type=Path)
-    parser.add_argument('--conformance-only', action='store_true')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--conformance-only', action='store_true')
+    modes.add_argument('--external-conformance', action='store_true')
     args = parser.parse_args()
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
         raise Violation('full native qualification runs in GitLab CI only')
@@ -450,7 +502,12 @@ def qualify():
         from native_sources import prepare
         prepare(qualification, qualification.host())
         evaluation_error = None
-        if args.conformance_only:
+        if args.external_conformance:
+            try:
+                qualification.external_endpoint_conformance()
+            except Violation as error:
+                evaluation_error = error
+        elif args.conformance_only:
             try:
                 qualification.core_conformance()
             except Violation as error:

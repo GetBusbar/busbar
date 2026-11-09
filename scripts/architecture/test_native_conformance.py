@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import native
 
@@ -48,6 +49,38 @@ raise SystemExit(1)
         (output / 'example.json').symlink_to(other)
         with self.assertRaisesRegex(native.Violation, 'indirect conformance'):
             self.q.copy_conformance()
+
+    def test_external_failed_judge_keeps_hashed_output_without_admission(self):
+        self.q.repository = 'GetBusbar/busbar-plane-llm'
+        self.q.receipt['host_revision'] = 'a' * 40
+        self.q.sdk = lambda: self.root
+        self.q.architecture = lambda sdk: None
+        entry = self.root / native.EXTERNAL_EVALUATIONS[self.q.repository]
+        entry.write_text('''mkdir "$CONFORMANCE_OUT"
+printf '{"status":"not-run","reason":"real model unavailable"}' > "$CONFORMANCE_OUT/evaluation.json"
+printf 'upstream cases: 300 not run\n' > "$CONFORMANCE_OUT/results.txt"
+exit 1
+''')
+        with patch.object(native, 'git', return_value='b' * 40):
+            with self.assertRaisesRegex(native.Violation, 'failed; no automatic retry'):
+                self.q.external_endpoint_conformance()
+        self.assertEqual(self.q.receipt['steps'][-1]['exit_code'], 1)
+        self.assertEqual(self.q.receipt['external_evidence'], {
+            name: native.digest(self.q.evidence / 'external' / name)
+            for name in ('evaluation.json', 'results.txt')})
+        self.assertEqual(self.q.env['BUSBAR_PIN'], 'a' * 40)
+
+    def test_external_job_cannot_substitute_for_other_repositories_or_modes(self):
+        self.assertEqual(native.evaluation_job('GetBusbar/busbar-plane-llm', False, True),
+                         'external-conformance')
+        self.assertIsNone(native.evaluation_job('GetBusbar/busbar-plane-llm', False, False))
+        for repository, core, external in [
+                ('GetBusbar/busbar', False, True),
+                ('GetBusbar/busbar-plane-llm', True, False),
+                ('GetBusbar/busbar-plane-llm', True, True),
+                ('GetBusbar/private-plugin', False, True)]:
+            with self.assertRaises(native.Violation):
+                native.evaluation_job(repository, core, external)
 
 
 if __name__ == '__main__':
