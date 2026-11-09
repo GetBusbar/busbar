@@ -263,9 +263,10 @@ impl<K: KindMarker> Host<K> {
     /// A proven loan stays usable by a plugin that forbids unsafe code:
     /// ```
     /// #![forbid(unsafe_code)]
-    /// use busbar_contract::abi::{sdk::{Lent, conn::Host, services::{Services, Wake}},
-    ///     mechanism::ticket::HostTables};
-    /// fn proven(t: Lent<'_, HostTables>) {
+    /// use busbar_contract::plugin::KindMarker;
+    /// use busbar_contract::abi::sdk::{lent::KindHostLoan,
+    ///     conn::Host, services::{Services, Wake}};
+    /// fn proven<K: KindMarker>(t: KindHostLoan<'_, K>) {
     ///     let _ = Host::of(t);
     ///     let _ = Services::of(t);
     ///     let _ = Wake::of(t);

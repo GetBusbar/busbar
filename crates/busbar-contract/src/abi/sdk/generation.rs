@@ -13,8 +13,8 @@ use std::marker::PhantomData;
 ///
 /// ```compile_fail,E0597
 /// use busbar_contract::abi::mechanism::call::AbiStr;
-/// use busbar_contract::abi::sdk::Instance;
-/// fn body(instance: Instance<'_, String>) {
+/// use busbar_contract::{abi::sdk::Instance, plugin::markers::AuthKind};
+/// fn body(instance: Instance<'_, String, AuthKind>) {
 ///     let gen = instance.generation();
 ///     let local = String::from("echo");
 ///     let _named = AbiStr::lent(&local, &gen);
@@ -25,8 +25,8 @@ use std::marker::PhantomData;
 ///
 /// ```
 /// use busbar_contract::abi::mechanism::call::AbiStr;
-/// use busbar_contract::abi::sdk::Instance;
-/// fn body(instance: Instance<'_, String>) {
+/// use busbar_contract::{abi::sdk::Instance, plugin::markers::AuthKind};
+/// fn body(instance: Instance<'_, String, AuthKind>) {
 ///     let gen = instance.generation();
 ///     let state = instance.get().map_or("", String::as_str);
 ///     let _named = AbiStr::lent(state, &gen);
@@ -38,8 +38,8 @@ use std::marker::PhantomData;
 /// ```compile_fail
 /// use busbar_contract::abi::auth::BeginLoginIn;
 /// use busbar_contract::abi::mechanism::call::AbiStr;
-/// use busbar_contract::abi::sdk::{Instance, Lent};
-/// fn body(instance: Instance<'_, String>, input: Lent<'_, BeginLoginIn>) {
+/// use busbar_contract::{abi::sdk::{Instance, Lent}, plugin::markers::AuthKind};
+/// fn body(instance: Instance<'_, String, AuthKind>, input: Lent<'_, BeginLoginIn>) {
 ///     let gen = instance.generation();
 ///     let lent = input.state().as_str().unwrap_or("");
 ///     let _named = AbiStr::lent(lent, &gen);
