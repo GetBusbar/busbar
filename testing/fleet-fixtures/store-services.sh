@@ -188,7 +188,8 @@ do_up() {
         docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
           -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
           -e MYSQL_DATABASE=busbar_store_qa \
-          -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
+          -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" \
+          --log-bin-trust-function-creators=1 >/dev/null || die "docker run failed for ${svc}" ;;
       valkey)
         docker run -d --rm --name "$name" --label "dev.getbusbar.fixture.owner=$name" \
           -p "127.0.0.1:${lport}:$(svc_port "$svc")" "$ref" >/dev/null || die "docker run failed for ${svc}" ;;
