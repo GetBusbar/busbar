@@ -1,0 +1,22 @@
+{
+  "schema": "busbar.native-oracle-pin/1",
+  "repository": "https://github.com/GetBusbar/busbar-release.git",
+  "source": "efc0f951091b984ce05cd32786ebf5ed8b7de528",
+  "crate": "busbar-release-oracle",
+  "bin": "busbar-oracle",
+  "release_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAHC1U0BcT6iFe98mWXNriKeDNxO6xOaoMY5UXotNweEs=\n-----END PUBLIC KEY-----\n",
+  "platforms": {
+    "x86_64": {
+      "filename": "busbar-oracle-linux-x86_64-efc0f951091b984ce05cd32786ebf5ed8b7de528",
+      "sha256": "b31151f9b56a5f5a76c7ddc77f9c45ce32637bc91ae9baf40fb9a00ba2e71529",
+      "signature": "80ekzelSiBBUa/o0oHXd1Ns+kdiyV1nbLIF+90HINGLNkeDTub5M9tKmCgwlS30nZ4nFLr9Uc7vO5i5lf0R3DQ==",
+      "canonical_asset": "https://github.com/GetBusbar/busbar-release/-/releases/dev-bin/downloads/busbar-oracle-linux-x86_64-efc0f951091b984ce05cd32786ebf5ed8b7de528"
+    },
+    "aarch64": {
+      "filename": "busbar-oracle-linux-aarch64-efc0f951091b984ce05cd32786ebf5ed8b7de528",
+      "sha256": "b6325966df0da054343ccbe2b4fd1299a8071f36531402f0f39cb3e560179f25",
+      "signature": "Q3BXLidNAdpSYWgh2f4FGSjDCbSfboE5CuVybcogqw6Y74UiWvh2F6lHc8JEXXChM6MfTE7+i113IOdZoL1tCQ==",
+      "canonical_asset": "https://github.com/GetBusbar/busbar-release/-/releases/dev-bin/downloads/busbar-oracle-linux-aarch64-efc0f951091b984ce05cd32786ebf5ed8b7de528"
+    }
+  }
+}
