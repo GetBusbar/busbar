@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "9c0241e72302afb8a08e376e3c60a9e71c0dce04",
+      "commit": "5a989e9ec41831489f909069921b05b23216ad24",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -191,7 +191,7 @@
     {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
-      "commit": "8209860d1147c8d1297ffb9899472aa1a47fb498",
+      "commit": "521bbfbca87821c709720807db25e65375fc1af8",
       "package": "busbar-transport-webrtc-plugin",
       "kind": "transport",
       "alias": "webrtc",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "c1cb6ebf105aa49d5818c4f205eea3bc8e6431cc",
+      "commit": "f6c9afaa8d4ad091f2f144f62e5fb4292d354c43",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "dbdbd19deab3bed9d497d38b0f1834a6c34abb9c",
+      "commit": "d093d9e0ad44bfebef27a8d70d6fdbba45c11ae7",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
@@ -312,7 +312,7 @@
     {
       "repo": "busbar-plane-streaming",
       "url": "https://github.com/GetBusbar/busbar-plane-streaming",
-      "commit": "3926d334dfc38323a830856b2ddb6a3638261796",
+      "commit": "40898ac6ff9650fb6fa3ac8282c17ef2f80b338d",
       "package": "busbar-plane-streaming-plugin",
       "kind": "plane",
       "alias": "streaming",
@@ -323,7 +323,7 @@
     {
       "repo": "busbar-secret-vault",
       "url": "https://github.com/GetBusbar/busbar-secret-vault",
-      "commit": "945231628039a0f7971193b4ea9d523e44065a71",
+      "commit": "7009dc6de4579ee16abbeebeed652e640e2eaed8",
       "package": "busbar-secret-vault-plugin",
       "kind": "secret",
       "alias": "vault",
@@ -334,7 +334,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "257bcfec8d0085a33ee9ea7f848c74e58be25239",
+      "commit": "cc1ab8df87a42610f3c85594f7cce72dccab9893",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "a62b406e9293bb028228f5a19db895e02dd962d2",
+      "commit": "47ecc8d3b9e2859ed312e5189d81e43856c1178e",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",

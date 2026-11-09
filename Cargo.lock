@@ -3599,9 +3599,9 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=257bcfec8d0085a33ee9ea7f848c74e58be25239#257bcfec8d0085a33ee9ea7f848c74e58be25239"
+source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=cc1ab8df87a42610f3c85594f7cce72dccab9893#cc1ab8df87a42610f3c85594f7cce72dccab9893"
 
 [[patch.unused]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=a62b406e9293bb028228f5a19db895e02dd962d2#a62b406e9293bb028228f5a19db895e02dd962d2"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=47ecc8d3b9e2859ed312e5189d81e43856c1178e#47ecc8d3b9e2859ed312e5189d81e43856c1178e"
