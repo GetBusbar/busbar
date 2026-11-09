@@ -198,6 +198,7 @@ class Qualification:
             CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
             CARGO_BUILD_JOBS=str(min(os.cpu_count() or 4, 16)), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
+            MODERNCI_CACHE_DIR=str(self.work / 'cache'), XDG_CACHE_HOME=str(self.work / 'cache'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')
         self.env['CI_SERVER_HOST'] = os.environ['CI_SERVER_HOST']
         # Runner umasks can permit group/world writes. Custody requires a private
