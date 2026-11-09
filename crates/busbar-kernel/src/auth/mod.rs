@@ -2245,6 +2245,7 @@ pub(crate) async fn auth_middleware(
     });
 
     let mut declared_admin = false;
+    let mut declared_core_admin = false;
 
     let mut claimed_at_key = false;
     if let Some(auth) = core_routes.declared_auth(&path, req.method()) {
@@ -2253,7 +2254,10 @@ pub(crate) async fn auth_middleware(
                 drop(_mw.take());
                 return Ok(next.run(req).await);
             }
-            busbar_contract::abi::mechanism::route::RouteAuth::Admin => declared_admin = true,
+            busbar_contract::abi::mechanism::route::RouteAuth::Admin => {
+                declared_admin = true;
+                declared_core_admin = true;
+            }
             busbar_contract::abi::mechanism::route::RouteAuth::Key => claimed_at_key = true,
         }
     }
@@ -2329,7 +2333,15 @@ pub(crate) async fn auth_middleware(
     if is_admin {
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let mut strips = Vec::new();
-        let door = if let Some(admission) = &inbound {
+        // The root deliberately defers core Admin routes to this verifier, independent
+        // of the data chain. Their unverified open guest verdict is not an admin grant.
+        let deferred_core_admin = declared_core_admin
+            && inbound.as_ref().is_some_and(|admission| {
+                matches!(&admission.selected_line().claimant,
+                crate::guest::Claimant::Clean(name) if name == "core")
+                    && matches!(admission.selected_line().auth, crate::guest::LineAuth::None)
+            });
+        let door = if let Some(admission) = inbound.as_ref().filter(|_| !deferred_core_admin) {
             let verdict = admission.admin_verdict();
             if admin_door_admits(&verdict.door, req.method().as_str(), target)
                 && !admission.claim_admin_replay().await
@@ -2346,7 +2358,7 @@ pub(crate) async fn auth_middleware(
                 &app,
                 req.method().as_str(),
                 target,
-                req.headers(),
+                inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
                 false,
                 true,
                 &mut strips,

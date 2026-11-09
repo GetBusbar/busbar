@@ -148,6 +148,9 @@ impl VaultPeer {
 }
 
 fn request(stream: &mut TcpStream) {
+    // Accepted sockets inherit the listener's nonblocking flag on macOS; the peer's
+    // bounded request reads must wait for the caller to send its headers.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();

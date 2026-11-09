@@ -897,6 +897,18 @@ pub struct TransportEntries {
     pub doors: Vec<crate::dispatch::Plugin<crate::dispatch::kinds::transport::Transport>>,
 }
 
+fn archive_filename(path: &Path) -> Option<Result<&str, String>> {
+    let name = path.file_name()?;
+    let bytes = name.as_encoded_bytes();
+    if !bytes.ends_with(b".tar.gz") && !bytes.ends_with(b".tgz") {
+        return None;
+    }
+    Some(
+        name.to_str()
+            .ok_or_else(|| format!("plugin archive filename is not UTF-8: {}", path.display())),
+    )
+}
+
 #[cold]
 #[inline(never)]
 pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
@@ -912,25 +924,16 @@ pub fn discover(dir: &Path) -> Result<Vec<PathBuf>, String> {
             entry.map_err(|e| format!("error reading plugins dir {}: {e}", dir.display()))?;
         let path = entry.path();
 
-        let archive = path.file_name().is_some_and(|name| {
-            let bytes = name.as_encoded_bytes();
-            bytes.ends_with(b".tar.gz") || bytes.ends_with(b".tgz")
-        });
-        if !archive {
+        let Some(name) = archive_filename(&path) else {
             continue;
-        }
+        };
         let metadata = path
             .metadata()
             .map_err(|e| format!("cannot inspect plugin archive {}: {e}", path.display()))?;
         if !metadata.is_file() {
             continue;
         }
-        if path.file_name().and_then(|f| f.to_str()).is_none() {
-            return Err(format!(
-                "plugin archive filename is not UTF-8: {}",
-                path.display()
-            ));
-        }
+        name?;
         out.push(path);
     }
     out.sort();

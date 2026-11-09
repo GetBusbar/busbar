@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[path = "../../../../busbar/src/link_policy.rs"]
+mod product_link_policy;
+
 const CONTRACT: &str = r#"
 pub struct Seal(());
 impl Seal {
@@ -48,9 +51,20 @@ fn main() {
 
 fn rustc(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    std::process::Command::new(rustc)
+    let mut command = std::process::Command::new(rustc);
+    command
         .current_dir(dir)
-        .args(["--edition", "2021", "-L", "."])
+        .args(["--edition", "2021", "-L", "."]);
+    let target = if cfg!(target_os = "macos") {
+        "host-apple-darwin"
+    } else {
+        "host"
+    };
+    // Exercise the same mandatory link policy emitted by both product build roots.
+    for argument in product_link_policy::arguments(target) {
+        command.arg("-C").arg(format!("link-arg={argument}"));
+    }
+    command
         .args(args)
         .output()
         .expect("rustc is on PATH wherever `cargo test` runs")

@@ -253,6 +253,7 @@ class Busbar:
                     os.killpg(self.proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                self.proc.wait(5)
 
 
 def request(port, method, path, *, headers=None, body=None, ctx=None, timeout=15):

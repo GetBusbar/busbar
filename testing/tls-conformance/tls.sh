@@ -37,13 +37,37 @@ PR_1713=refs/pull/1713/head
 W="$(mktemp -d "${TMPDIR:-/tmp}/tls-conf.XXXXXX")"
 cids=(); pids=()
 cleanup() {
+  local p i failed=0
   for c in "${cids[@]+"${cids[@]}"}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done
-  for p in "${pids[@]+"${pids[@]}"}"; do kill "$p" 2>/dev/null || true; done
+  for p in "${pids[@]+"${pids[@]}"}"; do
+    if kill -0 "$p" 2>/dev/null; then
+      if ! kill "$p" 2>/dev/null && kill -0 "$p" 2>/dev/null; then
+        say "could not terminate TLS subject supervisor $p"; failed=1
+      fi
+      # subject.py's finally stops and reaps Busbar, allowing up to 15 seconds for shutdown.
+      # Reap that supervisor before this shell exits and its process-group owner cleans up.
+      for ((i=0; i<100; i++)); do
+        kill -0 "$p" 2>/dev/null || break
+        sleep 0.2
+      done
+      if kill -0 "$p" 2>/dev/null; then
+        say "TLS subject supervisor $p did not stop within 20 seconds"
+        if ! kill -KILL "$p" 2>/dev/null && kill -0 "$p" 2>/dev/null; then
+          say "could not kill TLS subject supervisor $p"; failed=1; continue
+        fi
+        failed=1
+      fi
+    fi
+    wait "$p" || { say "TLS subject supervisor $p exited unsuccessfully"; failed=1; }
+  done
+  cids=(); pids=()
   rm -rf "$W"
+  return "$failed"
 }
-trap cleanup EXIT
+trap 'cleanup || exit 1' EXIT
 why=()
 final() {
+  cleanup || why+=("the TLS subject supervisor did not shut down and reap cleanly")
   python3 -I - "$CONFORMANCE_OUT/verdict.json" "$TESTSSL_VER" "${why[@]+"${why[@]}"}" <<'PY'
 import json, sys
 out, ver, why = sys.argv[1], sys.argv[2], sys.argv[3:]
