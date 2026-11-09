@@ -142,13 +142,21 @@ impl Site {
         let Some(client_id) = &self.browser_client_id else {
             return host.validate_migrated(&self.kind, &self.module, settings);
         };
+        if settings.get("client_id").is_some() {
+            return host.validate_migrated(&self.kind, &self.module, settings);
+        }
         // Match login opening: browser configuration supplies a fallback only.
         // Keep this projection out of authored settings and migration write-back.
-        let mut effective = settings.clone();
-        if effective.is_null() {
-            effective = serde_json::json!({});
-        }
-        if let Some(map) = effective.as_object_mut() {
+        let mut effective =
+            busbar_contract::abi::sdk::cred::SettingsValue::from(if settings.is_null() {
+                serde_json::json!({})
+            } else {
+                settings.clone()
+            });
+        if let Some(map) = effective
+            .pointer_mut("")
+            .and_then(serde_json::Value::as_object_mut)
+        {
             map.entry("client_id")
                 .or_insert_with(|| client_id.clone().into());
         }
