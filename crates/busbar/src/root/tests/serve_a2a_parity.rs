@@ -834,7 +834,12 @@ fn raw_relay_and_lifecycle(
     );
     let _ = plane.test_driver_sessions();
 
+    // Recycle queues retirement; the raw lifecycle calls below need it finished.
     dispatcher.recycle(driver);
+    assert!(
+        dispatcher.retirement_barrier(driver, Duration::from_secs(20)),
+        "the real driver retires before the isolated lifecycle crossings"
+    );
     let lifecycle = dispatcher
         .mint(0)
         .expect("the actual lifecycle tick ticket");
@@ -844,6 +849,10 @@ fn raw_relay_and_lifecycle(
         .expect("the real lifecycle tick settles");
     assert_eq!(tick.outcome, Outcome::Ready);
     dispatcher.recycle(lifecycle);
+    assert!(
+        dispatcher.retirement_barrier(lifecycle, Duration::from_secs(20)),
+        "the completed tick releases lifecycle admission before raw REFRESH"
+    );
     let mut cancel: Frame<PlaneCancelIn, PlaneCancelOut> = Frame::new(blank_in(), blank_out());
     assert_eq!(
         plane.call(life::slot::CANCEL, &mut cancel).outcome,
