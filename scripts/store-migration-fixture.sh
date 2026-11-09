@@ -33,7 +33,7 @@
 # answers about those rows (the fleet read and each key's read), the customer-visible half.
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")" && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 GOLDEN_DIGESTS="$repo/testing/shadow-oracle/golden-digests.tsv"
 PLUGIN_DIGESTS="$repo/testing/shadow-oracle/plugin-digests.tsv"
@@ -65,7 +65,27 @@ plugin_of() {
 }
 
 fetch() {  # fetch <url> <dest> <sha256>
-  curl -fsSL --retry 3 -o "$2" "$1" || die "download failed: $1"
+  if ! curl -fsSL --retry 3 -o "$2" "$1"; then
+    # Public release assets also have an official API download route. Bind its
+    # metadata and endpoint to the original pinned release URL, never a mirror.
+    local owner project tag asset api_asset
+    local release_url='^https://github\.com/(GetBusbar)/([A-Za-z0-9][A-Za-z0-9._-]*)/releases/download/([A-Za-z0-9][A-Za-z0-9._-]*)/([A-Za-z0-9][A-Za-z0-9._-]*)$'
+    [[ "$1" =~ $release_url ]] || die "download failed; no public release API fallback for: $1"
+    owner="${BASH_REMATCH[1]}"; project="${BASH_REMATCH[2]}"
+    tag="${BASH_REMATCH[3]}"; asset="${BASH_REMATCH[4]}"
+    api_asset="$(curl -fsSL --retry 3 -H 'Accept: application/vnd.github+json' \
+      "https://api.github.com/repos/${owner}/${project}/releases/tags/${tag}" \
+      | jq -er --arg original "$1" --arg name "$asset" \
+        --arg prefix "https://api.github.com/repos/${owner}/${project}/releases/assets/" '
+        [.assets[] | select(.browser_download_url == $original and .name == $name)]
+        | if length == 1 then .[0] else error("release asset match is not unique") end
+        | if (.id | type) == "number" and .id > 0 and (.id | floor) == .id
+             and .url == ($prefix + (.id | tostring))
+          then .url else error("release asset API endpoint is invalid") end
+      ')" || die "could not resolve the exact public release asset: $1"
+    curl -fsSL --retry 3 -H 'Accept: application/octet-stream' -o "$2" "$api_asset" \
+      || die "release asset API download failed: $1"
+  fi
   local got; got="$(sha256 "$2")"
   [ "$got" = "$3" ] || die "digest mismatch for $1: got $got, pinned $3"
 }
@@ -381,8 +401,10 @@ check() {
   echo "fixture $dir: written by v$RELEASE_VERSION ($name) through $passet; $files files match"
 }
 
-case "${1:-}" in
-  record) record "${2:-}" "${3:-}" ;;
-  check) check "${2:-}" ;;
-  *) die "usage: $0 record <sqlite|postgres|mysql|valkey> <out-dir> | check <fixture-dir>" ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    record) record "${2:-}" "${3:-}" ;;
+    check) check "${2:-}" ;;
+    *) die "usage: $0 record <sqlite|postgres|mysql|valkey> <out-dir> | check <fixture-dir>" ;;
+  esac
+fi
