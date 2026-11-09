@@ -146,6 +146,7 @@ def checkout(repository, revision, destination):
 
 class Qualification:
     def __init__(self, args):
+        self.conformance_only = args.conformance_only
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.evidence = self.work / 'evidence'
         self.evidence.mkdir()
@@ -158,6 +159,11 @@ class Qualification:
             policy_sha256=digest(self.trusted / 'ci/architecture.toml'),
             config_uri=os.environ['CI_CONFIG_REF_URI'], pipeline_id=os.environ['CI_PIPELINE_ID'],
             job_id=os.environ['CI_JOB_ID'], job_url=os.environ['CI_JOB_URL'], steps=[])
+        if self.conformance_only:
+            if self.repository != 'GetBusbar/busbar' or os.environ.get('CI_JOB_NAME') != 'core-conformance':
+                raise Violation('standalone conformance requires the trusted core job')
+            # An evaluation receipt can never satisfy native admission.
+            self.receipt['schema'] = 'busbar.protected-conformance/1'
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
         if git(self.root, 'status', '--porcelain'):
@@ -175,6 +181,8 @@ class Qualification:
             if subprocess.run(['git', '-C', str(self.root), 'merge-base', '--is-ancestor', target, self.receipt['source']]).returncode:
                 raise Violation('candidate must be rebased on current dev and qualified again')
             self.receipt['target_revision'] = target
+        elif self.conformance_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
+            self.receipt['target_revision'] = None
         elif os.environ['CI_PIPELINE_SOURCE'] == 'push' and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
             self.receipt['target_revision'] = self.receipt['source']
         else:
@@ -371,17 +379,44 @@ class Qualification:
     def conformance(self, name):
         suites = self.root / 'testing/conformance/suites.tsv'
         if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
-            self.run(name, ['bash', str(self.root / 'testing/conformance/run.sh')])
-            source = self.root / 'target/conformance'
-            destination = self.evidence / 'conformance'
-            destination.mkdir()
-            for relative in ('invocation.json', *[str(p.relative_to(source)) for p in sorted((source / 'verdicts').glob('*.json'))]):
-                path = source / relative
-                if path.is_symlink() or not path.is_file():
-                    raise Violation('missing or indirect conformance evidence')
-                out = destination / relative
-                out.parent.mkdir(exist_ok=True)
-                shutil.copyfile(path, out)
+            try:
+                self.run(name, ['bash', str(self.root / 'testing/conformance/run.sh')], timeout=10800)
+            finally:
+                # Failed and blocked evaluations are evidence too. Preserve their
+                # actual verdicts without changing the command or job's failure.
+                self.copy_conformance()
+
+    def copy_conformance(self):
+        source = self.root / 'target/conformance'
+        if not source.is_dir():
+            raise Violation('missing conformance output')
+        destination = self.evidence / 'conformance'
+        destination.mkdir(exist_ok=True)
+        for relative in ('invocation.json', *[str(p.relative_to(source)) for p in sorted((source / 'verdicts').glob('*.json'))]):
+            path = source / relative
+            if path.is_symlink() or not path.is_file():
+                raise Violation('missing or indirect conformance evidence')
+            out = destination / relative
+            out.parent.mkdir(exist_ok=True)
+            shutil.copyfile(path, out)
+
+    def core_conformance(self):
+        """Evaluate the registered core suites independently of product admission."""
+        failed = False
+        try:
+            self.conformance('core-native-conformance')
+        except Violation:
+            failed = True
+        out = self.evidence / 'sigstore'
+        out.mkdir()
+        self.env['CONFORMANCE_OUT'] = str(out)
+        try:
+            self.run('sigstore-release-verification', ['python3', '-I',
+                str(self.root / 'testing/conformance/sigstore.py'), '--require'])
+        except Violation:
+            failed = True
+        if failed:
+            raise Violation('one or more conformance evaluations did not pass; inspect actual verdicts')
 
     def finish(self, status, error=None):
         self.receipt.update(status=status, finished_at=now())
@@ -399,6 +434,7 @@ def qualify():
     parser.add_argument('--trusted', required=True, type=Path)
     parser.add_argument('--checkout', required=True, type=Path)
     parser.add_argument('--work', required=True, type=Path)
+    parser.add_argument('--conformance-only', action='store_true')
     args = parser.parse_args()
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
         raise Violation('full native qualification runs in GitLab CI only')
@@ -411,7 +447,13 @@ def qualify():
             prepare_oracle(qualification)
         from native_sources import prepare
         prepare(qualification, qualification.host())
-        if qualification.repository == 'GetBusbar/busbar':
+        evaluation_error = None
+        if args.conformance_only:
+            try:
+                qualification.core_conformance()
+            except Violation as error:
+                evaluation_error = error
+        elif qualification.repository == 'GetBusbar/busbar':
             qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
             from native_plugins import qualify_generator
@@ -430,6 +472,8 @@ def qualify():
         archive.stdout.close()
         if archive.wait():
             raise Violation('could not bind the qualified source archive')
+        if evaluation_error is not None:
+            raise evaluation_error
         qualification.finish('pass')
     except BaseException as error:
         if qualification is not None:

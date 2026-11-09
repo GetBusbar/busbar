@@ -4,6 +4,7 @@ workflow:
   auto_cancel:
     on_new_commit: conservative
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
     - when: never
@@ -12,6 +13,10 @@ stages: [qualify, website]
 
 native-qualification:
   stage: qualify
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api"'
+      when: never
+    - when: on_success
   tags: [busbar-native-admission]
   interruptible: true
   allow_failure: false
@@ -52,7 +57,12 @@ native-qualification:
           actual = subprocess.check_output(['git', '-C', str(trusted), 'rev-parse', 'HEAD'], text=True).strip()
           if actual != match[1]:
               raise SystemExit('trusted policy checkout mismatch')
-          subprocess.run(['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)], check=True)
+          command = ['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
+          if os.environ['CI_JOB_NAME'] == 'core-conformance':
+              command.append('--conformance-only')
+          elif os.environ['CI_JOB_NAME'] != 'native-qualification':
+              raise SystemExit('unrecognized trusted native job')
+          subprocess.run(command, check=True)
       finally:
           shutil.rmtree(work, ignore_errors=True)
       PY
@@ -61,6 +71,16 @@ native-qualification:
     access: developer
     expire_in: 30 days
     paths: [boundary-evidence/]
+
+# Explicit evaluations retain failed/blocked verdicts and cannot grant admission.
+# Keeping them independent prevents absent release signing inputs from hiding
+# completed protocol and SBOM outcomes. No QA/main promotion occurs here.
+core-conformance:
+  extends: native-qualification
+  tags: [busbar-conformance]
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - when: never
 
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness.
