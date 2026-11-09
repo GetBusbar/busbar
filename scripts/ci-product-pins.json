@@ -15,7 +15,7 @@
     {
       "repo": "busbar-auth-header",
       "url": "https://github.com/GetBusbar/busbar-auth-header",
-      "commit": "e702c48ed03fc7494941aad544e30a5be5f66e38",
+      "commit": "9cfa0c6a168e3841171ea6d25666137423602804",
       "package": "busbar-auth-header-plugin",
       "kind": "auth",
       "alias": "header",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "6f1e7b44c2d8cd6ef60eb0d06b263c42b8a615a1",
+      "commit": "a62b406e9293bb028228f5a19db895e02dd962d2",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "a95c2726d01ad7f58b0416b89cd0c79bf8a819e9",
+      "commit": "1e9be7441c8f89d3b4d054b5f6b49af0225209b3",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
