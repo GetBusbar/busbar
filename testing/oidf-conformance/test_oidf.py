@@ -152,6 +152,20 @@ class Subject(unittest.TestCase):
         self.assertIn("the subject could not be built: cargo exited 101", reason)
 
 
+class InstrumentFailure(unittest.TestCase):
+    def test_control_without_a_module_list_is_a_recordable_instrument_refusal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            suite = mock.Mock()
+            suite.runner.return_value = (125, "docker runner failed before the official plan started")
+            with self.assertRaises(oidf.Refused) as caught:
+                oidf.leg_control(suite, directory)
+            self.assertTrue(caught.exception.instrument)
+            self.assertIn("control runner exited 125", str(caught.exception))
+            self.assertIn("runner.log", str(caught.exception))
+            self.assertEqual(oidf.decide({"instrument_error": str(caught.exception)})[:2],
+                             ("not-run", False))
+
+
 class FreshStartup(unittest.TestCase):
     def test_generated_config_pins_the_exact_installed_oidc_archive(self):
         with tempfile.TemporaryDirectory() as directory:

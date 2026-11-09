@@ -974,7 +974,14 @@ def leg_control(suite, work):
     d = os.path.join(work, "control")
     os.makedirs(d, exist_ok=True)
     rc, log = suite.runner(d, [CONTROL_ARG, CONTROL_RP_CONFIG])
-    rows = judge(d, log)
+    try:
+        rows = judge(d, log)
+    except (ValueError, OSError, zipfile.BadZipFile) as error:
+        # Keep a real failed instrument record for both registry ids. An uncaught
+        # parser failure would omit the verdict and let the second id erase this
+        # attempt's runner log while starting the same instrument again.
+        raise Refused(f"control runner exited {rc}; module results unavailable: {error}; "
+                      f"see {d}/runner.log", instrument=True) from error
     # Held to the subject's rule: every module FINISHED, nothing FAILED. (The runner exits 1 on any
     # WARNING not in an expected-failures file; this rig keeps no such file, and lists warnings.)
     bad = [f"{m} {s}/{r}" for m, s, r, _ in rows if s != "FINISHED" or r not in GOOD]
