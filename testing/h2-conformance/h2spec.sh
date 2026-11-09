@@ -164,7 +164,8 @@ caddy_leg() {
 https://:$port {
   bind 127.0.0.1
   tls /etc/tls/leaf.pem /etc/tls/leaf.key
-  respond "ok"
+  # h2spec http2/6.9.2 needs at least five response bytes to exercise a negative window.
+  respond "h2 conformance control"
 }
 CONF
   local cid
@@ -181,8 +182,8 @@ say "=== leg 1: control (Caddy, h1 + h2)"
 if caddy_leg control "h1 h2"; then
   read -r n p f s bad <<<"$(grade control known)"
   say "control: $n tests, $p passed, $f failed beyond its known deviations, $s skipped"
-  { [ "$n" -ge "$MIN_TESTS" ] && [ "$f" = 0 ] && [ "$p" -ge "$CONTROL_MIN_PASSED" ]; } \
-    || why+=("the control leg failed: Caddy ($n tests, $p passed, $f failed beyond its known deviations: $bad; $(tail -2 "$W/control.log" | tr '\n' ' '))")
+  { [ "$n" -ge "$MIN_TESTS" ] && [ "$f" = 0 ] && [ "$s" = 0 ] && [ "$p" -ge "$CONTROL_MIN_PASSED" ]; } \
+    || why+=("the control leg failed: Caddy ($n tests, $p passed, $f failed beyond its known deviations, $s skipped: $bad; $(tail -2 "$W/control.log" | tr '\n' ' '))")
 else why+=("the control server (Caddy, h2) could not be started: $(tail -3 "$W/control-caddy.log" 2>/dev/null | tr '\n' ' ')"); fi
 
 # ── leg 2: NEGATIVE CONTROL ─────────────────────────────────────────────────────────────────────────

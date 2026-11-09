@@ -582,10 +582,51 @@ def subject_config(*, fapi2, data, admin, issuer, pki, plugins, jwks_url, client
     }
 
 
+def fresh_start(busbar, conf, prov, directory, env):
+    """Attest only this rig's new, exclusively owned in-process memory Store.
+
+    Inspection opens an independent ephemeral instance. Initialization and serving
+    share one open; an empty inspection alone never establishes freshness.
+    """
+    evidence = {
+        "newly_created_namespace": True, "sender_quiesced": True,
+        "backend_quiesced": True, "ephemeral_instance": True, "exclusive_instance": True,
+        "actor": "OIDF conformance fixture owner",
+        "reason": "new exclusive child-owned memory Store; no retained state or application senders",
+        "fixture_directory": os.path.abspath(directory), "owner_process": os.getpid(),
+    }
+    evidence_path = os.path.join(directory, "creation.json")
+    with open(evidence_path, "x") as stream:
+        json.dump(evidence, stream, sort_keys=True)
+    base = [busbar, "--config", conf, "--providers", prov]
+    result = subprocess.run(base + ["--principal-transition", "-", "--transition-action", "inspect"],
+                            cwd=directory, env=env, stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=60)
+    for name, body in (("inspect.stdout", result.stdout), ("inspect.stderr", result.stderr)):
+        with open(os.path.join(directory, name), "wb") as stream:
+            stream.write(body)
+    if result.returncode:
+        raise Refused(f"principal inspection failed ({result.returncode}); see {directory}/inspect.stderr")
+    state = json.loads(result.stdout)
+    if state.get("store_ephemeral") is not True or state.get("principal_receipt_head_sha256") is not None:
+        raise Refused("OIDF fresh startup requires an admitted ephemeral Store with no existing baseline")
+    receipt = {key: evidence[key] for key in (
+        "newly_created_namespace", "sender_quiesced", "backend_quiesced",
+        "ephemeral_instance", "exclusive_instance", "actor", "reason")}
+    receipt.update(version=1, store_config_sha256=state["store_config_sha256"],
+                   requirements=state["requirements"], witness=None,
+                   creation_evidence_sha256=sha256_file(evidence_path))
+    receipt_path = os.path.join(directory, "fresh.json")
+    with open(receipt_path, "x") as stream:
+        json.dump(receipt, stream, indent=2)
+    return base + ["--principal-transition", receipt_path,
+                   "--transition-action", "initialize-fresh-and-serve"]
+
+
 class Subject:
     def __init__(self, busbar, work, name, cfg, data):
         self.dir = os.path.join(work, name)
-        os.makedirs(self.dir, exist_ok=True)
+        os.makedirs(self.dir, exist_ok=False)
         self.log = os.path.join(self.dir, "busbar.log")
         conf = os.path.join(self.dir, "config.yaml")
         prov = os.path.join(self.dir, "providers.yaml")
@@ -595,10 +636,11 @@ class Subject:
             f.write("{}\n")
         env = dict(os.environ, BUSBAR_CONFIG=conf, BUSBAR_PROVIDERS=prov)
         self.data = data
-        out = open(self.log, "wb")
-        self.proc = subprocess.Popen([busbar], cwd=self.dir, env=env, stdin=subprocess.DEVNULL,
-                                     stdout=out, stderr=subprocess.STDOUT)
+        argv = fresh_start(busbar, conf, prov, self.dir, env)
         self.ctx = ssl.create_default_context(cafile=cfg["tls"]["cert"]["file"].replace("chain.pem", "ca.pem"))
+        with open(self.log, "wb") as out:
+            self.proc = subprocess.Popen(argv, cwd=self.dir, env=env, stdin=subprocess.DEVNULL,
+                                         stdout=out, stderr=subprocess.STDOUT)
 
     def get(self, path):
         import http.client
@@ -628,6 +670,7 @@ class Subject:
                 self.proc.wait(10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait()
 
 
 def boot(busbar, work, name, *, fapi2, pki, plugins, jwks, clients, callback):
@@ -636,25 +679,28 @@ def boot(busbar, work, name, *, fapi2, pki, plugins, jwks, clients, callback):
     stub = JwksStub(jwks, pki)
     cfg = subject_config(fapi2=fapi2, data=data, admin=admin, issuer=issuer, pki=pki, plugins=plugins,
                          jwks_url=f"https://127.0.0.1:{stub.port}/jwks", clients=clients, callback=callback)
-    s = Subject(busbar, work, name, cfg, data)
-    s.stub, s.issuer = stub, issuer
-    meta_path = "/.well-known/oauth-authorization-server"
-    status, body = s.wait(meta_path)
-    if status != 200:
-        s.stop()
-        raise Refused(f"busbar's authorization-server metadata answered {status}: {body[:200]!r}")
-    meta = json.loads(body)
-    if meta.get("issuer") != issuer:
-        s.stop()
-        raise Refused(f"busbar's metadata names issuer {meta.get('issuer')!r}, configured {issuer!r}")
-    if fapi2 and "pushed_authorization_request_endpoint" not in meta:
-        s.stop()
-        raise Refused("busbar's metadata advertises no PAR endpoint: the FAPI 2.0 posture is not on")
-    status, body = s.get("/jwks")
-    if status != 200 or json.loads(body).get("keys", [{}])[0].get("x") != jwks["keys"][0]["x"]:
-        s.stop()
-        raise Refused(f"busbar's JWKS ({status}) does not publish the configured signing key")
-    return s
+    s = None
+    try:
+        s = Subject(busbar, work, name, cfg, data)
+        s.stub, s.issuer = stub, issuer
+        meta_path = "/.well-known/oauth-authorization-server"
+        status, body = s.wait(meta_path)
+        if status != 200:
+            raise Refused(f"busbar's authorization-server metadata answered {status}: {body[:200]!r}")
+        meta = json.loads(body)
+        if meta.get("issuer") != issuer:
+            raise Refused(f"busbar's metadata names issuer {meta.get('issuer')!r}, configured {issuer!r}")
+        if fapi2 and "pushed_authorization_request_endpoint" not in meta:
+            raise Refused("busbar's metadata advertises no PAR endpoint: the FAPI 2.0 posture is not on")
+        status, body = s.get("/jwks")
+        if status != 200 or json.loads(body).get("keys", [{}])[0].get("x") != jwks["keys"][0]["x"]:
+            raise Refused(f"busbar's JWKS ({status}) does not publish the configured signing key")
+        return s
+    except BaseException:
+        if s is not None:
+            s.stop()
+        stub.stop()
+        raise
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -1177,6 +1223,19 @@ def keep_review(work, out):
             json.dump(index, f, indent=2)
 
 
+def run_identity(checkout):
+    """Bind the shared OAuth/FAPI record to this subject and this instrument's inputs."""
+    rc, head, _ = capture(["git", "-C", checkout, "rev-parse", "HEAD"])
+    if rc:
+        raise Refused("the subject checkout has no source commit")
+    rc, changes, _ = capture(["git", "-C", checkout, "diff", "--binary", "HEAD"])
+    if rc:
+        raise Refused("the subject checkout changes could not be read")
+    return {"head": head.strip(), "changes_sha256": hashlib.sha256(changes.encode()).hexdigest(),
+            "rig_sha256": sha256_file(os.path.abspath(__file__)),
+            "suite_commit": SUITE_COMMIT, "plan": PLAN}
+
+
 def main():
     # The driver (testing/conformance/run.sh) runs each suite inside its `while read` over
     # suites.tsv, so this process's stdin IS the rest of the suite list: any child that reads stdin
@@ -1189,13 +1248,13 @@ def main():
     os.makedirs(out, exist_ok=True)
     # One run serves both ids: it lives beside the per-suite dirs the driver made this invocation.
     work = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(out)), "oidf-run"))
-    head = capture(["git", "rev-parse", "HEAD"])[1].strip()
+    identity = run_identity(os.environ.get("BUSBAR_CHECKOUT") or os.getcwd())
     rec_path = os.path.join(work, "record.json")
     record = None
     if os.path.isfile(rec_path):
         with open(rec_path) as f:
             prior = json.load(f)
-        if prior.get("plan") == PLAN and prior.get("head") == head:
+        if prior.get("identity") == identity:
             say(f"reusing this invocation's run of {PLAN}")
             record = prior
     if record is None:
@@ -1205,7 +1264,8 @@ def main():
             record = run_all(work)
         except Refused as e:
             record = {"plan": PLAN, "instrument_error" if e.instrument else "subject_error": str(e)}
-        record["head"] = head
+        record["head"] = identity["head"]
+        record["identity"] = identity
         with open(rec_path, "w") as f:
             json.dump(record, f, indent=2)
     status, armed, reason = decide(record)

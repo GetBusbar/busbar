@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -149,6 +150,52 @@ class Subject(unittest.TestCase):
         status, _, reason = oidf.decide({"control": {"ok": True}, "build_error": "cargo exited 101"}, signoff={})
         self.assertEqual(status, "fail")
         self.assertIn("the subject could not be built: cargo exited 101", reason)
+
+
+class FreshStartup(unittest.TestCase):
+    def test_fresh_receipt_binds_actual_inspection_and_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            inspection = {"store_ephemeral": True, "principal_receipt_head_sha256": None,
+                          "store_config_sha256": "a" * 64, "requirements": [{"actual": "requirement"}]}
+            completed = mock.Mock(returncode=0, stdout=json.dumps(inspection).encode(), stderr=b"")
+            with mock.patch.object(oidf.subprocess, "run", return_value=completed) as run:
+                argv = oidf.fresh_start("/binary", "/config", "/providers", directory, {})
+            self.assertEqual(run.call_args.args[0][-4:],
+                             ["--principal-transition", "-", "--transition-action", "inspect"])
+            self.assertEqual(argv[-1], "initialize-fresh-and-serve")
+            receipt = json.loads(Path(argv[-3]).read_text())
+            self.assertEqual(receipt["requirements"], inspection["requirements"])
+            self.assertEqual(receipt["store_config_sha256"], inspection["store_config_sha256"])
+            self.assertEqual(receipt["creation_evidence_sha256"],
+                             oidf.sha256_file(str(Path(directory) / "creation.json")))
+            self.assertTrue(receipt["exclusive_instance"])
+
+    def test_retained_store_or_existing_baseline_cannot_be_initialized_fresh(self):
+        for state in ({"store_ephemeral": False, "principal_receipt_head_sha256": None},
+                      {"store_ephemeral": True, "principal_receipt_head_sha256": "existing"}):
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as directory:
+                completed = mock.Mock(returncode=0, stdout=json.dumps(state).encode(), stderr=b"")
+                with mock.patch.object(oidf.subprocess, "run", return_value=completed):
+                    with self.assertRaises(oidf.Refused):
+                        oidf.fresh_start("/binary", "/config", "/providers", directory, {})
+                self.assertFalse((Path(directory) / "fresh.json").exists())
+
+    def test_failed_boot_cleans_up_process_and_jwks_server(self):
+        stub, subject = mock.Mock(port=42), mock.Mock()
+        subject.wait.side_effect = oidf.Refused("boot refused")
+        with mock.patch.object(oidf, "JwksStub", return_value=stub), \
+                mock.patch.object(oidf, "subject_config", return_value={}), \
+                mock.patch.object(oidf, "Subject", return_value=subject):
+            with self.assertRaises(oidf.Refused):
+                oidf.boot("/binary", "/work", "subject", fapi2=True, pki="/pki", plugins="/plugins",
+                          jwks={}, clients=[], callback="/callback")
+        subject.stop.assert_called_once()
+        stub.stop.assert_called_once()
+
+    def test_changed_inputs_do_not_reuse_a_previous_green_run(self):
+        with mock.patch.object(oidf, "capture", side_effect=[(0, "a" * 40, ""), (0, "", ""),
+                                                           (0, "a" * 40, ""), (0, "changed config", "")]):
+            self.assertNotEqual(oidf.run_identity("/checkout"), oidf.run_identity("/checkout"))
 
 
 if __name__ == "__main__":
