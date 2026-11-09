@@ -3,7 +3,7 @@
 
 GitLab enforces protected branches, successful pipelines and fast-forward merging.
 This controller additionally admits only the trusted native job for the exact source,
-target and policy revision. Fork/external-status pipelines cannot impersonate it.
+target, host, SDK and policy revision. Fork/external-status pipelines cannot impersonate it.
 """
 from __future__ import annotations
 
@@ -143,7 +143,26 @@ def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
     return {'project': project['path_with_namespace'], 'id': project['id'], 'settings': settings, 'rules': rules}
 
 
-def validate_merge(project, mr, pipeline, jobs, receipt, revision, target):
+def expected_inputs(api, project, source):
+    """Resolve the same owner-controlled cohort input as native qualification."""
+    core = 'projects/' + encoded('GetBusbar/busbar')
+    if project['path_with_namespace'] == 'GetBusbar/busbar':
+        host = source
+    else:
+        variables = api.all('projects/' + str(project['id']) + '/variables')
+        cohort = [v for v in variables if v['key'] == 'BUSBAR_ADMISSION_CORE_REVISION']
+        if len(cohort) > 1:
+            raise ValueError('ambiguous host cohort input')
+        ref = cohort[0]['value'] if cohort else 'dev'
+        host = api.request(core + '/repository/commits/' + encoded(ref))['id']
+    vector = api.request(core + '/repository/files/' + encoded('scripts/ci-product-pins.json') + '?ref=' + host)
+    sdk = json.loads(base64.b64decode(vector['content']))['sdk']
+    if not all(re.fullmatch('[0-9a-f]{40}', value) for value in (host, sdk)):
+        raise ValueError('host and SDK must resolve to immutable commits')
+    return host, sdk
+
+
+def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk):
     """Finite admission predicate, shared by the controller and bypass regressions."""
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
         raise ValueError('trusted CI setting changed')
@@ -160,7 +179,7 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target):
         raise ValueError('external commit status is not a native job')
     expected = {'status': 'pass', 'repository': project['path_with_namespace'], 'source': mr['sha'],
                 'policy_revision': revision, 'pipeline_id': str(pipeline['id']), 'job_id': str(native[0]['id']),
-                'target_revision': target}
+                'target_revision': target, 'host_revision': host, 'sdk_revision': sdk}
     for key, value in expected.items():
         if receipt.get(key) != value:
             raise ValueError('native receipt mismatch: ' + key)
@@ -237,7 +256,8 @@ def main():
                 raise ValueError('current native qualification is not successful')
             receipt = api.request(identity + '/jobs/' + str(native[0]['id']) + '/artifacts/boundary-evidence/receipt.json')
             target = api.request(identity + '/repository/branches/dev')['commit']['id']
-            validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target)
+            host, sdk = expected_inputs(api, project, mr['sha'])
+            validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})
             report['projects'].append({'project': name, 'source': mr['sha'], 'target_before': target, 'merge_commit_sha': result.get('merge_commit_sha'), 'state': result['state']})
         args.output.write_text(json.dumps(report, indent=2) + '\n')

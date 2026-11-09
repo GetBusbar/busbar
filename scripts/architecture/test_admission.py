@@ -1,13 +1,16 @@
 """Admission regression cases: successful current native proof is mandatory."""
 import copy
+import base64
+import json
 import unittest
 
-from admission import validate_merge, validate_protection
+from admission import expected_inputs, validate_merge, validate_protection
 
 
 class Admission(unittest.TestCase):
     def setUp(self):
         self.revision, self.source, self.target = 'a' * 40, 'b' * 40, 'c' * 40
+        self.host, self.sdk = self.source, 'd' * 40
         self.project = dict(id=3, path_with_namespace='GetBusbar/busbar',
             ci_config_path='ci/architecture-pipeline.yml@GetBusbar/busbar:' + self.revision,
             merge_method='ff', only_allow_merge_if_pipeline_succeeds=True, allow_merge_on_skipped_pipeline=False)
@@ -16,10 +19,11 @@ class Admission(unittest.TestCase):
         self.jobs = [dict(id=101, name='native-qualification', status='success', allow_failure=False, runner={'id': 9})]
         self.receipt = dict(status='pass', repository='GetBusbar/busbar', source=self.source,
             policy_revision=self.revision, pipeline_id='100', job_id='101', target_revision=self.target,
+            host_revision=self.host, sdk_revision=self.sdk,
             steps=[dict(name='architecture', status='pass', exit_code=0)])
 
     def validate(self):
-        validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.receipt, self.revision, self.target)
+        validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.receipt, self.revision, self.target, self.host, self.sdk)
 
     def test_current_native_proof_admits(self):
         self.validate()
@@ -39,7 +43,7 @@ class Admission(unittest.TestCase):
                 self.validate()
 
     def test_source_target_policy_and_receipt_must_match(self):
-        for key in ('source', 'target_revision', 'policy_revision', 'pipeline_id', 'job_id', 'repository'):
+        for key in ('source', 'target_revision', 'host_revision', 'sdk_revision', 'policy_revision', 'pipeline_id', 'job_id', 'repository'):
             with self.subTest(key=key):
                 old = self.receipt[key]
                 self.receipt[key] = 'stale'
@@ -64,6 +68,23 @@ class Admission(unittest.TestCase):
         self.receipt['steps'] = []
         with self.assertRaises(ValueError):
             self.validate()
+
+    def test_expected_inputs_use_core_source_or_owner_cohort_and_that_hosts_vector(self):
+        from unittest.mock import Mock
+        api = Mock()
+        vector = {'content': base64.b64encode(json.dumps({'sdk': self.sdk}).encode()).decode()}
+        api.request.return_value = vector
+        self.assertEqual(expected_inputs(api, self.project, self.source), (self.source, self.sdk))
+        api.all.assert_not_called()
+        self.assertIn('?ref=' + self.source, api.request.call_args.args[0])
+        project = dict(self.project, path_with_namespace='GetBusbar/busbar-auth-header')
+        for variables, ref in [([], 'dev'), ([{'key': 'BUSBAR_ADMISSION_CORE_REVISION', 'value': self.host}], self.host)]:
+            api.reset_mock()
+            api.all.return_value = variables
+            api.request.side_effect = [{'id': self.host}, vector]
+            self.assertEqual(expected_inputs(api, project, self.source), (self.host, self.sdk))
+            self.assertTrue(api.request.call_args_list[0].args[0].endswith('/commits/' + ref))
+            self.assertTrue(api.request.call_args_list[1].args[0].endswith('?ref=' + self.host))
 
 
 class Protection(unittest.TestCase):

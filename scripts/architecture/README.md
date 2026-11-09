@@ -13,7 +13,7 @@ the external CI setting, fast-forward merges, required successful pipelines, dis
 pipeline-variable overrides and no direct/job-token/force pushes. Existing stricter
 QA/main merge permissions stay unchanged. Creating a missing QA/main protection
 requires an explicit `--stage-owner-id`; it never grants the dev operator promotion access. `merge` accepts only a same-project dev MR
-with the current successful native job and an exact source/target/policy receipt.
+with the current successful native job and an exact source/target/host/SDK/policy receipt.
 Every matching project and group rule is checked because permissions are additive.
 Unreadable group rules, permissive wildcards or unavailable settings prevent admission.
 The server also rejects a merge when the target has advanced beyond the candidate.
@@ -34,6 +34,8 @@ in project settings. Ordinary pipelines cannot override it. Once admitted, remov
 cohort override: the job resolves canonical dev once and records its actual revision.
 The selected host's SDK pin must match the plugin's `.busbar-ref`. Native conformance
 records the tested host commit, rather than mislabeling the SDK commit as a binary.
+Admission resolves the current owner-selected host and its SDK vector again; a passing
+receipt for an older host or SDK cannot admit the candidate.
 Before compilation, the trusted source collector fetches the exact public Git inputs
 from canonical repositories into a task-local cache. Cargo receives credential-free
 local URL mappings while source identities and lockfiles stay unchanged. This permits
