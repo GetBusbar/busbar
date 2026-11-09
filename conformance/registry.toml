@@ -278,6 +278,16 @@ verdict = "conformance-verdict-otlp"
 public = "true"
 
 [[suite]]
+id = "otel-semconv-weaver"
+repo = "GetBusbar/busbar-export-otlp"
+standard = "OpenTelemetry semantic conventions"
+plan = "Official Weaver Live Check evaluates actual Busbar exporter samples against pinned OpenTelemetry semantic conventions, with nonempty subject output and an invalid-attribute negative control"
+tier = "capable"
+label = "OpenTelemetry"
+verdict = "conformance-verdict-otel-semconv-weaver"
+public = "true"
+
+[[suite]]
 id = "evidence-audit-trail"
 repo = "GetBusbar/busbar"
 standard = "Audit trail: hash-chained, Ed25519-signed, tamper-evident action log"

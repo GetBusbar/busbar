@@ -13,7 +13,9 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome, Span};
 use busbar_contract::abi::mechanism::door::KindTailHead;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
-use busbar_contract::abi::sdk::auth_door::{Answer, Verdict, Verifier, VerifyPlugin, VerifyView};
+use busbar_contract::abi::sdk::auth_door::{
+    Answer, SyncVerifyPlugin, Verdict, Verifier, VerifyView,
+};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::lent::Lent;
 use busbar_contract::abi::sdk::life::Held;
@@ -40,7 +42,7 @@ mod plugin {
 
     pub struct Outbound;
 
-    impl VerifyPlugin for Outbound {
+    impl SyncVerifyPlugin for Outbound {
         fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
             busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
         }

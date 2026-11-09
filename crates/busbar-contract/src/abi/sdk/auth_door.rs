@@ -315,7 +315,31 @@ impl VerifyOp {
     }
 }
 
-/// AN AUTH PLUGIN THAT VERIFIES ON THE SPOT, or on its ticket over the host's services, in safe
+/// A verifier that may pend on host services. The ticketed method is required; use
+/// [`SyncVerifyPlugin`] for a synchronous implementation.
+///
+/// ```compile_fail,E0046
+/// use busbar_contract::abi::sdk::auth_door::VerifyPlugin;
+/// use busbar_contract::abi::sdk::life::Refusal;
+/// struct Unfinished;
+/// impl VerifyPlugin for Unfinished {
+///     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> { Ok(Self) }
+///     fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> { Ok(0) }
+/// }
+/// ```
+///
+/// ```
+/// use busbar_contract::abi::sdk::{auth_door::*, life::Refusal};
+/// use std::task::Poll;
+/// struct Ticketed;
+/// impl VerifyPlugin for Ticketed {
+///     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> { Ok(Self) }
+///     fn verify_ticketed(&self, _: &VerifyView<'_>, _: &VerifyOp) -> Poll<Answer> {
+///         Poll::Ready(Verdict::Pass.into())
+///     }
+///     fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> { Ok(0) }
+/// }
+/// ```
 pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// The index, in the plugin's Statement `families`, of its
     const CACHE_FAMILY: Option<u32> = None;
@@ -334,21 +358,75 @@ pub trait VerifyPlugin: Send + Sync + Sized + 'static {
     /// Build the plugin from its settings JSON and resolved secrets, preserving typed refusals.
     fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal>;
 
-    /// Judge the request at one point: the verdict, the decision and the lines to strip (a bare
-    fn verify(&self, request: &VerifyView<'_>) -> Answer {
-        let _ = request;
-        Verdict::reject("the plugin implements no on-the-spot verify").into()
-    }
-
-    /// Judge the request at one point, over `op`: the call's ticket and the host services, so the
-    fn verify_ticketed(&self, request: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer> {
-        let _ = op;
-        Poll::Ready(self.verify(request))
-    }
+    /// Judge the request over its ticket and host services. Every verifier implements this
+    /// method; synchronous verifiers can implement [`SyncVerifyPlugin`] instead.
+    fn verify_ticketed(&self, request: &VerifyView<'_>, op: &VerifyOp) -> Poll<Answer>;
 
     /// Reload settings and resolved secrets, flushing the inbound cache and returning its count.
     /// Refuse changes that cannot be applied to this instance without reopening it.
     fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal>;
+}
+
+/// A synchronous verifier, adapted to [`VerifyPlugin`] by returning `Poll::Ready`.
+/// The verification method is required; an unfinished plugin cannot silently reject every call.
+/// Implement this trait or [`VerifyPlugin`], never both.
+///
+/// ```compile_fail,E0046
+/// use busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin;
+/// use busbar_contract::abi::sdk::life::Refusal;
+/// struct Unfinished;
+/// impl SyncVerifyPlugin for Unfinished {
+///     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> { Ok(Self) }
+///     fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> { Ok(0) }
+/// }
+/// ```
+pub trait SyncVerifyPlugin: Send + Sync + Sized + 'static {
+    /// The index of the cache-flush metric family, when declared.
+    const CACHE_FAMILY: Option<u32> = None;
+
+    /// The configured carrier fields, selected from the Statement's carriers.
+    fn carriers(&self) -> Option<Vec<String>> {
+        None
+    }
+
+    /// Validate instance settings without opening the plugin.
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        let _ = settings;
+        Ok(())
+    }
+
+    /// Open from settings and resolved secrets.
+    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal>;
+
+    /// Judge the request immediately.
+    fn verify(&self, request: &VerifyView<'_>) -> Answer;
+
+    /// Reload the instance and return the number of cached verdicts flushed.
+    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal>;
+}
+
+impl<T: SyncVerifyPlugin> VerifyPlugin for T {
+    const CACHE_FAMILY: Option<u32> = T::CACHE_FAMILY;
+
+    fn carriers(&self) -> Option<Vec<String>> {
+        T::carriers(self)
+    }
+
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        T::validate(settings)
+    }
+
+    fn open_refusing(settings: &[u8], secrets: &[&[u8]]) -> Result<Self, Refusal> {
+        T::open_refusing(settings, secrets)
+    }
+
+    fn verify_ticketed(&self, request: &VerifyView<'_>, _: &VerifyOp) -> Poll<Answer> {
+        Poll::Ready(T::verify(self, request))
+    }
+
+    fn reload(&self, settings: &[u8], secrets: &[&[u8]]) -> Result<u64, Refusal> {
+        T::reload(self, settings, secrets)
+    }
 }
 
 /// [`VerifyPlugin::validate`] for a plugin whose `open` needs no secret: open over `settings` with
@@ -722,18 +800,50 @@ impl<T: VerifyPlugin, I: AbiIn, O: AbiOut> SafeSlot for NotServed<T, I, O> {
     }
 }
 
-/// THE VERIFY DOOR: `plugin_door!` over the auth table for a [`VerifyPlugin`] `$plugin`, stating
-/// `$statement` (its `kind_tail` an [`AuthTail`] from [`verify_tail`], through [`with_tail`]).
+/// The verify-only door. Its const declaration must state exactly `CAP_INBOUND`,
+/// no login kind and no outbound styles. Custom login implementations use `plugin_door!`.
 ///
-/// ```ignore
-/// busbar_contract::auth_verify_door!(MyPlugin, STATEMENT);
+/// A synchronous verifier uses the adapter and keeps the ordinary door shape:
+///
+/// ```
+/// use busbar_contract::abi::{auth::AuthPoints, sdk::{auth_door::*, door::statement, life::Refusal}};
+/// struct Judge;
+/// impl SyncVerifyPlugin for Judge {
+///     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> { Ok(Self) }
+///     fn verify(&self, _: &VerifyView<'_>) -> Answer { Verdict::Pass.into() }
+///     fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> { Ok(0) }
+/// }
+/// busbar_contract::auth_verify_door!(Judge,
+///     with_tail(statement("judge", "1", 1), &verify_tail(0, AuthPoints::HEAD)));
+/// # fn main() { let _ = door(); }
+/// ```
+///
+/// The same verifier cannot advertise the login capability its SDK shape does not serve:
+///
+/// ```compile_fail,E0080
+/// use busbar_contract::abi::{auth::*, sdk::{auth_door::*, door::statement, life::Refusal}};
+/// struct Judge;
+/// impl SyncVerifyPlugin for Judge {
+///     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> { Ok(Self) }
+///     fn verify(&self, _: &VerifyView<'_>) -> Answer { Verdict::Pass.into() }
+///     fn reload(&self, _: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> { Ok(0) }
+/// }
+/// const TAIL: &AuthTail = &AuthTail {
+///     caps: CAP_INBOUND | CAP_LOGIN, login_kind: LOGIN_KIND_CREDENTIAL,
+///     ..verify_tail(0, AuthPoints::HEAD)
+/// };
+/// busbar_contract::auth_verify_door!(Judge, with_tail(statement("judge", "1", 1), TAIL));
+/// # fn main() { let _ = door(); }
 /// ```
 #[macro_export]
 macro_rules! auth_verify_door {
     ($plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            statement: $statement,
+            // SAFETY: the door macro requires the Statement's pointers to name live const data.
+            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
+                $statement, $crate::abi::auth::CAP_INBOUND,
+            ) },
             lifecycle: life($crate::abi::sdk::auth_door::Verifier<$plugin>),
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_door::Verify<$plugin>>,
@@ -750,6 +860,131 @@ macro_rules! auth_verify_door {
             },
         }
     };
+}
+
+/// Validate the capabilities and outbound declarations of an SDK-owned auth shape.
+/// Used in the door macros' constant initializers, so mismatches fail compilation.
+///
+/// Distinct outbound names are accepted during constant evaluation:
+///
+/// ```
+/// use busbar_contract::abi::{auth::*, sdk::{auth_door::*, auth_outbound::*, door::statement}};
+/// const STYLES: &[StyleDecl] = &[style("first", 0, AuthPoints::HEAD), style("second", 0, AuthPoints::HEAD)];
+/// const TAIL: &AuthTail = &outbound_tail(0, STYLES);
+/// const CHECKED: busbar_contract::abi::mechanism::door::Statement = unsafe {
+///     check_shape(with_tail(statement("out", "1", 1), TAIL), CAP_OUTBOUND)
+/// };
+/// # fn main() { let _ = CHECKED; }
+/// ```
+///
+/// Changing only the second name to the first is a compilation error:
+///
+/// ```compile_fail,E0080
+/// use busbar_contract::abi::{auth::*, sdk::{auth_door::*, auth_outbound::*, door::statement}};
+/// const STYLES: &[StyleDecl] = &[style("first", 0, AuthPoints::HEAD), style("first", 0, AuthPoints::HEAD)];
+/// const TAIL: &AuthTail = &outbound_tail(0, STYLES);
+/// const CHECKED: busbar_contract::abi::mechanism::door::Statement = unsafe {
+///     check_shape(with_tail(statement("out", "1", 1), TAIL), CAP_OUTBOUND)
+/// };
+/// # fn main() { let _ = CHECKED; }
+/// ```
+///
+/// An empty name is also a compilation error:
+///
+/// ```compile_fail,E0080
+/// use busbar_contract::abi::{auth::*, sdk::{auth_door::*, auth_outbound::*, door::statement}};
+/// const STYLES: &[StyleDecl] = &[style("first", 0, AuthPoints::HEAD), style("", 0, AuthPoints::HEAD)];
+/// const TAIL: &AuthTail = &outbound_tail(0, STYLES);
+/// const CHECKED: busbar_contract::abi::mechanism::door::Statement = unsafe {
+///     check_shape(with_tail(statement("out", "1", 1), TAIL), CAP_OUTBOUND)
+/// };
+/// # fn main() { let _ = CHECKED; }
+/// ```
+///
+/// Outbound capability without any styles cannot be registered:
+///
+/// ```compile_fail,E0080
+/// use busbar_contract::abi::{auth::*, sdk::{auth_door::*, auth_outbound::*, door::statement}};
+/// const STYLES: &[StyleDecl] = &[];
+/// const TAIL: &AuthTail = &outbound_tail(0, STYLES);
+/// const CHECKED: busbar_contract::abi::mechanism::door::Statement = unsafe {
+///     check_shape(with_tail(statement("out", "1", 1), TAIL), CAP_OUTBOUND)
+/// };
+/// # fn main() { let _ = CHECKED; }
+/// ```
+///
+/// # Safety
+/// The Statement's kind tail and its lists/strings name their stated counts of live
+/// constant data, as required by `plugin_door!`.
+#[doc(hidden)]
+#[must_use]
+pub const unsafe fn check_shape(statement: Statement, caps: u32) -> Statement {
+    assert!(
+        !statement.kind_tail.is_null(),
+        "an auth SDK shape requires its auth tail"
+    );
+    // SAFETY: the caller supplies the live kind tail; inspect its head before the full value.
+    let head = unsafe { statement.kind_tail.read_unaligned() };
+    assert!(
+        head.size as usize >= std::mem::size_of::<AuthTail>(),
+        "an auth SDK shape requires a complete AuthTail"
+    );
+    // SAFETY: the declared tail covers the current AuthTail.
+    let tail = unsafe { statement.kind_tail.cast::<AuthTail>().read_unaligned() };
+    assert!(
+        tail.caps == caps,
+        "auth capabilities disagree with the SDK door shape"
+    );
+    assert!(
+        tail.login_kind == crate::abi::auth::LOGIN_KIND_NONE,
+        "this auth SDK shape has no login handlers"
+    );
+    assert!(
+        crate::abi::auth::check_inbound_points(tail.caps, tail.inbound_points).is_ok(),
+        "auth inbound points disagree with its capabilities"
+    );
+    let outbound = caps & crate::abi::auth::CAP_OUTBOUND != 0;
+    assert!(
+        outbound == (tail.styles_len != 0),
+        "auth outbound capability disagrees with its styles"
+    );
+    assert!(
+        tail.styles_len <= 64,
+        "an auth tail states more than 64 styles"
+    );
+    assert!(
+        tail.styles_len == 0 || !tail.styles.is_null(),
+        "auth styles are NULL"
+    );
+    let mut i = 0;
+    while i < tail.styles_len {
+        // SAFETY: the caller supplies this declared style and its string bytes.
+        let style = unsafe { tail.styles.add(i).read_unaligned() };
+        assert!(
+            style.name.len != 0 && !style.name.ptr.is_null(),
+            "an auth style name is empty"
+        );
+        assert!(
+            crate::abi::auth::check_style_decl(style.flags, style.points).is_ok(),
+            "auth style flags or points are invalid"
+        );
+        let mut j = 0;
+        while j < i {
+            // SAFETY: the earlier entry and its string have the same caller guarantee.
+            let previous = unsafe { tail.styles.add(j).read_unaligned() };
+            let mut same = previous.name.len == style.name.len;
+            let mut k = 0;
+            while same && k < style.name.len {
+                // SAFETY: both strings have the same declared length and k is within it.
+                same = unsafe { *previous.name.ptr.add(k) == *style.name.ptr.add(k) };
+                k += 1;
+            }
+            assert!(!same, "an auth style name is duplicated");
+            j += 1;
+        }
+        i += 1;
+    }
+    statement
 }
 
 /// An [`AuthTail`] for a verify-only plugin, with `facts` (`FACT_*`), called at the inbound `points`

@@ -775,6 +775,9 @@ impl DatagramFraming {
         judge: Option<(Arc<dyn DialJudge>, u32)>,
         opening: &[(String, Vec<u8>)],
     ) -> Result<(Self, Yielded), Refused> {
+        if side == SIDE_DIAL {
+            door.facts().require_dial()?;
+        }
         if !door.facts().datagram {
             return Err(Refused {
                 outcome: Outcome::Refused,

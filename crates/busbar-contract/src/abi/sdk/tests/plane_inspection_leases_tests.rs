@@ -73,10 +73,34 @@ impl PlaneLife for Leasing {
 }
 mod plugin {
     use super::*;
+    // These operations are outside this lifecycle fixture's purpose; explicit typed
+    // refusals keep its door complete without pretending to serve requests.
+    struct Refuse<I, O>(std::marker::PhantomData<(I, O)>);
+    impl<I: crate::abi::sdk::door::AbiIn, O: crate::abi::sdk::door::AbiOut>
+        crate::abi::sdk::door::RawSlot for Refuse<I, O>
+    {
+        type Kind = crate::plugin::markers::PlaneKind;
+        type In = I;
+        type Out = O;
+        unsafe fn call(_: *mut c_void, _: &I, _: &mut O) -> Outcome {
+            Outcome::Refused
+        }
+    }
+    use crate::abi::plane::{
+        ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
+    };
     crate::plugin_door! {
         ops: crate::abi::plane::Ops,
         statement: crate::abi::sdk::door::statement("inspection-plane-leases", "0", 1),
         lifecycle: plane_life(Leasing),
+        kind_ops: {
+            arrive: Refuse<ArriveIn, ArriveOut>,
+            on_piece: Refuse<OnPieceIn, OnPieceOut>,
+            refusal: Refuse<RefusalIn, RefusalOut>,
+            project: Refuse<ProjectIn, ProjectOut>,
+            hydrate: crate::abi::sdk::plane_life::Inert,
+            start: crate::abi::sdk::plane_life::Inert,
+        },
     }
 }
 fn table() -> &'static crate::abi::plane::Ops {

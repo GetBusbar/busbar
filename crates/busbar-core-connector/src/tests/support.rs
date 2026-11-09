@@ -358,6 +358,7 @@ impl TestDoor {
             || knobs.states_length;
         Self {
             facts: DoorFacts {
+                dials: true,
                 name: name.to_owned(),
                 claims: claims.to_vec(),
                 role: if composes_over.is_empty() && !frames {
@@ -408,6 +409,11 @@ impl TestDoor {
     pub fn with_role(mut self, role: u32) -> Self {
         self.facts.role = role;
         self.facts.ported = role == busbar_contract::abi::transport::ROLE_CARRIER;
+        self
+    }
+
+    pub fn without_dialing(mut self) -> Self {
+        self.facts.dials = false;
         self
     }
 

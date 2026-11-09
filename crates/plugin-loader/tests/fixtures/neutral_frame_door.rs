@@ -79,6 +79,7 @@ const TAIL: TransportTail = TransportTail {
     },
 
     role: ROLE_FRAMER,
+    facts: busbar_contract::abi::transport::FACT_DIALS,
     framing: FRAMING_STREAM,
     claim_rows: CLAIMS.as_ptr(),
     claim_rows_len: CLAIMS.len(),

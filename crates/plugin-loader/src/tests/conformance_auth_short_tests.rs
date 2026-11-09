@@ -7,7 +7,7 @@ use busbar_contract::abi::auth::{AuthPoints, Ops, DECISION_CONTINUE};
 use busbar_contract::abi::mechanism::call::RawOutcome;
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, DoorParts};
 use busbar_contract::abi::sdk::auth_door::{
-    short_reply, verify_tail, with_tail, Answer, Verdict, VerifiedIdentity, VerifyPlugin,
+    short_reply, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifiedIdentity,
     VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
@@ -33,7 +33,7 @@ struct ReleaseGate {
 }
 
 pub struct Probe;
-impl VerifyPlugin for Probe {
+impl SyncVerifyPlugin for Probe {
     fn open_refusing(
         _: &[u8],
         _: &[&[u8]],

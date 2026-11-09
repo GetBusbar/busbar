@@ -230,6 +230,7 @@ fn a_close_beside_a_hung_datagram_emit_never_waits_and_the_holder_finishes_it() 
     rt.block_on(async {
         let door = Arc::new(Hanging {
             facts: crate::framer::DoorFacts {
+                dials: true,
                 name: "hanging".into(),
                 claims: vec!["hanging"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -506,6 +507,7 @@ fn line_outputs_settings(
 ) -> (Arc<super::Dialled>, Arc<LineOutputs>, Arc<ReturnedLines>) {
     let door = Arc::new(LineOutputs {
         facts: crate::framer::DoorFacts {
+            dials: true,
             name: "line-output".into(),
             claims: vec!["line-output"],
             role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -1293,6 +1295,7 @@ fn connector_holds_datagram_writes_until_the_signalling_exchange_finishes() {
 
         let door = Arc::new(Hanging {
             facts: crate::framer::DoorFacts {
+                dials: true,
                 name: "signalling-write-guard".into(),
                 claims: vec!["signalling-write-guard"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,

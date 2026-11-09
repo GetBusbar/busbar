@@ -162,7 +162,16 @@ def expected_inputs(api, project, source):
     return host, sdk
 
 
-def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk):
+def required_conformance_job(repository):
+    if repository == 'GetBusbar/busbar':
+        return 'core-conformance'
+    if repository in ('GetBusbar/busbar-plane-llm', 'GetBusbar/busbar-plane-decisions'):
+        return 'external-conformance'
+    return None
+
+
+def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk,
+                   conformance_receipt=None):
     """Finite admission predicate, shared by the controller and bypass regressions."""
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
         raise ValueError('trusted CI setting changed')
@@ -172,6 +181,8 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
         raise ValueError('admission requires a same-project candidate targeting dev')
     if pipeline.get('project_id') != project['id'] or pipeline.get('source') != 'merge_request_event' or pipeline.get('sha') != mr['sha'] or pipeline.get('status') != 'success':
         raise ValueError('missing, stale or unsuccessful current MR pipeline')
+    if any(job.get('status') != 'success' or job.get('allow_failure') for job in jobs):
+        raise ValueError('pipeline contains a nonpassing or optional job')
     native = [j for j in jobs if j['name'] == 'native-qualification']
     if len(native) != 1 or native[0]['status'] != 'success' or native[0].get('allow_failure'):
         raise ValueError('required native job missing or not passing')
@@ -185,6 +196,21 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
             raise ValueError('native receipt mismatch: ' + key)
     if not receipt.get('steps') or any(step.get('status') != 'pass' or step.get('exit_code') != 0 for step in receipt['steps']):
         raise ValueError('native receipt contains missing or nonpassing checks')
+    required = required_conformance_job(project['path_with_namespace'])
+    if required:
+        evaluations = [job for job in jobs if job['name'] == required]
+        if len(evaluations) != 1 or not evaluations[0].get('runner'):
+            raise ValueError('required same-pipeline conformance job is missing or ambiguous')
+        if not isinstance(conformance_receipt, dict):
+            raise ValueError('required conformance receipt is missing')
+        expected = dict(expected, job_id=str(evaluations[0]['id']), schema='busbar.protected-conformance/1')
+        for key, value in expected.items():
+            if conformance_receipt.get(key) != value:
+                raise ValueError('conformance receipt mismatch: ' + key)
+        if not conformance_receipt.get('steps') or any(
+                step.get('status') != 'pass' or step.get('exit_code') != 0
+                for step in conformance_receipt['steps']):
+            raise ValueError('conformance receipt contains missing or nonpassing checks')
 
 
 def main():
@@ -257,7 +283,16 @@ def main():
             receipt = api.request(identity + '/jobs/' + str(native[0]['id']) + '/artifacts/boundary-evidence/receipt.json')
             target = api.request(identity + '/repository/branches/dev')['commit']['id']
             host, sdk = expected_inputs(api, project, mr['sha'])
-            validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk)
+            conformance_receipt = None
+            required = required_conformance_job(name)
+            if required:
+                evaluations = [job for job in jobs if job['name'] == required]
+                if len(evaluations) != 1:
+                    raise ValueError('required same-pipeline conformance job is missing or ambiguous')
+                conformance_receipt = api.request(identity + '/jobs/' + str(evaluations[0]['id'])
+                    + '/artifacts/boundary-evidence/receipt.json')
+            validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk,
+                           conformance_receipt)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})
             report['projects'].append({'project': name, 'source': mr['sha'], 'target_before': target, 'merge_commit_sha': result.get('merge_commit_sha'), 'state': result['state']})
         args.output.write_text(json.dumps(report, indent=2) + '\n')

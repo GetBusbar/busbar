@@ -47,6 +47,11 @@ mod needs_restated;
 #[path = "tests/ordinary_load_negatives.rs"]
 mod ordinary_load_negatives;
 
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/sdk_registration_tests.rs"]
+mod sdk_registration_tests;
+
 #[cfg(feature = "pack")]
 #[path = "../../../testing/settings/integer_token.rs"]
 pub mod settings_profile;

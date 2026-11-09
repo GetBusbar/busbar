@@ -10,6 +10,43 @@ use busbar_contract::abi::transport::{SIDE_ACCEPT, SIDE_DIAL};
 use super::*;
 use crate::support::{Knobs, TestDoor};
 
+#[test]
+fn undeclared_dialing_refuses_before_locate_or_begin_crosses() {
+    use busbar_contract::abi::transport::ROLE_FRAMER;
+    let door = Arc::new(
+        TestDoor::identity("accept-only")
+            .with_role(ROLE_FRAMER)
+            .without_dialing(),
+    );
+    for result in [
+        locate(door.as_ref(), "x"),
+        locate_request(door.as_ref(), "x", 100),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.outcome, Outcome::Refused);
+        assert!(error.error.contains("accept-only"));
+        assert!(error.error.contains("dialing"));
+    }
+    let result = Framing::begin(door.clone(), SIDE_DIAL, "x", &Established::plain_for_test());
+    assert!(matches!(
+        result,
+        Err(Refused {
+            outcome: Outcome::Refused,
+            ..
+        })
+    ));
+    assert_eq!(door.count("locate"), 0);
+    assert_eq!(door.count("begin"), 0);
+    assert!(Framing::begin(
+        door.clone(),
+        SIDE_ACCEPT,
+        "x",
+        &Established::plain_for_test()
+    )
+    .is_ok());
+    assert_eq!(door.count("begin"), 1, "accepting framing is unchanged");
+}
+
 struct FailedQueryEncode {
     inner: TestDoor,
     mode: EncodeRefusal,
@@ -606,6 +643,7 @@ fn a_ticketed_begin_whose_auth_pends_resumes_on_the_wake_with_one_auth_call() {
     use std::task::{Context, Poll, Waker};
     let door = Arc::new(AuthDoor {
         facts: DoorFacts {
+            dials: true,
             name: "framer".into(),
             claims: vec!["t"],
             role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -769,6 +807,7 @@ impl MuxDoor {
         Self {
             yield_writable: false,
             facts: DoorFacts {
+                dials: true,
                 name: "mux".into(),
                 claims: vec!["mux"],
                 role: busbar_contract::abi::transport::ROLE_FRAMER,

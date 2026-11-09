@@ -23,6 +23,7 @@ pub struct Answer<'a> {
     out: *const OutHead,
     out_size: usize,
     context: Option<&'a Context>,
+    operations: &'a [bool],
 }
 
 impl std::fmt::Debug for Answer<'_> {
@@ -54,6 +55,7 @@ impl<'a> Answer<'a> {
             out,
             out_size,
             context: None,
+            operations: &[],
         }
     }
 
@@ -64,6 +66,15 @@ impl<'a> Answer<'a> {
 
     pub fn context<T: 'static>(&self) -> Option<&'a T> {
         self.context.and_then(|c| c.downcast_ref::<T>())
+    }
+
+    #[must_use]
+    pub fn with_operations(self, operations: &'a [bool]) -> Self {
+        Self { operations, ..self }
+    }
+
+    pub fn has_operation(&self, slot: u32) -> bool {
+        self.operations.get(slot as usize).copied().unwrap_or(false)
     }
 
     pub(crate) fn frames(&self) -> (*const InHead, usize, *const OutHead, usize) {

@@ -798,11 +798,24 @@ pub const unsafe fn door<T: KindOps>(
 /// #         Ok(Refreshed::default())
 /// #     }
 /// # }
+/// # use busbar_contract::abi::{secret, sdk::{life::Held, Instance, Lent, Out, SafeSlot}};
+/// # struct Resolve;
+/// # impl SafeSlot for Resolve {
+/// #     type Kind = busbar_contract::plugin::markers::SecretKind;
+/// #     type In = secret::ResolveIn;
+/// #     type Out = secret::ResolveOut;
+/// #     type State = Held<P>;
+/// #     fn call(_: Instance<'_, Held<P>, Self::Kind>, _: Lent<'_, Self::In>, mut out: Out<'_, Self::Out>) -> busbar_contract::abi::mechanism::call::Outcome {
+/// #         out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+/// #         busbar_contract::abi::mechanism::call::Outcome::Failed
+/// #     }
+/// # }
 /// # mod plugin {
 /// #     busbar_contract::plugin_door! {
 /// #         ops: busbar_contract::abi::secret::Ops,
 /// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
 /// #         lifecycle: life(super::P),
+/// #         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
 /// #     }
 /// # }
 /// fn main() {
@@ -846,19 +859,29 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// #         Ok(Refreshed::default())
 /// #     }
 /// # }
+/// # use busbar_contract::abi::{secret, sdk::{life::Held, Instance, Lent, Out, SafeSlot}};
+/// # struct Resolve;
+/// # impl SafeSlot for Resolve {
+/// #     type Kind = busbar_contract::plugin::markers::SecretKind;
+/// #     type In = secret::ResolveIn;
+/// #     type Out = secret::ResolveOut;
+/// #     type State = Held<P>;
+/// #     fn call(_: Instance<'_, Held<P>, Self::Kind>, _: Lent<'_, Self::In>, mut out: Out<'_, Self::Out>) -> busbar_contract::abi::mechanism::call::Outcome {
+/// #         out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+/// #         busbar_contract::abi::mechanism::call::Outcome::Failed
+/// #     }
+/// # }
 /// # mod plugin {
 /// #     busbar_contract::plugin_door! {
 /// #         ops: busbar_contract::abi::secret::Ops,
 /// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
 /// #         lifecycle: life(super::P),
+/// #         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
 /// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
-///     let _ = MacroDoor { door: forged };
+///     let _ = MacroDoor { door: plugin::door };
 /// }
 /// ```
 ///
@@ -874,15 +897,25 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// #         Ok(Refreshed::default())
 /// #     }
 /// # }
+/// # use busbar_contract::abi::{secret, sdk::{life::Held, Instance, Lent, Out, SafeSlot}};
+/// # struct Resolve;
+/// # impl SafeSlot for Resolve {
+/// #     type Kind = busbar_contract::plugin::markers::SecretKind;
+/// #     type In = secret::ResolveIn;
+/// #     type Out = secret::ResolveOut;
+/// #     type State = Held<P>;
+/// #     fn call(_: Instance<'_, Held<P>, Self::Kind>, _: Lent<'_, Self::In>, mut out: Out<'_, Self::Out>) -> busbar_contract::abi::mechanism::call::Outcome {
+/// #         out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+/// #         busbar_contract::abi::mechanism::call::Outcome::Failed
+/// #     }
+/// # }
 /// # mod plugin {
 /// #     busbar_contract::plugin_door! {
 /// #         ops: busbar_contract::abi::secret::Ops,
 /// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
 /// #         lifecycle: life(super::P),
+/// #         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
 /// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
@@ -904,15 +937,25 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// #         Ok(Refreshed::default())
 /// #     }
 /// # }
+/// # use busbar_contract::abi::{secret, sdk::{life::Held, Instance, Lent, Out, SafeSlot}};
+/// # struct Resolve;
+/// # impl SafeSlot for Resolve {
+/// #     type Kind = busbar_contract::plugin::markers::SecretKind;
+/// #     type In = secret::ResolveIn;
+/// #     type Out = secret::ResolveOut;
+/// #     type State = Held<P>;
+/// #     fn call(_: Instance<'_, Held<P>, Self::Kind>, _: Lent<'_, Self::In>, mut out: Out<'_, Self::Out>) -> busbar_contract::abi::mechanism::call::Outcome {
+/// #         out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+/// #         busbar_contract::abi::mechanism::call::Outcome::Failed
+/// #     }
+/// # }
 /// # mod plugin {
 /// #     busbar_contract::plugin_door! {
 /// #         ops: busbar_contract::abi::secret::Ops,
 /// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
 /// #         lifecycle: life(super::P),
+/// #         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
 /// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
@@ -932,15 +975,25 @@ pub type RawDoorFn = extern "C" fn() -> *const Door;
 /// #         Ok(Refreshed::default())
 /// #     }
 /// # }
+/// # use busbar_contract::abi::{secret, sdk::{life::Held, Instance, Lent, Out, SafeSlot}};
+/// # struct Resolve;
+/// # impl SafeSlot for Resolve {
+/// #     type Kind = busbar_contract::plugin::markers::SecretKind;
+/// #     type In = secret::ResolveIn;
+/// #     type Out = secret::ResolveOut;
+/// #     type State = Held<P>;
+/// #     fn call(_: Instance<'_, Held<P>, Self::Kind>, _: Lent<'_, Self::In>, mut out: Out<'_, Self::Out>) -> busbar_contract::abi::mechanism::call::Outcome {
+/// #         out.set(|o| &o.error_kind, secret::ERROR_KIND_NOT_FOUND);
+/// #         busbar_contract::abi::mechanism::call::Outcome::Failed
+/// #     }
+/// # }
 /// # mod plugin {
 /// #     busbar_contract::plugin_door! {
 /// #         ops: busbar_contract::abi::secret::Ops,
 /// #         statement: busbar_contract::abi::sdk::door::statement("p", "0", 1),
 /// #         lifecycle: life(super::P),
+/// #         kind_ops: { resolve: busbar_contract::abi::sdk::Safe<super::Resolve> },
 /// #     }
-/// # }
-/// # extern "C" fn forged() -> *const busbar_contract::abi::mechanism::door::Door {
-/// #     core::ptr::null()
 /// # }
 /// # use busbar_contract::abi::sdk::door::MacroDoor;
 /// fn main() {
@@ -1204,6 +1257,7 @@ macro_rules! plugin_door {
             // `migrate`, when named, is the SDK's trampoline over its `ValidateIn`/`OutHead` slot;
             // the Statement's content is the caller's own `const` data (see `MACRO_DOOR` below).
             const __DOOR: &$crate::abi::mechanism::door::Door = &unsafe {
+                $crate::abi::sdk::registration::check(__STATEMENT, __OPS);
                 __sdk::door::<__Ops>(
                     __STATEMENT,
                     __OPS,
@@ -1268,8 +1322,8 @@ macro_rules! plugin_door {
 /// * `plane: P, statement: S, [ready: R,] kind_ops: { .. }` — a plane over its
 ///   [`PlaneLife`](crate::abi::sdk::plane_life::PlaneLife) `P` (`lifecycle: plane_life(P)`; its
 ///   `cancel` stays its own). The kind ops in table order; `serve`, `hydrate` and `start` may be
-///   left out: `serve` is then [`NoServe`](crate::abi::sdk::plane_life::NoServe) (REFUSED), and
-///   `hydrate`/`start` [`Inert`](crate::abi::sdk::plane_life::Inert) (READY). `catalog` left out
+///   left out: `serve` is absent and no admin route may be declared; `hydrate`/`start` use
+///   [`Inert`](crate::abi::sdk::plane_life::Inert) (READY). `catalog` left out
 ///   is absent, as in `plugin_door!`.
 ///
 /// ```ignore
@@ -1313,7 +1367,7 @@ macro_rules! export_plugin {
                 arrive: $arrive,
                 on_piece: $on_piece,
                 refusal: $refusal,
-                serve: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::NoServe $(, $serve)?),
+                $(serve: $serve,)?
                 hydrate: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::Inert $(, $hydrate)?),
                 start: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::Inert $(, $start)?),
                 project: $project,
@@ -1321,7 +1375,7 @@ macro_rules! export_plugin {
             },
         }
     };
-    (hook: $open:ty, statement: $statement:expr $(,)?) => {
+    (hook: $open:ty, statement: $statement:expr $(, serve: $serve:ty)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::hook::Ops,
             statement: $statement,
@@ -1333,7 +1387,7 @@ macro_rules! export_plugin {
                 configure: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Configure<$open>>,
                 status: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Status<$open>>,
                 describe: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Describe<$open>>,
-                serve: $crate::abi::sdk::Safe<$crate::abi::sdk::hook::Serve<$open>>,
+                $(serve: $serve,)?
             },
         }
     };

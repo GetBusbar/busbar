@@ -238,6 +238,9 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     check_tail_fee_units(&tail)
         .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let admin_routes = listed(tail.admin_routes, tail.admin_routes_len);
+    plane::check::check_admin_routes(&admin_routes)
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
 
     check_record_chains(
         &listed(tail.record_chains, tail.record_chains_len),
@@ -352,7 +355,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(kept)
                 .collect(),
-            admin_routes: listed(tail.admin_routes, tail.admin_routes_len)
+            admin_routes: admin_routes
                 .into_iter()
                 .map(|r| busbar_contract::plane_calls::StatedAdminRoute {
                     verb: kept(r.verb),
@@ -1233,6 +1236,10 @@ impl Kind for Plane {
         s == slot::CATALOG
     }
 
+    fn optional_by_statement(s: u32, st: &Statement) -> bool {
+        s == slot::SERVE && tail_facts(st).is_ok_and(|facts| facts.served.admin_routes.is_empty())
+    }
+
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::ARRIVE => "arrive",
@@ -1348,6 +1355,7 @@ impl Kind for Plane {
             life::OPEN if a.outcome == Outcome::Ready => {
                 let generation = a.input::<OpenIn>()?.generation;
                 snapshot(
+                    a,
                     a.out::<PlaneOpenOut>()?.snapshot,
                     generation,
                     "open.snapshot",
@@ -1356,6 +1364,7 @@ impl Kind for Plane {
             life::REFRESH if a.outcome == Outcome::Ready => {
                 let generation = a.input::<RefreshIn>()?.generation;
                 snapshot(
+                    a,
                     a.out::<PlaneRefreshOut>()?.snapshot,
                     generation,
                     "refresh.snapshot",
@@ -1699,11 +1708,67 @@ fn project(a: &Answer) -> Result<(), Fault> {
     }
 }
 
-fn snapshot(s: *const PlaneSnapshot, generation: u64, field: &'static str) -> Result<(), Fault> {
+fn snapshot(
+    answer: &Answer<'_>,
+    s: *const PlaneSnapshot,
+    generation: u64,
+    field: &'static str,
+) -> Result<(), Fault> {
     if s.is_null() {
         return Err(fault(Rule::Missing, field));
     }
-    check_snapshot(&as_written(s), generation)
+    let snapshot = as_written(s);
+    check_snapshot(&snapshot, generation)?;
+    // SAFETY: the snapshot's checked lists are generation-owned plugin memory, live
+    // throughout this crossing. `lent` also checks their alignment and byte bounds.
+    let (claims, routes) = unsafe {
+        use crate::dispatch::validate::lent;
+        (
+            lent(snapshot.claims, snapshot.claims_len)
+                .ok_or(fault(Rule::Foreign, "snapshot.claims"))?,
+            lent(snapshot.admin_routes, snapshot.admin_routes_len)
+                .ok_or(fault(Rule::Foreign, "snapshot.admin_routes"))?,
+        )
+    };
+    if claims
+        .iter()
+        .any(|claim| claim.flags & plane::CLAIM_CATALOG != 0)
+        && !answer.has_operation(slot::CATALOG)
+    {
+        return Err(fault(Rule::Missing, "snapshot.catalog.operation"));
+    }
+    if routes.is_empty() {
+        return Ok(());
+    }
+    if !answer.has_operation(slot::SERVE) {
+        return Err(fault(Rule::Missing, "snapshot.admin_routes.operation"));
+    }
+    plane::check::check_admin_routes(routes)?;
+    let facts = answer
+        .context::<PlaneFacts>()
+        .ok_or(fault(Rule::Missing, "plane.tail"))?;
+    for route in routes {
+        let text = |value| {
+            owned_str(value)
+                .map(Option::unwrap_or_default)
+                .ok_or(fault(Rule::Foreign, "snapshot.admin_routes"))
+        };
+        let verb = text(route.verb)?;
+        let target = text(route.target)?;
+        let audit_verb = text(route.audit_verb)?;
+        if !facts.served.admin_routes.iter().any(|declared| {
+            declared.verb == verb
+                && declared.target == target
+                && declared.flags == route.flags
+                && declared.audit_verb == audit_verb
+        }) {
+            return Err(fault(
+                Rule::Contradiction,
+                "snapshot.admin_routes.declaration",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn as_written(p: *const PlaneSnapshot) -> PlaneSnapshot {

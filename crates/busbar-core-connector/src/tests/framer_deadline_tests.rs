@@ -70,6 +70,7 @@ impl Deadlined {
     fn new(ahead: u64) -> Arc<Self> {
         Arc::new(Self {
             facts: DoorFacts {
+                dials: true,
                 name: "deadlined".into(),
                 claims: vec!["deadlined"],
                 role: ROLE_FRAMER,

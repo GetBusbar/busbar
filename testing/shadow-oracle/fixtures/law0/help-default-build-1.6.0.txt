@@ -82,6 +82,7 @@ ENDPOINTS (once running, listen address from config.yaml `listen`):
     POST /model/<modelId>/converse         Bedrock Converse ingress
     POST /model/<modelId>/converse-stream  Bedrock Converse streaming ingress
     GET  /v1/models  /v1beta/models        list models (answers in the caller's dialect)
+    GET  /v1/models/<model>               retrieve a caller-visible OpenAI model object
     GET  /stats  /healthz  /metrics
 
 Docs: https://getbusbar.com   ·   Source: https://github.com/GetBusbar/busbar

@@ -245,8 +245,8 @@ impl RawSlot for Inert {
     }
 }
 
-/// `serve` for a plane that names none (`export_plugin!`'s `plane` arm): REFUSED, a plane with no
-/// routes serves no request (never an open default).
+/// Explicit refusal adapter for a plane with no admin routes. The convenience door leaves
+/// an omitted `serve` absent so the loader can check it against static and active routes.
 #[derive(Debug)]
 pub struct NoServe;
 

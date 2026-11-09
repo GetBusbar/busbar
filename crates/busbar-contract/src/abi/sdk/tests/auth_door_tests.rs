@@ -49,6 +49,31 @@ mod plugin {
             })
         }
 
+        fn verify_ticketed(&self, r: &VerifyView<'_>, op: &VerifyOp) -> std::task::Poll<Answer> {
+            if r.credential() == Some(&b"noted"[..]) {
+                op.diag(
+                    0,
+                    crate::abi::mechanism::call::SEVERITY_WARN,
+                    "the judge noted a key",
+                );
+            }
+            std::task::Poll::Ready(self.verify(r))
+        }
+
+        fn reload(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
+            if settings == b"\"rotate-later\"" {
+                return Err(Refusal::refused(format!(
+                    "settings: a rotation needs a reopen ({} bytes)",
+                    settings.len()
+                )));
+            }
+            self.flushes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(3)
+        }
+    }
+
+    impl Judge {
         fn verify(&self, r: &VerifyView<'_>) -> Answer {
             const STRIPS: &[Strip] = &[strip_field("x-alt")];
             let verdict = match r.credential().or_else(|| r.line("X-Alt")) {
@@ -97,29 +122,6 @@ mod plugin {
                 fixed_strips: STRIPS,
                 ..verdict.into()
             }
-        }
-
-        fn verify_ticketed(&self, r: &VerifyView<'_>, op: &VerifyOp) -> std::task::Poll<Answer> {
-            if r.credential() == Some(&b"noted"[..]) {
-                op.diag(
-                    0,
-                    crate::abi::mechanism::call::SEVERITY_WARN,
-                    "the judge noted a key",
-                );
-            }
-            std::task::Poll::Ready(self.verify(r))
-        }
-
-        fn reload(&self, settings: &[u8], _: &[&[u8]]) -> Result<u64, Refusal> {
-            if settings == b"\"rotate-later\"" {
-                return Err(Refusal::refused(format!(
-                    "settings: a rotation needs a reopen ({} bytes)",
-                    settings.len()
-                )));
-            }
-            self.flushes
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(3)
         }
     }
 

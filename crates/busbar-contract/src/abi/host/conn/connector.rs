@@ -38,6 +38,9 @@ pub struct Need {
     /// none.
     pub auth: AbiStr,
     /// Where the target comes from (a config path the host reads); absent = the plugin names it.
+    /// A plane's inbound `ingress` need uses its optional `ingress` settings block. When absent,
+    /// the host's data listener is inherited; when present, `ingress.listen` selects its socket
+    /// and the host validates the full listener block. A malformed block never inherits.
     pub target_from: AbiStr,
     /// Where the trust anchors come from; absent = the host's default. On a member-target need
     /// (`target_from` = `settings.*.<key>`), a member path (`settings.*.<key>`) names, per

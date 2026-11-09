@@ -12,35 +12,26 @@ use crate::abi::mechanism::call::{
     Blob, InHead, Op, OutHead, Outcome, RawOutcome, BLOB_ABSENT, FLAG_RESUME,
 };
 use crate::abi::mechanism::lifecycle::{
-    slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, OpsHead, RefreshIn, ReleaseIn,
-    TickIn, TickOut, ValidateIn,
+    slot, CancelIn, CancelOut, DriveIn, GenIn, OpenIn, OpenOut, RefreshIn, ReleaseIn, TickIn,
+    TickOut, ValidateIn,
 };
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
-use crate::abi::mechanism::KindCode;
-use crate::abi::sdk::door::KindOps;
 use crate::abi::sdk::lent::Lent;
 
 use super::SafeSlot;
 use crate::abi::sdk::out::Out;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LifecycleOnly {
-    head: OpsHead,
-}
+/// A real Secret table; lifecycle tests explicitly refuse unrelated resolve calls.
+type SecretOps = crate::abi::secret::Ops;
 
-// SAFETY: `#[repr(C)]`, `head: OpsHead` first, nothing after it; the lifecycle's `open` out is
-// `OpenOut`.
-impl crate::abi::sdk::door::table_seal::Sealed for LifecycleOnly {}
-impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I> for LifecycleOnly {}
-impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I>
-    for crate::abi::sdk::door::Lifecycle
-{
-}
-unsafe impl KindOps for LifecycleOnly {
-    type Marker = FixtureKind;
-    const KIND: KindCode = KindCode::Secret;
-    type Lifecycle = crate::abi::sdk::door::Lifecycle;
+struct Resolve;
+impl crate::abi::sdk::door::RawSlot for Resolve {
+    type Kind = FixtureKind;
+    type In = crate::abi::secret::ResolveIn;
+    type Out = crate::abi::secret::ResolveOut;
+    unsafe fn call(_: *mut c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+        Outcome::Refused
+    }
 }
 
 /// The instance state: counts its drops into the test's counter.
@@ -211,7 +202,7 @@ mod plugin {
     });
 
     crate::plugin_door! {
-        ops: LifecycleOnly,
+        ops: SecretOps,
         statement: crate::abi::sdk::door::statement("safe-probe", "0", 4),
         lifecycle: {
             validate: crate::abi::sdk::Safe<Validate>,
@@ -224,12 +215,13 @@ mod plugin {
             release: crate::abi::sdk::Safe<Release>,
             close: crate::abi::sdk::Safe<Close>,
         },
+        kind_ops: { resolve: Resolve },
     }
 }
 
-fn table() -> &'static LifecycleOnly {
+fn table() -> &'static SecretOps {
     // SAFETY: the macro's `'static` door and table.
-    unsafe { &*plugin::door().ops.cast::<LifecycleOnly>() }
+    unsafe { &*plugin::door().ops.cast::<SecretOps>() }
 }
 
 fn in_head<T>(op: u32) -> InHead {

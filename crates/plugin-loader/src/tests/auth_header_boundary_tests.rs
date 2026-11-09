@@ -9,7 +9,8 @@ use busbar_contract::abi::auth::{
 use busbar_contract::abi::mechanism::call::{AbiStr, RawOutcome, FLAG_RESUME};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, MarkWord, Statement};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_tail, Answer, Strip as KitStrip, Verdict, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, Strip as KitStrip, SyncVerifyPlugin, Verdict,
+    VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -51,7 +52,7 @@ struct Probe {
     second: AtomicBool,
 }
 
-impl VerifyPlugin for Probe {
+impl SyncVerifyPlugin for Probe {
     fn open_refusing(settings: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self {
             second: AtomicBool::new(settings == b"true"),

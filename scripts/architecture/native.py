@@ -20,6 +20,7 @@ import signal
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 from check import Policy, Violation, read
 
@@ -27,6 +28,25 @@ EXTERNAL_EVALUATIONS = {
     'GetBusbar/busbar-plane-llm': 'testing/conformance/external-openai.sh',
     'GetBusbar/busbar-plane-decisions': 'testing/conformance/external-jev.sh',
 }
+
+
+def validate_test_report(path):
+    """A successful process exit cannot contradict a failing machine report."""
+    try:
+        root = ET.parse(path).getroot()
+        cases = list(root.iter('testcase'))
+        if root.tag not in ('testsuites', 'testsuite') or not cases:
+            raise ValueError('empty or unrecognized JUnit report')
+        for element in root.iter():
+            if element.tag in ('failure', 'error', 'rerunFailure', 'rerunError', 'flakyFailure', 'flakyError'):
+                raise ValueError('reported test failure')
+            for attribute in ('failures', 'errors'):
+                if attribute in element.attrib and int(element.attrib[attribute]) != 0:
+                    raise ValueError('nonzero failure/error count')
+        if all(case.find('skipped') is not None for case in cases):
+            raise ValueError('no executed test cases')
+    except (ET.ParseError, OSError, ValueError) as error:
+        raise Violation('native test report is not passing: ' + str(error)) from error
 
 
 def evaluation_job(repository, conformance_only, external_conformance):
@@ -187,9 +207,9 @@ class Qualification:
         if self.evaluation_only:
             expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance)
             if (os.environ.get('CI_JOB_NAME') != expected_job
-                    or os.environ.get('CI_PIPELINE_SOURCE') != 'api'):
-                raise Violation('standalone evaluation requires its trusted API job')
-            # An evaluation receipt can never satisfy native admission.
+                    or os.environ.get('CI_PIPELINE_SOURCE') not in ('api', 'merge_request_event', 'push')):
+                raise Violation('conformance requires its trusted job and pipeline source')
+            # This receipt supplements, and never replaces, native qualification.
             self.receipt['schema'] = 'busbar.protected-conformance/1'
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
@@ -283,6 +303,12 @@ class Qualification:
                 raise Violation('nextest did not produce its current machine-readable report')
             shutil.copyfile(junit, self.evidence / (name + '.xml'))
             row['junit_sha256'] = digest(junit)
+            try:
+                validate_test_report(junit)
+            except Violation:
+                row.update(status='fail', exit_code=1)
+                self.save()
+                raise
         self.save()
         print(json.dumps(row), flush=True)
         if code:
@@ -329,6 +355,8 @@ class Qualification:
 
     def core(self):
         self.architecture()
+        self.run('architecture-regressions', [sys.executable, '-m', 'unittest', 'discover',
+            '-s', str(self.trusted / 'scripts/architecture'), '-p', 'test_*.py'], cwd=self.trusted)
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
         self.sdk()
@@ -430,7 +458,8 @@ class Qualification:
             shutil.copyfile(path, out)
 
     def core_conformance(self):
-        """Evaluate the registered core suites independently of product admission."""
+        """Evaluate required core suites, retaining failures and release-input gaps."""
+        self.sdk()
         # The full applicable upstream mTLS signature roster contains thousands
         # of handshakes. Keep its three bounded legs inside this per-suite cap;
         # the enclosing command retains its three-hour bound.

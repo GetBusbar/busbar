@@ -38,6 +38,7 @@ struct LengthDoor {
 fn door() -> Arc<LengthDoor> {
     Arc::new(LengthDoor {
         facts: DoorFacts {
+            dials: true,
             name: "lp".into(),
             claims: vec!["web", "lp"],
 

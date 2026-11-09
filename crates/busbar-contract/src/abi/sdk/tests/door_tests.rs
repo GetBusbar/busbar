@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE DOOR MACRO, COMPILED-IN LEG: a tiny lifecycle-only plugin built with `plugin_door!` in this
+//! The door macro and raw trampoline layout, exercised with a complete Secret fixture.
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -20,24 +20,17 @@ use crate::abi::mechanism::{KindCode, DOOR_MAGIC, MECHANISM_VERSION};
 
 use super::{KindOps, KindSlot, RawSlot};
 
-/// The lifecycle-only table: the shared head and no kind op.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct LifecycleOnly {
-    head: OpsHead,
-}
+/// A real Secret table; lifecycle tests explicitly refuse unrelated resolve calls.
+type SecretOps = crate::abi::secret::Ops;
 
-// SAFETY: `#[repr(C)]`, `head: OpsHead` first, nothing after it.
-impl crate::abi::sdk::door::table_seal::Sealed for LifecycleOnly {}
-impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I> for LifecycleOnly {}
-impl<const I: u32> crate::abi::sdk::door::table_seal::For<LifecycleOnly, I>
-    for crate::abi::sdk::door::Lifecycle
-{
-}
-unsafe impl KindOps for LifecycleOnly {
-    type Marker = FixtureKind;
-    const KIND: KindCode = KindCode::Secret;
-    type Lifecycle = crate::abi::sdk::door::Lifecycle;
+struct Resolve;
+impl crate::abi::sdk::door::RawSlot for Resolve {
+    type Kind = FixtureKind;
+    type In = crate::abi::secret::ResolveIn;
+    type Out = crate::abi::secret::ResolveOut;
+    unsafe fn call(_: *mut c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+        Outcome::Refused
+    }
 }
 
 /// `validate` with this settings length panics.
@@ -156,7 +149,7 @@ mod plugin {
     use super::*;
 
     crate::plugin_door! {
-        ops: super::LifecycleOnly,
+        ops: super::SecretOps,
         statement: crate::abi::mechanism::door::Statement {
             max_inflight: 8,
             ..crate::abi::sdk::door::statement("sdk-door-test", "0.0.1", 0)
@@ -172,6 +165,7 @@ mod plugin {
             release: Release,
             close: Close,
         },
+        kind_ops: { resolve: Resolve },
     }
 }
 
@@ -180,9 +174,9 @@ fn the_door() -> &'static Door {
     door()
 }
 
-fn table() -> &'static LifecycleOnly {
-    // SAFETY: the door's ops point at the macro's `'static` `LifecycleOnly`.
-    unsafe { &*the_door().ops.cast::<LifecycleOnly>() }
+fn table() -> &'static SecretOps {
+    // SAFETY: the door's ops point at the macro's `'static` `SecretOps`.
+    unsafe { &*the_door().ops.cast::<SecretOps>() }
 }
 
 fn in_head<T>(op: u32, ticket: Ticket) -> InHead {
@@ -280,9 +274,9 @@ fn the_door_states_magic_versions_kind_statement_and_table() {
     assert_eq!(name, b"sdk-door-test");
 
     let head = &table().head;
-    assert_eq!(head.size as usize, size_of::<LifecycleOnly>());
-    assert_eq!(head.slots, LIFECYCLE_SLOTS);
-    assert_eq!(super::slot_count::<LifecycleOnly>(), LIFECYCLE_SLOTS);
+    assert_eq!(head.size as usize, size_of::<SecretOps>());
+    assert_eq!(head.slots, crate::abi::secret::SLOTS);
+    assert_eq!(super::slot_count::<SecretOps>(), crate::abi::secret::SLOTS);
     for (i, s) in [
         head.validate,
         head.open,
@@ -659,22 +653,39 @@ impl RawSlot for Second {
 
 mod kind_plugin {
     use super::*;
+    use crate::abi::sdk::capture::{CaptureHome, CaptureRetention, CaptureSlot};
 
-    crate::plugin_door! {
-        ops: super::TwoKindOps,
-        statement: crate::abi::sdk::door::statement("sdk-door-kind-ops", "0.0.1", 1),
-        lifecycle: {
-            validate: Validate,
-            open: Open,
-            refresh: Refresh,
-            retire: Retire,
-            tick: Tick,
-            drive: Drive,
-            cancel: Cancel,
-            release: Release,
-            close: Close,
-        },
-        kind_ops: { second: Second, first: First },
+    struct Capture;
+    impl CaptureHome for Capture {
+        fn with<R>(f: impl FnOnce(&mut CaptureSlot) -> R) -> R {
+            std::thread_local! {
+                static SLOT: std::cell::RefCell<CaptureSlot> =
+                    std::cell::RefCell::new(CaptureSlot::new());
+            }
+            SLOT.with(|slot| f(&mut slot.borrow_mut()))
+        }
+        fn retention() -> &'static CaptureRetention {
+            static RETENTION: std::sync::OnceLock<CaptureRetention> = std::sync::OnceLock::new();
+            RETENTION.get_or_init(Default::default)
+        }
+    }
+
+    pub extern "C" fn door() -> &'static Door {
+        use crate::abi::sdk::door::{door, kind_op, stamp, statement};
+        const ST: &crate::abi::mechanism::door::Statement =
+            &stamp::<TwoKindOps>(statement("sdk-door-kind-ops", "0.0.1", 1));
+        // SAFETY: the real Secret fixture owns this complete static lifecycle table.
+        let mut head = unsafe { *plugin::door().ops() };
+        head.size = size_of::<TwoKindOps>() as u32;
+        head.slots = LIFECYCLE_SLOTS + 2;
+        let ops = Box::leak(Box::new(TwoKindOps {
+            head,
+            second: kind_op::<TwoKindOps, TwoKindOps, Second, Capture, { LIFECYCLE_SLOTS + 1 }>(),
+            first: kind_op::<TwoKindOps, TwoKindOps, First, Capture, { LIFECYCLE_SLOTS }>(),
+        }));
+        // SAFETY: this deliberately fictional table and its descriptor are process-lived.
+        // It exercises raw slot layout/trampolines, never SDK registration or host admission.
+        Box::leak(Box::new(unsafe { door::<TwoKindOps>(ST, ops, None) }))
     }
 }
 
@@ -1058,7 +1069,10 @@ mod export_plugin {
 
     crate::plugin_door! {
         ops: crate::abi::export::Ops,
-        statement: crate::abi::sdk::door::statement("sdk-door-export", "0.0.1", 1),
+        statement: crate::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(&crate::abi::sdk::export::tail(&[], &[])).cast(),
+            ..crate::abi::sdk::door::statement("sdk-door-export", "0.0.1", 1)
+        },
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
@@ -1150,7 +1164,10 @@ mod hook_plugin {
 
     crate::plugin_door! {
         ops: crate::abi::hook::Ops,
-        statement: crate::abi::sdk::door::statement("sdk-door-hook", "0.0.1", 1),
+        statement: crate::abi::sdk::hook::statement_with_tail(
+            crate::abi::sdk::door::statement("sdk-door-hook", "0.0.1", 1),
+            &crate::abi::sdk::hook::tail(crate::abi::hook::CLASS_GATE, crate::abi::hook::PROMPT_NO, crate::abi::hook::USER_NO),
+        ),
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,

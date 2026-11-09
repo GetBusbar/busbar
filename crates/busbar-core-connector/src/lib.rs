@@ -1138,7 +1138,7 @@ impl Connector {
             .map(|(scheme, _)| scheme)
             .ok_or(ConnError::Refused)?;
         let view = self.transports.read().expect("transports");
-        let served = view.serving(scheme).ok_or(ConnError::Refused)?;
+        let served = view.dialing(scheme).ok_or(ConnError::Refused)?;
         if served.entry.door.facts().datagram {
             return Err(ConnError::Refused);
         }
@@ -1313,7 +1313,7 @@ impl Connector {
         });
         let served = {
             let view = self.transports.read().expect("transports");
-            view.serving(transport)
+            view.dialing(transport)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
         let Some((door, alpn)) = served else {
@@ -1422,7 +1422,7 @@ impl Connector {
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
-            view.serving(&spec.transport)
+            view.dialing(&spec.transport)
                 .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };
@@ -1506,7 +1506,7 @@ impl Connector {
     ) -> Result<(), ConnError> {
         let served = {
             let view = self.transports.read().expect("transports");
-            view.serving(&spec.transport)
+            view.dialing(&spec.transport)
                 .filter(|served| served.entry.door.facts().role == ROLE_CARRIER)
                 .map(|served| (Arc::clone(&served.entry.door), served.entry.alpn.clone()))
         };

@@ -74,30 +74,29 @@ native-qualification:
     expire_in: 30 days
     paths: [boundary-evidence/]
 
-# Explicit evaluations retain failed/blocked verdicts and cannot grant admission.
-# Keeping them independent prevents absent release signing inputs from hiding
-# completed protocol and SBOM outcomes. No QA/main promotion occurs here.
+# Conformance is mandatory alongside native qualification. API runs remain useful
+# diagnostics, but cannot replace these same-pipeline publication prerequisites.
 core-conformance:
   extends: native-qualification
   tags: [busbar-conformance]
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
 
-# External endpoint judges keep their own failures and unmet prerequisites.
-# These receipts are evaluations, never a substitute for native qualification.
+# External endpoint judges retain failures and unmet prerequisites. Both their
+# receipt and the native qualification receipt are required for publication.
 external-conformance:
   extends: native-qualification
   tags: [busbar-conformance]
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions"'
     - when: never
 
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness.
 website-dev:
   stage: website
-  needs: [native-qualification]
+  # Stage ordering requires every qualification job, including conformance.
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
       variables:

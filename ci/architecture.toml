@@ -874,3 +874,8 @@ count = 1
 source = "crates/plugin-loader/src/dispatch/plugin.rs"
 markers = ["fn swap(store:"]
 count = 1
+
+[[compiler_witnesses]]
+source = "crates/busbar-contract/src/abi/sdk/registration.rs"
+markers = ["SDK_REGISTRATION_WITNESS"]
+count = 14

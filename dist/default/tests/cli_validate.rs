@@ -1475,6 +1475,34 @@ fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
 
 #[cfg(linked_section_decisions)]
 fn write_decisions_configs(dir: &Path, protocol: &str, decisions_yaml: &str) {
+    // These cases exercise provider references and grammar, using a synthetic fixture model
+    // declared with this fixture contract on 2026-11-09, not metadata for a provider model.
+    // Leave scalar/typo sections intact so their intended parser failures remain visible.
+    let mut fixture: serde_yaml::Value = serde_yaml::from_str(decisions_yaml).unwrap();
+    let aliases: Option<Vec<String>> = fixture
+        .get("decisions")
+        .and_then(|section| section.get("models"))
+        .and_then(serde_yaml::Value::as_mapping)
+        .map(|models| {
+            models
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        });
+    let decisions_yaml = if let Some(aliases) = aliases {
+        let catalog: std::collections::BTreeMap<_, _> = aliases.into_iter().map(|alias| {
+            (alias, serde_json::json!({
+                "description": "Busbar Decisions CLI validation fixture (not a provider model)",
+                "release_date": "2026-11-09",
+            }))
+        }).collect();
+        fixture["decisions"]["catalog"] = serde_yaml::to_value(catalog).unwrap();
+        fixture["decisions"]["ingress"] = serde_yaml::from_str("{listen: '127.0.0.1:0'}").unwrap();
+        serde_yaml::to_string(&fixture).unwrap()
+    } else {
+        decisions_yaml.to_owned()
+    };
     std::fs::write(
         dir.join("providers.yaml"),
         format!(

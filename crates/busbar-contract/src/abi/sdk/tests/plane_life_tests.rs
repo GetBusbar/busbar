@@ -106,6 +106,10 @@ mod plugin {
         ops: crate::abi::plane::Ops,
         statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
         lifecycle: plane_life(Echo),
+        kind_ops: {
+            arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project,
+            hydrate: Inert, start: Inert,
+        },
     }
 }
 
@@ -130,6 +134,10 @@ mod migrating {
         statement: crate::abi::sdk::door::statement("plane-life-echo", "0", 1),
         lifecycle: plane_life(Echo),
         migrate: crate::abi::sdk::migrate::Migrator<super::EchoMigration>,
+        kind_ops: {
+            arrive: Arrive, on_piece: OnPiece, refusal: Refuse, project: Project,
+            hydrate: Inert, start: Inert,
+        },
     }
 }
 
@@ -502,12 +510,15 @@ fn serve_op(op: Option<Op>) -> Outcome {
 }
 
 #[test]
-fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_serve_to_refused() {
+fn the_plane_arm_defaults_hydrate_and_start_to_ready_and_leaves_serve_absent() {
     use crate::abi::plane::slot::{HYDRATE, START};
     let t = arm_table(defaulted::door);
     assert_eq!(gen_op(t.hydrate, HYDRATE), Outcome::Ready);
     assert_eq!(gen_op(t.start, START), Outcome::Ready);
-    assert_eq!(serve_op(t.serve), Outcome::Refused);
+    assert!(
+        t.serve.is_none(),
+        "an unnamed serve stays absent for admission checks"
+    );
     assert!(t.catalog.is_none(), "an unnamed catalog stays absent");
     assert!(t.head.cancel.is_some(), "cancel is the plane's own");
 }

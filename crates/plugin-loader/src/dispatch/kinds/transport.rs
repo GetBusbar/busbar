@@ -76,6 +76,8 @@ pub struct TransportFacts {
     /// Its tail states `FACT_ACCEPTS` (`TransportTail::facts`): its framer begins on the accepting
     /// side, so a listener may be framed by it.
     pub accepts: bool,
+    /// Its tail states `FACT_DIALS`: a framer can begin on the dialing side.
+    pub dials: bool,
     /// Its tail declares that it can release framing custody.
     pub detaches: bool,
     /// Its tail declares that it can adopt framing custody.
@@ -88,6 +90,33 @@ pub struct TransportFacts {
     pub seals: bool,
     /// Its Adopt consumes the host's inherited session extension before yielding frames.
     pub adopts_session: bool,
+}
+
+impl TransportFacts {
+    /// Refuse outbound framing that the transport did not declare. Carrier operations use
+    /// their required slots; the direction fact bits describe framer operations.
+    pub(crate) fn admit_direction(
+        &self,
+        s: u32,
+        input: *const busbar_contract::abi::mechanism::call::InHead,
+        in_size: usize,
+    ) -> Option<Outcome> {
+        if self.role != transport::ROLE_FRAMER || self.dials || input.is_null() {
+            return None;
+        }
+        let outbound = match s {
+            slot::LOCATE if in_size >= size_of::<LocateIn>() => {
+                // SAFETY: the dispatcher lends its own input frame with the checked size.
+                unsafe { input.cast::<LocateIn>().read_unaligned().accept == 0 }
+            }
+            slot::BEGIN if in_size >= size_of::<BeginIn>() => {
+                // SAFETY: the dispatcher lends its own input frame with the checked size.
+                unsafe { input.cast::<BeginIn>().read_unaligned().side == transport::SIDE_DIAL }
+            }
+            _ => false,
+        };
+        outbound.then_some(Outcome::Refused)
+    }
 }
 
 pub fn stated(
@@ -250,6 +279,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         name: owned(st.name, "Statement name")?,
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         accepts: tail.facts & busbar_contract::abi::transport::FACT_ACCEPTS != 0,
+        dials: tail.facts & transport::FACT_DIALS != 0,
         detaches: tail.facts & transport::FACT_DETACHES != 0,
         adopts: tail.facts & transport::FACT_ADOPTS != 0,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),

@@ -614,6 +614,33 @@ fn a_doors_listed_names_are_scope_filtered_as_its_admission_judges() {
         value: "alpha".to_string(),
     }]);
     assert_eq!(listed(&slots, Some(&granted)), ["alpha"]);
+    assert_eq!(
+        listed_for_plane(&slots, Some(&granted), decl.key),
+        ["alpha"]
+    );
+    assert!(listed_for_plane(&slots, Some(&granted), "another-plane").is_empty());
+
+    // A name granted under one plane's scope does not grant the same spelling under another.
+    let mut other_reg = registration("door-fold-other-listed", NAMED);
+    other_reg.scope_kinds = vec!["other-member"];
+    let other_decl = fold(other_reg).expect("other plane folds");
+    let mut colliding = slots.clone();
+    colliding.insert(
+        other_decl.key,
+        std::sync::Arc::new(DoorSlot {
+            section: DoorSection::new(other_decl.door, NAMED, serde_yaml::Value::Null),
+            facing: busbar_contract::plane_calls::DoorFacing {
+                listed: vec!["alpha".into()],
+                ..Default::default()
+            },
+            opened: true,
+        }),
+    );
+    assert_eq!(
+        listed_for_plane(&colliding, Some(&granted), decl.key),
+        ["alpha"]
+    );
+    assert!(listed_for_plane(&colliding, Some(&granted), other_decl.key).is_empty());
     let pools_only = key(vec![ScopeRef::pool("zeta")]);
     assert!(listed(&slots, Some(&pools_only)).is_empty());
     let empty: std::collections::BTreeMap<

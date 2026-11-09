@@ -9,7 +9,7 @@ use busbar_contract::abi::auth::{AuthPoint, AuthPoints, AuthTail, METRIC_CACHE_F
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{MarkWord, MetricFamily, Statement, FAMILY_COUNTER};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, Strip, Verdict, VerifyView,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::{
@@ -32,7 +32,7 @@ static REFRESH_GATE: (std::sync::Mutex<(bool, bool)>, std::sync::Condvar) = (
 
 static FLUSHES: AtomicU64 = AtomicU64::new(0);
 
-impl VerifyPlugin for Judge {
+impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Judge {
     fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
@@ -443,7 +443,7 @@ async fn a_verify_past_max_inflight_is_overloaded_and_never_queued() {
 
 struct Keyed;
 
-impl VerifyPlugin for Keyed {
+impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Keyed {
     fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
         serde_json::from_slice::<serde_json::Value>(settings)
             .map(drop)
@@ -1627,7 +1627,7 @@ mod reasons {
     };
     use busbar_contract::abi::mechanism::call::Outcome;
     use busbar_contract::abi::sdk::auth_door::{
-        verify_tail, with_tail, NotServed, Verifier, VerifyPlugin,
+        verify_tail, with_tail, Answer, NotServed, Verifier, VerifyPlugin, VerifyView,
     };
     use busbar_contract::abi::sdk::door::statement;
     use busbar_contract::abi::sdk::life::Held;
@@ -1640,6 +1640,14 @@ mod reasons {
     pub(super) struct Says;
 
     impl VerifyPlugin for Says {
+        fn verify_ticketed(
+            &self,
+            _: &VerifyView<'_>,
+            _: &busbar_contract::abi::sdk::auth_door::VerifyOp,
+        ) -> std::task::Poll<Answer> {
+            panic!("this fixture uses its explicit RejectSaying slot")
+        }
+
         fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
             busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
         }

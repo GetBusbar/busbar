@@ -711,6 +711,7 @@ pub struct Instance {
     name: String,
     statement_digest: [u8; 32],
     slots: Box<[Op]>,
+    operations: Box<[bool]>,
 
     ready: Option<Op>,
     families: Box<[FamilyShape]>,
@@ -1931,7 +1932,8 @@ impl Instance {
                                         out_size as usize,
                                     )
                                 }
-                                .with_context(self.context.as_deref());
+                                .with_context(self.context.as_deref())
+                                .with_operations(&self.operations);
                                 (self.check)(&answer).is_ok()
                             }
                         };
@@ -2017,7 +2019,9 @@ impl Instance {
             )
         };
 
-        let answer = answer.with_context(self.context.as_deref());
+        let answer = answer
+            .with_context(self.context.as_deref())
+            .with_operations(&self.operations);
         {
             if let Err(f) = (self.check)(&answer) {
                 tracing::warn!(
@@ -2686,7 +2690,7 @@ impl<K: Kind> Plugin<K> {
             ));
         }
         let _ = wake.caller.set(caller);
-        let context = K::context(&st).map_err(LoadError::KindTail)?;
+        let context = v.context;
         let _ = wake
             .credential_kinds
             .set(K::credential_kinds(context.as_deref()));
@@ -2700,6 +2704,7 @@ impl<K: Kind> Plugin<K> {
                 name: String::from_utf8_lossy(name).into_owned(),
                 statement_digest,
                 slots: v.slots,
+                operations: v.operations,
                 ready: v.ready,
                 families,
                 diag_ids: DiagIds {
@@ -3012,6 +3017,15 @@ impl<K: Kind> Plugin<K> {
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
+            return Called::from(Crossed::host(o));
+        }
+
+        if let Some(o) = self
+            .context::<super::kinds::transport::TransportFacts>()
+            .and_then(|facts| {
+                facts.admit_direction(s, frame.heads().0.cast_const(), size_of::<I>())
+            })
+        {
             return Called::from(Crossed::host(o));
         }
 

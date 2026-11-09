@@ -606,6 +606,28 @@ pub fn listed<'a>(
     >,
     key: Option<&busbar_contract::records::VirtualKey>,
 ) -> Vec<&'a str> {
+    listed_matching(slots, key, None)
+}
+
+pub fn listed_for_plane<'a>(
+    slots: &'a std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    key: Option<&busbar_contract::records::VirtualKey>,
+    plane: &str,
+) -> Vec<&'a str> {
+    listed_matching(slots, key, Some(plane))
+}
+
+fn listed_matching<'a>(
+    slots: &'a std::collections::BTreeMap<
+        &'static str,
+        std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    >,
+    key: Option<&busbar_contract::records::VirtualKey>,
+    plane: Option<&str>,
+) -> Vec<&'a str> {
     let registered = crate::plane_driver::registry::plane_decls();
     let mut doors: Vec<(&'static str, &'a DoorSlot)> = slots
         .iter()
@@ -623,6 +645,9 @@ pub fn listed<'a>(
         let Some(door) = slot.section.door else {
             continue;
         };
+        if plane.is_some_and(|plane| door.reg.key != plane) {
+            continue;
+        }
         let kind = door.reg.scope_kinds.first();
         out.extend(
             slot.facing
