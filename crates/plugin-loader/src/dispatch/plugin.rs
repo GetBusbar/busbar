@@ -2885,6 +2885,15 @@ impl<K: Kind> Plugin<K> {
         }
     }
 
+    /// Isolate host kind/grant/ownership checks from plugin business code in conformance.
+    /// Supplies only the active lifecycle phase; the live context, caller, ticket and
+    /// declared need checks remain unchanged. Unavailable in shipping builds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_in_host_operation<R>(&self, run: impl FnOnce() -> R) -> R {
+        let _phase = super::access::enter(busbar_contract::abi::mechanism::lifecycle::slot::TICK);
+        run()
+    }
+
     /// Context for adversarial raw-ABI conformance calls; absent from shipping builds.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_host_context(&self) -> HostCtx {

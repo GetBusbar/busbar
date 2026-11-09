@@ -13,6 +13,16 @@ import urllib.error
 import urllib.request
 
 
+def ldap_readiness_command(name):
+    # The pinned image answers LDAP during bootstrap, then stops that daemon.
+    # osixia/docker-openldap v1.5.0 image/service/slapd/startup.sh writes this
+    # marker after shutdown; only then probe the final daemon.
+    return ['docker', 'exec', name, 'sh', '-ec',
+            'test -f "$1"; shift; exec ldapsearch "$@"', 'ldap-ready',
+            '/container/run/state/slapd-first-start-done', '-x', '-H', 'ldap://127.0.0.1',
+            '-D', 'cn=admin,dc=example,dc=org', '-w', 'adminpassword', '-b', 'dc=example,dc=org']
+
+
 class Services:
     def __init__(self, qualification, host, all_services=False):
         self.q, self.host = qualification, host
@@ -97,16 +107,15 @@ class Services:
                 elif service == 'openldap':
                     seed = self.q.trusted / 'scripts/fixtures/auth-ldap/seed.ldif'
                     name, port = self.container(service, 389, ['-e', 'LDAP_ORGANISATION=Example Org',
-                        '-e', 'LDAP_DOMAIN=example.org', '-e', 'LDAP_ADMIN_PASSWORD=admin', '-e', 'LDAP_TLS=false'])
+                        '-e', 'LDAP_DOMAIN=example.org', '-e', 'LDAP_ADMIN_PASSWORD=adminpassword', '-e', 'LDAP_TLS=false'])
                     deadline = time.monotonic() + 60
-                    command = ['docker', 'exec', name, 'ldapsearch', '-x', '-H', 'ldap://127.0.0.1',
-                               '-D', 'cn=admin,dc=example,dc=org', '-w', 'admin', '-b', 'dc=example,dc=org']
+                    command = ldap_readiness_command(name)
                     while subprocess.run(command, env=self.q.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
                         if time.monotonic() >= deadline:
                             raise RuntimeError('OpenLDAP fixture failed readiness')
                         time.sleep(0.5)
                     subprocess.run(['docker', 'exec', '-i', name, 'ldapadd', '-x', '-H', 'ldap://127.0.0.1',
-                        '-D', 'cn=admin,dc=example,dc=org', '-w', 'admin'], input=seed.read_bytes(), env=self.q.env,
+                        '-D', 'cn=admin,dc=example,dc=org', '-w', 'adminpassword'], input=seed.read_bytes(), env=self.q.env,
                         stdout=subprocess.DEVNULL, check=True)
                     self.q.env['BUSBAR_TEST_LDAP_URL'] = 'ldap://127.0.0.1:' + port
             # The supported migration witness is produced by the real published 1.5.5
