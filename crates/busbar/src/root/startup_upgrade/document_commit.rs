@@ -651,6 +651,7 @@ impl Inventory {
             complete: false,
         };
         let mut phase = proof.phase;
+        let completed = phase == Phase::Complete;
         for (index, document) in self.documents.iter().enumerate() {
             let index = u32::try_from(index).map_err(|_| failure())?;
             let p = &document.publication;
@@ -673,7 +674,10 @@ impl Inventory {
                     FileOutcome::AlreadyConverted
                 }
                 Ok(DocumentInspection::Original { .. })
-                    if p.locked || document.read_only || document.metadata.is_none() =>
+                    if completed
+                        || p.locked
+                        || document.read_only
+                        || document.metadata.is_none() =>
                 {
                     FileOutcome::InMemoryOnly
                 }
@@ -752,14 +756,21 @@ impl Inventory {
                 FileOutcome::InMemoryOnly => Phase::Deferred(index),
                 _ => Phase::Published(index),
             };
-            self.confirm(checkpoints, proof.migration, phase).await?;
+            // Completion is terminal. On ordinary restart observe the retained
+            // files, including intentionally deferred originals, without reopening
+            // publication or regressing the native checkpoint.
+            if !completed {
+                self.confirm(checkpoints, proof.migration, phase).await?;
+            }
             report.files.push(FileReport {
                 path: p.path.clone(),
                 outcome,
             });
         }
-        self.confirm(checkpoints, proof.migration, Phase::Complete)
-            .await?;
+        if !completed {
+            self.confirm(checkpoints, proof.migration, Phase::Complete)
+                .await?;
+        }
         report.complete = true;
         Ok(report)
     }
@@ -792,6 +803,12 @@ mod tests {
                 let (_, phase) = Inventory::decode(protected, migration)?;
                 if self.fault.load(Ordering::SeqCst) == 1 {
                     return Ok(Secret::new(b"different readback".to_vec()));
+                }
+                if let Some(stored) = self.stored.lock().unwrap().as_ref() {
+                    let (_, previous) = Inventory::decode(stored, migration)?;
+                    if previous == Phase::Complete && phase != Phase::Complete {
+                        return Err("completed checkpoint cannot regress".into());
+                    }
                 }
                 *self.stored.lock().unwrap() = Some(protected.clone());
                 if phase == Phase::PendingReplace(1) && self.fault.swap(0, Ordering::SeqCst) == 2 {
@@ -965,6 +982,99 @@ mod tests {
             assert!(std::fs::read(path).unwrap().ends_with(b"# normalized\n"));
         }
         assert_eq!(std::fs::read_dir(&fixture.path).unwrap().count(), 2);
+
+        // An ordinary restart must observe the terminal checkpoint without
+        // writing an intermediate phase or replacing the authored files again.
+        let completed = checkpoint.stored.lock().unwrap().clone();
+        let restarted = fixture.documents();
+        let (resumed, intent) = Inventory::prepare(
+            &restarted,
+            &crate::root::admission::DURABLE,
+            &checkpoint,
+            migration,
+        )
+        .await
+        .unwrap();
+        let proof = resumed.validated(intent, &checkpoint).await.unwrap();
+        let report = resumed
+            .publish(
+                proof,
+                &checkpoint,
+                &crate::root::admission::DURABLE,
+                &restarted,
+            )
+            .await
+            .unwrap();
+        assert!(report.complete);
+        assert!(report
+            .files
+            .iter()
+            .all(|file| file.outcome == FileOutcome::AlreadyConverted));
+        assert_eq!(*checkpoint.stored.lock().unwrap(), completed);
+    }
+    #[tokio::test]
+    async fn completed_publication_keeps_deferred_originals_and_refuses_later_edits() {
+        let fixture = Fixture::new();
+        let original = fixture.documents();
+        let inventory = fixture.retained(&original);
+        let migration = [6; 16];
+        let completed = inventory.encoded(migration, Phase::Complete).unwrap();
+        let checkpoint = CheckpointMemory {
+            stored: Mutex::new(Some(completed.clone())),
+            fault: AtomicU8::new(0),
+        };
+        let restarted = fixture.documents();
+        let (resumed, intent) = Inventory::prepare(
+            &restarted,
+            &crate::root::admission::DURABLE,
+            &checkpoint,
+            migration,
+        )
+        .await
+        .unwrap();
+        let proof = resumed.validated(intent, &checkpoint).await.unwrap();
+        let report = resumed
+            .publish(
+                proof,
+                &checkpoint,
+                &crate::root::admission::DURABLE,
+                &restarted,
+            )
+            .await
+            .unwrap();
+        assert!(report.complete);
+        assert!(report
+            .files
+            .iter()
+            .all(|file| file.outcome == FileOutcome::InMemoryOnly));
+        for document in &inventory.documents {
+            assert_eq!(
+                std::fs::read(&document.publication.path).unwrap(),
+                document.publication.original.as_slice()
+            );
+        }
+        assert_eq!(*checkpoint.stored.lock().unwrap(), Some(completed.clone()));
+
+        let (resumed, intent) = Inventory::prepare(
+            &restarted,
+            &crate::root::admission::DURABLE,
+            &checkpoint,
+            migration,
+        )
+        .await
+        .unwrap();
+        let proof = resumed.validated(intent, &checkpoint).await.unwrap();
+        std::fs::write(&fixture.publications[0].0, b"changed after validation").unwrap();
+        assert!(resumed
+            .publish(
+                proof,
+                &checkpoint,
+                &crate::root::admission::DURABLE,
+                &restarted,
+            )
+            .await
+            .is_err());
+        assert_eq!(*checkpoint.stored.lock().unwrap(), Some(completed));
     }
     #[tokio::test]
     async fn restart_refuses_a_third_party_document_edit_before_any_replacement() {
