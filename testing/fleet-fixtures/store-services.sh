@@ -220,9 +220,13 @@ do_url() {  # STDOUT IS THE DSN AND NOTHING ELSE — this is consumed by command
   case "$svc" in
     postgres) printf 'postgres://busbar:busbar@127.0.0.1:%s/busbar_store_qa\n' "$lport" ;;
     mysql)
-      # Obtain the RSA pin through the owned fixture, never the unauthenticated wire.
+      # Read the authentication plugin's active RSA key through the owned admin
+      # channel. MySQL can serve a different key from public_key.pem; never learn
+      # the pin from the unauthenticated application connection.
       local pem pin
-      pem="$(docker exec "$(container mysql)" cat /var/lib/mysql/public_key.pem)" || return 1
+      pem="$(docker exec "$(container mysql)" mysql -uroot -pbusbar -N -B --raw \
+        -e "SHOW STATUS LIKE 'Caching_sha2_password_rsa_public_key'" | \
+        python3 -c 'import sys; row=sys.stdin.buffer.read().split(b"\t",1); len(row)==2 and row[0]==b"Caching_sha2_password_rsa_public_key" or sys.exit("active MySQL RSA key unavailable"); sys.stdout.buffer.write(row[1].strip())')" || return 1
       pin="$(printf '%s\n' "$pem" | python3 -c 'import base64,hashlib,re,sys; p=sys.stdin.read(); body="".join(re.search(r"-----BEGIN (?:RSA )?PUBLIC KEY-----([A-Za-z0-9+/=\s]+)-----END (?:RSA )?PUBLIC KEY-----",p).group(1).split()); print(hashlib.sha256(base64.b64decode(body,validate=True)).hexdigest())')" || return 1
       printf 'mysql://busbar:busbar@127.0.0.1:%s/busbar_store_qa?server_public_key_sha256=%s\n' "$lport" "$pin"
       ;;
