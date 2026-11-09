@@ -153,6 +153,24 @@ class Subject(unittest.TestCase):
 
 
 class FreshStartup(unittest.TestCase):
+    def test_generated_config_pins_the_exact_installed_oidc_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ca.pem").write_text("fixture CA")
+            archive = root / "oidc.tar.gz"
+            archive.write_bytes(b"actual installed fixture archive")
+            cfg = oidf.subject_config(fapi2=True, data=1234, admin=1235,
+                                      issuer="https://issuer.example", pki=directory,
+                                      plugins=directory, jwks_url="https://jwks.example",
+                                      clients=[], callback="https://callback.example")
+            self.assertEqual(cfg["plugins"]["fetch"], [{
+                "url": "https://plugins.example/oidc.tar.gz",
+                "sha256": oidf.sha256_file(str(archive)),
+            }])
+            self.assertEqual(cfg["auth"]["role_bindings"], {oidf.IDP: {oidf.SCOPE: {}}})
+            archive.write_bytes(b"a different archive")
+            self.assertNotEqual(cfg["plugins"]["fetch"][0]["sha256"], oidf.sha256_file(str(archive)))
+
     def test_fresh_receipt_binds_actual_inspection_and_creation(self):
         with tempfile.TemporaryDirectory() as directory:
             inspection = {"store_ephemeral": True, "principal_receipt_head_sha256": None,

@@ -714,7 +714,9 @@ def rbac_config(data, admin, plugins, issuer, ca_pem, signing_key_file, verb_nam
     return base_config(
         data, admin,
         **{"identity-providers": {"rig": idp(AUD, ceiling)},
-           "plugins": {"enabled": True, "dir": plugins, "trust": {"allow_unsigned": True}},
+           "plugins": {"enabled": True, "dir": plugins, "trust": {"allow_unsigned": True},
+                       "fetch": [{"url": "https://plugins.example/oidc.tar.gz",
+                                  "sha256": oidf.sha256_file(os.path.join(plugins, "oidc.tar.gz"))}]},
            "advanced": {"allow_destinations": ["127.0.0.1"]},
            "auth": {"chain": ["keys"] if ceiling == "full" else [], "admin_auth": ["rig"],
                     "signing_key": {"file": signing_key_file}, "role_bindings": {"rig": bind}}})

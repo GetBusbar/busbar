@@ -97,6 +97,9 @@ args=(); mounts=()
 while [ $# -gt 0 ]; do
   if [ "$1" = "--jsonfile" ]; then
     d="$(dirname "$2")"; mounts=(-v "$d:/out"); args+=(--jsonfile "/out/$(basename "$2")"); shift 2
+  elif [ "$1" = "--ip" ] && [ -n "${TLS_CONNECT_IP:-}" ]; then
+    # Override the connection address only; the URL still supplies localhost for SNI and trust.
+    args+=(--ip "$TLS_CONNECT_IP"); shift 2
   else args+=("$1"); shift; fi
 done
 exec docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp "${mounts[@]}" \
@@ -118,7 +121,19 @@ mkcert() {
 # assess <name> <port> <ca> <digest of the artifact served>: run the judge; its stdout in $W/<name>.log;
 # the exit is the judge's.
 assess() {
-  TLS_CA="$3" python3 -I "$J/tls_assess.py" run --host "localhost:$2" --version "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  local connect_ip=""
+  if [ "$1" = subject ] && [ "$(uname -s)" = Darwin ]; then
+    # Docker's host network is the Linux VM on macOS. Only the native subject needs the
+    # VM-to-Mac route; both container controls must keep using the VM's loopback.
+    connect_ip="$(docker run --rm --network host --entrypoint sh "$TLS_IMAGE" -c '
+      for host in host.docker.internal host.lima.internal; do
+        ip=$(getent ahostsv4 "$host" | awk "NR == 1 {print \$1; exit}")
+        if [ -n "$ip" ]; then printf "%s\n" "$ip"; exit 0; fi
+      done
+      exit 1
+    ')" || { say "the Docker VM could not resolve its macOS host for the native TLS subject"; return 1; }
+  fi
+  TLS_CONNECT_IP="$connect_ip" TLS_CA="$3" python3 -I "$J/tls_assess.py" run --host "localhost:$2" --version "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)" \
     --image-digest "$4" --variant "$1" --out "$W/out" >"$W/$1.log" 2>&1
   local rc=$?; sed "s/^/tls[$1]: /" "$W/$1.log" >&2; return $rc
 }
