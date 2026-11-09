@@ -26,7 +26,7 @@
     {
       "repo": "busbar-auth-ldap",
       "url": "https://github.com/GetBusbar/busbar-auth-ldap",
-      "commit": "869b7b54b06561c351d717c1f7acb14b7bb755ea",
+      "commit": "5ec0b2f912d76d6fbeaacfe313994001b1855863",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
@@ -70,7 +70,7 @@
     {
       "repo": "busbar-export-prometheus",
       "url": "https://github.com/GetBusbar/busbar-export-prometheus",
-      "commit": "723a9e9f85096b3cb34bd834899a2d7e1f9bbc79",
+      "commit": "2f0f422b08d9393dedb73295d3120b54b5af35d3",
       "package": "busbar-export-prometheus-plugin",
       "kind": "export",
       "alias": "prometheus",
@@ -213,7 +213,7 @@
     {
       "repo": "busbar-auth-github",
       "url": "https://github.com/GetBusbar/busbar-auth-github",
-      "commit": "a5bdd56efee516ad460af58246d96300ac5b4584",
+      "commit": "087699b8f1bafd79ed222b7a30ff9b25c8a831ae",
       "package": "busbar-auth-github-plugin",
       "kind": "auth",
       "alias": "github",
@@ -235,7 +235,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "72ae6dc4df880a32fec858735af63d7ca5780d45",
+      "commit": "2aeb9f14bb8d77118ade465591101162f4e674dd",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
@@ -257,7 +257,7 @@
     {
       "repo": "busbar-export-webhook",
       "url": "https://github.com/GetBusbar/busbar-export-webhook",
-      "commit": "c67db7f2a3a60a427bbb530bd12ef93bbb5a0e32",
+      "commit": "14b38c017fc9d7aaba74b61e897177509289f0c7",
       "package": "busbar-export-webhook-plugin",
       "kind": "export",
       "alias": "webhook",
@@ -268,7 +268,7 @@
     {
       "repo": "busbar-hook-webrequest",
       "url": "https://github.com/GetBusbar/busbar-hook-webrequest",
-      "commit": "70efca8af57a6245bd2510e592b2e64aaffe6488",
+      "commit": "86a954485b15df927143a18d9b937d9b5552f17b",
       "package": "busbar-hook-webrequest-plugin",
       "kind": "hook",
       "alias": "webrequest",
