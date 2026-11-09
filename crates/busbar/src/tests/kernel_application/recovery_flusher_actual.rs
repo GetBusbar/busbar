@@ -94,6 +94,35 @@ impl Journal {
             .clone()
     }
 }
+// Each call owns one fixed deadline; unrelated records and duplicates cannot renew it.
+async fn wait_native_checkpoint(
+    journal: &Journal,
+    operation_id: [u8; 16],
+    revision: u64,
+    state: RecoveryState,
+    diagnostics: &RecoveryDiagnostics,
+) -> RecoveryEvent {
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let next = journal.selected.lock().unwrap().iter()
+                .find(|event| event.operation_id == operation_id && event.revision == revision)
+                .cloned();
+            if let Some(next) = next {
+                break next;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.unwrap_or_else(|elapsed| {
+        let states: Vec<_> = journal.selected.lock().unwrap().iter()
+            .map(|event| (hex::encode(event.operation_id), event.kind, event.revision, event.state))
+            .collect();
+        panic!("the actual periodic flusher resumes the durable verdict without another resolve or restart: {elapsed}; awaiting operation={} revision={revision} state={state:?}; native checkpoints={states:?}; recovery diagnostics={:?}", hex::encode(operation_id), diagnostics.0.lock().unwrap());
+    });
+    assert_eq!(event.kind, RecoveryKind::Correction);
+    assert_eq!(event.state, state);
+    event
+}
+
 #[async_trait::async_trait]
 impl RecoverySink for Journal {
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
@@ -496,51 +525,94 @@ async fn actual_root_flusher_resumes_not_landed_using_the_current_cost_without_b
     let mut checkpoint = journal.current(original.operation_id);
     assert_eq!(checkpoint.revision, unknown.revision + 1);
     assert_eq!(checkpoint.state, RecoveryState::VerdictNotLanded);
-    let mut checkpoint_waits = Vec::with_capacity(3);
+    let mut checkpoint_waits = Vec::with_capacity(7);
     release_tx.send(()).unwrap();
-    // The native journal must select the raw cut, the successor authorization, and settlement.
-    // Bound each of these three advances, rather than charging every native Store round trip
-    // in all three stages to one five-second timer. A stalled stage still fails in five seconds.
-    for expected_state in [
-        RecoveryState::VerdictNotLanded,
-        RecoveryState::VerdictNotLanded,
-        RecoveryState::Settled,
-    ] {
+    // First select the raw cut and the exact successor authorization. Each native journal
+    // phase is bounded separately; the child's four acknowledgments are not one parent phase.
+    for _ in 0..2 {
         let revision = checkpoint.revision + 1;
         let started = std::time::Instant::now();
-        checkpoint = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let next = journal
-                    .selected
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|event| {
-                        event.operation_id == original.operation_id && event.revision == revision
-                    })
-                    .cloned();
-                if let Some(next) = next {
-                    break next;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap_or_else(|elapsed| {
-            let states: Vec<_> = journal.selected.lock().unwrap().iter()
-                .map(|event| (hex::encode(event.operation_id), event.kind, event.revision, event.state))
-                .collect();
-            panic!("the actual periodic flusher resumes the durable verdict without another resolve or restart: {elapsed}; native checkpoints={states:?}; recovery diagnostics={:?}", diagnostics.0.lock().unwrap());
-        });
-        assert_eq!(checkpoint.kind, RecoveryKind::Correction);
-        assert_eq!(checkpoint.revision, revision);
-        assert_eq!(checkpoint.state, expected_state);
-        checkpoint_waits.push((revision, started.elapsed()));
+        checkpoint = wait_native_checkpoint(
+            &journal,
+            original.operation_id,
+            revision,
+            RecoveryState::VerdictNotLanded,
+            &diagnostics,
+        )
+        .await;
+        assert_eq!(checkpoint.body_fingerprint, original.body_fingerprint);
+        checkpoint_waits.push((checkpoint.operation_id, revision, started.elapsed()));
     }
+    let authorized_parent = checkpoint.clone();
+    let custody: serde_json::Value = serde_json::from_slice(&authorized_parent.payload).unwrap();
+    let child_id: [u8; 16] = serde_json::from_value(custody["repost_operation_id"].clone())
+        .expect("the durable parent authorizes exactly one conditional successor");
+    assert_ne!(child_id, original.operation_id);
+    let descriptors: Vec<_> = custody["handoffs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|child| child["operation_id"] == serde_json::json!(child_id))
+        .collect();
+    assert_eq!(descriptors.len(), 1, "one exact successor descriptor");
+    let descriptor = descriptors[0];
+    let fingerprint: [u8; 32] =
+        serde_json::from_value(descriptor["body_fingerprint"].clone()).unwrap();
+    let kind: RecoveryKind = serde_json::from_value(descriptor["kind"].clone()).unwrap();
+    assert_eq!(kind, RecoveryKind::Correction);
+    let sent_at: Option<u64> =
+        serde_json::from_value(descriptor["first_sent_at_ms"].clone()).unwrap();
+    let payload: Vec<u8> = serde_json::from_value(descriptor["payload"].clone()).unwrap();
+    let mut expected_payload: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+    expected_payload["origin"] = serde_json::json!({
+        "operation_id": authorized_parent.operation_id,
+        "event_fingerprint": authorized_parent.fingerprint().unwrap(),
+    });
+    // Seven fixed five-second waits total: two parent, four authorized child, one parent.
+    // No Usage record, other correction, duplicate, or extra revision can extend that bound.
+    for (revision, state) in [
+        RecoveryState::Intent,
+        RecoveryState::Intent,
+        RecoveryState::Applied,
+        RecoveryState::Settled,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let started = std::time::Instant::now();
+        let child =
+            wait_native_checkpoint(&journal, child_id, revision as u64, state, &diagnostics).await;
+        assert_eq!(child.body_fingerprint, fingerprint);
+        assert_eq!(child.first_sent_at_ms, sent_at);
+        let body: serde_json::Value = serde_json::from_slice(&child.payload).unwrap();
+        assert_eq!(body["origin"], expected_payload["origin"]);
+        if revision == 0 {
+            assert_eq!(
+                body, expected_payload,
+                "the child genesis is exactly what the selected parent authorized"
+            );
+        }
+        checkpoint_waits.push((child.operation_id, child.revision, started.elapsed()));
+    }
+    let started = std::time::Instant::now();
+    checkpoint = wait_native_checkpoint(
+        &journal,
+        original.operation_id,
+        authorized_parent.revision + 1,
+        RecoveryState::Settled,
+        &diagnostics,
+    )
+    .await;
+    assert_eq!(checkpoint.body_fingerprint, original.body_fingerprint);
+    checkpoint_waits.push((
+        checkpoint.operation_id,
+        checkpoint.revision,
+        started.elapsed(),
+    ));
     assert_eq!(
         checkpoint.state,
         RecoveryState::Settled,
-        "the three native parent checkpoints settle the correction without another resolve or restart"
+        "the authorized child and parent checkpoints settle the correction without another resolve or restart"
     );
     shutdown_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), flusher)

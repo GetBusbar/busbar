@@ -292,6 +292,7 @@ impl Rig {
         let far = udp::bind("127.0.0.1:0").unwrap();
         let door = Arc::new(RawFramer {
             facts: DoorFacts {
+                dials: true,
                 name: "upstream-read-wake".into(),
                 claims: vec!["upstream-read-wake"],
                 role: ROLE_FRAMER,

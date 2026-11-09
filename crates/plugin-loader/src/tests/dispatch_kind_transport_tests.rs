@@ -481,6 +481,66 @@ fn the_tail_is_read_at_bind_and_a_missing_one_refuses() {
 }
 
 #[test]
+fn dialing_capability_is_retained_and_required_for_outbound_framer_calls() {
+    use crate::dispatch::kinds::transport::TransportFacts;
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{
+        Claim, TransportTail, FACT_ACCEPTS, FACT_DIALS, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT,
+        SIDE_ACCEPT_STREAM, SIDE_DIAL,
+    };
+
+    let claims = [Claim::ZERO];
+    let names = [abi_str("direction-test")];
+    for role in [ROLE_CARRIER, ROLE_FRAMER] {
+        for bits in [0, FACT_ACCEPTS, FACT_DIALS, FACT_ACCEPTS | FACT_DIALS] {
+            let mut tail: TransportTail = z();
+            tail.head.size = size_of::<TransportTail>() as u32;
+            tail.role = role;
+            tail.facts = bits;
+            tail.claim_rows = claims.as_ptr();
+            tail.claim_rows_len = claims.len();
+            let st = Statement {
+                kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+                claims: names.as_ptr(),
+                claims_len: names.len(),
+                ..statement("direction-test", "0", 1)
+            };
+            let context = Transport::context(&st).unwrap().unwrap();
+            let facts = context.downcast_ref::<TransportFacts>().unwrap();
+            assert_eq!(facts.dials, bits & FACT_DIALS != 0);
+            assert_eq!(facts.accepts, bits & FACT_ACCEPTS != 0);
+            let expected =
+                (role == ROLE_FRAMER && bits & FACT_DIALS == 0).then_some(Outcome::Refused);
+            for side in [SIDE_DIAL, SIDE_ACCEPT, SIDE_ACCEPT_STREAM] {
+                let mut input: BeginIn = z();
+                input.side = side;
+                assert_eq!(
+                    facts.admit_direction(
+                        slot::BEGIN,
+                        std::ptr::from_ref(&input).cast(),
+                        size_of::<BeginIn>()
+                    ),
+                    if side == SIDE_DIAL { expected } else { None },
+                );
+            }
+            for accept in [0, 1] {
+                let mut input: LocateIn = z();
+                input.accept = accept;
+                assert_eq!(
+                    facts.admit_direction(
+                        slot::LOCATE,
+                        std::ptr::from_ref(&input).cast(),
+                        size_of::<LocateIn>()
+                    ),
+                    if accept == 0 { expected } else { None },
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
     use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
     use busbar_contract::abi::sdk::door::{abi_str, statement};

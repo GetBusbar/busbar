@@ -31,6 +31,14 @@ mod auth {
 
     pub(super) struct Disabled;
     impl VerifyPlugin for Disabled {
+        fn verify_ticketed(
+            &self,
+            _: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
+            _: &busbar_contract::abi::sdk::auth_door::VerifyOp,
+        ) -> std::task::Poll<busbar_contract::abi::sdk::auth_door::Answer> {
+            panic!("cataloguing a disabled auth row must never verify")
+        }
+
         fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
             panic!("cataloguing a disabled auth row must never open it")
         }
@@ -75,10 +83,10 @@ mod hook {
     );
     busbar_contract::hook_door!(
         open: Disabled,
-        statement: Statement {
+        statement: busbar_contract::abi::sdk::hook::statement_with_tail(Statement {
             extensions: EXTENSIONS,
             ..statement(HOOK_NAME, FIXTURE_VERSION, FIXTURE_MAX_INFLIGHT)
-        }
+        }, &busbar_contract::abi::sdk::hook::tail(busbar_contract::abi::hook::CLASS_GATE, 0, 0))
     );
 }
 

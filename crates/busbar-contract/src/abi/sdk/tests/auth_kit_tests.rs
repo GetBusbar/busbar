@@ -106,12 +106,33 @@ impl SafeSlot for Complete {
     }
 }
 
+/// Explicit refusal handlers for Auth operations outside this login fixture.
+struct Refused<const INDEX: u32>;
+impl<const INDEX: u32> crate::abi::sdk::door::RawSlot for Refused<INDEX>
+where
+    Ops: crate::abi::sdk::door::KindSlot<INDEX>,
+{
+    type Kind = FixtureKind;
+    type In = <Ops as crate::abi::sdk::door::KindSlot<INDEX>>::In;
+    type Out = <Ops as crate::abi::sdk::door::KindSlot<INDEX>>::Out;
+    unsafe fn call(_: *mut core::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+        Outcome::Refused
+    }
+}
+
 mod plugin {
     crate::plugin_door! {
         ops: super::Ops,
         statement: super::statement("probe-login", "0.0.1", 4),
         lifecycle: life(super::Probe),
-        kind_ops: { complete_login: super::Safe<super::Complete> },
+        kind_ops: {
+            complete_login: super::Safe<super::Complete>,
+            verify: super::Refused<{ super::slot::VERIFY }>,
+            begin_login: super::Refused<{ super::slot::BEGIN_LOGIN }>,
+            open_outbound: super::Refused<{ super::slot::OPEN_OUTBOUND }>,
+            outbound_ready: super::Refused<{ super::slot::OUTBOUND_READY }>,
+            fields: super::Refused<{ super::slot::FIELDS }>,
+        },
     }
 }
 
@@ -146,7 +167,14 @@ mod outage_plugin {
         ops: super::Ops,
         statement: super::statement("probe-outage", "0.0.1", 4),
         lifecycle: life(super::Probe),
-        kind_ops: { complete_login: super::Safe<super::Outage> },
+        kind_ops: {
+            complete_login: super::Safe<super::Outage>,
+            verify: super::Refused<{ super::slot::VERIFY }>,
+            begin_login: super::Refused<{ super::slot::BEGIN_LOGIN }>,
+            open_outbound: super::Refused<{ super::slot::OPEN_OUTBOUND }>,
+            outbound_ready: super::Refused<{ super::slot::OUTBOUND_READY }>,
+            fields: super::Refused<{ super::slot::FIELDS }>,
+        },
     }
 }
 

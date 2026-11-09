@@ -114,7 +114,19 @@ pub async fn stats(
 }
 
 #[must_use]
-pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
+pub fn catalog_names(app: &App, gov: &GovCtx, plane: &str) -> Vec<String> {
+    // Names from another plane must never be flattened into this plane's authority. The same
+    // alias can exist under different scope kinds with different grants.
+    if plane != crate::plane_driver::dispatch::fallback_key() {
+        return crate::plane_driver::door::listed_for_plane(
+            &app.plane_slots,
+            gov.key.as_deref(),
+            plane,
+        )
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    }
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
 
     let view = app.engine_tables_view();
@@ -153,7 +165,9 @@ pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
     names.extend(models);
     names.dedup();
 
-    for name in crate::plane_driver::door::listed(&app.plane_slots, gov.key.as_deref()) {
+    for name in
+        crate::plane_driver::door::listed_for_plane(&app.plane_slots, gov.key.as_deref(), plane)
+    {
         if !names.contains(&name) {
             names.push(name);
         }

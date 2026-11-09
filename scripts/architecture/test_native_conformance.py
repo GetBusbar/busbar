@@ -20,6 +20,7 @@ class ConformanceEvidence(unittest.TestCase):
         self.q.evidence.mkdir()
         self.q.env = dict(os.environ)
         self.q.receipt = {'steps': []}
+        self.q.sdk = lambda: self.root
         scripts = self.root / 'testing/conformance'
         scripts.mkdir(parents=True)
         (scripts / 'suites.tsv').write_text('example\tbash example.sh\n')

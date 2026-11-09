@@ -39,6 +39,32 @@ fn each_scheme_is_served_by_one_entry_as_one_claim() {
 }
 
 #[test]
+fn outbound_selection_requires_the_framers_declared_dial_capability() {
+    use busbar_contract::abi::transport::ROLE_FRAMER;
+    let inbound = TestDoor::new("inbound", &["in", "in-alias"], &[], Knobs::default())
+        .with_role(ROLE_FRAMER)
+        .without_dialing();
+    let outbound = TestDoor::identity("out").with_role(ROLE_FRAMER);
+    let carrier = TestDoor::identity("carrier").without_dialing();
+    let view = Transports::new(vec![door(inbound), door(outbound), door(carrier)]).unwrap();
+    for scheme in ["in", "in-alias"] {
+        assert!(
+            view.serving(scheme).is_some(),
+            "inbound inventory is preserved"
+        );
+        assert!(
+            view.dialing(scheme).is_none(),
+            "no outbound supplier for {scheme}"
+        );
+    }
+    assert!(view.dialing("out").is_some());
+    assert!(
+        view.dialing("carrier").is_some(),
+        "carriers use their Dial slot"
+    );
+}
+
+#[test]
 fn two_entries_claiming_one_scheme_are_refused() {
     let r = Transports::new(vec![
         entry("first", &["p", "q"], &[]),

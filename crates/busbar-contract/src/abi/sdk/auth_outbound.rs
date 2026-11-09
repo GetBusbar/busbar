@@ -919,7 +919,10 @@ macro_rules! auth_outbound_door {
     ($plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            statement: $statement,
+            // SAFETY: the Statement points to the const data required by the door macro.
+            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
+                $statement, $crate::abi::auth::CAP_OUTBOUND,
+            ) },
             lifecycle: {
                 validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
@@ -974,7 +977,10 @@ macro_rules! auth_door {
     (verify_and_outbound: $plugin:ty, $statement:expr $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
-            statement: $statement,
+            // SAFETY: the Statement points to the const data required by the door macro.
+            statement: unsafe { $crate::abi::sdk::auth_door::check_shape(
+                $statement, $crate::abi::auth::CAP_INBOUND | $crate::abi::auth::CAP_OUTBOUND,
+            ) },
             lifecycle: {
                 validate: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Validate<
                     $crate::abi::sdk::auth_outbound::Both<$plugin>>>,

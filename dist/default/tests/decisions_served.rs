@@ -59,7 +59,7 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16) {
+fn write_configs(dir: &Path, upstream: u16, data: u16, admin: u16, decisions: u16) {
     std::fs::write(
         dir.join("providers.yaml"),
         format!("typesafe:\n  protocol: jev\n  base_url: \"http://127.0.0.1:{upstream}\"\n"),
@@ -95,6 +95,12 @@ providers:
     api_key: {{ env: JEV_PROVIDER_KEY }}
 models: {{}}
 decisions:
+  ingress: {{ listen: "127.0.0.1:{decisions}" }}
+  # This date is the release of this synthetic relay fixture, not a provider model.
+  catalog:
+    jev-1:
+      description: "Busbar Decisions HTTP relay test fixture (not a provider model)"
+      release_date: "2026-11-09"
   models:
     jev-1:
       provider: typesafe
@@ -154,7 +160,8 @@ fn a_booted_busbar_serves_post_v1_systemone() {
     let (far, seen) = far_end();
     let dir = fixture_dir("one-model");
     let (data, admin) = (common::boot::free_port(), common::boot::free_port());
-    write_configs(&dir, far, data, admin);
+    let decisions = common::boot::free_port();
+    write_configs(&dir, far, data, admin, decisions);
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
@@ -196,7 +203,7 @@ fn a_booted_busbar_serves_post_v1_systemone() {
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_else(|| panic!("the admin API must mint a key: {minted}"))
         .to_string();
-    let data_addr = format!("127.0.0.1:{data}");
+    let data_addr = format!("127.0.0.1:{decisions}");
     let absent = http_request(
         &data_addr,
         "POST",

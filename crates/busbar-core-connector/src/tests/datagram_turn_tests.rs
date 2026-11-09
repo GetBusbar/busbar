@@ -58,6 +58,7 @@ impl Branching {
     fn new(origin: Origin) -> Arc<Self> {
         Arc::new(Self {
             facts: DoorFacts {
+                dials: true,
                 name: "datagram-turn".into(),
                 claims: vec!["datagram-turn"],
                 role: ROLE_FRAMER,

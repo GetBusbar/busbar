@@ -6,6 +6,47 @@ use busbar_contract::abi::mechanism::call::Outcome;
 
 use super::*;
 
+#[test]
+fn duplicate_plane_routes_fail_with_the_listener_method_and_resolution() {
+    use busbar_contract::abi::{
+        auth::AuthPoints,
+        transport::route::{METHOD_GET, PATH_EXACT},
+    };
+    use busbar_kernel::guest::{Claimant, GuestList, Line, LineAuth, Route};
+    let line = |plane: &str| Line {
+        route: Route {
+            methods: METHOD_GET,
+            path_form: PATH_EXACT,
+            path: "/v1/models".into(),
+            fields: vec![],
+            rung: 0,
+        },
+        claimant: Claimant::Plane(plane.into()),
+        dialect: 0,
+        auth: LineAuth::None,
+        upgrade: None,
+        offered: AuthPoints::HEAD,
+    };
+    let refusal = GuestList::seal(vec![line("one"), line("two")])
+        .err()
+        .expect("same listener must refuse ambiguous ownership");
+    let error = guest_refusal("listen (127.0.0.1:8080)", refusal);
+    for required in [
+        "127.0.0.1:8080",
+        "one",
+        "two",
+        "GET /v1/models",
+        "ingress.listen",
+    ] {
+        assert!(error.contains(required), "missing {required}: {error}");
+    }
+    assert!(GuestList::seal(vec![line("one")]).is_ok());
+    assert!(
+        GuestList::seal(vec![line("two")]).is_ok(),
+        "separate listeners admit the two inventories independently"
+    );
+}
+
 struct Judges;
 
 impl HostServices for Judges {

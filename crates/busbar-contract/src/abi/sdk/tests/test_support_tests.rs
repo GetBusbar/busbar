@@ -118,11 +118,45 @@ impl Life for Probe {
     }
 }
 
+/// Explicit refusals for operations outside this fixture's exercised behavior.
+struct RefusedTransport<const INDEX: u32>;
+impl<const INDEX: u32> crate::abi::sdk::door::RawSlot for RefusedTransport<INDEX>
+where
+    crate::abi::transport::Ops: crate::abi::sdk::door::KindSlot<INDEX>,
+{
+    type Kind = crate::plugin::markers::TransportKind;
+    type In = <crate::abi::transport::Ops as crate::abi::sdk::door::KindSlot<INDEX>>::In;
+    type Out = <crate::abi::transport::Ops as crate::abi::sdk::door::KindSlot<INDEX>>::Out;
+    unsafe fn call(_: *mut core::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+        Outcome::Refused
+    }
+}
+
 mod plugin {
     crate::plugin_door! {
         ops: crate::abi::transport::Ops,
         statement: super::STATEMENT,
         lifecycle: life(super::Probe),
+        kind_ops: {
+            listen: super::RefusedTransport<{ crate::abi::transport::slot::LISTEN }>,
+            accept: super::RefusedTransport<{ crate::abi::transport::slot::ACCEPT }>,
+            dial: super::RefusedTransport<{ crate::abi::transport::slot::DIAL }>,
+            read: super::RefusedTransport<{ crate::abi::transport::slot::READ }>,
+            write: super::RefusedTransport<{ crate::abi::transport::slot::WRITE }>,
+            flush: super::RefusedTransport<{ crate::abi::transport::slot::FLUSH }>,
+            shut: super::RefusedTransport<{ crate::abi::transport::slot::SHUT }>,
+            arrival: super::RefusedTransport<{ crate::abi::transport::slot::ARRIVAL }>,
+            locate: super::RefusedTransport<{ crate::abi::transport::slot::LOCATE }>,
+            begin: super::RefusedTransport<{ crate::abi::transport::slot::BEGIN }>,
+            ingest: super::RefusedTransport<{ crate::abi::transport::slot::INGEST }>,
+            emit: super::RefusedTransport<{ crate::abi::transport::slot::EMIT }>,
+            encode: super::RefusedTransport<{ crate::abi::transport::slot::ENCODE }>,
+            refuse: super::RefusedTransport<{ crate::abi::transport::slot::REFUSE }>,
+            finish: super::RefusedTransport<{ crate::abi::transport::slot::FINISH }>,
+            detach: super::RefusedTransport<{ crate::abi::transport::slot::DETACH }>,
+            adopt: super::RefusedTransport<{ crate::abi::transport::slot::ADOPT }>,
+            timer: super::RefusedTransport<{ crate::abi::transport::slot::TIMER }>,
+        },
     }
 }
 
@@ -140,6 +174,26 @@ mod allowed_needs {
         ops: crate::abi::transport::Ops,
         statement: super::STATEMENT.with_needs(NEEDS),
         lifecycle: life(super::Probe),
+        kind_ops: {
+            listen: super::RefusedTransport<{ crate::abi::transport::slot::LISTEN }>,
+            accept: super::RefusedTransport<{ crate::abi::transport::slot::ACCEPT }>,
+            dial: super::RefusedTransport<{ crate::abi::transport::slot::DIAL }>,
+            read: super::RefusedTransport<{ crate::abi::transport::slot::READ }>,
+            write: super::RefusedTransport<{ crate::abi::transport::slot::WRITE }>,
+            flush: super::RefusedTransport<{ crate::abi::transport::slot::FLUSH }>,
+            shut: super::RefusedTransport<{ crate::abi::transport::slot::SHUT }>,
+            arrival: super::RefusedTransport<{ crate::abi::transport::slot::ARRIVAL }>,
+            locate: super::RefusedTransport<{ crate::abi::transport::slot::LOCATE }>,
+            begin: super::RefusedTransport<{ crate::abi::transport::slot::BEGIN }>,
+            ingest: super::RefusedTransport<{ crate::abi::transport::slot::INGEST }>,
+            emit: super::RefusedTransport<{ crate::abi::transport::slot::EMIT }>,
+            encode: super::RefusedTransport<{ crate::abi::transport::slot::ENCODE }>,
+            refuse: super::RefusedTransport<{ crate::abi::transport::slot::REFUSE }>,
+            finish: super::RefusedTransport<{ crate::abi::transport::slot::FINISH }>,
+            detach: super::RefusedTransport<{ crate::abi::transport::slot::DETACH }>,
+            adopt: super::RefusedTransport<{ crate::abi::transport::slot::ADOPT }>,
+            timer: super::RefusedTransport<{ crate::abi::transport::slot::TIMER }>,
+        },
     }
 }
 
@@ -157,6 +211,26 @@ mod forbidden_needs {
         ops: crate::abi::transport::Ops,
         statement: super::STATEMENT.with_needs(NEEDS),
         lifecycle: life(super::Probe),
+        kind_ops: {
+            listen: super::RefusedTransport<{ crate::abi::transport::slot::LISTEN }>,
+            accept: super::RefusedTransport<{ crate::abi::transport::slot::ACCEPT }>,
+            dial: super::RefusedTransport<{ crate::abi::transport::slot::DIAL }>,
+            read: super::RefusedTransport<{ crate::abi::transport::slot::READ }>,
+            write: super::RefusedTransport<{ crate::abi::transport::slot::WRITE }>,
+            flush: super::RefusedTransport<{ crate::abi::transport::slot::FLUSH }>,
+            shut: super::RefusedTransport<{ crate::abi::transport::slot::SHUT }>,
+            arrival: super::RefusedTransport<{ crate::abi::transport::slot::ARRIVAL }>,
+            locate: super::RefusedTransport<{ crate::abi::transport::slot::LOCATE }>,
+            begin: super::RefusedTransport<{ crate::abi::transport::slot::BEGIN }>,
+            ingest: super::RefusedTransport<{ crate::abi::transport::slot::INGEST }>,
+            emit: super::RefusedTransport<{ crate::abi::transport::slot::EMIT }>,
+            encode: super::RefusedTransport<{ crate::abi::transport::slot::ENCODE }>,
+            refuse: super::RefusedTransport<{ crate::abi::transport::slot::REFUSE }>,
+            finish: super::RefusedTransport<{ crate::abi::transport::slot::FINISH }>,
+            detach: super::RefusedTransport<{ crate::abi::transport::slot::DETACH }>,
+            adopt: super::RefusedTransport<{ crate::abi::transport::slot::ADOPT }>,
+            timer: super::RefusedTransport<{ crate::abi::transport::slot::TIMER }>,
+        },
     }
 }
 
@@ -954,12 +1028,23 @@ mod pending_open_custody {
         }
     }
 
+    struct Resolve;
+    impl crate::abi::sdk::door::RawSlot for Resolve {
+        type Kind = crate::plugin::markers::SecretKind;
+        type In = crate::abi::secret::ResolveIn;
+        type Out = crate::abi::secret::ResolveOut;
+        unsafe fn call(_: *mut core::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+            Outcome::Refused
+        }
+    }
+
     mod first {
         crate::plugin_door! {
             ops: crate::abi::secret::Ops,
             statement: crate::abi::sdk::door::statement("pending-open-first", "0", 1)
                 .with_secret_refs(super::SECRET_REFS),
             lifecycle: life(super::PendingLife),
+            kind_ops: { resolve: super::Resolve },
         }
     }
 
@@ -969,6 +1054,7 @@ mod pending_open_custody {
             statement: crate::abi::sdk::door::statement("pending-open-other", "0", 1)
                 .with_secret_refs(super::SECRET_REFS),
             lifecycle: life(super::PendingLife),
+            kind_ops: { resolve: super::Resolve },
         }
     }
 

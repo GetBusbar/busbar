@@ -1113,3 +1113,40 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
 }
 
 type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);
+
+#[test]
+fn outbound_style_declarations_require_capability_and_unique_nonempty_names() {
+    use busbar_contract::abi::auth::{AuthPoints, AuthTail, CAP_OUTBOUND};
+    use busbar_contract::abi::sdk::auth_door::{verify_tail, with_tail};
+    use busbar_contract::abi::sdk::auth_outbound::{outbound_tail, style};
+    use busbar_contract::abi::sdk::door::statement;
+
+    let bind = |tail: &'static AuthTail| {
+        <Auth as Kind>::context(&with_tail(statement("styles", "1", 1), tail)).map(|_| ())
+    };
+    const VALID: &[busbar_contract::abi::auth::StyleDecl] = &[
+        style("bearer", 0, AuthPoints::HEAD),
+        style("signed", 0, AuthPoints::HEAD_BODY),
+    ];
+    const DUPLICATE: &[busbar_contract::abi::auth::StyleDecl] = &[
+        style("same", 0, AuthPoints::HEAD),
+        style("same", 0, AuthPoints::HEAD_BODY),
+    ];
+    const EMPTY: &[busbar_contract::abi::auth::StyleDecl] = &[style("", 0, AuthPoints::HEAD)];
+    const VALID_TAIL: &AuthTail = &outbound_tail(0, VALID);
+    const INBOUND_TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
+    const DUPLICATE_TAIL: &AuthTail = &outbound_tail(0, DUPLICATE);
+    const EMPTY_TAIL: &AuthTail = &outbound_tail(0, EMPTY);
+    const MISSING_TAIL: &AuthTail = &outbound_tail(0, &[]);
+    assert_eq!(bind(VALID_TAIL), Ok(()));
+    assert_eq!(bind(INBOUND_TAIL), Ok(()));
+    assert!(bind(DUPLICATE_TAIL).unwrap_err().contains("duplicated"));
+    assert!(bind(EMPTY_TAIL).unwrap_err().contains("empty"));
+    assert!(bind(MISSING_TAIL).unwrap_err().contains("capability"));
+    const NO_CAP: &AuthTail = &AuthTail {
+        caps: 0,
+        ..outbound_tail(0, VALID)
+    };
+    assert_eq!(NO_CAP.caps & CAP_OUTBOUND, 0);
+    assert!(bind(NO_CAP).unwrap_err().contains("capability"));
+}

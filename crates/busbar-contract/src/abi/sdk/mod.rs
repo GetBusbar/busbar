@@ -17,6 +17,8 @@ pub mod transport;
 
 pub mod door;
 pub mod hook;
+#[doc(hidden)]
+pub mod registration;
 
 pub mod export;
 

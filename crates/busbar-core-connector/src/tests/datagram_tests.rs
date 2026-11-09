@@ -161,9 +161,37 @@ fn scripted(knobs: Knobs) -> Arc<Scripted> {
     scripted_as(knobs, (HOST_UFRAG, HOST_PWD))
 }
 
+#[test]
+fn undeclared_datagram_dialing_refuses_before_begin_crosses() {
+    let mut door = scripted(Knobs::default());
+    Arc::get_mut(&mut door).unwrap().facts.dials = false;
+    let judged = Arc::new(Mutex::new(Vec::new()));
+    let result = DatagramFraming::dial(
+        door.clone(),
+        Arc::new(SessionCert::mint().unwrap()),
+        p("198.51.100.1:3478"),
+        &[],
+        judge(judged.clone()),
+        0,
+    );
+    match result {
+        Err(error) => {
+            assert_eq!(error.outcome, Outcome::Refused);
+            assert!(error.error.contains("dialing"));
+        }
+        Ok(_) => panic!("a datagram framer without dial capability began dialing"),
+    }
+    assert!(judged.lock().unwrap().is_empty());
+    assert!(
+        door.st.lock().unwrap().seen.is_empty(),
+        "Begin never crossed"
+    );
+}
+
 fn scripted_as(knobs: Knobs, local: (&'static str, &'static str)) -> Arc<Scripted> {
     Arc::new(Scripted {
         facts: DoorFacts {
+            dials: true,
             name: "scripted".into(),
             claims: vec!["scripted"],
             role: ROLE_FRAMER,
@@ -1347,6 +1375,7 @@ fn book() -> crate::Connector {
 fn book_begin(begin: VecDeque<(u64, Vec<u8>, u16)>) -> crate::Connector {
     let dg = Arc::new(Scripted {
         facts: DoorFacts {
+            dials: true,
             name: "dg".into(),
             claims: vec!["dg"],
             ..scripted(dialling()).facts.clone()

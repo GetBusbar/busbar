@@ -60,6 +60,8 @@ pub struct DoorFacts {
     /// mid-way); a FRAMER frames messages over the carrier the connector chose from the target's
     /// scheme. The role is stated, never derived from `composes_over`.
     pub role: u32,
+    /// Its tail states `FACT_DIALS`, permitting a framer to begin on the dialing side.
+    pub dials: bool,
     /// The claims it composes over: always empty now (no transport names another); an entry that
     /// states one is refused where it would be served.
     pub composes_over: Vec<&'static str>,
@@ -85,6 +87,26 @@ pub struct DoorFacts {
     /// lane and it is driven only by [`crate::datagram::DatagramFraming`] over the host's port and
     /// secure layer; it never frames a stream, whatever its claim rows say.
     pub datagram: bool,
+}
+
+impl DoorFacts {
+    /// Carriers use their required Dial slot; framers must declare `FACT_DIALS`.
+    #[must_use]
+    pub fn supports_dial(&self) -> bool {
+        self.role == busbar_contract::abi::transport::ROLE_CARRIER
+            || (self.role == busbar_contract::abi::transport::ROLE_FRAMER && self.dials)
+    }
+
+    pub(crate) fn require_dial(&self) -> Result<(), Refused> {
+        if self.supports_dial() {
+            Ok(())
+        } else {
+            Err(Refused {
+                outcome: Outcome::Refused,
+                error: format!("transport `{}` does not declare dialing support", self.name),
+            })
+        }
+    }
 }
 
 /// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
@@ -1411,6 +1433,9 @@ fn locate_as(
     accept: bool,
     deadline_ns: u64,
 ) -> Result<Located, Refused> {
+    if !accept {
+        door.facts().require_dial()?;
+    }
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     let mut defaults_cap = 256_usize;
     for _ in 0..2 {
@@ -1765,6 +1790,9 @@ impl Framing {
         binding: AuthBinding,
         guests: Option<Arc<GuestLines>>,
     ) -> Result<(Self, Yielded), Refused> {
+        if side == SIDE_DIAL {
+            door.facts().require_dial()?;
+        }
         let context = door.framing_context(guests.as_ref().map_or(0, |g| g.listener()), 0)?;
         let guests = context
             .as_ref()

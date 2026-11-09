@@ -110,7 +110,7 @@ mod synthetic {
         auth::AuthPoints,
         sdk::{
             auth_door::{
-                carrier, verify_tail, with_tail, Answer, Verdict, VerifyPlugin, VerifyView,
+                carrier, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifyView,
             },
             door::statement,
             life::Refusal,
@@ -121,7 +121,7 @@ mod synthetic {
     pub struct Judge {
         mode: String,
     }
-    impl VerifyPlugin for Judge {
+    impl SyncVerifyPlugin for Judge {
         fn open_refusing(settings: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
             let value: serde_json::Value = serde_json::from_slice(settings)
                 .map_err(|_| Refusal::failed("invalid fixture settings"))?;

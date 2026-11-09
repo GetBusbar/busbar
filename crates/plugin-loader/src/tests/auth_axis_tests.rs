@@ -36,7 +36,7 @@ fn a_module_no_row_answers_is_refused_by_name() {
 
 struct Fixture;
 
-impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for Fixture {
+impl busbar_contract::abi::sdk::auth_door::SyncVerifyPlugin for Fixture {
     fn validate(settings: &[u8]) -> Result<(), busbar_contract::abi::sdk::life::Refusal> {
         busbar_contract::abi::sdk::auth_door::validate_by_opening::<Self>(settings)
     }
@@ -132,6 +132,7 @@ mod aliased_inbound {
     );
 }
 
+#[allow(unsafe_code)] // This fixture deliberately restates a raw ABI declaration.
 mod outbound_only {
     use busbar_contract::abi::auth::{AuthTail, StyleDecl, CAP_OUTBOUND, POINT_HEAD};
     const STYLES: &[StyleDecl] = &[StyleDecl {
@@ -144,7 +145,31 @@ mod outbound_only {
         ..AuthTail::EMPTY
     }
     .with_styles(STYLES);
-    busbar_contract::auth_verify_door!(super::Fixture, super::stating("outbound-only", TAIL, &[]));
+    pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
+        static DOOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let address = *DOOR.get_or_init(|| {
+            let base = super::plain::door();
+            let statement = Box::leak(Box::new(busbar_contract::abi::sdk::door::stamp::<
+                busbar_contract::abi::auth::Ops,
+            >(super::stating(
+                "outbound-only",
+                TAIL,
+                &[],
+            ))));
+            // SAFETY: this metadata-only raw fixture restates a live static auth door.
+            let door = unsafe {
+                busbar_contract::abi::mechanism::door::Door::__from_parts(
+                    busbar_contract::abi::mechanism::door::DoorParts {
+                        statement,
+                        ..base.parts()
+                    },
+                )
+            };
+            Box::into_raw(Box::new(door)) as usize
+        });
+        // SAFETY: the once-created fixture is leaked for the process lifetime.
+        unsafe { &*(address as *const busbar_contract::abi::mechanism::door::Door) }
+    }
 }
 
 #[test]

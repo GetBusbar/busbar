@@ -65,12 +65,45 @@ crate::not_served! {
     NoShut(ShutIn => OutHead) "shut";
 }
 
+/// Explicit refusals for operations outside this fixture's exercised behavior.
+struct RefusedTransport<const INDEX: u32>;
+impl<const INDEX: u32> crate::abi::sdk::door::RawSlot for RefusedTransport<INDEX>
+where
+    crate::abi::transport::Ops: crate::abi::sdk::door::KindSlot<INDEX>,
+{
+    type Kind = crate::plugin::markers::TransportKind;
+    type In = <crate::abi::transport::Ops as crate::abi::sdk::door::KindSlot<INDEX>>::In;
+    type Out = <crate::abi::transport::Ops as crate::abi::sdk::door::KindSlot<INDEX>>::Out;
+    unsafe fn call(_: *mut core::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome {
+        Outcome::Refused
+    }
+}
+
 mod plugin {
     crate::plugin_door! {
         ops: super::Ops,
         statement: super::statement("probe-transport", "0.0.1", 4),
         lifecycle: life(super::Probe),
-        kind_ops: { flush: super::Safe<super::Flush>, shut: super::Safe<super::NoShut> },
+        kind_ops: {
+            listen: super::RefusedTransport<{ crate::abi::transport::slot::LISTEN }>,
+            accept: super::RefusedTransport<{ crate::abi::transport::slot::ACCEPT }>,
+            dial: super::RefusedTransport<{ crate::abi::transport::slot::DIAL }>,
+            read: super::RefusedTransport<{ crate::abi::transport::slot::READ }>,
+            write: super::RefusedTransport<{ crate::abi::transport::slot::WRITE }>,
+            flush: super::Safe<super::Flush>,
+            shut: super::Safe<super::NoShut>,
+            arrival: super::RefusedTransport<{ crate::abi::transport::slot::ARRIVAL }>,
+            locate: super::RefusedTransport<{ crate::abi::transport::slot::LOCATE }>,
+            begin: super::RefusedTransport<{ crate::abi::transport::slot::BEGIN }>,
+            ingest: super::RefusedTransport<{ crate::abi::transport::slot::INGEST }>,
+            emit: super::RefusedTransport<{ crate::abi::transport::slot::EMIT }>,
+            encode: super::RefusedTransport<{ crate::abi::transport::slot::ENCODE }>,
+            refuse: super::RefusedTransport<{ crate::abi::transport::slot::REFUSE }>,
+            finish: super::RefusedTransport<{ crate::abi::transport::slot::FINISH }>,
+            detach: super::RefusedTransport<{ crate::abi::transport::slot::DETACH }>,
+            adopt: super::RefusedTransport<{ crate::abi::transport::slot::ADOPT }>,
+            timer: super::RefusedTransport<{ crate::abi::transport::slot::TIMER }>,
+        },
     }
 }
 

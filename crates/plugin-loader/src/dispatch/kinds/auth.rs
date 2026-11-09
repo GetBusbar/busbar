@@ -318,8 +318,18 @@ pub fn rendered_facts(rendering: &[u8]) -> Result<AuthFacts, String> {
     if t.styles.len() > MAX_STYLES {
         return Err(format!("the auth tail states {} styles", t.styles.len()));
     }
+    if (t.caps & auth::CAP_OUTBOUND != 0) != !t.styles.is_empty() {
+        return Err("the auth tail's outbound capability disagrees with its styles".to_string());
+    }
+    let mut names = std::collections::HashSet::new();
     let mut styles = Vec::with_capacity(t.styles.len());
     for d in &t.styles {
+        if d.name.is_empty() || !names.insert(d.name.as_str()) {
+            return Err(format!(
+                "auth style name {:?} is empty or duplicated",
+                d.name
+            ));
+        }
         styles.push(OutboundStyle {
             name: fit(&d.name, "an auth style name is over-long")?,
             flags: d.flags,

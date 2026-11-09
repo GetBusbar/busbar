@@ -54,6 +54,7 @@ impl FramerDoor for Hanging {
 fn a_close_beside_a_hung_framer_emit_never_waits_and_the_write_makes_it() {
     let door = Arc::new(Hanging {
         facts: DoorFacts {
+            dials: true,
             name: "lp".into(),
             claims: vec!["lp"],
             role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -162,6 +163,7 @@ async fn an_idle_framed_stream_drives_its_timer_and_wakes_the_unit() {
         }
     }
     let door = Arc::new(Timed(DoorFacts {
+        dials: true,
         name: "lp".into(),
         claims: vec!["lp"],
         role: busbar_contract::abi::transport::ROLE_FRAMER,

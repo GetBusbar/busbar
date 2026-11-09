@@ -9,7 +9,8 @@ use busbar_contract::abi::auth::{AuthPoints, EXT_CARRIERS};
 use busbar_contract::abi::mechanism::door::{MarkWord, Statement};
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_tail, Answer, Verdict, VerifiedIdentity, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifiedIdentity,
+    VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -19,7 +20,7 @@ struct Choice {
     refreshed: AtomicBool,
 }
 
-impl VerifyPlugin for Choice {
+impl SyncVerifyPlugin for Choice {
     fn open_refusing(settings: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self {
             variant: serde_json::from_slice(settings)

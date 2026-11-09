@@ -4080,7 +4080,12 @@ impl ListenerPlan {
             .map(|(at, lines)| {
                 GuestList::seal(lines)
                     .map(|list| (at.clone(), list))
-                    .map_err(|refusal| guest_refusal(&at, refusal))
+                    .map_err(|refusal| {
+                        let listener = physical_bind(&at)
+                            .map(|bind| format!("{at} ({})", bind.listen))
+                            .unwrap_or_else(|| at.clone());
+                        guest_refusal(&listener, refusal)
+                    })
             })
             .collect()
     }
@@ -4219,6 +4224,17 @@ fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
 
 fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) -> String {
     use busbar_kernel::guest::{GuestRefusal, Line};
+    let methods = |line: &Line| {
+        [
+            "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE",
+        ]
+        .into_iter()
+        .filter(|method| {
+            line.route.methods & busbar_contract::abi::transport::route::method_bit(method) != 0
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+    };
     let named = |lines: &[Line]| {
         lines
             .iter()
@@ -4228,8 +4244,10 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
     };
     match refusal {
         GuestRefusal::EqualPrecedence(pair) => format!(
-            "{listener}: the claims {:?} {} and {:?} {} meet at an equal precedence",
-            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
+            "{listener}: route conflict between {:?} {} {} and {:?} {} {}; both match at equal precedence. \
+             Assign one plane to a different socket using its ingress.listen configuration, or disable one conflicting plugin",
+            pair.0.claimant, methods(&pair.0), pair.0.route.path,
+            pair.1.claimant, methods(&pair.1), pair.1.route.path
         ),
         GuestRefusal::PeerMix(mix) => format!(
             "{listener}: the lines {} need the Peer auth point and the lines {} need a \
@@ -5086,7 +5104,11 @@ type BoundParent = (
 
 impl DataRoutes {
     fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
-        let names = busbar_kernel::endpoints::catalog_names(&req.app, &req.gov);
+        let names = busbar_kernel::endpoints::catalog_names(
+            &req.app,
+            &req.gov,
+            &self.served.planes[plane].facts.plane,
+        );
         let target = req
             .uri
             .path_and_query()

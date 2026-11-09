@@ -19,6 +19,14 @@ use std::sync::OnceLock;
 
 pub struct Probe;
 impl VerifyPlugin for Probe {
+    fn verify_ticketed(
+        &self,
+        _: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
+        _: &busbar_contract::abi::sdk::auth_door::VerifyOp,
+    ) -> std::task::Poll<busbar_contract::abi::sdk::auth_door::Answer> {
+        panic!("this fixture only calls its explicit login slot")
+    }
+
     fn open_refusing(
         _: &[u8],
         _: &[&[u8]],
@@ -36,11 +44,7 @@ impl VerifyPlugin for Probe {
 }
 mod base {
     use super::*;
-    const TAIL: &AuthTail = &AuthTail {
-        caps: CAP_INBOUND | CAP_LOGIN,
-        login_kind: LOGIN_KIND_REDIRECT,
-        ..verify_tail(0, AuthPoints::HEAD)
-    };
+    const TAIL: &AuthTail = &verify_tail(0, AuthPoints::HEAD);
     busbar_contract::auth_verify_door!(
         Probe,
         with_tail(statement("login-output", "1.0.0", 2), TAIL)
@@ -82,8 +86,17 @@ impl<const FAIL: bool> Begin<FAIL> {
                 begin_login: Some(Begin::<FAIL>::op),
                 ..ops
             }));
+            // Restate the raw login capability with the deliberately substituted login op.
+            let statement = unsafe { *real.statement() };
+            let tail = Box::leak(Box::new(AuthTail {
+                caps: CAP_INBOUND | CAP_LOGIN,
+                login_kind: LOGIN_KIND_REDIRECT,
+                ..verify_tail(0, AuthPoints::HEAD)
+            }));
+            let statement = Box::leak(Box::new(with_tail(statement, tail)));
             let door = unsafe {
                 Door::__from_parts(DoorParts {
+                    statement,
                     ops: std::ptr::from_ref(ops).cast(),
                     ..real.parts()
                 })

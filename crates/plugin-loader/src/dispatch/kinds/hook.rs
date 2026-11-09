@@ -153,6 +153,10 @@ impl Kind for Hook {
         Ok(Some(Box::new(read(st)?)))
     }
 
+    fn optional_by_statement(s: u32, st: &Statement) -> bool {
+        s == slot::SERVE && read(st).is_ok_and(|context| context.routes.is_empty())
+    }
+
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::DECIDE => "decide",

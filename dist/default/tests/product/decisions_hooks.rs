@@ -243,7 +243,12 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         "store":{"module":store,"settings":store_settings},
         "providers":{"typesafe":{"api_key":{"file":provider_key}}},
         "models":{},
-        "decisions":{"models":{"m":{"provider":"typesafe"}}},
+        // This synthetic hook-test model was defined with this fixture contract on 2026-11-09.
+        "decisions":{
+            "models":{"m":{"provider":"typesafe"}},
+            "catalog":{"m":{"description":"Busbar Decisions hook test fixture (not a provider model)","release_date":"2026-11-09"}},
+            "ingress":{"listen":"127.0.0.1:0"}
+        },
         "auth":{"chain":["keys"],"signing_key":{"file":signing_key},"admin_auth":[]},
         "advanced":{"allow_destinations":["127.0.0.1"]},
     });
@@ -489,7 +494,8 @@ async fn a_global_gate_refuses_a_decisions_request_before_its_dial() {
     .await;
     let (status, body, heard) = s.decide().await;
     assert_eq!(status.as_u16(), 409, "the hook's own status: {body}");
-    assert_eq!(body["error"]["message"], "no decisions today", "{body}");
+    assert_eq!(body["detail"]["message"], "no decisions today", "{body}");
+    assert_eq!(body["detail"]["error_type"], "api_usage_error", "{body}");
     assert!(
         heard.is_none(),
         "the gated unit reached the provider: {heard:?}"
@@ -537,7 +543,8 @@ async fn a_gate_named_in_decisions_hooks_refuses_the_unit() {
     .await;
     let (status, body, heard) = s.decide().await;
     assert_eq!(status.as_u16(), 403, "{body}");
-    assert_eq!(body["error"]["message"], "decisions closed", "{body}");
+    assert_eq!(body["detail"]["message"], "decisions closed", "{body}");
+    assert_eq!(body["detail"]["error_type"], "permission_denied", "{body}");
     assert!(heard.is_none(), "{heard:?}");
     println!("actual Decisions hook assertions completed");
 }

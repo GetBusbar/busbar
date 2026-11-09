@@ -227,6 +227,7 @@ fn lp_door(
     duplex: Vec<&'static str>,
 ) -> std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> {
     std::sync::Arc::new(Uncrossed(busbar_core_connector::framer::DoorFacts {
+        dials: true,
         name: "lp".into(),
         claims: vec!["lp"],
         role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -243,6 +244,7 @@ fn lp_door(
 #[test]
 fn a_datagram_framer_is_never_a_streams_framer_though_its_claim_states_a_session() {
     let facts = |datagram| busbar_core_connector::framer::DoorFacts {
+        dials: true,
         name: "dg".into(),
         claims: vec!["dg"],
         role: busbar_contract::abi::transport::ROLE_FRAMER,
@@ -305,6 +307,7 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
     }
     let line = super::lines::carrier().expect("this build links a line carrier");
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
+        dials: true,
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
 

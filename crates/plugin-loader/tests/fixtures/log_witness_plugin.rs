@@ -30,6 +30,16 @@ pub const NEST: &[u8] = b"nest";
 
 pub type Ops = busbar_contract::abi::export::Ops;
 
+const TAIL: &busbar_contract::abi::export::Tail =
+    &busbar_contract::abi::sdk::export::tail(&[], &[]);
+
+const fn statement(name: &'static str) -> busbar_contract::abi::mechanism::door::Statement {
+    busbar_contract::abi::mechanism::door::Statement {
+        kind_tail: std::ptr::from_ref(TAIL).cast(),
+        ..busbar_contract::abi::sdk::door::statement(name, "1.6.0", 4)
+    }
+}
+
 fn mode(input: &TickIn) -> &[u8] {
     let b = input.head.extensions;
     if b.ptr.is_null() || b.fmt != BLOB_OCTETS {
@@ -211,7 +221,7 @@ pub mod a {
 
     busbar_contract::plugin_door! {
         ops: super::Ops,
-        statement: busbar_contract::abi::sdk::door::statement("log-witness-a", "1.6.0", 4),
+        statement: statement("log-witness-a"),
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,
@@ -240,7 +250,7 @@ pub mod b {
 
     busbar_contract::plugin_door! {
         ops: super::Ops,
-        statement: busbar_contract::abi::sdk::door::statement("log-witness-b", "1.6.0", 4),
+        statement: statement("log-witness-b"),
         lifecycle: {
             validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
             drive: Drive, cancel: Cancel, release: Release, close: Close,

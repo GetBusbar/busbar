@@ -855,7 +855,7 @@ fn a_stray_field_flag_is_fault() {
 /// Verifies `good` inbound and presents `authorization: SIG` outbound, from one instance.
 struct Sig;
 
-impl VerifyPlugin for Sig {
+impl crate::abi::sdk::auth_door::SyncVerifyPlugin for Sig {
     fn carriers(&self) -> Option<Vec<String>> {
         Some(vec!["x-sig".into()])
     }

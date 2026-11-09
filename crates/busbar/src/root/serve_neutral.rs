@@ -321,7 +321,11 @@ impl DataRoutes {
             .get(claim as usize)
             .is_some_and(|claim| claim.flags & busbar_contract::abi::plane::CLAIM_CATALOG != 0);
         if catalog {
-            let names = busbar_kernel::endpoints::catalog_names(&context.app, &context.gov);
+            let names = busbar_kernel::endpoints::catalog_names(
+                &context.app,
+                &context.gov,
+                &self.served.planes[plane].facts.plane,
+            );
             let head = &context.head;
             let fields: HeadFields = head
                 .fields

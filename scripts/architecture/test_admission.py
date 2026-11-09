@@ -4,7 +4,7 @@ import base64
 import json
 import unittest
 
-from admission import expected_inputs, validate_merge, validate_protection
+from admission import expected_inputs, required_conformance_job, validate_merge, validate_protection
 
 
 class Admission(unittest.TestCase):
@@ -21,12 +21,54 @@ class Admission(unittest.TestCase):
             policy_revision=self.revision, pipeline_id='100', job_id='101', target_revision=self.target,
             host_revision=self.host, sdk_revision=self.sdk,
             steps=[dict(name='architecture', status='pass', exit_code=0)])
+        self.jobs.append(dict(self.jobs[0], id=102, name='core-conformance'))
+        self.conformance = dict(copy.deepcopy(self.receipt), job_id='102', schema='busbar.protected-conformance/1')
 
     def validate(self):
-        validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.receipt, self.revision, self.target, self.host, self.sdk)
+        validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.receipt, self.revision, self.target, self.host, self.sdk,
+                       self.conformance)
 
     def test_current_native_proof_admits(self):
         self.validate()
+
+    def test_missing_or_optional_conformance_never_admits(self):
+        good = copy.deepcopy(self.jobs)
+        for jobs in (good[:1], good + [good[1]], [good[0], dict(good[1], runner=None)],
+                     [good[0], dict(good[1], allow_failure=True)]):
+            with self.subTest(jobs=jobs), self.assertRaises(ValueError):
+                self.jobs = jobs
+                self.validate()
+
+    def test_nonpassing_jobs_cannot_hide_behind_successful_pipeline(self):
+        good = copy.deepcopy(self.jobs)
+        for status in ('failed', 'skipped', 'manual', 'canceled', 'pending', 'running'):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                self.jobs = [good[0], dict(good[1], status=status)]
+                self.validate()
+
+    def test_conformance_receipt_must_bind_every_input_and_contain_only_passing_steps(self):
+        good = copy.deepcopy(self.conformance)
+        for key in ('source', 'target_revision', 'host_revision', 'sdk_revision', 'policy_revision',
+                    'pipeline_id', 'job_id', 'repository', 'schema', 'status'):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                self.conformance = dict(good, **{key: 'stale'})
+                self.validate()
+        for receipt in (None, dict(good, steps=[]), dict(good, steps=[dict(status='not-run', exit_code=0)]),
+                        dict(good, steps=[dict(status='pass', exit_code=1)])):
+            with self.subTest(receipt=receipt), self.assertRaises(ValueError):
+                self.conformance = receipt
+                self.validate()
+
+    def test_external_endpoint_jobs_are_required_for_both_planes(self):
+        for repository in ('GetBusbar/busbar-plane-llm', 'GetBusbar/busbar-plane-decisions'):
+            with self.subTest(repository=repository):
+                self.assertEqual(required_conformance_job(repository), 'external-conformance')
+                self.project['path_with_namespace'] = repository
+                self.receipt['repository'] = repository
+                self.conformance['repository'] = repository
+                self.jobs[1]['name'] = 'external-conformance'
+                self.validate()
+        self.assertIsNone(required_conformance_job('GetBusbar/busbar-store-memory'))
 
     def test_nonpassing_pipeline_never_admits(self):
         for status in ('pending', 'running', 'skipped', 'failed', 'canceled', 'manual'):

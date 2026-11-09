@@ -135,6 +135,38 @@ fn a_need_declared_without_a_transport_dials_nothing() {
     );
 }
 
+#[test]
+fn outbound_need_requires_dialing_capability_while_inbound_registration_remains_available() {
+    let door = Arc::new(
+        TestDoor::identity("bytes")
+            .with_role(busbar_contract::abi::transport::ROLE_FRAMER)
+            .without_dialing(),
+    );
+    let view = Transports::new(vec![Entry {
+        door: door.clone(),
+        alpn: Vec::new(),
+    }])
+    .unwrap();
+    let connector = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}));
+    assert!(connector.serves_scheme("bytes"));
+    assert_eq!(
+        connector.declare_over(OWNER, NeedId(0), "bytes"),
+        Err(ConnError::Refused)
+    );
+    let mut spec = config_targeted_need("");
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NeedId(1), &spec, None, None),
+        Err(ConnError::Refused),
+    );
+    spec.direction = busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    assert_eq!(
+        DeclaredConns::declare(&connector, OWNER, NeedId(2), &spec, None, None),
+        Ok(()),
+    );
+    assert_eq!(door.count("locate"), 0);
+    assert_eq!(door.count("begin"), 0);
+}
+
 /// A need over a scheme no loaded transport serves is refused when it is declared, by the inherent
 #[test]
 fn a_need_over_an_unserved_scheme_is_refused_at_declare_and_a_served_one_opens() {

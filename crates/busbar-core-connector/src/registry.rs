@@ -140,6 +140,13 @@ impl Transports {
         })
     }
 
+    /// The entry serving an outbound scheme, with its dialing capability declared.
+    #[must_use]
+    pub fn dialing(&self, scheme: &str) -> Option<Served<'_>> {
+        self.serving(scheme)
+            .filter(|served| served.entry.door.facts().supports_dial())
+    }
+
     /// THE CARRIER OF A NETWORK ADDRESS: the first entry, in registration order, that is a CARRIER
     #[must_use]
     pub fn address_carrier(&self) -> Option<&Entry> {

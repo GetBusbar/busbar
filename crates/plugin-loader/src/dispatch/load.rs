@@ -622,6 +622,8 @@ pub(crate) struct Validated {
     pub(crate) kind: KindCode,
     pub(crate) statement: Statement,
     pub(crate) slots: Box<[Op]>,
+    pub(crate) operations: Box<[bool]>,
+    pub(crate) context: Option<Box<super::Context>>,
 
     pub(crate) ready: Option<Op>,
 }
@@ -769,9 +771,9 @@ impl AdmittedImage<super::kinds::hook::Hook> {
     pub(crate) fn routes(
         &self,
     ) -> Result<Vec<busbar_contract::abi::mechanism::route::Route>, LoadError> {
-        let context = super::kinds::hook::Hook::context(&self.validated.statement)
-            .map_err(LoadError::KindTail)?;
-        Ok(context
+        Ok(self
+            .validated
+            .context
             .as_deref()
             .and_then(|context| context.downcast_ref::<super::kinds::hook::HookContext>())
             .map_or_else(Vec::new, |context| context.routes.clone()))
@@ -919,12 +921,15 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
             .as_ref()
             .is_ok_and(|st| K::optional_by_statement(i, st))
     };
-    let slots = table::<K>(door.ops, by_statement)?;
+    let (slots, operations) = table::<K>(door.ops, by_statement)?;
     let statement = stated?;
+    let context = K::context(&statement).map_err(LoadError::KindTail)?;
     Ok(Validated {
         kind,
         statement,
         slots,
+        operations,
+        context,
         ready: door.ready,
     })
 }
@@ -946,10 +951,12 @@ extern "C" fn absent(
     RawOutcome::of(Outcome::Ready)
 }
 
+type LoadedTable = (Box<[Op]>, Box<[bool]>);
+
 fn table<K: Kind>(
     ops: *const OpsHead,
     by_statement: impl Fn(u32) -> bool,
-) -> Result<Box<[Op]>, LoadError> {
+) -> Result<LoadedTable, LoadError> {
     if ops.is_null() {
         return Err(LoadError::NullOps);
     }
@@ -977,17 +984,19 @@ fn table<K: Kind>(
         .cast::<u8>()
         .wrapping_add(FIRST_SLOT)
         .cast::<Option<Op>>();
-    (0..slots)
+    let entries = (0..slots)
         .map(|i| {
             // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
             match unsafe { first.add(i as usize).read_unaligned() } {
-                Some(op) => Ok(op),
+                Some(op) => Ok((op, true)),
 
-                None if K::optional_slot(i) || by_statement(i) => Ok(absent as Op),
+                None if K::optional_slot(i) || by_statement(i) => Ok((absent as Op, false)),
                 None => Err(LoadError::NullSlot(i)),
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let (slots, operations): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
+    Ok((slots.into_boxed_slice(), operations.into_boxed_slice()))
 }
 
 pub(crate) fn statement(door: &DoorParts) -> Result<Statement, LoadError> {

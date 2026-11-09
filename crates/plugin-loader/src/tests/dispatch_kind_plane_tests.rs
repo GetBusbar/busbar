@@ -1559,3 +1559,170 @@ fn reply_recall_includes_record_only_and_cross_dimension_shortages() {
     check_reply!(ServeIn, ServeOut, slot::SERVE, "serve");
     check_reply!(RefusalIn, RefusalOut, slot::REFUSAL, "refusal");
 }
+
+fn registration_text(value: &'static str) -> AbiStr {
+    AbiStr {
+        ptr: value.as_ptr(),
+        len: value.len(),
+    }
+}
+
+fn check_published_registration(
+    snapshot: &PlaneSnapshot,
+    facts: &PlaneFacts,
+    operations: &[bool],
+    expected: Result<(), Fault>,
+) {
+    let mut open: PlaneOpenIn = z();
+    open.open.generation = snapshot.generation;
+    let mut opened: PlaneOpenOut = z();
+    opened.snapshot = snapshot;
+    let mut refresh: RefreshIn = z();
+    refresh.generation = snapshot.generation;
+    let mut refreshed: PlaneRefreshOut = z();
+    refreshed.snapshot = snapshot;
+    for answer in [
+        bare(life::OPEN, Outcome::Ready, &open, &opened),
+        bare(life::REFRESH, Outcome::Ready, &refresh, &refreshed),
+    ] {
+        assert_eq!(
+            Plane::check(&answer.with_context(Some(facts)).with_operations(operations)),
+            expected,
+            "snapshot registration at slot {}",
+            answer.slot,
+        );
+    }
+}
+
+#[test]
+fn snapshot_registration_catalog_claim_requires_the_registered_operation() {
+    use busbar_contract::abi::plane::{Claim, CLAIM_CATALOG, CLAIM_EXACT};
+    let claim = Claim {
+        verb: registration_text("GET"),
+        target: registration_text("/catalog"),
+        carrier: registration_text("http"),
+        flags: CLAIM_EXACT | CLAIM_CATALOG,
+        ..z()
+    };
+    let mut snapshot = snap(7);
+    snapshot.claims = &claim;
+    snapshot.claims_len = 1;
+    let mut operations = [false; SLOTS as usize];
+    check_published_registration(
+        &snapshot,
+        &FACTS,
+        &operations,
+        f(Rule::Missing, "snapshot.catalog.operation"),
+    );
+    operations[slot::CATALOG as usize] = true;
+    check_published_registration(&snapshot, &FACTS, &operations, Ok(()));
+    snapshot.claims_len = 0;
+    operations[slot::CATALOG as usize] = false;
+    check_published_registration(&snapshot, &FACTS, &operations, Ok(()));
+}
+
+#[test]
+fn snapshot_registration_admin_routes_require_serve_and_preserve_declared_security() {
+    use busbar_contract::abi::plane::{AdminRoute, ROUTE_PUBLIC};
+    use busbar_contract::plane_calls::StatedAdminRoute;
+    let mut facts = FACTS.clone();
+    facts.served.admin_routes = vec![
+        StatedAdminRoute {
+            verb: "GET",
+            target: "/status",
+            flags: 0,
+            audit_verb: "read_status",
+        },
+        StatedAdminRoute {
+            verb: "POST",
+            target: "/reset",
+            flags: 0,
+            audit_verb: "reset",
+        },
+    ];
+    let mut route = AdminRoute {
+        verb: registration_text("GET"),
+        target: registration_text("/status"),
+        flags: 0,
+        audit_verb: registration_text("read_status"),
+        ..z()
+    };
+    let mut snapshot = snap(7);
+    snapshot.admin_routes = &route;
+    snapshot.admin_routes_len = 1;
+    let mut operations = [false; SLOTS as usize];
+    check_published_registration(
+        &snapshot,
+        &facts,
+        &operations,
+        f(Rule::Missing, "snapshot.admin_routes.operation"),
+    );
+    operations[slot::SERVE as usize] = true;
+    // A generation activates a subset of the static declaration.
+    check_published_registration(&snapshot, &facts, &operations, Ok(()));
+    let original = route;
+    for changed in [
+        AdminRoute {
+            flags: ROUTE_PUBLIC,
+            ..original
+        },
+        AdminRoute {
+            audit_verb: registration_text(""),
+            ..original
+        },
+        AdminRoute {
+            target: registration_text("/undeclared"),
+            ..original
+        },
+        AdminRoute {
+            verb: registration_text("DELETE"),
+            ..original
+        },
+    ] {
+        snapshot.admin_routes = &changed;
+        check_published_registration(
+            &snapshot,
+            &facts,
+            &operations,
+            f(Rule::Contradiction, "snapshot.admin_routes.declaration"),
+        );
+    }
+    route = AdminRoute {
+        verb: registration_text("POST"),
+        target: registration_text("/reset"),
+        audit_verb: registration_text("reset"),
+        ..original
+    };
+    snapshot.admin_routes = &route;
+    snapshot.generation = 8;
+    check_published_registration(&snapshot, &facts, &operations, Ok(()));
+    // Disabling all routes in a later generation remains valid.
+    snapshot.admin_routes_len = 0;
+    check_published_registration(&snapshot, &facts, &operations, Ok(()));
+}
+
+#[test]
+fn snapshot_registration_static_routes_validate_security_metadata() {
+    use busbar_contract::abi::plane::{AdminRoute, ROUTE_CARRIES_OWN_TOKEN, ROUTE_PUBLIC};
+    let route = AdminRoute {
+        verb: registration_text("POST"),
+        target: registration_text("/token"),
+        flags: ROUTE_CARRIES_OWN_TOKEN,
+        audit_verb: registration_text("token"),
+        ..z()
+    };
+    assert!(bounded_tail_context(|tail| {
+        tail.admin_routes = &route;
+        tail.admin_routes_len = 1;
+    })
+    .is_err());
+    let route = AdminRoute {
+        flags: ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN,
+        ..route
+    };
+    assert!(bounded_tail_context(|tail| {
+        tail.admin_routes = &route;
+        tail.admin_routes_len = 1;
+    })
+    .is_ok());
+}

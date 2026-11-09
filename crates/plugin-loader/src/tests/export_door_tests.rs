@@ -739,15 +739,20 @@ mod push_only {
             ..busbar_contract::abi::sdk::door::statement("routed-export-witness", "0", 4)
         };
 
-        busbar_contract::plugin_door! {
-            ops: busbar_contract::abi::export::Ops,
-            statement: STATEMENT,
-            lifecycle: life(super::super::leaky::Leaky),
-            kind_ops: {
-                deliver: Safe<Ready<DeliverIn, OutHead>>,
-                status: Safe<Ready<InHead, StatusOut>>,
-                check: Safe<Ready<CheckIn, CheckOut>>,
-            },
+        pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
+            use busbar_contract::abi::mechanism::door::{Door, DoorParts};
+            const STAMPED: Statement = busbar_contract::abi::sdk::door::stamp::<
+                busbar_contract::abi::export::Ops,
+            >(STATEMENT);
+            // SAFETY: the valid push-only table and this declaration are immutable,
+            // process-lived data. Deliberately adding a route without SERVE models a
+            // malformed foreign ABI descriptor, which the host must reject.
+            Box::leak(Box::new(unsafe {
+                Door::__from_parts(DoorParts {
+                    statement: &STAMPED,
+                    ..super::door().parts()
+                })
+            }))
         }
     }
 }

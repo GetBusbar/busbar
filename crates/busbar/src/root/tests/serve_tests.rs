@@ -724,6 +724,8 @@ use busbar_kernel::governance::signing::{TokenSigner, DEFAULT_KID};
 use busbar_kernel::governance::{GovState, NewKeySpec, PLANE_LANE_SEP};
 #[cfg(feature = "plane-decisions")]
 use busbar_kernel::plane_driver::{refusal_status, EndPost, PlaneMoney};
+// Catalogue metadata in these synthetic models declares the fixture contract released on
+// 2026-11-09; it does not describe a real provider model or its release date.
 #[cfg(feature = "plane-decisions")]
 use busbar_plane_decisions::door as decisions_door;
 #[cfg(feature = "plane-decisions")]
@@ -1038,7 +1040,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str("models: {m: {provider: typesafe}}\ncatalog: {m: {description: 'Busbar in-process Decisions test model (not a provider model)', release_date: '2026-11-09'}}").expect("a section"),
     );
     let mut served = compose_planes(
         &[(instance.to_string(), plane)],
@@ -1295,7 +1297,7 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     sections.insert(
         section,
         serde_yaml::from_str(&format!(
-            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}\ncatalog: {{m: {{description: 'Busbar in-process Decisions test model (not a provider model)', release_date: '2026-11-09'}}}}",
             plane.served().dialects[0]
         ))
         .expect("a section"),
@@ -1333,9 +1335,13 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
         .expect("the body");
     let body: serde_json::Value = serde_json::from_slice(&body).expect("the plane's JSON");
     assert_eq!(
-        body["error"]["message"],
+        body["detail"]["message"],
         ReasonCode::Unauthenticated.as_str(),
         "the kernel wrote the text, the plane rendered it: {body}"
+    );
+    assert_eq!(
+        body["detail"]["error_type"], "authentication_error",
+        "{body}"
     );
     assert!(
         door_routes(super::Served::default(), || CARD.pin(), &[], &[])
@@ -1436,7 +1442,7 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     sections.insert(
         section,
         serde_yaml::from_str(&format!(
-            "models: {{m: {{provider: typesafe, protocol: {}}}}}",
+            "models: {{m: {{provider: typesafe, protocol: {}}}}}\ncatalog: {{m: {{description: 'Busbar in-process Decisions test model (not a provider model)', release_date: '2026-11-09'}}}}",
             plane.served().dialects[0]
         ))
         .expect("a section"),
@@ -7063,7 +7069,7 @@ async fn serve_configured(
     let mut sections = BTreeMap::new();
     sections.insert(
         section_key,
-        serde_yaml::from_str("models: {m: {provider: typesafe}}").expect("a section"),
+        serde_yaml::from_str("models: {m: {provider: typesafe}}\ncatalog: {m: {description: 'Busbar in-process Decisions test model (not a provider model)', release_date: '2026-11-09'}}").expect("a section"),
     );
     let mut served = compose_planes_over(
         linked,
@@ -12639,7 +12645,7 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
     .expect("the linked door binds");
     let facing = (reg.facing)(
 
-        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}}}}"#,
+        br#"{"decisions":{"models":{"b":{"provider":"typesafe","protocol":"jev"},"a":{"provider":"typesafe","protocol":"jev"}},"catalog":{"a":{"description":"Busbar listed-model test fixture a (not a provider model)","release_date":"2026-11-09"},"b":{"description":"Busbar listed-model test fixture b (not a provider model)","release_date":"2026-11-09"}}}}"#,
         b"",
         None,
         &[],

@@ -365,6 +365,35 @@ fn two_instances_of_one_module_can_share_root_and_own_a_distinct_bind() {
 }
 
 #[test]
+fn plane_ingress_inherits_data_listener_or_selects_an_explicit_socket() {
+    let candidates = vec![listening_plane("ingress")];
+    let doc = serde_json::json!({"agents": {}});
+    let selected = select(&Uses::of(&doc), &candidates);
+    let roots = root_binds(
+        &doc,
+        &RootListens {
+            listen: "127.0.0.1:8080",
+            admin_listen: "127.0.0.1:8081",
+        },
+    );
+    let inherited = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
+    assert_eq!(inherited.binds, roots);
+    assert_eq!(inherited.needs[0].at, "listen");
+    let separate = serde_json::json!({"agents": {"ingress": {"listen": "127.0.0.1:8082"}}});
+    let plan = listener_needs(&separate, &candidates, &selected, roots.clone()).unwrap();
+    assert_eq!(plan.needs[0].at, "agents.ingress");
+    assert_eq!(plan.binds.last().unwrap().listen.port(), 8082);
+    for invalid in [
+        serde_json::Value::Null,
+        serde_json::json!({}),
+        serde_json::json!("127.0.0.1:8082"),
+    ] {
+        let doc = serde_json::json!({"agents": {"ingress": invalid}});
+        assert!(listener_needs(&doc, &candidates, &selected, roots.clone()).is_err());
+    }
+}
+
+#[test]
 fn explicit_same_address_needs_share_compatible_physical_policy() {
     let mut candidate = listening_plane("ingress");
     candidate.kind = KindCode::Export;

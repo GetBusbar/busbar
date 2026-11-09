@@ -9,7 +9,7 @@ use busbar_contract::abi::mechanism::door::{Door, MarkWord, Statement};
 use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
 use busbar_contract::abi::sdk::auth_door::{
-    carrier, verify_tail, with_tail, Answer, Verdict, VerifyPlugin, VerifyView,
+    carrier, verify_tail, with_tail, Answer, SyncVerifyPlugin, Verdict, VerifyView,
 };
 use busbar_contract::abi::sdk::door::statement;
 use busbar_contract::abi::sdk::life::Refusal;
@@ -18,7 +18,7 @@ use std::ffi::c_void;
 const TEST_CARRIERS_KEY: &str = "auth.carriers";
 
 struct OldApiChoice;
-impl VerifyPlugin for OldApiChoice {
+impl SyncVerifyPlugin for OldApiChoice {
     fn open_refusing(_: &[u8], _: &[&[u8]]) -> Result<Self, Refusal> {
         Ok(Self)
     }

@@ -432,14 +432,26 @@ pub mod ordering {
 }
 
 pub mod untailed {
-    hook_door!(
-        @statement busbar_contract::abi::sdk::door::statement(
+    #[allow(unsafe_code)]
+    pub extern "C" fn door() -> &'static busbar_contract::abi::mechanism::door::Door {
+        use busbar_contract::abi::mechanism::door::{Door, DoorParts, Statement};
+        const STATEMENT: Statement = busbar_contract::abi::sdk::door::stamp::<
+            busbar_contract::abi::hook::Ops,
+        >(busbar_contract::abi::sdk::door::statement(
             super::UNTAILED_NAME,
             "1.6.0",
             super::MAX_INFLIGHT,
-        ),
-        super::Decide
-    );
+        ));
+        // SAFETY: the complete conforming table and replacement Statement remain live
+        // for the process. The deliberately absent tail is an invalid foreign ABI
+        // declaration for the host's rejection test, not an SDK-authored registration.
+        Box::leak(Box::new(unsafe {
+            Door::__from_parts(DoorParts {
+                statement: &STATEMENT,
+                ..super::conforming::door().parts()
+            })
+        }))
+    }
 }
 
 pub mod panicking {

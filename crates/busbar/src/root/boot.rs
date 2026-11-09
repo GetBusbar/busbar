@@ -766,7 +766,9 @@ pub fn listener_needs(
                     .and_then(|v| v.get("settings")),
                 _ => None,
             };
-            if need.target_from == "listen" && settings.and_then(|v| v.get("listen")).is_none() {
+            let inherit_data_listener = need.target_from == "listen"
+                || candidate.kind == KindCode::Plane && need.target_from == "ingress";
+            if inherit_data_listener && settings.and_then(|v| v.get(&need.target_from)).is_none() {
                 let bind = binds
                     .iter()
                     .find(|b| b.owner == BindOwner::Root && b.at == "listen")
