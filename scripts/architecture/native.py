@@ -41,6 +41,12 @@ def evaluation_job(repository, conformance_only, external_conformance):
     return None
 
 
+def requires_native_oracle(repository, external_conformance):
+    # The independent endpoint job builds and judges its own actual subject.
+    # Native admission still requires the signed shipping oracle, unchanged.
+    return repository == 'GetBusbar/busbar-plane-llm' and not external_conformance
+
+
 class Interrupted(BaseException):
     def __init__(self, signum):
         self.signum = signum
@@ -496,7 +502,7 @@ def qualify():
     try:
         with deferred_interruptions():
             qualification = Qualification(args)
-        if qualification.repository == 'GetBusbar/busbar-plane-llm':
+        if requires_native_oracle(qualification.repository, args.external_conformance):
             from native_oracle import prepare as prepare_oracle
             prepare_oracle(qualification)
         from native_sources import prepare

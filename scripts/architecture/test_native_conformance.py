@@ -71,6 +71,8 @@ exit 1
         self.assertEqual(self.q.env['BUSBAR_PIN'], 'a' * 40)
 
     def test_external_job_cannot_substitute_for_other_repositories_or_modes(self):
+        self.assertTrue(native.requires_native_oracle('GetBusbar/busbar-plane-llm', False))
+        self.assertFalse(native.requires_native_oracle('GetBusbar/busbar-plane-llm', True))
         self.assertEqual(native.evaluation_job('GetBusbar/busbar-plane-llm', False, True),
                          'external-conformance')
         self.assertIsNone(native.evaluation_job('GetBusbar/busbar-plane-llm', False, False))
