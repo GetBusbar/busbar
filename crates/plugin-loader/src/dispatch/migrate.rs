@@ -97,10 +97,43 @@ fn complete_credential_migration(
             .map_err(|_| refused())?
             .to_owned(),
     );
-    let file =
-        busbar_contract::Secret::new(std::fs::read(path.expose(seal)).map_err(|_| refused())?);
+    let file = read_credential_file(&path, seal).map_err(|_| refused())?;
     let answer = call(Some(&file))?;
     answer.finish(Some(&path), seal).map_err(|_| refused())
+}
+
+fn read_credential_file(
+    path: &busbar_contract::Secret<String>,
+    seal: &dyn busbar_contract::plugin::KernelSeal,
+) -> std::io::Result<busbar_contract::Secret<Vec<u8>>> {
+    use std::io::Read;
+    let refuse = || std::io::Error::other("migration file is not a bounded regular file");
+    let path = path.expose(seal);
+    // Follow normal symlinks, but refuse special files before opening. Recheck the
+    // actual handle below so replacement cannot turn the read into a device stream.
+    let named = std::fs::metadata(path)?;
+    if !named.is_file() || named.len() > ANSWER_CAP as u64 {
+        return Err(refuse());
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // A FIFO substituted after metadata must not block while being opened.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let held = file.metadata()?;
+    if !held.is_file() || held.len() > ANSWER_CAP as u64 {
+        return Err(refuse());
+    }
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    file.take(ANSWER_CAP as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > ANSWER_CAP {
+        return Err(refuse());
+    }
+    Ok(busbar_contract::Secret::new(std::mem::take(&mut *bytes)))
 }
 
 type MigrationWireAnswer = (
