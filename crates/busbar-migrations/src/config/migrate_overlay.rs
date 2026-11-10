@@ -13,6 +13,12 @@ use serde_json::{Map, Value};
 // persisted patch. It borrows only the plugin-owned setting transforms and destination needs.
 struct OverlayHost<'a>(&'a dyn MigrateHost);
 impl MigrateHost for OverlayHost<'_> {
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> { self.0.source_declarations() }
+    fn migrate_credential(&self, module: &str, credential: &busbar_contract::secret_ref::SecretRef, from: &str)
+        -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> { self.0.migrate_credential(module, credential, from) }
+    fn migrate_references(&self, kind: &str, module: &str, settings: &Value, from: &str)
+        -> Result<Option<(String, MigrationAnswer)>, String> { self.0.migrate_references(kind, module, settings, from) }
+
     fn admit_config_profile(&self, proof: &super::HistoricalConfigProof) -> Result<(), String> {
         self.0.admit_config_profile(proof)
     }
@@ -129,6 +135,13 @@ mod tests {
     use super::*;
     struct Host;
     impl MigrateHost for Host {
+        fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+            use busbar_contract::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_PATH};
+            let mut sources = busbar_contract::secret_ref::Sugars::default();
+            sources.declare("artifact-owner", &[(REWRITE_SUGAR, "artifact".into(), "path".into()),
+                (REWRITE_SUGAR_ROLE, "artifact".into(), SUGAR_ROLE_PATH.into())])?;
+            Ok(sources)
+        }
         fn resolved_authored_scalar(&self, _: &str) -> Result<Option<Value>, String> {
             // A coincident authored YAML placeholder must not reinterpret frozen JSON data.
             Ok(Some(Value::String("unrelated-authored-environment".into())))
@@ -187,7 +200,7 @@ mod tests {
             [busbar_kernel::config::HookStage::Response]
         );
         assert_eq!(
-            doc.named_maps["identity-providers"]["corp"]["settings"]["token"]["file"],
+            doc.named_maps["identity-providers"]["corp"]["settings"]["token"]["settings"]["path"],
             "/protected/old-token"
         );
     }

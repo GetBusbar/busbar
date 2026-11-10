@@ -455,10 +455,12 @@ impl RootHost {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
+        references: bool,
     ) -> Result<Option<(String, MigrationAnswer)>, String> {
-        use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
+        use crate::root::loader::dispatch::{load::raw, migrate::{migrate_door, migrate_references_door}};
+        let migrate = if references { migrate_references_door } else { migrate_door };
         if let Some((name, door)) = Self::linked_door(kind, module) {
-            return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
+            return Ok(migrate(raw(door), settings, from)?.map(|m| (name, m)));
         }
 
         if kind == busbar_contract::abi::mechanism::kind::PLANE {
@@ -466,9 +468,8 @@ impl RootHost {
         }
         let local = self.local();
         if let Some(row) = local.resolve(module).filter(|r| r.manifest.kind == kind) {
-            return Ok(row
-                .migrate(settings, from)?
-                .map(|m| (row.manifest.name.clone(), m)));
+            let answer = if references { row.migrate_references(settings, from) } else { row.migrate(settings, from) }?;
+            return Ok(answer.map(|m| (row.manifest.name.clone(), m)));
         }
 
         let Ok(fetched) = self.fetch(kind, module) else {
@@ -477,9 +478,8 @@ impl RootHost {
         let Some(row) = fetched.resolve(module).filter(|r| r.manifest.kind == kind) else {
             return Ok(None);
         };
-        Ok(row
-            .migrate(settings, from)?
-            .map(|m| (row.manifest.name.clone(), m)))
+        let answer = if references { row.migrate_references(settings, from) } else { row.migrate(settings, from) }?;
+        Ok(answer.map(|m| (row.manifest.name.clone(), m)))
     }
 
     fn catalog_source(&self) -> Result<Option<(PathBuf, zeroize::Zeroizing<String>)>, String> {
@@ -747,7 +747,7 @@ impl MigrateHost for RootHost {
         settings: &serde_json::Value,
         from: &str,
     ) -> Result<Option<(String, MigrationAnswer)>, String> {
-        match self.migrate_settings(kind, module, settings, from) {
+        match self.migrate_settings(kind, module, settings, from, false) {
             Ok(value) => Ok(value),
             Err(error) => {
                 let resolved =
@@ -757,13 +757,18 @@ impl MigrateHost for RootHost {
                 }
                 // One registered converter sees the actual resolved legacy input. Do not
                 // infer arithmetic from differential probes or persist a frozen env value.
-                let converted = self.migrate_settings(kind, module, &resolved, from)?;
+                let converted = self.migrate_settings(kind, module, &resolved, from, false)?;
                 if converted.is_some() {
                     self.runtime_only.set(true);
                 }
                 Ok(converted)
             }
         }
+    }
+
+    fn migrate_references(&self, kind: &str, module: &str, settings: &serde_json::Value, from: &str)
+        -> Result<Option<(String, MigrationAnswer)>, String> {
+        self.migrate_settings(kind, module, settings, from, true)
     }
 
     fn repin(&self, github: &str) -> Result<Option<String>, String> {
@@ -831,21 +836,32 @@ impl MigrateHost for RootHost {
         }
     }
 
-    fn legacy_jwt_credential_file(
+    fn migrate_credential(
         &self,
+        module: &str,
         credential: &busbar_contract::secret_ref::SecretRef,
+        from: &str,
     ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
         let scope = busbar_contract::config_time::ConfigScope::config_time();
         let resolved =
             busbar_kernel::config::secret::resolve_linked_string_at_config(credential, &scope)
                 .map_err(|_| "the original credential source could not be resolved".to_string())?;
-        let cwd = std::env::current_dir()
-            .map_err(|_| "the original process working directory is unavailable".to_string())?;
-        legacy_jwt_file_reference(
-            resolved.expose(&busbar_kernel::seal::lend()),
-            &cwd,
-            &self.source_declarations()?,
-        )
+        let seal = busbar_kernel::seal::lend();
+        let local = self.local();
+        let answer = if let Some(row) = local
+            .resolve(module)
+            .filter(|row| row.manifest.kind == busbar_contract::abi::mechanism::kind::AUTH)
+        {
+            row.migrate_credential(&resolved, from, &seal)?
+        } else {
+            let fetched = self.fetch(busbar_contract::abi::mechanism::kind::AUTH, module)?;
+            let row = fetched
+                .resolve(module)
+                .filter(|row| row.manifest.kind == busbar_contract::abi::mechanism::kind::AUTH)
+                .ok_or("credential migration owner is unavailable")?;
+            row.migrate_credential(&resolved, from, &seal)?
+        };
+        answer.into_reference(&self.source_declarations()?)
     }
 
     fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
@@ -868,43 +884,6 @@ impl MigrateHost for RootHost {
             .by_module(kind, module)
             .and_then(IndexPlugin::pin_for_this_core))
     }
-}
-
-/// 1.5.5 resolved the outer SecretRef as text (trimming trailing CR/LF), then
-/// read a non-JSON credential as an exact path relative to the process cwd, not
-/// the config or providers catalog directory. Keep that distinction on output.
-fn legacy_jwt_file_reference(
-    credential: &str,
-    cwd: &Path,
-    sources: &busbar_contract::secret_ref::Sugars,
-) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
-    if credential.trim_start().starts_with('{') {
-        return Ok(None);
-    }
-    if credential.is_empty() {
-        return Err("the original credential is empty".into());
-    }
-    let path = cwd.join(credential);
-    let path_text = path
-        .to_str()
-        .ok_or("the credential filename is not UTF-8")?;
-    // Verify the filename before making it public configuration. An arbitrary
-    // non-JSON secret must not accidentally become a path in migrated YAML.
-    let content = busbar_contract::redacted::Secret::new(
-        std::fs::read(&path).map_err(|_| "the original credential file could not be read")?,
-    );
-    let seal = busbar_kernel::seal::lend();
-    let text = std::str::from_utf8(content.expose(&seal))
-        .map_err(|_| "the original credential file is not JSON")?;
-    if !text.trim_start().starts_with('{')
-        || serde_json::from_str::<serde::de::IgnoredAny>(text).is_err()
-    {
-        return Err("the original credential file is not JSON".into());
-    }
-    Ok(Some(sources.reference_for_role(
-        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
-        path_text,
-    )?))
 }
 
 #[cfg(test)]

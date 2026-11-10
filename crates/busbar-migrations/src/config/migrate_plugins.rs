@@ -74,6 +74,10 @@ pub trait MigrateHost {
         from: &str,
     ) -> Result<Option<(String, MigrationAnswer)>, String>;
 
+    /// Cold reference discovery, distinct from selecting an owner for settings migration.
+    fn migrate_references(&self, _kind: &str, _module: &str, _settings: &serde_json::Value, _from: &str)
+        -> Result<Option<(String, MigrationAnswer)>, String> { Ok(None) }
+
     fn repin(&self, github: &str) -> Result<Option<String>, String>;
 
     fn release_for(&self, kind: &str, module: &str) -> Result<Option<String>, String>;
@@ -88,11 +92,13 @@ pub trait MigrateHost {
         Ok(None)
     }
 
-    /// Resolve the released 1.5.5 JWT credential filename convention once, without
-    /// returning credential material to the configuration migrator. None means inline JSON.
-    fn legacy_jwt_credential_file(
+    /// Resolve and lend a reference to the auth owner selected by a plugin migration.
+    /// The host never interprets credential text or the owner's historical format.
+    fn migrate_credential(
         &self,
+        _module: &str,
         _credential: &busbar_contract::secret_ref::SecretRef,
+        _from: &str,
     ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
         Err("credential resolution is unavailable during migration".into())
     }
@@ -138,6 +144,7 @@ struct Site {
     settings: serde_json::Value,
 
     read_only: Vec<String>,
+    references_only: bool,
     browser_client_id: Option<String>,
 }
 
@@ -236,6 +243,24 @@ pub(super) fn migrate_over(
     let from = host.migrating_from().to_string();
     let mut wanted: Vec<(String, String)> = Vec::new();
     for site in sites(root, planes, host, ledger) {
+        if site.references_only {
+            match host.migrate_references(&site.kind, &site.module, &site.settings, &from) {
+                Ok(Some((_, answer))) => {
+                    for need in answer.needs {
+                        match need {
+                            MigrateNeed::MigrateCredential {path, module} if path.first().is_some_and(|section| site.read_only.contains(section)) =>
+                                super::migrate_credentials::migrate(root, host, &path, &module, ledger.changes, ledger.todos),
+                            MigrateNeed::Review {path, reason} if path.first().is_some_and(|section| site.read_only.contains(section)) =>
+                                ledger.todos.push(format!("{}: {reason}", path.join("."))),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => ledger.todos.push(format!("{}: its owner could not inspect original credential references; they were preserved", site.path)),
+            }
+            continue;
+        }
         wanted.push((site.kind.clone(), site.module.clone()));
         match host.migrate(&site.kind, &site.module, &site.settings, &from) {
             Ok(None) => {
@@ -324,6 +349,7 @@ fn sites(
                     module: module.to_string(),
                     settings,
                     read_only: Vec::new(),
+                references_only: false,
                     browser_client_id: None,
                 });
             }
@@ -356,6 +382,7 @@ fn sites(
                 module: module.to_string(),
                 settings,
                 read_only: Vec::new(),
+                references_only: false,
                 browser_client_id: (kind == Kind::Auth)
                     .then(|| {
                         entry
@@ -368,7 +395,7 @@ fn sites(
             });
         }
     }
-    let mut providers: Option<Result<Option<serde_json::Value>, ()>> = None;
+    let mut providers: Option<Result<ProviderDocuments, ()>> = None;
     'planes: for plane in planes {
         let mut sections = serde_json::Map::new();
         for s in &plane.owns {
@@ -380,12 +407,12 @@ fn sites(
             }
         }
 
-        if sections.is_empty()
-            && !host
+        let selected = !sections.is_empty()
+            || host
                 .plane_selecting_sections(plane.key)
                 .iter()
-                .any(|section| root.contains_key(Value::from(section.as_str())))
-        {
+                .any(|section| root.contains_key(Value::from(section.as_str())));
+        if !selected && !plane.consumes.iter().any(|section| root.contains_key(Value::from(*section))) {
             continue;
         }
         let mut read_only = Vec::new();
@@ -398,7 +425,15 @@ fn sites(
                     .get_or_insert_with(|| merged_providers(root, host, ledger))
                     .clone()
                 {
-                    Ok(value) => value,
+                    Ok(value) => {
+                        let source_key = busbar_contract::abi::sdk::migrate::SOURCE_DOCUMENTS;
+                        sections.insert(
+                            source_key.to_owned(),
+                            serde_json::json!({*s: value.sources}),
+                        );
+                        read_only.push(source_key.to_owned());
+                        value.effective
+                    }
                     Err(()) => continue 'planes,
                 }
             } else {
@@ -422,17 +457,24 @@ fn sites(
             module: plane.key.to_string(),
             settings: serde_json::Value::Object(sections),
             read_only,
+            references_only: !selected,
             browser_client_id: None,
         });
     }
     out
 }
 
+#[derive(Clone)]
+struct ProviderDocuments {
+    effective: Option<serde_json::Value>,
+    sources: busbar_contract::abi::sdk::migrate::SourceDocuments,
+}
+
 fn merged_providers(
     root: &Mapping,
     host: &dyn MigrateHost,
     ledger: &mut Ledger<'_>,
-) -> Result<Option<serde_json::Value>, ()> {
+) -> Result<ProviderDocuments, ()> {
     let key = Kind::Transport.root();
     let deployment = root
         .get(Value::from(key))
@@ -450,11 +492,24 @@ fn merged_providers(
             None
         }
     };
+    let sources = busbar_contract::abi::sdk::migrate::SourceDocuments {
+        authored: deployment.clone().unwrap_or_default(),
+        catalog: catalog
+            .clone()
+            .map(serde_json::Value::Object)
+            .unwrap_or_default(),
+    };
     let Some(mut merged) = catalog else {
-        return Ok(deployment);
+        return Ok(ProviderDocuments {
+            effective: deployment,
+            sources,
+        });
     };
     let Some(serde_json::Value::Object(entries)) = deployment else {
-        return Ok(Some(serde_json::Value::Object(merged)));
+        return Ok(ProviderDocuments {
+            effective: Some(serde_json::Value::Object(merged)),
+            sources,
+        });
     };
     for (name, entry) in entries {
         let entry = match (merged.remove(&name), entry) {
@@ -465,7 +520,10 @@ fn merged_providers(
         };
         merged.insert(name, entry);
     }
-    Ok(Some(serde_json::Value::Object(merged)))
+    Ok(ProviderDocuments {
+        effective: Some(serde_json::Value::Object(merged)),
+        sources,
+    })
 }
 
 fn plane_sections(d: &busbar_kernel::plane_driver::registry::PlaneDecl) -> Vec<&'static str> {
@@ -558,6 +616,19 @@ fn apply(
     for need in needs {
         match need {
             MigrateNeed::ExternalizeSecret { .. } => {}
+            MigrateNeed::Review { path, reason } => {
+                ledger.todos.push(format!("{}: {reason}", path.join(".")));
+            }
+            MigrateNeed::MigrateCredential { path, module } => {
+                super::migrate_credentials::migrate(
+                    root,
+                    host,
+                    &path,
+                    &module,
+                    &mut *ledger.changes,
+                    &mut *ledger.todos,
+                );
+            }
             MigrateNeed::AllowDestination(host) => allow_destination(root, plugin, &host, ledger),
 
             MigrateNeed::AllowDestinationIfPrivate(h) => {
