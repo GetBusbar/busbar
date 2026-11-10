@@ -161,35 +161,15 @@ pub(crate) unsafe fn prepare(
     }))
 }
 
-fn feature_present(mut bytes: &[u8]) -> bool {
-    while bytes.len() >= 2 {
-        let key_len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
-        let Some(key) = bytes.get(2..2 + key_len) else {
-            return false;
-        };
-        if [
+fn feature_present(bytes: &[u8]) -> bool {
+    busbar_contract::abi::mechanism::extensions::present(
+        bytes,
+        &[
             inspection::EXT_CAPABILITY,
             inspection::EXT_REQUEST,
             inspection::EXT_REPLY,
-        ]
-        .iter()
-        .any(|name| key == name.as_bytes())
-        {
-            return true;
-        }
-        let Some(value_len) = bytes.get(2 + key_len..6 + key_len) else {
-            return false;
-        };
-        let value_len = u32::from_le_bytes(value_len.try_into().expect("four bytes")) as usize;
-        let Some(next) = (6 + key_len)
-            .checked_add(value_len)
-            .and_then(|at| bytes.get(at..))
-        else {
-            return false;
-        };
-        bytes = next;
-    }
-    false
+        ],
+    )
 }
 
 /// Copy and serve a validated answer's request before its lease can be released. The provider

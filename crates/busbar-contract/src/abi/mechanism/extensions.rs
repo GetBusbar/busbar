@@ -71,6 +71,54 @@ pub fn entries(blob: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     })
 }
 
+/// A strict lookup requires complete framing and at most one entry for its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupError {
+    Truncated,
+    Duplicate,
+}
+
+/// Read one unique entry, rejecting malformed framing anywhere in the blob.
+/// Repeated unrelated keys remain the owning feature's responsibility.
+pub fn unique<'a>(blob: &'a [u8], key: &str) -> Result<Option<&'a [u8]>, LookupError> {
+    let mut read = 0usize;
+    let mut found = None;
+    for (name, value) in entries(blob) {
+        read += 6 + name.len() + value.len();
+        if name == key.as_bytes() && found.replace(value).is_some() {
+            return Err(LookupError::Duplicate);
+        }
+    }
+    if read != blob.len() {
+        return Err(LookupError::Truncated);
+    }
+    Ok(found)
+}
+
+/// Detect a named key even when its value is truncated. Bytes inside values never count.
+/// This is feature detection, not framing validation; use [`unique`] before consuming a value.
+#[must_use]
+pub fn present(mut blob: &[u8], names: &[&str]) -> bool {
+    while blob.len() >= 2 {
+        let len = usize::from(u16::from_le_bytes([blob[0], blob[1]]));
+        let Some(key) = blob.get(2..2 + len) else {
+            return false;
+        };
+        if names.iter().any(|name| key == name.as_bytes()) {
+            return true;
+        }
+        let Some(size) = blob.get(2 + len..6 + len) else {
+            return false;
+        };
+        let size = u32::from_le_bytes(size.try_into().expect("four bytes")) as usize;
+        let Some(rest) = (6 + len).checked_add(size).and_then(|end| blob.get(end..)) else {
+            return false;
+        };
+        blob = rest;
+    }
+    false
+}
+
 /// The value `blob` states under `key` (its first entry so named); `None` when it states none.
 #[must_use]
 pub fn get<'a>(blob: &'a [u8], key: &str) -> Option<&'a [u8]> {
