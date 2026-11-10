@@ -136,13 +136,13 @@ async fn nested_references_refresh_on_every_configure_push() {
         for (version, credential) in [(1, ORIGINAL_VALUE), (2, ROTATED_VALUE)] {
             *source.value.lock().unwrap() = Some(credential);
             let loaded = open_resolved(HOOK_NAME, &hook, resolve(), |resolved| {
-                opened.push((&crate::config::secret::test_resolved_value(&resolved)).clone());
+                opened.push(crate::config::secret::test_resolved_value(resolved));
                 Ok(())
             });
             assert!(configure_resolved(loaded, |(), resolved| {
                 configured.push((
                     version,
-                    (&crate::config::secret::test_resolved_value(&resolved)).clone(),
+                    crate::config::secret::test_resolved_value(&resolved),
                 ));
                 std::future::ready(Ok(()))
             })
@@ -157,14 +157,11 @@ async fn nested_references_refresh_on_every_configure_push() {
         assert!(configured[1].0 == 2 && configured[1].1 == opened[1]);
         *source.value.lock().unwrap() = None;
         let loaded = open_resolved(HOOK_NAME, &hook, resolve(), |resolved| {
-            opened.push((&crate::config::secret::test_resolved_value(&resolved)).clone());
+            opened.push(crate::config::secret::test_resolved_value(resolved));
             Ok(())
         });
         let refused = configure_resolved(loaded, |(), resolved| {
-            configured.push((
-                2,
-                (&crate::config::secret::test_resolved_value(&resolved)).clone(),
-            ));
+            configured.push((2, crate::config::secret::test_resolved_value(&resolved)));
             std::future::ready(Ok(()))
         })
         .await
@@ -174,14 +171,11 @@ async fn nested_references_refresh_on_every_configure_push() {
         assert!(configured.len() == 2);
         *source.value.lock().unwrap() = Some(ORIGINAL_VALUE);
         let loaded = open_resolved(HOOK_NAME, &hook, resolve(), |resolved| {
-            opened.push((&crate::config::secret::test_resolved_value(&resolved)).clone());
+            opened.push(crate::config::secret::test_resolved_value(resolved));
             Ok(())
         });
         assert!(configure_resolved(loaded, |(), resolved| {
-            configured.push((
-                2,
-                (&crate::config::secret::test_resolved_value(&resolved)).clone(),
-            ));
+            configured.push((2, crate::config::secret::test_resolved_value(&resolved)));
             std::future::ready(Ok(()))
         })
         .await
@@ -238,8 +232,8 @@ async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
             ),
             |resolved| {
                 assert_eq!(
-                    (&crate::config::secret::test_resolved_value(&resolved)),
-                    &expected
+                    crate::config::secret::test_resolved_value(resolved),
+                    expected
                 );
                 Ok(())
             },
@@ -250,7 +244,7 @@ async fn opaque_and_literal_settings_still_reuse_the_opened_transport() {
             assert!(configure_resolved(Some(loaded.clone()), |(), resolved| {
                 configured.push((
                     version,
-                    (&crate::config::secret::test_resolved_value(&resolved)).clone(),
+                    crate::config::secret::test_resolved_value(&resolved),
                 ));
                 std::future::ready(Ok(()))
             })
@@ -347,14 +341,14 @@ async fn replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot() {
                 &busbar_contract::config_time::ConfigScope::config_time(),
             ),
             |resolved| {
-                opened.push((&crate::config::secret::test_resolved_value(&resolved)).clone());
+                opened.push(crate::config::secret::test_resolved_value(resolved));
                 Ok(())
             },
         );
         assert!(configure_resolved(loaded, |(), resolved| {
             configured.push((
                 version,
-                (&crate::config::secret::test_resolved_value(&resolved)).clone(),
+                crate::config::secret::test_resolved_value(&resolved),
             ));
             std::future::ready(Ok(()))
         })

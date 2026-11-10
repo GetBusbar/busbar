@@ -3323,8 +3323,20 @@ fn failing_secrets() -> Vec<Failing> {
     )
     .expect("a module reference");
     [
-        (SecretRef::env(&var), vec![var.clone()]),
-        (SecretRef::file(&path), vec![path.clone()]),
+        (
+            serde_json::from_value(serde_json::json!({
+                "module": "env", "settings": { "name": var }
+            }))
+            .expect("an opaque environment source reference"),
+            vec![var.clone()],
+        ),
+        (
+            serde_json::from_value(serde_json::json!({
+                "module": "file", "settings": { "path": path }
+            }))
+            .expect("an opaque file source reference"),
+            vec![path.clone()],
+        ),
         (plugin, vec![module.clone()]),
     ]
     .into_iter()

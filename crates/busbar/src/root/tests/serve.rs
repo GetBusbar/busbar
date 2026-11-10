@@ -28,8 +28,7 @@ fn duplicate_plane_routes_fail_with_the_listener_method_and_resolution() {
         offered: AuthPoints::HEAD,
     };
     let refusal = GuestList::seal(vec![line("one"), line("two")])
-        .err()
-        .expect("same listener must refuse ambiguous ownership");
+        .expect_err("same listener must refuse ambiguous ownership");
     let error = guest_refusal("listen (127.0.0.1:8080)", refusal);
     for required in [
         "127.0.0.1:8080",
