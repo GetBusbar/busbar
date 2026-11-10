@@ -218,7 +218,9 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
         "origin alone must not change the admitted actual OIDC metadata"
     );
     let audience = "api://auth-both-origins";
-    let settings = serde_json::Value::Object(common::credentials::settings(audience));
+    let settings =
+        busbar_contract::plugin_settings::Settings::from(common::credentials::settings(audience))
+            .prepare();
     let valid = common::credentials::token_for("alice", &["reader", "writer"], audience);
     let foreign =
         common::credentials::token_for("alice", &["reader", "writer"], "api://different-audience");
@@ -233,14 +235,15 @@ async fn the_same_real_oidc_image_preserves_verdicts_through_linked_and_dropped_
     let groups: Vec<_> = (0..300).map(|i| format!("group-{i}")).collect();
     let group_refs: Vec<_> = groups.iter().map(String::as_str).collect();
     let wide = common::credentials::token_for("alice", &group_refs, audience);
-    let other_settings = serde_json::Value::Object(common::credentials::settings(
-        "api://different-verifier-policy",
-    ));
+    let other_settings = busbar_contract::plugin_settings::Settings::from(
+        common::credentials::settings("api://different-verifier-policy"),
+    )
+    .prepare();
     let timestamp = busbar_kernel::store::now();
     let mut transcripts = Vec::new();
     for registry in [linked, dropped] {
-        let rows =
-            AuthRows::new(Arc::new(registry), dispatcher.clone()).with_table(connector.clone());
+        let rows = AuthRows::new(Arc::new(registry), dispatcher.clone())
+            .with_table(crate::root::connector::admit(connector.clone()));
         let auth = rows
             .open(&manifest.name, "the-auth", &settings)
             .expect("actual OIDC opens with its production HTTPS table");

@@ -254,10 +254,11 @@ fn one_validator_refuses_in_one_order() {
     };
     let refuse_root = |_: &busbar_kernel::config::RootCfg| Err("the root refuses".to_string());
 
-    cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef {
-        module: "typo-ref".to_string(),
-        ..crate::distribution::config_validation_application::source_fill("K")
-    };
+    cfg.providers.get_mut("acme").unwrap().api_key =
+        busbar_kernel::config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+            module: "typo-ref".to_string(),
+            settings: Default::default(),
+        });
     cfg.secrets.insert(
         "typo-vault".to_string(),
         busbar_kernel::config::SecretModuleCfg::default(),
