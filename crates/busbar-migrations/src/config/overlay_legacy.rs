@@ -238,7 +238,9 @@ mod tests {
         ));
         let doc = decode_legacy_overlay(source).unwrap();
         assert!(matches!(
-            classify_bytes(Some(serde_json::to_vec(&doc).unwrap())),
+            classify_bytes(Some(
+                serde_json::to_vec(&doc.authoring(&busbar_kernel::seal::acquire())).unwrap()
+            )),
             OverlayReadState::Loaded(_)
         ));
     }

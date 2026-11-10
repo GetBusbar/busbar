@@ -46,7 +46,7 @@ fn dispatcher() -> &'static Arc<Dispatcher> {
     DISPATCHER.get_or_init(|| {
         let dispatcher = Dispatcher::new(
             DispatchConfig::default(),
-            busbar_contract::services::test_caller_binding(),
+            busbar_kernel::host_services::caller_binding(),
         );
         dispatcher.install_runtime(runtime().clone());
         dispatcher.install_io(crate::hostio::process());

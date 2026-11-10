@@ -459,7 +459,7 @@ fn plugin_view_with(
     json!({
         "module": module,
         "settings_keys": settings.key_names(),
-        "settings_public": settings.snapshot_view(public, &super::secret::sugars()),
+        "settings_public": settings.snapshot_view(&crate::seal::acquire(), public, &super::secret::sugars()),
     })
 }
 

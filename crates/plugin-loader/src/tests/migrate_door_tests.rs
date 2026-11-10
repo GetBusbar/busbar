@@ -140,7 +140,12 @@ fn the_host_calls_a_doors_migrate_and_reads_the_plugins_own_migration() {
     .expect("the door migrates")
     .expect("the door states migrate");
     assert_eq!(
-        m.settings,
+        serde_json::from_slice::<serde_json::Value>(
+            m.encode()
+                .unwrap()
+                .expose(&busbar_contract::plugin::TestKernelSeal)
+        )
+        .unwrap(),
         serde_json::json!({"signing_secret": {"env": "S"}, "url": "10.0.0.7"})
     );
     assert_eq!(m.report.len(), 1);
@@ -149,6 +154,27 @@ fn the_host_calls_a_doors_migrate_and_reads_the_plugins_own_migration() {
         m.needs,
         vec![MigrateNeed::AllowDestination("10.0.0.7".into())]
     );
+}
+
+#[test]
+fn a_null_migration_answer_stays_null_in_host_custody() {
+    let answer = migrate_door(raw(witness::with::door), &serde_json::Value::Null, "1.5.5")
+        .unwrap()
+        .unwrap();
+    let seal = busbar_contract::caps::KernelSeal::acquire_for_kernel();
+    assert_eq!(
+        serde_json::to_value(answer.authoring(&seal)).unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        answer
+            .encode()
+            .unwrap()
+            .expose(&busbar_contract::plugin::TestKernelSeal),
+        b"null"
+    );
+    assert!(answer.report.is_empty());
+    assert!(answer.needs.is_empty());
 }
 
 #[test]

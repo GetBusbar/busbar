@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Opaque configuration custody. Interpretation belongs to the receiving plugin.
-//! Generic document serialization is intentionally supported; it is not an authorization to
-//! reconstruct and interpret an owner's schema in host code.
+//! Document serialization requires the kernel's concrete authoring authority. Settings themselves
+//! have no serialization or readable-value interface.
 
 mod owned;
 
-use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::fmt;
@@ -15,6 +15,11 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// An operator's settings object. Debug reveals names only, and every owned string is wiped.
 /// No map/value accessor or typed owner-schema decoder is available to host code.
+///
+/// ```compile_fail
+/// let settings = busbar_contract::plugin_settings::Settings::default();
+/// let _ = serde_json::to_value(&settings);
+/// ```
 #[derive(Clone, PartialEq, Eq, Default)]
 pub struct Settings(pub(crate) Tree);
 
@@ -55,7 +60,34 @@ pub(crate) enum ReferenceDelivery<'a> {
     Strip(&'a str),
 }
 
+/// A borrowed document view issued only with concrete kernel authority.
+/// The view preserves authored JSON; creating it grants access equivalent to a guarded-byte borrow.
+///
+/// ```compile_fail
+/// let settings = busbar_contract::plugin_settings::Settings::default();
+/// let _ = busbar_contract::plugin_settings::Authoring { settings: &settings };
+/// ```
+#[derive(Debug)]
+pub struct Authoring<'a> {
+    settings: &'a Settings,
+}
+
 impl Settings {
+    /// Borrow the original document shape for an authorized persistence or admin operation.
+    /// A generic transport grant or caller-implemented seal is insufficient.
+    ///
+    /// ```compile_fail
+    /// fn read(settings: &busbar_contract::plugin_settings::Settings, seal: &dyn busbar_contract::plugin::KernelSeal) {
+    ///     let _ = settings.authoring(seal);
+    /// }
+    /// ```
+    pub fn authoring<'a>(&'a self, _seal: &'a crate::caps::KernelSeal) -> Authoring<'a> {
+        self.writing()
+    }
+    // Only fixed SDK encoders and guarded normalization use this internal view.
+    pub(crate) fn writing(&self) -> Authoring<'_> {
+        Authoring { settings: self }
+    }
     /// Public configuration member names, for diagnostics and redacted admin projections.
     pub fn key_names(&self) -> Vec<String> {
         self.0
@@ -191,7 +223,23 @@ impl Settings {
     }
 
     /// Project only fields the owner declares public, for generic admin rendering.
-    pub fn public_view(&self, public: &std::collections::BTreeSet<String>) -> RedactedSettings {
+    /// The host must authorize the field selection; a caller cannot declare arbitrary values public.
+    ///
+    /// ```compile_fail
+    /// let settings = busbar_contract::plugin_settings::Settings::default();
+    /// let _ = settings.public_view(&Default::default());
+    /// ```
+    /// ```compile_fail
+    /// fn project(settings: &busbar_contract::plugin_settings::Settings,
+    ///            seal: &dyn busbar_contract::plugin::KernelSeal) {
+    ///     let _ = settings.public_view(seal, &Default::default());
+    /// }
+    /// ```
+    pub fn public_view(
+        &self,
+        _seal: &crate::caps::KernelSeal,
+        public: &std::collections::BTreeSet<String>,
+    ) -> RedactedSettings {
         RedactedSettings(crate::settings_public::public_view(
             self.0 .0.as_object().expect("settings object"),
             public,
@@ -216,8 +264,20 @@ impl Settings {
     }
 
     /// Public generation snapshot, additionally excluding credential-like keys and references.
+    ///
+    /// ```compile_fail
+    /// let settings = busbar_contract::plugin_settings::Settings::default();
+    /// let _ = settings.snapshot_view(&Default::default(), &Default::default());
+    /// ```
+    /// ```compile_fail
+    /// fn project(settings: &busbar_contract::plugin_settings::Settings,
+    ///            seal: &dyn busbar_contract::plugin::KernelSeal) {
+    ///     let _ = settings.snapshot_view(seal, &Default::default(), &Default::default());
+    /// }
+    /// ```
     pub fn snapshot_view(
         &self,
+        _seal: &crate::caps::KernelSeal,
         public: &std::collections::BTreeSet<String>,
         sources: &crate::secret_ref::Sugars,
     ) -> RedactedSettings {
@@ -506,7 +566,7 @@ fn canonicalize(tree: &mut Value, sources: &crate::secret_ref::Sugars) -> Result
                     crate::secret_ref::context::deserialize(Tree(tree.clone()), sources).map_err(
                         |_| "invalid declared source reference (value not echoed)".to_owned(),
                     )?;
-                let canonical = serde_json::to_value(reference)
+                let canonical = serde_json::to_value(reference.writing())
                     .map_err(|_| "cannot encode source reference".to_owned())?;
                 wipe(tree);
                 *tree = canonical;
@@ -541,9 +601,9 @@ impl fmt::Debug for Settings {
             .finish_non_exhaustive()
     }
 }
-impl Serialize for Settings {
+impl Serialize for Authoring<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0 .0.serialize(serializer)
+        self.settings.0 .0.serialize(serializer)
     }
 }
 impl<'de> Deserialize<'de> for Settings {
@@ -662,7 +722,98 @@ impl<'de> Deserialize<'de> for Tree {
                 Ok(tree)
             }
         }
-        deserializer.deserialize_any(Capture)
+        // serde_json represents exact numbers as synthetic maps in deserialize_any.
+        // Request its raw-token protocol first so a physical object containing the
+        // number marker is never mistaken for that transport. Other formats enter
+        // through the ordinary newtype visitor and keep their native scalar types.
+        struct Format;
+        impl<'de> Visitor<'de> for Format {
+            type Value = Tree;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a JSON-compatible settings document")
+            }
+            fn visit_newtype_struct<D: Deserializer<'de>>(self, de: D) -> Result<Tree, D::Error> {
+                de.deserialize_any(Capture)
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
+                let key = map.next_key::<Zeroizing<String>>()?;
+                if key.as_deref().map(String::as_str) != Some(RAW_JSON_TOKEN) {
+                    return Err(de::Error::custom("invalid raw settings document"));
+                }
+                let tree = map.next_value_seed(RawTree)?;
+                if map.next_key::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom("invalid raw settings document"));
+                }
+                Ok(tree)
+            }
+        }
+        deserializer.deserialize_newtype_struct(RAW_JSON_TOKEN, Format)
+    }
+}
+
+// The serde_json RawValue newtype protocol, also used by our guarded owned deserializer.
+const RAW_JSON_TOKEN: &str = "$serde_json::private::RawValue";
+
+struct RawTree;
+impl<'de> DeserializeSeed<'de> for RawTree {
+    type Value = Tree;
+    fn deserialize<D: Deserializer<'de>>(self, de: D) -> Result<Tree, D::Error> {
+        de.deserialize_str(self)
+    }
+}
+impl<'de> Visitor<'de> for RawTree {
+    type Value = Tree;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("raw settings JSON")
+    }
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<Tree, E> {
+        // This parser uses input-span provenance to distinguish real object keys
+        // from numeric transport tags; decoded strings and partial trees are wiped.
+        let mut held = crate::abi::sdk::cred::protected_json::document(text.as_bytes(), false)
+            .map_err(|_| E::custom("invalid settings JSON (values not echoed)"))?;
+        Ok(Tree(std::mem::take(&mut held.0)))
+    }
+    fn visit_string<E: de::Error>(self, text: String) -> Result<Tree, E> {
+        self.visit_str(&Zeroizing::new(text))
+    }
+}
+
+#[cfg(test)]
+mod exact_number_tests {
+    use super::*;
+
+    #[test]
+    fn settings_keep_exact_json_numbers_and_physical_marker_keys() {
+        let raw = r#"{"$serde_json::private::Number":"123","n":1e999,"fraction":1.00000000000000001,"wide":18446744073709551616,"nested":{"$serde_json::private::Number":"456","other":true},"duplicate":"old-secret","duplicate":"new-secret"}"#;
+        let settings: Settings = serde_json::from_str(raw).unwrap();
+        let expected = crate::json_grammar::parse_value(raw.as_bytes()).unwrap();
+        assert_eq!(serde_json::to_value(settings.writing()).unwrap(), expected);
+
+        // Value-backed deserialization must keep a real marker object as an object too.
+        let settings: Settings = serde_json::from_value(expected.clone()).unwrap();
+        assert_eq!(serde_json::to_value(settings.writing()).unwrap(), expected);
+        let escaped: Settings =
+            serde_json::from_str(r#"{"\u0024serde_json::private::Number":"123"}"#).unwrap();
+        assert_eq!(escaped.key_names(), ["$serde_json::private::Number"]);
+        assert_eq!(
+            serde_json::to_value(escaped.writing()).unwrap(),
+            serde_json::json!({"$serde_json::private::Number":"123"})
+        );
+    }
+
+    #[test]
+    fn yaml_markers_are_ordinary_settings_and_nonfinite_numbers_are_refused() {
+        let yaml = "'$serde_json::private::Number': '123'\n'$serde_json::private::RawValue': 'null'\nnested: {a: 1.5, b: 18446744073709551615}\n";
+        let expected = serde_json::json!({
+            "$serde_json::private::Number": "123",
+            "$serde_json::private::RawValue": "null",
+            "nested": {"a": 1.5, "b": u64::MAX},
+        });
+        let direct: Settings = serde_yaml::from_str(yaml).unwrap();
+        let value: Settings = serde_yaml::from_value(serde_yaml::from_str(yaml).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(direct.writing()).unwrap(), expected);
+        assert_eq!(serde_json::to_value(value.writing()).unwrap(), expected);
+        assert!(serde_yaml::from_str::<Settings>("value: .inf").is_err());
     }
 }
 
@@ -745,7 +896,7 @@ mod tests {
         assert_eq!(wire["nested"]["password"], "resolved-canary");
         assert_eq!(wire["destination"], "resolved-canary");
         assert_eq!(wire["literal"]["cabinet"], "owner-data");
-        assert_eq!(serde_json::to_value(settings).unwrap(), original);
+        assert_eq!(serde_json::to_value(settings.writing()).unwrap(), original);
         assert!(resolved
             .insert_secret(
                 "undeclared",
@@ -853,7 +1004,7 @@ mod tests {
         let set: Settings = serde_json::from_value(serde_json::json!({"nullable":null})).unwrap();
         let edited = original.edit(&set, &["removed".into()]).unwrap();
         assert_eq!(
-            serde_json::to_value(&edited).unwrap(),
+            serde_json::to_value(edited.writing()).unwrap(),
             serde_json::json!({
                 "password":"credential-canary", "retained":"private-canary", "nullable":null
             })
@@ -873,7 +1024,7 @@ mod tests {
         let original =
             serde_json::json!({"password":"secret-canary","nested":{"value":"other-canary"}});
         let settings: Settings = serde_json::from_value(original.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&settings).unwrap(), original);
+        assert_eq!(serde_json::to_value(settings.writing()).unwrap(), original);
         assert_eq!(settings.key_names(), ["nested", "password"]);
         let shown = format!("{settings:?}");
         assert!(!shown.contains("secret-canary"));

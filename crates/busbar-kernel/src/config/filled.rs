@@ -209,7 +209,7 @@ fn reference_to(
     } else {
         busbar_contract::secret_ref::SecretRef::template(&fill.written, sources)?
     };
-    serde_json::to_value(reference)
+    serde_json::to_value(reference.authoring(&crate::seal::acquire()))
         .map_err(|_| "cannot encode admitted source reference".to_owned())
 }
 

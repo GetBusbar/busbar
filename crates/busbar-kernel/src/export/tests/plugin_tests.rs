@@ -684,8 +684,8 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         };
 
     let written = settings_of(serde_json::json!({
-        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url)).unwrap(),
-        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token)).unwrap() },
+        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url).authoring(&crate::seal::acquire())).unwrap(),
+        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token).authoring(&crate::seal::acquire())).unwrap() },
         "batch": 10,
     }));
     let handed = sink_settings(
@@ -709,7 +709,10 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     );
     assert_eq!(
         written["url"],
-        serde_json::to_value(crate::config::secret::fixed_reference(&url)).unwrap()
+        serde_json::to_value(
+            crate::config::secret::fixed_reference(&url).authoring(&crate::seal::acquire())
+        )
+        .unwrap()
     );
 
     let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
@@ -785,8 +788,8 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         };
 
     let written = settings_of(serde_json::json!({
-        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url_var)).unwrap(),
-        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token_var)).unwrap() },
+        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url_var).authoring(&crate::seal::acquire())).unwrap(),
+        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token_var).authoring(&crate::seal::acquire())).unwrap() },
     }));
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -824,11 +827,17 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
     );
     assert_eq!(
         written["url"],
-        serde_json::to_value(crate::config::secret::fixed_reference(&url_var)).unwrap()
+        serde_json::to_value(
+            crate::config::secret::fixed_reference(&url_var).authoring(&crate::seal::acquire())
+        )
+        .unwrap()
     );
     assert_eq!(
         written["auth_header"]["value"],
-        serde_json::to_value(crate::config::secret::fixed_reference(&token_var)).unwrap()
+        serde_json::to_value(
+            crate::config::secret::fixed_reference(&token_var).authoring(&crate::seal::acquire())
+        )
+        .unwrap()
     );
     let literal = settings_of(serde_json::json!({
         "url": "https://literal.example/collector",

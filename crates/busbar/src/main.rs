@@ -620,7 +620,14 @@ async fn run(
             ),
         ))
     });
-    let base_store_settings = serde_json::to_value(&base_cfg.store).unwrap_or_else(|error| {
+    let authoring_seal = busbar_kernel::seal::acquire();
+    let base_store_settings = serde_json::to_value(
+        base_cfg
+            .store
+            .as_ref()
+            .map(|store| store.authoring(&authoring_seal)),
+    )
+    .unwrap_or_else(|error| {
         die(boot_error(
             "principal transition base Store configuration refused",
             format!("base Store settings: {error}"),
@@ -1088,10 +1095,18 @@ async fn run(
         .hold_listeners(Arc::clone(&listener_plan))
         .unwrap_or_else(|e| die(e));
 
-    let record_bootstrap_store = serde_json::to_value(&cfg.store)
-        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")));
-    let boot_store = if serde_json::to_value(&cfg.store)
-        .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
+    let record_bootstrap_store = serde_json::to_value(
+        cfg.store
+            .as_ref()
+            .map(|store| store.authoring(&authoring_seal)),
+    )
+    .unwrap_or_else(|error| die(format!("effective Store settings: {error}")));
+    let boot_store = if serde_json::to_value(
+        cfg.store
+            .as_ref()
+            .map(|store| store.authoring(&authoring_seal)),
+    )
+    .unwrap_or_else(|error| die(format!("effective Store settings: {error}")))
         == base_store_settings
     {
         Some(anchor_store)

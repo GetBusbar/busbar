@@ -4,7 +4,7 @@
 //! Admission of configuration fields owned by the export kind.
 
 use crate::plugin_settings::{Resolution, ResolvedSettings, Settings};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer};
 
 /// An export opening's opaque owner settings and normalized kind-owned delivery bound.
 /// The original object is retained unchanged for document roundtrip and plugin delivery.
@@ -32,6 +32,14 @@ impl PreparedExport {
 }
 
 impl ExportOpening {
+    /// Borrow the exact written settings under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a crate::caps::KernelSeal,
+    ) -> crate::plugin_settings::Authoring<'a> {
+        self.settings.authoring(seal)
+    }
+
     /// Admit the export kind's common host field. Owner-specific settings stay opaque.
     pub fn new(settings: Settings) -> Self {
         let max_inflight = settings
@@ -87,11 +95,6 @@ impl Default for ExportOpening {
         Self::new(Settings::default())
     }
 }
-impl Serialize for ExportOpening {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.settings.serialize(serializer)
-    }
-}
 impl<'de> Deserialize<'de> for ExportOpening {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Settings::deserialize(deserializer).map(Self::new)
@@ -120,7 +123,10 @@ mod tests {
         ] {
             let opening: ExportOpening = serde_json::from_value(value.clone()).unwrap();
             assert_eq!(opening.max_inflight(), expected);
-            assert_eq!(serde_json::to_value(&opening).unwrap(), value);
+            assert_eq!(
+                serde_json::to_value(opening.settings.writing()).unwrap(),
+                value
+            );
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&opening.settings.encode().unwrap().0)
                     .unwrap(),

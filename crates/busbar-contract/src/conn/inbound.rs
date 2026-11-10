@@ -17,7 +17,7 @@ pub const DEFAULT_MAX_CONNS: u64 = 1024;
 /// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
 /// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
 /// (`die`). Key bytes are never logged.
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TlsCfg {
     /// PEM certificate chain, leaf first (e.g. fullchain.pem), as a secret reference.
@@ -28,6 +28,23 @@ pub struct TlsCfg {
     /// a cert chaining to this CA to complete the handshake at all. `None` ⇒ server-only TLS.
     #[serde(default)]
     pub client_ca: Option<SecretRef>,
+}
+
+impl TlsCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(&'a self, seal: &'a KernelSeal) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a> {
+            cert: crate::secret_ref::Authoring<'a>,
+            key: crate::secret_ref::Authoring<'a>,
+            client_ca: Option<crate::secret_ref::Authoring<'a>>,
+        }
+        View {
+            cert: self.cert.authoring(seal),
+            key: self.key.authoring(seal),
+            client_ca: self.client_ca.as_ref().map(|value| value.authoring(seal)),
+        }
+    }
 }
 
 /// A declared inbound need, with an absent block distinguished from malformed configuration.
@@ -88,7 +105,7 @@ fn interpret(settings: &Settings, needs: &[ReadNeed]) -> Result<Vec<ListenerClai
         let path = &need.target_from;
         let block = path
             .split('.')
-            .try_fold(&settings.0.0, |value, key| value.get(key));
+            .try_fold(&settings.0 .0, |value, key| value.get(key));
         let binding = block.map(|block| {
             let listen = block.get("listen").and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("{path}.listen: not set"))?

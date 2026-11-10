@@ -155,7 +155,7 @@ pub struct Carry {
     pub raw: UsageLedger,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub specification: Specification,
@@ -167,6 +167,36 @@ pub struct Plan {
     pub groups_before: BTreeMap<String, GroupCfg>,
     pub overlay_before: Option<OverlayDoc>,
     pub carry: Vec<Carry>,
+}
+impl Plan {
+    /// Borrow the original transition document under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, O: Serialize> {
+            specification: &'a Specification,
+            previous: &'a Option<PreviousReceipt>,
+            keys_before: &'a Vec<VirtualKey>,
+            denylist_before: &'a Vec<String>,
+            groups_before: &'a BTreeMap<String, GroupCfg>,
+            overlay_before: Option<O>,
+            carry: &'a Vec<Carry>,
+        }
+        View {
+            specification: &self.specification,
+            previous: &self.previous,
+            keys_before: &self.keys_before,
+            denylist_before: &self.denylist_before,
+            groups_before: &self.groups_before,
+            overlay_before: self
+                .overlay_before
+                .as_ref()
+                .map(|value| value.authoring(seal)),
+            carry: &self.carry,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -253,6 +283,12 @@ fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, String> {
     let mut value = serde_json::to_value(value).map_err(|e| e.to_string())?;
     value.sort_all_objects();
     serde_json::to_vec(&value).map_err(|e| e.to_string())
+}
+
+fn overlay_digest(value: Option<&OverlayDoc>) -> Result<String, String> {
+    let seal = crate::seal::acquire();
+    let result = digest(&value.map(|doc| doc.authoring(&seal)));
+    result
 }
 
 pub fn digest<T: Serialize>(value: &T) -> Result<String, String> {
@@ -1108,7 +1144,7 @@ fn read_generation(rows: &dyn RecordRows, bytes: &[u8], depth: usize) -> Result<
         if !receipt_version(
             plan.specification.version,
             plan.specification.witness_binding.as_ref(),
-        ) || digest(&plan)? != head.plan_sha256
+        ) || digest(&plan.authoring(&crate::seal::acquire()))? != head.plan_sha256
             || plan.previous != previous
         {
             return Err(
@@ -1568,8 +1604,9 @@ async fn inspect(
         }
     }
     let actual = overlay.read_required_async().await?;
-    if digest(&actual)? != digest(&plan.overlay_before)?
-        && !(allow_after && digest(&actual)? == digest(&Some(after_overlay(plan)?))?)
+    if overlay_digest(actual.as_ref())? != overlay_digest(plan.overlay_before.as_ref())?
+        && !(allow_after
+            && overlay_digest(actual.as_ref())? == overlay_digest(Some(&after_overlay(plan)?))?)
     {
         return Err("overlay preimage changed".into());
     }
@@ -1589,7 +1626,7 @@ pub async fn check(
     compare_witness(&core, &plan.specification).await?;
     let rows = native_receipt_snapshot(&core).await?;
     let existing = read_head(&rows)?;
-    let plan_digest = digest(plan)?;
+    let plan_digest = digest(&plan.authoring(&crate::seal::acquire()))?;
     let resuming = existing
         .as_ref()
         .is_some_and(|(head, _)| head.plan_sha256 == plan_digest);
@@ -1662,7 +1699,7 @@ pub async fn apply(
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
     check(plan, core.clone(), overlay, now, effective_config_sha256).await?;
-    let plan_sha256 = digest(plan)?;
+    let plan_sha256 = digest(&plan.authoring(&crate::seal::acquire()))?;
     let epoch = hex::decode(&attestation.epoch).map_err(|_| "invalid quiescence epoch")?;
     if attestation.version != 1
         || epoch.len() != 16
@@ -1724,7 +1761,7 @@ pub async fn apply(
             raw,
         });
     }
-    let plan_bytes = canonical_bytes(plan)?;
+    let plan_bytes = canonical_bytes(&plan.authoring(&crate::seal::acquire()))?;
     let mut mutations = chunks(&body_prefix(&plan_sha256), &plan_bytes)?;
     if !resuming {
         if let Some((_, bytes)) = &previous {
@@ -1878,7 +1915,9 @@ pub async fn apply(
         }
     }
     let after = after_overlay(plan)?;
-    if digest(&overlay.read_required_async().await?)? != digest(&Some(&after))? {
+    if overlay_digest(overlay.read_required_async().await?.as_ref())?
+        != overlay_digest(Some(&after))?
+    {
         crate::config::overlay::write_async(overlay,&after).await.map_err(|_|"overlay write uncertain; fence retained; settle backend and obtain a new quiescence attestation")?;
     }
     let elapsed = started.elapsed();
@@ -1961,7 +2000,9 @@ async fn verify_poststate(
             return Err("incomplete key transition".into());
         }
     }
-    if digest(&overlay.read_required_async().await?)? != digest(&Some(after_overlay(plan)?))? {
+    if overlay_digest(overlay.read_required_async().await?.as_ref())?
+        != overlay_digest(Some(&after_overlay(plan)?))?
+    {
         return Err("incomplete group transition".into());
     }
     Ok(())
@@ -1976,7 +2017,7 @@ pub async fn verify(
     compare_witness(&core, &plan.specification).await?;
     let rows = native_receipt_snapshot(&core).await?;
     let (head, _) = read_head(&rows)?.ok_or("missing transition receipt")?;
-    if !head.complete || head.plan_sha256 != digest(plan)? {
+    if !head.complete || head.plan_sha256 != digest(&plan.authoring(&crate::seal::acquire()))? {
         return Err("transition has no matching completed receipt".into());
     }
     verify_poststate(plan, core.clone(), overlay, now, &head.extra_carry).await
@@ -2040,7 +2081,7 @@ pub fn requirements(
             format,
             domain_sha256,
             product_sha256,
-            settings_sha256: digest(definition)?,
+            settings_sha256: digest(&definition.authoring(&crate::seal::acquire()))?,
         });
     }
     requirements.sort();

@@ -267,7 +267,7 @@ pub const FROZEN_HOOK_NAME_WORD_SPACE: &[&str] = &[
 /// plugin (by manifest name/alias), loaded like a store/auth plugin. Shared runtime knobs carry over
 /// from the 1.2.1 policy block. A pool references a GATE by name via its `hook:` key; global taps/gates
 /// via `global_hooks:` (or inline `global: true`).
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct HookCfg {
     /// The hook's MODE: `tap` (fire-and-forget) or `gate` (fire-and-wait, returns a reply arm).
@@ -360,6 +360,48 @@ pub struct HookCfg {
     /// One-shot migration normalizes an old single-stage selection into this list.
     #[serde(default)]
     pub phase: Vec<HookStage>,
+}
+impl HookCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            kind: &'a HookKind,
+            #[serde(rename = "module")]
+            plugin: &'a String,
+            timeout_ms: &'a u64,
+            on_error: &'a String,
+            prompt: &'a PromptAccess,
+            user: &'a UserAccess,
+            priority: &'a u16,
+            on_empty: &'a Option<PolicyOnError>,
+            settings: F0,
+            signals: &'a Vec<busbar_contract::signal::Signal>,
+            global: &'a bool,
+            default: &'a bool,
+            groups: &'a Vec<String>,
+            phase: &'a Vec<HookStage>,
+        }
+        View {
+            kind: &self.kind,
+            plugin: &self.plugin,
+            timeout_ms: &self.timeout_ms,
+            on_error: &self.on_error,
+            prompt: &self.prompt,
+            user: &self.user,
+            priority: &self.priority,
+            on_empty: &self.on_empty,
+            settings: self.settings.authoring(seal),
+            signals: &self.signals,
+            global: &self.global,
+            default: &self.default,
+            groups: &self.groups,
+            phase: &self.phase,
+        }
+    }
 }
 
 impl HookCfg {

@@ -472,8 +472,9 @@ impl Documents {
             .state
             .lock()
             .map_err(|_| "configuration custody failed")?;
-        let mut settings = serde_json::to_value(std::mem::take(&mut target.settings))
-            .map_err(|_| "Store comparison settings encoding failed")?;
+        let mut settings =
+            serde_json::to_value(target.settings.authoring(&busbar_kernel::seal::acquire()))
+                .map_err(|_| "Store comparison settings encoding failed")?;
         for secret in state
             .secrets
             .values()
@@ -564,10 +565,10 @@ impl Documents {
             .map(std::mem::take)
             .ok_or("Store comparison settings are invalid")?
             .into();
-        let original =
-            serde_json::to_value(original).map_err(|_| "Store comparison encoding failed")?;
-        let target =
-            serde_json::to_value(target).map_err(|_| "Store comparison encoding failed")?;
+        let original = serde_json::to_value(original.authoring(&busbar_kernel::seal::acquire()))
+            .map_err(|_| "Store comparison encoding failed")?;
+        let target = serde_json::to_value(target.authoring(&busbar_kernel::seal::acquire()))
+            .map_err(|_| "Store comparison encoding failed")?;
         Ok(original == target)
     }
 

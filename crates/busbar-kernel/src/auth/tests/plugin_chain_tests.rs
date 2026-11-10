@@ -63,7 +63,10 @@ fn chain_open_wipes_the_resolved_settings() {
     let settings: serde_json::Map<String, serde_json::Value> = [
         (
             "client_secret".to_string(),
-            serde_json::to_value(crate::config::secret::fixed_reference(&var)).unwrap(),
+            serde_json::to_value(
+                crate::config::secret::fixed_reference(&var).authoring(&crate::seal::acquire()),
+            )
+            .unwrap(),
         ),
         (
             "issuer".to_string(),

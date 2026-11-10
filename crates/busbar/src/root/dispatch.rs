@@ -142,6 +142,6 @@ fn conns() -> busbar_contract::conn::admissions::AdmissionAuthority {
 #[path = "tests/dispatch.rs"]
 mod tests;
 
-#[cfg(all(test, linked_every_auth))]
-#[path = "tests/declared_credentials.rs"]
-mod declared_credentials_tests;
+#[cfg(test)]
+#[path = "tests/diagnostic_logging.rs"]
+mod diagnostic_logging_tests;

@@ -577,8 +577,9 @@ pub fn configured_listener_needs(
 pub fn configured_root_binds(
     cfg: &busbar_kernel::config::RootCfg,
 ) -> Result<Vec<InboundBind>, String> {
-    let doc = serde_json::json!({"tls": serde_json::to_value(&cfg.tls).map_err(|e| e.to_string())?,
-        "admin_tls": serde_json::to_value(&cfg.admin_tls).map_err(|e| e.to_string())?});
+    let authoring_seal = busbar_kernel::seal::acquire();
+    let doc = serde_json::json!({"tls": serde_json::to_value(cfg.tls.as_ref().map(|tls| tls.authoring(&authoring_seal))).map_err(|e| e.to_string())?,
+        "admin_tls": serde_json::to_value(cfg.admin_tls.as_ref().map(|tls| tls.authoring(&authoring_seal))).map_err(|e| e.to_string())?});
     let binds = root_binds(
         &doc,
         &RootListens {

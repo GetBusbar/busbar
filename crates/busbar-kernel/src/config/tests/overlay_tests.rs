@@ -498,11 +498,22 @@ async fn overlays_larger_than_record_bound_round_trip_without_a_content_cap() {
     );
     write_async(&backend, &doc).await.unwrap();
     assert_eq!(
-        serde_json::to_value(backend.read_required_async().await.unwrap().unwrap()).unwrap(),
-        serde_json::to_value(OverlayDoc {
-            version: OVERLAY_VERSION,
-            ..doc
-        })
+        serde_json::to_value(
+            backend
+                .read_required_async()
+                .await
+                .unwrap()
+                .unwrap()
+                .authoring(&crate::seal::acquire())
+        )
+        .unwrap(),
+        serde_json::to_value(
+            OverlayDoc {
+                version: OVERLAY_VERSION,
+                ..doc
+            }
+            .authoring(&crate::seal::acquire())
+        )
         .unwrap()
     );
 }

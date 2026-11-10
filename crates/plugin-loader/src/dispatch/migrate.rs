@@ -5,7 +5,7 @@ use busbar_contract::abi::mechanism::call::{Blob, BLOB_JSON, BLOB_OCTETS};
 use busbar_contract::abi::mechanism::door::Door;
 use busbar_contract::abi::mechanism::lifecycle::{slot, ValidateIn};
 use busbar_contract::abi::sdk::door::RawDoorFn;
-use busbar_contract::abi::sdk::migrate::{read_answer, Migrated};
+use busbar_contract::abi::sdk::migrate::{read_answer, MigrationAnswer};
 
 pub const ANSWER_CAP: usize = 4 * 1024 * 1024;
 
@@ -13,7 +13,7 @@ pub fn migrate_door(
     door: RawDoorFn,
     settings: &serde_json::Value,
     from: &str,
-) -> Result<Option<Migrated>, String> {
+) -> Result<Option<MigrationAnswer>, String> {
     let p = super::load::enter_door(door);
     super::load::validate_any(p).map_err(|e| e.to_string())?;
     // SAFETY: `validate_any` admitted `p`: a non-NULL `'static` door readable through its stated
@@ -141,7 +141,7 @@ pub fn migrate_library(
     display: &str,
     settings: &serde_json::Value,
     from: &str,
-) -> Result<Option<Migrated>, String> {
+) -> Result<Option<MigrationAnswer>, String> {
     let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` is held open until the
     // call below has returned.

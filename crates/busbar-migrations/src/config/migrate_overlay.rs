@@ -3,7 +3,9 @@
 
 //! Explicit 1.5.5 file-overlay conversion. Serving never calls this module.
 use super::migrate_plugins::MigrateHost;
+#[cfg(test)]
 use busbar_contract::abi::sdk::migrate::Migrated;
+use busbar_contract::abi::sdk::migrate::MigrationAnswer;
 use busbar_kernel::config::overlay::OverlayDoc;
 use serde_json::{Map, Value};
 
@@ -26,7 +28,7 @@ impl MigrateHost for OverlayHost<'_> {
         module: &str,
         settings: &Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         self.0.migrate(kind, module, settings, from)
     }
     fn externalize_secret(
@@ -137,7 +139,7 @@ mod tests {
             module: &str,
             settings: &Value,
             _: &str,
-        ) -> Result<Option<(String, Migrated)>, String> {
+        ) -> Result<Option<(String, MigrationAnswer)>, String> {
             if module != "test-lift" {
                 return Ok(None);
             }
@@ -151,7 +153,8 @@ mod tests {
                             path: vec!["token".into()],
                         },
                     ],
-                },
+                }
+                .into(),
             )))
         }
         fn externalize_secret(

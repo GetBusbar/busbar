@@ -198,7 +198,7 @@ impl LoadablePlugin {
         &self,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<busbar_contract::abi::sdk::migrate::Migrated>, String> {
+    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
         use crate::dispatch::migrate::{migrate_door, migrate_library};
         match &self.entry {
             Some(LinkedEntry::Store { door }) => {

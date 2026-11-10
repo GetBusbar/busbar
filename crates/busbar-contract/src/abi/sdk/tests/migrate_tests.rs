@@ -78,7 +78,10 @@ fn the_plugins_migration_is_answered_into_the_hosts_buffer() {
     assert_eq!(outcome, Outcome::Ready);
     let m = read_answer(outcome, &answer).expect("a migration");
     assert_eq!(
-        m.settings,
+        serde_json::from_slice::<serde_json::Value>(
+            m.encode().unwrap().expose(&crate::plugin::TestKernelSeal)
+        )
+        .unwrap(),
         serde_json::json!({"signing_secret": {"env": "S"}, "url": "10.0.0.7"})
     );
     assert_eq!(
@@ -96,7 +99,91 @@ fn a_section_the_plugin_has_none_of_is_null_and_comes_back_unchanged() {
     let mut buf = vec![0u8; 4096];
     let (outcome, answer) = call(b"", b"", &mut buf);
     let m = read_answer(outcome, &answer).expect("a migration");
-    assert_eq!(m, Migrated::unchanged(serde_json::Value::Null));
+    assert_eq!(m, Migrated::unchanged(serde_json::Value::Null).into());
+}
+
+#[test]
+fn host_answer_preserves_arbitrary_json_and_redacts_debug() {
+    for settings in [
+        serde_json::Value::Null,
+        serde_json::json!(true),
+        serde_json::json!(42),
+        serde_json::json!("PRIVATE-MIGRATION-CANARY"),
+        serde_json::json!(["PRIVATE-MIGRATION-CANARY", null, {"nested": 1}]),
+        serde_json::json!({"PRIVATE-KEY-CANARY": "PRIVATE-MIGRATION-CANARY"}),
+    ] {
+        let owner = Migrated::unchanged(settings.clone());
+        let wire = serde_json::to_vec(&owner).unwrap();
+        let held = read_answer(Outcome::Ready, &wire).unwrap();
+        let encoded = held.encode().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                encoded.expose(&crate::plugin::TestKernelSeal)
+            )
+            .unwrap(),
+            settings
+        );
+        assert!(!format!("{held:?}").contains("CANARY"));
+        assert!(held.report.is_empty());
+        assert!(held.needs.is_empty());
+    }
+}
+
+#[test]
+fn host_answer_preserves_exact_numbers_and_literal_number_marker_objects() {
+    for original in [
+        "18446744073709551616",
+        "1.00000000000000001",
+        "1e999",
+        r#"{"$serde_json::private::Number":"123","other":true}"#,
+    ] {
+        let wire = format!("{{\"settings\":{original}}}");
+        let held = read_answer(Outcome::Ready, wire.as_bytes()).unwrap();
+        let encoded = held.encode().unwrap();
+        let expected = original
+            .parse::<serde_json::Number>()
+            .map(|number| number.to_string())
+            .unwrap_or_else(|_| original.to_owned());
+        // Compare wire text too: serde_json's Value reader can itself interpret a marker
+        // object as a number, masking a holder that changed the physical JSON shape.
+        assert_eq!(
+            std::str::from_utf8(encoded.expose(&crate::plugin::TestKernelSeal)).unwrap(),
+            expected
+        );
+    }
+}
+
+#[cfg(feature = "test-seal")]
+#[test]
+fn only_kernel_authoring_borrows_the_original_migration_document() {
+    let seal = crate::caps::KernelSeal::acquire_for_kernel();
+    for settings in [
+        serde_json::Value::Null,
+        serde_json::json!(["secret", {"nested": 1}]),
+    ] {
+        let held: MigrationAnswer = Migrated::unchanged(settings.clone()).into();
+        assert_eq!(
+            serde_json::to_value(held.authoring(&seal)).unwrap(),
+            settings
+        );
+        assert!(!format!("{:?}", held.authoring(&seal)).contains("secret"));
+    }
+}
+
+#[test]
+fn malformed_host_answer_does_not_echo_owner_data() {
+    for wire in [
+        br#"{"settings":{"token":"PRIVATE-CANARY"},"PRIVATE-UNKNOWN-CANARY":0}"#.as_slice(),
+        br#"{"settings":null,"report":"PRIVATE-REPORT-CANARY"}"#.as_slice(),
+        br#"{"settings":null,"needs":[{"PRIVATE-NEED-CANARY":1}]}"#.as_slice(),
+    ] {
+        let error = read_answer(Outcome::Ready, wire).unwrap_err();
+        assert_eq!(
+            error,
+            "its migrate answered something that is not a migration"
+        );
+        assert!(!error.contains("CANARY"));
+    }
 }
 
 #[test]
@@ -269,7 +356,13 @@ fn a_door_states_migrate_on_its_tail_and_the_host_calls_it_with_no_instance() {
     };
     assert_eq!(raw.outcome(), Outcome::Ready);
     let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
-    assert_eq!(m.settings, serde_json::json!({"signing_secret": "x"}));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            m.encode().unwrap().expose(&crate::plugin::TestKernelSeal)
+        )
+        .unwrap(),
+        serde_json::json!({"signing_secret": "x"})
+    );
     assert_eq!(
         m.report,
         vec!["signing-secret -> signing_secret (renamed after 1.5.5)"]

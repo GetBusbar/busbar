@@ -1391,7 +1391,13 @@ async fn build_app_native(
         if let Some(gs) = p.governance.clone() {
             let transition_holds = governance::principal_transition::guard_native(
                 gs.core_store_handle().map_err(|error| error.to_string())?,
-                &governance::principal_transition::store_fingerprint(&cfg.store)?,
+                &{
+                    let seal = crate::seal::acquire();
+                    let fingerprint = governance::principal_transition::store_fingerprint(
+                        &cfg.store.as_ref().map(|store| store.authoring(&seal)),
+                    )?;
+                    fingerprint
+                },
                 &transition_requirements,
             )
             .await?;
@@ -1472,7 +1478,13 @@ async fn build_app_native(
         }
         let transition_holds = governance::principal_transition::guard_startup_native(
             core.clone(),
-            &governance::principal_transition::store_fingerprint(&cfg.store)?,
+            &{
+                let seal = crate::seal::acquire();
+                let fingerprint = governance::principal_transition::store_fingerprint(
+                    &cfg.store.as_ref().map(|store| store.authoring(&seal)),
+                )?;
+                fingerprint
+            },
             &transition_requirements,
         )
         .await?;

@@ -90,6 +90,84 @@ impl Migrated {
     }
 }
 
+/// The host's custody of a migration answer. Settings retain their exact JSON shape,
+/// including `null`, but cannot be inspected or serialized without kernel authority.
+/// The owner's [`Migrated`] remains the construction API on the plugin side.
+///
+/// ```compile_fail
+/// fn inspect(answer: busbar_contract::abi::sdk::migrate::MigrationAnswer) {
+///     let _ = answer.settings;
+/// }
+/// ```
+/// ```compile_fail
+/// fn serialize(answer: busbar_contract::abi::sdk::migrate::MigrationAnswer) {
+///     let _ = serde_json::to_value(answer);
+/// }
+/// ```
+#[derive(Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MigrationAnswer {
+    settings: crate::plugin_settings::Tree,
+    /// Owner-authored report lines; these must not contain secret values.
+    #[serde(default)]
+    pub report: Vec<String>,
+    /// Explicit migration needs against host-owned configuration.
+    #[serde(default)]
+    pub needs: Vec<MigrateNeed>,
+}
+
+impl std::fmt::Debug for MigrationAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MigrationAnswer")
+            .field("settings", &"[REDACTED]")
+            .field("report_count", &self.report.len())
+            .field("need_count", &self.needs.len())
+            .finish()
+    }
+}
+
+impl From<Migrated> for MigrationAnswer {
+    fn from(migrated: Migrated) -> Self {
+        Self {
+            settings: crate::plugin_settings::Tree(migrated.settings),
+            report: migrated.report,
+            needs: migrated.needs,
+        }
+    }
+}
+
+impl MigrationAnswer {
+    /// Borrow the settings document for authorized migration write-back.
+    /// A transport grant or generic sealed credential borrow cannot author documents.
+    ///
+    /// ```compile_fail
+    /// fn read(answer: &busbar_contract::abi::sdk::migrate::MigrationAnswer,
+    ///         seal: &dyn busbar_contract::plugin::KernelSeal) {
+    ///     let _ = answer.authoring(seal);
+    /// }
+    /// ```
+    pub fn authoring<'a>(&'a self, _seal: &'a crate::caps::KernelSeal) -> MigrationAuthoring<'a> {
+        MigrationAuthoring { answer: self }
+    }
+
+    /// Encode the settings for a receiving kind while retaining guarded byte custody.
+    pub fn encode(&self) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
+        self.settings.encode()
+    }
+}
+
+/// Borrowed settings document issued by [`MigrationAnswer::authoring`].
+#[derive(Debug)]
+pub struct MigrationAuthoring<'a> {
+    answer: &'a MigrationAnswer,
+}
+
+impl Serialize for MigrationAuthoring<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.answer.settings.0.serialize(serializer)
+    }
+}
+
 /// A plugin's own migration of its settings section.
 pub trait Migrate {
     /// Kind whose settings are being migrated.
@@ -172,14 +250,13 @@ unsafe fn lent<'a>(p: *const u8, len: usize) -> &'a [u8] {
     unsafe { std::slice::from_raw_parts(p, len) }
 }
 
-/// The answer a door's `migrate` named, read back by the HOST: the plugin's [`Migrated`], or the
-pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<Migrated, String> {
-    let text = String::from_utf8_lossy(answer);
+/// Read a door's answer into host custody without exposing the owner's settings.
+pub fn read_answer(outcome: Outcome, answer: &[u8]) -> Result<MigrationAnswer, String> {
     match outcome {
         Outcome::Ready => serde_json::from_slice(answer)
-            .map_err(|e| format!("its migrate answered something that is not a migration: {e}")),
-        o if text.is_empty() => Err(format!("its migrate answered {o:?}")),
-        _ => Err(text.into_owned()),
+            .map_err(|_| "its migrate answered something that is not a migration".to_owned()),
+        o if answer.is_empty() => Err(format!("its migrate answered {o:?}")),
+        _ => Err(String::from_utf8_lossy(answer).into_owned()),
     }
 }
 

@@ -5,7 +5,7 @@ use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
-use busbar_contract::abi::sdk::migrate::Migrated;
+use busbar_contract::abi::sdk::migrate::MigrationAnswer;
 use busbar_kernel::config::PluginsCfg;
 use busbar_migrations::config::migrate_plugins::MigrateHost;
 
@@ -455,7 +455,7 @@ impl RootHost {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         use crate::root::loader::dispatch::{load::raw, migrate::migrate_door};
         if let Some((name, door)) = Self::linked_door(kind, module) {
             return Ok(migrate_door(raw(door), settings, from)?.map(|m| (name, m)));
@@ -746,7 +746,7 @@ impl MigrateHost for RootHost {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         match self.migrate_settings(kind, module, settings, from) {
             Ok(value) => Ok(value),
             Err(error) => {

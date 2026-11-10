@@ -234,7 +234,7 @@ impl Fixture {
         ColdAttestation {
             version: 1,
             epoch: hex::encode([epoch; 16]),
-            plan_sha256: digest(plan).unwrap(),
+            plan_sha256: digest(&plan.authoring(&crate::seal::acquire())).unwrap(),
             sender_quiesced: true,
             backend_quiesced: true,
             recovery_and_corrections_settled: true,
@@ -272,7 +272,7 @@ fn next_artifact(f: &Fixture, plan: &Plan) -> super::Reauthorization {
     super::Reauthorization {
         witness_binding: Some(test_witness_binding()),
         version: 2,
-        baseline_sha256: digest(plan).unwrap(),
+        baseline_sha256: digest(&plan.authoring(&crate::seal::acquire())).unwrap(),
         previous_requirements_sha256: digest(&plan.specification.requirements).unwrap(),
         requirements,
         identity_outputs_unchanged: true,
@@ -693,8 +693,10 @@ async fn cold_principal_transition_pending_or_unknown_outcome_refuses_serving() 
         .await
         .unwrap_err()
         .contains("already consumed"));
-        let mut changed: Plan =
-            serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+        let mut changed: Plan = serde_json::from_value(
+            serde_json::to_value(plan.authoring(&crate::seal::acquire())).unwrap(),
+        )
+        .unwrap();
         changed.specification.id.push('x');
         assert!(apply(
             &changed,
@@ -1046,7 +1048,10 @@ async fn cold_principal_transition_enumerates_exact_scoped_windows_and_eras() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(head.plan_sha256, digest(&rolled_plan).unwrap());
+    assert_eq!(
+        head.plan_sha256,
+        digest(&rolled_plan.authoring(&crate::seal::acquire())).unwrap()
+    );
     assert!(head.rollover.is_some());
     assert!(!head.extra_carry.is_empty());
 
@@ -1292,9 +1297,11 @@ fn principal_digests_canonicalize_nested_objects_even_with_preserve_order() {
         r#"{"settings":{"nested":{"a":1,"b":2},"z":1},"module":"opaque-store"}"#,
     )
     .unwrap();
+    let authoring_seal = crate::seal::acquire();
     let typed: Option<crate::config::StoreCfg> = serde_json::from_value(store_a.clone()).unwrap();
     assert_eq!(
-        super::store_fingerprint(&typed).unwrap(),
+        super::store_fingerprint(&typed.as_ref().map(|store| store.authoring(&authoring_seal)))
+            .unwrap(),
         super::store_fingerprint(&store_b).unwrap()
     );
     assert_eq!(
@@ -1602,10 +1609,16 @@ async fn unrelated_retained_self_group_requires_exact_unaffected_provenance_and_
     let plan = prepare(spec, f.store.clone(), f.groups.clone(), None)
         .await
         .unwrap();
-    let mut forged: Plan = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+    let mut forged: Plan = serde_json::from_value(
+        serde_json::to_value(plan.authoring(&crate::seal::acquire())).unwrap(),
+    )
+    .unwrap();
     forged.specification.unaffected[0].provider = "identity".into();
     assert!(super::validate_plan(&forged).is_err());
-    forged = serde_json::from_value(serde_json::to_value(&plan).unwrap()).unwrap();
+    forged = serde_json::from_value(
+        serde_json::to_value(plan.authoring(&crate::seal::acquire())).unwrap(),
+    )
+    .unwrap();
     forged
         .groups_before
         .insert(group("orphan"), GroupCfg::default());

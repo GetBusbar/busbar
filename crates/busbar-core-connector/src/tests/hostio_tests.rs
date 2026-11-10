@@ -515,7 +515,7 @@ async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
 #[test]
 fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
-    std::env::set_var(VAR, "hostio-spawn-value");
+    crate::spawn_env::set_source_value(VAR, Some("hostio-spawn-value"));
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -523,14 +523,11 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
-            env_refs: vec![(
-                "WHOLE".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env(VAR),
-            )],
+            env_refs: vec![("WHOLE".to_owned(), crate::spawn_env::source_reference(VAR))],
         };
         let held = crate::spawn_env::HeldEnv::load(
             &program.env_refs,
-            Some(crate::spawn_env::counting_env),
+            Some(crate::spawn_env::counting_source),
             &scope(),
         );
         assert!(
@@ -546,16 +543,14 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
             ]
         );
 
-        let unresolved = Program {
-            env_refs: vec![(
-                "MISSING".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env("BUSBAR_HOSTIO_SPAWN_UNSET_VAR"),
-            )],
-            ..program
-        };
+        let mut unresolved = program.clone();
+        unresolved.env_refs = vec![(
+            "MISSING".to_owned(),
+            crate::spawn_env::source_reference("BUSBAR_HOSTIO_SPAWN_UNSET_VAR"),
+        )];
         let held = crate::spawn_env::HeldEnv::load(
             &unresolved.env_refs,
-            Some(crate::spawn_env::counting_env),
+            Some(crate::spawn_env::counting_source),
             &scope(),
         );
         io.admit(ticket(31), Admission::Spawn(unresolved, held));
@@ -575,7 +570,7 @@ fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
 #[test]
 fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
-    std::env::set_var(VAR, "before-rotation");
+    crate::spawn_env::set_source_value(VAR, Some("before-rotation"));
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -585,12 +580,12 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![(
                 "ROTATED".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env(VAR),
+                crate::spawn_env::source_reference(VAR),
             )],
         };
         let held = crate::spawn_env::HeldEnv::load(
             &program.env_refs,
-            Some(crate::spawn_env::counting_env),
+            Some(crate::spawn_env::counting_source),
             &scope(),
         );
         let loaded = crate::spawn_env::resolutions_of(VAR);
@@ -606,7 +601,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
             "a spawn resolved a reference"
         );
 
-        std::env::set_var(VAR, "after-rotation");
+        crate::spawn_env::set_source_value(VAR, Some("after-rotation"));
         io.admit(ticket(42), Admission::Spawn(program.clone(), held.clone()));
         assert_eq!(
             env_lines(&io, 42).await.unwrap(),
@@ -617,7 +612,7 @@ fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_ref
         io.admit(ticket(43), Admission::Spawn(program.clone(), held.clone()));
         assert_eq!(env_lines(&io, 43).await.unwrap(), want("after-rotation"));
 
-        std::env::remove_var(VAR);
+        crate::spawn_env::set_source_value(VAR, None);
         crate::spawn_env::refresh_all();
         io.admit(ticket(44), Admission::Spawn(program, held));
         match env_lines(&io, 44).await {

@@ -31,7 +31,7 @@ fn default_overlay_version() -> u32 {
 fn backend(value: Option<&OverlayStore>) -> Result<&OverlayStore, String> {
     value.ok_or_else(|| NO_WRITABLE_OVERLAY_MSG.to_string())
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,6 +60,58 @@ pub struct RootSettings {
     pub health: Option<crate::config::patch::HealthPatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing: Option<crate::config::patch::RoutingPatch>,
+}
+impl RootSettings {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize> {
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            listen: &'a Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            tls: Option<F0>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            admin_listen: &'a Option<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            admin_tls: Option<F1>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            admin_require_mtls: &'a Option<bool>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            rate_card: &'a Option<BTreeMap<String, RateEntryCfg>>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            per_request_fee: &'a Option<i64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            store: Option<F2>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            security: &'a Option<crate::config::patch::SecurityPatch>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            limits: &'a Option<crate::config::patch::LimitsPatch>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            advanced: &'a Option<crate::config::patch::AdvancedPatch>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            health: &'a Option<crate::config::patch::HealthPatch>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            routing: &'a Option<crate::config::patch::RoutingPatch>,
+        }
+        View {
+            listen: &self.listen,
+            tls: self.tls.as_ref().map(|value| value.authoring(seal)),
+            admin_listen: &self.admin_listen,
+            admin_tls: self.admin_tls.as_ref().map(|value| value.authoring(seal)),
+            admin_require_mtls: &self.admin_require_mtls,
+            rate_card: &self.rate_card,
+            per_request_fee: &self.per_request_fee,
+            store: self.store.as_ref().map(|value| value.authoring(seal)),
+            security: &self.security,
+            limits: &self.limits,
+            advanced: &self.advanced,
+            health: &self.health,
+            routing: &self.routing,
+        }
+    }
 }
 
 impl RootSettings {
@@ -219,7 +271,7 @@ impl OverlaySection {
 /// (`deleted`) — hooks removed via the API that must be subtracted from base config at boot. Tombstones
 /// are what let the additive `base + overlay` model express a DELETION (an additive merge alone cannot
 /// remove a base-defined hook).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct OverlayDoc {
     /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
     #[serde(default = "default_overlay_version")]
@@ -278,6 +330,50 @@ pub struct OverlayDoc {
     /// deletion is expressible as a plain removal from this map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub named_maps: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+}
+impl OverlayDoc {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize> {
+            version: &'a u32,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            document_patch: &'a Option<super::document_patch::DocumentPatch>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            providers_patch: &'a Option<super::document_patch::DocumentPatch>,
+            hooks: F0,
+            global_hooks: &'a Vec<String>,
+            deleted: &'a Vec<String>,
+            groups: &'a BTreeMap<String, GroupCfg>,
+            deleted_groups: &'a Vec<String>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            root: Option<F1>,
+            #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+            plugin_versions: &'a BTreeMap<String, String>,
+            #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+            named_maps: &'a BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+        }
+        View {
+            version: &self.version,
+            document_patch: &self.document_patch,
+            providers_patch: &self.providers_patch,
+            hooks: self
+                .hooks
+                .iter()
+                .map(|(name, value)| (name, value.authoring(seal)))
+                .collect::<HashMap<_, _>>(),
+            global_hooks: &self.global_hooks,
+            deleted: &self.deleted,
+            groups: &self.groups,
+            deleted_groups: &self.deleted_groups,
+            root: self.root.as_ref().map(|value| value.authoring(seal)),
+            plugin_versions: &self.plugin_versions,
+            named_maps: &self.named_maps,
+        }
+    }
 }
 
 impl Default for OverlayDoc {

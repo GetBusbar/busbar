@@ -476,7 +476,10 @@ impl DocumentPatch {
             let Some(deploy) = deployments.get(&parts[0]) else {
                 continue;
             };
-            let typed = WipedYaml(serde_yaml::to_value(deploy).map_err(|_| PatchError::Encoding)?);
+            let typed = WipedYaml(
+                serde_yaml::to_value(deploy.authoring(&crate::seal::acquire()))
+                    .map_err(|_| PatchError::Encoding)?,
+            );
             let typed = typed.0.as_mapping().ok_or(PatchError::Encoding)?;
             let overrides = typed
                 .iter()

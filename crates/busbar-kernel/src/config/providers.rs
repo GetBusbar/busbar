@@ -12,43 +12,33 @@ use busbar_contract::secret_ref::SecretRef;
 
 use super::provider_grammar::{Form, ValueSeed};
 
-#[derive(Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProviderCfg {
     /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
     /// as an opaque word. The kernel supplies no dialect of its own (BUSBAR-1.6.0.md #49: the kernel
     /// contains zero transport-protocol literals), so an omitted key here is EMPTY. A resolved
     /// provider always carries one, because the catalog's `ProviderDef::protocol` is required; the
     /// default for a key omitted elsewhere is the speaking plane's own.
-    #[serde(default)]
     pub protocol: String,
     pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
     /// secret module. Resolved once at startup; the resolved value never appears in config or logs.
     pub api_key: SecretRef,
     /// Active health-probe settings for this provider's lanes (mode + interval + timeout).
-    #[serde(default)]
     pub health: Option<HealthCfg>,
 
     pub error_map: HashMap<String, String>,
     /// Optional upstream request-path override (see ProviderDef::path).
-    #[serde(default)]
     pub path: Option<String>,
     /// Optional path-BASE override (see ProviderDef::path_base) — replaces a URL-model protocol's
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
-    #[serde(default)]
     pub path_base: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
-    #[serde(default)]
     pub token_url: Option<String>,
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
-    #[serde(default)]
     pub scope: Option<String>,
     /// JWT-bearer assertion `sub` (subject) claim for `auth: jwt-bearer` (see ProviderDef::subject).
-    #[serde(default)]
     pub subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
-    #[serde(default)]
     pub auth: Option<ProviderAuth>,
     /// Per-provider SURGICAL escape hatch: the cloud-metadata hosts/IPs to UNBLOCK for THIS
     /// provider's `base_url` (and path-override composition) only. Each entry carves a single
@@ -62,7 +52,6 @@ pub struct ProviderCfg {
     /// provider URL (model NAME → operator pool → operator URL), so private upstreams pose no
     /// client-driven SSRF and local models (Ollama / vLLM) "just work" with no entry. Default empty
     /// (all metadata blocked).
-    #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
     /// The provider's options: every key of the entry that is not one of
     /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
@@ -70,8 +59,44 @@ pub struct ProviderCfg {
     /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
     /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
     /// position.
-    #[serde(skip)]
     pub options: ProviderTable,
+}
+impl ProviderCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            protocol: &'a String,
+            base_url: &'a String,
+            api_key: F0,
+            health: &'a Option<HealthCfg>,
+            error_map: &'a HashMap<String, String>,
+            path: &'a Option<String>,
+            path_base: &'a Option<String>,
+            token_url: &'a Option<String>,
+            scope: &'a Option<String>,
+            subject: &'a Option<String>,
+            auth: &'a Option<ProviderAuth>,
+            allow_metadata_hosts: &'a Vec<String>,
+        }
+        View {
+            protocol: &self.protocol,
+            base_url: &self.base_url,
+            api_key: self.api_key.authoring(seal),
+            health: &self.health,
+            error_map: &self.error_map,
+            path: &self.path,
+            path_base: &self.path_base,
+            token_url: &self.token_url,
+            scope: &self.scope,
+            subject: &self.subject,
+            auth: &self.auth,
+            allow_metadata_hosts: &self.allow_metadata_hosts,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -222,45 +247,33 @@ struct ProviderDefCore {
 }
 
 /// Provider deployment - operator config in config.yaml (names provider + supplies key).
-#[derive(Serialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone)]
 pub struct ProviderDeploy {
     /// The provider credential as a SECRET REFERENCE. Replaces the removed `api_key_env:`
     /// (`api_key_env: VAR` becomes `api_key: { env: VAR }`).
     pub api_key: SecretRef,
-    #[serde(default)]
     pub protocol: Option<String>,
-    #[serde(default)]
     pub base_url: Option<String>,
-    #[serde(default)]
     pub error_map: Option<HashMap<String, String>>,
     /// Optional upstream request-path override (see ProviderDef::path).
-    #[serde(default)]
     pub path: Option<String>,
     /// Optional path-BASE override (see ProviderDef::path_base) — replaces a URL-model protocol's
     /// hardcoded base segment so the per-request `/{model}:verb` suffix is appended to it (Vertex AI).
-    #[serde(default)]
     pub path_base: Option<String>,
     /// OAuth token endpoint for `auth: oauth-client-credentials` (see ProviderDef::token_url).
-    #[serde(default)]
     pub token_url: Option<String>,
     /// OAuth scope for `auth: oauth-client-credentials` (see ProviderDef::scope).
-    #[serde(default)]
     pub scope: Option<String>,
     /// JWT-bearer assertion `sub` claim for `auth: jwt-bearer` (see ProviderDef::subject). Opt-in;
     /// unset (the default) means no `sub` claim, unchanged from before this field existed.
-    #[serde(default)]
     pub subject: Option<String>,
     /// Optional auth-style override (see ProviderDef::auth).
-    #[serde(default)]
     pub auth: Option<ProviderAuth>,
     /// Per-provider metadata allow-override (see `ProviderCfg::allow_metadata_hosts`). `Some` REPLACES
     /// the catalog default; `None` falls back to the catalog's `allow_metadata_hosts`.
-    #[serde(default)]
     pub allow_metadata_hosts: Option<Vec<String>>,
     /// Optional active health-probe settings (see ProviderDef::health). Overrides the catalog's
     /// `health` when set; this is the block the shipped `config.yaml` documents under a provider.
-    #[serde(default)]
     pub health: Option<HealthCfg>,
     /// The provider's options: every key of the entry that is not one of
     /// the keys above, under its far end's own wire name (`OpenAI-Organization`, `api-version`,
@@ -268,8 +281,44 @@ pub struct ProviderDeploy {
     /// judges each one against that dialect's list ([`judge_options`]); the kernel names none.
     /// Read by [`deployments`] beside the typed keys, so a typed key's refusal keeps its path and
     /// position.
-    #[serde(skip)]
     pub options: ProviderTable,
+}
+impl ProviderDeploy {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            api_key: F0,
+            protocol: &'a Option<String>,
+            base_url: &'a Option<String>,
+            error_map: &'a Option<HashMap<String, String>>,
+            path: &'a Option<String>,
+            path_base: &'a Option<String>,
+            token_url: &'a Option<String>,
+            scope: &'a Option<String>,
+            subject: &'a Option<String>,
+            auth: &'a Option<ProviderAuth>,
+            allow_metadata_hosts: &'a Option<Vec<String>>,
+            health: &'a Option<HealthCfg>,
+        }
+        View {
+            api_key: self.api_key.authoring(seal),
+            protocol: &self.protocol,
+            base_url: &self.base_url,
+            error_map: &self.error_map,
+            path: &self.path,
+            path_base: &self.path_base,
+            token_url: &self.token_url,
+            scope: &self.scope,
+            subject: &self.subject,
+            auth: &self.auth,
+            allow_metadata_hosts: &self.allow_metadata_hosts,
+            health: &self.health,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -402,19 +451,29 @@ pub struct ResolvedProvider {
     pub table: ProviderTable,
 }
 
-pub fn plane_table<T: Serialize>(entry: &T) -> ProviderTable {
-    let Ok(Value::Object(mut table)) = serde_json::to_value(entry) else {
-        return ProviderTable::new();
-    };
-    for key in CORE_PROVIDER_KEYS {
-        table.remove(*key);
-    }
-    drop_unset(&mut table);
-    table
+trait PlaneFields {
+    fn plane_table(&self) -> ProviderTable;
 }
 
-fn with_options<T: Serialize>(entry: &T, options: &ProviderTable) -> ProviderTable {
-    let mut table = plane_table(entry);
+macro_rules! plane_fields {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl PlaneFields for $ty {
+            fn plane_table(&self) -> ProviderTable {
+                // These are the only typed fields not owned by core. Credentials never enter
+                // this projection, even transiently while constructing an intermediate object.
+                let Value::Object(mut table) = serde_json::json!({
+                    "protocol": self.protocol, "error_map": self.error_map,
+                }) else { unreachable!() };
+                drop_unset(&mut table);
+                table
+            }
+        }
+    )+};
+}
+plane_fields!(ProviderCfg, ProviderDef, ProviderDeploy);
+
+fn with_options<T: PlaneFields>(entry: &T, options: &ProviderTable) -> ProviderTable {
+    let mut table = entry.plane_table();
     for (name, value) in options {
         table.insert(name.clone(), value.clone());
     }

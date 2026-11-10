@@ -21,7 +21,7 @@ pub(super) fn insert_admitted() {
 
 #[test]
 fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
-    use std::sync::{Barrier, mpsc};
+    use std::sync::{mpsc, Barrier};
 
     let s = Arc::new(slab());
     let original = s.insert(A, NEED, "original").unwrap();
@@ -77,8 +77,8 @@ fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
 
 #[test]
 fn rejected_and_removed_states_are_dropped_outside_slab_guards() {
-    use std::sync::Weak;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Weak;
 
     struct State {
         slab: Weak<ConnSlab<State>>,
@@ -397,7 +397,7 @@ fn a_programs_environment_is_held_as_its_declared_reference() {
     let value = serde_json::json!({
         "command": "/usr/bin/server",
         (crate::conn::PROGRAM_ENV_KEY): {
-            "PLAIN": "v", "KEY": {"lookup": "SECRET_VAR"}, "T": template,
+            "PLAIN": "v", "KEY": {"lookup": "SECRET_VAR"}, "T": template.writing(),
         }
     });
     assert_eq!(

@@ -133,7 +133,9 @@ fn hook_explicit_edit_preserves_private_settings_and_replacement_remains_explici
         json!({"edit":{"set":{"visible":2,"nullable":null},"remove":["remove_me"]}}),
     )
     .unwrap();
-    let edited = request.apply(existing.clone()).unwrap();
+    let edited = request.apply(existing.clone().into()).unwrap();
+    let edited = serde_json::to_value(edited.authoring(&busbar_kernel::seal::acquire())).unwrap();
+    let edited = edited.as_object().unwrap();
     assert_eq!(edited["credential"], existing["credential"]);
     assert_eq!(edited["visible"], 2);
     assert!(edited["nullable"].is_null());
@@ -141,8 +143,8 @@ fn hook_explicit_edit_preserves_private_settings_and_replacement_remains_explici
     let request: PatchSettingsReq =
         serde_json::from_value(json!({"settings":{"visible":3}})).unwrap();
     assert_eq!(
-        request.apply(existing.clone()).unwrap(),
-        json!({"visible":3}).as_object().unwrap().clone()
+        request.apply(existing.clone().into()).unwrap(),
+        json!({"visible":3}).as_object().unwrap().clone().into()
     );
     for body in [
         json!({}),
@@ -150,7 +152,7 @@ fn hook_explicit_edit_preserves_private_settings_and_replacement_remains_explici
         json!({"edit":{"set":{"credential":null},"remove":["credential"]}}),
     ] {
         let request: PatchSettingsReq = serde_json::from_value(body).unwrap();
-        assert!(request.apply(existing.clone()).is_err());
+        assert!(request.apply(existing.clone().into()).is_err());
     }
     for body in [
         json!({"settings":null}),

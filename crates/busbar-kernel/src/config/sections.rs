@@ -43,7 +43,7 @@ pub struct SecurityCfg {
 /// `busy_timeout_ms`; postgres/valkey read `url`). Required: exactly one store resolves
 /// from config — a config with no `store:` block is refused
 /// with [`store_required`], and no linked row stands in as a default.
-#[derive(Debug, Deserialize, Serialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct StoreCfg {
     /// The store module, by plugin ALIAS or CANONICAL NAME: a linked row's name opens in process; any
@@ -57,6 +57,23 @@ pub struct StoreCfg {
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
+}
+impl StoreCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            module: &'a String,
+            settings: F0,
+        }
+        View {
+            module: &self.module,
+            settings: self.settings.authoring(seal),
+        }
+    }
 }
 
 pub fn store_required() -> String {
@@ -91,7 +108,7 @@ pub fn store_required() -> String {
 ///
 /// This is recorded HERE, on the struct, precisely so nobody later "fixes" the inconsistency: the
 /// module-keyed shape is the correct shape for module-level `open()` config, and it is frozen.
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SecretModuleCfg {
     /// The module's own opaque module-level settings, delivered to the plugin's `open()` as its config
@@ -99,6 +116,21 @@ pub struct SecretModuleCfg {
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
+}
+impl SecretModuleCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<F0: Serialize> {
+            settings: F0,
+        }
+        View {
+            settings: self.settings.authoring(seal),
+        }
+    }
 }
 
 /// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
@@ -350,7 +382,7 @@ pub fn rate_entry_per_mtok(r: &RateEntryCfg) -> f64 {
 /// `/metrics`), `request-log-webhook` / `request-log-file` → Logs (PUSH per request), `otlp` →
 /// Traces. `otlp` ABSORBS the DELETED `observability:` block's only remaining field (`otlp_url`), so
 /// `export:` is now the single telemetry-egress surface.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ExportDefCfg {
     /// The built-in exporter module backing this instance: `prometheus` | `request-log-webhook` |
@@ -392,6 +424,29 @@ pub struct ExportDefCfg {
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
+}
+impl ExportDefCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            module: &'a String,
+            streams: &'a Option<Vec<String>>,
+            fields: &'a Option<Vec<String>>,
+            durable: &'a bool,
+            settings: F0,
+        }
+        View {
+            module: &self.module,
+            streams: &self.streams,
+            fields: &self.fields,
+            durable: &self.durable,
+            settings: self.settings.authoring(seal),
+        }
+    }
 }
 
 pub type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;

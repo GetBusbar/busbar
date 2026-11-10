@@ -6,38 +6,24 @@ use std::sync::Arc;
 
 use axum::routing::get;
 use axum::Router;
-use busbar_kernel::config::sections::TlsCfg;
-use busbar_kernel::config::SecretRef;
 use rustls::pki_types::pem::PemObject;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-fn scratch(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("busbar-tls-h2-{tag}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    dir
-}
-
-fn identity(dir: &std::path::Path) -> (TlsCfg, String) {
+fn identity() -> (super::tests::TlsFixture, String) {
     let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("a test cert");
     let cert_pem = cert.pem();
-    let cert_file = dir.join("cert.pem");
-    let key_file = dir.join("key.pem");
-    std::fs::write(&cert_file, &cert_pem).expect("write cert");
-    std::fs::write(&key_file, signing_key.serialize_pem()).expect("write key");
-    let tls = TlsCfg {
-        cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: None,
-    };
+    let tls = super::tests::tls_fixture(&cert_pem, &signing_key.serialize_pem(), None);
     (tls, cert_pem)
 }
 
-async fn tls_listener(tls: &TlsCfg) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
+async fn tls_listener(
+    tls: &super::tests::TlsFixture,
+) -> (SocketAddr, tokio::sync::oneshot::Sender<()>) {
     let security = busbar_core_connector::tls::prepare(
         "h2-listener",
-        Some(tls),
+        Some(&tls.config),
         &super::tests::tls_fixture_resolver(tls),
         true,
     )
@@ -86,8 +72,7 @@ async fn connect(
 
 #[tokio::test]
 async fn a_client_offering_h2_is_served_http2_over_tls() {
-    let dir = scratch("h2");
-    let (tls, cert_pem) = identity(&dir);
+    let (tls, cert_pem) = identity();
     let (addr, _stop) = tls_listener(&tls).await;
 
     let stream = connect(addr, &cert_pem, &[b"h2", b"http/1.1"]).await;
@@ -121,8 +106,7 @@ async fn a_client_offering_h2_is_served_http2_over_tls() {
 
 #[tokio::test]
 async fn a_client_offering_only_http1_is_served_http1_as_in_1_5_5() {
-    let dir = scratch("h1");
-    let (tls, cert_pem) = identity(&dir);
+    let (tls, cert_pem) = identity();
     let (addr, _stop) = tls_listener(&tls).await;
 
     let mut stream = connect(addr, &cert_pem, &[b"http/1.1"]).await;

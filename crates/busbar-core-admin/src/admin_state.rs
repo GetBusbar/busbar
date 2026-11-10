@@ -28,7 +28,17 @@ impl AppAdmin for App {
     }
 
     fn record_version_at(&self, version: u64, principal: &str, summary: &str) {
-        let snapshot = serde_json::to_value(&self.hook_registry).unwrap_or(serde_json::Value::Null);
+        let seal = busbar_kernel::seal::acquire();
+        let snapshot = serde_json::to_value(
+            self.hook_registry
+                .iter()
+                .map(|(name, hook)| (name, hook.authoring(&seal)))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+        .unwrap_or_else(|e| {
+            tracing::warn!("hook registry snapshot failed to serialize: {e}");
+            serde_json::Value::Null
+        });
         self.versions()
             .record(version, principal, summary, snapshot, &self.global_hooks);
     }

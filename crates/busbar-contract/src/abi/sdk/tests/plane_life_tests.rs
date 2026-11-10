@@ -187,7 +187,13 @@ fn a_plane_life_door_states_migrate_when_it_names_one() {
     };
     assert_eq!(raw.outcome(), Outcome::Ready);
     let m = read_answer(raw.outcome(), &buf[..out.error.len]).expect("a migration");
-    assert_eq!(m.settings, serde_json::json!({"new": 1}));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            m.encode().unwrap().expose(&crate::plugin::TestKernelSeal)
+        )
+        .unwrap(),
+        serde_json::json!({"new": 1})
+    );
 }
 
 fn table() -> &'static Ops {

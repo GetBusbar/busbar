@@ -2521,7 +2521,8 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
         Err(error) => return err_json(&error),
     };
 
-    let mut settings = serde_json::to_value(&root).unwrap_or_else(|_| json!({}));
+    let mut settings = serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
+        .unwrap_or_else(|_| json!({}));
     crate::v1::service::redact_settings_bags(&mut settings);
     with_config_etag(
         ok_json(
@@ -2706,7 +2707,9 @@ pub(crate) async fn put_config_settings(
                 format!("stored and installed as configuration; reload_to_apply paths {} require a process restart. plane_refresh observes only synchronous ordinary door callbacks, not listener, model, credential, fallback, transport, or asynchronous plugin activation", reload_to_apply.join(", "))
             };
 
-            let mut settings = serde_json::to_value(&merged).unwrap_or_else(|_| json!({}));
+            let mut settings =
+                serde_json::to_value(merged.authoring(&busbar_kernel::seal::acquire()))
+                    .unwrap_or_else(|_| json!({}));
             crate::v1::service::redact_settings_bags(&mut settings);
             with_config_etag(
                 ok_json(
@@ -4374,13 +4377,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     body_raw!(
         "/config/settings",
         "put",
-        json!({"oneOf": [{"allOf": [config_doc(
-            "The settings sections to replace, keyed by section name. A mutable config always \
-             stores the change through its configured Store. A locked config \
-             (`config.locked: true`) refuses changes with `400`. There is no apply-in-memory-only \
-             outcome. Every top-level key must be a known settings section; unknown or retired \
-             fields, including `persist`, are refused with `400`."
-        ), {"not": {"anyOf": [{"required": ["document_patch"]}, {"required": ["persist"]}]}}]}, super::config_document::request_schema()]})
+        json!({"oneOf": [super::contract_metadata::root_settings_schema(), super::config_document::request_schema()]})
     );
     body_raw!(
         PATH_GROUPS,

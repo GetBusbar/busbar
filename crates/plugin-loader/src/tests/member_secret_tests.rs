@@ -1,48 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
+use busbar_contract::secret_ref::SecretRef;
 
 use super::*;
 
-const SOURCE_WORDS: [&str; 3] = ["environment variable", "is unset", "no such file"];
+const SOURCE_WORDS: [&str; 2] = ["fixture source failure", "private_source_canary"];
 
 fn source_in(text: &str, secret: &SecretRef) -> Vec<String> {
     let lower = text.to_ascii_lowercase();
     let mut needles: Vec<String> = SOURCE_WORDS.iter().map(|w| (*w).to_string()).collect();
-    needles.push(format!("secret {SECRET_MODULE_FILE}"));
     needles.push(secret.describe());
-    needles.extend(secret.env_var().map(str::to_string));
     needles
         .into_iter()
         .filter(|n| lower.contains(&n.to_ascii_lowercase()))
         .collect()
 }
 
-fn env_reference(r: &SecretRef) -> Result<(), String> {
-    if r.module != busbar_contract::secret_ref::SECRET_MODULE_ENV {
-        return Err(format!("{} does not resolve", r.describe()));
-    }
-    use busbar_contract::secret::SecretAxis;
-    let mut rows = crate::secret_calls::SecretRows::new(
-        || {
-            std::sync::Arc::new(crate::dispatch::Dispatcher::new(
-                crate::dispatch::DispatchConfig::default(),
-                busbar_contract::services::test_caller_binding(),
-            ))
-        },
-        || None,
-    );
-    rows.link(crate::actual_env_secret::door)?;
-    rows.shared(crate::actual_env_secret::NAME)?
-        .resolve(&serde_json::to_vec(&r.settings).expect("the reference settings serialize"))
-        .map(drop)
-        .map_err(|e| e.text)
+fn fixture_reference(r: &SecretRef) -> Result<(), String> {
+    Err(format!(
+        "fixture source failure PRIVATE_SOURCE_CANARY: {}",
+        r.describe()
+    ))
 }
 
 /// A connection table holding the connector's member-program contract: the members each
 /// declaration named, an open naming any other refused (`ConnError::Refused`), and an open whose
-/// program's `env` reference does not resolve ([`env_reference`]) at its spawn refused the same.
+/// program's `env` reference does not resolve ([`fixture_reference`]) at its spawn refused the same.
 #[derive(Default)]
 struct Members {
     slab: ConnSlab<()>,
@@ -102,7 +86,7 @@ impl Conns for Members {
         if program
             .env_refs
             .iter()
-            .any(|(_, reference)| env_reference(reference).is_err())
+            .any(|(_, reference)| fixture_reference(reference).is_err())
         {
             return Err(ConnError::Refused);
         }
@@ -133,11 +117,11 @@ impl Conns for Members {
 }
 
 #[test]
-fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_class_refusal() {
+fn a_member_whose_secret_source_refuses_reaches_the_plugin_as_a_fixed_class_refusal() {
     let var = format!("BUSBAR_LOADER_MEMBER_SECRET_SOURCE_{}", std::process::id());
-    std::env::remove_var(&var);
-    let secret = SecretRef::env(&var);
-    let operator = env_reference(&secret).expect_err("the variable is unset");
+    let authored = serde_json::json!({"module":"fixture-source","settings":{"slot":var}});
+    let secret: SecretRef = serde_json::from_value(authored.clone()).unwrap();
+    let operator = fixture_reference(&secret).expect_err("the fixture source refuses resolution");
     assert!(
         !source_in(&operator, &secret).is_empty(),
         "the source's own refusal names it: {operator}"
@@ -151,11 +135,11 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     )
     .expect("the instance binds");
     let settings: &'static [u8] = Box::leak(
-        format!(
-            r#"{{"ghost":{{"command":"/usr/bin/ghost","env":{{"TOKEN":{{"env":"{var}"}}}}}},
-                "live":{{"command":"/usr/bin/live"}}}}"#
-        )
-        .into_bytes()
+        serde_json::to_vec(&serde_json::json!({
+            "ghost":{"command":"/usr/bin/ghost","env":{"TOKEN":authored}},
+            "live":{"command":"/usr/bin/live"}
+        }))
+        .unwrap()
         .into_boxed_slice(),
     );
     assert_eq!(open_with(&p, settings), Outcome::Ready);

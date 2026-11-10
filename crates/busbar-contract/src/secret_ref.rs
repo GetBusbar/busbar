@@ -19,7 +19,7 @@ pub const SECRET_MODULE_NONE: &str = "none";
 const NON_BLANK: &str = r"\S";
 
 /// An admitted source's module identity and opaque authored settings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceReference {
     /// The source owner's module identity.
     pub module: String,
@@ -45,7 +45,7 @@ impl FillSource {
 
 /// Core interpolation with guarded text and one immutable admitted source declaration.
 /// No text accessor or caller-selected lookup is exposed.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TemplateReference {
     #[serde(deserialize_with = "template_text")]
@@ -72,6 +72,11 @@ impl fmt::Debug for TemplateReference {
 }
 
 /// A credential position names a source, a core template, or explicitly no credential.
+///
+/// ```compile_fail
+/// let reference = busbar_contract::secret_ref::SecretRef::none();
+/// let _ = serde_json::to_value(&reference);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretRef {
     /// An opaque source reference; canonical wire shape is `{module, settings}`.
@@ -90,7 +95,32 @@ pub enum TemplateRefused<E> {
     TooLarge,
 }
 
+/// An exact authoring view borrowed under concrete kernel authority.
+///
+/// ```compile_fail
+/// let reference = busbar_contract::secret_ref::SecretRef::None;
+/// let _ = busbar_contract::secret_ref::Authoring { reference: &reference };
+/// ```
+#[derive(Debug)]
+pub struct Authoring<'a> {
+    reference: &'a SecretRef,
+}
+
 impl SecretRef {
+    /// Borrow the authored reference shape for a privileged document operation.
+    ///
+    /// ```compile_fail
+    /// fn read(reference: &busbar_contract::secret_ref::SecretRef, seal: &dyn busbar_contract::plugin::KernelSeal) {
+    ///     let _ = reference.authoring(seal);
+    /// }
+    /// ```
+    pub fn authoring<'a>(&'a self, _seal: &'a crate::caps::KernelSeal) -> Authoring<'a> {
+        self.writing()
+    }
+    pub(crate) fn writing(&self) -> Authoring<'_> {
+        Authoring { reference: self }
+    }
+
     /// A template bound to the one source whose admitted declaration owns the fill role.
     pub fn template(text: impl Into<String>, sources: &Sugars) -> Result<Self, String> {
         let source = sources
@@ -224,19 +254,36 @@ impl SecretRef {
         Ok(joined)
     }
 }
-impl Serialize for SecretRef {
+impl Serialize for Authoring<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
-        match self {
-            Self::None => SourceReference {
-                module: SECRET_MODULE_NONE.into(),
-                settings: Settings::default(),
+        match self.reference {
+            SecretRef::None => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("module", SECRET_MODULE_NONE)?;
+                map.serialize_entry("settings", &Settings::default().writing())?;
+                map.end()
             }
-            .serialize(serializer),
-            Self::Source(source) => source.serialize(serializer),
-            Self::Template(template) => {
+            SecretRef::Source(source) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("module", &source.module)?;
+                map.serialize_entry("settings", &source.settings.writing())?;
+                map.end()
+            }
+            SecretRef::Template(template) => {
+                #[derive(Serialize)]
+                struct Template<'a> {
+                    text: &'a str,
+                    source: &'a FillSource,
+                }
                 let mut map = serializer.serialize_map(Some(1))?;
-                map.serialize_entry("template", template)?;
+                map.serialize_entry(
+                    "template",
+                    &Template {
+                        text: &template.text,
+                        source: &template.source,
+                    },
+                )?;
                 map.end()
             }
         }
@@ -558,3 +605,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/sugars_tests.rs"]
 mod sugars_tests;
+
+#[cfg(test)]
+#[path = "tests/secret_ref_mutation_hardening.rs"]
+mod mutation_hardening;

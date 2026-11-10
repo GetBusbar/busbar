@@ -60,12 +60,26 @@ impl schemars::JsonSchema for ExactU64 {
 }
 
 #[derive(Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) enum Phase {
     /// Producer drive returned; buffered response bytes may still be draining.
     LlmProducerDrive,
     /// A mounted handler returned its response; its body may still be streaming.
     MountedResponseReady,
+}
+
+#[cfg(feature = "openapi-schema")]
+impl schemars::JsonSchema for Phase {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Phase".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "enum": ["LlmProducerDrive", "MountedResponseReady"],
+            "description": "LlmProducerDrive: producer drive returned; buffered response bytes may still be draining. MountedResponseReady: mounted handler returned its response; its body may still be streaming."
+        })
+    }
 }
 
 #[derive(Serialize)]

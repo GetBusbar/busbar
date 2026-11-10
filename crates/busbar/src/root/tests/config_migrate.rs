@@ -406,7 +406,7 @@ fn current_settings_validation_does_not_read_a_selected_planes_historical_catalo
             _: &str,
             _: &serde_json::Value,
             _: &str,
-        ) -> Result<Option<(String, busbar_contract::abi::sdk::migrate::Migrated)>, String>
+        ) -> Result<Option<(String, busbar_contract::abi::sdk::migrate::MigrationAnswer)>, String>
         {
             Ok(None)
         }

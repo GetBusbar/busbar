@@ -466,7 +466,7 @@ async fn apply(
                             };
                             obj.insert(
                                 SETTINGS_KEY.to_string(),
-                                serde_json::to_value(&settings).expect("settings serialize as an object"),
+                                serde_json::to_value(settings.authoring(&busbar_kernel::seal::acquire())).expect("settings serialize as an object"),
                             );
                         }
                         None => {
@@ -776,7 +776,7 @@ fn configured_settings(
         } else {
             "configured"
         },
-        settings_public: settings.public_view(&public(module)),
+        settings_public: settings.public_view(&busbar_kernel::seal::acquire(), &public(module)),
     }
 }
 
@@ -956,9 +956,7 @@ fn check_trust_ceiling(
 
 #[cfg(feature = "openapi-schema")]
 pub(crate) fn settings_request_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
+    let properties = serde_json::json!({
             "settings": {"type": "object", "additionalProperties": true},
             "edit": {
                 "type": "object",
@@ -968,10 +966,16 @@ pub(crate) fn settings_request_schema() -> serde_json::Value {
                 },
                 "additionalProperties": false
             }
-        },
+    });
+    // Complete object alternatives give generators named, typed request members.
+    // Both alternatives validate both known fields: null must not evade the
+    // non-null rule by becoming an unknown property of the other alternative.
+    serde_json::json!({
         "oneOf": [
-            {"required": ["settings"], "not": {"required": ["edit"]}},
-            {"required": ["edit"], "not": {"required": ["settings"]}}
+            {"title": "SettingsReplacement", "type": "object", "properties": properties,
+             "required": ["settings"]},
+            {"title": "SettingsModification", "type": "object", "properties": properties,
+             "required": ["edit"]}
         ]
     })
 }

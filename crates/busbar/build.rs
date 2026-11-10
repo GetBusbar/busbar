@@ -242,6 +242,11 @@ fn main() {
         println!("cargo::rustc-cfg=linked_every_transport");
     }
 
+    let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
+        .join("source_scan_needles.rs");
+    std::fs::write(out, source_scan_needles_source(&manifest, &enabled))
+        .expect("write source_scan_needles.rs");
+
     let (cells, cells_files, rig) = door_cells_source(&manifest, &enabled);
 
     println!("cargo::rustc-check-cfg=cfg(door_rig)");
@@ -452,22 +457,82 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
     (out, files, rig)
 }
 
+fn source_scan_needles_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let features = declared_features(manifest);
+    let required = required_deps(manifest);
+    let mut out = String::from(
+        "// @generated from each linked source owner's test metadata.\n\
+         const SOURCE_SCAN_NEEDLES: &[&str] = &[\n",
+    );
+    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
+        let is_source = axes
+            .iter()
+            .any(|(f, a)| *f == feature && a.split_whitespace().any(|axis| axis == SECRET_AXIS));
+        let always = !features.contains(&feature) && required.contains(&krate);
+        if !is_source || !(enabled(&feature) || always) {
+            continue;
+        }
+        let links = format!("busbar-source-scan-{krate}");
+        let var = format!(
+            "DEP_{}_SOURCE_SCAN_NEEDLES",
+            links.to_uppercase().replace('-', "_")
+        );
+        println!("cargo:rerun-if-env-changed={var}");
+        let at = match env::var(&var) {
+            Ok(at) => at,
+            Err(_) if !enabled("test-harness") => continue,
+            Err(e) => panic!(
+                "{krate}: source-scan owner metadata is required under test-harness ({var}): {e}"
+            ),
+        };
+        if let Err(e) =
+            metadata_is_the_crates_own(&krate, &at, "tests/source_scan_needles.json", &links)
+        {
+            panic!("{var}: {e}");
+        }
+        println!("cargo:rerun-if-changed={at}");
+        out.push_str(&format!("    include_str!({at:?}),\n"));
+    }
+    out.push_str("];\n");
+    out
+}
+
 fn cells_are_the_crates_own(krate: &str, at: &str) -> Result<(), String> {
+    metadata_is_the_crates_own(krate, at, "tests/root/mod.rs", &door_cells_links(krate))
+}
+
+fn metadata_is_the_crates_own(
+    krate: &str,
+    at: &str,
+    relative: &str,
+    want_links: &str,
+) -> Result<(), String> {
     use std::path::{Component, Path};
     let path = Path::new(at);
-    if path
-        .components()
-        .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
-        || !path.ends_with("tests/root/mod.rs")
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+        || !path.ends_with(relative)
     {
         return Err(format!(
-            "`{at}` is not `<{krate}'s manifest dir>/tests/root/mod.rs`"
+            "`{at}` is not `<{krate}'s manifest dir>/{relative}`"
         ));
     }
     let dir = path
         .ancestors()
-        .nth(3)
+        .nth(Path::new(relative).components().count())
         .ok_or_else(|| format!("`{at}` has no crate directory"))?;
+    let canonical_dir = dir.canonicalize().map_err(|e| format!("`{at}`: {e}"))?;
+    let canonical_path = path.canonicalize().map_err(|e| format!("`{at}`: {e}"))?;
+    if canonical_path != canonical_dir.join(relative) {
+        return Err(format!("`{at}` leaves {krate}'s own metadata path"));
+    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        dir.join("Cargo.toml").display()
+    );
     let manifest = std::fs::read_to_string(dir.join("Cargo.toml"))
         .map_err(|e| format!("`{at}`: {}: {e}", dir.join("Cargo.toml").display()))?;
     let (mut name, mut links, mut in_package) = (None, None, false);
@@ -486,12 +551,11 @@ fn cells_are_the_crates_own(krate: &str, at: &str) -> Result<(), String> {
             }
         }
     }
-    let want_links = door_cells_links(krate);
-    if name.as_deref() == Some(krate) && links.as_deref() == Some(want_links.as_str()) {
+    if name.as_deref() == Some(krate) && links.as_deref() == Some(want_links) {
         Ok(())
     } else {
         Err(format!(
-            "`{at}` is not {krate}'s own cells: {} names package {name:?}, links {links:?}",
+            "`{at}` is not {krate}'s own metadata: {} names package {name:?}, links {links:?}",
             dir.join("Cargo.toml").display()
         ))
     }

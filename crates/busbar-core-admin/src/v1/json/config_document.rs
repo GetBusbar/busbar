@@ -297,6 +297,7 @@ fn pointer(key: &str) -> String {
 #[cfg(feature = "openapi-schema")]
 pub(super) fn request_schema() -> serde_json::Value {
     json!({
+        "title": "ConfigDocumentModification",
         "type": "object", "required": ["document_patch"], "additionalProperties": false,
         "properties": {
             "document_patch": {
@@ -559,10 +560,40 @@ mod tests {
         assert!(body.to_string().contains("document_patch"));
         assert!(body.to_string().contains("reset_document_paths"));
         assert!(request_schema()["properties"].get("persist").is_none());
-        assert_eq!(
-            body["oneOf"][0]["allOf"][1]["not"]["anyOf"][1],
-            json!({"required": ["persist"]})
-        );
+        assert_eq!(body["oneOf"][0]["type"], "object");
+        assert_eq!(body["oneOf"][0]["additionalProperties"], false);
+        assert!(body["oneOf"][0].get("allOf").is_none());
+        let validator = jsonschema::validator_for(body).unwrap();
+        let parses = |value: &serde_json::Value| {
+            if value.get("document_patch").is_some() {
+                serde_json::from_value::<DocumentRequest>(value.clone()).is_ok()
+            } else {
+                serde_json::from_value::<busbar_kernel::config::overlay::RootSettings>(
+                    value.clone(),
+                )
+                .is_ok()
+            }
+        };
+        for good in [
+            json!({}),
+            json!({"per_request_fee": 42, "limits": {"request_body_max_bytes": 4096}}),
+            json!({"listen": null}),
+            json!({"document_patch": {"set": {"/limits/request_body_max_bytes": 4096}}}),
+        ] {
+            assert!(validator.is_valid(&good), "{good}");
+            assert!(parses(&good), "{good}");
+        }
+        for bad in [
+            json!({"persist": true}),
+            json!({"retired_section": {}}),
+            json!({"document_patch": null}),
+            json!({"document_patch": {}, "listen": "127.0.0.1:8080"}),
+            json!({"document_patch": {}, "persist": false}),
+            json!({"per_request_fee": "42"}),
+        ] {
+            assert!(!validator.is_valid(&bad), "{bad}");
+            assert!(!parses(&bad), "{bad}");
+        }
         assert!(
             schema["components"]["schemas"]["ConfigSettingsView"]["properties"]
                 .get("configuration")
