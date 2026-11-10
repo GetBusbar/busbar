@@ -138,6 +138,24 @@ class Protection(unittest.TestCase):
     def test_controlled_merge_and_no_push(self):
         validate_protection(self.rules, [], {8})
 
+    def test_approved_operator_may_push_dev_but_never_stage_branches(self):
+        self.rules[0]['push_access_levels'] = [dict(access_level=40, user_id=8)]
+        validate_protection(self.rules, [], {8})
+        for stage in self.rules[1:]:
+            stage['push_access_levels'] = [dict(access_level=40, user_id=8)]
+            with self.subTest(stage=stage['name']), self.assertRaisesRegex(ValueError, 'direct-push'):
+                validate_protection(self.rules, [], {8})
+            stage['push_access_levels'] = [dict(access_level=0)]
+
+    def test_dev_does_not_allow_unknown_principals_or_wildcard_stage_access(self):
+        self.rules[0]['push_access_levels'] = [dict(access_level=40, user_id=99)]
+        with self.assertRaisesRegex(ValueError, 'direct-push'):
+            validate_protection(self.rules, [], {8})
+        self.rules[0]['push_access_levels'] = [dict(access_level=0)]
+        group = dict(name='*', push_access_levels=[dict(access_level=40, user_id=8)], merge_access_levels=[])
+        with self.assertRaisesRegex(ValueError, 'direct-push'):
+            validate_protection(self.rules, [group], {8})
+
     def test_group_wildcard_overrides_stricter_project_rule(self):
         group = dict(name='d*', push_access_levels=[dict(access_level=40)], merge_access_levels=[])
         with self.assertRaisesRegex(ValueError, 'direct-push'):
