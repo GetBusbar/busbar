@@ -227,6 +227,9 @@ class FreshStartup(unittest.TestCase):
                 "sha256": oidf.sha256_file(str(archive)),
             }])
             self.assertEqual(cfg["auth"]["role_bindings"], {oidf.IDP: {oidf.SCOPE: {}}})
+            self.assertEqual(cfg["oauth_as"]["signing_key"], {
+                "module": "file", "settings": {"path": str(root / "as.key.b64")},
+            })
             archive.write_bytes(b"a different archive")
             self.assertNotEqual(cfg["plugins"]["fetch"][0]["sha256"], oidf.sha256_file(str(archive)))
 

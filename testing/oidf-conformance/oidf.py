@@ -604,7 +604,7 @@ def subject_config(*, fapi2, data, admin, issuer, pki, plugins, jwks_url, client
             "issuer": issuer,
             "default_grant": [SCOPE],
             "fapi2": fapi2,
-            "signing_key": {"file": os.path.join(pki, "as.key.b64")},
+            "signing_key": {"module": "file", "settings": {"path": os.path.join(pki, "as.key.b64")}},
             "key_id": AS_KID,
             "clients": declared,
         },
