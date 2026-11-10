@@ -3,7 +3,7 @@
 
 //! Assemble the core-owned overlay protocol from admitted record facts.
 //! Root receives only the exact protected document from the frozen capture.
-use crate::{archive_source::ArchiveRows, Error, Identity};
+use crate::{Error, Identity, archive_source::ArchiveRows};
 use busbar_contract::Secret;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};

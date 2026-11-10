@@ -3,15 +3,15 @@
 //! Arithmetic over explicit logical facts and declared projection requirements.
 use super::HistoricalFact;
 use crate::{
-    legacy::{
-        assemble_usage, attach_metering_units, attach_usage_units, canonical_metering,
-        canonical_usage, transform::Output, HistoricalRow, UsageCell,
-    },
     Error,
+    legacy::{
+        HistoricalRow, UsageCell, assemble_usage, attach_metering_units, attach_usage_units,
+        canonical_metering, canonical_usage, transform::Output,
+    },
 };
 use busbar_contract::{
     persistence::lifecycle::source::{AccountingRole, RequestAggregation},
-    records::{MeteringRow, ModelTokens, UsageLedger, RESERVED_UNITS},
+    records::{MeteringRow, ModelTokens, RESERVED_UNITS, UsageLedger},
 };
 use std::collections::{BTreeMap, BTreeSet};
 fn invalid(_: crate::legacy::Error) -> Error {
@@ -462,11 +462,11 @@ mod tests {
     use super::*;
     use crate::source_facts::FactRow;
     use busbar_contract::{
-        persistence::lifecycle::{
-            source::{HistoricalFamily, SourceChunk},
-            DocumentSemantics, SourceCodec, SourceReader,
-        },
         Secret,
+        persistence::lifecycle::{
+            DocumentSemantics, SourceCodec, SourceReader,
+            source::{HistoricalFamily, SourceChunk},
+        },
     };
     fn fact(value: HistoricalFact) -> FactRow {
         FactRow {
@@ -570,9 +570,10 @@ mod tests {
         let expected = canonical_usage("bucket", 0, &ledger()).unwrap();
         let rows = output(&projected_group()).unwrap();
         for (address, value) in expected {
-            assert!(rows
-                .iter()
-                .any(|r| r.address == address && r.value == value));
+            assert!(
+                rows.iter()
+                    .any(|r| r.address == address && r.value == value)
+            );
         }
         for missing in 0..4 {
             let mut facts = projected_group();
@@ -600,9 +601,21 @@ mod tests {
         });
         let rows = output(&[input]).unwrap();
         for (address, value) in canonical_usage("bucket", 0, &ledger()).unwrap() {
-            assert!(rows
-                .iter()
-                .any(|r| r.address == address && r.value == value));
+            assert!(
+                rows.iter()
+                    .any(|r| r.address == address && r.value == value)
+            );
         }
+    }
+    #[test]
+    fn duplicate_exact_and_orphan_projection_refuse_activation() {
+        let mut duplicate = projected_group();
+        duplicate.insert(0, projected_group().remove(0));
+        assert!(output(&duplicate).is_err());
+        let mut orphan = projected_group();
+        orphan.remove(0);
+        assert!(output(&orphan).is_err());
+        let exact_only = vec![projected_group().remove(0)];
+        assert!(output(&exact_only).is_err());
     }
 }
