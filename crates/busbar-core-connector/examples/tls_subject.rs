@@ -67,14 +67,32 @@ fn main() {
     std::fs::write(&cert_path, cert.pem()).expect("cert.pem");
     std::fs::write(&key_path, signing_key.serialize_pem()).expect("key.pem");
 
+    // The neutral fixture binds just this PEM pair. Source-owner shorthand and
+    // ambient filesystem lookup are not part of the connector's contract.
+    let mut bindings = Vec::new();
+    let mut bind = |role: &str, path: &std::path::Path| {
+        let module = format!("tls-subject-{role}");
+        let settings = busbar_contract::plugin_settings::Settings::default();
+        let material = busbar_kernel::config::secret::Held::new(
+            std::fs::read(path).expect("the generated PEM is readable"),
+        );
+        bindings.push((module.clone(), settings.clone(), material));
+        SecretRef::Source(busbar_contract::secret_ref::SourceReference { module, settings })
+    };
     let cfg = TlsCfg {
-        cert: SecretRef::file(cert_path.to_string_lossy().into_owned()),
-        key: SecretRef::file(key_path.to_string_lossy().into_owned()),
+        cert: bind("cert", &cert_path),
+        key: bind("key", &key_path),
         client_ca: None,
     };
-    let server =
-        busbar_core_connector::tls::build_server_config(&cfg, &SecretResolver::builtins_only())
-            .expect("the production TLS config builds");
+    let resolver = SecretResolver::with_plugin(Box::new(move |module, settings| {
+        bindings
+            .iter()
+            .find(|(name, bound, _)| name == module && bound == settings)
+            .map(|(_, _, material)| material.clone())
+            .ok_or_else(|| "unbound TLS subject reference".into())
+    }));
+    let server = busbar_core_connector::tls::build_server_config(&cfg, &resolver)
+        .expect("the production TLS config builds");
 
     let alpn: Vec<Vec<u8>> = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     support::worker().block_on(async move {
