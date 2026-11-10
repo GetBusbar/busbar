@@ -565,6 +565,7 @@ node = "plane_node"
 # the install order (the planes' layering order).
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
+file_export = "busbar-export-file"
 auth_oidc = "busbar-auth-oidc"
 ranking_hook = "busbar-hook-ranking"
 source_env = "busbar-secret-env"
@@ -1247,3 +1248,6 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # panic is left at the default `unwind` ON PURPOSE: a panic in one request task must unwind that
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
+
+[package.metadata.busbar.test-common-sources]
+metrics_fixture = "busbar-export-prometheus"
