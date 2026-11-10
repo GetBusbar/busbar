@@ -1,14 +1,14 @@
 use busbar_contract::{
+    Secret,
     persistence::{
         archive::{self, Header, Limits, Table, Writer},
         legacy_row::{self, Cell, Row},
     },
-    Secret,
 };
 use busbar_migrations::{
+    Bounds, Edge, Error, Family, Record, SourceReader, TargetRow, Transform,
     archive_source::{ArchiveSource, Grouping},
     legacy::group::LogicalGroup,
-    Bounds, Edge, Error, Family, Record, SourceReader, TargetRow, Transform,
 };
 use std::{
     io::{Cursor, Read, Seek, SeekFrom},
@@ -52,7 +52,7 @@ impl Transform for Expands {
         let mut rows = Vec::new();
         for (index, record) in records.iter().enumerate() {
             for copy in 0..2 {
-                let mut key = if self.1 { vec![] } else { record.key.clone() };
+                let mut key = if self.1 { vec![] } else { record.key.to_vec() };
                 key.push(copy);
                 rows.push(TargetRow {
                     address: busbar_contract::persistence::Address {
@@ -77,7 +77,7 @@ fn archive_bytes() -> (Vec<u8>, Limits) {
         index_bytes: 8192,
     };
     let header = Header {
-        owner: *b"legacy.sqlite.v1",
+        owner: *b"fixture.source01",
         physical: 6,
         catalogue_digest: archive::digest(b"catalogue"),
         native_anchor_digest: [0; 32],
@@ -322,11 +322,13 @@ async fn physical_pages_cover_each_original_row_once_independent_of_group_size()
     assert_eq!(last.records.len(), 1);
     assert_eq!(last.next, 3);
     assert!(last.complete);
-    assert!(first
-        .records
-        .iter()
-        .chain(&last.records)
-        .all(|row| row.preserve_exact));
+    assert!(
+        first
+            .records
+            .iter()
+            .chain(&last.records)
+            .all(|row| row.preserve_exact)
+    );
     assert_ne!(first.records[0].key, first.records[1].key);
     assert_ne!(first.records[0].key, last.records[0].key);
 }
@@ -369,7 +371,7 @@ async fn overlapping_valid_groups_end_the_page_before_the_second_marker() {
     let forged = Record {
         key: first.records[0].key.clone(),
         value: busbar_migrations::legacy::projection::encode_marker(
-            &Secret::new(first.records[0].key.clone()),
+            &Secret::new(first.records[0].key.to_vec()),
             [9; 32],
         )
         .unwrap(),

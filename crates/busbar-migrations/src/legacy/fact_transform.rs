@@ -2,17 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 //! Logical import transforms consume admitted owner facts, never physical grammar.
 use super::{
-    archive, canonical_identity, projection,
+    Credential, HistoricalRow, archive, canonical_identity, projection,
     transform::{self, Output, *},
-    Credential, HistoricalRow,
 };
 use crate::{
-    source_facts::{FactRow, View},
     Bounds, Edge, Error, Family, Format, Record, Registry, TargetRow, Transform,
+    source_facts::{FactRow, View},
 };
 use busbar_contract::{
-    persistence::{archive::Table, lifecycle::source::HistoricalFact, Address},
     Secret,
+    persistence::{Address, archive::Table, lifecycle::source::HistoricalFact},
 };
 use busbar_kernel::persistence::import_target::records::{self, history::HistoryMode};
 use sha2::{Digest, Sha256};
@@ -387,7 +386,6 @@ impl FactTransform {
                                 .push(super::journal_binding::Part { key, value });
                         }
                         archive::Route::RequiresBinding => return Err(Error::MissingCapability),
-                        _ => return Err(Error::Corrupt),
                     }
                 }
                 HistoricalFact::History {
@@ -448,13 +446,15 @@ impl FactTransform {
                 } => {
                     if kind == "ticket-spent" {
                         out.canonical(
-                            vec![records::ticket::legacy_ticket_token(
-                                kind,
-                                std::str::from_utf8(token.expose(&seal))
-                                    .map_err(|_| Error::Corrupt)?,
-                                *expires_at,
-                            )
-                            .map_err(|_| Error::Verification)?],
+                            vec![
+                                records::ticket::legacy_ticket_token(
+                                    kind,
+                                    std::str::from_utf8(token.expose(&seal))
+                                        .map_err(|_| Error::Corrupt)?,
+                                    *expires_at,
+                                )
+                                .map_err(|_| Error::Verification)?,
+                            ],
                             false,
                         )?;
                         continue;
@@ -839,9 +839,11 @@ mod tests {
         ];
         assert_eq!(output.len(), expected.len());
         for (address, value) in expected {
-            assert!(output
-                .iter()
-                .any(|row| row.address == address && row.value == value));
+            assert!(
+                output
+                    .iter()
+                    .any(|row| row.address == address && row.value == value)
+            );
         }
         let mut native = output
             .into_iter()
@@ -893,5 +895,103 @@ mod tests {
             ),
             Err(Error::Verification)
         ));
+    }
+    #[tokio::test]
+    async fn many_admitted_fragments_fit_one_bounded_native_output() {
+        use busbar_contract::{
+            persistence::lifecycle::source::{AccountingRole, RequestAggregation},
+            records::{ModelTokens, UsageLedger},
+        };
+        use std::collections::BTreeMap;
+        fn facts() -> Vec<HistoricalFact> {
+            (0..6)
+                .map(|ordinal| {
+                    let model = if ordinal == 0 {
+                        String::new()
+                    } else {
+                        format!("m{ordinal}")
+                    };
+                    HistoricalFact::Usage {
+                        bucket: "bucket".into(),
+                        window: 0,
+                        model: model.clone(),
+                        requests: RequestAggregation::Dedicated,
+                        role: AccountingRole::Fragment,
+                        ledger: UsageLedger {
+                            requests: if ordinal == 0 { 4 } else { 0 },
+                            billable_requests: if ordinal == 0 { 3 } else { 0 },
+                            models: if ordinal == 0 {
+                                vec![]
+                            } else {
+                                vec![ModelTokens {
+                                    scale: 6,
+                                    model,
+                                    usage_units: BTreeMap::from([("input".into(), 7_000_000)]),
+                                }]
+                            },
+                        },
+                    }
+                })
+                .collect()
+        }
+        for (semantic, expected_success) in [(1 << 20, true), (16_384, false)] {
+            let source = crate::source_facts::test_archive(facts(), semantic);
+            let identity = source.identity();
+            let bounds = Bounds {
+                items: 2,
+                bytes: 1 << 20,
+            };
+            let transform = FactTransform::registered(
+                identity.format,
+                archive::Provenance {
+                    dataset: identity.dataset,
+                    catalogue: source.header().catalogue_digest,
+                },
+                &source.header().tables,
+                source.interpretation().unwrap().clone(),
+                crate::routes::Bindings::default(),
+                bounds,
+            )
+            .unwrap()
+            .with_projection(source.clone())
+            .unwrap();
+            let family = transform
+                .edge()
+                .families
+                .iter()
+                .find(|f| f.id == ACCOUNTING)
+                .unwrap();
+            let page = source
+                .page(&source.snapshot(), family, 0, bounds)
+                .await
+                .unwrap();
+            assert!(page.complete);
+            assert_eq!(page.records.len(), 1);
+            let result = transform.transform(family, &page.records, bounds);
+            if !expected_success {
+                assert!(matches!(result, Err(Error::Bounds)));
+                continue;
+            }
+            let rows = result.unwrap();
+            assert_eq!(rows.len(), 2);
+            let ledger = UsageLedger {
+                requests: 4,
+                billable_requests: 3,
+                models: (1..6)
+                    .map(|n| ModelTokens {
+                        scale: 6,
+                        model: format!("m{n}"),
+                        usage_units: BTreeMap::from([("input".into(), 7_000_000)]),
+                    })
+                    .collect(),
+            };
+            assert_eq!(ledger.total_input(), 35_000_000);
+            for (address, value) in super::super::canonical_usage("bucket", 0, &ledger).unwrap() {
+                assert!(
+                    rows.iter()
+                        .any(|r| r.address == address && r.value == value)
+                );
+            }
+        }
     }
 }

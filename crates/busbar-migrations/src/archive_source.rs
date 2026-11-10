@@ -5,18 +5,18 @@
 //! bounded offsets and protected logical-group keys remain resident. No paths,
 //! source settings or whole-dataset row payloads enter this adapter.
 
-use super::legacy::{group::LogicalGroup, transform::TableLayout, Profile};
+use super::legacy::group::LogicalGroup;
 use super::{
     Bounds, Error, Family, Format, Identity, Record, SnapshotEvidence, SourcePage, SourceReader,
     Transform,
 };
 use async_trait::async_trait;
 use busbar_contract::{
+    Secret,
     persistence::{
         archive::{self, Header, Table, VerifiedArchive},
         legacy_row::Row,
     },
-    Secret,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -87,116 +87,6 @@ pub trait Grouping: Send + Sync {
         native_key: &[u8],
         row: Row<'_>,
     ) -> Result<LogicalGroup, Error>;
-}
-#[derive(Debug)]
-pub struct SqlGroups {
-    profile: Profile,
-}
-impl SqlGroups {
-    pub fn new(profile: Profile) -> Self {
-        Self { profile }
-    }
-}
-impl Grouping for SqlGroups {
-    fn verify_inventory(
-        &self,
-        source: &mut dyn ArchiveRows,
-        _metadata_bytes: usize,
-    ) -> Result<(), Error> {
-        super::legacy::group::verify_sql_identity_inventory(self.profile, source)
-    }
-
-    fn classify(
-        &self,
-        header: &Header,
-        table: &Table,
-        key: &[u8],
-        row: Row<'_>,
-    ) -> Result<LogicalGroup, Error> {
-        let format = self.profile.importer_format();
-        if header.owner != format.owner || header.physical != format.physical {
-            return Err(Error::IdentityMismatch);
-        }
-        let mut columns = Vec::new();
-        columns
-            .try_reserve_exact(table.columns.len())
-            .map_err(|_| Error::Bounds)?;
-        columns.extend(table.columns.iter().map(String::as_str));
-        super::legacy::group::row_class_and_group(self.profile, &table.name, &columns, key, row)
-            .map_err(|_| Error::Corrupt)
-    }
-}
-#[derive(Debug)]
-pub struct ValkeyGroups {
-    profile: super::legacy::valkey::Profile,
-    source_db: u32,
-    physical: u32,
-}
-impl ValkeyGroups {
-    pub fn new(header: &Header) -> Result<Self, Error> {
-        if header.tables.len() != 1 || header.tables[0].name != "valkey" {
-            return Err(Error::Corrupt);
-        }
-        let table = &header.tables[0];
-        if !table
-            .columns
-            .iter()
-            .map(String::as_str)
-            .eq(super::legacy::valkey::NATIVE_COLUMNS.iter().copied())
-            || header.catalogue_digest != archive::digest(&table.native_layout)
-        {
-            return Err(Error::IdentityMismatch);
-        }
-        let layout = super::legacy::valkey::NativeLayout::decode(&table.native_layout)
-            .map_err(|_| Error::Corrupt)?;
-        let format = layout.importer_format();
-        if header.owner != format.owner || header.physical != format.physical {
-            return Err(Error::IdentityMismatch);
-        }
-        Ok(Self {
-            profile: layout.profile,
-            source_db: layout.source_db,
-            physical: format.physical,
-        })
-    }
-}
-impl Grouping for ValkeyGroups {
-    fn verify_inventory(
-        &self,
-        source: &mut dyn ArchiveRows,
-        metadata_bytes: usize,
-    ) -> Result<(), Error> {
-        let table = source.header().tables.first().ok_or(Error::Corrupt)?;
-        let layout = super::legacy::valkey::NativeLayout::decode(&table.native_layout)
-            .map_err(|_| Error::Corrupt)?;
-        super::legacy::valkey::verify_inventory(&layout, source, metadata_bytes)
-    }
-    fn classify(
-        &self,
-        header: &Header,
-        table: &Table,
-        key: &[u8],
-        row: Row<'_>,
-    ) -> Result<LogicalGroup, Error> {
-        if header.owner != super::legacy::valkey::IMPORTER_OWNER || header.physical != self.physical
-        {
-            return Err(Error::IdentityMismatch);
-        }
-        let mut columns = Vec::new();
-        columns
-            .try_reserve_exact(table.columns.len())
-            .map_err(|_| Error::Bounds)?;
-        columns.extend(table.columns.iter().map(String::as_str));
-        super::legacy::group::valkey_row_class_and_group(
-            self.profile,
-            self.source_db,
-            &table.name,
-            &columns,
-            key,
-            row,
-        )
-        .map_err(|_| Error::Corrupt)
-    }
 }
 fn copy_header(header: &Header, budget: usize) -> Result<(Header, usize), Error> {
     let mut charge = std::mem::size_of::<Header>();
@@ -661,19 +551,6 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
             });
         }
         Ok(records)
-    }
-    pub fn table_layouts(&self) -> Result<Vec<TableLayout>, Error> {
-        let mut tables = Vec::new();
-        tables
-            .try_reserve_exact(self.header.tables.len())
-            .map_err(|_| Error::Bounds)?;
-        for table in &self.header.tables {
-            tables.push(TableLayout {
-                table: table.name.clone(),
-                columns: table.columns.clone(),
-            });
-        }
-        Ok(tables)
     }
 }
 impl<R: Read + Seek + Send> ArchiveSource<R> {
