@@ -8,10 +8,7 @@ use crate::{
         self,
         archive::Provenance,
         projection::ProjectionSource,
-        transform::{
-            HistoryBinding, NativeProofs, RecordBinding, SqlTransform, TableLayout, TokenBinding,
-        },
-        valkey_transform::ValkeyTransform,
+        transform::{HistoryBinding, NativeProofs, RecordBinding, TokenBinding},
     },
     *,
 };
@@ -22,12 +19,8 @@ use busbar_contract::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 mod parents;
-pub use parents::{with_parent_graph_from_facts, with_parent_graph_from_frozen};
+pub use parents::with_parent_graph_from_facts;
 
-enum Profile {
-    Sql(legacy::Profile),
-    Valkey,
-}
 #[derive(Clone, Default)]
 pub struct Bindings {
     pub records: Vec<RecordBinding>,
@@ -163,7 +156,6 @@ pub struct FrozenCapabilities {
     pub recovery: Option<Arc<legacy::recovery::FencedReceiptProofs>>,
 }
 pub struct PreparedRoute {
-    profile: Profile,
     reader: lifecycle::SourceReader,
     source: lifecycle::SourceIdentity,
     target_format: Format,
@@ -193,27 +185,6 @@ impl PreparedRoute {
             return Err(Error::IdentityMismatch);
         }
         let format = importer_format(source.format.ok_or(Error::UnsupportedPath)?)?;
-        let profile = if format.owner == legacy::valkey::IMPORTER_OWNER {
-            if format.logical != 1
-                || format.codec != 1
-                || !(6..=9).contains(&format.physical)
-                || catalogue.len() != 1
-                || catalogue[0].name != "valkey"
-                || !catalogue[0]
-                    .columns
-                    .iter()
-                    .map(String::as_str)
-                    .eq(legacy::valkey::NATIVE_COLUMNS.iter().copied())
-            {
-                return Err(Error::UnsupportedPath);
-            }
-            Profile::Valkey
-        } else {
-            Profile::Sql(
-                legacy::Profile::from_importer_format(format)
-                    .map_err(|_| Error::UnsupportedPath)?,
-            )
-        };
         let mut hash = Sha256::new();
         field(&mut hash, b"busbar.native.prepared-route/1");
         field(&mut hash, &legacy::transform::code_digest());
@@ -246,7 +217,6 @@ impl PreparedRoute {
         }
         let digest = hash.finalize().into();
         Ok(Self {
-            profile,
             reader,
             source: source.clone(),
             target_format,
@@ -403,75 +373,35 @@ impl PreparedRoute {
             overlay,
             recovery,
         } = capabilities;
-        let compiled = match self.profile {
-            Profile::Sql(profile) => {
-                let layouts = catalogue
-                    .iter()
-                    .map(|table| TableLayout {
-                        table: table.name.clone(),
-                        columns: table.columns.clone(),
-                    })
-                    .collect();
-                let mut transform = SqlTransform::registered(
-                    profile,
-                    provenance,
-                    layouts,
-                    records,
-                    histories,
-                    tokens,
-                    self.bounds,
-                )?;
-                if let Some(journal) = journal {
-                    transform = transform.with_journal(journal)?;
-                }
-                if let Some(overlay) = overlay {
-                    transform = transform.with_overlay(overlay)?;
-                }
-                if let Some(recovery) = recovery {
-                    transform = transform.with_recovery(recovery)?;
-                }
-                Compiled::Sql(transform.with_projection(projection)?)
-            }
-            Profile::Valkey => {
-                if catalogue.len() != 1
-                    || catalogue[0].name != "valkey"
-                    || !catalogue[0]
-                        .columns
-                        .iter()
-                        .map(String::as_str)
-                        .eq(legacy::valkey::NATIVE_COLUMNS.iter().copied())
-                {
-                    return Err(Error::IdentityMismatch);
-                }
-                let facts = legacy::valkey::NativeLayout::decode(&catalogue[0].native_layout)
-                    .map_err(|_| Error::Corrupt)?;
-                if !matches!(facts.evidence, legacy::valkey::NativeEvidence::Snapshot { native_anchor, .. } if native_anchor == self.source.native_anchor)
-                {
-                    return Err(Error::IdentityMismatch);
-                }
-                let mut transform = ValkeyTransform::registered(
-                    provenance,
-                    &catalogue[0].native_layout,
-                    records,
-                    histories,
-                    tokens,
-                    self.bounds,
-                )?;
-                if transform.descriptor().source != source.format {
-                    return Err(Error::IdentityMismatch);
-                }
-                if let Some(journal) = journal {
-                    transform = transform.with_journal(journal)?;
-                }
-                if let Some(overlay) = overlay {
-                    transform = transform.with_overlay(overlay)?;
-                }
-                if let Some(recovery) = recovery {
-                    transform = transform.with_recovery(recovery)?;
-                }
-                Compiled::Valkey(transform.with_projection(projection)?)
-            }
-        };
+        let view = projection
+            .fact_view()
+            .ok_or(Error::MissingCapability)?
+            .clone();
+        if view.reader() != self.reader {
+            return Err(Error::IdentityMismatch);
+        }
+        let mut compiled = legacy::fact_transform::FactTransform::registered(
+            source.format,
+            provenance,
+            catalogue,
+            view,
+            Bindings {
+                records,
+                histories,
+                tokens,
+            },
+            self.bounds,
+        )?;
+        if let Some(journal) = journal {
+            compiled = compiled.with_journal(journal)?;
+        }
+        if let Some(overlay) = overlay {
+            compiled = compiled.with_overlay(overlay)?;
+        }
+        if let Some(recovery) = recovery {
+            compiled = compiled.with_recovery(recovery)?;
+        }
+        let compiled = compiled.with_projection(projection)?;
         let compiled = Arc::new(compiled);
         let registry = Registry::new(vec![compiled.edge().clone()])?;
         Ok(BoundRoute {
@@ -756,37 +686,8 @@ fn binding_subset(effective: &Bindings, inventory: &Bindings) -> bool {
             })
         })
 }
-enum Compiled {
-    Sql(SqlTransform),
-    Valkey(ValkeyTransform),
-}
-impl Transform for Compiled {
-    fn edge(&self) -> &Edge {
-        match self {
-            Self::Sql(t) => t.edge(),
-            Self::Valkey(t) => t.edge(),
-        }
-    }
-    fn authorize(&self, family: &Family, address: &Address) -> bool {
-        match self {
-            Self::Sql(t) => t.authorize(family, address),
-            Self::Valkey(t) => t.authorize(family, address),
-        }
-    }
-    fn transform(
-        &self,
-        family: &Family,
-        records: &[Record],
-        bounds: Bounds,
-    ) -> Result<Vec<TargetRow>, Error> {
-        match self {
-            Self::Sql(t) => t.transform(family, records, bounds),
-            Self::Valkey(t) => t.transform(family, records, bounds),
-        }
-    }
-}
 struct Readback {
-    compiled: Arc<Compiled>,
+    compiled: Arc<legacy::fact_transform::FactTransform>,
     proofs: Arc<dyn NativeProofs>,
 }
 impl NativeReadback for Readback {
@@ -801,24 +702,14 @@ impl NativeReadback for Readback {
         bounds: Bounds,
         native: &[(Address, Secret<Vec<u8>>)],
     ) -> Result<Digest32, Error> {
-        let proof = match self.compiled.as_ref() {
-            Compiled::Sql(t) => t.verify_page(
-                source,
-                family,
-                records,
-                bounds,
-                native,
-                self.proofs.as_ref(),
-            )?,
-            Compiled::Valkey(t) => t.verify_page(
-                source,
-                family,
-                records,
-                bounds,
-                native,
-                self.proofs.as_ref(),
-            )?,
-        };
+        let proof = self.compiled.verify_page(
+            source,
+            family,
+            records,
+            bounds,
+            native,
+            self.proofs.as_ref(),
+        )?;
         Ok(proof.semantics_digest)
     }
 }
@@ -830,119 +721,7 @@ pub struct BoundRoute {
     pub prepared_digest: Digest32,
 }
 
-/// Read the actual entire frozen physical inventory, selecting original legacy
-/// audit rows by the compiled profile. Zero is established by that complete
-/// scan; it is never a fabricated empty proof. Optional native ancestry owns
-/// parent and historical receipt resolution, independently of audit validity.
-pub fn proofs_from_frozen(
-    format: Format,
-    provenance: Provenance,
-    source: &mut dyn crate::archive_source::ArchiveRows,
-    semantic_bytes: usize,
-    ancestry: Option<Arc<dyn NativeProofs>>,
-) -> Result<Arc<dyn NativeProofs>, Error> {
-    use busbar_contract::persistence::legacy_row::Row;
-    use legacy::transform::CompleteAuditProofs;
-    if source.header().owner != format.owner
-        || source.header().physical != format.physical
-        || semantic_bytes == 0
-    {
-        return Err(Error::IdentityMismatch);
-    }
-    let sql = if format.owner == legacy::valkey::IMPORTER_OWNER {
-        None
-    } else {
-        Some(legacy::Profile::from_importer_format(format).map_err(|_| Error::UnsupportedPath)?)
-    };
-    let valkey = if sql.is_none() {
-        let table = source.header().tables.first().ok_or(Error::Corrupt)?;
-        if source.header().tables.len() != 1 || table.name != "valkey" {
-            return Err(Error::Corrupt);
-        }
-        let layout = legacy::valkey::NativeLayout::decode(&table.native_layout)
-            .map_err(|_| Error::Corrupt)?;
-        if layout.importer_format() != format {
-            return Err(Error::IdentityMismatch);
-        }
-        Some(layout)
-    } else {
-        None
-    };
-    let mut audit = Vec::new();
-    let mut actual_count = 0usize;
-    let mut charge = 0usize;
-    let seal = crate::seal::lend();
-    for ordinal in 0..source.row_count() {
-        let original = source.read_row(ordinal)?;
-        let table = source
-            .header()
-            .tables
-            .get(original.table as usize)
-            .ok_or(Error::Corrupt)?;
-        if sql.is_some() && table.name != "audit_log" {
-            continue;
-        }
-        let row = Row::decode(original.value.expose(&seal)).map_err(|_| Error::Corrupt)?;
-        let selected = if let Some(profile) = sql {
-            let upper = original
-                .value
-                .expose(&seal)
-                .len()
-                .checked_mul(32)
-                .and_then(|v| v.checked_add(1024))
-                .ok_or(Error::Bounds)?;
-            charge = charge.checked_add(upper).ok_or(Error::Bounds)?;
-            if charge > semantic_bytes {
-                return Err(Error::Bounds);
-            }
-            let columns = table.columns.iter().map(String::as_str).collect::<Vec<_>>();
-            let legacy::HistoricalRow::Audit(record) =
-                legacy::decode(profile, &table.name, &columns, row).map_err(|_| Error::Corrupt)?
-            else {
-                return Err(Error::Corrupt);
-            };
-            Some(record)
-        } else {
-            let layout = valkey.as_ref().ok_or(Error::Corrupt)?;
-            let cell = legacy::valkey::physical(row).map_err(|_| Error::Corrupt)?;
-            if cell.database == layout.source_db
-                && cell.key == b"busbar:audit"
-                && cell.kind == legacy::valkey::PhysicalKind::SortedSet
-            {
-                let upper = original
-                    .value
-                    .expose(&seal)
-                    .len()
-                    .checked_mul(32)
-                    .and_then(|v| v.checked_add(1024))
-                    .ok_or(Error::Bounds)?;
-                charge = charge.checked_add(upper).ok_or(Error::Bounds)?;
-                if charge > semantic_bytes {
-                    return Err(Error::Bounds);
-                }
-                Some(legacy::valkey::audit(cell.position).map_err(|_| Error::Corrupt)?)
-            } else {
-                None
-            }
-        };
-        if let Some(record) = selected {
-            audit.try_reserve(1).map_err(|_| Error::Bounds)?;
-            actual_count = actual_count.checked_add(1).ok_or(Error::Bounds)?;
-            audit.push(record);
-        }
-    }
-    let audit = CompleteAuditProofs::from_complete_source(
-        format,
-        provenance,
-        audit,
-        u64::try_from(actual_count).map_err(|_| Error::Bounds)?,
-    )?;
-    Ok(Arc::new(FrozenProofs {
-        audit: Arc::new(audit),
-        ancestry,
-    }))
-}
-/// Complete logical audit verification from an evidence-admitted source view.
+/// Extract and verify the complete admitted logical audit inventory.
 pub fn proofs_from_facts(
     format: Format,
     provenance: Provenance,
@@ -983,9 +762,8 @@ pub fn proofs_from_facts(
         Ok(())
     })?;
     let count = u64::try_from(audit.len()).map_err(|_| Error::Bounds)?;
-    let audit = legacy::transform::CompleteAuditProofs::from_complete_source(
-        format, provenance, audit, count,
-    )?;
+    let audit =
+        legacy::transform::CompleteAuditProofs::from_complete_facts(provenance, audit, count)?;
     Ok(Arc::new(FrozenProofs {
         audit: Arc::new(audit),
         ancestry,
@@ -1046,8 +824,6 @@ impl NativeProofs for FrozenProofs {
 #[cfg(test)]
 mod binding_tests {
     use super::*;
-    use busbar_contract::persistence::legacy_row::{self, Cell};
-    busbar_contract::own_seal!(Own);
 
     fn collection(kind: &str) -> legacy::transform::Collection {
         legacy::transform::Collection {
@@ -1084,7 +860,7 @@ mod binding_tests {
                 native_anchor: [1; 32],
                 dataset: busbar_contract::persistence::DatasetId([2; 16]),
                 format: Some(lifecycle::Format {
-                    owner: lifecycle::SQLITE_SOURCE_OWNER,
+                    owner: *b"fixture.source01",
                     physical: 6,
                     logical: 1,
                     codec: 1,
@@ -1245,164 +1021,76 @@ mod binding_tests {
             .is_empty());
     }
 
-    #[test]
-    fn actual_sql_token_with_ambiguous_historical_owner_refuses() {
+    #[tokio::test]
+    async fn actual_token_fact_with_ambiguous_historical_owner_refuses() {
         let bindings = dormant_safe_bindings(&competing_inventory(), 65536).unwrap();
-        let tables = [
-            "audit_log",
-            "credentials",
-            "denylist",
-            "keys",
-            "plane_records",
-            "plane_tokens",
-            "schema_records",
-            "store_meta",
-            "store_ops",
-            "store_revision",
-            "usage_metering",
-            "usage_metering_exact",
-            "usage_metering_units",
-            "usage_window_exact",
-            "usage_window_units",
-            "usage_windows",
-        ];
-        let layouts = tables
-            .into_iter()
-            .map(|table| TableLayout {
-                table: table.into(),
-                columns: if table == "plane_tokens" {
-                    vec!["kind".into(), "token".into(), "expires_at".into()]
-                } else {
-                    vec!["unused".into()]
-                },
-            })
-            .collect();
+        let source = crate::source_facts::test_archive(
+            vec![lifecycle::source::HistoricalFact::Token {
+                kind: "shared".into(),
+                token: Secret::new(b"spent".to_vec()),
+                expires_at: 6000,
+            }],
+            65536,
+        );
+        let identity = source.identity();
         let bounds = Bounds {
             items: 16,
             bytes: 65536,
         };
-        let transform = SqlTransform::registered(
-            legacy::Profile::SqliteDev9,
+        let transform = legacy::fact_transform::FactTransform::registered(
+            identity.format,
             Provenance {
-                dataset: [8; 16],
-                catalogue: [9; 32],
+                dataset: identity.dataset,
+                catalogue: source.header().catalogue_digest,
             },
-            layouts,
-            bindings.records,
-            bindings.histories,
-            bindings.tokens,
+            &source.header().tables,
+            source.interpretation().unwrap().clone(),
+            bindings,
             bounds,
         )
+        .unwrap()
+        .with_projection(source.clone())
         .unwrap();
-        let value = legacy_row::encode::<Own>(
-            &[
-                Cell::Text(b"shared"),
-                Cell::Text(b"spent"),
-                Cell::Integer(6000),
-            ],
-            65536,
-        )
-        .unwrap();
-        let row = Record {
-            key: legacy::transform::source_key("plane_tokens", b"native-token").unwrap(),
-            value: Secret::new(value.expose_own(&Own::here()).clone()),
-            preserve_exact: true,
-        };
         let family = transform
             .edge()
             .families
             .iter()
-            .find(|f| f.id == legacy::transform::ARCHIVAL)
+            .find(|family| family.id == legacy::transform::ARCHIVAL)
+            .unwrap();
+        let page = source
+            .page(&source.snapshot(), family, 0, bounds)
+            .await
             .unwrap();
         assert!(matches!(
-            transform.transform(family, &[row], bounds),
+            transform.transform(family, &page.records, bounds),
             Err(Error::MissingCapability)
         ));
     }
-
     #[test]
-    fn actual_valkey_token_with_ambiguous_historical_owner_refuses() {
-        let bindings = dormant_safe_bindings(&competing_inventory(), 65536).unwrap();
-        let counts = 1u64.to_le_bytes();
-        let layout = legacy_row::encode::<Own>(
-            &[
-                Cell::Text(b"busbar.valkey.native-inventory/1"),
-                Cell::Integer(0),
-                Cell::Integer(9),
-                Cell::Integer(0x90103),
-                Cell::Blob(&[1; 32]),
-                Cell::Blob(&[2; 32]),
-                Cell::Blob(&[3; 32]),
-                Cell::Blob(&[4; 32]),
-                Cell::Integer(1),
-                Cell::Blob(&counts),
-            ],
-            65536,
-        )
-        .unwrap();
-        let bounds = Bounds {
-            items: 16,
-            bytes: 65536,
-        };
-        let transform = ValkeyTransform::registered(
-            Provenance {
-                dataset: [8; 16],
-                catalogue: [9; 32],
+    fn exact_reader_identity_pins_resume_descriptor() {
+        let first = route();
+        let same = route();
+        assert_eq!(first.descriptor_digest(), same.descriptor_digest());
+        let changed = PreparedRoute::inspect(
+            first.source(),
+            &[Table {
+                name: "records".into(),
+                columns: vec!["value".into()],
+                native_layout: vec![1],
+            }],
+            Bounds {
+                items: 16,
+                bytes: 65536,
             },
-            layout.expose_own(&Own::here()),
-            bindings.records,
-            bindings.histories,
-            bindings.tokens,
-            bounds,
+            CORE_FORMAT,
+            lifecycle::SourceReader::new(
+                lifecycle::SourceCodec::HistoricalV1,
+                lifecycle::DocumentSemantics::Historical,
+                [9; 32],
+            )
+            .unwrap(),
         )
         .unwrap();
-        let key = format!(
-            "busbar:plane:{}:tok:{}",
-            hex::encode(b"shared"),
-            hex::encode(b"spent")
-        );
-        let rows = [(0, b"string".as_slice()), (1, b"6000".as_slice())]
-            .into_iter()
-            .map(|(kind, value)| {
-                let native = legacy_row::encode::<Own>(
-                    &[
-                        Cell::Integer(0),
-                        Cell::Integer(kind),
-                        Cell::Blob(key.as_bytes()),
-                        Cell::Blob(b""),
-                    ],
-                    65536,
-                )
-                .unwrap();
-                let value = legacy_row::encode::<Own>(
-                    &[
-                        Cell::Integer(0),
-                        Cell::Integer(kind),
-                        Cell::Integer(-1),
-                        Cell::Blob(key.as_bytes()),
-                        Cell::Blob(b""),
-                        Cell::Blob(value),
-                    ],
-                    65536,
-                )
-                .unwrap();
-                Record {
-                    key: legacy::transform::source_key("valkey", native.expose_own(&Own::here()))
-                        .unwrap(),
-                    value: Secret::new(value.expose_own(&Own::here()).clone()),
-                    preserve_exact: true,
-                }
-            })
-            .collect::<Vec<_>>();
-        let family = transform
-            .edge()
-            .families
-            .iter()
-            .find(|f| f.id == legacy::transform::ARCHIVAL)
-            .unwrap();
-        assert!(matches!(
-            transform.transform(family, &rows, bounds),
-            Err(Error::MissingCapability)
-        ));
+        assert_ne!(first.descriptor_digest(), changed.descriptor_digest());
     }
 }

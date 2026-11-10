@@ -276,3 +276,86 @@ impl View {
         Ok(SourceProofDigest(digest.finish()))
     }
 }
+
+/// Logical-consumer fixture: native admission is exercised separately by the
+/// retained-source tests. No plugin format is interpreted by this fixture.
+#[cfg(test)]
+pub(crate) fn test_archive(
+    facts: Vec<HistoricalFact>,
+    budget: usize,
+) -> Arc<crate::archive_source::ArchiveSource<std::io::Cursor<zeroize::Zeroizing<Vec<u8>>>>> {
+    use busbar_contract::persistence::legacy_row;
+    busbar_contract::own_seal!(Fixture);
+    let reader = l::SourceReader::new(
+        l::SourceCodec::HistoricalV1,
+        l::DocumentSemantics::Current,
+        [9; 32],
+    )
+    .unwrap();
+    let limits = archive::Limits {
+        frame_bytes: budget,
+        total_bytes: 1 << 24,
+        rows: 1000,
+        tables: 3,
+        columns: 1,
+        index_bytes: budget,
+    };
+    let header = archive::Header {
+        owner: *b"fixture.source01",
+        physical: 1,
+        catalogue_digest: [3; 32],
+        native_anchor_digest: [0; 32],
+        capture: None,
+        tables: ["chunks", "facts", "source"]
+            .into_iter()
+            .map(|name| archive::Table {
+                name: name.into(),
+                columns: vec!["frame".into()],
+                native_layout: vec![1],
+            })
+            .collect(),
+    };
+    let mut writer = archive::Writer::new(Vec::new(), header, limits).unwrap();
+    for (ordinal, fact) in facts.into_iter().enumerate() {
+        let key = (ordinal as u64).to_be_bytes();
+        let chunk = SourceChunk {
+            reader,
+            family: fact.family(),
+            group: Secret::new(key.to_vec()),
+            sequence: 0,
+            complete: false,
+            evidence: vec![],
+            facts: vec![fact],
+        };
+        let encoded = l::codec::encode_source_chunk(
+            &chunk,
+            l::Bounds {
+                items: u32::MAX,
+                bytes: budget.try_into().unwrap(),
+            },
+        )
+        .unwrap();
+        let row = legacy_row::encode::<Fixture>(
+            &[Cell::Blob(encoded.expose(&crate::seal::lend()))],
+            budget,
+        )
+        .unwrap();
+        writer
+            .write_row(1, &key, row.expose_own(&Fixture::here()))
+            .unwrap();
+    }
+    let bytes = zeroize::Zeroizing::new(writer.finish().unwrap().0);
+    let source = archive::read(std::io::Cursor::new(bytes), limits).unwrap();
+    let view = View::new(reader, 0, 1, vec![2]).unwrap();
+    Arc::new(
+        crate::archive_source::ArchiveSource::open(
+            source,
+            Arc::new(grouping::FactGroups::new(view, budget).unwrap()),
+            budget,
+            [0; 3],
+        )
+        .unwrap()
+        .with_semantic_budget(budget)
+        .unwrap(),
+    )
+}

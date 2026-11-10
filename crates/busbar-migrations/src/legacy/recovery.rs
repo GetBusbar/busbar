@@ -5,18 +5,9 @@
 //! Only protected group keys and head hashes remain resident; original frames
 //! and head values are reread individually. This proves ancestry, never a new
 //! executable receipt, business outcome, or append-custody grant.
-use super::{
-    journal::{JournalPlan, Layout},
-    transform::ARCHIVAL,
-};
+use super::{journal::JournalPlan, transform::ARCHIVAL};
 use crate::{archive_source::ArchiveSource, Bounds, Error, Record};
-use busbar_contract::{
-    persistence::{
-        legacy_row::{Cell, Row},
-        Address,
-    },
-    Secret,
-};
+use busbar_contract::{persistence::Address, Secret};
 use busbar_kernel::persistence::import_target::{journal::VerifiedNode, records, recovery::*};
 use busbar_kernel_wal::JournalRecord;
 use sha2::{Digest, Sha256};
@@ -34,7 +25,6 @@ struct HeadFact {
 pub struct FrozenRecovery<R> {
     source: Arc<ArchiveSource<R>>,
     journal: Arc<JournalPlan<R>>,
-    layout: Layout,
     bounds: Bounds,
     frame_bytes: usize,
     heads: BTreeMap<[u8; 16], HeadFact>,
@@ -53,53 +43,17 @@ pub struct FencedReceiptProofs {
     applied: BTreeMap<Address, (Secret<Vec<u8>>, records::Rows)>,
     digest: [u8; 32],
 }
-fn bytes(cell: Cell<'_>) -> Option<&[u8]> {
-    match cell {
-        Cell::Text(v) | Cell::Blob(v) => Some(v),
-        _ => None,
-    }
-}
-fn operation(layout: Layout, group: &[u8]) -> Result<Option<[u8; 16]>, Error> {
+fn operation(group: &[u8]) -> Result<Option<[u8; 16]>, Error> {
     let fields = records::keys::components(group, b'G').map_err(|_| Error::Corrupt)?;
-    let key = match layout {
-        Layout::Sql(profile) => {
-            let table = if matches!(
-                profile,
-                super::Profile::SqliteDev7
-                    | super::Profile::SqliteDev8
-                    | super::Profile::SqliteDev9
-            ) {
-                b"schema_records".as_slice()
-            } else {
-                b"store_records".as_slice()
-            };
-            if fields.len() != 3 || fields[0] != b"X" || fields[1] != table {
-                return Ok(None);
-            }
-            let native = Row::decode(fields[2]).map_err(|_| Error::Corrupt)?;
-            let mut cells = native.cells();
-            if cells.len() != 2 {
-                return Err(Error::Corrupt);
-            }
-            if bytes(cells.next().ok_or(Error::Corrupt)?) != Some(HEAD_SCHEMA) {
-                return Ok(None);
-            }
-            bytes(cells.next().ok_or(Error::Corrupt)?).ok_or(Error::Corrupt)?
-        }
-        Layout::Facts | Layout::Valkey { .. } => {
-            if fields.len() != 3 || fields[0] != b"R" || fields[1] != HEAD_SCHEMA {
-                return Ok(None);
-            }
-            fields[2]
-        }
-    };
-    Ok(Some(key.try_into().map_err(|_| Error::Corrupt)?))
+    if fields.len() != 3 || fields[0] != b"R" || fields[1] != HEAD_SCHEMA {
+        return Ok(None);
+    }
+    Ok(Some(fields[2].try_into().map_err(|_| Error::Corrupt)?))
 }
 impl<R: Read + Seek + Send> FrozenRecovery<R> {
     pub fn verify(
         source: Arc<ArchiveSource<R>>,
         journal: Arc<JournalPlan<R>>,
-        layout: Layout,
         bounds: Bounds,
         metadata_bytes: usize,
         frame_bytes: usize,
@@ -121,7 +75,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
         let mut heads = BTreeMap::new();
         let mut charge = 0usize;
         source.visit_group_keys(ARCHIVAL, &mut |key| {
-            let Some(op) = operation(layout, key.expose(&crate::seal::lend()))? else {
+            let Some(op) = operation(key.expose(&crate::seal::lend()))? else {
                 return Ok(());
             };
             charge = charge
@@ -131,7 +85,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             if charge > metadata_bytes {
                 return Err(Error::Bounds);
             }
-            let value = read_head(&source, layout, key, op, bounds)?;
+            let value = read_head(&source, key, op, bounds)?;
             let digest = Sha256::digest(value.expose(&crate::seal::lend())).into();
             if heads
                 .insert(
@@ -157,7 +111,6 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
         let mut inventory = Self {
             source,
             journal,
-            layout,
             bounds,
             frame_bytes,
             heads,
@@ -231,12 +184,11 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
         })?;
         let mut receipts = BTreeMap::new();
         self.source.visit_group_keys(ARCHIVAL, &mut |key| {
-            if !is_receipt(self.layout, key.expose(&crate::seal::lend()))? {
+            if !is_receipt(key.expose(&crate::seal::lend()))? {
                 return Ok(());
             }
-            with_receipt(
+            with_fact_receipt(
                 &self.source,
-                self.layout,
                 key,
                 provenance,
                 self.bounds,
@@ -283,7 +235,7 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
             let op = selection.initial.operation_id;
             let fact = receipts.get(&op).ok_or(Error::ReconciliationRequired)?;
             let head_fact = self.heads.get(&op).ok_or(Error::Verification)?;
-            let head = read_head(&self.source, self.layout, &head_fact.group, op, self.bounds)?;
+            let head = read_head(&self.source, &head_fact.group, op, self.bounds)?;
             if <[u8; 32]>::from(Sha256::digest(head.expose(&crate::seal::lend())))
                 != head_fact.digest
             {
@@ -378,7 +330,6 @@ impl<R: Read + Seek + Send> FrozenRecovery<R> {
 }
 fn read_head<R: Read + Seek + Send>(
     source: &ArchiveSource<R>,
-    layout: Layout,
     key: &Secret<Vec<u8>>,
     operation: [u8; 16],
     bounds: Bounds,
@@ -390,79 +341,20 @@ fn read_head<R: Read + Seek + Send>(
         bounds.bytes as usize,
         &mut |record: &Record| {
             let seal = crate::seal::lend();
-            let (table, _) =
-                super::transform::source_parts(&record.key).map_err(|_| Error::Corrupt)?;
-            let row = Row::decode(record.value.expose(&seal)).map_err(|_| Error::Corrupt)?;
-            let interpreted;
-            let bytes = match layout {
-                Layout::Facts => {
-                    let view = source.interpretation().ok_or(Error::MissingCapability)?;
-                    interpreted = view.decode_row(row, bounds.bytes as usize)?;
-                    let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
-                        schema,
-                        key,
-                        value,
-                    } = interpreted.fact()
-                    else {
-                        return Err(Error::Corrupt);
-                    };
-                    if schema.as_bytes() != HEAD_SCHEMA || key.expose(&seal).as_slice() != operation
-                    {
-                        return Err(Error::Verification);
-                    }
-                    value.expose(&seal)
-                }
-                Layout::Sql(_) => {
-                    let columns = source
-                        .header()
-                        .tables
-                        .iter()
-                        .find(|t| t.name == table)
-                        .ok_or(Error::Corrupt)?
-                        .columns
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>();
-                    let mysql = matches!(
-                        layout,
-                        Layout::Sql(
-                            super::Profile::MysqlDev4
-                                | super::Profile::MysqlDev5
-                                | super::Profile::MysqlDev7
-                        )
-                    );
-                    let (schema, keycol) = if table == "schema_records" {
-                        ("schema", "record_key")
-                    } else {
-                        ("schema_id", if mysql { "rkey" } else { "key" })
-                    };
-                    let cells =
-                        super::Columns::new(mysql, &columns, row, &[schema, keycol, "value"])
-                            .map_err(|_| Error::Corrupt)?;
-                    if cells.bytes(schema).map_err(|_| Error::Corrupt)? != HEAD_SCHEMA
-                        || cells.bytes(keycol).map_err(|_| Error::Corrupt)? != operation
-                    {
-                        return Err(Error::Verification);
-                    }
-                    cells.bytes("value").map_err(|_| Error::Corrupt)?
-                }
-                Layout::Valkey { database, .. } => {
-                    let cell = super::valkey::physical(row).map_err(|_| Error::Corrupt)?;
-                    if cell.database != database
-                        || cell.position != operation
-                        || cell.expires_at_ms.is_some()
-                    {
-                        return Err(Error::Verification);
-                    }
-                    match cell.kind {
-                        super::valkey::PhysicalKind::Hash => cell.value,
-                        super::valkey::PhysicalKind::SortedSet if cell.value == b"0" => {
-                            return Ok(());
-                        }
-                        _ => return Err(Error::Verification),
-                    }
-                }
+            let view = source.interpretation().ok_or(Error::MissingCapability)?;
+            let interpreted = view.decode(record.value.expose(&seal), bounds.bytes as usize)?;
+            let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
+                schema,
+                key,
+                value: payload,
+            } = interpreted.fact()
+            else {
+                return Err(Error::Corrupt);
             };
+            if schema.as_bytes() != HEAD_SCHEMA || key.expose(&seal).as_slice() != operation {
+                return Err(Error::Verification);
+            }
+            let bytes = payload.expose(&seal);
             records::recovery::legacy_head_address(&operation, bytes)
                 .map_err(|_| Error::Verification)?;
             if value.replace(Secret::new(bytes.to_vec())).is_some() {
@@ -492,14 +384,8 @@ impl<R: Read + Seek + Send> RecoveryHistory for FrozenRecovery<R> {
         let Some(fact) = self.heads.get(operation) else {
             return Ok(None);
         };
-        let head = read_head(
-            &self.source,
-            self.layout,
-            &fact.group,
-            *operation,
-            self.bounds,
-        )
-        .map_err(|e| RecoveryError::Invalid(format!("frozen head: {e:?}")))?;
+        let head = read_head(&self.source, &fact.group, *operation, self.bounds)
+            .map_err(|e| RecoveryError::Invalid(format!("frozen head: {e:?}")))?;
         if <[u8; 32]>::from(Sha256::digest(head.expose(&crate::seal::lend()))) != fact.digest {
             return Err(RecoveryError::Invalid("frozen head changed".into()));
         }
@@ -507,118 +393,9 @@ impl<R: Read + Seek + Send> RecoveryHistory for FrozenRecovery<R> {
     }
 }
 
-fn is_receipt(layout: Layout, group: &[u8]) -> Result<bool, Error> {
+fn is_receipt(group: &[u8]) -> Result<bool, Error> {
     let fields = records::keys::components(group, b'G').map_err(|_| Error::Corrupt)?;
-    Ok(match layout {
-        Layout::Facts => fields.len() == 2 && fields[0] == b"C" && fields[1].len() == 16,
-        Layout::Sql(_) => fields.len() == 3 && fields[0] == b"X" && fields[1] == b"store_ops",
-        Layout::Valkey { .. } => {
-            fields.len() == 2 && fields[0] == b"T" && fields[1].starts_with(b"busbar:op:")
-        }
-    })
-}
-fn with_receipt<R: Read + Seek + Send>(
-    source: &ArchiveSource<R>,
-    layout: Layout,
-    key: &Secret<Vec<u8>>,
-    provenance: super::archive::Provenance,
-    bounds: Bounds,
-    visitor: &mut dyn FnMut(Address, super::archive::Receipt<'_>) -> Result<(), Error>,
-) -> Result<(), Error> {
-    if matches!(layout, Layout::Facts) {
-        return with_fact_receipt(source, key, provenance, bounds, visitor);
-    }
-    let mut rows = Vec::new();
-    source.visit_group_rows(ARCHIVAL, key, bounds.bytes as usize, &mut |row| {
-        // Known SQL receipts have one physical row; known Valkey receipts have
-        // exactly one header and one hash field. Additional data is unresolved.
-        if rows.len() >= 2 {
-            return Err(Error::ReconciliationRequired);
-        }
-        rows.push(Record {
-            key: row.key.clone(),
-            value: Secret::new(row.value.expose(&crate::seal::lend()).clone()),
-            preserve_exact: true,
-        });
-        Ok(())
-    })?;
-    let seal = crate::seal::lend();
-    match layout {
-        Layout::Facts => Err(Error::Corrupt),
-        Layout::Sql(profile) => {
-            if rows.len() != 1 {
-                return Err(Error::Verification);
-            }
-            let (table, native) =
-                super::transform::source_parts(&rows[0].key).map_err(|_| Error::Corrupt)?;
-            let columns = source
-                .header()
-                .tables
-                .iter()
-                .find(|t| t.name == table)
-                .ok_or(Error::Corrupt)?
-                .columns
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            let retained = super::archive::sql(
-                profile,
-                provenance,
-                table,
-                &columns,
-                native,
-                rows[0].value.expose(&seal),
-                &[],
-            )
-            .map_err(|_| Error::Corrupt)?;
-            let super::archive::Route::Receipt(receipt) = retained.route else {
-                return Err(Error::Verification);
-            };
-            visitor(retained.address, receipt)
-        }
-        Layout::Valkey { database, .. } => {
-            let mut cells = Vec::new();
-            let mut address = None;
-            for row in &rows {
-                let (table, native) =
-                    super::transform::source_parts(&row.key).map_err(|_| Error::Corrupt)?;
-                if table != "valkey" {
-                    return Err(Error::Corrupt);
-                }
-                let cell = super::valkey::physical(
-                    Row::decode(row.value.expose(&seal)).map_err(|_| Error::Corrupt)?,
-                )
-                .map_err(|_| Error::Corrupt)?;
-                if cell.database != database {
-                    return Err(Error::Verification);
-                }
-                if cell.kind == super::valkey::PhysicalKind::Hash && cell.position == b"b" {
-                    address = Some(Address {
-                        namespace: super::archive::NAMESPACE.0,
-                        key: records::keys::framed(
-                            b'E',
-                            &[
-                                &provenance.dataset,
-                                &provenance.catalogue,
-                                b"valkey",
-                                native,
-                            ],
-                        )
-                        .map_err(|_| Error::Bounds)?,
-                    });
-                }
-                cells.push(cell);
-            }
-            let receipt = super::valkey_transform::receipt_group(
-                &cells,
-                Bounds {
-                    items: 2,
-                    bytes: bounds.bytes,
-                },
-            )?;
-            visitor(address.ok_or(Error::Verification)?, receipt.borrowed())
-        }
-    }
+    Ok(fields.len() == 2 && fields[0] == b"C" && fields[1].len() == 16)
 }
 fn with_fact_receipt<R: Read + Seek + Send>(
     source: &ArchiveSource<R>,
@@ -652,19 +429,7 @@ fn with_fact_receipt<R: Read + Seek + Send>(
         // complete source group, including companion metadata. It is independent
         // of backend-specific choices of a primary physical receipt cell.
         let origin = source.fact_origin_digest(&fact, bounds.bytes as usize)?;
-        let address = Address {
-            namespace: super::archive::NAMESPACE.0,
-            key: records::keys::framed(
-                b'E',
-                &[
-                    &provenance.dataset,
-                    &provenance.catalogue,
-                    b"source-receipt-v1",
-                    &origin.0,
-                ],
-            )
-            .map_err(|_| Error::Bounds)?,
-        };
+        let address = fact_receipt_reference(provenance, origin)?;
         visitor(
             address,
             super::archive::Receipt {
@@ -682,6 +447,27 @@ fn with_fact_receipt<R: Read + Seek + Send>(
         return Err(Error::Verification);
     }
     Ok(())
+}
+
+/// A proof reference committing to all original group members. This is not a
+/// claim that a derived logical receipt is a physical row in the target archive.
+pub(crate) fn fact_receipt_reference(
+    provenance: super::archive::Provenance,
+    origin: crate::source_facts::SourceProofDigest,
+) -> Result<Address, Error> {
+    Ok(Address {
+        namespace: super::archive::NAMESPACE.0,
+        key: records::keys::framed(
+            b'E',
+            &[
+                &provenance.dataset,
+                &provenance.catalogue,
+                b"source-receipt-v1",
+                &origin.0,
+            ],
+        )
+        .map_err(|_| Error::Bounds)?,
+    })
 }
 
 fn receipt_digest(

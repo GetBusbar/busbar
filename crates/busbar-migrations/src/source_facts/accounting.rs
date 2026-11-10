@@ -456,3 +456,153 @@ pub(crate) fn convert(facts: &[super::FactRow], out: &mut Output) -> Result<(), 
     }
     fragments(decoded.into_iter().map(|(_, row)| row).collect(), out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source_facts::FactRow;
+    use busbar_contract::{
+        persistence::lifecycle::{
+            source::{HistoricalFamily, SourceChunk},
+            DocumentSemantics, SourceCodec, SourceReader,
+        },
+        Secret,
+    };
+    fn fact(value: HistoricalFact) -> FactRow {
+        FactRow {
+            chunk: SourceChunk {
+                reader: SourceReader::new(
+                    SourceCodec::HistoricalV1,
+                    DocumentSemantics::Current,
+                    [1; 32],
+                )
+                .unwrap(),
+                family: HistoricalFamily::Accounting,
+                group: Secret::new(b"group".to_vec()),
+                sequence: 0,
+                complete: false,
+                evidence: vec![],
+                facts: vec![value],
+            },
+        }
+    }
+    fn ledger() -> UsageLedger {
+        UsageLedger {
+            requests: u64::MAX,
+            billable_requests: 3,
+            models: vec![ModelTokens {
+                scale: 6,
+                model: "m".into(),
+                usage_units: BTreeMap::from([
+                    ("input".into(), i128::from(i64::MAX) + 1),
+                    ("seconds".into(), 9),
+                ]),
+            }],
+        }
+    }
+    fn projected_group() -> Vec<FactRow> {
+        let usage = |model: &str, ledger, role| {
+            fact(HistoricalFact::Usage {
+                bucket: "bucket".into(),
+                window: 0,
+                model: model.into(),
+                requests: RequestAggregation::Dedicated,
+                ledger,
+                role,
+            })
+        };
+        vec![
+            usage("", ledger(), AccountingRole::ExactWithSigned64Projection),
+            usage(
+                "",
+                UsageLedger {
+                    requests: i64::MAX as u64,
+                    billable_requests: 3,
+                    models: vec![],
+                },
+                AccountingRole::Signed64Projection,
+            ),
+            usage(
+                "m",
+                UsageLedger {
+                    requests: 0,
+                    billable_requests: 0,
+                    models: vec![ModelTokens {
+                        scale: 6,
+                        model: "m".into(),
+                        usage_units: RESERVED_UNITS
+                            .into_iter()
+                            .map(|unit| {
+                                (
+                                    unit.into(),
+                                    if unit == "input" {
+                                        i128::from(i64::MAX)
+                                    } else {
+                                        0
+                                    },
+                                )
+                            })
+                            .collect(),
+                    }],
+                },
+                AccountingRole::Signed64Projection,
+            ),
+            fact(HistoricalFact::UsageUnit {
+                bucket: "bucket".into(),
+                window: 0,
+                model: "m".into(),
+                unit: "seconds".into(),
+                count: 9,
+                role: AccountingRole::Signed64Projection,
+            }),
+        ]
+    }
+    fn output(facts: &[FactRow]) -> Result<Vec<crate::TargetRow>, Error> {
+        let mut out = Output::new(crate::Bounds {
+            items: 32,
+            bytes: 65536,
+        });
+        convert(facts, &mut out)?;
+        Ok(out.finish())
+    }
+    #[test]
+    fn explicit_projection_requirement_preserves_wide_totals_and_refuses_missing_members() {
+        let expected = canonical_usage("bucket", 0, &ledger()).unwrap();
+        let rows = output(&projected_group()).unwrap();
+        for (address, value) in expected {
+            assert!(rows
+                .iter()
+                .any(|r| r.address == address && r.value == value));
+        }
+        for missing in 0..4 {
+            let mut facts = projected_group();
+            facts.remove(missing);
+            assert!(
+                matches!(output(&facts), Err(Error::Verification)),
+                "missing {missing}"
+            );
+        }
+        let mut wrong = projected_group();
+        if let HistoricalFact::UsageUnit { count, .. } = &mut wrong[3].chunk.facts[0] {
+            *count = 10;
+        }
+        assert!(matches!(output(&wrong), Err(Error::Verification)));
+    }
+    #[test]
+    fn standalone_exact_fact_needs_no_physical_projection() {
+        let input = fact(HistoricalFact::Usage {
+            bucket: "bucket".into(),
+            window: 0,
+            model: String::new(),
+            requests: RequestAggregation::Dedicated,
+            ledger: ledger(),
+            role: AccountingRole::Exact,
+        });
+        let rows = output(&[input]).unwrap();
+        for (address, value) in canonical_usage("bucket", 0, &ledger()).unwrap() {
+            assert!(rows
+                .iter()
+                .any(|r| r.address == address && r.value == value));
+        }
+    }
+}

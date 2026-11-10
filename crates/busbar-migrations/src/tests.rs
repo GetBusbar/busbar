@@ -225,7 +225,7 @@ impl SourceReader for Reader {
             next: after + 1,
             complete: after == 1,
             records: vec![Record {
-                key: vec![after as u8],
+                key: vec![after as u8].into(),
                 value: Secret::new(vec![42]),
                 preserve_exact: true,
             }],
@@ -252,7 +252,7 @@ impl Transform for CopyTransform {
             .map(|(index, r)| TargetRow {
                 address: Address {
                     namespace: family.target_namespace,
-                    key: r.key.clone(),
+                    key: r.key.to_vec(),
                 },
                 value: r.value.clone(),
                 preserved_source: Some(index as u32),
@@ -1652,7 +1652,7 @@ impl NativeReadback for ExactFixtureReadback {
                 .zip(values)
                 .any(|(record, (address, value))| {
                     address.namespace != family.target_namespace
-                        || address.key != record.key
+                        || address.key.as_slice() != record.key.as_slice()
                         || value != &record.value
                 })
         {

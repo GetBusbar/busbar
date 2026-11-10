@@ -67,7 +67,7 @@ pub fn sql_rows<'t>(
 ) -> Result<Vec<(&'t str, HistoricalRow<'static>)>, super::super::Error> {
     use super::super::Error as MigrationError;
     projection::verify_marker(source, transform::ACCOUNTING, marker)?;
-    let group = busbar_contract::Secret::new(marker.key.clone());
+    let group = busbar_contract::Secret::new(marker.key.to_vec());
     let mut decoded = Vec::new();
     let mut charge = 0usize;
     let count = source.visit(
@@ -195,7 +195,7 @@ mod tests {
         };
         let group = Secret::new(b"group".to_vec());
         let marker = Record {
-            key: b"group".to_vec(),
+            key: b"group".to_vec().into(),
             value: projection::encode_marker(&group, [7; 32]).unwrap(),
             preserve_exact: false,
         };

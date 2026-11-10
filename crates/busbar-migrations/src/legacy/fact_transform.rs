@@ -236,7 +236,7 @@ impl FactTransform {
         let mut facts = Vec::new();
         let count = source.visit(
             family.id,
-            &Secret::new(marker.key.clone()),
+            &Secret::new(marker.key.to_vec()),
             budget,
             &mut |record| {
                 charged = charged
@@ -259,7 +259,7 @@ impl FactTransform {
                     .key
                     .expose(&crate::seal::lend())
                     .as_slice()
-                    != marker.key
+                    != marker.key.as_slice()
                 {
                     return Err(Error::Verification);
                 }
@@ -400,6 +400,19 @@ impl FactTransform {
                     body,
                     append,
                 } => {
+                    let record = busbar_contract::records::PlaneRecordRef {
+                        kind,
+                        id,
+                        parent: parent.as_deref(),
+                        seq: *sequence,
+                        ts: *timestamp,
+                        disposition: *disposition,
+                        body: body.expose(&seal),
+                    };
+                    if let Some(rows) = builtin_history(record, *append)? {
+                        out.canonical(rows, false)?;
+                        continue;
+                    }
                     let binding = self.history(kind).ok_or(Error::MissingCapability)?;
                     let declaration = binding
                         .collections
@@ -433,6 +446,19 @@ impl FactTransform {
                     token,
                     expires_at,
                 } => {
+                    if kind == "ticket-spent" {
+                        out.canonical(
+                            vec![records::ticket::legacy_ticket_token(
+                                kind,
+                                std::str::from_utf8(token.expose(&seal))
+                                    .map_err(|_| Error::Corrupt)?,
+                                *expires_at,
+                            )
+                            .map_err(|_| Error::Verification)?],
+                            false,
+                        )?;
+                        continue;
+                    }
                     let mut candidates = self
                         .tokens
                         .iter()
@@ -568,5 +594,304 @@ impl Transform for FactTransform {
             bounds,
             |marker| self.logical(family, &self.load(family, marker)?, bounds),
         )
+    }
+}
+
+impl FactTransform {
+    pub fn verify_page(
+        &self,
+        source: &crate::Identity,
+        family: &Family,
+        input: &[Record],
+        bounds: Bounds,
+        native: &[(Address, Secret<Vec<u8>>)],
+        proofs: &dyn NativeProofs,
+    ) -> Result<PageVerification, Error> {
+        if !self.matches_source(source) {
+            return Err(Error::IdentityMismatch);
+        }
+        let expected = self.transform(family, input, bounds)?;
+        let mut verified = projection::verify_physical(
+            input,
+            &expected,
+            native,
+            &self.edge.verification_rule_digest,
+        )?;
+        if family.id == projection::PHYSICAL || family.id == super::overlay::FAMILY {
+            return Ok(verified);
+        }
+        let frozen = self.projection.as_deref().ok_or(Error::MissingCapability)?;
+        let mut semantic = Sha256::new();
+        hash_field(&mut semantic, &verified.semantics_digest);
+        hash_field(&mut semantic, b"admitted-owner-facts/readback/1");
+        for marker in input {
+            projection::verify_marker(frozen, family.id, marker)?;
+            hash_field(&mut semantic, &projection::decode_marker(marker)?);
+            if projection::is_journal_marker(marker)? {
+                hash_field(
+                    &mut semantic,
+                    &self
+                        .journal
+                        .as_ref()
+                        .ok_or(Error::MissingCapability)?
+                        .descriptor_digest(),
+                );
+                continue;
+            }
+            for fact in self.load(family, marker)? {
+                let seal = crate::seal::lend();
+                let proof = match fact.fact() {
+                    HistoricalFact::Audit(record) => {
+                        Some(proofs.historical_audit(self.provenance, record)?)
+                    }
+                    HistoricalFact::History { kind, .. } if builtin_history_kind(kind) => None,
+                    HistoricalFact::History { kind, parent, .. } => {
+                        let binding = self.history(kind).ok_or(Error::MissingCapability)?;
+                        let declaration = binding
+                            .collections
+                            .iter()
+                            .find(|c| c.kind == *kind)
+                            .ok_or(Error::MissingCapability)?;
+                        match &declaration.parent {
+                            Some(parent_kind) => Some(proofs.parent_present(
+                                self.provenance,
+                                &binding.owner,
+                                parent_kind,
+                                parent.as_deref().ok_or(Error::Verification)?,
+                            )?),
+                            None => None,
+                        }
+                    }
+                    HistoricalFact::Receipt {
+                        operation,
+                        body,
+                        answer,
+                        recorded_at,
+                        expires_at_ms,
+                        historical_digest,
+                        completed_shape,
+                    } => {
+                        let origin = frozen.fact_origin_digest(&fact, frozen.semantic_bytes())?;
+                        let address =
+                            super::recovery::fact_receipt_reference(self.provenance, origin)?;
+                        Some(proofs.resolve_original(
+                            self.provenance,
+                            &address,
+                            &archive::Receipt {
+                                operation,
+                                body: body.expose(&seal),
+                                answer: answer.expose(&seal),
+                                recorded_at: *recorded_at,
+                                expires_at_ms: *expires_at_ms,
+                                historical_digest: *historical_digest,
+                                completed_shape: *completed_shape,
+                            },
+                        )?)
+                    }
+                    _ => None,
+                };
+                if let Some(proof) = proof {
+                    if proof == [0; 32] {
+                        return Err(Error::Verification);
+                    }
+                    hash_field(&mut semantic, &proof);
+                }
+            }
+        }
+        verified.semantics_digest = semantic.finalize().into();
+        Ok(verified)
+    }
+}
+
+fn builtin_history_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "demotion" | "trust_decision" | "ticket" | "busbar.admin-idempotency"
+    )
+}
+fn builtin_history(
+    record: busbar_contract::records::PlaneRecordRef<'_>,
+    append: Option<bool>,
+) -> Result<Option<super::CanonicalRows>, Error> {
+    if !builtin_history_kind(record.kind) {
+        return Ok(None);
+    }
+    if append != Some(false) || record.seq != 0 || record.parent.is_some() {
+        return Err(Error::Verification);
+    }
+    Ok(Some(match record.kind {
+        "demotion" | "trust_decision" => {
+            vec![
+                records::trust::migration_trust_rows(record.kind, record.id, record.body)
+                    .map_err(|_| Error::Verification)?,
+            ]
+        }
+        "ticket" => {
+            if record.disposition != busbar_contract::records::PlaneDisposition::Active {
+                return Err(Error::Verification);
+            }
+            vec![
+                records::ticket::legacy_ticket_record(record.id, record.ts, record.body)
+                    .map_err(|_| Error::Verification)?,
+                records::ticket::legacy_ticket_expiry(record.id, record.ts)
+                    .map_err(|_| Error::Verification)?,
+            ]
+        }
+        "busbar.admin-idempotency" => vec![(
+            records::scoped::migration_address(
+                true,
+                "busbar.admin",
+                record.kind,
+                record.id.as_bytes(),
+            )
+            .map_err(|_| Error::Verification)?,
+            Secret::new(record.body.to_vec()),
+        )],
+        _ => return Err(Error::Corrupt),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SourceReader as _;
+    use busbar_contract::records::PlaneDisposition;
+    fn history(kind: &str, id: &str, body: &[u8]) -> HistoricalFact {
+        HistoricalFact::History {
+            kind: kind.into(),
+            id: id.into(),
+            parent: None,
+            sequence: 0,
+            timestamp: 17,
+            disposition: PlaneDisposition::Active,
+            body: Secret::new(body.to_vec()),
+            append: Some(false),
+        }
+    }
+    #[tokio::test]
+    async fn core_owned_historical_records_keep_routes_and_exact_readback() {
+        let ticket = "0123456789abcdef0123456789abcdef";
+        let body = b"original opaque consumer body";
+        let demotion = br#"{"server":"upstream","reason":"held","recorded_at":17}"#;
+        let source = crate::source_facts::test_archive(
+            vec![
+                history("ticket", ticket, body),
+                history("busbar.admin-idempotency", "request", body),
+                history("demotion", "upstream", demotion),
+                HistoricalFact::Token {
+                    kind: "ticket-spent".into(),
+                    token: Secret::new(ticket.as_bytes().to_vec()),
+                    expires_at: 17,
+                },
+            ],
+            1 << 20,
+        );
+        let mut identity = source.identity();
+        // This logical fixture has no native binding; the production binding
+        // selects the admitted catalogue identity before constructing routes.
+        identity.schema_digest = source.header().catalogue_digest;
+        let provenance = archive::Provenance {
+            dataset: identity.dataset,
+            catalogue: identity.schema_digest,
+        };
+        let bounds = Bounds {
+            items: 32,
+            bytes: 1 << 20,
+        };
+        let transform = FactTransform::registered(
+            identity.format,
+            provenance,
+            &source.header().tables,
+            source.interpretation().unwrap().clone(),
+            crate::routes::Bindings::default(),
+            bounds,
+        )
+        .unwrap()
+        .with_projection(source.clone())
+        .unwrap();
+        let family = transform
+            .edge()
+            .families
+            .iter()
+            .find(|f| f.id == ARCHIVAL)
+            .unwrap();
+        let page = source
+            .page(&source.snapshot(), family, 0, bounds)
+            .await
+            .unwrap();
+        assert!(page.complete);
+        let output = transform.transform(family, &page.records, bounds).unwrap();
+        let expected = [
+            records::ticket::legacy_ticket_record(ticket, 17, body).unwrap(),
+            records::ticket::legacy_ticket_expiry(ticket, 17).unwrap(),
+            records::ticket::legacy_ticket_token("ticket-spent", ticket, 17).unwrap(),
+            records::trust::migration_trust_rows("demotion", "upstream", demotion).unwrap(),
+            (
+                records::scoped::migration_address(
+                    true,
+                    "busbar.admin",
+                    "busbar.admin-idempotency",
+                    b"request",
+                )
+                .unwrap(),
+                Secret::new(body.to_vec()),
+            ),
+        ];
+        assert_eq!(output.len(), expected.len());
+        for (address, value) in expected {
+            assert!(output
+                .iter()
+                .any(|row| row.address == address && row.value == value));
+        }
+        let mut native = output
+            .into_iter()
+            .map(|row| (row.address, row.value))
+            .collect::<Vec<_>>();
+        let proofs = CompleteAuditProofs::from_complete_facts(provenance, vec![], 0).unwrap();
+        transform
+            .verify_page(&identity, family, &page.records, bounds, &native, &proofs)
+            .unwrap();
+        native[0].1 = Secret::new(vec![0]);
+        assert!(matches!(
+            transform.verify_page(&identity, family, &page.records, bounds, &native, &proofs),
+            Err(Error::Verification)
+        ));
+    }
+    #[test]
+    fn builtin_history_keeps_parent_append_and_terminal_refusals() {
+        let base = busbar_contract::records::PlaneRecordRef {
+            kind: "ticket",
+            id: "0123456789abcdef0123456789abcdef",
+            parent: None,
+            seq: 0,
+            ts: 17,
+            disposition: PlaneDisposition::Active,
+            body: b"original",
+        };
+        assert!(builtin_history(base, Some(false)).unwrap().is_some());
+        assert!(matches!(
+            builtin_history(base, Some(true)),
+            Err(Error::Verification)
+        ));
+        assert!(matches!(
+            builtin_history(
+                busbar_contract::records::PlaneRecordRef {
+                    parent: Some("parent"),
+                    ..base
+                },
+                Some(false)
+            ),
+            Err(Error::Verification)
+        ));
+        assert!(matches!(
+            builtin_history(
+                busbar_contract::records::PlaneRecordRef {
+                    disposition: PlaneDisposition::Terminal,
+                    ..base
+                },
+                Some(false)
+            ),
+            Err(Error::Verification)
+        ));
     }
 }

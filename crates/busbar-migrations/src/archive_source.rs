@@ -1002,7 +1002,7 @@ impl<R: Read + Seek + Send> SourceReader for ArchiveSource<R> {
                 &member.group,
             )?;
             let marker = Record {
-                key: member.group.expose(&seal).clone(),
+                key: zeroize::Zeroizing::new(member.group.expose(&seal).clone()),
                 value: super::legacy::projection::encode_marker(&member.group, digest.0)?,
                 preserve_exact: false,
             };

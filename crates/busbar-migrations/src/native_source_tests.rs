@@ -71,7 +71,7 @@ fn source() -> SourceIdentity {
         native_anchor: [1; 32],
         dataset: DatasetId([2; 16]),
         format: Some(native::Format {
-            owner: SQLITE_SOURCE_OWNER,
+            owner: *b"fixture.source01",
             physical: 6,
             logical: 0,
             codec: 1,
@@ -437,5 +437,104 @@ async fn interpreted_capture_keeps_originals_and_splits_multi_fact_chunks_after_
             .unwrap();
             assert_eq!(count, 1);
         }
+
+        let catalogue = frozen.catalogue().to_vec();
+        let identity = frozen.identity();
+        let grouped = frozen
+            .into_source(
+                Arc::new(
+                    crate::source_facts::grouping::FactGroups::new(view.clone(), 65536).unwrap(),
+                ),
+                65536,
+                65536,
+                [0, 0, 0],
+            )
+            .unwrap();
+        assert!(grouped.interpretation().is_some());
+        let transform = crate::legacy::fact_transform::FactTransform::registered(
+            identity.format,
+            crate::legacy::archive::Provenance {
+                dataset: identity.dataset,
+                catalogue: identity.schema_digest,
+            },
+            &catalogue,
+            view,
+            crate::routes::Bindings::default(),
+            crate::Bounds {
+                items: 8,
+                bytes: 4096,
+            },
+        )
+        .unwrap()
+        .with_projection(grouped.clone())
+        .unwrap();
+        use crate::{SourceReader as _, Transform as _};
+        let physical = transform
+            .edge()
+            .families
+            .iter()
+            .find(|f| f.id == crate::legacy::projection::PHYSICAL)
+            .unwrap();
+        let page = grouped
+            .page(
+                &grouped.snapshot(),
+                physical,
+                0,
+                crate::Bounds {
+                    items: 8,
+                    bytes: 4096,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.complete);
+        assert_eq!(
+            page.records.len(),
+            1,
+            "only the original row enters the physical evidence phase"
+        );
+        let copied = transform
+            .transform(
+                physical,
+                &page.records,
+                crate::Bounds {
+                    items: 8,
+                    bytes: 4096,
+                },
+            )
+            .unwrap();
+        assert_eq!(copied.len(), 1);
+        assert_eq!(copied[0].value, row());
+        let logical = transform
+            .edge()
+            .families
+            .iter()
+            .find(|f| f.id == crate::legacy::transform::ARCHIVAL)
+            .unwrap();
+        let page = grouped
+            .page(
+                &grouped.snapshot(),
+                logical,
+                0,
+                crate::Bounds {
+                    items: 8,
+                    bytes: 4096,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.complete);
+        assert_eq!(page.records.len(), 2);
+        assert!(transform
+            .transform(
+                logical,
+                &page.records,
+                crate::Bounds {
+                    items: 8,
+                    bytes: 4096
+                }
+            )
+            .unwrap()
+            .is_empty());
     }
 }
