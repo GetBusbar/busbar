@@ -1099,10 +1099,7 @@ fn test_validate_operator_token_secret_module_checked() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare(config::operator_provider());
-    entry.token = Some(config::SecretRef {
-        module: "env".to_string(),
-        settings: Default::default(),
-    });
+    entry.token = Some(without_scalar(source_fill("fixture-input")));
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("an env secret ref without settings.key must fail");
@@ -3885,10 +3882,11 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
 #[test]
 fn test_validate_secret_module_resolvability() {
     let (mut providers, models, pools) = valid_maps();
-    providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
-        module: "vault".to_string(),
-        settings: Default::default(),
-    };
+    providers.get_mut("myprovider").unwrap().api_key =
+        config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+            module: "fixture-source".into(),
+            settings: Default::default(),
+        });
     let cfg = make_root_cfg(providers, models, pools);
     assert!(
         validate(&cfg).is_ok(),
@@ -3899,18 +3897,12 @@ fn test_validate_secret_module_resolvability() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
-        cert: config::SecretRef {
-            module: "vault".to_string(),
-            settings: Default::default(),
-        },
-        key: config::SecretRef {
-            module: "file".to_string(),
-            settings: Default::default(),
-        },
-        client_ca: Some(config::SecretRef {
-            module: "env".to_string(),
+        cert: config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+            module: "fixture-source".into(),
             settings: Default::default(),
         }),
+        key: without_scalar(source_path("fixture-input")),
+        client_ca: Some(without_scalar(source_fill("fixture-input"))),
     });
     let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
 
@@ -3951,10 +3943,12 @@ fn test_validate_secret_module_resolvability() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
-    auth.signing_key = Some(config::SecretRef {
-        module: "vault".to_string(),
-        settings: Default::default(),
-    });
+    auth.signing_key = Some(config::SecretRef::Source(
+        busbar_contract::secret_ref::SourceReference {
+            module: "fixture-source".into(),
+            settings: Default::default(),
+        },
+    ));
     cfg.auth = Some(auth);
     assert!(
         validate(&cfg).is_ok(),
@@ -4210,9 +4204,9 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
             .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
     assert_eq!(
-        empty_env.env_var(),
-        Some(""),
-        "precondition: Some(\"\"), not None"
+        empty_env,
+        source_fill(""),
+        "precondition: the canonical reference retains its empty scalar"
     );
 
     let mut providers = HashMap::new();
@@ -4598,4 +4592,12 @@ fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
         .sugars()
         .reference_for_role(role, value.as_ref())
         .expect("the admitted source declares the fixture's role")
+}
+
+fn without_scalar(reference: config::SecretRef) -> config::SecretRef {
+    let config::SecretRef::Source(mut source) = reference else {
+        panic!("fixture source reference")
+    };
+    source.settings = Default::default();
+    config::SecretRef::Source(source)
 }

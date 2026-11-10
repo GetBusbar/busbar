@@ -290,10 +290,12 @@ fn a_linked_rows_refusals_print_its_key() {
             )
         );
         cfg.secrets.clear();
-        cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef {
-            module: word.to_string(),
-            ..crate::distribution::config_validation_application::source_fill("K")
-        };
+        cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::Source(
+            busbar_contract::secret_ref::SourceReference {
+                module: word.to_string(),
+                settings: Default::default(),
+            },
+        );
         let refused = refusal(&cfg);
         assert!(
             refused.contains(&format!(
@@ -359,7 +361,7 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         }
     }
     crate::dist_root_install::install();
-    use busbar_kernel::config::secret::{SecretRef, SecretResolver};
+    use busbar_kernel::config::secret::SecretResolver;
     let reg = busbar_kernel::preflight::plugins_preflight(
         None,
         None,
@@ -383,12 +385,18 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     std::env::set_var(var, "hunter2");
     let resolver = SecretResolver::builtins_only();
     assert_eq!(
-        busbar_contract::secret::SecretResolve::resolve(&resolver, &SecretRef::env(var)).unwrap(),
+        busbar_contract::secret::SecretResolve::resolve(
+            &resolver,
+            &crate::distribution::config_validation_application::source_fill(var)
+        )
+        .unwrap(),
         busbar_contract::redacted::Secret::new(b"hunter2".to_vec())
     );
     let missing = busbar_contract::secret::SecretResolve::resolve(
         &resolver,
-        &SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"),
+        &crate::distribution::config_validation_application::source_fill(
+            "BUSBAR_K5B_NO_SUCH_VARIABLE",
+        ),
     )
     .expect_err("an unset variable refuses");
     assert_eq!(
@@ -401,7 +409,11 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         panic!("a linked actual secret source must never delegate to the cold fallback")
     }));
     assert_eq!(
-        busbar_contract::secret::SecretResolve::resolve(&cold, &SecretRef::env(var)).unwrap(),
+        busbar_contract::secret::SecretResolve::resolve(
+            &cold,
+            &crate::distribution::config_validation_application::source_fill(var)
+        )
+        .unwrap(),
         busbar_contract::redacted::Secret::new(b"hunter2".to_vec())
     );
     std::env::remove_var(var);
