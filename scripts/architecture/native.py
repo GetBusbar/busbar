@@ -457,13 +457,13 @@ class Qualification:
 
     def copy_conformance(self):
         source = self.root / 'target/conformance'
-        if not source.is_dir():
+        if source.is_symlink() or source.parent.is_symlink() or not source.is_dir():
             raise Violation('missing conformance output')
         destination = self.evidence / 'conformance'
         destination.mkdir(exist_ok=True)
         for relative in ('invocation.json', *[str(p.relative_to(source)) for p in sorted((source / 'verdicts').glob('*.json'))]):
             path = source / relative
-            if path.is_symlink() or not path.is_file():
+            if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
                 raise Violation('missing or indirect conformance evidence')
             out = destination / relative
             out.parent.mkdir(exist_ok=True)
