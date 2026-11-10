@@ -8,16 +8,10 @@ use crate::export::projection::{
 };
 use busbar_contract::abi::export::{ExportField, ExportStream};
 
-fn resolve_errs(yaml: &str) -> Vec<String> {
+fn resolve_errs(yaml: &str, carries: &[ExportStream]) -> Vec<String> {
     let defs: ExportDefs = serde_yaml::from_str(yaml).expect("fixture parses");
     let mut errors = Vec::new();
     for (name, def) in defs {
-        let carries = match def.module.as_str() {
-            "request-log-webhook" => &[ExportStream::Logs][..],
-            "prometheus" => &[ExportStream::Metrics][..],
-            "otlp" => &[ExportStream::Traces][..],
-            module => panic!("unexpected grammar input module {module}"),
-        };
         resolve_projection(
             &name,
             &def.module,
@@ -54,9 +48,10 @@ fn producerless_stream_is_a_loud_config_error() {
         ExportStream::ALL.len()
     );
     for stream in producerless {
-        let errors = resolve_errs(&format!(
-            "siem:\n  module: request-log-webhook\n  streams: [{stream}]\n  settings:\n    url: https://sink.example.com/l\n"
-        ));
+        let errors = resolve_errs(
+            &format!("siem:\n  module: fixture-export\n  streams: [{stream}]\n  settings: {{}}\n"),
+            &[ExportStream::Logs],
+        );
         assert!(
             !errors.is_empty(),
             "`streams: [{stream}]` VALIDATED — it has no producer, so this config would report \
@@ -69,15 +64,18 @@ fn producerless_stream_is_a_loud_config_error() {
 #[test]
 fn produced_streams_are_accepted() {
     let errors = resolve_errs(
-        "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\n",
+        "req-log:\n  module: fixture-export\n  streams: [logs]\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert!(errors.is_empty(), "logs should validate: {errors:#?}");
     let errors = resolve_errs(
-        "metrics:\n  module: prometheus\n  streams: [metrics]\n  settings:\n    buffer_seconds: 60\n",
+        "metrics:\n  module: fixture-export\n  streams: [metrics]\n  settings: {}\n",
+        &[ExportStream::Metrics],
     );
     assert!(errors.is_empty(), "metrics should validate: {errors:#?}");
     let errors = resolve_errs(
-        "traces:\n  module: otlp\n  streams: [traces]\n  settings:\n    url: http://localhost:4318/v1/traces\n",
+        "traces:\n  module: fixture-export\n  streams: [traces]\n  settings: {}\n",
+        &[ExportStream::Traces],
     );
     assert!(errors.is_empty(), "traces should validate: {errors:#?}");
 }
@@ -85,7 +83,8 @@ fn produced_streams_are_accepted() {
 #[test]
 fn audit_is_refused_as_a_stream_with_the_reason() {
     let errors = resolve_errs(
-        "soc2:\n  module: request-log-webhook\n  streams: [audit]\n  settings:\n    url: https://sink.example.com/l\n",
+        "soc2:\n  module: fixture-export\n  streams: [audit]\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert_error_mentions(&errors, &["audit", "NOT a stream", "logs"]);
 }
@@ -93,7 +92,8 @@ fn audit_is_refused_as_a_stream_with_the_reason() {
 #[test]
 fn unknown_stream_names_the_vocabulary() {
     let errors = resolve_errs(
-        "x:\n  module: request-log-webhook\n  streams: [buckets]\n  settings:\n    url: https://sink.example.com/l\n",
+        "x:\n  module: fixture-export\n  streams: [buckets]\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert_error_mentions(&errors, &["unknown stream", "buckets", "completions"]);
 }
@@ -101,15 +101,17 @@ fn unknown_stream_names_the_vocabulary() {
 #[test]
 fn stream_the_module_cannot_carry_is_a_loud_error() {
     let errors = resolve_errs(
-        "m:\n  module: prometheus\n  streams: [logs]\n  settings:\n    buffer_seconds: 60\n",
+        "m:\n  module: fixture-export\n  streams: [logs]\n  settings: {}\n",
+        &[ExportStream::Metrics],
     );
-    assert_error_mentions(&errors, &["prometheus", "cannot carry", "logs"]);
+    assert_error_mentions(&errors, &["fixture-export", "cannot carry", "logs"]);
 }
 
 #[test]
 fn empty_streams_list_is_a_loud_error() {
     let errors = resolve_errs(
-        "x:\n  module: request-log-webhook\n  streams: []\n  settings:\n    url: https://sink.example.com/l\n",
+        "x:\n  module: fixture-export\n  streams: []\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert_error_mentions(&errors, &["EMPTY", "receives nothing"]);
 }
@@ -119,7 +121,7 @@ fn absent_streams_takes_the_modules_own_streams() {
     let mut errors = Vec::new();
     let proj = resolve_projection(
         "req-log",
-        "request-log-webhook",
+        "fixture-export",
         Some(&[ExportStream::Logs]),
         None,
         None,
@@ -135,12 +137,14 @@ fn absent_streams_takes_the_modules_own_streams() {
 #[test]
 fn durable_true_is_a_loud_not_yet_implemented_error() {
     let errors = resolve_errs(
-        "spooled:\n  module: request-log-webhook\n  durable: true\n  settings:\n    url: https://sink.example.com/l\n",
+        "spooled:\n  module: fixture-export\n  durable: true\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert_error_mentions(&errors, &["durable", "NOT YET IMPLEMENTED"]);
 
     let errors = resolve_errs(
-        "plain:\n  module: request-log-webhook\n  durable: false\n  settings:\n    url: https://sink.example.com/l\n",
+        "plain:\n  module: fixture-export\n  durable: false\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert!(errors.is_empty(), "{errors:#?}");
 }
@@ -148,8 +152,7 @@ fn durable_true_is_a_loud_not_yet_implemented_error() {
 #[test]
 fn fields_on_logs_is_refused_while_its_pinned_field_has_no_producer() {
     let errors = resolve_errs(
-        "soc2:\n  module: request-log-webhook\n  streams: [logs]\n  fields: [ts, pool]\n  settings:\n    url: https://sink.example.com/l\n",
-    );
+        "soc2:\n  module: fixture-export\n  streams: [logs]\n  fields: [ts, pool]\n  settings: {}\n", &[ExportStream::Logs]);
     assert_error_mentions(
         &errors,
         &[
@@ -165,7 +168,8 @@ fn fields_on_logs_is_refused_while_its_pinned_field_has_no_producer() {
 #[test]
 fn fields_on_metrics_is_a_loud_error() {
     let errors = resolve_errs(
-        "m:\n  module: prometheus\n  streams: [metrics]\n  fields: [pool]\n  settings:\n    buffer_seconds: 60\n",
+        "m:\n  module: fixture-export\n  streams: [metrics]\n  fields: [pool]\n  settings: {}\n",
+        &[ExportStream::Metrics],
     );
     assert_error_mentions(&errors, &["metrics", "no per-record fields"]);
 }
@@ -173,7 +177,8 @@ fn fields_on_metrics_is_a_loud_error() {
 #[test]
 fn empty_fields_list_is_a_loud_error() {
     let errors = resolve_errs(
-        "x:\n  module: request-log-webhook\n  streams: [logs]\n  fields: []\n  settings:\n    url: https://sink.example.com/l\n",
+        "x:\n  module: fixture-export\n  streams: [logs]\n  fields: []\n  settings: {}\n",
+        &[ExportStream::Logs],
     );
     assert_error_mentions(&errors, &["EMPTY", "EXHAUSTIVE OVERRIDE"]);
 }
@@ -328,7 +333,7 @@ fn projection_union_is_the_compute_gate() {
     }
 
     let defs: ExportDefs = serde_yaml::from_str(
-        "req-log:\n  module: request-log-webhook\n  streams: [logs]\n  settings:\n    url: https://sink.example.com/l\ntraces:\n  module: otlp\n  streams: [traces]\n  settings:\n    url: http://localhost:4318/v1/traces\n",
+        "req-log:\n  module: fixture-export\n  streams: [logs]\n  settings: {}\ntraces:\n  module: fixture-export\n  streams: [traces]\n  settings: {}\n",
     )
     .unwrap();
     let mut errors = Vec::new();
@@ -417,11 +422,11 @@ fn produced_fields_are_a_subset_of_the_documented_defaults() {
 #[test]
 fn projection_keys_are_instance_level_not_settings() {
     let def: ExportDefCfg = serde_yaml::from_str(
-        "module: request-log-webhook\nstreams: [logs]\ndurable: false\nsettings:\n  url: https://sink.example.com/l\n",
+        "module: fixture-export\nstreams: [logs]\ndurable: false\nsettings:\n  option: opaque\n",
     )
     .unwrap();
     assert_eq!(def.streams.as_deref(), Some(&["logs".to_string()][..]));
     assert!(!def.durable);
-    assert!(def.settings.contains_key("url"));
-    assert!(!def.settings.contains_key("streams"));
+    assert!(def.settings.key_names().contains(&"option".to_owned()));
+    assert!(!def.settings.key_names().contains(&"streams".to_owned()));
 }
