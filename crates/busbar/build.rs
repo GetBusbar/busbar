@@ -255,6 +255,11 @@ fn main() {
     }
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(out_dir.join("door_cells.rs"), cells).expect("write door_cells.rs");
+    std::fs::write(
+        out_dir.join("root_test_sources.rs"),
+        root_test_sources_source(&manifest),
+    )
+    .expect("write root_test_sources.rs");
     std::fs::write(out_dir.join("door_cells_files.rs"), cells_files)
         .expect("write door_cells_files.rs");
 
@@ -389,6 +394,27 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
             "compile_error!(\"more than one linked plane rides the `node` axis: {}\");\n",
             more.join(", ")
         )),
+    }
+    out
+}
+
+// A source-only fixture can be a dev-dependency, whose links metadata Cargo does
+// not pass to this build script. Its owner exports the source inclusion macro;
+// the package-literal arm checks the explicit roster against the actual owner.
+fn root_test_sources_source(manifest: &str) -> String {
+    let mut out = String::from("// @generated from package.metadata.busbar.root-test-sources.\n");
+    for (module, krate) in metadata_map(manifest, "package.metadata.busbar.root-test-sources") {
+        assert!(
+            !module.is_empty()
+                && module.bytes().enumerate().all(|(i, b)| b == b'_'
+                    || b.is_ascii_alphabetic()
+                    || (i > 0 && b.is_ascii_digit())),
+            "invalid root test source module: {module}"
+        );
+        out.push_str(&format!(
+            "{}::__busbar_root_tests!({module}, {krate:?});\n",
+            ident(&krate)
+        ));
     }
     out
 }

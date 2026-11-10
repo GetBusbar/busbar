@@ -6924,6 +6924,9 @@ mod door_tests;
 #[path = "tests/door_rig.rs"]
 pub(crate) mod door_rig;
 
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/root_test_sources.rs"));
+
 #[cfg(all(test, linked_section_pools))]
 include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 

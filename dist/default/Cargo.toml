@@ -563,6 +563,13 @@ node = "plane_node"
 # `$OUT_DIR/test_linked.rs` (each crate a plane served through its memory-ABI door, its registry row
 # folded from its Statement as the root folds it), so the tests' sources name no plane. The list is
 # the install order (the planes' layering order).
+# Source-owned root fixtures from any plugin kind, compiled only in root test builds.
+[package.metadata.busbar.root-test-sources]
+auth_oidc = "busbar-auth-oidc"
+source_env = "busbar-secret-env"
+source_file = "busbar-secret-file"
+metrics_fixture = "busbar-export-prometheus"
+
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 # The operator credential's auth plugin the admin tests (`tests/admin_cross_plane/`) authenticate
@@ -570,6 +577,8 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+# The source-owned metrics fixture is available even when its runtime row is disabled.
+busbar-export-prometheus = { workspace = true }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
 tokio-tungstenite = { workspace = true }
 h2 = { workspace = true }
