@@ -351,8 +351,8 @@ mod actual_store;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/actual_env_secret.rs"]
-mod actual_env_secret;
+#[path = "tests/neutral_secret.rs"]
+mod neutral_secret;
 
 #[cfg(test)]
 #[allow(unsafe_code)]

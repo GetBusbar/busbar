@@ -34,6 +34,11 @@ path = "tests/fixtures/log_witness_door.rs"
 crate-type = ["cdylib"]
 
 [[example]]
+name = "neutral_secret_door"
+path = "tests/fixtures/neutral_secret_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
 name = "secret_broken_door"
 path = "tests/fixtures/secret_broken_door.rs"
 crate-type = ["cdylib"]

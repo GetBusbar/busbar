@@ -8,18 +8,18 @@ use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_NOT_F
 use super::door_both_ways::{
     self as both, close, input, line, open, output, release, same, Loaded,
 };
-use crate::actual_env_secret as secret_fixture;
 use crate::dispatch::kinds::export::Export;
 use crate::dispatch::kinds::secret::Secret;
 use crate::dispatch::{load_linked, Frame, LinkedRow, Plugin};
+use crate::neutral_secret as secret_fixture;
 
 #[path = "../../tests/fixtures/secret_door_plugin.rs"]
 pub(crate) mod secret_door_plugin;
 
-const MATERIAL: &str = "s3cr3t-both-ways";
+use secret_fixture::MATERIAL;
 
-const HIT: &str = "BUSBAR_LOADER_SECRET_BOTH_WAYS_HIT";
-const MISS: &str = "BUSBAR_LOADER_SECRET_BOTH_WAYS_MISS";
+const HIT: &str = "hit";
+const MISS: &str = "miss";
 
 const CROSSINGS: u64 = 10;
 
@@ -77,8 +77,8 @@ fn resolve(p: &Plugin<Secret>, settings: &[u8]) -> String {
 }
 
 fn script(p: &Plugin<Secret>) -> Vec<String> {
-    let hit = format!(r#"{{"key": "{HIT}"}}"#);
-    let miss = format!(r#"{{"key": "{MISS}"}}"#);
+    let hit = format!(r#"{{"case": "{HIT}"}}"#);
+    let miss = format!(r#"{{"case": "{MISS}"}}"#);
     let mut t = vec![validate(p, b"{}"), line("open", &open(p, b"{}"))];
     t.push(resolve(p, hit.as_bytes()));
     t.push(line("release", &release(p, 1)));
@@ -103,8 +103,6 @@ fn dropped() -> Loaded<Secret> {
 
 #[test]
 fn a_linked_and_a_dropped_in_secret_plugin_resolve_identically() {
-    std::env::set_var(HIT, MATERIAL);
-    std::env::remove_var(MISS);
     let (linked, dropped) = (linked(), dropped());
     let (a, b) = (script(&linked.plugin), script(&dropped.plugin));
     same(&a, &b);

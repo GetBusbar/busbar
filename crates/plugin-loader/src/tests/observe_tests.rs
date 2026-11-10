@@ -329,7 +329,7 @@ fn a_hook_envelope_reaches_the_host_observer() {
 #[test]
 fn a_secret_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::secret::Secret>(
-        actual_secret_observer_door,
+        crate::neutral_secret::door,
         busbar_contract::abi::mechanism::kind::SECRET,
     );
 }
@@ -501,18 +501,6 @@ extern "C" fn actual_auth_observer_door() -> &'static busbar_contract::abi::mech
     )> = std::sync::OnceLock::new();
     actual_observer_door::<crate::dispatch::kinds::auth::Auth>(
         "BUSBAR_AUTH_TEST_OIDC_PLUGIN",
-        &IMAGE,
-    )
-}
-
-extern "C" fn actual_secret_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door
-{
-    static IMAGE: std::sync::OnceLock<(
-        libloading::Library,
-        busbar_contract::abi::sdk::door::RawDoorFn,
-    )> = std::sync::OnceLock::new();
-    actual_observer_door::<crate::dispatch::kinds::secret::Secret>(
-        "BUSBAR_TEST_SECRET_ENV_CDYLIB",
         &IMAGE,
     )
 }
