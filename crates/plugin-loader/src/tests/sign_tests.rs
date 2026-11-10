@@ -1619,20 +1619,20 @@ fn former_names_are_covered_by_the_signature() {
 #[test]
 fn a_malformed_or_repeated_former_name_fails_structure() {
     let ok = |former: &[&str]| {
-        let mut m = manifest("busbar-hook-webrequest", "webrequest", "busbar");
+        let mut m = manifest("busbar-hook-fixture", "fixture", "busbar");
         m.former_names = former.iter().map(|s| s.to_string()).collect();
         validate_identity(&m, HOST_IDENTITY)
     };
-    ok(&["busbar-webrequest"]).expect("a well-formed former name");
+    ok(&["busbar-fixture"]).expect("a well-formed former name");
     ok(&[]).expect("none");
     for bad in [
-        &["Busbar-WebRequest"][..],
-        &["busbar_webrequest"],
+        &["Busbar-Fixture"][..],
+        &["busbar_fixture"],
         &["-busbar"],
         &[""],
-        &["busbar-hook-webrequest"],
-        &["webrequest"],
-        &["busbar-webrequest", "busbar-webrequest"],
+        &["busbar-hook-fixture"],
+        &["fixture"],
+        &["busbar-fixture", "busbar-fixture"],
     ] {
         let e = ok(bad).expect_err("refused");
         assert!(e.contains("former name"), "{bad:?}: {e}");

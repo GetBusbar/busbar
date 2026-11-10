@@ -509,6 +509,82 @@ struct Selectors {
     seen: BTreeSet<(usize, usize)>,
 }
 
+// This checks direct spellings, not alias resolution or arbitrary macro expansion.
+// Recursing through tokens keeps imports, cfg branches, macro bodies and doc
+// attributes visible even when they are not active for the current Cargo target.
+fn concrete_package_references(
+    input: proc_macro2::TokenStream,
+    packages: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    fn word(value: &str, packages: &BTreeSet<String>, found: &mut BTreeSet<String>) {
+        let value = value.strip_prefix("r#").unwrap_or(value);
+        let canonical = value.replace('_', "-");
+        if packages.contains(&canonical) {
+            found.insert(canonical);
+        } else if let Some(library) = canonical.strip_prefix("lib") {
+            if packages.contains(library) {
+                found.insert(library.to_owned());
+            }
+        }
+    }
+    fn tokens(
+        input: proc_macro2::TokenStream,
+        packages: &BTreeSet<String>,
+        found: &mut BTreeSet<String>,
+    ) {
+        for token in input {
+            match token {
+                proc_macro2::TokenTree::Group(group) => tokens(group.stream(), packages, found),
+                proc_macro2::TokenTree::Ident(ident) => word(&ident.to_string(), packages, found),
+                proc_macro2::TokenTree::Literal(literal) => {
+                    let value = match syn::parse_str::<syn::Lit>(&literal.to_string()) {
+                        Ok(syn::Lit::Str(value)) => Some(value.value()),
+                        Ok(syn::Lit::ByteStr(value)) => {
+                            Some(String::from_utf8_lossy(&value.value()).into_owned())
+                        }
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        for part in value
+                            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                        {
+                            word(part, packages, found);
+                        }
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+    let mut found = BTreeSet::new();
+    tokens(input, packages, &mut found);
+    found
+}
+
+#[test]
+fn direct_owner_references_cannot_hide_in_cfg_macros_or_literals() {
+    let packages = BTreeSet::from(["busbar-store-fixture-owner".to_owned()]);
+    for code in [
+        "use busbar_store_fixture_owner::door as renamed;",
+        "use r#busbar_store_fixture_owner::door;",
+        "#[cfg(test)] fn f() { busbar_store_fixture_owner::door(); }",
+        "macro_rules! f { () => { busbar_store_fixture_owner::door() } }",
+        r#"#[cfg(feature = "busbar-store-fixture-owner")] fn f() {}"#,
+        r#"fn f() { load("/plugins/libbusbar_store_fixture_owner.so"); }"#,
+        r#"fn f() { load(b"busbar-store-fixture-owner"); }"#,
+        "/// The busbar-store-fixture-owner package.\nfn f() {}",
+    ] {
+        assert_eq!(
+            concrete_package_references(code.parse().unwrap(), &packages),
+            packages,
+            "unchecked owner reference: {code}"
+        );
+    }
+    let generic = r#"fn f() { metric("busbar_store_fixture_owner_requests_total");
+        describe("http", "env", "busbar-store-fixture-owner-extra"); }"#;
+    assert!(concrete_package_references(generic.parse().unwrap(), &packages).is_empty());
+}
+
 impl<'ast> Visit<'ast> for Selectors {
     // Selection predicates also occur outside `if`: iterator filters, match guards,
     // assigned booleans, and `while` conditions all execute policy.
@@ -676,6 +752,17 @@ fn core_policy_does_not_select_implementations() {
     assert!(!rows["paths"].is_empty());
     let mut errors = Vec::new();
     let mut seen = BTreeSet::new();
+    let packages = rows["plugin_packages"].iter().cloned().collect();
+    assert!(!rows["raw_paths"].is_empty(), "no handwritten core sources");
+    for path in &rows["raw_paths"] {
+        let source = std::fs::read_to_string(path).expect("handwritten core source readable");
+        let tokens = source.parse().unwrap_or_else(|e| panic!("{path}: {e}"));
+        errors.extend(
+            concrete_package_references(tokens, &packages)
+                .into_iter()
+                .map(|package| format!("{path}: direct concrete package reference {package}")),
+        );
+    }
     // Visit actual Cargo target roots first: custom binary/test names have the
     // same sibling-module resolution as lib.rs, not foo/bar.rs resolution.
     let roots: BTreeSet<String> = rows["roots"].iter().cloned().collect();

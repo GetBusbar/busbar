@@ -216,9 +216,9 @@ pub fn revoked_digests() -> BTreeMap<String, String> {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
-    /// Canonical plugin name, e.g. `busbar-store-valkey-plugin`. Lowercase `[a-z0-9-]+`.
+    /// Canonical plugin name, e.g. `busbar-store-example-plugin`. Lowercase `[a-z0-9-]+`.
     pub name: String,
-    /// Short config alias, e.g. `valkey` - what `governance.store:` may reference. Lowercase
+    /// Short config alias, e.g. `example` - what `governance.store:` may reference. Lowercase
     /// `[a-z0-9-]+`. May equal `name`.
     pub alias: String,
     /// Plugin category (see [`KNOWN_KINDS`]). Selects the kind's door the cdylib exports and the

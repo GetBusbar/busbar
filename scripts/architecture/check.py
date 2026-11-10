@@ -482,10 +482,16 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         env['BUSBAR_ARCHITECTURE_GENERATED_DIRS'] = str(generated)
     if repository == 'GetBusbar/busbar':
         inventory = scratch / 'policy-sources.json'
-        paths = set(core_source_inventory(policy, checkout))
+        raw_paths = core_source_inventory(policy, checkout)
+        paths = set(raw_paths)
         for output in mapping.values():
             paths.update(str(path.resolve()) for path in Path(output).rglob('*.rs'))
-        inventory.write_text(json.dumps({'paths': sorted(paths), 'roots': crate_roots,
+        # Handwritten core must not know concrete owners. Generated assembly may
+        # link those owners, but remains subject to the short-name selector check.
+        plugin_packages = sorted(name for name, entry in policy.packages.items()
+            if entry['role'] in ('implementation', 'wrapper'))
+        inventory.write_text(json.dumps({'paths': sorted(paths), 'raw_paths': raw_paths,
+            'roots': crate_roots, 'plugin_packages': plugin_packages,
             'names': sorted({r.split('/', 1)[1].split('-', 2)[2] for r in policy.data['repositories']})}))
         env['BUSBAR_ARCHITECTURE_POLICY_SOURCES'] = str(inventory)
     subprocess.run(['cargo', 'test', '--manifest-path', str(harness / 'Cargo.toml'), '--test', 'architecture_surface'], cwd=scratch, env=env, check=True)
