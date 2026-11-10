@@ -2772,7 +2772,7 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
 pub mod admit;
 
 pub mod caller_credential;
-pub use caller_credential::{present_caller, CallerCredential, ConsumedCredentials};
+pub use caller_credential::{CallerCredential, ConsumedCredentials};
 
 pub mod audience;
 
