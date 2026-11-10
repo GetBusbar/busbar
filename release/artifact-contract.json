@@ -143,14 +143,11 @@
       "title": "the build-provenance attestation verifies against these exact bytes",
       "exec": false,
       "why": [
-        "`gh attestation verify <archive> --repo GetBusbar/busbar` is the command the docs tell users",
-        "to run, so it is the command that must be proven to pass -- on the bytes downloaded from the",
-        "release, not on a local copy of the file the build step happened to still have. An",
-        "attestation that covers a different digest than the asset a user downloads is worse than",
-        "none, because it looks like provenance.",
-        "Gated on `published`: an artifact packaged into an image rather than",
-        "uploaded has no release asset to attest against, and a row that cannot",
-        "run must not be quietly satisfied."
+        "Verify the complete downloaded release with independently approved inventory and Sigstore trust digests.",
+        "The GitLab-native signed inventory binds every artifact, exact source/target/input provenance and SBOM mapping.",
+        "Missing trust, inventory, bundle, checkpoint or subject refuses; GitHub Actions is not a producer identity.",
+        "The provenance path remains unactivated until the protected producer and signing deployment are qualified.",
+        "A successful signature is not a SLSA Build level assessment or proof of private input completeness."
       ],
       "applies_when": {
         "kind": "binary",

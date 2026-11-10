@@ -8,6 +8,10 @@ Files intended for dev:
   scripts/release/native_provenance.py
   scripts/release/provenance_stage.py
   scripts/release/test_native_provenance.py
+  scripts/release/release_verifier.py
+  scripts/release/test_release_verifier.py
+  scripts/release/test_artifact_provenance.py
+  scripts/verify-artifact.py (native provenance row; release/artifact-contract.json)
   ci/provenance-checks.yaml (merge check map into protected CI configuration)
 
 Protected execution contract
@@ -125,7 +129,7 @@ and --public-key. No signing operation is run by the prepare/verify stage CLI.
 
 Sigstore adapter
 
-Production sigstore.json fields:
+Existing tooling Sigstore configuration fields:
   version: 1
   builder_id: exact permitted builder ID for this signer
   cosign: absolute pinned cosign executable path
@@ -134,7 +138,17 @@ Production sigstore.json fields:
   trusted_root_sha256: digest of the root obtained by a trusted operator/TUF flow
   mode: key OR identity
   key mode: public_key file MUST match the existing tooling-key fingerprint
-  identity mode: identity and issuer MUST name an existing authorized identity
+  identity mode: exact https://github.com issuer and local signing project's
+    //.gitlab-ci.yml@refs/heads/main identity; no regex, alias, or GitHub identity
+
+Prepared release-specific configuration uses version: 2 and
+purpose: release-attestation, retaining the executable/root/builder fields above.
+Key mode additionally requires public_key_sha256 (DER SubjectPublicKeyInfo SHA-256)
+and key_algorithm: ed25519 OR ecdsa-p256-sha256. The actual key type/curve must
+match. Version 1 and detached tooling signatures still accept only TOOLING_KEY.
+The new schema does not select or provision a production key. The whole trust
+configuration digest must be independently approved, not fetched as its own
+trust authority beside untrusted release assets.
 
 Signing additionally requires signing_config + signing_config_sha256, and either
 an existing key_handle (supported KMS/transit/PKCS11 URI) or identity_token_file
@@ -178,7 +192,11 @@ Only that isolated fixture test disables tlog; production refuses unlogged
 bundles. Tests also cover source/input/builder mismatch, privacy, invalid native
 receipts, detached signature/name binding, signer executable pin, duplicate
 JSON keys, inventory substitution, main rebuild and public-payload substitution.
-No live transparency-log inclusion was tested or claimed.
+The public inventory tests additionally verify a real custom-predicate DSSE
+signature offline, reject tampering, missing/extra/reused/symlinked files, wrong
+SBOM release identity, trust substitution and mutation during verification.
+Run test_release_verifier.py and test_artifact_provenance.py with the same
+unittest discovery invocation. No live transparency-log inclusion was tested or claimed.
 
 Primary references consulted:
 https://slsa.dev/spec/v1.1/provenance
@@ -296,13 +314,13 @@ if that disclosure is not approved. A private log must have retained durable
 state, independently distributed trusted keys and checkpoint monitoring; an
 unmonitored operator-controlled log is not independent public transparency.
 
-The current `native_provenance.py` key mode deliberately pins the existing
-Ed25519 TOOLING_KEY and therefore CANNOT be pointed at an arbitrary release KMS
-key. Activation requires a versioned release-specific trust schema supporting
-the selected key algorithm/fingerprint, while preserving the tooling adapter's
-purpose and tests. Do not change TOOLING_KEY to reuse the plugin trust root or
-silently broaden all tooling trust. The existing `sign-kms.sh` signs plugin key
-documents and is not a release-attestation DSSE adapter.
+`native_provenance.py` version 1 still pins Ed25519 TOOLING_KEY. Version 2 now
+accepts an independently pinned release-specific Ed25519 or P-256 public key,
+with purpose and algorithm checks, without broadening tooling trust. Its existing
+KMS-handle signing command verifies the resulting DSSE immediately. No actual
+release key, key version, federation or log configuration has been selected or
+activated. Do not change TOOLING_KEY to reuse the plugin trust root. The existing
+`sign-kms.sh` signs plugin key documents and is not a release-attestation DSSE adapter.
 
 Fulcio route (alternative, explicit new infrastructure decision)
 
@@ -394,11 +412,82 @@ produced. The existing fixture proves real offline DSSE verification only.
 Cryptographic success alone is insufficient. Apply the repository verifier's
 expected plan comparison to require the exact builder_id, buildType, source
 commit, target, six input digests, artifact digest and QA-qualified inventory.
-The public consumer adapter must additionally verify the aggregate release
-inventory and SBOM-to-artifact mapping. Refuse missing/extra subjects, wrong
+The prepared public consumer adapter verifies the aggregate download inventory
+and SBOM-to-artifact mapping as described below. Inventory v2 additionally checks
+OCI export closure, platform/native mappings and the exact registry attestation.
+Scanner freshness and actual in-image native binary equivalence still belong to
+the protected release gate; OCI metadata alone does not establish them. Refuse missing/extra subjects, wrong
 builder/predicate, substituted source/policy/target, stale scan evidence,
 untrusted key/root, missing log proof or changed QA artifact. No
 --insecure-ignore-tlog, issuer wildcard or trust-on-first-download fallback.
+
+Prepared public download verifier (implemented, not activated)
+
+Run with trusted Python cryptography and the independently pinned Cosign executable:
+  python3 scripts/release/release_verifier.py \
+    --directory ./downloaded-release \
+    --inventory-sha256 <independently-approved-release-inventory-digest> \
+    --trust /trusted/release-sigstore.json \
+    --trust-sha256 <independently-approved-trust-configuration-digest>
+
+Keep the directory private during verification and through use of its verified
+bytes. It must contain exactly release-inventory.json,
+release-inventory.intoto.json, release-inventory.sigstore.json, and the listed
+artifact/SBOM/statement/bundle files. Extra, missing, reused and symlinked files
+refuse. Never derive the expected inventory/trust digests from the same untrusted
+download without independently authenticating them. Run trusted verifier code,
+not a script supplied by the release being checked.
+
+The public inventory has schema: busbar.release-inventory/1, release: 1.6.0,
+and artifacts: a nonempty list. Each entry has exactly:
+  plan: the public QA plan fields listed above, without private paths/receipts
+  component_name: expected CycloneDX metadata.component.name
+  statement: {name: <basename>, sha256: <digest>}
+  bundle: {name: <basename>, sha256: <digest>}
+  sbom: {name: <basename>, sha256: <digest>}
+The artifact basename/digest are in plan. Each basename is unique across the
+entire release. The SBOM must be CycloneDX, have a nonempty components list,
+and match component_name plus release version. Per-artifact statement bytes
+must equal the canonical native statement reconstructed from the approved plan.
+This checks signed assertions, not actual private input bytes or build execution.
+
+The aggregate statement is an in-toto Statement v1, with the sole subject
+release-inventory.json and its SHA-256, predicateType:
+urn:busbar:release-inventory:v1, and predicate: {release, builder_id}.
+release_verifier.inventory_statement constructs these canonical public fields;
+the protected producer must supply the independently approved complete inventory
+and obtain its real logged DSSE bundle. This custom release inventory is not
+itself SLSA build provenance. Every artifact still requires its native SLSA bundle.
+Both kinds of bundle require cryptographically verified log inclusion/checkpoint.
+
+scripts/verify-artifact.py's attestation row now calls this same verifier with
+--provenance-directory, --provenance-inventory-sha256, --provenance-trust and
+--provenance-trust-sha256. It additionally matches the selected archive digest,
+name, target and version to a verified inventory subject. Absent activation
+inputs fail closed. The obsolete GitHub workflow identity/environment override
+is removed; the contract default now points to release/artifact-contract.json.
+The existing publish_gate.py G-9 refusal is unchanged.
+
+Prepared OCI consumer extension
+
+busbar.release-inventory/2 adds an oci list and requires each artifact entry's
+sbom_statement and sbom_bundle file bindings. The SBOM statement uses the official
+https://cyclonedx.org/bom predicate with that artifact as subject and the exact
+published CycloneDX document as predicate. Each OCI entry has reference (immutable
+registry/name@sha256:index), platforms (linux/amd64 or linux/arm64 mapped to native
+artifact basenames), and archive/index/statement/bundle file bindings.
+
+oci_provenance.py hashes the OCI tar without extracting it. It rejects links,
+traversal, duplicate files, foreign layers, missing/extra blobs, descriptor size
+or digest mismatches, platform/config disagreement and wrong native target maps.
+It binds the actual index, configuration and layer digests to a custom
+urn:busbar:oci-release:v1 statement, verifies its logged bundle against the exact
+index bytes, then uses pinned Cosign verify-attestation on the immutable registry
+reference and requires exactly matching statement payloads. Registry access is
+read-only; missing or conflicting verified attestations refuse. This is not a
+claim that registry production signing or image-content equivalence is qualified.
+The 5 targeted OCI fixtures cover closure and refusal cases; live registry
+signature/log verification remains a deployment witness, not a mocked-test claim.
 
 Activation work, with exact missing inputs
 
@@ -413,9 +502,11 @@ Activation work, with exact missing inputs
    These values are not available from source; none was guessed or provisioned.
 4. Select public or private log, approve exact published metadata, pin trust and
    signing configuration bytes, retention and checkpoint monitoring responsibility.
-5. Implement the release-specific KMS trust adapter (or activate the independently
-   managed Fulcio roots/identity), aggregate inventory and SBOM statement emitter,
-   consumer policy verifier, and protected artifact transfer. The standalone
+5. Deploy the prepared release-specific KMS trust adapter with actual approved
+   trust (or activate independently managed Fulcio roots/identity). Complete
+   protected aggregate inventory and SBOM statement emission, OCI registry
+   subject verification, and protected artifact transfer. The file-download
+   consumer verifier is implemented; it does not provide those producer interfaces. The standalone
    plugin-release G-S validator now accepts artifact-bound per-target SBOMs, but
    the protected producer must still emit them from actual build closure. Prove real staging
    negative cases: wrong issuer/ref/config/project/key, tampered artifact/SBOM,
@@ -425,6 +516,17 @@ Activation work, with exact missing inputs
    This source change does not schedule or run production signing or promotion.
 
 Native boundary required before provenance activation
+
+Retained rollout evidence establishes runner 33's real runsc/UID-1000 Console
+execution, measured image/closure, unshadowed protected paths and automatic
+VM/disk retirement: project 46, pipeline 1365, successful jobs 2237 and 2249.
+The immutable builder image digest is
+83a5fc11d5ad73acc645e600029767fa8d0ed42eb1b0ca4056f0d49c363ae594.
+The same pipeline's overall status is failed, confirmed by live GitLab readback.
+This closes the claim that no isolated worker exists; it does not qualify core's
+runner 32 or move native fixture execution into that sandbox. Core scheduling
+was resumed on runner 32 without changing its security settings; runner 33 was
+not retagged or relaxed. The native-specific work below remains necessary.
 
 The existing runner32 manager was read back on 2026-11-10: instance executor,
 capacity_per_instance=1, max_use_count=1, idle_count=0 and no external cache. That

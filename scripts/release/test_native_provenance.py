@@ -14,6 +14,7 @@ from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric import ec
 
 import native_provenance as p
 import provenance_stage as stages
@@ -82,6 +83,84 @@ class ProvenanceTests(unittest.TestCase):
         Path(self.inputs["lockgraph"]).write_text("changed")
         with self.assertRaises(ValueError):
             p.check_inputs(self.plan, self.inputs)
+
+    def trust(self):
+        tool = self.root / "cosign"
+        tool.write_bytes(b"pinned fixture tool")
+        root = self.root / "trusted-root.json"
+        root.write_bytes(b"pinned fixture root")
+        return {
+            "version": 2,
+            "purpose": "release-attestation",
+            "mode": "key",
+            "cosign": str(tool),
+            "cosign_sha256": p.digest(tool),
+            "trusted_root": str(root),
+            "trusted_root_sha256": p.digest(root),
+            "public_key": str(self.public),
+            "public_key_sha256": self.key_digest,
+            "key_algorithm": "ed25519",
+        }
+
+    def test_release_key_does_not_broaden_tooling_trust(self):
+        config = self.trust()
+        self.assertEqual(p.cosign_trust(config), ["--key", str(self.public)])
+        for update in (
+            {"version": 1},
+            {"version": True},
+            {"purpose": "plugin-signing"},
+            {"public_key_sha256": "0" * 64},
+            {"key_algorithm": "rsa"},
+        ):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                p.cosign_trust({**config, **update})
+
+    def test_trust_paths_cannot_verify_one_file_then_execute_from_path(self):
+        config = self.trust()
+        for field in ("cosign", "trusted_root", "public_key"):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                p.cosign_trust({**config, field: "relative-fixture"})
+
+    def test_release_p256_key_and_curve_are_pinned(self):
+        config = self.trust()
+        for curve, allowed in ((ec.SECP256R1(), True), (ec.SECP384R1(), False)):
+            key = ec.generate_private_key(curve).public_key()
+            self.public.write_bytes(
+                key.public_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            )
+            config["public_key_sha256"] = hashlib.sha256(
+                key.public_bytes(
+                    serialization.Encoding.DER,
+                    serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            ).hexdigest()
+            config["key_algorithm"] = "ecdsa-p256-sha256"
+            if allowed:
+                self.assertEqual(p.cosign_trust(config), ["--key", str(self.public)])
+            else:
+                with self.assertRaises(ValueError):
+                    p.cosign_trust(config)
+
+    def test_identity_requires_exact_local_gitlab_issuer_and_config(self):
+        config = {
+            **self.trust(),
+            "mode": "identity",
+            "issuer": "https://github.com",
+            "identity": "https://github.com/GetBusbar/release-signing//.gitlab-ci.yml@refs/heads/main",
+        }
+        self.assertIn("--certificate-identity", p.cosign_trust(config))
+        for update in (
+            {"issuer": "https://token.actions.githubusercontent.com"},
+            {"issuer": "https://gitlab.com"},
+            {"issuer": "https://github.com/"},
+            {"identity": config["identity"].replace("/main", "/dev")},
+            {"identity": "https://github.com/.*"},
+        ):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                p.cosign_trust({**config, **update})
 
     def test_each_binding_and_native_failure_is_refused(self):
         for key in (

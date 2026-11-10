@@ -53,21 +53,36 @@ only while this one-use lifecycle remains enforced. Do not switch to a shared
 shell worker or reuse a build VM under this tag. The native recipe supplies
 Python 3.12, Docker socket access and `BUSBAR_NATIVE_SCRATCH=/var/lib/busbar-native`.
 Keep source-fetch credentials outside scan containers and give the worker no
-signing/cloud/promotion/merge credential. Registry/database access, pinned image
-availability and successful exact-source CI receipts still require live qualification.
-This source change does not itself activate an immutable project CI policy.
+signing/cloud/promotion/merge credential. The deployed immutable policy produced mandatory successful security job 2370 in
+core pipeline 1420 on 2026-11-10: source a261b97649f81fe13340a6543ff6226f4101e972,
+policy c3e684c421696a0db3990b67cc2127d4d4872335. Its retained receipt has zero
+findings and exit 0 for secrets, dependencies and SAST, with tool-image pins and
+a database updated at 2026-11-10T13:03:09Z. This is exact-source scan evidence,
+not qualification of later changes or final release artifacts; later vectors
+must obtain their own mandatory receipts.
 
-**Native build isolation remains unresolved.** `scripts/architecture/native.py`
-executes ordinary child processes. Filtering their environment is not confinement:
-candidate build scripts can potentially reach same-user processes/files, trusted
-checkout, receipts, caches and a Docker daemon used for fixtures. Solving this needs
-an independently controlled disposable worker/VM or a sandbox with isolated PID,
-mount, user and network namespaces and no host Docker socket. The controller must
-freeze inputs, run candidates without credentials, collect outputs as untrusted,
-then generate authoritative receipts outside that writable namespace. Shared
-`HOME`/Cargo caches and test services need explicit separation. Existing fixtures
-and source fetchers make simply wrapping `Popen` in a container unsafe/incomplete.
-Do not label current native receipts SLSA isolation evidence or release provenance.
+**Isolation evidence is runner-specific.** The 2026-11-10 rollout has an actual
+successful Console `repository-gates` job (project 46, pipeline 1365, job 2237)
+on runner 33: runsc, UID/GID `1000:1000`, unshadowed protected paths, measured
+builder closure and automatic one-use VM/disk retirement. The pinned builder is
+`source-builder@sha256:83a5fc11d5ad73acc645e600029767fa8d0ed42eb1b0ca4056f0d49c363ae594`.
+A second observed `lifecycle-tools` job 2249 succeeded. The overall historical
+pipeline failed; neither job qualifies the current core or all Console jobs.
+
+Core native/conformance use runner 32, tagged `busbar-native-admission` and
+`busbar-conformance`, with a separate instance executor. Its `native.py` executes
+ordinary child processes; filtering their environment is not confinement.
+Same-user policy/receipt/cache access and the fixture Docker socket remain an
+unresolved within-job boundary. Runner 33's bridge/runsc setup cannot replace
+this path merely by changing tags: core fixtures and TSan need qualified runtime
+interfaces. The controller must freeze inputs, isolate candidate execution,
+collect outputs as untrusted, and emit authoritative receipts outside the
+candidate-writable namespace. No SLSA isolation claim follows from runner 32.
+
+A live readback on 2026-11-10 found the manager still using the rollout's exact
+startup digest and both runners paused. Runner 32 was subsequently resumed for
+authorized CI availability, preserving its existing protected access and tags;
+runner 33 was not changed. Resuming scheduling does not qualify native isolation.
 
 The existing provenance packet remains **not activated**. Owner/producer inputs
 still required: approved builder/predicate/source binding, controller evidence and

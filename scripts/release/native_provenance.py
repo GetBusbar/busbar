@@ -45,7 +45,7 @@ def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
 
 
-def load(path):
+def decode(data):
     def pairs(items):
         out = {}
         for key, value in items:
@@ -53,7 +53,11 @@ def load(path):
             out[key] = value
         return out
 
-    return json.loads(Path(path).read_text(), object_pairs_hook=pairs)
+    return json.loads(data, object_pairs_hook=pairs)
+
+
+def load(path):
+    return decode(Path(path).read_bytes())
 
 
 def write(path, data):
@@ -230,6 +234,7 @@ def verify_detached(path, signature, key_path):
 
 def sign_detached(path, signature, key_path, signer, signer_sha256):
     public_key(key_path, TOOLING_KEY)
+    require(Path(signer).is_absolute(), "operator signer must use an absolute path")
     require(
         digest(signer) == hex_value(signer_sha256),
         "operator signer executable differs from custody receipt",
@@ -245,7 +250,20 @@ def sign_detached(path, signature, key_path, signer, signer_sha256):
 
 
 def cosign_trust(config):
-    require(config["version"] == 1, "unknown Sigstore trust configuration")
+    require(
+        type(config["version"]) is int and config["version"] in (1, 2),
+        "unknown Sigstore trust configuration",
+    )
+    if config["version"] == 2:
+        require(
+            config.get("purpose") == "release-attestation",
+            "release trust must have an explicit purpose",
+        )
+    require(
+        Path(config["cosign"]).is_absolute()
+        and Path(config["trusted_root"]).is_absolute(),
+        "pinned executable and trust root require absolute paths",
+    )
     require(
         digest(config["cosign"]) == hex_value(config["cosign_sha256"]),
         "cosign executable not pinned",
@@ -255,7 +273,30 @@ def cosign_trust(config):
         "Sigstore trusted root not pinned",
     )
     if config["mode"] == "key":
-        public_key(config["public_key"], TOOLING_KEY)
+        require(
+            Path(config["public_key"]).is_absolute(),
+            "public key requires an absolute path",
+        )
+        if config["version"] == 1:
+            public_key(config["public_key"], TOOLING_KEY)
+        else:
+            # The configuration digest is independently pinned by the controller
+            # or consumer. A key downloaded beside a bundle is never its own root.
+            from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+
+            key = public_key(
+                config["public_key"], hex_value(config["public_key_sha256"])
+            )
+            algorithm = config.get("key_algorithm")
+            require(
+                (algorithm == "ed25519" and isinstance(key, ed25519.Ed25519PublicKey))
+                or (
+                    algorithm == "ecdsa-p256-sha256"
+                    and isinstance(key, ec.EllipticCurvePublicKey)
+                    and isinstance(key.curve, ec.SECP256R1)
+                ),
+                "release public key algorithm differs from approved trust",
+            )
         return ["--key", config["public_key"]]
     require(config["mode"] == "identity", "unknown Sigstore signer mode")
     require(
@@ -263,8 +304,14 @@ def cosign_trust(config):
         "existing identity and issuer must be pinned",
     )
     require(
-        "github" not in config["issuer"].lower(),
-        "GitHub signing identity is not this pipeline",
+        config["issuer"] == "https://github.com"
+        and isinstance(config["identity"], str)
+        and re.fullmatch(
+            r"https://git\.getbusbar\.dev/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+"
+            r"//\.gitlab-ci\.yml@refs/heads/main",
+            config["identity"],
+        ),
+        "exact local GitLab issuer and protected main configuration identity required",
     )
     return [
         "--certificate-identity",
@@ -275,11 +322,32 @@ def cosign_trust(config):
 
 
 def verify_bundle(path, bundle_path, artifact, config):
-    trust = cosign_trust(config)
     require(
         config.get("builder_id")
         == load(path)["predicate"]["runDetails"]["builder"]["id"],
         "signer is not authorized for this builder",
+    )
+    verify_dsse(path, bundle_path, artifact, config, PREDICATE)
+
+
+def verify_dsse(path, bundle_path, artifact, config, predicate_type, subject_name=None):
+    """Verify exact statement bytes, subject and logged signature; caller checks policy."""
+    trust = cosign_trust(config)
+    statement_value = load(path)
+    require(
+        statement_value.get("_type") == STATEMENT
+        and statement_value.get("predicateType") == predicate_type,
+        "wrong statement or predicate type",
+    )
+    require(
+        statement_value.get("subject")
+        == [
+            {
+                "name": subject_name or Path(artifact).name,
+                "digest": {"sha256": digest(artifact)},
+            }
+        ],
+        "statement subject differs",
     )
     bundle = load(bundle_path)
     envelope = bundle["dsseEnvelope"]
@@ -309,7 +377,7 @@ def verify_bundle(path, bundle_path, artifact, config):
             "--bundle",
             bundle_path,
             "--type",
-            PREDICATE,
+            predicate_type,
             "--trusted-root",
             config["trusted_root"],
             *trust,
