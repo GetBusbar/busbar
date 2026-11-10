@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -31,6 +32,15 @@ def transcript(roster, negative=False, **counts):
 
 
 class AdapterChecks(unittest.TestCase):
+    def test_untrusted_installer_wheel_is_refused_before_execution(self):
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(adapter.urllib.request, "urlopen",
+                                  return_value=io.BytesIO(b"untrusted wheel")), \
+                mock.patch.object(adapter.subprocess, "Popen") as process:
+            with self.assertRaisesRegex(adapter.Refused, "installer wheel digest mismatch"):
+                adapter.installer(work)
+            process.assert_not_called()
+
     def test_entire_applicable_rsa_2048_roster_is_2068_executions(self):
         roster = adapter.expected_cases(256, ALGORITHMS)
         self.assertEqual(len(roster), 2068)

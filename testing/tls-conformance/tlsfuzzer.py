@@ -13,9 +13,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import sys
+import urllib.request
 
 REPOSITORY = "https://github.com/tlsfuzzer/tlsfuzzer.git"
 REVISION = "5eebc4464e5197a7f7392fb9acda99cfc32441f7"
@@ -30,6 +32,12 @@ PROFILE = "TLS 1.3 mandatory client authentication / RSA-PSS CertificateVerify p
 LEG_TIMEOUT = 900
 NEGATIVE_TIMEOUT = 120
 BOOTSTRAP_TIMEOUT = 120
+PIP_WHEEL = {
+    "version": "25.3",
+    "filename": "pip-25.3-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/44/3c/d717024885424591d5376220b5e836c2d5293ce2011523c9de23ff7bf068/pip-25.3-py3-none-any.whl",
+    "sha256": "9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd",
+}
 
 
 class Refused(ValueError):
@@ -68,6 +76,34 @@ def bounded(argv, log, timeout, cwd=None):
 
 def capture(argv):
     return subprocess.check_output(argv, text=True, timeout=60).strip()
+
+
+def installer(work):
+    """Minimal CI Python has no ensurepip; verify an installer before executing it."""
+    wheel = Path(work) / PIP_WHEEL["filename"]
+    with (
+        urllib.request.urlopen(PIP_WHEEL["url"], timeout=BOOTSTRAP_TIMEOUT) as source,
+        wheel.open("xb") as target,
+    ):
+        shutil.copyfileobj(source, target)
+    if digest(wheel) != PIP_WHEEL["sha256"]:
+        raise Refused("TLSfuzzer installer wheel digest mismatch")
+    return wheel
+
+
+def environment_commands(work, wheel):
+    python = Path(work) / "venv/bin/python"
+    # No host pip, system-site-packages, mutable get-pip script or build backend.
+    # The pinned wheel is executable as a zip import and installs only itself.
+    bootstrap = ('import runpy,sys;sys.path.insert(0,sys.argv.pop(1));'
+                 'runpy.run_module("pip",run_name="__main__")')
+    return [
+        [sys.executable, "-B", "-I", "-m", "venv", "--without-pip", str(Path(work) / "venv")],
+        [str(python), "-B", "-I", "-c", bootstrap, str(wheel), "install",
+         "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", str(wheel)],
+        [str(python), "-B", "-I", "-m", "pip", "install", "--disable-pip-version-check",
+         "--no-cache-dir", "--only-binary=:all:", "--require-hashes", "-r", str(LOCK)],
+    ]
 
 
 def expected_cases(octets, algorithms):
@@ -128,6 +164,7 @@ class Profile:
                        "upstream": REPOSITORY, "revision": REVISION,
                        "application_sha256": APPLICATION_SHA256, "entry_sha256": ENTRY_SHA256,
                        "dependency_lock_sha256": digest(LOCK), "excluded_configuration": EXCLUDED,
+                       "installer": PIP_WHEEL,
                        "upstream_socket_timeout_seconds": 5, "leg_timeout_seconds": LEG_TIMEOUT,
                        "negative_timeout_seconds": NEGATIVE_TIMEOUT,
                        "legs": {}, "pass": False}
@@ -139,9 +176,7 @@ class Profile:
             ["git", "init", "-q", str(self.source)],
             ["git", "-C", str(self.source), "fetch", "-q", "--depth", "1", REPOSITORY, REVISION],
             ["git", "-C", str(self.source), "checkout", "-q", "--detach", "FETCH_HEAD"],
-            [sys.executable, "-B", "-I", "-m", "venv", str(self.work / "venv")],
-            [str(self.python), "-B", "-I", "-m", "pip", "install", "--disable-pip-version-check",
-             "--no-cache-dir", "--only-binary=:all:", "--require-hashes", "-r", str(LOCK)],
+            *environment_commands(self.work, installer(self.work)),
         ]
         for index, command in enumerate(commands):
             if bounded(command, self.output / f"bootstrap-{index}.log", BOOTSTRAP_TIMEOUT):

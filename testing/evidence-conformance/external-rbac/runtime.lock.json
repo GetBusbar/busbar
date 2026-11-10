@@ -8,7 +8,8 @@
     "graaljs-alpha-0.12.0.zap": "09eef48f9d59da168ca6be03935001ceb927f3f71990ef617c4a53509bdb7757",
     "network-beta-0.25.0.zap": "bf32c4d2c40c76171efa29da1987375a312cc09595ece29d67018e7ae54d6cf3",
     "scripts-release-45.17.0.zap": "ea5302741955b00f0432fdcaea17c4ae68e13ca0ff3086006283a298b6a537ff",
-    "pscan-alpha-0.6.0.zap": "269ff66f0d8a8012f156e90e13238606a8d503b99521170649b62c9aa7295927"
+    "pscan-alpha-0.6.0.zap": "269ff66f0d8a8012f156e90e13238606a8d503b99521170649b62c9aa7295927",
+    "callhome-release-0.20.0.zap": "a9e499dfa9f2fc85992faba66ab90db48d46b47e4241dc60106c78094412a679"
   },
   "addons": [
     {
