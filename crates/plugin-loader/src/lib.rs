@@ -398,3 +398,8 @@ mod retired_store_fixture;
 #[allow(unsafe_code)]
 #[path = "tests/neutral_transport.rs"]
 mod neutral_transport;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/neutral_auth.rs"]
+mod neutral_auth;
