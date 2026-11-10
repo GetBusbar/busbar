@@ -249,3 +249,45 @@ fn default_reference_discovery_does_not_run_ordinary_settings_migration() {
     .unwrap();
     assert_eq!(returned, settings);
 }
+
+#[test]
+fn host_refuses_unsolicited_file_acceptance_and_bounds_file_continuations() {
+    let seal = &busbar_contract::plugin::TestKernelSeal;
+    let mut calls = 0;
+    let result = super::complete_credential_migration(
+        &busbar_contract::Secret::new("MUST_NOT_BE_READ".into()),
+        seal,
+        |loan| {
+            calls += 1;
+            assert!(loan.is_none());
+            Ok(serde_json::from_str(r#"{"action":"use_file"}"#).unwrap())
+        },
+    );
+    assert_eq!(calls, 1);
+    assert_eq!(
+        result.unwrap_err(),
+        "credential owner could not migrate the original reference"
+    );
+    let file = std::env::temp_dir().join(format!("migration-bounded-read-{}", std::process::id()));
+    std::fs::write(&file, b"SYNTHETIC_FILE").unwrap();
+    calls = 0;
+    let result = super::complete_credential_migration(
+        &busbar_contract::Secret::new(file.to_str().unwrap().into()),
+        seal,
+        |loan| {
+            calls += 1;
+            if calls == 1 {
+                assert!(loan.is_none());
+            } else {
+                assert_eq!(loan.unwrap().expose(seal), b"SYNTHETIC_FILE");
+            }
+            Ok(serde_json::from_str(r#"{"action":"read_file"}"#).unwrap())
+        },
+    );
+    assert_eq!(calls, 2);
+    assert_eq!(
+        result.unwrap_err(),
+        "credential owner could not migrate the original reference"
+    );
+    std::fs::remove_file(file).unwrap();
+}

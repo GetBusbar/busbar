@@ -424,9 +424,13 @@ fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
         None,
         &crate::plugin::TestKernelSeal,
     );
-    input.settings = Blob::of(encoded.expose(&crate::plugin::TestKernelSeal))
-        .with_fmt(BLOB_OCTETS)
-        .with_flags(crate::abi::mechanism::call::BLOB_SECRET);
+    let bytes = encoded.expose(&crate::plugin::TestKernelSeal);
+    input.settings = Blob {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+        fmt: BLOB_OCTETS,
+        flags: crate::abi::mechanism::call::BLOB_SECRET,
+    };
     input.head.extensions = Blob::of(b"1.5.5");
     let mut buffer = [0; 256];
     input.err_buf = buffer.as_mut_ptr();
