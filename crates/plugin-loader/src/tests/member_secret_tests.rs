@@ -147,7 +147,7 @@ fn a_member_whose_env_secret_does_not_resolve_reaches_the_plugin_as_a_fixed_clas
     let conns: std::sync::Arc<dyn DeclaredConns> = table.clone();
     let p = bind_as(
         Box::leak(Box::new(MEMBER_NEEDS)),
-        crate::dispatch::ConnTable::Host(conns),
+        crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
     )
     .expect("the instance binds");
     let settings: &'static [u8] = Box::leak(

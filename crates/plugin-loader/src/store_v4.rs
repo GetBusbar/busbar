@@ -893,7 +893,6 @@ struct PreparedOpenLent {
 
 struct OpenLent {
     _session: Option<Arc<Session>>,
-    // settings-leak-lint: allow — NON-PROJECTION engine type: OPEN settings bytes.
     settings: zeroize::Zeroizing<Vec<u8>>,
     _secrets: Vec<zeroize::Zeroizing<Vec<u8>>>,
     blobs: Vec<Blob>,

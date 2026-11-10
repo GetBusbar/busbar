@@ -492,7 +492,9 @@ mod lifecycle_connections {
 fn served_lifecycle_binding(dispatcher: &Arc<crate::dispatch::Dispatcher>) -> Bind {
     Bind {
         dispatcher: dispatcher.adopter(),
-        conns: ConnTable::Host(Arc::new(lifecycle_connections::Table::default())),
+        conns: ConnTable::Host(crate::dispatch::test_admissions(Arc::new(
+            lifecycle_connections::Table::default(),
+        ))),
         ..binding()
     }
 }

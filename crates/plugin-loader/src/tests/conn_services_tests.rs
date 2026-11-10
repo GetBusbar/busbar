@@ -205,7 +205,10 @@ fn bind_over(
     table: &Arc<Recording>,
 ) -> Result<Plugin<TestKind>, crate::dispatch::LoadError> {
     let conns: Arc<dyn DeclaredConns> = table.clone();
-    bind_as(needs, crate::dispatch::ConnTable::Host(conns))
+    bind_as(
+        needs,
+        crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
+    )
 }
 
 fn bind_as(
@@ -771,7 +774,7 @@ fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
     let conns: Arc<dyn DeclaredConns> = table.clone();
     let p = bind_as_kind::<PlaneShaped>(
         Box::leak(Box::new(OWNED_TRUSTING)),
-        crate::dispatch::ConnTable::Host(conns),
+        crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
     )
     .expect("the plane-shaped fixture binds");
     let decoy: &'static [u8] = br#"{"agent_push":{"ca":"PEM-IN-SETTINGS"},"owned":{"agent_push":{"ca":"PEM-IN-SETTINGS"}}}"#;
@@ -906,29 +909,47 @@ fn a_config_program_is_declared_as_a_program() {
 
 #[test]
 fn a_target_from_path_resolves_only_to_a_non_empty_string_under_settings() {
-    use crate::dispatch::plugin::resolve_setting;
-    let doc = serde_json::json!({
-        "upstream": "db:5432",
-        "nested": {"url": "h:1"},
-        "n": 3,
-        "e": "",
-    });
-    assert_eq!(
-        resolve_setting(&doc, "settings.upstream").as_deref(),
-        Some("db:5432")
-    );
-    assert_eq!(
-        resolve_setting(&doc, "settings.nested.url").as_deref(),
-        Some("h:1")
-    );
-    for miss in [
-        "settings.n",
-        "settings.e",
-        "settings.absent",
-        "upstream",
-        "settings.nested",
+    let table = Arc::new(Recording::default());
+    let authority = crate::dispatch::test_admissions(table.clone());
+    let doc =
+        serde_json::from_value::<busbar_contract::plugin_settings::Settings>(serde_json::json!({
+            "upstream": "db:5432", "nested": {"url": "h:1"}, "n": 3, "e": "",
+        }))
+        .unwrap();
+    for (path, expected) in [
+        ("settings.upstream", Some("db:5432")),
+        ("settings.nested.url", Some("h:1")),
+        ("settings.n", None),
+        ("settings.e", None),
+        ("settings.absent", None),
+        ("upstream", None),
+        ("settings.nested", None),
     ] {
-        assert_eq!(resolve_setting(&doc, miss), None, "{miss}");
+        let need = ReadNeed {
+            direction: 0,
+            egress_class: 0,
+            transport: "byte-stream".into(),
+            auth: String::new(),
+            target_from: path.into(),
+            trust_from: String::new(),
+            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            keep_response_headers: Vec::new(),
+            timeout_ms: 0,
+            keep_mode: 0,
+            deny_response_headers: Vec::new(),
+        };
+        let bound = authority.bind(InstanceId(1), &[need]);
+        let answers = bound.apply(Some(&doc), None, None).unwrap();
+        assert_eq!(
+            table.declared.lock().unwrap().last().unwrap().3.as_deref(),
+            expected,
+            "{path}"
+        );
+        assert_eq!(answers[0].result.is_ok(), expected.is_some(), "{path}");
     }
 }
 
@@ -1386,7 +1407,7 @@ fn bound_over_needs(
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: adopter,
-            conns: crate::dispatch::ConnTable::Host(conns),
+            conns: crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
         },
     )
     .expect("the instance binds")
@@ -3243,7 +3264,7 @@ fn an_auth_instances_authority_is_held_before_its_needs_are_declared() {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: crate::dispatch::ConnTable::Host(conns),
+            conns: crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
         },
     )
     .expect("the auth-kind instance binds");
@@ -3584,7 +3605,7 @@ fn bound_labelled(needs: &'static [Need], table: &Arc<Recording>, label: &str) -
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: crate::dispatch::ConnTable::Host(conns),
+            conns: crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
         },
     )
     .expect("the instance binds")
@@ -3888,7 +3909,7 @@ mod refresh_driver_generation {
                 max_inflight_cap: 8,
                 sink: Arc::new(NoSink),
                 dispatcher: d.adopter(),
-                conns: crate::dispatch::ConnTable::Host(conns),
+                conns: crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(conns)),
             },
         )
         .unwrap();

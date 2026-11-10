@@ -193,10 +193,10 @@ fn encoded_record(expires_at: u64, record: &[u8]) -> Secret<Vec<u8>> {
     bytes.extend_from_slice(record);
     Secret::new(bytes)
 }
-fn record_body(bytes: &Secret<Vec<u8>>, expires_at: u64) -> Option<&[u8]> {
+fn record_body_len(bytes: &Secret<Vec<u8>>, expires_at: u64) -> Option<usize> {
     let bytes = bytes.expose(&crate::seal::lend());
     (bytes.len() >= 9 && bytes[0] == 1 && bytes[1..9] == expires_at.to_be_bytes())
-        .then(|| &bytes[9..])
+        .then(|| bytes.len() - 9)
 }
 async fn native_record(
     core: &CoreStore,
@@ -263,14 +263,14 @@ async fn native_record(
         .is_some_and(|value| value.expose(&crate::seal::lend()) != &[1])
         || spent
             .as_ref()
-            .is_some_and(|value| record_body(value, expires_at) != Some(&[][..]))
+            .is_some_and(|value| record_body_len(value, expires_at) != Some(0))
     {
         return Err(RecordStoreError("invalid native ticket metadata".into()));
     }
     let Some(record) = active else {
         return Ok(None);
     };
-    if record_body(&record, expires_at).is_none() || index.is_none() {
+    if record_body_len(&record, expires_at).is_none() || index.is_none() {
         return Err(RecordStoreError("invalid native ticket record".into()));
     }
     if spent.is_some() {
@@ -355,7 +355,7 @@ impl GovState {
             let active = values.pop()?;
             if active
                 .as_ref()
-                .is_some_and(|bytes| record_body(bytes, expiry).is_none())
+                .is_some_and(|bytes| record_body_len(bytes, expiry).is_none())
                 || spent.as_ref().is_some_and(|bytes| {
                     bytes.expose(&crate::seal::lend())
                         != encoded_record(expiry, b"").expose(&crate::seal::lend())
@@ -492,7 +492,8 @@ impl GovState {
             operation
         } else {
             let original = native_record(&core, &id, expires_at).await.ok()??;
-            let record = Secret::new(record_body(&original, expires_at)?.to_vec());
+            record_body_len(&original, expires_at)?;
+            let record = Secret::new(original.expose(&crate::seal::lend())[9..].to_vec());
             let op_id = request_id(&core)?;
             let mut spent = vec![1];
             spent.extend_from_slice(&expires_at.to_be_bytes());

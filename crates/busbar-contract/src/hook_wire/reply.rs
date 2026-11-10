@@ -96,8 +96,7 @@ pub struct StatusReply {
 
     /// The hook's echo of its resolved settings bag.
     #[serde(default)]
-    // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
-    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    pub settings: Option<crate::plugin_settings::Settings>,
     /// The raw metric entries, validated by [`parse_status_metrics`].
     #[serde(default)]
     pub metrics: Option<Vec<serde_json::Value>>,

@@ -189,7 +189,7 @@ pub(super) fn plane_gate(handle: &AppHandle, section: NamedMapSection) -> Option
 enum Mutation {
     Replace(serde_json::Value),
 
-    Settings(serde_json::Map<String, serde_json::Value>),
+    Settings(busbar_contract::plugin_settings::Settings),
 
     EditSettings(SettingsEdit),
 
@@ -276,9 +276,12 @@ async fn patch_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct NamedSettingsReq {
-    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
     #[serde(default, deserialize_with = "present_mode")]
-    pub(crate) settings: Option<serde_json::Map<String, serde_json::Value>>,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")
+    )]
+    pub(crate) settings: Option<busbar_contract::plugin_settings::Settings>,
     #[serde(default, deserialize_with = "present_mode")]
     pub(crate) edit: Option<SettingsEdit>,
 }
@@ -447,8 +450,8 @@ async fn apply(
                                 Mutation::Settings(settings) => settings.clone(),
                                 Mutation::EditSettings(edit) => {
                                     let existing = match obj.remove(SETTINGS_KEY) {
-                                        None => serde_json::Map::new(),
-                                        Some(serde_json::Value::Object(settings)) => settings,
+                                        None => busbar_contract::plugin_settings::Settings::default(),
+                                        Some(serde_json::Value::Object(settings)) => settings.into(),
                                         Some(_) => return Ok(Outcome::Value(Err((
                                             AdminError::Validation("the stored settings bag is not an object".into()),
                                             Cond::InvalidConfig,
@@ -463,7 +466,7 @@ async fn apply(
                             };
                             obj.insert(
                                 SETTINGS_KEY.to_string(),
-                                serde_json::Value::Object(settings),
+                                serde_json::to_value(&settings).expect("settings serialize as an object"),
                             );
                         }
                         None => {
@@ -712,7 +715,11 @@ struct ConfiguredSettingsView {
     config_version: u64,
     source: &'static str,
     state: &'static str,
-    settings_public: serde_json::Map<String, serde_json::Value>,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "serde_json::Map<String, serde_json::Value>")
+    )]
+    settings_public: busbar_contract::plugin_settings::RedactedSettings,
 }
 
 impl MutatedDefView {
@@ -757,7 +764,7 @@ impl MutatedDefView {
 fn configured_settings(
     config_version: u64,
     module: &str,
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
     pending_restart: bool,
     public: &dyn Fn(&str) -> std::collections::BTreeSet<String>,
 ) -> ConfiguredSettingsView {
@@ -769,7 +776,7 @@ fn configured_settings(
         } else {
             "configured"
         },
-        settings_public: busbar_contract::settings_public::public_view(settings, &public(module)),
+        settings_public: settings.public_view(&public(module)),
     }
 }
 
@@ -905,7 +912,9 @@ fn validate_definition(
         )));
     }
     if let Some(serde_json::Value::Object(settings)) = obj.get(SETTINGS_KEY) {
-        crate::v1::service::validate_hook_settings_size(settings)?;
+        crate::v1::service::validate_hook_settings_size(
+            &busbar_contract::plugin_settings::Settings::from(settings.clone()),
+        )?;
     }
     Ok(())
 }

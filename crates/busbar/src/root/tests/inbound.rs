@@ -334,7 +334,7 @@ async fn actual_listener_with_routers(
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: ConnTable::Host(connector.clone()),
+                conns: ConnTable::Host(crate::root::connector::admit(connector.clone())),
             },
         )
         .expect("the actual linked LLM image binds to normal host services"),

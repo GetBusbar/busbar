@@ -741,9 +741,9 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     let [linked, dropped] = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher());
         let transcript = serde_json::json!({
-            "accepted": rows.probe(name, "tail", &accepted),
-            "refused": rows.probe(name, "tail", &refused),
-            "not_export": rows.probe("no-such-module", "tail", &refused),
+            "accepted": rows.probe(name, "tail", &crate::dispatch::test_settings(&accepted)),
+            "refused": rows.probe(name, "tail", &crate::dispatch::test_settings(&refused)),
+            "not_export": rows.probe("no-such-module", "tail", &crate::dispatch::test_settings(&refused)),
         })
         .to_string();
         ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
@@ -784,9 +784,9 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
         let far = Arc::new(Far::default());
         let rows = ExportRows::new(&registry, dispatcher())
             .with_envelope(tape.clone())
-            .with_conns(far.clone());
+            .with_conns(crate::dispatch::test_admissions(far.clone()));
         let first_party = rows.first_party(name);
-        let sink = rows.open(name, "export.s3", &cfg).expect("opens");
+        let sink = rows.open(name, "export.s3", &crate::export_axis::test_opening(&cfg)).expect("opens");
         deliver(sink.as_ref(), &serde_json::json!({ "n": 1 }));
         until("the transport-error diagnostic", || {
             tape.count("BUSBAR-7072") == 1
@@ -833,8 +833,12 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(registry, dispatcher())
             .with_envelope(tape.clone())
-            .with_conns(far.clone())
-            .open(name, "export.s5", &serde_json::json!({ "url": url }))
+            .with_conns(crate::dispatch::test_admissions(far.clone()))
+            .open(
+                name,
+                "export.s5",
+                &crate::export_axis::test_opening(&serde_json::json!({ "url": url })),
+            )
             .expect("opens");
         for n in 1..=2 {
             deliver(sink.as_ref(), &serde_json::json!({ "n": n }));
@@ -899,19 +903,22 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         webhook_cdylib(),
     );
     let file_settings = serde_json::json!({ "path": "/tmp/x" });
+    let file_settings = crate::dispatch::test_settings(&file_settings);
     let file_instances = [("tail".to_string(), &file_settings)];
     let hook_settings = serde_json::json!({
         "url": "https://collector.example/in",
         "max_inflight_deliveries": 0,
         "delivery_timeout_secs": 0,
     });
+    let hook_settings = crate::dispatch::test_settings(&hook_settings);
     let hook_instances = [("audit".to_string(), &hook_settings)];
     let transcripts: Vec<String> = files
         .iter()
         .zip(hooks.iter())
         .map(|(file, hook)| {
             let f = ExportRows::new(file, dispatcher());
-            let h = ExportRows::new(hook, dispatcher()).with_conns(Arc::new(Far::default()));
+            let h = ExportRows::new(hook, dispatcher())
+                .with_conns(crate::dispatch::test_admissions(Arc::new(Far::default())));
             format!(
                 "{:?} {:?} {:?} {:?} {:?}",
                 f.check("k9c-sink", CHECK_PHASE_INSTANCES, &file_instances),
@@ -972,11 +979,13 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     let [linked, dropped] = doors.map(|registry| {
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
-            .with_conns(far.clone())
+            .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
                 name,
                 "export.k9e2",
-                &serde_json::json!({ "url": "https://collector.example/in" }),
+                &crate::export_axis::test_opening(
+                    &serde_json::json!({ "url": "https://collector.example/in" }),
+                ),
             )
             .expect("opens");
         drop(sink);
@@ -1038,8 +1047,12 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let sink = ExportRows::new(&registry, d)
-            .with_conns(far.clone())
-            .open(name, "export.k9c", &settings)
+            .with_conns(crate::dispatch::test_admissions(far.clone()))
+            .open(
+                name,
+                "export.k9c",
+                &crate::export_axis::test_opening(&settings),
+            )
             .expect("opens");
 
         let _answer = Released(far.clone());
@@ -1097,14 +1110,14 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
 
     let far = Arc::new(Far::default());
     let sink = ExportRows::new(&registry, dispatcher())
-        .with_conns(far.clone())
+        .with_conns(crate::dispatch::test_admissions(far.clone()))
         .open(
             name,
             "export.bn2",
-            &serde_json::json!({
+            &crate::export_axis::test_opening(&serde_json::json!({
                 "url": format!("https://{STALL_TARGET}/in"),
                 "delivery_timeout_secs": 600,
-            }),
+            })),
         )
         .expect("opens");
     deliver(sink.as_ref(), &serde_json::json!({ "n": 0 }));
@@ -1139,8 +1152,12 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
             .is_some_and(|r| r.first_party()));
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
-            .with_conns(far.clone())
-            .open("k9e2-otlp", "export.trace", &settings)
+            .with_conns(crate::dispatch::test_admissions(far.clone()))
+            .open(
+                "k9e2-otlp",
+                "export.trace",
+                &crate::export_axis::test_opening(&settings),
+            )
             .expect("a first-party collector opens");
         drop(sink);
         serde_json::to_string(&far.declarations()).expect("encode")
@@ -1161,8 +1178,12 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     let row = registry.resolve("k9e2-third-otlp").expect("admitted");
     assert!(!row.first_party());
     ExportRows::new(&registry, dispatcher())
-        .with_conns(Arc::new(Far::default()))
-        .open("k9e2-third-otlp", "export.trace", &settings)
+        .with_conns(crate::dispatch::test_admissions(Arc::new(Far::default())))
+        .open(
+            "k9e2-third-otlp",
+            "export.trace",
+            &crate::export_axis::test_opening(&settings),
+        )
         .expect("an operator-trusted collector opens");
 
     let mut third = stating(
@@ -1317,11 +1338,13 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
             .with_envelope(tape.clone())
-            .with_conns(far.clone())
+            .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
                 name,
                 "export.trace",
-                &serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" }),
+                &crate::export_axis::test_opening(
+                    &serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" }),
+                ),
             )
             .expect("a first-party collector opens");
         let queued = sink.deliver(

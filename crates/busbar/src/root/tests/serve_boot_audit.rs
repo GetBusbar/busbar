@@ -234,7 +234,9 @@ pub(super) async fn run() {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(connector.clone() as Arc<dyn DeclaredConns>),
+            conns: ConnTable::Host(crate::root::connector::admit(
+                connector.clone() as Arc<dyn DeclaredConns>
+            )),
         },
     )
     .expect("the real Decisions image binds");
@@ -292,7 +294,9 @@ pub(super) async fn run() {
             dispatcher.clone(),
             crate::LINKED.auths,
             None,
-            ConnTable::Host(connector.clone() as Arc<dyn DeclaredConns>),
+            ConnTable::Host(crate::root::connector::admit(
+                connector.clone() as Arc<dyn DeclaredConns>
+            )),
             busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         )),
         conns: connector as Arc<dyn PollConns>,

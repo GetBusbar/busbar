@@ -50,7 +50,9 @@ async fn actual_mcp_health_calls(
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: ConnTable::Host(crate::root::connector::the().clone()),
+                conns: ConnTable::Host(crate::root::connector::admit(
+                    crate::root::connector::the().clone(),
+                )),
             },
         )
         .expect("the actual MCP door binds to the root host"),

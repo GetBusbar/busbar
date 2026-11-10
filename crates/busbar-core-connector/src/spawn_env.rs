@@ -96,16 +96,14 @@ fn resolve_each(
             )
         })?;
         let value = reference
-            .resolve_template(&|r| {
-                secret(r, scope).map(|held| held.expose(&busbar_kernel::seal::lend()).clone())
-            })
+            .resolve_template(&|r| secret(r, scope))
             .map_err(|e| {
                 format!(
                     "the program's environment `{name}` ({}) did not resolve: {e}",
                     reference.describe()
                 )
             })?;
-        env.push((name.clone(), Secret::new(value)));
+        env.push((name.clone(), value));
     }
     Ok(env)
 }

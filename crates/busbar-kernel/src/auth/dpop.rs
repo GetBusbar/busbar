@@ -81,8 +81,8 @@ pub(crate) async fn judge_method(
         let presented = crate::oauth_as::seam::DpopPresentation {
             method: method.to_string(),
             path: path.to_string(),
-            token: token.clone(),
-            proof: proof.to_string(),
+            token: token.clone().into(),
+            proof: proof.to_string().into(),
         };
         return if (seam.verify_dpop)(plane, presented).await {
             SenderConstraint::Proven(token)

@@ -447,57 +447,20 @@ fn tls_view(tls: Option<&super::TlsCfg>) -> Value {
     }
 }
 
-fn plugin_view(module: &str, settings: &Map<String, Value>) -> Value {
+fn plugin_view(module: &str, settings: &busbar_contract::plugin_settings::Settings) -> Value {
     plugin_view_with(module, settings, &super::settings_public::public(module))
 }
 
 fn plugin_view_with(
     module: &str,
-    settings: &Map<String, Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
     public: &std::collections::BTreeSet<String>,
 ) -> Value {
-    // Filter borrowed values BEFORE cloning: serializing then redacting would create a new raw
-    // secret-bearing copy, even if the final response did not disclose it.
-    let shown: Map<_, _> = settings
-        .iter()
-        .filter(|(key, value)| public.contains(*key) && safe_public_value(key, value))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
     json!({
         "module": module,
-        "settings_keys": settings.keys().collect::<Vec<_>>(),
-        "settings_public": shown,
+        "settings_keys": settings.key_names(),
+        "settings_public": settings.snapshot_view(public, &super::secret::sugars()),
     })
-}
-
-fn safe_public_value(key: &str, value: &Value) -> bool {
-    let key = key.to_ascii_lowercase();
-    if [
-        "token",
-        "secret",
-        "password",
-        "credential",
-        "private_key",
-        "api_key",
-    ]
-    .iter()
-    .any(|word| key.contains(word))
-    {
-        return false;
-    }
-    match value {
-        // Even public-marked settings may contain secret references; never copy their settings,
-        // template text or literal escape contents into this public generation snapshot.
-        Value::Object(map) => {
-            !["env", "file", "literal"]
-                .iter()
-                .any(|k| map.contains_key(*k))
-                && !(map.contains_key("module") && map.contains_key("settings"))
-                && map.iter().all(|(key, value)| safe_public_value(key, value))
-        }
-        Value::Array(values) => values.iter().all(|value| safe_public_value("", value)),
-        _ => true,
-    }
 }
 
 #[cfg(test)]

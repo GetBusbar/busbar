@@ -5,6 +5,10 @@
 //! seekable capability and its filesystem permissions. No runtime Store fallback.
 //! Row/key buffers wipe on drop; catalogue metadata must contain no secret values.
 
+/// Encrypted, transient seekable custody shared by native source owners.
+#[allow(unsafe_code)]
+pub mod spool;
+
 use super::{legacy_row, source_fence::CaptureFence};
 use crate::Secret;
 use sha2::{Digest, Sha256};
@@ -607,14 +611,20 @@ impl<R> std::fmt::Debug for VerifiedArchive<R> {
 }
 /// Complete frame copies remain in wiping ownership. Never derive payload Debug.
 #[derive(Debug)]
-pub struct ArchiveRow {
+pub struct ArchiveRow<O = crate::redacted::Kernel> {
     /// Ordinal into the archive catalogue.
     pub table: u32,
     /// Untouched native identity under wiping custody.
-    pub native_key: Secret<Vec<u8>>,
+    pub native_key: Secret<Vec<u8>, O>,
     /// Untouched legacy_row frame under wiping custody.
-    pub value: Secret<Vec<u8>>,
+    pub value: Secret<Vec<u8>, O>,
 }
+struct RowBuffers {
+    table: u32,
+    key: Zeroizing<Vec<u8>>,
+    value: Zeroizing<Vec<u8>>,
+}
+
 impl<R: Read + Seek> VerifiedArchive<R> {
     /// The validated public native catalogue.
     pub fn header(&self) -> &Header {
@@ -663,6 +673,35 @@ impl<R: Read + Seek> VerifiedArchive<R> {
     }
     /// Seek and revalidate one original frame before copying protected cells.
     pub fn read_row(&mut self, ordinal: u64) -> Result<ArchiveRow, Error> {
+        let RowBuffers {
+            table,
+            mut key,
+            mut value,
+        } = self.read_row_buffers(ordinal)?;
+        Ok(ArchiveRow {
+            table,
+            native_key: Secret::new(std::mem::take(&mut *key)),
+            value: Secret::new(std::mem::take(&mut *value)),
+        })
+    }
+    /// Revalidate an original frame into the reading owner's wiping custody.
+    /// The archive is already a caller-owned seekable capability; no kernel secret is re-sealed.
+    pub fn read_row_owned<O: crate::redacted::OwnerSeal>(
+        &mut self,
+        ordinal: u64,
+    ) -> Result<ArchiveRow<O>, Error> {
+        let RowBuffers {
+            table,
+            mut key,
+            mut value,
+        } = self.read_row_buffers(ordinal)?;
+        Ok(ArchiveRow {
+            table,
+            native_key: Secret::held(std::mem::take(&mut *key)),
+            value: Secret::held(std::mem::take(&mut *value)),
+        })
+    }
+    fn read_row_buffers(&mut self, ordinal: u64) -> Result<RowBuffers, Error> {
         let entry = self
             .index
             .get(usize::try_from(ordinal).map_err(|_| Error::Budget)?)
@@ -680,16 +719,16 @@ impl<R: Read + Seek> VerifiedArchive<R> {
             return Err(Error::Integrity);
         }
         let (table, key, value) = row_parts(&bytes, &self.header)?;
-        let copy = |src: &[u8]| -> Result<Secret<Vec<u8>>, Error> {
+        let copy = |src: &[u8]| -> Result<Zeroizing<Vec<u8>>, Error> {
             let mut out = Zeroizing::new(Vec::new());
             out.try_reserve_exact(src.len())
                 .map_err(|_| Error::Allocation)?;
             out.extend_from_slice(src);
-            Ok(Secret::new(std::mem::take(&mut *out)))
+            Ok(out)
         };
-        Ok(ArchiveRow {
+        Ok(RowBuffers {
             table,
-            native_key: copy(key)?,
+            key: copy(key)?,
             value: copy(value)?,
         })
     }

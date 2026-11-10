@@ -227,6 +227,107 @@ pub fn frozen_overlay(
     }))
 }
 
+/// Assemble the active core-owned overlay from admitted logical record facts.
+/// The owning reader validates native collections; this consumer understands
+/// only the overlay's own head/chunk protocol.
+pub fn frozen_overlay_from_facts(
+    source: &mut dyn ArchiveRows,
+    identity: &Identity,
+    budget: usize,
+) -> Result<Option<FrozenOverlay>, Error> {
+    use busbar_contract::persistence::lifecycle::source::HistoricalFact;
+    if budget == 0
+        || source.header().owner != identity.format.owner
+        || source.header().physical != identity.format.physical
+        || source.header().catalogue_digest != identity.schema_digest
+    {
+        return Err(Error::IdentityMismatch);
+    }
+    // Public hash metadata indexes guarded original keys. Keeping those keys
+    // allows explicit collision refusal without retaining document bytes raw.
+    struct Entry {
+        key: Secret<Vec<u8>>,
+        value: Secret<Vec<u8>>,
+    }
+    let mut entries = BTreeMap::<[u8; 32], Entry>::new();
+    let mut charge = 0usize;
+    let seal = crate::seal::lend();
+    crate::source_facts::visit(source, budget, &mut |_, fact| {
+        let HistoricalFact::Record { schema, key, value } = fact.fact() else {
+            return Ok(());
+        };
+        if schema != SCHEMA {
+            return Ok(());
+        }
+        charge = charge
+            .checked_add(key.expose(&seal).len())
+            .and_then(|n| n.checked_add(value.expose(&seal).len()))
+            .and_then(|n| n.checked_add(256))
+            .ok_or(Error::Bounds)?;
+        if charge > budget {
+            return Err(Error::Bounds);
+        }
+        let digest: [u8; 32] = Sha256::digest(key.expose(&seal)).into();
+        if entries
+            .insert(
+                digest,
+                Entry {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            )
+            .is_some()
+        {
+            return Err(Error::Verification);
+        }
+        Ok(())
+    })?;
+    let lookup = |key: &[u8]| -> Result<Option<&Secret<Vec<u8>>>, Error> {
+        let digest: [u8; 32] = Sha256::digest(key).into();
+        let Some(entry) = entries.get(&digest) else {
+            return Ok(None);
+        };
+        if entry.key.expose(&seal).as_slice() != key {
+            return Err(Error::Verification);
+        }
+        Ok(Some(&entry.value))
+    };
+    let Some(raw) = lookup(b"head")? else {
+        return Ok(None);
+    };
+    let head: Head = serde_json::from_slice(raw.expose(&seal)).map_err(|_| Error::Corrupt)?;
+    if head.version != 1 || head.length == 0 {
+        return Err(Error::Corrupt);
+    }
+    let length = usize::try_from(head.length).map_err(|_| Error::Bounds)?;
+    if charge.checked_add(length).is_none_or(|n| n > budget) {
+        return Err(Error::Bounds);
+    }
+    let mut output = zeroize::Zeroizing::new(Vec::new());
+    output
+        .try_reserve_exact(length)
+        .map_err(|_| Error::Bounds)?;
+    for index in 0..length.div_ceil(busbar_contract::MAX_RECORD_BYTES) {
+        let mut key = b"chunk:".to_vec();
+        key.extend_from_slice(&head.generation);
+        key.extend_from_slice(&(index as u64).to_be_bytes());
+        let chunk = lookup(&key)?.ok_or(Error::Verification)?.expose(&seal);
+        if chunk.len() != (length - output.len()).min(busbar_contract::MAX_RECORD_BYTES) {
+            return Err(Error::Verification);
+        }
+        output.extend_from_slice(chunk);
+    }
+    if <[u8; 32]>::from(Sha256::digest(&output)) != head.digest {
+        return Err(Error::Verification);
+    }
+    Ok(Some(FrozenOverlay {
+        source: identity.clone(),
+        bytes: Secret::new(std::mem::take(&mut *output)),
+        digest: head.digest,
+        head_digest: Sha256::digest(raw.expose(&seal)).into(),
+    }))
+}
+
 pub const FAMILY: [u8; 16] = *b"legacy.overlay1\0";
 /// Immutable derived output. Its original physical evidence is copied separately;
 /// each converted chunk and the final head has its own bounded projection marker.

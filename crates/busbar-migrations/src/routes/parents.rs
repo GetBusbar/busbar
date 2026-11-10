@@ -222,6 +222,87 @@ pub fn with_parent_graph_from_frozen(
         digest: hash.finalize().into(),
     }))
 }
+pub fn with_parent_graph_from_facts(
+    format: Format,
+    provenance: Provenance,
+    source: &mut dyn ArchiveRows,
+    metadata_bytes: usize,
+    bindings: &Bindings,
+    base: Arc<dyn NativeProofs>,
+) -> Result<Arc<dyn NativeProofs>, Error> {
+    if source.header().owner != format.owner || source.header().physical != format.physical {
+        return Err(Error::IdentityMismatch);
+    }
+    if metadata_bytes == 0 {
+        return Err(Error::Bounds);
+    }
+    let view = source
+        .interpretation()
+        .ok_or(Error::MissingCapability)?
+        .clone();
+    let mut inventory = Inventory {
+        bindings,
+        parents: BTreeMap::new(),
+        edges: Vec::new(),
+        charge: 0,
+        budget: metadata_bytes,
+    };
+    let seal = crate::seal::lend();
+    for ordinal in 0..source.row_count() {
+        if source.row_table(ordinal)? != view.facts_table() {
+            continue;
+        }
+        if source.row_frame_bytes(ordinal)? > metadata_bytes {
+            return Err(Error::Bounds);
+        }
+        let original = source.read_row(ordinal)?;
+        let fact = view.decode(original.value.expose(&seal), metadata_bytes)?;
+        if let busbar_contract::persistence::lifecycle::source::HistoricalFact::History {
+            kind,
+            id,
+            parent,
+            append,
+            ..
+        } = fact.fact()
+        {
+            let source_hash = view.origin_digest(source, &fact, metadata_bytes)?.0;
+            inventory.observe(kind, id, parent.as_deref(), *append, source_hash)?;
+        }
+    }
+    for parent in &inventory.edges {
+        if !inventory.parents.contains_key(parent) {
+            return Err(Error::Verification);
+        }
+    }
+    let mut hash = Sha256::new();
+    field(&mut hash, b"busbar.frozen.history-parents/1");
+    field(&mut hash, &provenance.dataset);
+    field(&mut hash, &provenance.catalogue);
+    legacy::transform::bind_config(
+        &mut hash,
+        &bindings.records,
+        &bindings.histories,
+        &bindings.tokens,
+    );
+    for ((owner, kind, id), digest) in &inventory.parents {
+        field(&mut hash, owner.as_bytes());
+        field(&mut hash, kind.as_bytes());
+        field(&mut hash, id.as_bytes());
+        field(&mut hash, digest);
+    }
+    inventory.edges.sort();
+    for (owner, kind, id) in &inventory.edges {
+        field(&mut hash, owner.as_bytes());
+        field(&mut hash, kind.as_bytes());
+        field(&mut hash, id.as_bytes());
+    }
+    Ok(Arc::new(GraphProofs {
+        base,
+        provenance,
+        parents: inventory.parents,
+        digest: hash.finalize().into(),
+    }))
+}
 struct GraphProofs {
     base: Arc<dyn NativeProofs>,
     provenance: Provenance,

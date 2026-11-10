@@ -14,15 +14,34 @@ use sha2::{Digest, Sha256};
 pub const PHYSICAL: [u8; 16] = *b"legacy.physical1";
 const TAG: &[u8; 8] = b"BBLPROJ1";
 
+/// Public commitment to a complete ordered group inventory, never its protected rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InventoryDigest(pub [u8; 32]);
+
 /// The frozen source implementation binds its full artifact and each ordered
 /// original member ordinal/frame hash. This interface never accepts a report's
 /// claimed inventory or an independent mutable source connection.
 pub trait ProjectionSource: Send + Sync {
+    fn fact_view(&self) -> Option<&crate::source_facts::View> {
+        None
+    }
+    fn fact_origin_digest(
+        &self,
+        _fact: &crate::source_facts::FactRow,
+        _budget: usize,
+    ) -> Result<crate::source_facts::SourceProofDigest, Error> {
+        Err(Error::MissingCapability)
+    }
+
     fn provenance(&self) -> Provenance;
     /// Explicit host memory budget for one logical decoded projection. This is
     /// independent of physical page and destination candidate item limits.
     fn semantic_bytes(&self) -> usize;
-    fn inventory_digest(&self, family: [u8; 16], key: &Secret<Vec<u8>>) -> Result<[u8; 32], Error>;
+    fn inventory_digest(
+        &self,
+        family: [u8; 16],
+        key: &Secret<Vec<u8>>,
+    ) -> Result<InventoryDigest, Error>;
     fn visit(
         &self,
         family: [u8; 16],
@@ -69,7 +88,7 @@ pub fn verify_marker(
     record: &Record,
 ) -> Result<(), Error> {
     let key = Secret::new(record.key.clone());
-    if decode_marker(record)? != source.inventory_digest(family, &key)? {
+    if decode_marker(record)? != source.inventory_digest(family, &key)?.0 {
         return Err(Error::IdentityMismatch);
     }
     Ok(())

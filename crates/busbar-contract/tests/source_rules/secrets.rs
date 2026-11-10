@@ -26,38 +26,6 @@ const CONTEXT_NEEDLES: &[&str] = &["secret", "token", "credential", "credentials
 const CONTEXT_STRUCTS: &[&str] = &[
     "Key", "Cred", "Token", "Secret", "Auth", "Lease", "Issued", "Mint",
 ];
-const WRAPPERS: &[&str] = &["Secret", "Zeroizing", "SecretRef"];
-
-/// The documented exceptions: `(file, needle, field)`; an empty field covers every field the
-const ALLOWED: &[(&str, &str, &str)] = &[
-    ("crates/busbar-contract/src/records.rs", "secret", "secret"),
-    (
-        "crates/busbar-core-admin/src/v1/schema.rs",
-        "token",
-        "token",
-    ),
-    (
-        "crates/busbar-core-admin/src/v1/schema.rs",
-        "aws_secret_access_key",
-        "aws_secret_access_key",
-    ),
-    (
-        "crates/busbar-core-admin/src/v1/schema.rs",
-        "access_token",
-        "",
-    ),
-    (
-        "crates/busbar-core-admin/src/v1/schema.rs",
-        "secret",
-        "secret",
-    ),
-    (
-        "crates/busbar-core-admin/src/v1/contract/mod.rs",
-        "upstream_credentials",
-        "upstream_credentials",
-    ),
-];
-
 /// `field` carries `needle` as an `_`-delimited tail behind at least one character.
 fn qualified(field: &str, needle: &str) -> bool {
     field.len() > needle.len() + 1
@@ -88,38 +56,6 @@ fn secret_needle(field: &str, ty_name: &str) -> Option<&'static str> {
         .copied()
 }
 
-/// The type holds its value as bare text or bytes.
-fn is_bare(toks: &[TokenTree]) -> bool {
-    toks.iter().enumerate().any(|(i, t)| match t {
-        TokenTree::Ident(id) => {
-            let s = id.to_string();
-            s.contains("String")
-                || s == "str"
-                || s == "Bytes"
-                || s == "BytesMut"
-                || (s == "Vec"
-                    && matches!(toks.get(i + 1), Some(TokenTree::Punct(p)) if p.as_char() == '<')
-                    && matches!(toks.get(i + 2), Some(TokenTree::Ident(u)) if u == "u8"))
-        }
-        TokenTree::Group(g) if g.delimiter() == Delimiter::Bracket => {
-            matches!(g.stream().into_iter().next(), Some(TokenTree::Ident(u)) if u == "u8")
-        }
-        _ => false,
-    })
-}
-
-fn is_wrapped(toks: &[TokenTree]) -> bool {
-    walk::idents(toks)
-        .iter()
-        .any(|i| WRAPPERS.contains(&i.as_str()))
-}
-
-fn allowed(rel: &str, field: &str) -> bool {
-    ALLOWED
-        .iter()
-        .any(|(f, n, fld)| *f == rel && (*fld == field || (fld.is_empty() && tailmatch(field, n))))
-}
-
 fn bare_secret_fields(src: &Source) -> Vec<String> {
     let mut out = Vec::new();
     for item in walk::items(&src.file.items) {
@@ -133,8 +69,9 @@ fn bare_secret_fields(src: &Source) -> Vec<String> {
             if secret_needle(&name, &ty_name).is_none() {
                 continue;
             }
-            let ty = walk::tokens(&field.ty);
-            if is_bare(&ty) && !is_wrapped(&ty) && !allowed(&src.rel, &name) {
+            if crate::credential_typecheck::owns_bare(&field.ty)
+                && !crate::credential_typecheck::field_wiped(src, &ty_name, &name)
+            {
                 out.push(format!(
                     "{}:{}: {ty_name}.{name} holds secret material bare; type it `Secret<..>` or `SecretRef`",
                     src.rel,
@@ -159,7 +96,6 @@ fn a_secret_named_field_is_never_a_bare_string() {
 fn a_bare_secret_field_is_found() {
     let src = Source {
         rel: "planted.rs".into(),
-        text: String::new(),
         file: syn::parse_file(
             "struct Cfg { api_key: String, password: Secret<String>, name: String }\n\
              struct IssuedKey { token: Vec<u8> }\n\
@@ -285,7 +221,6 @@ fn an_exposed_secret_never_reaches_a_log_metric_or_audit_sink() {
 fn an_exposed_secret_in_a_sink_is_found() {
     let src = Source {
         rel: "planted.rs".into(),
-        text: String::new(),
         file: syn::parse_file(
             "fn a(s: &Secret<String>, seal: Seal) {\n\
                  tracing::info!(key = s.expose(seal));\n\
@@ -303,26 +238,36 @@ fn an_exposed_secret_in_a_sink_is_found() {
 const BAG_TYPES: &[&str] = &[
     "HashMap", "BTreeMap", "IndexMap", "Map", "Value", "RawValue", "String", "str", "Bytes",
 ];
-const ALLOW_MARKER: &str = "settings-leak-lint: allow";
-
-/// The source lines above `line` (1-based) that belong to the declaration: comments and attributes.
-fn marked_allowed(text: &str, line: usize) -> bool {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut i = line.saturating_sub(1);
-    loop {
-        let l = lines.get(i).map(|l| l.trim()).unwrap_or("");
-        if let Some((_, reason)) = l.split_once(ALLOW_MARKER) {
-            let reason = reason.trim_start_matches([' ', '—', '-', ':']).trim();
-            return !reason.is_empty();
+/// Borrowed frames own no allocation. Guarded encoded bytes retain custody, while a map or
+/// dynamic JSON tree remains a readable settings bag even if a wrapper wipes it on drop.
+fn owns_settings_bag(ty: &syn::Type, guarded: bool) -> bool {
+    use syn::{GenericArgument, PathArguments, Type};
+    match ty {
+        Type::Reference(_) => false,
+        Type::Paren(p) => owns_settings_bag(&p.elem, guarded),
+        Type::Group(g) => owns_settings_bag(&g.elem, guarded),
+        Type::Tuple(t) => t.elems.iter().any(|t| owns_settings_bag(t, guarded)),
+        Type::Path(p) => {
+            let Some(last) = p.path.segments.last() else {
+                return false;
+            };
+            let name = last.ident.to_string();
+            if BAG_TYPES.contains(&name.as_str()) {
+                return !(guarded && matches!(name.as_str(), "String" | "str" | "Bytes"));
+            }
+            let PathArguments::AngleBracketed(args) = &last.arguments else {
+                return false;
+            };
+            let guarded = guarded || matches!(name.as_str(), "Secret" | "Zeroizing");
+            args.args.iter().any(|arg| match arg {
+                GenericArgument::Type(Type::Path(p)) if name == "Vec" && p.path.is_ident("u8") => {
+                    !guarded
+                }
+                GenericArgument::Type(t) => owns_settings_bag(t, guarded),
+                _ => false,
+            })
         }
-        if i == 0 {
-            return false;
-        }
-        i -= 1;
-        let above = lines.get(i).map(|l| l.trim()).unwrap_or("");
-        if !(above.starts_with("//") || above.starts_with("#[")) {
-            return false;
-        }
+        _ => false,
     }
 }
 
@@ -337,11 +282,9 @@ fn raw_settings_bags(src: &Source) -> Vec<String> {
             if lower != "settings" && !lower.ends_with("_settings") {
                 continue;
             }
-            let ty = walk::idents(&walk::tokens(&field.ty));
-            let bag = ty.iter().any(|i| BAG_TYPES.contains(&i.as_str()))
-                || (ty.iter().any(|i| i == "Vec") && ty.iter().any(|i| i == "u8"));
+            let bag = owns_settings_bag(&field.ty, false);
             let line = field.ident.as_ref().map_or(0, walk::line_of);
-            if bag && !marked_allowed(&src.text, line) {
+            if bag {
                 out.push(format!(
                     "{}:{line}: {ty_name}.{name} carries a raw settings bag",
                     src.rel
@@ -360,25 +303,37 @@ fn no_struct_carries_a_raw_settings_bag() {
         .collect();
     assert!(
         findings.is_empty(),
-        "an admin read serves key names, never a bag's values; a field that must hold one says why \
-         with `// {ALLOW_MARKER} — <reason>`:\n{}",
+        "settings cross the host as opaque carriers or guarded encoded bytes; comments cannot exempt a readable bag:\n{}",
         findings.join("\n")
     );
 }
 
 #[test]
-fn a_raw_settings_bag_is_found_and_a_reasoned_marker_covers_it() {
+fn settings_comments_cannot_exempt_raw_bags_and_guards_apply_to_bytes_only() {
     let text = "struct View {\n    settings: serde_json::Value,\n}\n\
                 struct Req {\n    // settings-leak-lint: allow — an inbound request body, never served\n    settings: serde_json::Value,\n}\n\
                 struct Bare {\n    // settings-leak-lint: allow\n    hook_settings: HashMap<String, String>,\n}\n\
                 struct Typed {\n    settings: HookSettings,\n}\n";
     let src = Source {
         rel: "planted.rs".into(),
-        text: text.to_string(),
         file: syn::parse_file(text).expect("parses"),
     };
     let found = raw_settings_bags(&src);
-    assert_eq!(found.len(), 2, "{found:?}");
+    assert_eq!(found.len(), 3, "{found:?}");
     assert!(found[0].contains("View.settings"), "{found:?}");
-    assert!(found[1].contains("Bare.hook_settings"), "{found:?}");
+    assert!(found[1].contains("Req.settings"), "{found:?}");
+    assert!(found[2].contains("Bare.hook_settings"), "{found:?}");
+    assert!(!owns_settings_bag(
+        &syn::parse_quote!(zeroize::Zeroizing<Vec<u8>>),
+        false
+    ));
+    assert!(!owns_settings_bag(&syn::parse_quote!(&str), false));
+    assert!(owns_settings_bag(
+        &syn::parse_quote!(zeroize::Zeroizing<serde_json::Value>),
+        false
+    ));
+    assert!(owns_settings_bag(
+        &syn::parse_quote!((zeroize::Zeroizing<Vec<u8>>, Vec<u8>)),
+        false
+    ));
 }

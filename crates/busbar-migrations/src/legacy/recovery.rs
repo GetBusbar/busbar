@@ -86,7 +86,7 @@ fn operation(layout: Layout, group: &[u8]) -> Result<Option<[u8; 16]>, Error> {
             }
             bytes(cells.next().ok_or(Error::Corrupt)?).ok_or(Error::Corrupt)?
         }
-        Layout::Valkey { .. } => {
+        Layout::Facts | Layout::Valkey { .. } => {
             if fields.len() != 3 || fields[0] != b"R" || fields[1] != HEAD_SCHEMA {
                 return Ok(None);
             }
@@ -393,7 +393,25 @@ fn read_head<R: Read + Seek + Send>(
             let (table, _) =
                 super::transform::source_parts(&record.key).map_err(|_| Error::Corrupt)?;
             let row = Row::decode(record.value.expose(&seal)).map_err(|_| Error::Corrupt)?;
+            let interpreted;
             let bytes = match layout {
+                Layout::Facts => {
+                    let view = source.interpretation().ok_or(Error::MissingCapability)?;
+                    interpreted = view.decode_row(row, bounds.bytes as usize)?;
+                    let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
+                        schema,
+                        key,
+                        value,
+                    } = interpreted.fact()
+                    else {
+                        return Err(Error::Corrupt);
+                    };
+                    if schema.as_bytes() != HEAD_SCHEMA || key.expose(&seal).as_slice() != operation
+                    {
+                        return Err(Error::Verification);
+                    }
+                    value.expose(&seal)
+                }
                 Layout::Sql(_) => {
                     let columns = source
                         .header()
@@ -439,7 +457,7 @@ fn read_head<R: Read + Seek + Send>(
                     match cell.kind {
                         super::valkey::PhysicalKind::Hash => cell.value,
                         super::valkey::PhysicalKind::SortedSet if cell.value == b"0" => {
-                            return Ok(())
+                            return Ok(());
                         }
                         _ => return Err(Error::Verification),
                     }
@@ -492,6 +510,7 @@ impl<R: Read + Seek + Send> RecoveryHistory for FrozenRecovery<R> {
 fn is_receipt(layout: Layout, group: &[u8]) -> Result<bool, Error> {
     let fields = records::keys::components(group, b'G').map_err(|_| Error::Corrupt)?;
     Ok(match layout {
+        Layout::Facts => fields.len() == 2 && fields[0] == b"C" && fields[1].len() == 16,
         Layout::Sql(_) => fields.len() == 3 && fields[0] == b"X" && fields[1] == b"store_ops",
         Layout::Valkey { .. } => {
             fields.len() == 2 && fields[0] == b"T" && fields[1].starts_with(b"busbar:op:")
@@ -506,6 +525,9 @@ fn with_receipt<R: Read + Seek + Send>(
     bounds: Bounds,
     visitor: &mut dyn FnMut(Address, super::archive::Receipt<'_>) -> Result<(), Error>,
 ) -> Result<(), Error> {
+    if matches!(layout, Layout::Facts) {
+        return with_fact_receipt(source, key, provenance, bounds, visitor);
+    }
     let mut rows = Vec::new();
     source.visit_group_rows(ARCHIVAL, key, bounds.bytes as usize, &mut |row| {
         // Known SQL receipts have one physical row; known Valkey receipts have
@@ -522,6 +544,7 @@ fn with_receipt<R: Read + Seek + Send>(
     })?;
     let seal = crate::seal::lend();
     match layout {
+        Layout::Facts => Err(Error::Corrupt),
         Layout::Sql(profile) => {
             if rows.len() != 1 {
                 return Err(Error::Verification);
@@ -597,6 +620,70 @@ fn with_receipt<R: Read + Seek + Send>(
         }
     }
 }
+fn with_fact_receipt<R: Read + Seek + Send>(
+    source: &ArchiveSource<R>,
+    key: &Secret<Vec<u8>>,
+    provenance: super::archive::Provenance,
+    bounds: Bounds,
+    visitor: &mut dyn FnMut(Address, super::archive::Receipt<'_>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    use busbar_contract::persistence::lifecycle::source::HistoricalFact;
+    let view = source.interpretation().ok_or(Error::MissingCapability)?;
+    let mut seen = false;
+    source.visit_group_rows(ARCHIVAL, key, bounds.bytes as usize, &mut |row| {
+        if std::mem::replace(&mut seen, true) {
+            return Err(Error::Verification);
+        }
+        let seal = crate::seal::lend();
+        let fact = view.decode(row.value.expose(&seal), bounds.bytes as usize)?;
+        let HistoricalFact::Receipt {
+            operation,
+            body,
+            answer,
+            recorded_at,
+            expires_at_ms,
+            historical_digest,
+            completed_shape,
+        } = fact.fact()
+        else {
+            return Err(Error::Verification);
+        };
+        // This protected commitment binds every original native member of the
+        // complete source group, including companion metadata. It is independent
+        // of backend-specific choices of a primary physical receipt cell.
+        let origin = source.fact_origin_digest(&fact, bounds.bytes as usize)?;
+        let address = Address {
+            namespace: super::archive::NAMESPACE.0,
+            key: records::keys::framed(
+                b'E',
+                &[
+                    &provenance.dataset,
+                    &provenance.catalogue,
+                    b"source-receipt-v1",
+                    &origin.0,
+                ],
+            )
+            .map_err(|_| Error::Bounds)?,
+        };
+        visitor(
+            address,
+            super::archive::Receipt {
+                operation,
+                body: body.expose(&seal),
+                answer: answer.expose(&seal),
+                recorded_at: *recorded_at,
+                expires_at_ms: *expires_at_ms,
+                historical_digest: *historical_digest,
+                completed_shape: *completed_shape,
+            },
+        )
+    })?;
+    if !seen {
+        return Err(Error::Verification);
+    }
+    Ok(())
+}
+
 fn receipt_digest(
     provenance: super::archive::Provenance,
     address: &Address,

@@ -68,8 +68,7 @@ pub struct IdentityProviderCfg {
 
     /// The module's own opaque settings (pushed to the auth plugin verbatim).
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 pub type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
@@ -93,8 +92,7 @@ pub struct AuthChainEntry {
     pub token: Option<SecretRef>,
 
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 impl AuthChainEntry {
@@ -105,7 +103,7 @@ impl AuthChainEntry {
             module,
             max_admin_scope: None,
             token: None,
-            settings: serde_json::Map::new(),
+            settings: Default::default(),
         }
     }
 }
@@ -365,8 +363,7 @@ pub struct AuthMethodCfg {
     pub browser_login: Option<BrowserLoginCfg>,
 
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;

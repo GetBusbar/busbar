@@ -201,6 +201,7 @@ async fn pages_join_nonadjacent_native_rows_and_never_split_a_complete_group() {
             &source, FAMILY, &group_key
         )
         .unwrap()
+        .0
     );
     let mut tampered = one.records;
     tampered[0].key[0] ^= 1;

@@ -131,7 +131,13 @@ fn a_dropped_in_disk_source_is_refused_on_a_request_path() {
         .reading_disk(true);
     rows.set_dropped([candidate]);
     let opened = rows
-        .open(NAME, &serde_json::json!({}), &unreached)
+        .open(
+            NAME,
+            Some(&crate::dispatch::test_authored_settings(
+                &serde_json::json!({}),
+            )),
+            &unreached,
+        )
         .expect("the source opens");
     let request = spell(opened.resolve(&hit()));
     assert!(

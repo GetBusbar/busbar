@@ -119,6 +119,7 @@ struct Prepared {
     fences: AtomicUsize,
     request: Mutex<Option<usize>>,
     wrong_snapshot: bool,
+    wrong_evidence: bool,
 }
 impl PreparedStore for Prepared {
     fn phase(&self) -> Phase {
@@ -145,6 +146,47 @@ impl PreparedStore for Prepared {
                     ..
                 } => {
                     assert_eq!(*snapshot, [5; 16]);
+                    if let SourceSelector::Interpret { reader, .. } = selector {
+                        use native::source::{
+                            HistoricalFact, HistoricalFamily, SourceChunk, SourceEvidence,
+                        };
+                        assert_eq!(*family, INTERPRETED_SOURCE);
+                        let chunk = SourceChunk {
+                            reader: *reader,
+                            family: HistoricalFamily::Evidence,
+                            group: Secret::new(b"logical-owner-group".to_vec()),
+                            sequence: 0,
+                            complete: true,
+                            evidence: vec![SourceEvidence {
+                                table: 0,
+                                native_key: Secret::new(b"native-key".to_vec()),
+                                value_digest: if self.wrong_evidence {
+                                    [99; 32]
+                                } else {
+                                    archive::digest(row().expose(&crate::seal::lend()))
+                                },
+                            }],
+                            facts: vec![HistoricalFact::EvidenceOnly, HistoricalFact::EvidenceOnly],
+                        };
+                        return Ok(Arc::new(Response::SourcePage(native::SourcePage {
+                            snapshot: *snapshot,
+                            family: *family,
+                            rows: vec![SourceRow {
+                                table: 0,
+                                native_key: Secret::new(b"chunk".to_vec()),
+                                value: native::codec::encode_source_chunk(
+                                    &chunk,
+                                    Bounds {
+                                        items: 32,
+                                        bytes: 4096,
+                                    },
+                                )?,
+                            }],
+                            next: None,
+                            source_digest: [12; 32],
+                            coverage_digest: [14; 32],
+                        })));
+                    }
                     assert_eq!(*family, source().format.unwrap().owner);
                     assert!(cursor.is_none());
                     assert!(matches!(selector, SourceSelector::Scan { table: 0 }));
@@ -308,6 +350,92 @@ async fn resumed_native_capture_coverage_excludes_fresh_fence_challenges() {
             assert_eq!(&captured.snapshot(), expected);
         } else {
             first = Some(captured.snapshot());
+        }
+    }
+}
+
+#[tokio::test]
+async fn interpreted_capture_keeps_originals_and_splits_multi_fact_chunks_after_evidence_validation(
+) {
+    for wrong_evidence in [false, true] {
+        let prepared = Arc::new(Prepared {
+            wrong_evidence,
+            ..Prepared::default()
+        });
+        let bounds = Bounds {
+            items: 8,
+            bytes: 4096,
+        };
+        let mut limits = limits();
+        limits.tables = 4;
+        let upgrade = upgrade();
+        let frozen = NativeSnapshot::capture(prepared, &upgrade, bounds, &Factory, limits)
+            .await
+            .unwrap();
+        let reader = native::SourceReader::new(
+            SourceCodec::HistoricalV1,
+            DocumentSemantics::Historical,
+            [17; 32],
+        )
+        .unwrap();
+        let result = frozen
+            .interpret(
+                &upgrade,
+                reader,
+                bounds,
+                InterpretationBounds {
+                    semantic_bytes: 65536,
+                    index_bytes: 16384,
+                    storage_bytes: 65536,
+                },
+                &Factory,
+                limits,
+            )
+            .await;
+        if wrong_evidence {
+            assert!(matches!(result, Err(Error::Verification)));
+            continue;
+        }
+        let mut frozen = result.unwrap();
+        assert_eq!(
+            frozen.row_count(),
+            4,
+            "one original, one original chunk, two derived facts"
+        );
+        let view = frozen.interpretation().unwrap().clone();
+        assert_eq!(frozen.header().native_anchor_digest, [1; 32]);
+        let at = frozen
+            .find_native(view.original_table(0).unwrap(), b"native-key")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frozen.read_row(at).unwrap().value, row());
+        let mut ordinals = Vec::new();
+        crate::source_facts::visit(&mut frozen, 65536, &mut |ordinal, fact| {
+            assert!(matches!(
+                fact.fact(),
+                native::source::HistoricalFact::EvidenceOnly
+            ));
+            ordinals.push(ordinal);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(ordinals.len(), 2);
+        for ordinal in ordinals {
+            let original = frozen.read_row(ordinal).unwrap();
+            let fact = view
+                .decode(original.value.expose(&crate::seal::lend()), 65536)
+                .unwrap();
+            let mut count = 0;
+            view.evidence(&mut frozen, &fact, 65536, &mut |evidence| {
+                assert_eq!(
+                    evidence.value_digest,
+                    archive::digest(row().expose(&crate::seal::lend()))
+                );
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(count, 1);
         }
     }
 }

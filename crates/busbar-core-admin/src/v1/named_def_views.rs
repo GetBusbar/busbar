@@ -57,7 +57,11 @@ pub(super) fn unparseable_def_view(
                 .raw
                 .get(SETTINGS_KEY)
                 .and_then(|s| s.as_object())
-                .map(settings_keys)
+                .map(|settings| {
+                    let mut keys: Vec<_> = settings.keys().cloned().collect();
+                    keys.sort();
+                    keys
+                })
                 .unwrap_or_default(),
         )
     }

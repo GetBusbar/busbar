@@ -26,6 +26,15 @@ use std::{
 
 /// Compiled grouping policy. Operator documents never select executable code.
 pub trait ArchiveRows {
+    fn row_frame_bytes(&self, _ordinal: u64) -> Result<usize, Error> {
+        Err(Error::MissingCapability)
+    }
+    fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        None
+    }
+    fn row_table(&mut self, ordinal: u64) -> Result<u32, Error> {
+        Ok(self.read_row(ordinal)?.table)
+    }
     fn header(&self) -> &Header;
     fn row_count(&self) -> u64;
     fn read_row(&mut self, ordinal: u64) -> Result<archive::ArchiveRow, Error>;
@@ -38,6 +47,12 @@ fn archive_error(error: archive::Error) -> Error {
     }
 }
 impl<R: Read + Seek> ArchiveRows for VerifiedArchive<R> {
+    fn row_frame_bytes(&self, ordinal: u64) -> Result<usize, Error> {
+        VerifiedArchive::row_frame_bytes(self, ordinal).map_err(archive_error)
+    }
+    fn row_table(&mut self, ordinal: u64) -> Result<u32, Error> {
+        VerifiedArchive::row_table(self, ordinal).map_err(archive_error)
+    }
     fn header(&self) -> &Header {
         self.header()
     }
@@ -52,6 +67,12 @@ impl<R: Read + Seek> ArchiveRows for VerifiedArchive<R> {
     }
 }
 pub trait Grouping: Send + Sync {
+    fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        None
+    }
+    fn includes(&self, _table: u32) -> bool {
+        true
+    }
     fn verify_inventory(
         &self,
         _source: &mut dyn ArchiveRows,
@@ -259,6 +280,7 @@ type GroupVisitor<'a> = dyn FnMut(&Secret<Vec<u8>>) -> Result<(), Error> + 'a;
 
 pub struct ArchiveSource<R> {
     archive: Mutex<VerifiedArchive<R>>,
+    interpretation: Option<crate::source_facts::View>,
     header: Header,
     members: Vec<Member>,
     identity: Identity,
@@ -300,6 +322,9 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         let mut members = Vec::new();
         let seal = crate::seal::lend();
         for ordinal in 0..summary.rows {
+            if !grouping.includes(archive.row_table(ordinal).map_err(archive_error)?) {
+                continue;
+            }
             // Admit metadata bookkeeping before allocating it; row/group scratch
             // is separately bounded by the archive's one-frame limit.
             charge = charge
@@ -371,6 +396,7 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         };
         Ok(Self {
             archive: Mutex::new(archive),
+            interpretation: grouping.interpretation().cloned(),
             header,
             members,
             identity,
@@ -467,6 +493,34 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         self.native_identity.as_ref() == Some(fence.source())
             && self.snapshot.snapshot == fence.snapshot()
             && self._native_owner.is_some()
+    }
+    pub fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        self.interpretation.as_ref()
+    }
+    pub fn fact_origin_digest(
+        &self,
+        fact: &crate::source_facts::FactRow,
+        budget: usize,
+    ) -> Result<crate::source_facts::SourceProofDigest, Error> {
+        let view = self
+            .interpretation
+            .as_ref()
+            .ok_or(Error::MissingCapability)?;
+        let mut archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
+        view.origin_digest(&mut *archive, fact, budget)
+    }
+    pub fn visit_fact_evidence(
+        &self,
+        fact: &crate::source_facts::FactRow,
+        budget: usize,
+        visitor: &mut dyn FnMut(crate::source_facts::EvidenceRow) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let view = self
+            .interpretation
+            .as_ref()
+            .ok_or(Error::MissingCapability)?;
+        let mut archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
+        view.evidence(&mut *archive, fact, budget, visitor)
     }
     pub fn identity(&self) -> Identity {
         self.identity.clone()
@@ -686,7 +740,12 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
         bounds: Bounds,
         output_budget: Option<&dyn Transform>,
     ) -> Result<SourcePage, Error> {
-        let total = self.members.len() as u64;
+        let total = self
+            .archive
+            .lock()
+            .map_err(|_| Error::Corrupt)?
+            .summary()
+            .rows;
         if after > total {
             return Err(Error::Bounds);
         }
@@ -697,6 +756,14 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
             let row = {
                 let mut archive = self.archive.lock().map_err(|_| Error::Corrupt)?;
                 let table = archive.row_table(next).map_err(archive_error)?;
+                if self
+                    .interpretation
+                    .as_ref()
+                    .is_some_and(|view| !view.is_original(table))
+                {
+                    next += 1;
+                    continue;
+                }
                 let table = self
                     .header
                     .tables
@@ -753,6 +820,17 @@ impl<R: Read + Seek + Send> ArchiveSource<R> {
     }
 }
 impl<R: Read + Seek + Send> super::legacy::projection::ProjectionSource for ArchiveSource<R> {
+    fn fact_view(&self) -> Option<&crate::source_facts::View> {
+        self.interpretation()
+    }
+    fn fact_origin_digest(
+        &self,
+        fact: &crate::source_facts::FactRow,
+        budget: usize,
+    ) -> Result<crate::source_facts::SourceProofDigest, Error> {
+        ArchiveSource::fact_origin_digest(self, fact, budget)
+    }
+
     fn semantic_bytes(&self) -> usize {
         self.semantic_bytes
     }
@@ -762,7 +840,11 @@ impl<R: Read + Seek + Send> super::legacy::projection::ProjectionSource for Arch
             catalogue: self.header.catalogue_digest,
         }
     }
-    fn inventory_digest(&self, family: [u8; 16], key: &Secret<Vec<u8>>) -> Result<[u8; 32], Error> {
+    fn inventory_digest(
+        &self,
+        family: [u8; 16],
+        key: &Secret<Vec<u8>>,
+    ) -> Result<super::legacy::projection::InventoryDigest, Error> {
         let seal = crate::seal::lend();
         let compare = |member: &Member| {
             member
@@ -791,7 +873,9 @@ impl<R: Read + Seek + Send> super::legacy::projection::ProjectionSource for Arch
                     .map_err(archive_error)?,
             );
         }
-        Ok(hash.finalize().into())
+        Ok(super::legacy::projection::InventoryDigest(
+            hash.finalize().into(),
+        ))
     }
     fn visit(
         &self,
@@ -919,7 +1003,7 @@ impl<R: Read + Seek + Send> SourceReader for ArchiveSource<R> {
             )?;
             let marker = Record {
                 key: member.group.expose(&seal).clone(),
-                value: super::legacy::projection::encode_marker(&member.group, digest)?,
+                value: super::legacy::projection::encode_marker(&member.group, digest.0)?,
                 preserve_exact: false,
             };
             // Validate each group independently before treating an overlap as a page boundary.

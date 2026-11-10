@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::plugin_rows::PluginRows;
-use busbar_contract::secret_fields::{undeclared_reference, undeclared_refusal};
+use busbar_contract::secret_fields::undeclared_refusal;
 
 use super::RootCfg;
 
@@ -29,18 +29,17 @@ fn check_declared_paths(
     };
     let policed = |at: String,
                    module: &str,
-                   settings: &serde_json::Map<String, serde_json::Value>,
+                   settings: &busbar_contract::plugin_settings::Settings,
                    paths: &[String]|
      -> Result<(), String> {
-        let tree = serde_json::Value::Object(settings.clone());
-        match undeclared_reference(&tree, paths) {
+        match settings.undeclared_reference(paths, &crate::config::secret::sugars())? {
             Some(field) => Err(undeclared_refusal(&format!("{at}.{field}"), module)),
             None => Ok(()),
         }
     };
     let check = |at: String,
                  module: &str,
-                 settings: &serde_json::Map<String, serde_json::Value>|
+                 settings: &busbar_contract::plugin_settings::Settings|
      -> Result<(), String> { policed(at, module, settings, &declared(module)) };
     if let Some(store) = &cfg.store {
         check("store.settings".into(), &store.module, &store.settings)?;

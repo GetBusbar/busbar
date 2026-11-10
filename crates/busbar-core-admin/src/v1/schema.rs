@@ -46,7 +46,7 @@ pub struct KeyView {
 /// `POST /keys` (mint): the key metadata plus the ONCE-shown signed token, and (when an AWS SigV4
 /// credential was requested) the AccessKeyId + secret access key. The AWS fields are absent on a
 /// bearer-only mint.
-#[derive(Serialize, JsonSchema)]
+#[derive(JsonSchema)]
 pub struct CreatedKeyView {
     pub id: String,
     pub name: String,
@@ -60,7 +60,8 @@ pub struct CreatedKeyView {
     pub state: String,
     /// The busbar-SIGNED token: the key credential (1.5.0), shown EXACTLY once and never
     /// returned by any read. (This is the field a client must capture to authenticate.)
-    pub token: String,
+    #[schemars(with = "String")]
+    pub token: busbar_contract::Secret<String>,
     /// Unix-seconds expiry of the signed token.
     pub expires_at: u64,
     /// Whether this mint AUTO-PROVISIONED its bound group leaf (self-service); lets a portal
@@ -71,13 +72,14 @@ pub struct CreatedKeyView {
     pub aws_access_key_id: Option<String>,
     /// AWS SigV4 secret access key, shown once (present only with an AWS credential).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub aws_secret_access_key: Option<String>,
+    #[schemars(with = "Option<String>")]
+    pub aws_secret_access_key: Option<busbar_contract::Secret<String>>,
 }
 
 /// `POST /keys/{id}/rotate`: the key metadata plus the ONCE-shown fresh CREDENTIAL. Exactly one of
 /// `token`+`expires_at` (a 1.5.0 signed-token key: a new token at a new binding generation, every
 /// prior token now rejected) or `secret` (a legacy hashed-secret key) is present.
-#[derive(Serialize, JsonSchema)]
+#[derive(JsonSchema)]
 pub struct RotatedKeyView {
     pub id: String,
     pub name: String,
@@ -93,13 +95,15 @@ pub struct RotatedKeyView {
     pub state: String,
     /// The fresh busbar-SIGNED token, shown EXACTLY once (signed-token keys).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
+    #[schemars(with = "Option<String>")]
+    pub token: Option<busbar_contract::Secret<String>>,
     /// Unix-seconds expiry of the re-minted signed token (present with `token`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
     /// The fresh bearer secret, shown EXACTLY once (legacy hashed-secret keys only).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
+    #[schemars(with = "Option<String>")]
+    pub secret: Option<busbar_contract::Secret<String>>,
 }
 
 /// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in
@@ -266,7 +270,6 @@ pub struct ConfigSettingsView {
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.
-    // settings-leak-lint: allow — response ENVELOPE member; every bag nested inside it is reduced to
     pub settings: serde_json::Value,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT

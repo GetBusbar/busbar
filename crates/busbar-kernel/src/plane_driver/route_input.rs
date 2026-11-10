@@ -14,7 +14,7 @@ pub enum HealthModeInput {
 }
 
 /// ONE resolved lane (one per model), flattened to the scalars the route tables and the boot banner read.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LaneInput {
     /// The model name (config key) — the lane's stable identity and `by_model` key.
     pub model: String,
@@ -62,4 +62,15 @@ pub struct PoolInput {
     pub members: Vec<PoolMemberInput>,
     /// The pool's `on_exhausted:` policy.
     pub on_exhausted: OnExhaustedInput,
+}
+
+impl std::fmt::Debug for LaneInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaneInput")
+            .field("model", &self.model)
+            .field("provider", &self.provider)
+            .field("base_url", &"<redacted>")
+            .field("max_concurrent", &self.max_concurrent)
+            .finish()
+    }
 }

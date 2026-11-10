@@ -8,6 +8,88 @@ const BOUNDS: Bounds = Bounds {
     items: 128,
     bytes: 16384,
 };
+fn reader() -> SourceReader {
+    SourceReader::new(
+        SourceCodec::HistoricalV1,
+        DocumentSemantics::Historical,
+        [8; 32],
+    )
+    .unwrap()
+}
+
+#[test]
+fn historical_registration_requires_a_valid_typed_reader_on_the_wire() {
+    assert!(SourceReader::new(
+        SourceCodec::HistoricalV1,
+        DocumentSemantics::Historical,
+        [0; 32]
+    )
+    .is_err());
+    for state in [
+        InspectionState::Legacy(reader()),
+        InspectionState::InProgress(reader()),
+    ] {
+        let response: Response = Response::Inspected(Inspection {
+            state,
+            source: Some(source()),
+            admission_marker: None,
+            catalogue: vec![],
+            capabilities: vec![NativeCapability::Snapshot],
+        });
+        let encoded = encode_response(&Ok(response), BOUNDS).unwrap();
+        let decoded = decode_response(&encoded.0, BOUNDS).unwrap();
+        let Response::Inspected(inspected) = decoded else {
+            panic!("inspection");
+        };
+        assert_eq!(inspected.state, state);
+        let mut missing = encoded.0.clone();
+        missing.drain(17..51);
+        assert!(decode_response(&missing, BOUNDS).is_err());
+        let mut unknown = encoded.0.clone();
+        unknown[17] = 255;
+        assert!(matches!(
+            decode_response(&unknown, BOUNDS),
+            Err(Error::UnsupportedFormat)
+        ));
+        let mut invalid = encoded.0.clone();
+        invalid[19..51].fill(0);
+        assert!(decode_response(&invalid, BOUNDS).is_err());
+    }
+    request_roundtrip(Request::SourcePage {
+        upgrade: reference(),
+        snapshot: [4; 16],
+        family: INTERPRETED_SOURCE,
+        selector: SourceSelector::Interpret {
+            reader: reader(),
+            bounds: InterpretationBounds {
+                semantic_bytes: 8192,
+                index_bytes: 4096,
+                storage_bytes: 16 * 1024 * 1024,
+            },
+        },
+        cursor: None,
+        bounds: BOUNDS,
+    });
+    let invalid: Request = Request::SourcePage {
+        upgrade: reference(),
+        snapshot: [4; 16],
+        family: INTERPRETED_SOURCE,
+        selector: SourceSelector::Interpret {
+            reader: reader(),
+            bounds: InterpretationBounds {
+                semantic_bytes: 0,
+                index_bytes: 4096,
+                storage_bytes: 16 * 1024 * 1024,
+            },
+        },
+        cursor: None,
+        bounds: BOUNDS,
+    };
+    assert!(matches!(
+        encode_request(&invalid, BOUNDS),
+        Err(Error::Bounds)
+    ));
+}
 fn source() -> SourceIdentity {
     SourceIdentity {
         native_anchor: [1; 32],
@@ -153,7 +235,7 @@ fn finish_roundtrips_exact_empty_applied_results_for_both_phases() {
 #[test]
 fn response_roundtrips_preserve_native_bytes_and_metadata() {
     response_roundtrip(Response::Inspected(Inspection {
-        state: InspectionState::Legacy,
+        state: InspectionState::Legacy(reader()),
         source: Some(source()),
         admission_marker: None,
         catalogue: vec![super::super::super::archive::Table {
@@ -267,7 +349,7 @@ fn strict_envelopes_and_remote_errors() {
 #[test]
 fn budgets_include_collection_metadata_and_secret_bytes() {
     let reply = Ok(Response::<Kernel>::Inspected(Inspection {
-        state: InspectionState::Legacy,
+        state: InspectionState::Legacy(reader()),
         source: Some(source()),
         admission_marker: None,
         catalogue: vec![super::super::super::archive::Table {
@@ -373,7 +455,12 @@ fn reject_inconsistent_inspections_catalogues_and_native_rows() {
     unknown.format = None;
     assert_eq!(
         encode_response(
-            &make(InspectionState::Legacy, Some(unknown), None, vec![]),
+            &make(
+                InspectionState::Legacy(reader()),
+                Some(unknown),
+                None,
+                vec![]
+            ),
             BOUNDS
         )
         .unwrap_err(),
@@ -390,7 +477,12 @@ fn reject_inconsistent_inspections_catalogues_and_native_rows() {
     ] {
         assert_eq!(
             encode_response(
-                &make(InspectionState::Legacy, Some(source()), None, catalogue),
+                &make(
+                    InspectionState::Legacy(reader()),
+                    Some(source()),
+                    None,
+                    catalogue
+                ),
                 BOUNDS
             )
             .unwrap_err(),

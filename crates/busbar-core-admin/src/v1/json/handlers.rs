@@ -2529,7 +2529,6 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
             &json!({
                 "applied": false,
                 "config_version": current.config_version,
-                // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
                 // already reduced every bag inside `settings` to its key names.
                 "settings": settings,
                 "settings_source": "desired_root_overlay",
@@ -2715,7 +2714,6 @@ pub(crate) async fn put_config_settings(
                     &json!({
                         "applied": true,
                         "config_version": installed.config_version,
-                        // settings-leak-lint: allow — the envelope member; `redact_settings_bags`
                         // above has already reduced every bag inside `settings` to its key names.
                         "settings": settings,
                         "configuration": configuration,
@@ -2734,10 +2732,12 @@ pub(crate) async fn put_config_settings(
 #[derive(serde::Deserialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct PatchSettingsReq {
-    // settings-leak-lint: allow — INBOUND request body (`Deserialize` only). This is the operator
-    // settings-leak-lint: allow — the envelope member; `redact_settings_bags` above has
     #[serde(default, deserialize_with = "present_settings_mode")]
-    settings: Option<serde_json::Map<String, serde_json::Value>>,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")
+    )]
+    settings: Option<busbar_contract::plugin_settings::Settings>,
     /// Explicit top-level edits preserve all unmentioned settings, including private values.
     #[serde(default, deserialize_with = "present_settings_mode")]
     edit: Option<super::settings_edit::SettingsEdit>,
@@ -2754,8 +2754,8 @@ where
 impl PatchSettingsReq {
     fn apply(
         self,
-        existing: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, AdminError> {
+        existing: busbar_contract::plugin_settings::Settings,
+    ) -> Result<busbar_contract::plugin_settings::Settings, AdminError> {
         match (self.settings, self.edit) {
             (Some(settings), None) => {
                 crate::v1::service::validate_hook_settings_size(&settings)?;
@@ -3147,7 +3147,7 @@ pub(crate) async fn hook_status(
                     "settings_version": desired_version,
                 },
                 "reported": {
-                    "settings_keys": r.settings.as_ref().map(crate::v1::service::settings_keys),
+                    "settings_keys": r.settings.as_ref().map(busbar_contract::plugin_settings::Settings::key_names),
                     "settings_version": r.settings_version,
                 },
                 "drift": settings_drift || version_drift,

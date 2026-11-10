@@ -779,7 +779,7 @@ pub(crate) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
                 conns: crate::root::loader::dispatch::ConnTable::Host(
-                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                    crate::root::connector::admit(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
                 ),
             },
         )

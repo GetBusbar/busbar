@@ -45,7 +45,7 @@ fn bind(table: Arc<dyn DeclaredConns>, timeout_ms: u64) -> Plugin<TestKind> {
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: Adopter::unwatched(),
-            conns: ConnTable::Host(table),
+            conns: ConnTable::Host(crate::dispatch::test_admissions(table)),
         },
     )
     .unwrap()

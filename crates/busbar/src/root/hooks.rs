@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::conn::DeclaredConns;
 use busbar_contract::hook_calls::HookAxis;
 use std::sync::Arc;
 
@@ -9,8 +8,8 @@ use busbar_contract::plugin_rows::PluginRows;
 
 use crate::root::loader::{hook_door::HookRows, rows::registry_of};
 
-fn conns() -> Arc<dyn DeclaredConns> {
-    crate::root::connector::the().clone()
+fn conns() -> busbar_contract::conn::admissions::AdmissionAuthority {
+    crate::root::connector::admit(crate::root::connector::the().clone())
 }
 
 pub fn axis(registry: &Arc<dyn PluginRows>) -> Result<Arc<dyn HookAxis>, String> {

@@ -183,7 +183,7 @@ pub trait SecretAxis: Send + Sync {
     fn open(
         &self,
         module: &str,
-        settings: &serde_json::Value,
+        settings: Option<&crate::plugin_settings::Settings>,
         resolve: &dyn Fn(&SecretRef) -> Result<SecretBytes, String>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }

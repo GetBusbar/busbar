@@ -66,33 +66,12 @@ pub fn normalize_historical_config(
 /// Credential binding conversion additionally inspects the authored reference and
 /// resolved credential shape; unresolved field decisions remain required debt.
 pub fn normalize_supported_source(
-    profile: crate::ReleasedProfile,
+    semantics: busbar_contract::persistence::lifecycle::DocumentSemantics,
     raw: &str,
     host: &dyn migrate_plugins::MigrateHost,
 ) -> Result<migrate::MigrateOutput, String> {
-    match profile {
-        crate::ReleasedProfile::Sqlite6
-        | crate::ReleasedProfile::Postgres6
-        | crate::ReleasedProfile::Mysql3
-        | crate::ReleasedProfile::Valkey6 => normalize(raw, None, host, true),
-        crate::ReleasedProfile::Sqlite7
-        | crate::ReleasedProfile::Sqlite8
-        | crate::ReleasedProfile::Sqlite9
-        | crate::ReleasedProfile::Postgres7
-        | crate::ReleasedProfile::Postgres8
-        | crate::ReleasedProfile::Postgres9
-        | crate::ReleasedProfile::Mysql4
-        | crate::ReleasedProfile::Mysql5
-        | crate::ReleasedProfile::Mysql7
-        | crate::ReleasedProfile::Valkey7
-        | crate::ReleasedProfile::Valkey8
-        | crate::ReleasedProfile::Valkey9 => {
-            // These retained development formats already used the current config
-            // contract. Do not reinterpret their grants or JWT credential bindings
-            // as the older released reader's implicit semantics.
-            normalize(raw, None, host, false)
-        }
-    }
+    use busbar_contract::persistence::lifecycle::DocumentSemantics;
+    normalize(raw, None, host, semantics == DocumentSemantics::Historical)
 }
 
 fn normalize(
@@ -317,14 +296,14 @@ mod normalize_tests {
     fn development_profiles_preserve_current_grants_instead_of_released_defaults() {
         let raw = "store: {module: custom}\nidentity-providers: {corp: {module: header}}\nauth: {chain: [corp], role_bindings: {corp: {eng: {allowed_pools: [fast]}}}}\n";
         let dev = normalize_supported_source(
-            crate::ReleasedProfile::Sqlite9,
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Current,
             raw,
             &migrate_plugins::NoPlugins,
         )
         .unwrap();
         assert_eq!(dev.yaml, raw);
         let released = normalize_supported_source(
-            crate::ReleasedProfile::Sqlite6,
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Historical,
             raw,
             &migrate_plugins::NoPlugins,
         )

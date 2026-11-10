@@ -24,8 +24,8 @@ pub struct DpopPresentation {
     pub method: String,
 
     pub path: String,
-    pub token: String,
-    pub proof: String,
+    pub token: zeroize::Zeroizing<String>,
+    pub proof: zeroize::Zeroizing<String>,
 }
 
 /// An `oauth_as:` block its owner has ACCEPTED ([`AsPlaneSeam::check`]), carried by `RootCfg`: the

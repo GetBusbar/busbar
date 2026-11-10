@@ -848,24 +848,36 @@ async fn every_declared_stream_type_goes_piece_by_piece() {
 fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
     use crate::root::loader::boot::BindOwner;
     use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
-    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
-        section: "a-section",
-        need_auths: vec![
-            (DIRECTION_OUTBOUND, "none"),
-            (DIRECTION_INBOUND, "none"),
-            (DIRECTION_INBOUND, "none"),
-            (DIRECTION_INBOUND, "none"),
-        ],
-        need_targets: vec!["far", "media", "", "quiet"],
-        need_transports: vec!["out-t", "in-t", "bare-t", "quiet-t"],
-        ..Default::default()
-    };
+    use busbar_contract::abi::mechanism::rendering::ReadNeed;
+    fn need(direction: u32, transport: &str, target_from: &str) -> ReadNeed {
+        ReadNeed {
+            direction,
+            egress_class: 0,
+            transport: transport.into(),
+            auth: String::new(),
+            target_from: target_from.into(),
+            trust_from: String::new(),
+            details: busbar_contract::abi::mechanism::rendering::ReadBlob {
+                fmt: 0,
+                flags: 0,
+                bytes: Vec::new(),
+            },
+            timeout_ms: 0,
+            keep_mode: busbar_contract::abi::host::conn::connector::KEEP_NAMED,
+            keep_response_headers: Vec::new(),
+            deny_response_headers: Vec::new(),
+        }
+    }
+    let needs = vec![
+        need(DIRECTION_OUTBOUND, "out-t", "far"),
+        need(DIRECTION_INBOUND, "in-t", "media"),
+    ];
     let doc = |yaml: &str| -> BTreeMap<&'static str, serde_yaml::Value> {
         BTreeMap::from([("a-section", serde_yaml::from_str(yaml).expect("yaml"))])
     };
     let sections =
         doc("far: {listen: \"127.0.0.1:7000\"}\nmedia: {listen: \"127.0.0.1:7001\"}\nquiet: {}\n");
-    let binds = super::need_binds("inst", &facts, &sections).expect("binds");
+    let binds = super::need_binds("inst", "a-section", &needs, &sections).expect("binds");
     assert_eq!(
         binds.len(),
         1,
@@ -881,13 +893,31 @@ fn a_planes_inbound_need_binds_at_the_listen_its_block_states() {
         BindOwner::Need { instance, need: 1, .. } if instance == "inst"
     ));
     assert!(
-        super::need_binds("inst", &facts, &BTreeMap::new())
+        super::need_binds("inst", "a-section", &needs, &BTreeMap::new())
             .expect("no section")
             .is_empty(),
         "a plane whose section is absent binds nothing"
     );
     assert_eq!(
-        super::need_binds("inst", &facts, &doc("media: {listen: \"nowhere\"}\n")).unwrap_err(),
-        "a-section.media.listen: `nowhere` is not an ip:port address"
+        super::need_binds(
+            "inst",
+            "a-section",
+            &needs,
+            &doc("media: {listen: \"nowhere\"}\n")
+        )
+        .unwrap_err(),
+        "a-section.media.listen: not an ip:port address"
+    );
+    let mut incomplete = needs.clone();
+    incomplete.push(need(DIRECTION_INBOUND, "quiet-t", "quiet"));
+    assert_eq!(
+        super::need_binds("inst", "a-section", &incomplete, &sections).unwrap_err(),
+        "a-section.quiet.listen: not set"
+    );
+    let undeclared = [need(DIRECTION_INBOUND, "bare-t", "")];
+    assert!(
+        super::need_binds("inst", "a-section", &undeclared, &sections)
+            .unwrap_err()
+            .contains("names no settings block")
     );
 }

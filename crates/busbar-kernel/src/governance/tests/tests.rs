@@ -800,7 +800,7 @@ async fn test_aws_credential_debug_redacts_secret() {
             revoke_reason: None,
             revision: 0,
         },
-        secret: "v1:plain:SUPER-SECRET-SIGNING-KEY-zzz".to_string(),
+        secret: "v1:plain:SUPER-SECRET-SIGNING-KEY-zzz".to_string().into(),
     };
     let dbg = format!("{cred:?}");
     assert!(

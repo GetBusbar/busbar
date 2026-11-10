@@ -269,10 +269,7 @@ impl LoginMethods {
 
             if let Some(bl) = &mc.browser_login {
                 if let Some(cid) = &bl.client_id {
-                    resolved
-                        .map_mut()
-                        .entry("client_id".to_string())
-                        .or_insert_with(|| serde_json::Value::String(cid.clone()));
+                    resolved.default_text("client_id", cid.clone());
                 }
             }
             let refused = |e: String| login_module_refusal(name, &mc.module, e);
@@ -295,10 +292,10 @@ impl LoginMethods {
                 mc.browser_login.as_ref(),
                 &registry.secret_slots(&mc.module),
                 secret_resolver,
-                resolved.map_mut(),
+                &mut resolved,
             )?;
 
-            let opened = axis.open(&mc.module, &login_label(name), resolved.as_value());
+            let opened = axis.open(&mc.module, &login_label(name), &resolved);
 
             drop(resolved);
             let calls = opened.map_err(&refused)?;
@@ -352,7 +349,7 @@ fn lend_browser_login_secret(
     browser: Option<&crate::config::BrowserLoginCfg>,
     secret_slots: &[String],
     secret_resolver: &crate::config::secret::SecretResolver,
-    resolved: &mut serde_json::Map<String, serde_json::Value>,
+    resolved: &mut busbar_contract::plugin_settings::ResolvedSettings,
 ) -> Result<(), String> {
     let Some(sref) = browser.and_then(|bl| bl.client_secret.as_ref()) else {
         return Ok(());
@@ -370,11 +367,7 @@ fn lend_browser_login_secret(
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
         .map_err(|e| format!("identity-providers.{name} browser_login.client_secret: {e}"))?;
-    resolved.insert(
-        CLIENT_SECRET_SLOT.to_string(),
-        serde_json::Value::String(secret.expose(&crate::seal::lend()).clone()),
-    );
-    Ok(())
+    resolved.insert_secret(CLIENT_SECRET_SLOT, secret_slots, secret)
 }
 
 fn login_label(name: &str) -> String {

@@ -1673,12 +1673,7 @@ async fn run(
             &bind.at,
             max_inbound,
         );
-        let tls: Option<busbar_kernel::config::sections::TlsCfg> = bind
-            .tls
-            .clone()
-            .map(serde_json::from_value)
-            .transpose()
-            .unwrap_or_else(|e| die(format!("{}: {e}", bind.at)));
+        let tls = bind.tls.clone();
         let addr = bind.listen.to_string();
         busbar_core_connector::tls::prepare(&addr, tls.as_ref(), &tls_secret_resolver, true)
             .unwrap_or_else(|e| die(e.to_string()));

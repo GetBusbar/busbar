@@ -12,6 +12,7 @@ use super::ticket::{InstanceWake, Waking};
 
 pub(crate) struct Generation {
     pub(crate) conn: Option<(InstanceId, Arc<dyn DeclaredConns>)>,
+    pub(crate) admissions: Option<busbar_contract::conn::admissions::EnforcedAdmissions>,
     pub(crate) destinations: Vec<DiskDest>,
 }
 

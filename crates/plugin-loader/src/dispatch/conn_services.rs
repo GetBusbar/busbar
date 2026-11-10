@@ -2803,6 +2803,7 @@ mod creating_authority_tests {
     ) -> Arc<super::super::export_bindings::Generation> {
         Arc::new(super::super::export_bindings::Generation {
             conn: Some((owner, table.clone())),
+            admissions: None,
             destinations: Vec::new(),
         })
     }
@@ -3054,10 +3055,12 @@ mod creating_authority_tests {
         let wake = Box::leak(Box::<InstanceWake>::default());
         let old = Arc::new(Generation {
             conn: None,
+            admissions: None,
             destinations: Vec::new(),
         });
         let candidate = Arc::new(Generation {
             conn: None,
+            admissions: None,
             destinations: Vec::new(),
         });
         let refresh = Ticket {
@@ -3094,10 +3097,12 @@ mod creating_authority_tests {
         let wake = Box::leak(Box::<InstanceWake>::default());
         let old = Arc::new(Generation {
             conn: None,
+            admissions: None,
             destinations: Vec::new(),
         });
         let candidate = Arc::new(Generation {
             conn: None,
+            admissions: None,
             destinations: Vec::new(),
         });
         let operation = Ticket {

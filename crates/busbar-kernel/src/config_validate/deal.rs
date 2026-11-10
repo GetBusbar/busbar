@@ -240,7 +240,6 @@ pub struct Section {
 
     /// The blob that crosses: `{verb: section}` for every stated verb the document writes, reserved
     /// sub-keys stripped; an instance's own `settings`.
-    // settings-leak-lint: allow — NON-PROJECTION engine type. `Section` derives no `Serialize`: it
     pub settings: Value,
     /// The reserved sub-keys read off, each at its path, for the kernel.
     pub reserved: Vec<(Vec<String>, Value)>,

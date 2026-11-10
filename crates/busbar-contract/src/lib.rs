@@ -81,6 +81,8 @@ pub mod secret_ref;
 /// Settings sensitivity: every plugin setting is sensitive unless its schema declares it public.
 pub mod settings_public;
 
+pub mod plugin_settings;
+
 pub mod secret_fields;
 pub mod section;
 pub mod services;

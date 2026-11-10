@@ -69,7 +69,11 @@ fn resolves(opened: &dyn busbar_contract::secret::SecretCalls) -> Vec<String> {
 
 fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
     let opened = axis
-        .open(NAME, &settings(), &unreached)
+        .open(
+            NAME,
+            Some(&crate::dispatch::test_authored_settings(&settings())),
+            &unreached,
+        )
         .expect("the env source opens over its settings");
     resolves(opened.as_ref())
 }
@@ -167,7 +171,12 @@ fn replacing_or_removing_a_dropped_set_retires_its_cached_checker() {
         assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
         replace(vec![replacement.clone()]);
         assert!(
-            rows.open(NAME, &settings(), &unreached).is_err(),
+            rows.open(
+                NAME,
+                Some(&crate::dispatch::test_authored_settings(&settings())),
+                &unreached
+            )
+            .is_err(),
             "open already selects the current replacement image"
         );
         let error = rows
@@ -390,9 +399,19 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
     })
     .expect("a former name no other row claims");
 
-    let first = rows.open(NAME, &settings(), &unreached).expect("opens");
+    let first = rows
+        .open(
+            NAME,
+            Some(&crate::dispatch::test_authored_settings(&settings())),
+            &unreached,
+        )
+        .expect("opens");
     let second = rows
-        .open("env-second", &settings(), &unreached)
+        .open(
+            "env-second",
+            Some(&crate::dispatch::test_authored_settings(&settings())),
+            &unreached,
+        )
         .expect("the same plugin opens under its other word");
     let shared = rows.shared(NAME).expect("the shared instance opens");
     assert_eq!(resolves(first.as_ref()), resolves(second.as_ref()));
@@ -524,7 +543,11 @@ fn a_value_that_grew_between_the_two_reads_is_a_named_transient_refusal() {
     let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(growing::door).expect("the growing stub links");
     let opened = rows
-        .open("stub-growing", &settings(), &unreached)
+        .open(
+            "stub-growing",
+            Some(&crate::dispatch::test_authored_settings(&settings())),
+            &unreached,
+        )
         .expect("the growing stub opens");
     let refused = opened
         .resolve(br#"{"key":"rotating"}"#)

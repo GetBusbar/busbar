@@ -74,8 +74,19 @@ impl Preparation {
                 ) && self.source.as_ref() == Some(expected_source)
                     && self.begin_body.is_none_or(|prior| prior == body)
             }
-            Request::SourcePage { upgrade, .. }
-            | Request::Target { upgrade }
+            Request::SourcePage {
+                upgrade, selector, ..
+            } => {
+                self.upgrade == Some(upgrade.id)
+                    && match selector {
+                        native::SourceSelector::Interpret { reader, .. } => {
+                            self.inspected.and_then(native::InspectionState::reader)
+                                == Some(*reader)
+                        }
+                        _ => true,
+                    }
+            }
+            Request::Target { upgrade }
             | Request::CheckFence { upgrade }
             | Request::Finish { upgrade, .. } => self.upgrade == Some(upgrade.id),
         }

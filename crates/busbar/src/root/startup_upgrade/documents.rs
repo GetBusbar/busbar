@@ -49,7 +49,10 @@ pub struct SecretPublication {
 enum Phase {
     #[default]
     Structural,
-    Released([u8; 32], busbar_migrations::ReleasedProfile),
+    Released(
+        [u8; 32],
+        busbar_contract::persistence::lifecycle::DocumentSemantics,
+    ),
     Current,
 }
 #[derive(Default)]
@@ -60,7 +63,7 @@ struct State {
     revision: u64,
     locked: bool,
     source_binding: Option<[u8; 32]>,
-    source_profile: Option<busbar_migrations::ReleasedProfile>,
+    source_profile: Option<busbar_contract::persistence::lifecycle::DocumentSemantics>,
     config_proofs: BTreeMap<[u8; 32], busbar_migrations::config::HistoricalShape>,
     secret_binding: Option<[u8; 32]>,
 }
@@ -278,14 +281,19 @@ impl Documents {
             binding.update(format.logical.to_be_bytes());
             binding.update(format.codec.to_be_bytes());
         }
-        self.enter_released_binding(binding.finalize().into(), proof.profile())
+        binding.update(proof.reader().decoder_digest());
+        binding.update([match proof.documents() {
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Historical => 0,
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Current => 1,
+        }]);
+        self.enter_released_binding(binding.finalize().into(), proof.documents())
     }
 
     /// Phase entry is wired below to the migration coordinator's opaque source proof.
     fn enter_released_binding(
         &self,
         binding: [u8; 32],
-        profile: busbar_migrations::ReleasedProfile,
+        profile: busbar_contract::persistence::lifecycle::DocumentSemantics,
     ) -> Result<(), String> {
         let mut state = self
             .state
@@ -462,7 +470,8 @@ impl Documents {
             .state
             .lock()
             .map_err(|_| "configuration custody failed")?;
-        let mut settings = serde_json::Value::Object(std::mem::take(&mut target.settings));
+        let mut settings = serde_json::to_value(std::mem::take(&mut target.settings))
+            .map_err(|_| "Store comparison settings encoding failed")?;
         for secret in state
             .secrets
             .values()
@@ -544,7 +553,8 @@ impl Documents {
         target.settings = settings
             .as_object_mut()
             .map(std::mem::take)
-            .ok_or("Store comparison settings are invalid")?;
+            .ok_or("Store comparison settings are invalid")?
+            .into();
         let original =
             serde_json::to_value(original).map_err(|_| "Store comparison encoding failed")?;
         let target =
@@ -917,19 +927,12 @@ fn json_slot_mut<'a>(
 }
 
 fn has_historical_semantics(state: &State) -> bool {
-    use busbar_migrations::ReleasedProfile;
-    matches!(
-        state.source_profile,
-        Some(
-            ReleasedProfile::Sqlite6
-                | ReleasedProfile::Postgres6
-                | ReleasedProfile::Mysql3
-                | ReleasedProfile::Valkey6
-        )
-    ) || state
-        .config_proofs
-        .values()
-        .any(|shape| *shape == busbar_migrations::config::HistoricalShape::RootGrammar)
+    state.source_profile
+        == Some(busbar_contract::persistence::lifecycle::DocumentSemantics::Historical)
+        || state
+            .config_proofs
+            .values()
+            .any(|shape| *shape == busbar_migrations::config::HistoricalShape::RootGrammar)
 }
 
 fn document_transform(
@@ -1037,8 +1040,11 @@ mod tests {
             "{}\n",
         )
         .unwrap();
-        docs.enter_released_binding([7; 32], busbar_migrations::ReleasedProfile::Sqlite6)
-            .unwrap();
+        docs.enter_released_binding(
+            [7; 32],
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Historical,
+        )
+        .unwrap();
         assert!(
             docs.pending().is_err(),
             "every original must be reloaded in the new phase"
@@ -1076,8 +1082,11 @@ mod tests {
         let raw = "store: {module: custom, settings: {password: historical, database: original}}\n";
         docs.normalize(ConfigDocument::Deployment, path, raw)
             .unwrap();
-        docs.enter_released_binding([7; 32], busbar_migrations::ReleasedProfile::Sqlite6)
-            .unwrap();
+        docs.enter_released_binding(
+            [7; 32],
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Historical,
+        )
+        .unwrap();
         docs.stage_secret(SecretPublication {
             config_path: path.into(),
             site: "store.settings".into(),
@@ -1182,8 +1191,11 @@ mod tests {
     #[test]
     fn secret_intents_are_retained_exactly_without_filesystem_writes() {
         let docs = Documents::default();
-        docs.enter_released_binding([9; 32], busbar_migrations::ReleasedProfile::Postgres6)
-            .unwrap();
+        docs.enter_released_binding(
+            [9; 32],
+            busbar_contract::persistence::lifecycle::DocumentSemantics::Historical,
+        )
+        .unwrap();
         let secret = |bytes: &[u8]| SecretPublication {
             config_path: "config.yaml".into(),
             site: "auth:test".into(),

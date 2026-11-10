@@ -280,7 +280,13 @@ impl GovState {
         let commit = self
             .core
             .identity()
-            .put_key_with_credential(&binding, &CredentialSecret { meta, secret })
+            .put_key_with_credential(
+                &binding,
+                &CredentialSecret {
+                    meta,
+                    secret: secret.into(),
+                },
+            )
             .await?;
         let binding = committed_key(&commit, &binding.id)?;
         self.publish_identity(commit);

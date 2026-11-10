@@ -4469,7 +4469,9 @@ async fn try_publish_door(
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: busbar_plugin_loader::dispatch::ConnTable::Host(conns.clone()),
+                    conns: busbar_plugin_loader::dispatch::ConnTable::Host(
+                        crate::root::connector::admit(conns.clone()),
+                    ),
                 },
             )
             .ok()?;

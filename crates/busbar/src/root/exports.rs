@@ -21,7 +21,12 @@ fn rows() -> Option<ExportRows<'static>> {
 }
 
 impl ExportAxis for RootExports {
-    fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
+    fn probe(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Option<Probed> {
         rows()?.probe(module, instance, settings)
     }
 
@@ -29,7 +34,7 @@ impl ExportAxis for RootExports {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, &serde_json::Value)],
+        instances: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>> {
         rows()?.check(module, phase, instances)
     }
@@ -38,14 +43,14 @@ impl ExportAxis for RootExports {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::export_calls::PreparedExport,
     ) -> Result<Arc<dyn ExportCalls>, String> {
         let rows =
             rows().ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
         let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
             crate::root::connector::the().clone();
         rows.with_logs(crate::root::linked::logs())
-            .with_conns(conns)
+            .with_conns(crate::root::connector::admit(conns))
             .open(module, label, settings)
     }
 

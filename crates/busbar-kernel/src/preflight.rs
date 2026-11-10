@@ -120,7 +120,7 @@ pub struct RegistryIn<'a> {
     pub inventory_only: bool,
 }
 /// One `plugins.fetch` entry's outcome, as the root's fetch reports it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Fetched {
     /// The pinned file was already present and hashed to the pin: no network.
     Cached {
@@ -346,16 +346,20 @@ pub(crate) fn builtin_ranking_known(name: &str) -> bool {
 fn ranking_settings(
     axis: &dyn busbar_contract::hook_calls::HookAxis,
     name: &str,
-) -> Result<serde_json::Value, String> {
-    let settings = serde_json::json!({ "policy": name });
+) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
+    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
+        serde_json::json!({ "policy": name }),
+    );
     ranking_settings_from(name, axis.probe(name, name, &settings))
 }
 
 pub(crate) fn ranking_settings_from(
     name: &str,
     probed: Option<busbar_contract::hook_calls::Probed>,
-) -> Result<serde_json::Value, String> {
-    let settings = serde_json::json!({"policy":name});
+) -> Result<busbar_contract::plugin_settings::ResolvedSettings, String> {
+    let settings = busbar_contract::plugin_settings::ResolvedSettings::from(
+        serde_json::json!({"policy":name}),
+    );
     let (facts, problems) =
         probed.ok_or_else(|| format!("ranking strategy '{name}' has no admitted hook plugin"))?;
     let Some(facts) = facts else {
@@ -407,9 +411,14 @@ pub(crate) fn ranking_on_axis(
 
 pub(crate) fn open_ranked<T>(
     name: &str,
-    settings: &serde_json::Value,
+    settings: &busbar_contract::plugin_settings::ResolvedSettings,
     budget: std::time::Duration,
-    open: impl FnOnce(&str, &str, &serde_json::Value, std::time::Duration) -> Result<T, String>,
+    open: impl FnOnce(
+        &str,
+        &str,
+        &busbar_contract::plugin_settings::ResolvedSettings,
+        std::time::Duration,
+    ) -> Result<T, String>,
 ) -> Result<(T, std::time::Duration), String> {
     open(name, name, settings, budget).map(|opened| (opened, budget))
 }
@@ -989,8 +998,10 @@ pub(crate) fn build_secret_resolver(
 ) -> Result<config::secret::SecretResolver, String> {
     let builtins = config::secret::SecretResolver::builtins_only();
 
-    let mut raw_config: std::collections::BTreeMap<String, serde_json::Value> =
-        std::collections::BTreeMap::new();
+    let mut raw_config: std::collections::BTreeMap<
+        String,
+        busbar_contract::plugin_settings::Settings,
+    > = std::collections::BTreeMap::new();
 
     let mut claimed_by: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
@@ -1008,7 +1019,7 @@ pub(crate) fn build_secret_resolver(
         )
         .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
-        raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
+        raw_config.insert(canonical, mcfg.settings.clone());
     }
 
     let opened = OpenedSecrets::default();
@@ -1024,14 +1035,10 @@ pub(crate) fn build_secret_resolver(
                     return opened.resolve(key, settings, scope, || {
                         let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
                         let linked = config::secret::SecretResolver::builtins_only();
-                        axis.open(
-                            module,
-                            raw.unwrap_or(&serde_json::Value::Null),
-                            &|r| match scope {
-                                Some(scope) => linked.resolve_at_config(r, scope),
-                                None => linked.resolve(r),
-                            },
-                        )
+                        axis.open(module, raw, &|r| match scope {
+                            Some(scope) => linked.resolve_at_config(r, scope),
+                            None => linked.resolve(r),
+                        })
                     });
                 }
 
@@ -1155,3 +1162,23 @@ mod central2_boot_log_tests;
 #[cfg(test)]
 #[path = "tests/central2_missing_plugin_tests.rs"]
 mod central2_missing_plugin_tests;
+
+impl std::fmt::Debug for Fetched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cached { filename } => f
+                .debug_struct("Cached")
+                .field("filename", filename)
+                .finish(),
+            Self::Fetched { filename } => f
+                .debug_struct("Fetched")
+                .field("filename", filename)
+                .finish(),
+            Self::Warned { url: _, error } => f
+                .debug_struct("Warned")
+                .field("url", &"<redacted>")
+                .field("error", error)
+                .finish(),
+        }
+    }
+}

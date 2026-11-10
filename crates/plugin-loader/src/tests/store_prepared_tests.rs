@@ -111,7 +111,14 @@ fn response(request: &native::Request, state: &Native) -> native::Response {
     match request {
         Request::Inspect { .. } => Response::Inspected(native::Inspection {
             state: if state.stats.legacy {
-                native::InspectionState::Legacy
+                native::InspectionState::Legacy(
+                    native::SourceReader::new(
+                        native::SourceCodec::HistoricalV1,
+                        native::DocumentSemantics::Historical,
+                        [8; 32],
+                    )
+                    .unwrap(),
+                )
             } else {
                 native::InspectionState::Empty
             },

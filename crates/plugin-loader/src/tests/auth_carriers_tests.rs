@@ -114,8 +114,12 @@ fn rows() -> AuthRows {
 fn opened_instances_select_their_own_carriers_and_refresh_preserves_owned_snapshots() {
     let rows = rows();
     let open = |variant: &str| {
-        rows.open("carrier-choice", variant, &serde_json::json!(variant))
-            .expect("the selected variant opens")
+        rows.open(
+            "carrier-choice",
+            variant,
+            &crate::dispatch::test_settings(&serde_json::json!(variant)),
+        )
+        .expect("the selected variant opens")
     };
     let first = open("first");
     let second = open("second");
@@ -137,13 +141,17 @@ fn opened_instances_select_their_own_carriers_and_refresh_preserves_owned_snapsh
 fn undeclared_open_carriers_refuse_and_invalid_refreshed_carriers_stop_new_verifies() {
     let rows = rows();
     assert!(rows
-        .open("carrier-choice", "bad-open", &serde_json::json!("bad-open"))
+        .open(
+            "carrier-choice",
+            "bad-open",
+            &crate::dispatch::test_settings(&serde_json::json!("bad-open"))
+        )
         .is_err());
     let bad = rows
         .open(
             "carrier-choice",
             "bad-refresh",
-            &serde_json::json!("bad-refresh"),
+            &crate::dispatch::test_settings(&serde_json::json!("bad-refresh")),
         )
         .unwrap();
     assert_eq!(
@@ -165,7 +173,11 @@ fn undeclared_open_carriers_refuse_and_invalid_refreshed_carriers_stop_new_verif
     );
 
     let refused = rows
-        .open("carrier-choice", "refused", &serde_json::json!("refused"))
+        .open(
+            "carrier-choice",
+            "refused",
+            &crate::dispatch::test_settings(&serde_json::json!("refused")),
+        )
         .unwrap();
     assert!(refused.refresh().is_err());
     assert_eq!(refused.carriers(), ["x-first"]);
@@ -223,7 +235,11 @@ fn malformed_carrier_metadata_is_rejected_without_echoing_its_value() {
 fn admitted_verify_keeps_its_input_while_refresh_publishes_a_new_selection() {
     let rows = rows();
     let calls = rows
-        .open("carrier-choice", "concurrent", &serde_json::json!("first"))
+        .open(
+            "carrier-choice",
+            "concurrent",
+            &crate::dispatch::test_settings(&serde_json::json!("first")),
+        )
         .unwrap();
     let opening = calls.carriers();
     std::thread::scope(|scope| {
@@ -436,7 +452,7 @@ mod observed {
             dispatcher,
             "observed",
             &serde_json::to_vec(variant).unwrap(),
-            vec![b"wipe-on-refusal".to_vec()],
+            vec![(b"wipe-on-refusal".to_vec()).into()],
         )
     }
 }

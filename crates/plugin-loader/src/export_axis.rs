@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use busbar_contract::abi::mechanism::lifecycle::refusal_lines;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::conn::DeclaredConns;
-use busbar_contract::export_calls::{ExportCalls, Probed, DEFAULT_INFLIGHT, INFLIGHT_KEY};
+use busbar_contract::conn::admissions::AdmissionAuthority;
+use busbar_contract::export_calls::{ExportCalls, PreparedExport, Probed, DEFAULT_INFLIGHT};
 
 use crate::dispatch::kinds::export::{Export, ExportFacts};
 use crate::dispatch::{
@@ -32,7 +32,7 @@ pub struct ExportRows<'r> {
 
     logs: Option<&'r PluginLogConfig>,
 
-    conns: Option<Arc<dyn DeclaredConns>>,
+    conns: Option<AdmissionAuthority>,
 
     envelope: Option<Arc<dyn EnvelopeSink>>,
 }
@@ -62,7 +62,7 @@ impl<'r> ExportRows<'r> {
     }
 
     #[must_use]
-    pub fn with_conns(mut self, conns: Arc<dyn DeclaredConns>) -> Self {
+    pub fn with_conns(mut self, conns: AdmissionAuthority) -> Self {
         self.conns = Some(conns);
         self
     }
@@ -83,7 +83,7 @@ impl<'r> ExportRows<'r> {
         &self,
         row: &LoadablePlugin,
         label: &str,
-        opening: Option<&serde_json::Value>,
+        opening: Option<u32>,
     ) -> Result<Plugin<Export>, String> {
         let name = &row.manifest.name;
         let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
@@ -105,12 +105,7 @@ impl<'r> ExportRows<'r> {
                 }
             }
         };
-        let max_inflight_cap = opening
-            .and_then(|settings| settings.get(INFLIGHT_KEY))
-            .and_then(serde_json::Value::as_u64)
-            .map_or(DEFAULT_INFLIGHT, |n| {
-                u32::try_from(n).unwrap_or(u32::MAX).max(1)
-            });
+        let max_inflight_cap = opening.unwrap_or(DEFAULT_INFLIGHT);
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap,
@@ -137,16 +132,27 @@ impl<'r> ExportRows<'r> {
         &self,
         module: &str,
         instance: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Option<Probed> {
         let row = self.row(module)?;
         match self.load(row, &label(instance), None) {
             Ok(p) => {
                 let streams = p.context::<ExportFacts>().map(|f| f.streams.clone());
-                let text = zeroize::Zeroizing::new(settings.to_string());
-                let declaration = export_door::validate(&p, text.as_bytes()).and_then(|()| {
+                let text = match settings.encode() {
+                    Ok(text) => text,
+                    Err(error) => return Some((streams, vec![error.to_string()], None)),
+                };
+                let Some(seal) = self.dispatcher.seal() else {
+                    return Some((
+                        streams,
+                        vec!["export probe requires the host settings seal".into()],
+                        None,
+                    ));
+                };
+                let text = text.expose(seal);
+                let declaration = export_door::validate(&p, text).and_then(|()| {
                     if p.context::<ExportFacts>().is_some_and(|f| f.recorder) {
-                        ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())
+                        ExportInstance::open(p, self.dispatcher.clone(), text)
                             .map(|opened| opened.recorder_requirements())
                     } else {
                         Ok(None)
@@ -223,15 +229,22 @@ impl<'r> ExportRows<'r> {
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, &serde_json::Value)],
+        instances: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>> {
         let row = self.row(module)?;
-        let listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> = zeroize::Zeroizing::new(
-            instances
-                .iter()
-                .map(|(n, s)| (n.clone(), s.to_string().into_bytes()))
-                .collect(),
-        );
+        let seal = match self.dispatcher.seal() {
+            Some(seal) => seal,
+            None => return Some(vec!["export check requires the host settings seal".into()]),
+        };
+        let mut listed: zeroize::Zeroizing<Vec<(String, Vec<u8>)>> =
+            zeroize::Zeroizing::new(Vec::with_capacity(instances.len()));
+        for (name, settings) in instances {
+            let bytes = match settings.encode() {
+                Ok(bytes) => bytes,
+                Err(error) => return Some(vec![error.to_string()]),
+            };
+            listed.push((name.clone(), bytes.expose(seal).clone()));
+        }
         let none = [(module.to_string(), b"{}".to_vec())];
         let candidates = if listed.is_empty() {
             &none[..]
@@ -265,7 +278,7 @@ impl<'r> ExportRows<'r> {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &PreparedExport,
     ) -> Result<Arc<dyn ExportCalls>, String> {
         let row =
             self.row(module)
@@ -276,8 +289,15 @@ impl<'r> ExportRows<'r> {
                     ),
                     None => format!("no `kind: export` plugin answers to '{module}'"),
                 })?;
-        let text = zeroize::Zeroizing::new(settings.to_string());
-        let p = self.load(row, label, Some(settings))?;
+        let text = settings
+            .settings()
+            .encode()
+            .map_err(|_| "cannot encode exporter settings")?;
+        let seal = self
+            .dispatcher
+            .seal()
+            .ok_or("export opening requires the host settings seal")?;
+        let p = self.load(row, label, Some(settings.max_inflight()))?;
 
         let grant = crate::observe::grant_series(
             self.dispatcher.observing(),
@@ -289,7 +309,7 @@ impl<'r> ExportRows<'r> {
         p.grant_destinations(&row.manifest.declares);
 
         let opened =
-            ExportInstance::open(p, self.dispatcher.clone(), text.as_bytes())?.holding(grant);
+            ExportInstance::open(p, self.dispatcher.clone(), text.expose(seal))?.holding(grant);
         Ok(Arc::new(opened))
     }
 
@@ -312,6 +332,13 @@ impl<'r> ExportRows<'r> {
 
 fn label(instance: &str) -> String {
     format!("{SECTION}.{instance}")
+}
+
+#[cfg(test)]
+pub(crate) fn test_opening(settings: &serde_json::Value) -> PreparedExport {
+    let admitted: busbar_contract::export_calls::ExportOpening =
+        serde_json::from_value(settings.clone()).expect("export settings object");
+    admitted.prepare()
 }
 
 #[cfg(test)]

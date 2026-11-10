@@ -81,10 +81,14 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
         .resolve_template(&|r| {
             r.env_var()
                 .and_then(|v| std::env::var(v).ok())
+                .map(busbar_contract::Secret::new)
                 .ok_or_else(|| "unresolved".to_string())
         })
         .expect("resolves");
-    assert_eq!(resolved, format!("Bearer {PLAIN}"));
+    assert_eq!(
+        resolved.expose(&crate::seal::lend()),
+        &format!("Bearer {PLAIN}")
+    );
 }
 
 #[test]

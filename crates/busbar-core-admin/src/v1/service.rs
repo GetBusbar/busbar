@@ -25,8 +25,8 @@ use busbar_kernel::config::{
     DeployCfg, HookCfg, HookKind, HookStage, PromptAccess, ProviderDef, UserAccess,
 };
 
-pub(crate) fn settings_keys(settings: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
-    let mut keys: Vec<String> = settings.keys().cloned().collect();
+pub(crate) fn settings_keys(settings: &busbar_contract::plugin_settings::Settings) -> Vec<String> {
+    let mut keys = settings.key_names();
     keys.sort();
     keys
 }
@@ -49,7 +49,7 @@ pub(crate) fn redact_settings_bags_with(
                     .unwrap_or_default();
                 let (keys, shown) = match bag {
                     serde_json::Value::Object(o) => (
-                        settings_keys(&o),
+                        o.keys().cloned().collect(),
                         busbar_contract::settings_public::public_view(&o, &module),
                     ),
                     _ => (Vec::new(), serde_json::Map::new()),
@@ -551,15 +551,18 @@ pub(crate) const MAX_HOOK_NAME_LEN: usize = 256;
 pub(crate) use busbar_kernel::governance::group_provision::build_with_group;
 
 pub(crate) fn validate_hook_settings_size(
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
 ) -> Result<(), AdminError> {
-    if settings.len() > MAX_SETTINGS_KEYS {
+    let count = settings.key_names().len();
+    if count > MAX_SETTINGS_KEYS {
         return Err(AdminError::Validation(format!(
             "settings has too many keys ({}, max {MAX_SETTINGS_KEYS})",
-            settings.len()
+            count
         )));
     }
-    if let Ok(bytes) = serde_json::to_vec(settings) {
+    if let Ok(bytes) = settings.encode() {
+        let seal = busbar_kernel::seal::lend();
+        let bytes = bytes.expose(&seal);
         if bytes.len() > MAX_SETTINGS_BYTES {
             return Err(AdminError::Validation(format!(
                 "settings too large ({} bytes, max {MAX_SETTINGS_BYTES})",

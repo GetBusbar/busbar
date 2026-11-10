@@ -2294,7 +2294,7 @@ fn decimal_parts(text: &str) -> Option<(bool, String, i64)> {
 /// `base_url` it dials, its default `protocol` and `error_map` (the dialect fields its plane is handed
 /// at open), its credential reference, the `auth:` style it states (`None` = its plane's dialect
 /// default) and the parameters that style is opened with.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderRoute {
     /// `base_url`, as the operator (or the catalog) spelled it, less any `user:pass@`: 1.5.5 dialled,
     /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25),
@@ -2324,7 +2324,7 @@ pub struct ProviderRoute {
 /// credential states (`token_uri`, a `jwt-bearer` service account's token endpoint), filled at the
 /// seal once the credential resolves. The JSON object the auth plugin's `open_outbound` reads is
 /// built from them at the call, never carried as a bag.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct StyleParams {
     /// `token_url`, where stated.
     pub token_url: Option<String>,
@@ -2821,10 +2821,12 @@ fn presenting(
 ) -> crate::root::loader::dispatch::ConnTable {
     use crate::root::loader::dispatch::ConnTable;
     match conns {
-        ConnTable::Host(inner) => ConnTable::Host(Arc::new(PresentingConns {
-            inner,
-            userinfo: userinfo.clone(),
-        })),
+        ConnTable::Host(inner) => {
+            ConnTable::Host(crate::root::connector::admit(Arc::new(PresentingConns {
+                inner: Arc::clone(inner.table()),
+                userinfo: userinfo.clone(),
+            })))
+        }
         other => other,
     }
 }
@@ -3236,10 +3238,10 @@ pub fn process_auths() -> Arc<OutboundAuths> {
             crate::root::dispatch::dispatcher(),
             crate::LINKED.auths,
             crate::root::boot::dropped_registry(),
-            crate::root::loader::dispatch::ConnTable::Host(
+            crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
                 Arc::clone(crate::root::connector::the())
                     as Arc<dyn busbar_contract::conn::DeclaredConns>,
-            ),
+            )),
             crate::root::linked::catalogue(),
         ))
     }))
@@ -4326,3 +4328,29 @@ pub(crate) mod tests;
 #[cfg(all(test, linked_axis_transport_door, linked_section_agents))]
 #[path = "tests/registration_pin.rs"]
 mod registration_pin_tests;
+
+impl std::fmt::Debug for ProviderRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderRoute")
+            .field("base_url", &"<redacted>")
+            .field("userinfo", &self.userinfo)
+            .field("protocol", &self.protocol)
+            .field("error_map", &self.error_map)
+            .field("credential", &self.credential)
+            .field("style", &self.style)
+            .field("params", &self.params)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for StyleParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StyleParams")
+            .field("token_url", &"<redacted>")
+            .field("token_uri", &"<redacted>")
+            .field("scope", &self.scope)
+            .field("subject", &self.subject)
+            .finish()
+    }
+}

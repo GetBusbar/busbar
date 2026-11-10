@@ -116,7 +116,7 @@ pub struct MemberRoute {
 }
 
 /// The need a far request opens on: its id, its keep rule and the base URL it dials.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Ride<'a> {
     /// The need.
     pub need: NeedId,
@@ -2340,4 +2340,14 @@ fn cap(live: &mut Live, mut piece: FarPiece) -> FarPiece {
     live.ended = true;
     piece.last = true;
     piece
+}
+
+impl<'a> std::fmt::Debug for Ride<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ride")
+            .field("need", &self.need)
+            .field("keep", &self.keep)
+            .field("base_url", &"<redacted>")
+            .finish()
+    }
 }

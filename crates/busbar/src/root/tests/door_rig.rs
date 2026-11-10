@@ -93,7 +93,7 @@ pub(crate) fn bind_door(
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(conns),
+            conns: ConnTable::Host(crate::root::connector::admit(conns)),
         },
     )
     .map(Arc::new)
@@ -301,7 +301,7 @@ impl EgressRig {
                 Arc::clone(dispatcher),
                 crate::LINKED.auths,
                 None,
-                ConnTable::Host(table),
+                ConnTable::Host(crate::root::connector::admit(table)),
                 busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns,

@@ -1219,7 +1219,13 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert!(
-        crate::hooks::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
+        crate::hooks::settings_drift_keys(
+            &hook,
+            Some(&busbar_contract::plugin_settings::Settings::from(
+                in_sync.clone()
+            ))
+        )
+        .is_empty(),
         "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
@@ -1233,7 +1239,12 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::hooks::settings_drift_keys(&hook, Some(&drifted));
+    let keys = crate::hooks::settings_drift_keys(
+        &hook,
+        Some(&busbar_contract::plugin_settings::Settings::from(
+            drifted.clone(),
+        )),
+    );
     assert_eq!(
         keys,
         vec!["ratio".to_string()],
@@ -1253,7 +1264,12 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&literal_drift)),
+        crate::hooks::settings_drift_keys(
+            &hook,
+            Some(&busbar_contract::plugin_settings::Settings::from(
+                literal_drift.clone()
+            ))
+        ),
         vec!["db".to_string()],
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
@@ -1289,7 +1305,13 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
-            crate::hooks::settings_drift_keys(&hook, Some(&observed)).is_empty(),
+            crate::hooks::settings_drift_keys(
+                &hook,
+                Some(&busbar_contract::plugin_settings::Settings::from(
+                    observed.clone()
+                ))
+            )
+            .is_empty(),
             "a SecretRef-valued field is never compared on the read path (and resolving it to \
              compare would be blocking FFI on a polled async GET): {observed:?}"
         );
@@ -1304,7 +1326,12 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&observed)),
+        crate::hooks::settings_drift_keys(
+            &hook,
+            Some(&busbar_contract::plugin_settings::Settings::from(
+                observed.clone()
+            ))
+        ),
         vec!["ratio".to_string()],
         "an ordinary field still drifts — the fix must not blind the endpoint"
     );

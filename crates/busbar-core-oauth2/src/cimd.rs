@@ -688,7 +688,7 @@ impl Storage for Backend {
 /// handle spent at the point of authorization, not of loading the page. So the store notes these
 /// three values when the record is pushed and forgets them when it is taken or expires; the record
 /// itself, and the single use the library enforces on it, are untouched.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct Pushed {
     pub(crate) client_id: String,
     /// The pushed `scope`, `None` when the request named none (it is then granted the client's
@@ -800,7 +800,7 @@ impl CimdStore {
     async fn fetch_document(&self, url: &str) -> Option<Arc<Client>> {
         let Some(_share) = self.documents.site_share(url) else {
             tracing::debug!(
-                client_id = url,
+                client_id = "<redacted>",
                 "oauth_as: this site's client metadata document fetches are all in flight; the \
                  client is unknown"
             );
@@ -810,7 +810,7 @@ impl CimdStore {
             tokio::time::timeout(PERMIT_WAIT, self.documents.permits.acquire()).await
         else {
             tracing::debug!(
-                client_id = url,
+                client_id = "<redacted>",
                 "oauth_as: every client metadata document fetch is in flight; the client is \
                  unknown"
             );
@@ -820,7 +820,7 @@ impl CimdStore {
             Ok(body) => body,
             Err(why) => {
                 tracing::debug!(
-                    client_id = url,
+                    client_id = "<redacted>",
                     %why,
                     "oauth_as: the client metadata document fetch was refused or failed; the \
                      client is unknown"
@@ -832,7 +832,7 @@ impl CimdStore {
             Ok(client) => Some(Arc::new(client)),
             Err(why) => {
                 tracing::debug!(
-                    client_id = url,
+                    client_id = "<redacted>",
                     %why,
                     "oauth_as: the client metadata document failed validation; the client is \
                      unknown"
@@ -1164,3 +1164,15 @@ impl Storage for CimdStore {
 #[cfg(test)]
 #[path = "tests/cimd_tests.rs"]
 mod cimd_tests;
+
+impl std::fmt::Debug for Pushed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pushed")
+            .field("client_id", &self.client_id)
+            .field("scope", &self.scope)
+            .field("redirect_uri", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .field("shown", &self.shown)
+            .finish()
+    }
+}

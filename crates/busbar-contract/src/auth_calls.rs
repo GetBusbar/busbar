@@ -383,7 +383,7 @@ pub trait AuthAxis: Send + Sync {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &crate::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<dyn AuthCalls>, String>;
 
     /// The config keys of the auth rows whose Statement states
@@ -710,3 +710,6 @@ pub trait OutboundAuth: Send + Sync {
         true
     }
 }
+
+/// Admission of declared identity-domain configuration metadata.
+pub mod domain;

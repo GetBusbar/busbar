@@ -1,3 +1,4 @@
+use zeroize::Zeroizing;
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
@@ -212,7 +213,7 @@ struct CompleteHeld {
     redirect_uri: Option<String>,
     code_verifier: Option<Vec<u8>>,
     nonce: Option<String>,
-    submitted: Vec<(String, Vec<u8>)>,
+    submitted: Vec<(String, Zeroizing<Vec<u8>>)>,
     named: Vec<busbar_contract::abi::auth::NamedValue>,
     id: Arc<Held>,
 }
@@ -240,7 +241,12 @@ impl CompleteHeld {
             submitted: login
                 .submitted
                 .iter()
-                .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).as_bytes().to_vec())))
+                .filter_map(|(n, v)| {
+                    Some((
+                        n.clone(),
+                        Zeroizing::new(v.expose(seal?).as_bytes().to_vec()),
+                    ))
+                })
                 .collect(),
             named: Vec::new(),
             id: Held::new(

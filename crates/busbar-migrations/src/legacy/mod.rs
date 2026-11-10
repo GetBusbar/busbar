@@ -11,6 +11,7 @@ use busbar_contract::records::{
     VirtualKey, RESERVED_UNITS,
 };
 pub mod archive;
+pub mod fact_transform;
 pub mod group;
 pub mod journal;
 pub mod journal_binding;

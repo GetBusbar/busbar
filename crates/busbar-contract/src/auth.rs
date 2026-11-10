@@ -93,7 +93,7 @@ pub enum AuthVerdict {
 
 /// `begin_login` input — everything is CORE-generated or public; there is NO secret
 /// field, structurally keeping the confidential-client secret off the begin path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct BeginLogin {
     /// Callback URL the IdP returns the browser to (busbar's `/auth/token`).
     pub redirect_uri: String,
@@ -206,7 +206,7 @@ impl std::fmt::Debug for CompleteLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompleteLogin")
             .field("code", &withheld(&self.code))
-            .field("redirect_uri", &self.redirect_uri)
+            .field("redirect_uri", &withheld(&self.redirect_uri))
             .field("code_verifier", &withheld(&self.code_verifier))
             .field("submitted", &self.submitted)
             .field("token_response", &self.token_response)
@@ -298,3 +298,15 @@ pub enum IdentityRefusal {
 #[cfg(test)]
 #[path = "tests/auth_tests.rs"]
 mod tests;
+
+impl std::fmt::Debug for BeginLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BeginLogin")
+            .field("redirect_uri", &"<redacted>")
+            .field("state", &self.state)
+            .field("code_challenge", &self.code_challenge)
+            .field("nonce", &self.nonce)
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}

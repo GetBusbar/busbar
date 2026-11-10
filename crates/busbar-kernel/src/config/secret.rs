@@ -21,8 +21,6 @@
 
 pub use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 
-pub(crate) const SETTING_LITERAL_KEY: &str = "literal";
-
 pub struct SecretResolver {
     plugin: Option<ScopedPluginResolveFn>,
 }
@@ -176,211 +174,49 @@ impl SecretResolver {
     }
 }
 
-pub(crate) const PLUGIN_LICENSE_KEYS: &[&str] = &["license", "licenseKey"];
-
-pub(crate) enum SettingShape<'a> {
-    Verbatim(&'a serde_json::Value),
-
-    Reference(SecretRef),
-}
-
-pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
-    if let serde_json::Value::Object(obj) = value {
-        if obj.len() == 1 {
-            if let Some(inner) = obj.get(SETTING_LITERAL_KEY) {
-                return SettingShape::Verbatim(inner);
-            }
-        }
-        if let Ok(secret) = serde_json::from_value::<SecretRef>(value.clone()) {
-            return SettingShape::Reference(secret);
-        }
-    }
-    SettingShape::Verbatim(value)
-}
+pub use busbar_contract::plugin_settings::ResolvedSettings;
 
 pub(crate) fn resolve_settings(
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
     declared: &[String],
     reference: &[String],
     plugin: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
-    resolve_settings_with_literals(
-        settings, declared, reference, plugin, resolver, scope, false,
+    settings.resolve(
+        &busbar_contract::plugin_settings::Resolution {
+            owner: plugin,
+            secrets: declared,
+            references: reference,
+            sources: &sugars(),
+        },
+        resolver,
+        scope,
     )
 }
 
 pub(crate) fn resolve_export_settings(
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
     declared: &[String],
     reference: &[String],
     plugin: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
     scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<ResolvedSettings, String> {
-    resolve_settings_with_literals(settings, declared, reference, plugin, resolver, scope, true)
+    busbar_contract::export_calls::ExportOpening::new(settings.clone()).resolve(
+        &busbar_contract::plugin_settings::Resolution {
+            owner: plugin,
+            secrets: declared,
+            references: reference,
+            sources: &sugars(),
+        },
+        resolver,
+        scope,
+    )
 }
 
-fn resolve_settings_with_literals(
-    settings: &serde_json::Map<String, serde_json::Value>,
-    declared: &[String],
-    reference: &[String],
-    plugin: &str,
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    scope: &busbar_contract::config_time::ConfigScope,
-    allow_declared_literals: bool,
-) -> Result<ResolvedSettings, String> {
-    use busbar_contract::secret_fields;
-    if let Some(path) = secret_fields::contradiction(declared, reference) {
-        return Err(secret_fields::contradiction_refusal(&path, plugin));
-    }
-    let mut held = ResolvedSettings(serde_json::Value::Object(settings.clone()));
-    let tree = &mut held.0;
-    if let Some(at) = secret_fields::undeclared_reference(tree, &[declared, reference].concat()) {
-        return Err(secret_fields::undeclared_refusal(
-            &format!("settings.{at}"),
-            plugin,
-        ));
-    }
-    if !allow_declared_literals {
-        if let Some(at) = secret_fields::declared_literal(tree, declared) {
-            return Err(secret_fields::declared_literal_refusal(
-                &format!("settings.{at}"),
-                plugin,
-            ));
-        }
-    }
-    for path in declared {
-        for at in secret_fields::declared_references(tree, path) {
-            let field = at.join(".");
-            let Some(slot) = secret_fields::value_at_mut(tree, &at) else {
-                continue;
-            };
-            let SettingShape::Reference(secret) = classify_setting(slot) else {
-                continue;
-            };
-
-            tracing::info!(
-                setting = field.as_str(),
-                reference = %secret.describe(),
-                "plugin setting resolved as a SECRET REFERENCE at a field the plugin declares secret"
-            );
-            let resolved = resolver
-                .resolve_string_at_config(&secret, scope)
-                .map_err(|e| {
-                    format!(
-                        "plugin setting '{field}' is a secret reference that did not resolve: {e}"
-                    )
-                })?;
-
-            *slot = serde_json::Value::String(resolved.into_exposed(&crate::seal::lend()));
-        }
-    }
-
-    secret_fields::resolve_references(tree, declared, reference, |field, secret| {
-        tracing::info!(
-            setting = field,
-            reference = %secret.describe(),
-            "plugin setting resolved as a REFERENCE at a field the plugin declares \
-             reference-capable (not secret)"
-        );
-        resolver
-            .resolve_string_at_config(secret, scope)
-            .map(|value| value.into_exposed(&crate::seal::lend()))
-            .map_err(|e| {
-                format!("plugin setting '{field}' is a reference that did not resolve: {e}")
-            })
-    })?;
-
-    if let serde_json::Value::Object(map) = tree {
-        for value in map.values_mut() {
-            if let serde_json::Value::Object(obj) = value {
-                if obj.len() == 1 {
-                    if let Some(inner) = obj.get_mut(SETTING_LITERAL_KEY) {
-                        *value = std::mem::take(inner);
-                    }
-                }
-            }
-        }
-    }
-
-    for key in PLUGIN_LICENSE_KEYS {
-        if held.contains_key(*key) {
-            let via_secret_ref = settings.get(*key).map(|v| v.is_object()).unwrap_or(false);
-            tracing::info!(
-                license_key = key,
-                via_secret_ref,
-                "delivering a plugin license credential to the plugin (the plugin validates its own \
-                 license; the core enforces nothing)"
-            );
-        }
-    }
-    Ok(held)
-}
-
-/// A plugin's settings with its declared secret references RESOLVED ([`resolve_settings`]): the
-/// bag busbar hands the plugin's `open` (or re-pushes a hook's `configure`). It holds the plaintext
-/// of every resolved secret, so it is a HOLDER, not a value: every string in it is overwritten with
-/// zeroes when it drops (security.md:318, "overwriting its own copies with zeroes once the plugin
-/// has them"), its `Debug` shows key names only, and it is read in place ([`Self::as_value`]),
-/// never moved out into a plain `serde_json::Value`.
-/// Always a JSON object: built only from a settings map and changed only in place.
-#[derive(Clone)]
-pub struct ResolvedSettings(serde_json::Value);
-
-const ALWAYS_AN_OBJECT: &str = "resolved settings are built from a settings map";
-
-impl ResolvedSettings {
-    pub(crate) fn from_map(settings: serde_json::Map<String, serde_json::Value>) -> Self {
-        Self(serde_json::Value::Object(settings))
-    }
-
-    pub fn as_value(&self) -> &serde_json::Value {
-        &self.0
-    }
-
-    pub fn map_mut(&mut self) -> &mut serde_json::Map<String, serde_json::Value> {
-        self.0.as_object_mut().expect(ALWAYS_AN_OBJECT)
-    }
-}
-
-impl Default for ResolvedSettings {
-    fn default() -> Self {
-        Self(serde_json::Value::Object(serde_json::Map::new()))
-    }
-}
-
-impl std::ops::Deref for ResolvedSettings {
-    type Target = serde_json::Map<String, serde_json::Value>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_object().expect(ALWAYS_AN_OBJECT)
-    }
-}
-
-impl zeroize::Zeroize for ResolvedSettings {
-    fn zeroize(&mut self) {
-        wipe_strings(&mut self.0);
-    }
-}
-
-impl Drop for ResolvedSettings {
-    fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(self);
-    }
-}
-
-impl zeroize::ZeroizeOnDrop for ResolvedSettings {}
-
-impl std::fmt::Debug for ResolvedSettings {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ResolvedSettings")
-            .field("keys", &self.keys().collect::<Vec<_>>())
-            .finish_non_exhaustive()
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn wipe_strings(v: &mut serde_json::Value) {
     use zeroize::Zeroize as _;
     match v {

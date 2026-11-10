@@ -71,7 +71,7 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
         self.0.open(module, label, settings)
     }
@@ -134,8 +134,8 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
     }
 }
 
-fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
-    crate::root::connector::the().clone()
+fn conns() -> busbar_contract::conn::admissions::AdmissionAuthority {
+    crate::root::connector::admit(crate::root::connector::the().clone())
 }
 
 #[cfg(test)]

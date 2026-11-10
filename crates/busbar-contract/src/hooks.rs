@@ -306,8 +306,7 @@ pub enum TransformOutcome {
 pub struct HookStatus {
     pub settings_version: Option<u64>,
 
-    // settings-leak-lint: allow — NON-PROJECTION engine type. This struct derives no `Serialize`:
-    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
+    pub settings: Option<crate::plugin_settings::Settings>,
     /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
     /// validates + bounds entries before exposing them.
     pub metrics: Option<Vec<serde_json::Value>>,
@@ -370,7 +369,7 @@ pub trait RoutingPolicy: Send + Sync + 'static {
     async fn configure(
         &self,
         _hook_name: &str,
-        _settings: &serde_json::Map<String, serde_json::Value>,
+        _settings: &crate::plugin_settings::ResolvedSettings,
         _settings_version: u64,
         _budget: std::time::Duration,
     ) -> Result<(), PolicyError> {

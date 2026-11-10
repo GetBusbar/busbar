@@ -611,7 +611,12 @@ impl ExportAxis for DeclaringAxis {
     fn check(&self, _: &str, _: u32, _: &[(String, &Value)]) -> Option<Vec<String>> {
         None
     }
-    fn open(&self, module: &str, _: &str, _: &Value) -> Result<Arc<dyn ExportCalls>, String> {
+    fn open(
+        &self,
+        module: &str,
+        _: &str,
+        _: &busbar_contract::export_calls::PreparedExport,
+    ) -> Result<Arc<dyn ExportCalls>, String> {
         Err(format!("{module} opens nothing here"))
     }
     fn linked(&self, _: &str) -> bool {

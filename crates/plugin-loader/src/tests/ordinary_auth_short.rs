@@ -226,7 +226,11 @@ fn opened(
     ));
     let rows = AuthRows::new(Arc::new(registry), dispatcher.clone());
     let auth = rows
-        .open("short-pin", "short-pin", &serde_json::json!({}))
+        .open(
+            "short-pin",
+            "short-pin",
+            &crate::dispatch::test_settings(&serde_json::json!({})),
+        )
         .unwrap();
     (dispatcher, auth)
 }

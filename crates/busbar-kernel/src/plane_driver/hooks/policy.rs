@@ -211,13 +211,12 @@ impl RoutingPolicy for HookPolicy {
     async fn configure(
         &self,
         hook_name: &str,
-        settings: &serde_json::Map<String, serde_json::Value>,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
         settings_version: u64,
         budget: Duration,
     ) -> Result<(), PolicyError> {
-        let settings = serde_json::Value::Object(settings.clone()).to_string();
         self.calls
-            .configure(hook_name, &settings, settings_version, budget)
+            .configure(hook_name, settings, settings_version, budget)
             .await
             .map_err(PolicyError::from)
     }

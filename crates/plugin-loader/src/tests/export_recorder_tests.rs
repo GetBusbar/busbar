@@ -144,14 +144,20 @@ fn config_probe_carries_the_declaration_or_reports_its_refusal() {
         .probe(
             "neutral-recorder",
             "any-name",
-            &serde_json::json!({"retention_seconds":23,"key_gauge_limit":4}),
+            &crate::dispatch::test_settings(
+                &serde_json::json!({"retention_seconds":23,"key_gauge_limit":4}),
+            ),
         )
         .unwrap();
     assert_eq!(streams, Some(vec![ExportStream::Metrics as u8]));
     assert!(problems.is_empty(), "{problems:?}");
     assert_eq!(recorder.unwrap().retention_seconds, 23);
     let (_, problems, recorder) = rows
-        .probe("neutral-recorder", "any-name", &serde_json::json!({}))
+        .probe(
+            "neutral-recorder",
+            "any-name",
+            &crate::dispatch::test_settings(&serde_json::json!({})),
+        )
         .unwrap();
     assert!(recorder.is_none());
     assert!(!problems.is_empty());

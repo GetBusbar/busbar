@@ -174,7 +174,11 @@ fn rows() -> AuthRows {
 
 fn opened(label: &str) -> Arc<dyn AuthCalls> {
     rows()
-        .open("judge", label, &serde_json::json!("ok"))
+        .open(
+            "judge",
+            label,
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        )
         .expect("the linked door opens")
 }
 
@@ -332,7 +336,11 @@ fn refresh_answers_the_count_the_plugin_reported() {
 #[test]
 fn a_refused_setting_names_the_module_and_the_plugins_words() {
     let err = rows()
-        .open("judge", "judge-a", &serde_json::json!("nope"))
+        .open(
+            "judge",
+            "judge-a",
+            &crate::dispatch::test_settings(&serde_json::json!("nope")),
+        )
         .err()
         .expect("refused");
     assert!(err.contains("'judge'"), "{err}");
@@ -581,11 +589,15 @@ fn a_statement_secret_ref_is_handed_to_open_as_a_secret_not_a_setting() {
         .unwrap();
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let settings = serde_json::json!({ "token": "s3cret", "other": 1 });
-    rows.open("keyed", "keyed", &settings)
+    rows.open("keyed", "keyed", &crate::dispatch::test_settings(&settings))
         .expect("the credential reaches open as its secret");
 
     let err = rows
-        .open("keyed", "keyed", &serde_json::json!({ "other": 1 }))
+        .open(
+            "keyed",
+            "keyed",
+            &crate::dispatch::test_settings(&serde_json::json!({ "other": 1 })),
+        )
         .err()
         .expect("refused");
     assert!(err.contains("no service credential"), "{err}");
@@ -612,7 +624,7 @@ fn an_instance_debug_never_shows_its_settings_or_secrets() {
         d.clone(),
         "keyed-a",
         br#"{"dsn":"db://svc:pw-in-the-settings@db/auth"}"#,
-        vec![b"s3cret".to_vec()],
+        vec![(b"s3cret".to_vec()).into()],
     )
     .expect("the keyed plugin opens over its credential");
     let shown = format!("{a:?}");
@@ -667,8 +679,12 @@ fn an_auth_row_answers_to_its_statements_alias_rewrite() {
     assert!(rows.linked("keyed-too"), "and names a linked row");
     assert!(!rows.answers("keyed-three"));
     let settings = serde_json::json!({ "token": "s3cret" });
-    rows.open("keyed-too", "by-alias", &settings)
-        .expect("the row opens by its Statement's alias");
+    rows.open(
+        "keyed-too",
+        "by-alias",
+        &crate::dispatch::test_settings(&settings),
+    )
+    .expect("the row opens by its Statement's alias");
 }
 
 mod readers {
@@ -715,7 +731,11 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     let err = rows
-        .open("reader-a", "reader-a", &serde_json::json!("ok"))
+        .open(
+            "reader-a",
+            "reader-a",
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        )
         .err()
         .expect("a second reader of signed refuses");
     assert_eq!(
@@ -724,7 +744,11 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
          'signed'; one verifier reads a credential kind"
     );
     assert!(rows
-        .open("reader-c", "reader-c", &serde_json::json!("ok"))
+        .open(
+            "reader-c",
+            "reader-c",
+            &crate::dispatch::test_settings(&serde_json::json!("ok"))
+        )
         .is_ok());
 
     let alone = PluginRegistry::empty()
@@ -732,7 +756,11 @@ fn two_auth_rows_reading_one_credential_kind_refuse_to_open() {
         .expect("the linked door registers");
     let rows = AuthRows::new(Arc::new(alone), dispatcher());
     assert!(rows
-        .open("reader-a", "reader-a", &serde_json::json!("ok"))
+        .open(
+            "reader-a",
+            "reader-a",
+            &crate::dispatch::test_settings(&serde_json::json!("ok"))
+        )
         .is_ok());
 }
 
@@ -751,8 +779,12 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
     for word in ["busbar-auth-judge", "judge"] {
         assert!(rows.answers(word) && rows.linked(word), "{word}");
-        rows.open(word, word, &serde_json::json!("ok"))
-            .unwrap_or_else(|e| panic!("{word}: {e}"));
+        rows.open(
+            word,
+            word,
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        )
+        .unwrap_or_else(|e| panic!("{word}: {e}"));
     }
     assert_eq!(
         rows.linked_names(),
@@ -760,7 +792,11 @@ fn a_linked_auth_row_answers_its_canonical_name_and_refuses_in_its_key() {
         "keys, as before"
     );
     for word in ["busbar-auth-broken", "broken"] {
-        let Err(refused) = rows.open(word, word, &serde_json::json!("ok")) else {
+        let Err(refused) = rows.open(
+            word,
+            word,
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        ) else {
             panic!("{word}: a door that states nothing does not open");
         };
         assert!(
@@ -880,17 +916,23 @@ impl busbar_contract::conn::DeclaredConns for DeclarationObserver {
     }
 }
 static SERVING_TABLE: std::sync::OnceLock<Arc<DeclarationObserver>> = std::sync::OnceLock::new();
-fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
-    SERVING_TABLE
-        .get_or_init(|| Arc::new(DeclarationObserver::default()))
-        .clone()
+fn serving_table() -> busbar_contract::conn::admissions::AdmissionAuthority {
+    crate::dispatch::test_admissions(
+        SERVING_TABLE
+            .get_or_init(|| Arc::new(DeclarationObserver::default()))
+            .clone(),
+    )
 }
 
 #[test]
 fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() {
     let rows = networked_rows().with_conns(serving_table);
-    rows.open("judge", "judge-served", &serde_json::json!("ok"))
-        .expect("the networked door opens over the host's table");
+    rows.open(
+        "judge",
+        "judge-served",
+        &crate::dispatch::test_settings(&serde_json::json!("ok")),
+    )
+    .expect("the networked door opens over the host's table");
     assert_eq!(
         SERVING_TABLE
             .get()
@@ -905,7 +947,11 @@ fn a_networked_auth_door_opened_to_serve_declares_its_need_on_the_hosts_table() 
 #[test]
 fn a_wedged_refresh_holds_no_other_caller() {
     let a = rows()
-        .open("judge", "judge-wedge", &serde_json::json!("wedge"))
+        .open(
+            "judge",
+            "judge-wedge",
+            &crate::dispatch::test_settings(&serde_json::json!("wedge")),
+        )
         .expect("the linked door opens");
     let wedged = {
         let a = Arc::clone(&a);
@@ -1101,7 +1147,11 @@ fn an_auth_instance_logs_to_its_own_plugin_log_file() {
         .expect("the linked door registers");
     let a = AuthRows::new(Arc::new(registry), dispatcher())
         .with_logs(log_config)
-        .open("judge", "auth.logged", &serde_json::json!("ok"))
+        .open(
+            "judge",
+            "auth.logged",
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        )
         .expect("the linked door opens");
     assert_eq!(
         a.verify_now(&request(Some("log"), None)),
@@ -1471,7 +1521,11 @@ mod ticketed {
             busbar_contract::services::test_caller_binding(),
         ));
         AuthRows::new(Arc::new(registry), d)
-            .open("proves", "proves", &serde_json::json!({}))
+            .open(
+                "proves",
+                "proves",
+                &crate::dispatch::test_settings(&serde_json::json!({})),
+            )
             .expect("the linked door opens")
     }
 
@@ -1551,7 +1605,11 @@ mod ticketed {
             busbar_contract::services::test_caller_binding(),
         ));
         let a = AuthRows::new(Arc::new(registry), d)
-            .open("judge", "judge-sync", &serde_json::json!("ok"))
+            .open(
+                "judge",
+                "judge-sync",
+                &crate::dispatch::test_settings(&serde_json::json!("ok")),
+            )
             .expect("the linked door opens");
         for (req, want) in super::script() {
             assert_eq!(a.verify_now(&req), Some(want.clone()), "{req:?}");
@@ -1572,7 +1630,11 @@ fn an_auth_module_whose_open_fails_is_named_in_1_5_5s_words() {
         )])
         .expect("the linked door registers");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
-    let Err(refused) = rows.open("witness", "witness", &serde_json::json!({})) else {
+    let Err(refused) = rows.open(
+        "witness",
+        "witness",
+        &crate::dispatch::test_settings(&serde_json::json!({})),
+    ) else {
         panic!("an open that refuses does not open");
     };
     assert!(
@@ -1680,7 +1742,7 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
         d.clone(),
         "keyed-z",
         b"{}",
-        vec![b"s3cret".to_vec()],
+        vec![(b"s3cret".to_vec()).into()],
     )
     .expect("the keyed plugin opens over its credential");
     let kept = a.kept_secrets();
@@ -1805,7 +1867,11 @@ fn red_a_rejects_and_an_outages_reason_reach_the_instances_log() {
         .expect("the linked door registers");
     let a = AuthRows::new(Arc::new(registry), dispatcher())
         .with_logs(log_config)
-        .open("says", "auth.says", &serde_json::json!("ok"))
+        .open(
+            "says",
+            "auth.says",
+            &crate::dispatch::test_settings(&serde_json::json!("ok")),
+        )
         .expect("the linked door opens");
     let answer = a
         .verify_now(&request(Some("anything"), None))
@@ -1937,6 +2003,10 @@ fn a_peer_row_whose_statement_does_not_read_back_does_not_block_a_healthy_row() 
         ])
         .expect("the linked doors register");
     let rows = AuthRows::new(Arc::new(registry), dispatcher());
-    rows.open("reader-a", "reader-a", &serde_json::json!("ok"))
-        .expect("an unreadable, never-serving peer does not block a healthy row");
+    rows.open(
+        "reader-a",
+        "reader-a",
+        &crate::dispatch::test_settings(&serde_json::json!("ok")),
+    )
+    .expect("an unreadable, never-serving peer does not block a healthy row");
 }

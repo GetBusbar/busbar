@@ -3,29 +3,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use busbar_contract::secret_ref::SecretRef;
 use busbar_kernel_ledger::cost::UnitRate;
 
 use super::limits::{DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS};
 
-/// Native inbound TLS configuration for the client↔Busbar hop. Absent (`Config.tls == None`) ⇒
-/// Busbar serves plain HTTP exactly as before. Present ⇒ Busbar terminates TLS itself; if
-/// `client_ca` is also set, it additionally requires and verifies a client certificate (mTLS).
-/// All three values are SECRET REFERENCES (`{ file: … }` / `{ env: … }` / a secret module)
-/// resolving to PEM bytes; they are resolved once at startup and any resolve/parse error is fatal
-/// (`die`). Key bytes are never logged.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct TlsCfg {
-    /// PEM certificate chain, leaf first (e.g. fullchain.pem), as a secret reference.
-    pub cert: SecretRef,
-    /// PEM private key matching the leaf cert (PKCS#8, PKCS#1, or SEC1), as a secret reference.
-    pub key: SecretRef,
-    /// PEM CA bundle to verify client certs against. `Some` ⇒ mTLS required: a client must present
-    /// a cert chaining to this CA to complete the handshake at all. `None` ⇒ server-only TLS.
-    #[serde(default)]
-    pub client_ca: Option<SecretRef>,
-}
+pub use busbar_contract::conn::inbound::TlsCfg;
 
 pub const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:8080";
 
@@ -74,8 +56,7 @@ pub struct StoreCfg {
 
     /// The module's own opaque settings, passed through verbatim as its config JSON.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 pub fn store_required() -> String {
@@ -117,8 +98,7 @@ pub struct SecretModuleCfg {
     /// JSON. Any `SecretRef`-typed value (e.g. `token: { env: VAULT_TOKEN }`) is resolved via the
     /// built-in env/file modules before it crosses the ABI.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 /// The `advanced:` block - INTERNAL tuning knobs (formerly under `governance:`). Every field
@@ -411,8 +391,7 @@ pub struct ExportDefCfg {
     /// The module's own settings bag. OPAQUE at this layer exactly like `hooks.<name>.settings` —
     /// typed per module by busbar-core's `resolve_export`, so a typo inside it still fails boot loudly.
     #[serde(default)]
-    // settings-leak-lint: allow — operator CONFIG struct, not a projection: this is the
-    pub settings: serde_json::Map<String, serde_json::Value>,
+    pub settings: busbar_contract::plugin_settings::Settings,
 }
 
 pub type ExportDefs = indexmap::IndexMap<String, ExportDefCfg>;

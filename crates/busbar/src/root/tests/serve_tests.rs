@@ -186,8 +186,10 @@ fn render_metrics() -> String {
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(std::sync::Arc::clone(connector)
-                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+            conns: ConnTable::Host(crate::root::connector::admit(
+                std::sync::Arc::clone(connector)
+                    as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
+            )),
         },
     )
     .expect("the actual exporter loads through its memory ABI");
@@ -246,8 +248,10 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(std::sync::Arc::clone(connector)
-                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+            conns: ConnTable::Host(crate::root::connector::admit(
+                std::sync::Arc::clone(connector)
+                    as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
+            )),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");
@@ -933,7 +937,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
                 conns: crate::root::loader::dispatch::ConnTable::Host(
-                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                    crate::root::connector::admit(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
                 ),
             },
         )
@@ -1021,9 +1025,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        crate::root::loader::dispatch::ConnTable::Host(
-            Arc::clone(&connector) as Arc<dyn DeclaredConns>
-        ),
+        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(Arc::clone(
+            &connector,
+        )
+            as Arc<dyn DeclaredConns>)),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = DoorReach {
@@ -1942,7 +1947,9 @@ pub(super) mod session_door {
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: crate::root::loader::dispatch::ConnTable::Host(Arc::clone(&conns)),
+                    conns: crate::root::loader::dispatch::ConnTable::Host(
+                        crate::root::connector::admit(Arc::clone(&conns)),
+                    ),
                 },
             )
             .expect("the linked door binds");
@@ -2205,9 +2212,9 @@ pub(super) mod session_door {
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
             None,
-            crate::root::loader::dispatch::ConnTable::Host(
-                Arc::clone(&connector) as Arc<dyn DeclaredConns>
-            ),
+            crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+                Arc::clone(&connector) as Arc<dyn DeclaredConns>,
+            )),
             busbar_kernel::diagnostics::Catalogue::NEUTRAL,
         );
         let reach = DoorReach {
@@ -6937,7 +6944,7 @@ async fn serve_configured(
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
                 conns: crate::root::loader::dispatch::ConnTable::Host(
-                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                    crate::root::connector::admit(Arc::clone(&connector) as Arc<dyn DeclaredConns>),
                 ),
             },
         )
@@ -7051,9 +7058,10 @@ async fn serve_configured(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
         None,
-        crate::root::loader::dispatch::ConnTable::Host(
-            Arc::clone(&connector) as Arc<dyn DeclaredConns>
-        ),
+        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(Arc::clone(
+            &connector,
+        )
+            as Arc<dyn DeclaredConns>)),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = DoorReach {

@@ -252,13 +252,15 @@ fn a_programs_environment_never_prints() {
     let p = super::Program {
         command: "/usr/bin/server".into(),
         cwd: None,
-        args: vec!["--serve".into()],
+        args: vec!["--serve".into(), "argument-secret-canary".into()],
         env: vec![("TOKEN".into(), "s3cr3t-value".into())],
         env_refs: Vec::new(),
     };
     let printed = format!("{p:?}");
     assert!(printed.contains("TOKEN") && printed.contains("/usr/bin/server"));
     assert!(!printed.contains("s3cr3t-value"), "{printed}");
+    assert!(!printed.contains("argument-secret-canary"), "{printed}");
+    assert!(printed.contains("argument_count: 2"), "{printed}");
 }
 
 #[test]
