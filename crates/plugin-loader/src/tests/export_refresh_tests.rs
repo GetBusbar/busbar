@@ -81,7 +81,7 @@ mod pending_boundary {
             .lock()
             .unwrap()
             .get(&owner)
-            .expect("wrapped actual image")
+            .expect("wrapped SDK witness")
             .clone()
     }
 
@@ -112,11 +112,11 @@ mod pending_boundary {
         let actual = if dropped {
             let image = IMAGE.get_or_init(|| {
                 let (library, staged) = crate::stage::load_library_from_bytes(
-                    &cdylib_bytes(webhook_cdylib()),
-                    "pending-refresh-actual-webhook",
+                    &cdylib_bytes(witness_cdylib()),
+                    "pending-refresh-neutral-witness",
                 )
-                .expect("stage actual Webhook image");
-                // SAFETY: this actual mechanism image exports its typed door; IMAGE owns it.
+                .expect("stage neutral SDK image");
+                // SAFETY: this SDK witness image exports its typed door; IMAGE owns it.
                 let entry = unsafe {
                     *library
                         .get::<busbar_contract::abi::sdk::door::RawDoorFn>(DOOR_SYMBOL)
@@ -126,10 +126,10 @@ mod pending_boundary {
             });
             crate::dispatch::load::enter_door(image.2)
         } else {
-            WEBHOOK_DOOR() as *const Door
+            WITNESS_DOOR() as *const Door
         };
         let mut validated = crate::dispatch::load::validate_door::<Export>(actual)
-            .expect("the actual Webhook descriptor validates before wrapping");
+            .expect("the neutral SDK descriptor validates before wrapping");
         let refresh = validated.slots[life::REFRESH as usize];
         let cancel = validated.slots[life::CANCEL as usize];
         let close = validated.slots[life::CLOSE as usize];
@@ -255,7 +255,7 @@ mod pending_boundary {
             // nor business reentry runs under the shim state lock.
             let plan = root.plans.lock().unwrap().remove(&ticket);
             let Some(mut plan) = plan else {
-                // SAFETY: forward this actual product's live instance and checked original frame.
+                // SAFETY: forward this SDK witness's live instance and checked original frame.
                 return unsafe { (root.refresh)(instance, input, out) };
             };
             let mut probe = plan.probe.take().unwrap_or_else(|| Probe::new(root.host, ticket));
@@ -275,7 +275,7 @@ mod pending_boundary {
                     // SAFETY: copy only the checked host-owned RefreshIn; all its loans remain live.
                     let mut actual = unsafe { *input.cast::<RefreshIn>() };
                     actual.head.flags &= !FLAG_RESUME;
-                    // SAFETY: forward the live actual instance and this still-live host frame.
+                    // SAFETY: forward the live witness instance and this still-live host frame.
                     return unsafe { (root.refresh)(instance, std::ptr::from_ref(&actual).cast(), out) };
                 }
             };
@@ -297,7 +297,7 @@ mod pending_boundary {
             // SAFETY: checked host lifecycle input begins with InHead.
             let owner = unsafe { (*input.cast::<InHead>()).host.handle };
             let root = root(input);
-            // SAFETY: the actual instance and CLOSE frame stay live until this product returns.
+            // SAFETY: the actual instance and CLOSE frame stay live until the witness returns.
             let answer = unsafe { (root.close)(instance, input, out) };
             if answer == RawOutcome::of(Outcome::Ready) || answer == RawOutcome::of(Outcome::Fault) {
                 let removed = ROOTS.lock().unwrap().remove(&owner);
@@ -499,8 +499,8 @@ fn pending_refresh_keeps_one_candidate_and_barrier_while_full_old_capacity_resum
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
-        let old = serde_json::json!({"url":"https://old-stall.example/old","max_inflight_deliveries":64,"delivery_timeout_secs":600});
-        let new = serde_json::json!({"url":"https://refresh-stall.example/pending-refresh","max_inflight_deliveries":64,"delivery_timeout_secs":600});
+        let old = serde_json::json!({"target":"https://old-stall.example/old","max_inflight_deliveries":64,"delivery_timeout_secs":600});
+        let new = serde_json::json!({"target":"https://refresh-stall.example/pending-refresh","max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
         let _answer = Released(far.clone());
         let abandoned = d.inline_ticket().unwrap();
@@ -627,8 +627,8 @@ fn pending_refresh_refusal_and_cancel_retire_candidate_once_and_unblock_prior_ge
             let far = Arc::new(Far::default());
             assert!(far.waker.set(d.conn_waker()).is_ok());
             let plugin = loaded(dropped, &d, far.clone());
-            let old = serde_json::json!({"url":"https://old-stall.example/old","delivery_timeout_secs":600});
-            let new = serde_json::json!({"url":"https://refresh-stall.example/pending-refresh-refuse","delivery_timeout_secs":600});
+            let old = serde_json::json!({"target":"https://old-stall.example/old","delivery_timeout_secs":600});
+            let new = serde_json::json!({"target":"https://refresh-stall.example/pending-refresh-refuse","delivery_timeout_secs":600});
             let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
             let _answer = Released(far.clone());
             let old_owner = owner_of(&far, "old-stall.example");
@@ -726,10 +726,10 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         let far = Arc::new(Far::with_modeled_secure_transport());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
-        let old = serde_json::json!({"url":format!("https://alice:old@{STALL_TARGET}/old"),
-            "auth_header":{"name":"x-generation","value":"credential-A"},"delivery_timeout_secs":600});
-        let new = serde_json::json!({"url":"https://bob:new@collector-b.example/new",
-            "auth_header":{"name":"x-generation","value":"credential-B"},"delivery_timeout_secs":600});
+        let old = serde_json::json!({"target":format!("https://{STALL_TARGET}/old"),
+            "fields":[["x-generation","credential-A"],["x-second","opaque-A"]],"delivery_timeout_secs":600});
+        let new = serde_json::json!({"target":"https://collector-b.example/new",
+            "fields":[["x-generation","credential-B"],["x-second","opaque-B"]],"delivery_timeout_secs":600});
         let sink =
             Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
 
@@ -770,14 +770,9 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
                 .find(|request| request["body"] == format!("{{\"n\":{n}}}"))
                 .unwrap();
             let (target, path, credential, basic) = if n == 3 {
-                (
-                    "collector-b.example",
-                    "/new",
-                    "credential-B",
-                    "Basic Ym9iOm5ldw==",
-                )
+                ("collector-b.example", "/new", "credential-B", "opaque-B")
             } else {
-                (STALL_TARGET, "/old", "credential-A", "Basic YWxpY2U6b2xk")
+                (STALL_TARGET, "/old", "credential-A", "opaque-A")
             };
             assert!(
                 request["target"].as_str().unwrap().contains(target),
@@ -790,7 +785,7 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
                 .any(|field| field == &serde_json::json!(["x-generation", credential])));
             assert!(fields
                 .iter()
-                .any(|field| field == &serde_json::json!(["authorization", basic])));
+                .any(|field| field == &serde_json::json!(["x-second", basic])));
         }
 
         let reentered = Arc::new(AtomicUsize::new(0));
@@ -827,7 +822,8 @@ fn pending_export_batch_keeps_its_target_and_credentials_after_same_instance_ref
         *far.on_forget.lock().unwrap() = None;
         assert_eq!(reentered.load(Ordering::SeqCst), 1);
 
-        let rejected = serde_json::json!({"url":"https://collector-c.example/rejected","bogus":1});
+        let rejected =
+            serde_json::json!({"target":"https://collector-c.example/rejected","bogus":1});
         assert_ne!(refresh(sink.plugin(), &rejected, 4), Outcome::Ready);
         let fresh = d.inline_ticket().unwrap();
         let mut after_refusal = batch(b"{\"n\":4}\n", 3);
@@ -860,8 +856,8 @@ fn cancelled_export_connector_batch_does_not_resume_on_a_reused_ticket_after_ref
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
-        let old = serde_json::json!({"url":format!("https://{STALL_TARGET}/cancelled"),"delivery_timeout_secs":600});
-        let new = serde_json::json!({"url":"https://collector-b.example/current"});
+        let old = serde_json::json!({"target":format!("https://{STALL_TARGET}/cancelled"),"delivery_timeout_secs":600});
+        let new = serde_json::json!({"target":"https://collector-b.example/current"});
         let sink = ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap();
         let cancelled = d.inline_ticket().unwrap();
         let old_ticket = cancelled.ticket();
@@ -944,9 +940,9 @@ fn refresh_enters_at_full_export_capacity_old_batches_resume_and_new_batches_wai
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let plugin = loaded(dropped, &d, far.clone());
-        let old = serde_json::json!({"url":format!("https://{STALL_TARGET}/old"),
+        let old = serde_json::json!({"target":format!("https://{STALL_TARGET}/old"),
             "max_inflight_deliveries":64,"delivery_timeout_secs":600});
-        let new = serde_json::json!({"url":"https://collector-b.example/new",
+        let new = serde_json::json!({"target":"https://collector-b.example/new",
             "max_inflight_deliveries":64,"delivery_timeout_secs":600});
         let sink =
             Arc::new(ExportInstance::open(plugin, d.clone(), old.to_string().as_bytes()).unwrap());
@@ -1143,7 +1139,7 @@ fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
         let far = Arc::new(Far::default());
         assert!(far.waker.set(dispatcher.conn_waker()).is_ok());
         let plugin = loaded(dropped, &dispatcher, Arc::clone(&far));
-        let settings = serde_json::json!({"url":"https://collector.example/worker-wake"});
+        let settings = serde_json::json!({"target":"https://collector.example/worker-wake"});
         let sink = ExportInstance::open(
             plugin,
             Arc::clone(&dispatcher),
@@ -1184,7 +1180,7 @@ fn worker_delivery_releases_inline_refresh_waiter_after_unlock_both_doors() {
         entering
             .recv_timeout(CROSSING_CONTROL_TIMEOUT)
             .expect("delivery enters the real connector crossing");
-        let next = serde_json::json!({"url":"https://collector.example/next"});
+        let next = serde_json::json!({"target":"https://collector.example/next"});
         let next_bytes = next.to_string();
         let mut frame = pending_refresh(next_bytes.as_bytes(), NEXT_SETTINGS_GENERATION);
         assert_eq!(
