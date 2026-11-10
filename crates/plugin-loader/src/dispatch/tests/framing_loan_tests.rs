@@ -209,7 +209,7 @@ mod typed_transport_cancellation {
     use busbar_contract::abi::mechanism::call::{DeadlineClass, Op, Outcome, RawOutcome};
     use busbar_contract::abi::mechanism::door::{Door, DoorParts};
     use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelIn, OpenIn, OpenOut};
-    use busbar_contract::abi::sdk::door::{blank_in, blank_out, RawDoorFn};
+    use busbar_contract::abi::sdk::door::{blank_in, blank_out};
     use busbar_contract::abi::transport::{self, AdoptIn, BeginIn, EmitIn, FramerOut};
     use std::ffi::c_void;
     use std::future::Future;
@@ -222,38 +222,21 @@ mod typed_transport_cancellation {
 
     const WAIT: Duration = Duration::from_secs(10);
 
-    struct Product {
+    struct Witness {
         door: usize,
         cancel: Op,
-        _library: libloading::Library,
     }
 
-    fn product() -> &'static Product {
-        static PRODUCT: OnceLock<Product> = OnceLock::new();
-        PRODUCT.get_or_init(|| {
-            let path = std::env::var_os("BUSBAR_TEST_HTTP_CDYLIB")
-                .expect("BUSBAR_TEST_HTTP_CDYLIB names the actual HTTP transport library");
-            let library = crate::dlopen_on_worker(&path).expect("the product HTTP library opens");
-            // SAFETY: this is the mechanism's door symbol; the process-held library owns it.
-            let raw = unsafe {
-                *library
-                    .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
-                    .expect("the product HTTP library exports its door")
-            };
-            crate::dispatch::load::validate::<Transport>(raw)
-                .expect("the genuine product descriptor has the complete Transport table");
-            let real = crate::ffi_thread::on_plugin_thread(|| {
-                // SAFETY: the actual product library owns this door for the process lifetime.
-                unsafe { &*raw() }.parts()
-            })
-            .expect("the product descriptor reads on its FFI thread");
-            // SAFETY: the genuine descriptor has the transport ABI table; the normal loader
-            // below validates its Statement, layout and table before any operation is submitted.
+    fn witness() -> &'static Witness {
+        static WITNESS: OnceLock<Witness> = OnceLock::new();
+        WITNESS.get_or_init(|| {
+            let descriptor = crate::neutral_transport::framer::door();
+            crate::dispatch::load::validate_door::<Transport>(descriptor)
+                .expect("the SDK witness has the complete Transport table");
+            let real = descriptor.parts();
+            // SAFETY: the validated static SDK descriptor owns the complete transport table.
             let mut ops = unsafe { *real.ops.cast::<transport::Ops>() };
-            let cancel = ops
-                .head
-                .cancel
-                .expect("the product transport serves CANCEL");
+            let cancel = ops.head.cancel.expect("the SDK witness serves CANCEL");
             ops.adopt = Some(pending_adopt);
             ops.emit = Some(pending_commit);
             ops.head.cancel = Some(observed_cancel);
@@ -266,10 +249,9 @@ mod typed_transport_cancellation {
                     ..real
                 })
             };
-            Product {
+            Witness {
                 door: Box::into_raw(Box::new(door)) as usize,
                 cancel,
-                _library: library,
             }
         })
     }
@@ -323,8 +305,8 @@ mod typed_transport_cancellation {
 
     crate::dispatch_tests::c_abi! {
         fn fault_door() -> &'static Door {
-            // SAFETY: product() retains the descriptor and its library for the process lifetime.
-            unsafe { &*(product().door as *const Door) }
+            // SAFETY: product() retains the SDK descriptor for the process lifetime.
+            unsafe { &*(witness().door as *const Door) }
         }
         fn pending_adopt(instance: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
             // SAFETY: the actual Transport dispatcher supplies the named typed ADOPT frame.
@@ -353,9 +335,9 @@ mod typed_transport_cancellation {
             // SAFETY: the test retains an independent safety owner even if dispatcher custody
             // fails; strong counts independently assert the dispatcher's original loan remains.
             assert_eq!(unsafe { std::slice::from_raw_parts(bytes as *const u8, len) }, b"original framing loan");
-            // SAFETY: this delegates the original product callback with its actual instance
+            // SAFETY: this delegates the original SDK callback with its actual instance
             // and the same live CancelIn/output frames supplied by the Transport dispatcher.
-            let outcome = unsafe { (product().cancel)(instance, input, out) };
+            let outcome = unsafe { (witness().cancel)(instance, input, out) };
             control.cancel_completions.fetch_add(1, Ordering::SeqCst);
             outcome
         }
@@ -392,7 +374,7 @@ mod typed_transport_cancellation {
             busbar_contract::services::test_caller_binding(),
         );
         let plugin = load_linked::<Transport>(
-            &LinkedRow::of(fault_door).expect("the genuine transport Statement renders"),
+            &LinkedRow::of(fault_door).expect("the SDK transport Statement renders"),
             Bind {
                 instance: "typed-framing-loan-negative".into(),
                 max_inflight_cap: 4,
@@ -401,7 +383,7 @@ mod typed_transport_cancellation {
                 conns: ConnTable::NoNeeds,
             },
         )
-        .expect("actual Transport admission validates the held product descriptor");
+        .expect("Transport admission validates the held witness descriptor");
         let mut opening = Frame::new(
             OpenIn {
                 head: in_head(),
@@ -430,8 +412,8 @@ mod typed_transport_cancellation {
         input.side = transport::SIDE_DIAL;
         input.scheme = busbar_contract::abi::host::service::SCHEME_PLAIN;
         input.target = busbar_contract::abi::mechanism::call::AbiStr {
-            ptr: b"http://127.0.0.1/".as_ptr(),
-            len: b"http://127.0.0.1/".len(),
+            ptr: b"witness://target/".as_ptr(),
+            len: b"witness://target/".len(),
         };
         let mut beginning = Frame::new(input, blank_out::<FramerOut>());
         let begun = with_context(Some(scope.clone()), || {
@@ -440,7 +422,7 @@ mod typed_transport_cancellation {
         assert_eq!(
             begun.outcome,
             Outcome::Ready,
-            "the actual product begins the source framing"
+            "the SDK witness begins the source framing"
         );
         assert_ne!(beginning.out.framing, 0);
         scope.confirm(beginning.out.framing).unwrap();

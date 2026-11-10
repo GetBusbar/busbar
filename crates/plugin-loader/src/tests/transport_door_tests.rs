@@ -17,9 +17,7 @@ fn fixture() -> Vec<u8> {
 }
 
 fn fixture_path() -> std::path::PathBuf {
-    let p = std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
-        .map(std::path::PathBuf::from)
-        .expect("BUSBAR_TEST_TCP_CDYLIB names the qualified actual TCP product");
+    let p = crate::neutral_transport::cdylib();
     assert!(
         crate::dispatch::rendering_of_library(&p)
             .ok()
@@ -33,8 +31,10 @@ fn fixture_path() -> std::path::PathBuf {
                 .ok()
             })
             .and_then(|d| d.context::<TransportFacts>().cloned())
-            .is_some_and(|f| f.role == ROLE_CARRIER && f.claims == ["tcp"]),
-        "the actual TCP product admits as the carrier claiming tcp"
+            .is_some_and(
+                |f| f.role == ROLE_CARRIER && f.claims == [crate::neutral_transport::CLAIM]
+            ),
+        "the neutral carrier witness admits as the carrier claiming its declared wire"
     );
     p
 }
@@ -72,14 +72,14 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
 
 fn manifest() -> crate::sign::Manifest {
     let rendering = crate::dispatch::rendering_of_library(&fixture_path())
-        .expect("the actual TCP image renders")
-        .expect("the actual TCP image exports its door");
+        .expect("the neutral carrier image renders")
+        .expect("the neutral carrier image exports its door");
     let read = busbar_contract::abi::mechanism::rendering::read(&rendering)
-        .expect("the actual TCP statement reads");
+        .expect("the neutral carrier statement reads");
     let declares = busbar_contract::abi::mechanism::extensions::declares(&read.extensions.bytes)
         .map(crate::sign::Declares::from_declares_json)
         .transpose()
-        .expect("the actual TCP declares document reads")
+        .expect("the neutral carrier declares document reads")
         .unwrap_or_default();
     crate::sign::Manifest {
         version: read.version,
@@ -88,7 +88,7 @@ fn manifest() -> crate::sign::Manifest {
         ..statement(
             busbar_contract::abi::mechanism::kind::TRANSPORT,
             &read.name,
-            "tcp",
+            crate::neutral_transport::CLAIM,
             busbar_contract::abi::transport::ABI_VERSION,
         )
     }
@@ -106,19 +106,27 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["tcp"]), &log_config())
+        .open_transport_entries(
+            &bind(),
+            &uses(&[crate::neutral_transport::CLAIM]),
+            &log_config(),
+        )
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
     assert_eq!(
         facts.role, ROLE_CARRIER,
-        "the actual TCP door is the carrier, never a framer"
+        "the neutral carrier door is the carrier, never a framer"
     );
-    assert_eq!(facts.claims, ["tcp"], "the actual carrier claims tcp");
+    assert_eq!(
+        facts.claims,
+        [crate::neutral_transport::CLAIM],
+        "the neutral carrier claims its declared wire"
+    );
     assert!(
         facts.composes_over.is_empty(),
-        "the actual TCP carrier does not compose over another carrier"
+        "the neutral carrier does not compose over another carrier"
     );
     let mut i: OpenIn = blank_in();
     i.head = in_head();
@@ -181,7 +189,7 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
     let lib = fixture();
     let registry = dropped("door-fixture", manifest(), &lib);
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["https"]), &log_config())
+        .open_transport_entries(&bind(), &uses(&["unclaimed-wire"]), &log_config())
         .expect("nothing to open is no refusal");
     assert!(
         entries.doors.is_empty(),
@@ -189,7 +197,11 @@ fn a_dropped_transport_no_configured_scheme_selects_is_never_opened() {
         entries.doors.iter().map(|d| d.name()).collect::<Vec<_>>()
     );
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["tcp"]), &log_config())
+        .open_transport_entries(
+            &bind(),
+            &uses(&[crate::neutral_transport::CLAIM]),
+            &log_config(),
+        )
         .expect("the selected door opens");
     assert_eq!(entries.doors.len(), 1, "the scheme it claims selects it");
 }
@@ -218,7 +230,7 @@ fn a_dropped_transport_is_bound_to_its_own_plugin_log_file() {
     );
     assert!(!path.exists(), "the log file must not pre-exist");
     let entries = registry
-        .open_transport_entries(&bind(), &uses(&["tcp"]), &logs)
+        .open_transport_entries(&bind(), &uses(&[crate::neutral_transport::CLAIM]), &logs)
         .expect("the door opens");
     assert_eq!(entries.doors.len(), 1);
     assert!(

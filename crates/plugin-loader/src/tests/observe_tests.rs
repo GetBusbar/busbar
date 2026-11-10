@@ -337,7 +337,7 @@ fn a_secret_envelope_reaches_the_host_observer() {
 #[test]
 fn a_transport_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::transport::Transport>(
-        actual_transport_observer_door,
+        crate::neutral_transport::door,
         busbar_contract::abi::mechanism::kind::TRANSPORT,
     );
 }
@@ -492,18 +492,6 @@ fn actual_observer_door<K: crate::dispatch::Kind>(
         .expect("actual product descriptor kind validates");
     // SAFETY: validation established a live immutable descriptor held by retained.
     unsafe { &*door }
-}
-
-extern "C" fn actual_transport_observer_door(
-) -> &'static busbar_contract::abi::mechanism::door::Door {
-    static IMAGE: std::sync::OnceLock<(
-        libloading::Library,
-        busbar_contract::abi::sdk::door::RawDoorFn,
-    )> = std::sync::OnceLock::new();
-    actual_observer_door::<crate::dispatch::kinds::transport::Transport>(
-        "BUSBAR_TEST_TCP_CDYLIB",
-        &IMAGE,
-    )
 }
 
 extern "C" fn actual_export_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door

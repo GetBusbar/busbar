@@ -12,7 +12,6 @@ mod pressure_boundary {
     use super::*;
     use busbar_contract::abi::mechanism::call::{Blob, RawOutcome, BLOB_OCTETS};
     use busbar_contract::abi::mechanism::door::{Door, DoorParts};
-    use busbar_contract::abi::sdk::door::RawDoorFn;
     use std::collections::BTreeMap;
     use std::sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -77,28 +76,9 @@ mod pressure_boundary {
         RawOutcome::of(Outcome::Ready)
     }
     pub(super) extern "C" fn door() -> &'static Door {
-        static IMAGE: OnceLock<(libloading::Library, RawDoorFn)> = OnceLock::new();
         static DOOR: OnceLock<usize> = OnceLock::new();
-        let image = IMAGE.get_or_init(|| {
-            let path =
-                std::env::var_os("BUSBAR_TEST_TCP_CDYLIB").expect("qualified actual TCP image");
-            let library = crate::dlopen_on_worker(path.as_os_str()).expect("load actual TCP");
-            // SAFETY: the qualified actual product exports the typed ABI entry; IMAGE retains it.
-            let entry = unsafe {
-                *library
-                    .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
-                    .expect("TCP entry")
-            };
-            (library, entry)
-        });
         let address = *DOOR.get_or_init(|| {
-            let raw = crate::dispatch::load::enter_door(image.1);
-            crate::dispatch::load::validate_door::<crate::dispatch::kinds::transport::Transport>(
-                raw,
-            )
-            .expect("actual TCP descriptor");
-            // SAFETY: validation established live immutable retained product metadata and table.
-            let actual = unsafe { &*raw };
+            let actual = crate::neutral_transport::door();
             let mut ops = unsafe {
                 actual
                     .ops()
@@ -108,7 +88,7 @@ mod pressure_boundary {
             ops.ingest = Some(ingest);
             ops.head.release = Some(release);
             let ops = Box::leak(Box::new(ops));
-            // SAFETY: same actual TCP descriptor and operation table layout, only the two
+            // SAFETY: same neutral carrier descriptor and operation table layout, only the two
             // explicitly hostile accounting boundary slots use permanently retained overrides.
             let descriptor = unsafe {
                 Door::__from_parts(DoorParts {
