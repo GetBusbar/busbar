@@ -3,6 +3,7 @@
   "x-busbar-config-schemas": {
     "version": 1,
     "context": "user_configuration",
+    "reference_base": "schema",
     "schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "x-busbar-settings-profile": "integer-token-v1",
@@ -2123,26 +2124,40 @@
                     {
                       "type": "object",
                       "properties": {
-                        "env": {
-                          "type": "string",
-                          "pattern": "\\S"
+                        "template": {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "type": "object",
+                              "properties": {
+                                "module": {
+                                  "type": "string",
+                                  "pattern": "\\S"
+                                },
+                                "setting": {
+                                  "type": "string",
+                                  "pattern": "\\S"
+                                }
+                              },
+                              "required": [
+                                "module",
+                                "setting"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "text",
+                            "source"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
-                        "env"
-                      ],
-                      "additionalProperties": false
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "file": {
-                          "type": "string",
-                          "pattern": "\\S"
-                        }
-                      },
-                      "required": [
-                        "file"
+                        "template"
                       ],
                       "additionalProperties": false
                     }
@@ -2395,26 +2410,40 @@
             {
               "type": "object",
               "properties": {
-                "env": {
-                  "type": "string",
-                  "pattern": "\\S"
+                "template": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "object",
+                      "properties": {
+                        "module": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        },
+                        "setting": {
+                          "type": "string",
+                          "pattern": "\\S"
+                        }
+                      },
+                      "required": [
+                        "module",
+                        "setting"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "text",
+                    "source"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
-                "env"
-              ],
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "properties": {
-                "file": {
-                  "type": "string",
-                  "pattern": "\\S"
-                }
-              },
-              "required": [
-                "file"
+                "template"
               ],
               "additionalProperties": false
             }
@@ -10549,18 +10578,12 @@
         ]
       },
       "Phase": {
-        "oneOf": [
-          {
-            "type": "string",
-            "const": "LlmProducerDrive",
-            "description": "Producer drive returned; buffered response bytes may still be draining."
-          },
-          {
-            "type": "string",
-            "const": "MountedResponseReady",
-            "description": "A mounted handler returned its response; its body may still be streaming."
-          }
-        ]
+        "type": "string",
+        "enum": [
+          "LlmProducerDrive",
+          "MountedResponseReady"
+        ],
+        "description": "LlmProducerDrive: producer drive returned; buffered response bytes may still be draining. MountedResponseReady: mounted handler returned its response; its body may still be streaming."
       },
       "Dropped": {
         "type": "object",
@@ -12347,8 +12370,7 @@
           "expected_archive_sha256": {
             "type": "string",
             "description": "Optional exact SHA-256 of the complete archive reviewed by the caller. Stale/missing = 409.",
-            "pattern": "^[0-9a-f]{64}$",
-            "default": null
+            "pattern": "^[0-9a-f]{64}$"
           }
         },
         "required": [
@@ -13209,7 +13231,7 @@
           "hook references, prompt/user grants and normal deploy validation"
         ]
       },
-      "PatchSettingsReq": {
+      "SettingsReplacement": {
         "type": "object",
         "properties": {
           "settings": {
@@ -13233,26 +13255,45 @@
             "additionalProperties": false
           }
         },
+        "required": [
+          "settings"
+        ]
+      },
+      "SettingsModification": {
+        "type": "object",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "edit": {
+            "type": "object",
+            "properties": {
+              "set": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "remove": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "edit"
+        ]
+      },
+      "PatchSettingsReq": {
         "oneOf": [
           {
-            "required": [
-              "settings"
-            ],
-            "not": {
-              "required": [
-                "edit"
-              ]
-            }
+            "$ref": "#/components/schemas/SettingsReplacement"
           },
           {
-            "required": [
-              "edit"
-            ],
-            "not": {
-              "required": [
-                "settings"
-              ]
-            }
+            "$ref": "#/components/schemas/SettingsModification"
           }
         ],
         "additionalProperties": true,
@@ -14184,6 +14225,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -14339,6 +14387,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -14358,6 +14413,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -14614,6 +14676,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -14811,6 +14880,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -14830,6 +14906,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -15659,6 +15742,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -15814,6 +15904,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -16272,6 +16369,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -16989,6 +17093,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -17146,6 +17257,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -17349,6 +17467,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -17592,6 +17717,13 @@
           "204": {
             "description": "Removed; fully live removals return no body",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -17851,6 +17983,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -18098,49 +18237,62 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "settings": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "edit": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "set": {
+                      "settings": {
                         "type": "object",
                         "additionalProperties": true
                       },
-                      "remove": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
-                  }
-                },
-                "oneOf": [
-                  {
                     "required": [
                       "settings"
-                    ],
-                    "not": {
-                      "required": [
-                        "edit"
-                      ]
-                    }
+                    ]
                   },
                   {
+                    "type": "object",
+                    "properties": {
+                      "settings": {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
                     "required": [
                       "edit"
-                    ],
-                    "not": {
-                      "required": [
-                        "settings"
-                      ]
-                    }
+                    ]
                   }
                 ],
                 "description": "settings replaces the entire bag, dropping omitted keys; edit explicitly sets/removes top-level keys and preserves all others. Null setting values are values. A setting cannot appear in both set and remove. Never reconstruct a replacement from redacted readback."
@@ -18165,6 +18317,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -18322,6 +18481,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -18525,6 +18691,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -18768,6 +18941,13 @@
           "204": {
             "description": "Removed; fully live removals return no body",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -18787,6 +18967,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -19046,6 +19233,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -19293,49 +19487,62 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "settings": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "edit": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "set": {
+                      "settings": {
                         "type": "object",
                         "additionalProperties": true
                       },
-                      "remove": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
-                  }
-                },
-                "oneOf": [
-                  {
                     "required": [
                       "settings"
-                    ],
-                    "not": {
-                      "required": [
-                        "edit"
-                      ]
-                    }
+                    ]
                   },
                   {
+                    "type": "object",
+                    "properties": {
+                      "settings": {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
                     "required": [
                       "edit"
-                    ],
-                    "not": {
-                      "required": [
-                        "settings"
-                      ]
-                    }
+                    ]
                   }
                 ],
                 "description": "settings replaces the entire bag, dropping omitted keys; edit explicitly sets/removes top-level keys and preserves all others. Null setting values are values. A setting cannot appear in both set and remove. Never reconstruct a replacement from redacted readback."
@@ -19360,6 +19567,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -19518,6 +19732,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -19722,6 +19943,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -19966,6 +20194,13 @@
           "204": {
             "description": "Removed; fully live removals return no body",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -20226,6 +20461,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -20473,49 +20715,62 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "settings": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "edit": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "set": {
+                      "settings": {
                         "type": "object",
                         "additionalProperties": true
                       },
-                      "remove": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
-                  }
-                },
-                "oneOf": [
-                  {
                     "required": [
                       "settings"
-                    ],
-                    "not": {
-                      "required": [
-                        "edit"
-                      ]
-                    }
+                    ]
                   },
                   {
+                    "type": "object",
+                    "properties": {
+                      "settings": {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
                     "required": [
                       "edit"
-                    ],
-                    "not": {
-                      "required": [
-                        "settings"
-                      ]
-                    }
+                    ]
                   }
                 ],
                 "description": "settings replaces the entire bag, dropping omitted keys; edit explicitly sets/removes top-level keys and preserves all others. Null setting values are values. A setting cannot appear in both set and remove. Never reconstruct a replacement from redacted readback."
@@ -20541,6 +20796,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -20699,6 +20961,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -20903,6 +21172,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -21147,6 +21423,13 @@
           "204": {
             "description": "Removed; fully live removals return no body",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -21407,6 +21690,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -21654,49 +21944,62 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "settings": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "edit": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "set": {
+                      "settings": {
                         "type": "object",
                         "additionalProperties": true
                       },
-                      "remove": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
-                  }
-                },
-                "oneOf": [
-                  {
                     "required": [
                       "settings"
-                    ],
-                    "not": {
-                      "required": [
-                        "edit"
-                      ]
-                    }
+                    ]
                   },
                   {
+                    "type": "object",
+                    "properties": {
+                      "settings": {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
                     "required": [
                       "edit"
-                    ],
-                    "not": {
-                      "required": [
-                        "settings"
-                      ]
-                    }
+                    ]
                   }
                 ],
                 "description": "settings replaces the entire bag, dropping omitted keys; edit explicitly sets/removes top-level keys and preserves all others. Null setting values are values. A setting cannot appear in both set and remove. Never reconstruct a replacement from redacted readback."
@@ -21932,6 +22235,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -22703,6 +23013,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -22915,6 +23232,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -23184,6 +23508,13 @@
           "204": {
             "description": "Removed",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -23434,6 +23765,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -23646,6 +23984,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -23922,6 +24267,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -24235,6 +24587,13 @@
           "204": {
             "description": "Removed",
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -26664,6 +27023,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -26884,49 +27250,62 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "settings": {
-                    "type": "object",
-                    "additionalProperties": true
-                  },
-                  "edit": {
+                "oneOf": [
+                  {
                     "type": "object",
                     "properties": {
-                      "set": {
+                      "settings": {
                         "type": "object",
                         "additionalProperties": true
                       },
-                      "remove": {
-                        "type": "array",
-                        "items": {
-                          "type": "string"
-                        }
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
-                    "additionalProperties": false
-                  }
-                },
-                "oneOf": [
-                  {
                     "required": [
                       "settings"
-                    ],
-                    "not": {
-                      "required": [
-                        "edit"
-                      ]
-                    }
+                    ]
                   },
                   {
+                    "type": "object",
+                    "properties": {
+                      "settings": {
+                        "type": "object",
+                        "additionalProperties": true
+                      },
+                      "edit": {
+                        "type": "object",
+                        "properties": {
+                          "set": {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          "remove": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    },
                     "required": [
                       "edit"
-                    ],
-                    "not": {
-                      "required": [
-                        "settings"
-                      ]
-                    }
+                    ]
                   }
                 ],
                 "additionalProperties": true,
@@ -27375,6 +27754,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -27634,6 +28020,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -28078,6 +28471,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -28233,6 +28633,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -28447,31 +28854,197 @@
               "schema": {
                 "oneOf": [
                   {
-                    "allOf": [
-                      {
-                        "type": "object",
-                        "description": "The settings sections to replace, keyed by section name. A mutable config always stores the change through its configured Store. A locked config (`config.locked: true`) refuses changes with `400`. There is no apply-in-memory-only outcome. Every top-level key must be a known settings section; unknown or retired fields, including `persist`, are refused with `400`. The accepted shape is the config file's own, documented in the configuration reference; it is not restated here because several of its types parse a wire shape that does not match their field layout.",
-                        "additionalProperties": true
+                    "title": "ConfigSettingsReplacement",
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Replace named root settings sections, merging omitted sections with the existing overlay. Null preserves a section. A mutable configuration stores changes through its configured Store; a locked configuration refuses changes. Listen, TLS and Store changes require restart. Unknown or retired fields, including persist, are refused. Nested section parsers and normal configuration validation remain authoritative.",
+                    "properties": {
+                      "listen": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
-                      {
-                        "not": {
+                      "tls": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Inbound TLS: cert and key SecretRefs, plus optional client_ca.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "admin_listen": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "admin_tls": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Admin listener TLS: cert and key SecretRefs, plus optional client_ca.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "admin_require_mtls": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "rate_card": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "additionalProperties": {
                           "anyOf": [
                             {
-                              "required": [
-                                "document_patch"
-                              ]
+                              "type": "object",
+                              "additionalProperties": true
                             },
                             {
-                              "required": [
-                                "persist"
-                              ]
+                              "type": "array",
+                              "items": {}
                             }
-                          ]
+                          ],
+                          "description": "RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. Normal rate validation applies."
                         }
+                      },
+                      "per_request_fee": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "minimum": -9223372036854775808,
+                        "maximum": 9223372036854775807
+                      },
+                      "store": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Store selection: module and module-owned settings; requires restart.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "security": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Per-field SecurityPatch; omitted or null members preserve their value.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "limits": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Per-field LimitsPatch; omitted members preserve their value. Null datagram_line_memory_bytes explicitly disables that limit.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "advanced": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Per-field AdvancedPatch; omitted or null members preserve their value.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "health": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Per-field HealthPatch; omitted or null members preserve their value.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
+                      },
+                      "routing": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "additionalProperties": true
+                          },
+                          {
+                            "type": "array",
+                            "items": {}
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Per-field RoutingPatch; omitted or null members preserve their value.",
+                        "x-busbar-runtime-validation": "The owning section parser validates field names, types and positional forms."
                       }
-                    ]
+                    }
                   },
                   {
+                    "title": "ConfigDocumentModification",
                     "type": "object",
                     "required": [
                       "document_patch"
@@ -28770,6 +29343,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -29060,6 +29640,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted configuration generation for If-Match on configuration mutations. Preserve the header verbatim; re-read after a version conflict.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9]+\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {
@@ -30204,6 +30791,13 @@
               }
             },
             "headers": {
+              "ETag": {
+                "description": "Quoted key version for If-Match on this key's patch or delete operation. Re-read this key after mutation; this is not a configuration-generation ETag.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"[0-9a-f]{16}\"$"
+                }
+              },
               "Cache-Control": {
                 "description": "Administrative responses, including credential issuance and replay, must not be stored.",
                 "schema": {

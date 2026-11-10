@@ -184,7 +184,20 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
             }
         }
     }
-    schemas.insert("PatchSettingsReq".into(), hook_settings_schema());
+    // Referenced object branches avoid generators processing nested inline models
+    // twice when this union appears as a standalone component.
+    let mut hook_settings = hook_settings_schema();
+    for (index, name) in ["SettingsReplacement", "SettingsModification"]
+        .into_iter()
+        .enumerate()
+    {
+        let branch = std::mem::replace(
+            &mut hook_settings["oneOf"][index],
+            json!({"$ref":format!("#/components/schemas/{name}")}),
+        );
+        schemas.insert(name.into(), branch);
+    }
+    schemas.insert("PatchSettingsReq".into(), hook_settings);
     // Omission is allowed, but the custom runtime deserializer rejects JSON null.
     // Schemars derives the Option default independently of the String wire override.
     if let Some(field) = schemas
@@ -348,6 +361,22 @@ mod tests {
             assert_eq!(alternative["type"], "object");
             assert!(alternative["properties"].is_object());
             assert!(alternative.get("not").is_none());
+            assert!(
+                alternative.get("title").is_none(),
+                "inline branch names must be scoped by their operation or component"
+            );
+        }
+        let document = super::super::handlers::openapi_doc();
+        let schemas = &document["components"]["schemas"];
+        for (index, name) in ["SettingsReplacement", "SettingsModification"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                schemas["PatchSettingsReq"]["oneOf"][index]["$ref"],
+                format!("#/components/schemas/{name}")
+            );
+            assert_eq!(schemas[name], schema["oneOf"][index]);
         }
     }
 

@@ -967,14 +967,15 @@ pub(crate) fn settings_request_schema() -> serde_json::Value {
                 "additionalProperties": false
             }
     });
-    // Complete object alternatives give generators named, typed request members.
+    // Complete object alternatives give generators typed request members. Let each
+    // operation/component supply the names: shared inline titles collide in SDKs.
     // Both alternatives validate both known fields: null must not evade the
     // non-null rule by becoming an unknown property of the other alternative.
     serde_json::json!({
         "oneOf": [
-            {"title": "SettingsReplacement", "type": "object", "properties": properties,
+            {"type": "object", "properties": properties,
              "required": ["settings"]},
-            {"title": "SettingsModification", "type": "object", "properties": properties,
+            {"type": "object", "properties": properties,
              "required": ["edit"]}
         ]
     })
