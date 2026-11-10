@@ -101,6 +101,74 @@
 //! }
 //! ```
 
+//! Each forbidden operation has a matching production-feature positive control.
+//!
+//! ```
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::AuthKind};
+//! fn record(host: &Host<AuthKind>) { let _ = host.services().unwrap().records_get(CompletionHandle::ZERO, "declared", b"key", &mut []); }
+//! ```
+//!
+//! ```compile_fail,E0277
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::SecretKind};
+//! fn record(host: &Host<SecretKind>) { let _ = host.services().unwrap().records_get(CompletionHandle::ZERO, "declared", b"key", &mut []); }
+//! ```
+//!
+//! ```
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{OwnerSeal, abi::{sdk::{conn::Host, services::HeadViewArgs}, host::service::{AuthRef, UnitRef}, mechanism::ticket::CompletionHandle}, plugin::markers::TransportKind};
+//! fn authenticate<O: OwnerSeal>(host: &Host<TransportKind>, request: &HeadViewArgs<'_>) { let _ = host.services().unwrap().auth_call::<O>(CompletionHandle::ZERO, AuthRef::NONE, UnitRef::NONE, 0, 1, 1, request, None); }
+//! ```
+//!
+//! ```compile_fail,E0277
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{OwnerSeal, abi::{sdk::{conn::Host, services::HeadViewArgs}, host::service::{AuthRef, UnitRef}, mechanism::ticket::CompletionHandle}, plugin::markers::ExportKind};
+//! fn authenticate<O: OwnerSeal>(host: &Host<ExportKind>, request: &HeadViewArgs<'_>) { let _ = host.services().unwrap().auth_call::<O>(CompletionHandle::ZERO, AuthRef::NONE, UnitRef::NONE, 0, 1, 1, request, None); }
+//! ```
+//!
+//! ```
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::PlaneKind};
+//! fn nest(host: &Host<PlaneKind>) { let _ = host.services().unwrap().unit_nest(CompletionHandle::ZERO, "POST", "/declared", b"", &mut [], &mut []); }
+//! ```
+//!
+//! ```compile_fail,E0277
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::ExportKind};
+//! fn nest(host: &Host<ExportKind>) { let _ = host.services().unwrap().unit_nest(CompletionHandle::ZERO, "POST", "/declared", b"", &mut [], &mut []); }
+//! ```
+//!
+//! ```
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::sdk::{conn::Host, services::Services}, plugin::{KindMarker, markers::{StoreKind, PlaneKind}}};
+//! fn retain<K: KindMarker>(host: &Host<K>) -> Option<Services<K>> { host.services() }
+//! fn restore(host: &Host<StoreKind>) -> Option<Services<StoreKind>> { retain(host) }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::sdk::{conn::Host, services::Services}, plugin::{KindMarker, markers::{StoreKind, PlaneKind}}};
+//! fn retain<K: KindMarker>(host: &Host<K>) -> Option<Services<K>> { host.services() }
+//! fn restore(host: &Host<StoreKind>) -> Option<Services<PlaneKind>> { retain(host) }
+//! ```
+//!
+//! ```
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::sdk::conn::Host, plugin::markers::{ExportKind, PlaneKind}};
+//! pub use busbar_contract::abi::sdk::services::Services as Client;
+//! type Snapshot = Client<ExportKind>;
+//! fn restore(host: &Host<ExportKind>) -> Option<Snapshot> { host.services() }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! // BOUNDARY_ACCEPTANCE_WITNESS
+//! use busbar_contract::{abi::sdk::conn::Host, plugin::markers::{ExportKind, PlaneKind}};
+//! pub use busbar_contract::abi::sdk::services::Services as Client;
+//! type Snapshot = Client<PlaneKind>;
+//! fn restore(host: &Host<ExportKind>) -> Option<Snapshot> { host.services() }
+//! ```
+
 use super::service::op;
 use crate::abi::mechanism::KindCode;
 use crate::plugin::{markers::*, KindMarker};

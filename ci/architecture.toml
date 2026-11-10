@@ -869,8 +869,8 @@ repository = "GetBusbar/busbar-store-postgres"
 # come from the candidate SDK. A candidate cannot delete its own negative proof.
 [[compiler_witnesses]]
 source = "crates/busbar-contract/src/abi/host/access.rs"
-markers = ["fn plane(", "fn store(", "fn auth(", "fn secret(", "fn loan(", "fn raw(", "impl Permitted<", "unsafe impl KindOps", "fn swapped<", "fn hook(", "fn transport("]
-count = 12
+markers = ["fn plane(", "fn store(", "fn auth(", "fn secret(", "fn loan(", "fn raw(", "impl Permitted<", "unsafe impl KindOps", "fn swapped<", "fn hook(", "fn transport(", "BOUNDARY_ACCEPTANCE_WITNESS"]
+count = 22
 
 [[compiler_witnesses]]
 source = "crates/busbar-contract/src/abi/sdk/door.rs"
@@ -879,8 +879,8 @@ count = 2
 
 [[compiler_witnesses]]
 source = "crates/busbar-contract/src/services.rs"
-markers = ["let caller = Caller", "fn forged(pass:"]
-count = 2
+markers = ["let caller = Caller", "fn forged(pass:", "BOUNDARY_INCARNATION_WITNESS"]
+count = 4
 
 [[compiler_witnesses]]
 source = "crates/busbar-contract/src/plugin.rs"
