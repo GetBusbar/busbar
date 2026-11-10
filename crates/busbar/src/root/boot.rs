@@ -1004,7 +1004,6 @@ pub struct RootListens<'a> {
     pub admin_listen: &'a str,
 }
 
-#[must_use]
 pub fn root_binds(
     doc: &serde_json::Value,
     root: &RootListens<'_>,
