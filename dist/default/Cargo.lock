@@ -588,7 +588,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=0510ab978a10b1af7049148a731c17c2d67f5dfd#0510ab978a10b1af7049148a731c17c2d67f5dfd"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=bdc679bd89c78535dad3fb592c5daa64beadfd5d#bdc679bd89c78535dad3fb592c5daa64beadfd5d"
 dependencies = [
  "busbar-contract",
  "prost",
@@ -602,7 +602,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-otlp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=0510ab978a10b1af7049148a731c17c2d67f5dfd#0510ab978a10b1af7049148a731c17c2d67f5dfd"
+source = "git+https://github.com/GetBusbar/busbar-export-otlp?rev=bdc679bd89c78535dad3fb592c5daa64beadfd5d#bdc679bd89c78535dad3fb592c5daa64beadfd5d"
 dependencies = [
  "busbar-contract",
  "busbar-export-otlp",
