@@ -229,11 +229,27 @@ fn a_refused_units_status_is_the_one_its_ending_earned() {
     assert_eq!(status(ReasonCode::OverBudget).status, 429);
     assert_eq!(status(ReasonCode::DurabilityUnavailable).status, 503);
     assert_eq!(status(ReasonCode::ScopeDenied).status, 403);
-    assert_eq!(status(ReasonCode::Unauthenticated).status, 403);
+    for (reason, expected_status, code) in [
+        (ReasonCode::Unauthenticated, 401, "unauthenticated"),
+        (ReasonCode::BodyTooLarge, 413, "too_large"),
+        (ReasonCode::RateLimited, 429, "rate_limited"),
+        (ReasonCode::DeadlineExceeded, 504, "timeout"),
+        (ReasonCode::PlanePanic, 502, "upstream_error"),
+    ] {
+        let expected = error_answer(expected_status, code);
+        assert_eq!(status(reason), expected, "refusal {reason:?}");
+        assert_eq!(
+            answer_for(Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                reason
+            )),
+            expected,
+            "failure {reason:?}"
+        );
+    }
     assert_eq!(
-        status(ReasonCode::PlanePanic).status,
-        403,
-        "an ending nobody mapped keeps the pinned answer rather than inventing one"
+        answer_for(Outcome::Completed),
+        error_answer(500, "internal_error")
     );
 
     assert_eq!(
