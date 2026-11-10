@@ -518,8 +518,9 @@ host observer, never copy candidate receipt fields or accept a candidate-selecte
 digest. Digest comparison preserves that external trust decision; it does not
 turn self-reported booleans into independent evidence. A compatible core host
 observer is still required engineering and has not been deployed by this work.
-Current native.py records host-subprocess/isolated:false/release_eligible:false;
-current receipts cannot satisfy the release-producer boundary requirement.
+The deployed native path records host-subprocess/isolated:false/release_eligible:false.
+The new opt-in Docker path records controller-observed confinement and remains
+release_eligible:false; neither substitutes for the independent host observation.
 
 Prepare rechecks the real private QA receipt/input files and native bundles:
   python3 scripts/release/release_producer.py prepare \
@@ -591,51 +592,60 @@ not retagged or relaxed. The native-specific work below remains necessary.
 The existing runner32 manager was read back on 2026-11-10: instance executor,
 capacity_per_instance=1, max_use_count=1, idle_count=0 and no external cache. That
 prevents cross-job host/daemon reuse and supports the separate security-scans job.
-It does not protect a controller from code in its own job. Native.run launches
-candidate Cargo build scripts/tests under the controller UID; architecture/check.py
-also compiles and loads candidate code. ci-product-inputs.sh now returns a
-data-only JSON map: native_product_inputs.py requires exactly the permitted
-fixture variables and regular files under candidate target/cache directories.
-It rejects arbitrary environment keys, shell content, links and escaping paths.
-No candidate-produced shell file is sourced by the controller. Candidate
-conformance launchers use Docker. HOME/Cargo/toolchain directories and receipts
-are not separated from that process authority. The worker's Docker group grants
-host-root control through its socket. Clearing env vars is not confinement.
+The deployed native path still runs host subprocesses. No runner settings,
+protected pipeline configuration or production activation were changed here.
 
-Implement the boundary as three explicit roles on the existing one-job workers:
-(a) a trusted fetch/fixture/receipt controller, (b) an unprivileged candidate
-sandbox with private PID/mount/user namespaces and writable source/build/cache
-only, and (c) a separate artifact verifier/signer job. Keep policy/interpreter,
-expected inputs and receipt output outside candidate-writable mounts. Supply
-only read-only pinned toolchain and per-job dependency inputs. Never bind the
-host Docker socket or controller HOME. Kill/reap all sandbox descendants before
-collecting regular-file outputs, rejecting links/devices/path traversal, and
-hash the collected bytes independently. Keep metadata-service access and source
-fetch credentials outside the sandbox; use an explicit dependency egress policy.
+Implemented opt-in confinement:
+- native.py separates run_controller from candidate run; receipts and generated
+  harness source live outside candidate writable roots. A protected configuration
+  file plus independently selected digest are required; a configured failure has
+  no host fallback. See scripts/architecture/CONFINEMENT.md for the exact contract.
+- native_confinement.py creates one nonroot Docker container per command using an
+  already-present digest-pinned image, private PID/IPC/network/cgroup namespaces,
+  read-only root/source/policy/harness mounts, zero capabilities, seccomp filtering,
+  no-new-privileges and explicit CPU/memory/PID caps. No Docker socket, controller
+  HOME or receipt path is mounted. Environment values use an allowlist; Git clone
+  credentials/hooks are removed. Candidate outputs remain writable separately.
+- check.py keeps policy calculation in the controller and sends Cargo/cc/nm through
+  that boundary. Cargo 1.98 supports separate harness lockfiles; harness compilation
+  uses fresh target directories and a fresh copy of the immutable image Cargo seed.
+  Source harnesses remain read-only. Candidate output paths are checked before use.
+- Fixture container lifecycle is controller-only. Bounded fixed-destination Unix
+  socket capabilities expose only controller-selected loopback fixture ports to
+  loopback adapters inside the network-none candidate. No destination-routing
+  protocol or general network proxy is supplied. Core's online 1.5.5 migration
+  recorder is refused in confined mode until its inputs are collected separately.
+- Artifact/JUnit intake rejects links, nonregular files, path escape and oversize;
+  controller hashes the copied bytes after confirmed command/container disposal.
 
-Split check.py's candidate compile/execute calls from its trusted policy judgment;
-move candidate results across a data-only interface. The product-input shell
-import has been replaced with strict JSON/path validation. Run fixture Docker
-operations only in the trusted controller and expose the required service ports
-to the candidate namespace. For conformance suites that themselves create
-containers, provide a separate nested/rootless daemon confined to the candidate
-sandbox, or move their container lifecycle into a trusted fixture API. Preserve
-all existing conformance assertions, TSan functionality and native ABI targets.
-A separate verifier must not treat a candidate-authored JUnit or receipt as proof
-that execution happened; controller-observed argv, exit, lifecycle and collected
-outputs remain distinct from test-program assertions.
+Actual 2026-11-10 evidence: an existing local Colima/runc Linux runtime and its
+preinstalled Python image exercised nonroot execution, inaccessible controller
+secrets/receipts, denied policy/source/rootfs writes, absent Docker socket and
+CI/AWS credentials, denied metadata/external network, command failure, timeout
+with a forked descendant, confirmed container removal and distinct controller/
+candidate dispatch. Fixed-destination socket forwarding was exercised locally.
+A separate actual Cargo 1.98 metadata fixture confirmed external lockfile placement.
+These small fixtures do not prove a native build, TSan, a cross-namespace live
+service roster, a deployed core runner, independent host attestation or a release.
 
-The current native worker recipe has Docker/Python/util-linux/Rust/Node, but no
-bwrap/nsjail/runsc candidate execution contract or pinned build container image.
-The separate existing runsc sandbox profile has incompatible host fixture
-networking and TSan personality requirements. Therefore switching a tag or
-wrapping Popen while passing the host socket cannot safely activate this design.
-Before native confinement can run: build/pin a compatible toolchain sandbox on
-existing dev infrastructure, implement the controller interfaces above, and
-prove candidate attempts to write policy/receipts, read controller credentials,
-use host Docker/metadata, persist children or replace artifacts all fail while
-the required fixture and TSan witnesses still pass. No new cloud provisioning
-is inherently required, but the runtime/interface work is not implemented here.
+Remaining engineering and deployment dependencies:
+1. Build/pin and qualify an offline Linux native toolchain/dependency-seed image on
+   existing infrastructure. Native worker readback confirms Docker/Python/Rust, but
+   no compatible pinned image was verified. Qualify required TSan/personality and
+   all fixture behavior under the selected runtime; do not weaken confinement to
+   make a test pass. Worker filesystem quotas and the selected runtime's kernel/
+   user-namespace boundary also need an explicit deployment policy.
+2. Split the online pinned 1.5.5 migration recorder into protected input collection
+   and confined execution. Migrate Docker-spawning conformance and external judge
+   networking to controller capabilities, and register generated-project harness
+   roots. These paths refuse explicitly in confined mode; legacy dev still works.
+3. Deploy independent host observation, bind lifecycle/regular outputs to the actual
+   source/artifact/config/image digests, then run the full final-vector native,
+   conformance and release witnesses in CI. The producer still refuses absent or
+   mismatched observations. Controller-self-reported fields are not that evidence.
+4. Owner-approved signer/identity/key/log/registry authority and production routing
+   remain separate prerequisites. No signing, registry publication or QA/main
+   activation was performed.
 
 Assurance language
 

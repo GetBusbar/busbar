@@ -70,14 +70,21 @@ A second observed `lifecycle-tools` job 2249 succeeded. The overall historical
 pipeline failed; neither job qualifies the current core or all Console jobs.
 
 Core native/conformance use runner 32, tagged `busbar-native-admission` and
-`busbar-conformance`, with a separate instance executor. Its `native.py` executes
+`busbar-conformance`, with a separate instance executor. Its deployed `native.py` path executes
 ordinary child processes; filtering their environment is not confinement.
 The controller now rejects shell product-input output and imports only exact-key
 JSON paths under candidate target/cache directories. Native receipts explicitly
 record host-subprocess execution as isolated:false/release_eligible:false, and the
 protected release producer requires independently pinned host-isolation evidence.
 Same-user policy/receipt/cache access and the fixture Docker socket remain an
-unresolved within-job boundary. Runner 33's bridge/runsc setup cannot replace
+unresolved boundary in that deployed path. The new opt-in confinement backend
+separates controller and candidate execution, protects harness/evidence mounts,
+uses network-none nonroot containers, and brokers only fixed fixture endpoints.
+Actual small existing-runtime checks cover denied host access and failure/timeout
+disposal; they do not qualify the native toolchain, fixture roster or deployed
+runner. Confined migration/conformance/generator paths still require engineering
+and explicitly refuse unsupported execution. See
+[the confinement contract](../architecture/CONFINEMENT.md). Runner 33's bridge/runsc setup cannot replace
 this path merely by changing tags: core fixtures and TSan need qualified runtime
 interfaces. The controller must freeze inputs, isolate candidate execution,
 collect outputs as untrusted, and emit authoritative receipts outside the

@@ -19,6 +19,23 @@ import tomllib
 from urllib.parse import urlsplit
 
 
+EXECUTION = None
+
+
+def candidate_run(argv, **kwargs):
+    if EXECUTION is None:
+        return subprocess.run(argv, **kwargs)
+    kwargs.setdefault('cwd', EXECUTION.roots['checkout'])
+    return EXECUTION.run(argv, **kwargs)
+
+
+def candidate_output(argv, **kwargs):
+    if EXECUTION is None:
+        return subprocess.check_output(argv, **kwargs)
+    kwargs.setdefault('cwd', EXECUTION.roots['checkout'])
+    return EXECUTION.check_output(argv, **kwargs)
+
+
 class Violation(ValueError):
     pass
 
@@ -365,7 +382,7 @@ def resolve_shipping(checkout, entries, scratch, cargo_config=None, assembly=Fal
     cmd = ['cargo', 'metadata', '--format-version', '1', '--manifest-path', str(probe / 'Cargo.toml')]
     if cargo_config:
         cmd += ['--config', str(cargo_config)]
-    metadata = json.loads(subprocess.check_output(cmd, cwd=scratch, text=True))
+    metadata = json.loads(candidate_output(cmd, cwd=scratch, text=True))
     for package in metadata['packages']:
         if package['name'] in binary_roots:
             package['manifest_path'] = binary_roots[package['name']]
@@ -460,7 +477,7 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
     if repository == 'GetBusbar/busbar':
         # Shipping resolution substitutes empty libraries for binary-only crates. Those
         # stubs cannot identify real custom binary roots or produce their generated Rust.
-        source_metadata = json.loads(subprocess.check_output(
+        source_metadata = json.loads(candidate_output(
             ['cargo', 'metadata', '--no-deps', '--format-version', '1',
              '--manifest-path', str(checkout / 'Cargo.toml')], cwd=checkout, text=True))
         crate_roots = core_target_roots(policy, checkout, source_metadata)
@@ -470,13 +487,17 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         build_command = (['cargo', 'build', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
             if repository == 'GetBusbar/busbar' else
             ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
-        build = subprocess.check_output(build_command + ['--message-format=json'], cwd=checkout, text=True)
+        build = candidate_output(build_command + ['--message-format=json'], cwd=checkout, text=True)
         for line in build.splitlines():
             row = json.loads(line)
             if row.get('reason') == 'build-script-executed':
                 for package in source_metadata['packages']:
                     if package['id'] == row['package_id'] and package['name'] in policy.packages:
-                        mapping[str(Path(package['manifest_path']).parent)] = row['out_dir']
+                        output = Path(row['out_dir'])
+                        if EXECUTION and (not output.is_absolute() or output != output.resolve()
+                                or not output.is_relative_to(EXECUTION.roots['candidate'])):
+                            raise Violation('candidate generated source path escapes its build output')
+                        mapping[str(Path(package['manifest_path']).parent)] = str(output)
         generated = scratch / 'generated-directories.json'
         generated.write_text(json.dumps(mapping))
         env['BUSBAR_ARCHITECTURE_GENERATED_DIRS'] = str(generated)
@@ -485,7 +506,10 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         raw_paths = core_source_inventory(policy, checkout)
         paths = set(raw_paths)
         for output in mapping.values():
-            paths.update(str(path.resolve()) for path in Path(output).rglob('*.rs'))
+            for path in Path(output).rglob('*.rs'):
+                if EXECUTION and (path.is_symlink() or not path.resolve().is_relative_to(EXECUTION.roots['candidate'])):
+                    raise Violation('indirect generated source file')
+                paths.add(str(path.resolve()))
         # Handwritten core must not know concrete owners. Generated assembly may
         # link those owners, but remains subject to the short-name selector check.
         plugin_packages = sorted(name for name, entry in policy.packages.items()
@@ -494,7 +518,7 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
             'roots': crate_roots, 'plugin_packages': plugin_packages,
             'names': sorted({r.split('/', 1)[1].split('-', 2)[2] for r in policy.data['repositories']})}))
         env['BUSBAR_ARCHITECTURE_POLICY_SOURCES'] = str(inventory)
-    subprocess.run(['cargo', 'test', '--manifest-path', str(harness / 'Cargo.toml'), '--test', 'architecture_surface'], cwd=scratch, env=env, check=True)
+    candidate_run(['cargo', 'test', '--manifest-path', str(harness / 'Cargo.toml'), '--test', 'architecture_surface'], cwd=scratch, env=env, check=True)
     return {'source_roots': len(set(roots)), 'core_source_files': len(paths) if repository == 'GetBusbar/busbar' else 0,
             'trusted_source_check': True}
 
@@ -510,11 +534,14 @@ def check_c(policy, repository, checkout, sdk, scratch):
         includes = re.findall(r'^\s*#\s*include\s+(.+)$', source.read_text(), re.MULTILINE)
         if includes != ['"busbar_plugin.h"']:
             raise Violation(f'C plugin must include only the public ABI header: {source}')
-    library = scratch / ('plugin.dylib' if sys.platform == 'darwin' else 'plugin.so')
-    subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fvisibility=hidden', '-fPIC',
-        '-dynamiclib' if sys.platform == 'darwin' else '-shared', '-I', str(sdk / 'crates/busbar-contract/include'),
+    platform = 'linux' if EXECUTION else sys.platform
+    output_directory = EXECUTION.roots['candidate'] / 'architecture' if EXECUTION else scratch
+    output_directory.mkdir(exist_ok=True)
+    library = output_directory / ('plugin.dylib' if platform == 'darwin' else 'plugin.so')
+    candidate_run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fvisibility=hidden', '-fPIC',
+        '-dynamiclib' if platform == 'darwin' else '-shared', '-I', str(sdk / 'crates/busbar-contract/include'),
         *map(str, sources), '-o', str(library)], check=True)
-    output = subprocess.check_output(['nm', '-gU' if sys.platform == 'darwin' else '--defined-only', str(library)], text=True)
+    output = candidate_output(['nm', '-gU' if platform == 'darwin' else '--defined-only', str(library)], text=True)
     exported = {line.split()[-1].removeprefix('_') for line in output.splitlines() if len(line.split()) >= 3 and line.split()[-2].isupper()}
     if exported != {'busbar_plugin_door'}:
         raise Violation(f'C runtime exports are not the sole ABI door: {sorted(exported)}')
@@ -560,7 +587,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
     if not cases or not any(not expected for _, expected in cases):
         raise Violation('compiler witnesses require a positive control')
     for name, expected in cases:
-        result = subprocess.run(['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json'], cwd=scratch, text=True, capture_output=True)
+        result = candidate_run(['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json'], cwd=scratch, text=True, capture_output=True)
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
         errors = [row['message'] for row in messages if row.get('reason') == 'compiler-message' and row.get('target', {}).get('name') == name and row['message']['level'] == 'error']
         codes = {error['code']['code'] for error in errors if error.get('code')}
@@ -580,6 +607,7 @@ def source_revision(checkout):
 
 
 def main():
+    global EXECUTION
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--repository', required=True)
@@ -588,7 +616,21 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--trusted', required=True, type=Path)
     parser.add_argument('--sdk', type=Path, help='Exact pinned SDK checkout for a C plugin')
+    parser.add_argument('--execution-context', type=Path)
+    parser.add_argument('--execution-context-sha256')
     args = parser.parse_args()
+    EXECUTION = None
+    if args.execution_context:
+        from native_confinement import Execution
+        EXECUTION = Execution.from_context(args.execution_context, args.execution_context_sha256)
+        if (args.checkout.resolve() != EXECUTION.roots['checkout']
+                or args.trusted.resolve() != EXECUTION.roots['trusted']
+                or not args.scratch.resolve().is_relative_to(EXECUTION.roots['harness'])
+                or not args.output.resolve().is_relative_to(EXECUTION.control)
+                or any(args.output.resolve().is_relative_to(p) for p in EXECUTION.roots.values())):
+            raise Violation('architecture controller paths differ from confined execution context')
+    elif args.execution_context_sha256:
+        raise Violation('execution context digest requires its context')
     policy = Policy(read(args.policy))
     checkout = args.checkout.resolve()
     if args.repository != 'GetBusbar/busbar' and args.repository not in policy.data['repositories']:
@@ -609,6 +651,9 @@ def main():
             receipt.update(check_compiler_witnesses(policy, checkout, args.trusted.resolve(), args.scratch.resolve()))
         receipt.update(check_sources(policy, args.repository, checkout, metadata, args.trusted.resolve(), args.scratch.resolve()))
     receipt.update(repository=args.repository, policy_sha256=hashlib.sha256(args.policy.read_bytes()).hexdigest(), source=source_revision(checkout))
+    if EXECUTION:
+        receipt['candidate_execution'] = EXECUTION.observations
+        receipt['release_eligible'] = False
     args.output.write_text(json.dumps(receipt, indent=2) + '\n')
     print(json.dumps(receipt))
 
@@ -616,6 +661,6 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (Violation, OSError, subprocess.CalledProcessError, tomllib.TOMLDecodeError) as error:
+    except (Violation, ValueError, OSError, subprocess.CalledProcessError, tomllib.TOMLDecodeError) as error:
         print(f'architecture: {error}', file=sys.stderr)
         sys.exit(1)
