@@ -282,6 +282,7 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
     };
     use busbar_core_connector::carrier::Driven;
     use busbar_core_connector::doors::bind_on;
+    use busbar_core_connector::framer::FramerDoor;
     use busbar_core_connector::hostio::{Admission, HostIo};
     use busbar_core_connector::spawn_env::HeldEnv;
 

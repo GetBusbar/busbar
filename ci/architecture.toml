@@ -813,7 +813,7 @@ dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 repository = "GetBusbar/busbar"
 manifest = "dist/default/Cargo.toml"
 package = "busbar-default"
-dev_allows = ["busbar-plugin-loader", "busbar-auth-oauth", "busbar-auth-oidc", "busbar-auth-oidc-plugin", "busbar-contract", "busbar-core-admin", "busbar-core-connector", "busbar-export-file-plugin", "busbar-export-otlp-plugin", "busbar-export-prometheus-plugin", "busbar-kernel", "busbar-kernel-audit", "busbar-plane-a2a", "busbar-plane-llm", "busbar-plane-mcp", "busbar-transport-tcp-plugin"]
+dev_allows = ["busbar-hook-ranking", "busbar-export-prometheus", "busbar-plugin-loader", "busbar-auth-oauth", "busbar-auth-oidc", "busbar-auth-oidc-plugin", "busbar-contract", "busbar-core-admin", "busbar-core-connector", "busbar-export-file-plugin", "busbar-export-otlp-plugin", "busbar-export-prometheus-plugin", "busbar-kernel", "busbar-kernel-audit", "busbar-plane-a2a", "busbar-plane-llm", "busbar-plane-mcp", "busbar-transport-tcp-plugin"]
 registration = ["dist/default/src/linked.rs", "crates/busbar/src/root/linked.rs"]
 
 [[test_hosts]]

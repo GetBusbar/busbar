@@ -310,8 +310,8 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub statement: Option<String>,
     /// The FORMER NAMES the plugin answers to beside `name` and `alias`: the manifest names its
-    /// earlier releases carried (a 1.5.5 config names `busbar-webrequest`, the 1.6.0 plugin is
-    /// `busbar-hook-webrequest`), so a configuration written for those releases loads unchanged.
+    /// earlier releases carried, so configurations using a prior name still resolve the
+    /// same plugin after a rename.
     /// Each is a reference the registry resolves exactly as it resolves the alias, and each is held
     /// to the alias's rules (lowercase `[a-z0-9-]+`) and to phase 3's collision checks. SIGNED like
     /// every field; `busbar-plugin-pack --former-name` (repeatable) writes it from plugins.yaml's
