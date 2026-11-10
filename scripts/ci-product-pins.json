@@ -136,13 +136,13 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "8b8e450372d1bfc507199f949e9e0e23d3988cf8",
+      "commit": "e1e7d15e4e59bfa93c3b07e331be2ba1b93cb0b8",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "11d32e23398802e3af3428fbe7ab90226fd76e626d6aee187c72c0fae9e9bd76"
+      "lock_sha256": "8dcf7a056a677ead76aa62c8d91f15a8f7c8ea44fe6752add77615fc7389a464"
     },
     {
       "repo": "busbar-transport-grpc",
@@ -180,13 +180,13 @@
     {
       "repo": "busbar-transport-tcp",
       "url": "https://github.com/GetBusbar/busbar-transport-tcp",
-      "commit": "022538c0010bd1f1e527b9da91065586f9675053",
+      "commit": "cebc89b7c1286f41ee4da3b89f08ffa5481011f1",
       "package": "busbar-transport-tcp-plugin",
       "kind": "transport",
       "alias": "tcp",
       "image": "libbusbar_transport_tcp_plugin.so",
       "declares": "transport-tcp/declares.json",
-      "lock_sha256": "88fbd21f2a9bd4cbb96f8ae4af4c87d78e22ac5813eb5610f3205695bf769673"
+      "lock_sha256": "af81b82facdb4dc29960e3d2de91529bd6782cc83a118dd29ce701093da86506"
     },
     {
       "repo": "busbar-transport-webrtc",
@@ -334,35 +334,35 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "bed6617588e3646fdd7a8e645ee45a475d27c2c7",
+      "commit": "99fe7626c3bd5487c7d30e91893ace9b052546f0",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
       "image": "libbusbar_store_mysql_plugin.so",
       "declares": "store-mysql/declares.json",
-      "lock_sha256": "301d1b0b17c723f4f1a0b9037052e2bae8b768637b582be1aa8a4155f1b0b9e9"
+      "lock_sha256": "5dbcaa7230ef1354ac0b571fa0b7a2a8b5b31d033c4d3c6aa423f77c0e21f194"
     },
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "ba55637630fb38de6382e8dd7370b3c2d45da57b",
+      "commit": "faf071d02114eb944a23642d44992e526ab2a173",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
       "image": "libbusbar_store_postgres_plugin.so",
       "declares": "store-postgres/declares.json",
-      "lock_sha256": "6299e4ac2f23914ce0588d18af00360f5e4bc0d2a74abb27c292af4a61e4fa16"
+      "lock_sha256": "7371c930c9cd0239fe7227a11a05d6ca35e8cff43a2e56aa14815c9398130fb9"
     },
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "ab070bd5de89a33656e29a9d0cde1ced32ed581d",
+      "commit": "0b04d08422a9dc8fdb04e8ce73dabf17a015adb1",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
       "image": "libbusbar_store_valkey_plugin.so",
       "declares": "store-valkey/declares.json",
-      "lock_sha256": "404a3d7f4cba0a910c3e1f9ddc8bea76b8f6c3ab254046cce9f81037c3572701"
+      "lock_sha256": "a34aa5e50636644a28ecfca486fea33e4e5de8e8db42087325c6851d27858002"
     }
   ],
   "c_witness": {
