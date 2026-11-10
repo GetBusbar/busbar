@@ -895,7 +895,7 @@ fn golden_migrate_bare_tap_pins_the_legacy_request_only_phase() {
 }
 
 /// 1.5.3 — the redis→valkey rename. The first-party Valkey store plugin was renamed
-/// wholesale: repo, crate, artifact, manifest NAME (`busbar-store-valkey-plugin`) and the config
+/// wholesale: repo, crate, artifact, manifest name and the config
 /// ALIAS (`valkey`). Nothing resolves `redis` any more — the loader matches a `store.module:` against
 /// the installed manifests' `name`/`alias`, and neither spelling exists on the renamed artifact — so
 /// an un-migrated `store.module: redis` is not a "wrong backend", it is a boot that cannot find its
