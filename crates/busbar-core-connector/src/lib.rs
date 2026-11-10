@@ -3103,7 +3103,8 @@ impl Connector {
                     }
 
                     Err((stream, _)) if line.flushed() != redial.mark => {
-                        let held = Held::over(Some((line, stream)), None, pooled);
+                        let held =
+                            Held::over(Some((line, stream)), None, pooled).bounded(desc.timeout_ms);
                         return Ok(held);
                     }
 

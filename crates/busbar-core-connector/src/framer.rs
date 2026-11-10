@@ -623,8 +623,6 @@ impl Buffers {
             for slot in [head.method, head.target, head.authority, head.reason] {
                 copied = copied.saturating_add(slot.len);
             }
-
-            copied = copied.saturating_add(head.reason.len);
         }
         if y.flags & YIELD_STREAM_FULL != 0 {
             metadata = metadata.saturating_add(size_of::<StreamFlow>() as u64);

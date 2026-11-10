@@ -6,7 +6,10 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 
-use busbar_contract::abi::host::conn::connector::{EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB};
+use busbar_contract::abi::host::conn::connector::{
+    EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    EGRESS_PROVIDER,
+};
 use busbar_contract::abi::host::service::{
     DEST_INTERNAL, DEST_NO_HOST, DEST_PLAINTEXT, DEST_SCHEME, DEST_UNRESOLVABLE,
 };
@@ -75,7 +78,14 @@ impl GuardJudge {
         reach: bool,
     ) -> Result<(String, u16, bool, Option<IpAddr>), u64> {
         let class = target.egress_class;
-        if class > EGRESS_LOOPBACK_ALLOWED {
+        if !matches!(
+            class,
+            EGRESS_DEFAULT
+                | EGRESS_PROVIDER
+                | EGRESS_OPERATOR_INFRASTRUCTURE
+                | EGRESS_OPEN_WEB
+                | EGRESS_LOOPBACK_ALLOWED
+        ) {
             return Err(DEST_NO_HOST);
         }
         let located = busbar_kernel::config_validate::ProviderDestination {

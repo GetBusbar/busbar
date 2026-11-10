@@ -106,16 +106,18 @@ fn no_thread_per_connection() {
                 Connection::dial(door.clone(), &support::via(), dial(&far, vec![i; 3])).unwrap(),
             );
         }
-        let during = thread_count();
+        let during_dial = thread_count();
         for (i, c) in conns.iter_mut().enumerate() {
             assert_eq!(gather(c, 3).await, vec![i as u8; 3]);
         }
+        let during_io = thread_count();
         for c in conns {
             c.close();
         }
+        let during = during_dial.max(during_io);
         assert!(
             during <= before,
-            "64 open connections, no new thread: {before} -> {during}"
+            "64 open connections, no new thread: {before} -> dial {during_dial}, io {during_io}"
         );
         assert_eq!(door.threads.lock().unwrap().len(), 1, "one worker thread");
     });

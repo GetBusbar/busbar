@@ -387,10 +387,12 @@ struct Hashes;
 
 impl HashProvider for Hashes {
     fn create_hash(&self, alg: HashAlgorithm) -> Box<dyn HashContext> {
-        let alg = if alg == HashAlgorithm::SHA384 {
-            &digest::SHA384
-        } else {
-            &digest::SHA256
+        let alg = match alg {
+            HashAlgorithm::SHA256 => &digest::SHA256,
+            HashAlgorithm::SHA384 => &digest::SHA384,
+            // The trait has no Result path; a silent wrong hash is worse than a
+            // clear failure.  Only SHA-256 and SHA-384 are used by DTLS 1.2 suites.
+            other => panic!("unsupported DTLS hash algorithm: {other:?}"),
         };
         Box::new(Hash(digest::Context::new(alg)))
     }

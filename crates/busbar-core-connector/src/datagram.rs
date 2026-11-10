@@ -2410,12 +2410,10 @@ impl PortAssociations {
                     text,
                 } => {
                     let answer = f.emit(stream, &bytes, end_of_frame, text, now);
-                    let ok = answer.is_ok();
-                    if let Ok(yielded) = answer {
-                        answered.push((id, Ok(yielded)));
-                    }
-                    emitted.get_or_insert(ok);
-                    (false, None)
+                    let failed = answer.is_err();
+                    emitted.get_or_insert(!failed);
+                    answered.push((id, answer));
+                    (failed, None)
                 }
             };
             while let Some((to, d)) = f.poll_send() {

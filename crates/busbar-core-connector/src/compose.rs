@@ -641,7 +641,17 @@ impl Planned {
             &Dest::Authority(addr.to_string()),
         )
         .map_err(dial_failure)?;
-        let offered_name = tls.as_ref().and(located.name.clone());
+        // When TLS is active the SNI may come from located.name or, if that is None,
+        // from the authority host (see the `host` fallback above).  Record whichever
+        // name was actually offered so ConnFacts.sni is accurate.
+        let offered_name = tls.as_ref().map(|_| {
+            located.name.clone().unwrap_or_else(|| {
+                located
+                    .authority
+                    .rsplit_once(':')
+                    .map_or(located.authority.clone(), |(h, _)| h.to_owned())
+            })
+        });
         let mut conn = Connection::open_dialled(
             door,
             carried,
@@ -840,7 +850,7 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
-            open_deadline: None,
+            open_deadline: Instant::now().checked_add(dial.open_timeout),
             framer_deadline: None,
             sleep: None,
             _slot: None,
@@ -947,7 +957,7 @@ impl Connection {
             early: Vec::new(),
             flushed: 0,
             read_end: false,
-            open_deadline: Some(Instant::now() + accept.handshake_timeout),
+            open_deadline: Instant::now().checked_add(accept.handshake_timeout),
             framer_deadline: None,
             sleep: None,
             _slot: slot,
@@ -1957,6 +1967,9 @@ impl Connection {
             }
             if let Err(e) = tls.process_new_packets() {
                 self.security_error = Some(e.to_string());
+                // Flush the fatal alert that rustls queued (RFC 8446 §6.2) so the
+                // peer sees it before the TCP close.
+                let _ = self.tls_out();
                 return Err(Failure::Refused(format!("tls: {e}")));
             }
         }
