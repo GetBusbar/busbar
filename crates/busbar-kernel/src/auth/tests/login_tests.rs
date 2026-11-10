@@ -64,7 +64,7 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
         crate::config::AuthMethodCfg {
             module: "idp-plugin".into(),
             browser_login: Some(crate::config::BrowserLoginCfg {
-                client_secret: Some(crate::config::SecretRef::env(env)),
+                client_secret: Some(crate::config::secret::fixed_reference(env)),
                 client_id: Some("client-abc".into()),
             }),
             settings: serde_json::Map::new().into(),
@@ -92,7 +92,6 @@ fn browser_login_secret_required_for_redirect_absent_for_credential() {
 #[test]
 fn the_client_secret_is_lent_at_open() {
     const SECRET: &str = "REAL-SECRET-XYZ";
-    std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_LENT");
     let method = &cfg.methods["idp"];
     let mut resolved = busbar_contract::plugin_settings::ResolvedSettings::from(
@@ -103,7 +102,7 @@ fn the_client_secret_is_lent_at_open() {
         &method.module,
         method.browser_login.as_ref(),
         &["client_secret".into()],
-        &crate::config::secret::actual_product_resolver(),
+        &crate::config::secret::fixed_value("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET.as_bytes()),
         &mut resolved,
     )
     .expect("the declared secret is resolved into the settings lent at open");

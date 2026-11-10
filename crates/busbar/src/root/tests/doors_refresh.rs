@@ -82,10 +82,13 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
     let door = Arc::new(Dispatched::open_on(plugin, &settings, dispatcher).unwrap());
     let mut side = Driven::of(door.as_ref()).expect("the actual carrier owns a side");
     let executable = std::env::current_exe().unwrap();
-    let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
-        "command": executable,
-        "args": ["--list", "--exact", "__busbar_supervisor_natural_exit_fixture__"]
-    }))
+    let program = busbar_contract::conn::Program::from_settings(
+        &serde_json::json!({
+            "command": executable,
+            "args": ["--list", "--exact", "__busbar_supervisor_natural_exit_fixture__"]
+        }),
+        &Default::default(),
+    )
     .unwrap();
     let arguments: Vec<AbiStr> = program
         .args
@@ -350,9 +353,12 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
     };
     let door = Dispatched::open_on(plugin, &settings, dispatcher).unwrap();
     let mut side = Driven::of(&door).expect("the actual stdio carrier owns a side");
-    let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
-        "command": "/bin/cat",
-    }))
+    let program = busbar_contract::conn::Program::from_settings(
+        &serde_json::json!({
+            "command": "/bin/cat",
+        }),
+        &Default::default(),
+    )
     .unwrap();
     io.admit(
         side.ticket(),

@@ -51,7 +51,7 @@ fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
 
 fn provider_deploy(env_var: &str) -> ProviderDeploy {
     ProviderDeploy {
-        api_key: SecretRef::env(env_var),
+        api_key: crate::config::secret::descriptor_reference(env_var),
         protocol: None,
         base_url: None,
         error_map: None,
@@ -193,7 +193,7 @@ fn test_health_typo_rejected_at_parse() {
 
 #[test]
 fn test_tls_typo_and_removed_keys_rejected_at_parse() {
-    let bad = "cert: { file: /c.pem }\nkey: { file: /k.pem }\nclient_c: { file: /ca.pem }";
+    let bad = "cert: { module: fixture-source, settings: { slot: /c.pem } }\nkey: { module: fixture-source, settings: { slot: /k.pem } }\nclient_c: { module: fixture-source, settings: { slot: /ca.pem } }";
     let err = serde_yaml::from_str::<TlsCfg>(bad)
         .expect_err("a typo under tls: must be rejected at parse (deny_unknown_fields)");
     let msg = err.to_string();
@@ -207,13 +207,19 @@ fn test_tls_typo_and_removed_keys_rejected_at_parse() {
         .expect_err("the removed cert_file/key_file keys must be rejected");
     assert!(err.to_string().contains("unknown field"), "{err}");
 
-    let good = "cert: { file: /c.pem }\nkey: { env: TLS_KEY_PEM }\nclient_ca: { file: /ca.pem }";
+    let good = "cert: { module: fixture-source, settings: { slot: /c.pem } }\nkey: { module: fixture-source, settings: { slot: TLS_KEY_PEM } }\nclient_ca: { module: fixture-source, settings: { slot: /ca.pem } }";
     let cfg = serde_yaml::from_str::<TlsCfg>(good).expect("well-formed tls config parses");
-    assert_eq!(cfg.cert.file_path(), Some("/c.pem"));
-    assert_eq!(cfg.key.env_var(), Some("TLS_KEY_PEM"));
     assert_eq!(
-        cfg.client_ca.as_ref().and_then(|c| c.file_path()),
-        Some("/ca.pem")
+        cfg.cert,
+        crate::config::secret::descriptor_reference("/c.pem")
+    );
+    assert_eq!(
+        cfg.key,
+        crate::config::secret::descriptor_reference("TLS_KEY_PEM")
+    );
+    assert_eq!(
+        cfg.client_ca.as_ref(),
+        Some(&crate::config::secret::descriptor_reference("/ca.pem"))
     );
 }
 
@@ -298,7 +304,7 @@ fn test_config_without_pools_parses() {
 listen: "0.0.0.0:8080"
 providers:
   acme:
-    api_key: { env: ACME_KEY }
+    api_key: { module: fixture-source, settings: { slot: ACME_KEY } }
 models:
   widget:
     provider: acme
@@ -307,7 +313,10 @@ models:
     let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("config without pools must parse");
     assert!(deploy.pools.pools.is_empty());
     assert!(deploy.models.contains_key("widget"));
-    assert_eq!(deploy.providers["acme"].api_key.env_var(), Some("ACME_KEY"));
+    assert_eq!(
+        deploy.providers["acme"].api_key,
+        crate::config::secret::descriptor_reference("ACME_KEY")
+    );
 }
 
 #[test]
@@ -340,7 +349,10 @@ fn test_provider_path_override_resolves() {
         "config.yaml provider health must resolve into ProviderCfg"
     );
 
-    assert_eq!(cfg.providers["zai-payg"].api_key.env_var(), Some("ZAI_KEY"));
+    assert_eq!(
+        cfg.providers["zai-payg"].api_key,
+        crate::config::secret::descriptor_reference("ZAI_KEY")
+    );
 }
 
 #[test]
@@ -377,9 +389,9 @@ fn admin_plane_boot_guard() {
             .insert("p".to_string(), provider_deploy("P_KEY"));
         deploy.admin_listen = admin_listen.to_string();
         deploy.admin_tls = client_ca.map(|ca| TlsCfg {
-            cert: SecretRef::file("cert.pem"),
-            key: SecretRef::file("key.pem"),
-            client_ca: Some(SecretRef::file(ca)),
+            cert: crate::config::secret::descriptor_reference("cert.pem"),
+            key: crate::config::secret::descriptor_reference("key.pem"),
+            client_ca: Some(crate::config::secret::descriptor_reference(ca)),
         });
         deploy.admin_require_mtls = require_mtls;
         resolve(&deploy, &defs)
@@ -1102,7 +1114,10 @@ fn test_resolve_provider_from_def() {
         .expect("z.ai should be in resolved providers");
     assert_eq!(provider_cfg.dialect(), CATALOG_PROTOCOL);
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
-    assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
+    assert_eq!(
+        provider_cfg.api_key,
+        crate::config::secret::descriptor_reference("ZAI_KEY")
+    );
     assert_eq!(error_class(provider_cfg, "1113"), Some("billing"));
     assert_eq!(error_class(provider_cfg, "1302"), Some("rate_limit"));
 }
@@ -1221,7 +1236,10 @@ fn test_resolve_override_wins() {
         provider_cfg.base_url, "https://override.example.com",
         "base_url override should win"
     );
-    assert_eq!(provider_cfg.api_key.env_var(), Some("CUSTOM_KEY"));
+    assert_eq!(
+        provider_cfg.api_key,
+        crate::config::secret::descriptor_reference("CUSTOM_KEY")
+    );
     assert_eq!(error_class(provider_cfg, "9999"), Some("client_error"));
 }
 
@@ -1344,7 +1362,9 @@ fn breaker_trip_default_matches_an_empty_config_object() {
 fn test_debug_of_full_config_never_shows_resolved_secrets() {
     std::env::set_var("BUSBAR_T_DEBUG_SECRET", "SECRET-resolved-value-zzz");
     let auth = crate::config::AuthDeployCfg {
-        signing_key: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+        signing_key: Some(crate::config::secret::descriptor_reference(
+            "BUSBAR_T_DEBUG_SECRET",
+        )),
         chain: vec![KEYS_MODULE.to_string()],
         admin_auth: vec![crate::config::operator_provider().to_string()],
         role_bindings: RoleBindings::new(),
@@ -1359,14 +1379,16 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         crate::config::IdentityProviderCfg {
             module: crate::config::operator_provider().to_string(),
             max_admin_scope: None,
-            token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
+            token: Some(crate::config::secret::descriptor_reference(
+                "BUSBAR_T_DEBUG_SECRET",
+            )),
             browser_login: None,
             settings: serde_json::Map::new().into(),
         },
     );
     deploy.tls = Some(TlsCfg {
-        cert: SecretRef::file("/run/secrets/cert.pem"),
-        key: SecretRef::env("BUSBAR_T_DEBUG_SECRET"),
+        cert: crate::config::secret::descriptor_reference("/run/secrets/cert.pem"),
+        key: crate::config::secret::descriptor_reference("BUSBAR_T_DEBUG_SECRET"),
         client_ca: None,
     });
     deploy
@@ -1391,7 +1413,7 @@ fn test_limits_absent_block_yields_historical_defaults() {
 listen: "0.0.0.0:8080"
 providers:
   acme:
-    api_key: { env: ACME_KEY }
+    api_key: { module: fixture-source, settings: { slot: ACME_KEY } }
 models:
   widget:
     provider: acme
@@ -1538,7 +1560,7 @@ fn test_request_body_size_couples_ingress_and_translate() {
 listen: "0.0.0.0:8080"
 providers:
   acme:
-    api_key: { env: ACME_KEY }
+    api_key: { module: fixture-source, settings: { slot: ACME_KEY } }
 models:
   widget:
     provider: acme
@@ -1558,144 +1580,93 @@ limits:
 }
 
 #[test]
-fn test_secret_ref_sugar_desugars_to_builtin_modules() {
-    let e: SecretRef = serde_yaml::from_str("env: MY_KEY").expect("env sugar parses");
-    assert_eq!(e, SecretRef::env("MY_KEY"));
-    assert_eq!(e.module, "env");
-    assert_eq!(e.env_var(), Some("MY_KEY"));
-    assert_eq!(e.file_path(), None);
-    assert_eq!(e.describe(), "env:MY_KEY");
-
-    let f: SecretRef =
-        serde_yaml::from_str("file: /run/secrets/tls.pem").expect("file sugar parses");
-    assert_eq!(f, SecretRef::file("/run/secrets/tls.pem"));
-    assert_eq!(f.module, "file");
-    assert_eq!(f.file_path(), Some("/run/secrets/tls.pem"));
-    assert_eq!(f.env_var(), None);
-    assert_eq!(f.describe(), "file:/run/secrets/tls.pem");
+fn test_secret_ref_shorthand_uses_only_its_admitted_owner() {
+    use crate::config::secret::{fixture_authored, fixture_sources};
+    let sources = fixture_sources();
+    for (word, owner, other) in [
+        ("lookup", "first-source", "second-source"),
+        ("artifact", "second-source", "first-source"),
+    ] {
+        let reference = fixture_authored(&format!("{word}: private-descriptor")).unwrap();
+        assert_eq!(
+            reference,
+            sources.get(word).unwrap().reference("private-descriptor")
+        );
+        assert_eq!(reference.source_module(), Some(owner));
+        assert_eq!(
+            serde_json::to_value(&reference.source().unwrap().settings).unwrap(),
+            serde_json::json!({"slot":"private-descriptor"})
+        );
+        assert_ne!(reference.source_module(), Some(other));
+        assert_eq!(reference.describe(), format!("secret module '{owner}'"));
+    }
 }
 
 #[test]
 fn test_secret_ref_canonical_form_parses() {
-    let v: SecretRef = serde_yaml::from_str("module: vault\nsettings:\n  path: kv/prod/api\n")
-        .expect("canonical form parses");
-    assert_eq!(v.module, "vault");
+    let v: SecretRef =
+        serde_yaml::from_str("module: independent-source\nsettings:\n  slot: descriptor\n")
+            .expect("canonical form parses");
+    assert_eq!(v.source_module(), Some("independent-source"));
     assert_eq!(
-        v.settings.get("path").and_then(|p| p.as_str()),
-        Some("kv/prod/api")
+        serde_json::to_value(&v.source().unwrap().settings).unwrap(),
+        serde_json::json!({"slot":"descriptor"})
     );
-    assert_eq!(v.env_var(), None, "a non-env module has no env_var");
-    assert_eq!(v.describe(), "secret module 'vault'");
-
-    let bare: SecretRef = serde_yaml::from_str("module: vault").expect("settings default empty");
-    assert!(bare.settings.is_empty());
+    assert!(!v.is_none(), "a canonical source is not keyless");
+    assert_eq!(v.describe(), "secret module 'independent-source'");
+    let bare: SecretRef =
+        serde_yaml::from_str("module: independent-source").expect("settings default empty");
+    assert!(bare.source().unwrap().settings.is_empty());
 }
 
 #[test]
 fn test_secret_ref_malformed_shapes_rejected() {
-    let err = serde_yaml::from_str::<SecretRef>("module: env\nenv: FOO")
-        .expect_err("module + sugar must error");
-    assert!(err.to_string().contains("not both"), "{err}");
-
-    let err = serde_yaml::from_str::<SecretRef>("env: FOO\nfile: /p")
-        .expect_err("two sugar keys must error");
-    assert!(err.to_string().contains("exactly one"), "{err}");
-
-    let err = serde_yaml::from_str::<SecretRef>("env: FOO\nsettings: { a: 1 }")
-        .expect_err("sugar with settings must error");
-    assert!(err.to_string().contains("no `settings:`"), "{err}");
-
+    use crate::config::secret::fixture_authored;
+    for text in [
+        "module: first-source\nlookup: FOO",
+        "lookup: FOO\nartifact: /p",
+        "lookup: FOO\nsettings: {a: 1}",
+    ] {
+        let err = fixture_authored(text).expect_err("mixed reference forms refuse");
+        assert!(
+            err.to_string().contains("unknown reference member"),
+            "{err}"
+        );
+    }
     let err =
-        serde_yaml::from_str::<SecretRef>("keyring: FOO").expect_err("unknown key must error");
+        fixture_authored("unadmitted: private-descriptor").expect_err("unknown shorthand refuses");
     let msg = err.to_string();
     assert!(
-        msg.contains("unknown field") && msg.contains("keyring"),
+        msg.contains("not declared") && msg.contains("unadmitted"),
         "{msg}"
     );
-
-    let err =
-        serde_yaml::from_str::<SecretRef>("env: \"\"").expect_err("empty sugar value must error");
+    let err = fixture_authored("lookup: ''").expect_err("empty shorthand refuses");
     assert!(err.to_string().contains("non-empty"), "{err}");
-
-    let err =
-        serde_yaml::from_str::<SecretRef>("module: \"\"").expect_err("empty module must error");
-    assert!(err.to_string().contains("non-empty"), "{err}");
-
-    let err = serde_yaml::from_str::<SecretRef>("{}").expect_err("empty map must error");
-    assert!(err.to_string().contains("needs `module:`"), "{err}");
-
-    assert!(serde_yaml::from_str::<SecretRef>("\"sk-raw-secret\"").is_err());
+    let err = fixture_authored("module: ''").expect_err("empty module refuses");
+    assert!(err.to_string().contains("nonempty"), "{err}");
+    let err = fixture_authored("{}").expect_err("empty map refuses");
+    assert!(err.to_string().contains("needs a nonempty module"), "{err}");
+    assert!(fixture_authored("\"sk-raw-secret\"").is_err());
 }
 
 #[test]
-fn test_secret_ref_builtin_resolution_fail_closed() {
-    use crate::config::secret::actual_product_resolver;
-
-    std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
+fn test_secret_ref_text_resolution_and_unknown_source_fail_closed() {
+    use crate::config::secret::{fixed_reference, fixed_value, SecretResolver};
+    let reference = fixed_reference("trim-source");
     assert_eq!(
-        actual_product_resolver()
-            .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
-            .unwrap(),
-        busbar_contract::redacted::Secret::new(b"s3cr3t-value".to_vec())
-    );
-    std::env::remove_var("BUSBAR_T_SECRET_ENV_OK");
-
-    let err = actual_product_resolver()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_UNSET"))
-        .unwrap_err();
-    assert!(
-        err.contains("BUSBAR_T_SECRET_ENV_UNSET") && err.contains("unset"),
-        "{err}"
-    );
-
-    std::env::set_var("BUSBAR_T_SECRET_ENV_EMPTY", "");
-    let err = actual_product_resolver()
-        .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_EMPTY"))
-        .unwrap_err();
-    std::env::remove_var("BUSBAR_T_SECRET_ENV_EMPTY");
-    assert!(err.contains("EMPTY"), "{err}");
-
-    let dir = std::env::temp_dir();
-    let path = dir.join(format!("busbar-secret-test-{}", std::process::id()));
-    std::fs::write(&path, "file-secret\n").unwrap();
-    let sref = SecretRef::file(path.to_str().unwrap());
-    assert_eq!(
-        actual_product_resolver()
-            .resolve_at_config(
-                &sref,
-                &busbar_contract::config_time::ConfigScope::config_time()
-            )
-            .unwrap(),
-        busbar_contract::redacted::Secret::new(b"file-secret\n".to_vec())
-    );
-    assert_eq!(
-        actual_product_resolver()
+        fixed_value("trim-source", b"file-secret\n")
             .resolve_string_at_config(
-                &sref,
+                &reference,
                 &busbar_contract::config_time::ConfigScope::config_time()
             )
             .unwrap(),
         busbar_contract::redacted::Secret::new("file-secret".to_string())
     );
-    std::fs::remove_file(&path).unwrap();
-
-    let missing = SecretRef::file("/nonexistent/busbar-secret-test");
-    assert!(actual_product_resolver()
-        .resolve_at_config(
-            &missing,
-            &busbar_contract::config_time::ConfigScope::config_time()
-        )
-        .is_err());
-
-    let mut settings = serde_json::Map::new();
-    settings.insert("path".to_string(), serde_json::Value::String("x".into()));
-    let unknown = SecretRef {
-        module: "vault".to_string(),
-        settings,
-    };
-    let err = actual_product_resolver().resolve(&unknown).unwrap_err();
+    let err = SecretResolver::builtins_only()
+        .resolve(&fixed_reference("unknown-source"))
+        .unwrap_err();
     assert!(
-        err.contains("vault") && err.contains("fail-closed"),
+        err.contains("unknown-source") && err.contains("fail-closed"),
         "{err}"
     );
 }
@@ -1743,7 +1714,7 @@ fn serde_default_fns_return_their_documented_constants() {
 #[test]
 fn an_omitted_provider_protocol_names_no_dialect_in_the_kernel() {
     let p: ProviderCfg =
-        serde_yaml::from_str("base_url: https://x.example\napi_key: {env: K}\nerror_map: {}\n")
+        serde_yaml::from_str("base_url: https://x.example\napi_key: { module: fixture-source, settings: { slot: K } }\nerror_map: {}\n")
             .expect("a provider entry with no protocol parses");
     assert_eq!(
         p.protocol, "",
@@ -2178,7 +2149,7 @@ fn test_resolve_projects_admin_auth_names() {
     deploy.auth = Some(auth);
 
     deploy.identity_providers = serde_yaml::from_str(&format!(
-        "{op}: {{ module: {op}, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+        "{op}: {{ module: {op}, token: {{ module: fixture-source, settings: {{ slot: BUSBAR_ADMIN_TOKEN }} }} }}\n\
          ad: {{ module: ad, max_admin_scope: read-only }}\n",
     ))
     .expect("identity-providers parse");
@@ -2186,11 +2157,10 @@ fn test_resolve_projects_admin_auth_names() {
     assert_eq!(cfg.admin_auth, [crate::config::operator_provider(), "ad"]);
 
     assert_eq!(
-        cfg.auth
-            .as_ref()
-            .and_then(|a| a.admin_token_ref())
-            .and_then(|t| t.env_var()),
-        Some("BUSBAR_ADMIN_TOKEN")
+        cfg.auth.as_ref().and_then(|a| a.admin_token_ref()),
+        Some(&crate::config::secret::descriptor_reference(
+            "BUSBAR_ADMIN_TOKEN"
+        ))
     );
 
     let mut deploy = base_deploy();
@@ -2225,7 +2195,7 @@ fn test_auth_method_browser_login_parses() {
 test-idp-double:
   module: oidc-plugin
   browser_login:
-    client_secret: { env: BUSBAR_OIDC_SECRET }
+    client_secret: { module: fixture-source, settings: { slot: BUSBAR_OIDC_SECRET } }
     client_id: busbar-web
   settings:
     issuer: https://idp.example/
@@ -2255,8 +2225,10 @@ test-idp-double:
     assert_eq!(bl.client_id.as_deref(), Some("busbar-web"));
 
     assert_eq!(
-        bl.client_secret.as_ref().and_then(|s| s.env_var()),
-        Some("BUSBAR_OIDC_SECRET")
+        bl.client_secret.as_ref(),
+        Some(&crate::config::secret::descriptor_reference(
+            "BUSBAR_OIDC_SECRET"
+        ))
     );
 
     assert_eq!(
@@ -2286,7 +2258,7 @@ fn test_browser_login_deny_unknown_field() {
 oidc:
   module: oidc-plugin
   browser_login:
-    client_secret: { env: X }
+    client_secret: { module: fixture-source, settings: { slot: X } }
     client_idd: oops
 ";
     let err = serde_yaml::from_str::<crate::config::IdentityProviders>(yaml)
@@ -2455,7 +2427,11 @@ advanced:
         "advanced.upstream_h2_prior_knowledge must reach cfg.limits"
     );
 
-    for selector in ["false", "true", "{file: old-overlay.json}"] {
+    for selector in [
+        "false",
+        "true",
+        "{ module: fixture-source, settings: { slot: old-overlay.json } }",
+    ] {
         let retired = format!(
             "providers: {{}}\nmodels: {{}}\nconfig: {{locked: true, overlay: {selector}}}\n"
         );
@@ -2662,7 +2638,7 @@ fn core_sections_parse_directly_and_are_named_in_unknown_field_errors() {
     let empty = parse("oauth_as: null\ncredentials: null\n").expect("null optional sections");
     assert!(empty.oauth_as.is_none());
     assert!(empty.credentials.at_rest.is_none());
-    let credentials = parse("credentials:\n  at_rest:\n    key: { env: TEST_KEY }\n")
+    let credentials = parse("credentials:\n  at_rest:\n    key: { module: fixture-source, settings: { slot: TEST_KEY } }\n")
         .expect("current credential schema");
     assert!(credentials.credentials.at_rest.is_some());
     let typo = parse("credentials:\n  unknowable: true\n").expect_err("strict credential schema");
@@ -2740,7 +2716,7 @@ struct ProvidersDoc {
 #[test]
 fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
     let doc: ProvidersDoc = serde_yaml::from_str(
-        "providers:\n  p:\n    api_key: {env: K}\n    OpenAI-Organization: org-abc\n    \
+        "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n    OpenAI-Organization: org-abc\n    \
          api-version: 2024-10-21\n    path: /v1/x\n    organization: o\n",
     )
     .expect("reads");
@@ -2771,8 +2747,10 @@ fn a_deployments_options_ride_the_resolved_table_under_their_wire_names() {
         )
     );
 
-    let plain: ProvidersDoc =
-        serde_yaml::from_str("providers:\n  p:\n    api_key: {env: K}\n").expect("reads");
+    let plain: ProvidersDoc = serde_yaml::from_str(
+        "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n",
+    )
+    .expect("reads");
     let plain = merge_provider_fallback(
         &provider_def("openai", "https://api.example.com"),
         &plain.providers["p"],
@@ -2853,7 +2831,7 @@ fn an_unused_catalog_still_requires_valid_core_fields() {
 #[test]
 fn an_option_written_twice_is_refused() {
     let e = serde_yaml::from_str::<ProvidersDoc>(
-        "providers:\n  p:\n    api_key: {env: K}\n    x-a: 1\n    x-a: 2\n",
+        "providers:\n  p:\n    api_key: { module: fixture-source, settings: { slot: K } }\n    x-a: 1\n    x-a: 2\n",
     )
     .err()
     .map(|e| e.to_string())

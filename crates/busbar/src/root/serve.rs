@@ -1091,9 +1091,22 @@ impl DoorApply {
             }
             None => None,
         };
-        let owned = sections
+        let owned = match sections
             .map(|sections| owned_sections(&self.served_facts, sections))
-            .unwrap_or_default();
+            .transpose()
+        {
+            Ok(owned) => owned.unwrap_or_default(),
+            Err(error) => {
+                tracing::error!(%error, "refusing invalid plane source projection");
+                app.plane_refresh.record(
+                    &self.facts.plane,
+                    self.served_facts.section,
+                    now.generation,
+                    Some(busbar_kernel::state::activation::RefreshFailure::InvalidProjection),
+                );
+                return;
+            }
+        };
 
         let handed = match sections {
             Some(sections) if !section.is_null() => {
@@ -1325,7 +1338,8 @@ impl DoorAppliers {
             }
             let now = p.current();
             let next = now.generation + 1;
-            let owned = match owned_bytes(&owned_sections(facts, sections)) {
+            let owned = match owned_sections(facts, sections).and_then(|owned| owned_bytes(&owned))
+            {
                 Ok(owned) => owned,
                 Err(e) => {
                     tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
@@ -2110,7 +2124,7 @@ pub(crate) async fn compose_planes_over(
                 .ok_or("initial plane caller is unbound")?;
             let settings = settings_of(&facts, section, sections);
             let walked = walked_section(&facts, section, sections);
-            let owned = owned_sections(&facts, sections);
+            let owned = owned_sections(&facts, sections)?;
             let dialects = egress
                 .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
                 .unwrap_or_default();
@@ -2171,7 +2185,7 @@ pub(crate) async fn compose_planes_over(
         let settings = settings_of(&served_facts, section, sections);
         let walked = walked_section(&served_facts, section, sections);
 
-        let owned = owned_sections(&served_facts, sections);
+        let owned = owned_sections(&served_facts, sections)?;
 
         let dialects = egress
             .map(|e| crate::root::door_steps::dialect_facts(&walked, e.reach.providers))
@@ -2677,16 +2691,19 @@ fn arm_probes(
 fn owned_sections(
     facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
-) -> serde_json::Map<String, serde_json::Value> {
-    facts
-        .owns
-        .iter()
-        .filter_map(|name| {
-            let value = serde_json::to_value(sections.get(name)?).ok()?;
-            let value = busbar_kernel::config::filled::plane_bound(&[name], value);
-            Some(((*name).to_string(), value))
-        })
-        .collect()
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut owned = serde_json::Map::new();
+    for name in &facts.owns {
+        let Some(section) = sections.get(name) else {
+            continue;
+        };
+        let value = serde_json::to_value(section)
+            .map_err(|_| format!("{name}: owned section is not JSON"))?;
+        let value = busbar_kernel::config::filled::plane_bound(&[name], value)
+            .map_err(|error| format!("{name}: {error}"))?;
+        owned.insert((*name).to_string(), value);
+    }
+    Ok(owned)
 }
 
 fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<u8>, String> {

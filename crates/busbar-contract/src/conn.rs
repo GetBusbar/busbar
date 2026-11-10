@@ -9,8 +9,8 @@ use std::task::{Context, Poll};
 
 use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
-use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
+use crate::transport::wire::{WireFault, WireStatusClass};
 
 /// The frozen bytes an [`OpenDesc`] carries its body in.
 pub use bytes::Bytes;
@@ -710,8 +710,8 @@ pub struct Program {
     pub args: Vec<String>,
     /// Its environment entries written as values, name and value, in the settings' order.
     pub env: Vec<(String, String)>,
-    /// Its environment entries written as SECRET REFERENCES (`{ env: X }`, `{ file: P }`, a
-    /// template), name and reference, in the settings' order. The host resolves each at the SPAWN,
+    /// Its environment entries written as declared source references or captured templates,
+    /// name and reference, in the settings' order. The host resolves each at the SPAWN,
     /// never earlier: the reference is what a plane is handed and what the table holds, and the
     /// value exists only in the child's environment.
     pub env_refs: Vec<(String, crate::secret_ref::SecretRef)>,
@@ -773,7 +773,10 @@ pub enum ProgramRefused {
 
 impl Program {
     /// A REGISTRATION's program ([`crate::section::MEMBER_PROGRAM`]): its `command`, `args`, `cwd`
-    pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
+    pub fn of_member(
+        registration: &serde_json::Value,
+        sources: &crate::secret_ref::Sugars,
+    ) -> Option<Result<Self, ProgramRefused>> {
         let map = registration.as_object()?;
         map.get("command")?;
         let picked = crate::plugin_settings::Tree(serde_json::Value::Object(
@@ -782,11 +785,14 @@ impl Program {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         ));
-        Some(Self::from_settings(&picked.0))
+        Some(Self::from_settings(&picked.0, sources))
     }
 
     /// The settings' spelling of a program: `{command, args?, env?, cwd?}` — paths are absolute,
-    pub fn from_settings(value: &serde_json::Value) -> Result<Self, ProgramRefused> {
+    pub fn from_settings(
+        value: &serde_json::Value,
+        sources: &crate::secret_ref::Sugars,
+    ) -> Result<Self, ProgramRefused> {
         let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
         if map
             .keys()
@@ -826,7 +832,7 @@ impl Program {
                     serde_json::Value::String(text) => env.push((k.clone(), text.clone())),
                     serde_json::Value::Object(_) => env_refs.push((
                         k.clone(),
-                        serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone())
+                        crate::secret_ref::context::deserialize(v.clone(), sources)
                             .map_err(|_| ProgramRefused::Env)?,
                     )),
                     _ => return Err(ProgramRefused::Env),

@@ -88,7 +88,7 @@ fn interpret(settings: &Settings, needs: &[ReadNeed]) -> Result<Vec<ListenerClai
         let path = &need.target_from;
         let block = path
             .split('.')
-            .try_fold(&settings.0 .0, |value, key| value.get(key));
+            .try_fold(&settings.0.0, |value, key| value.get(key));
         let binding = block.map(|block| {
             let listen = block.get("listen").and_then(serde_json::Value::as_str)
                 .ok_or_else(|| format!("{path}.listen: not set"))?

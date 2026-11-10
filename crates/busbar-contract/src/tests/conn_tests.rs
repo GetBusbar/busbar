@@ -21,7 +21,7 @@ pub(super) fn insert_admitted() {
 
 #[test]
 fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
-    use std::sync::{mpsc, Barrier};
+    use std::sync::{Barrier, mpsc};
 
     let s = Arc::new(slab());
     let original = s.insert(A, NEED, "original").unwrap();
@@ -77,8 +77,8 @@ fn forgetting_includes_an_insert_already_admitted_for_the_owner() {
 
 #[test]
 fn rejected_and_removed_states_are_dropped_outside_slab_guards() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Weak;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct State {
         slab: Weak<ConnSlab<State>>,
@@ -181,7 +181,7 @@ fn an_undeclared_need_opens_nothing() {
 #[test]
 fn a_program_is_read_from_its_settings_and_refused_when_it_cannot_be_spawned_as_written() {
     use super::{Program, ProgramRefused};
-    let read = |v: serde_json::Value| Program::from_settings(&v);
+    let read = |v: serde_json::Value| Program::from_settings(&v, &Default::default());
     assert_eq!(
         read(serde_json::json!({
             "command": "/usr/bin/server",
@@ -266,14 +266,24 @@ fn a_programs_environment_never_prints() {
 #[test]
 fn a_program_working_directory_is_explicit_absolute_and_part_of_its_identity() {
     use super::{Program, ProgramRefused};
-    let base = Program::from_settings(&serde_json::json!({"command": "/bin/pwd"})).unwrap();
+    let base = Program::from_settings(
+        &serde_json::json!({"command": "/bin/pwd"}),
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(base.cwd, None);
     assert_eq!(
-        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": null})),
+        Program::from_settings(
+            &serde_json::json!({"command": "/bin/pwd", "cwd": null}),
+            &Default::default()
+        ),
         Ok(base.clone())
     );
-    let at =
-        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv"})).unwrap();
+    let at = Program::from_settings(
+        &serde_json::json!({"command": "/bin/pwd", "cwd": "/srv"}),
+        &Default::default(),
+    )
+    .unwrap();
     assert_eq!(at.cwd.as_deref(), Some("/srv"));
     assert_ne!(at, base);
     for cwd in [
@@ -284,12 +294,18 @@ fn a_program_working_directory_is_explicit_absolute_and_part_of_its_identity() {
         serde_json::json!("/srv "),
     ] {
         assert_eq!(
-            Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": cwd})),
+            Program::from_settings(
+                &serde_json::json!({"command": "/bin/pwd", "cwd": cwd}),
+                &Default::default()
+            ),
             Err(ProgramRefused::Cwd)
         );
     }
     assert_eq!(
-        Program::from_settings(&serde_json::json!({"command": "/bin/pwd", "cwd": "/srv\0bad"})),
+        Program::from_settings(
+            &serde_json::json!({"command": "/bin/pwd", "cwd": "/srv\0bad"}),
+            &Default::default()
+        ),
         Err(ProgramRefused::Nul)
     );
 }
@@ -298,15 +314,18 @@ fn a_program_working_directory_is_explicit_absolute_and_part_of_its_identity() {
 fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
     use super::{Program, ProgramRefused};
     assert_eq!(
-        Program::of_member(&serde_json::json!({
-            "transport": "pipe",
-            "command": "/usr/bin/server",
-            "args": ["--serve"],
-            "env": {"LEVEL": "debug"},
-            "pin": {"mechanism": "unpinned"},
-            "tools_allow": ["a"],
-            "cwd": "/srv"
-        })),
+        Program::of_member(
+            &serde_json::json!({
+                "transport": "pipe",
+                "command": "/usr/bin/server",
+                "args": ["--serve"],
+                "env": {"LEVEL": "debug"},
+                "pin": {"mechanism": "unpinned"},
+                "tools_allow": ["a"],
+                "cwd": "/srv"
+            }),
+            &Default::default()
+        ),
         Some(Ok(Program {
             command: "/usr/bin/server".into(),
             cwd: Some("/srv".into()),
@@ -316,13 +335,22 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
         }))
     );
     assert_eq!(
-        Program::of_member(&serde_json::json!({"url": "https://up.example/rpc", "pin": {}})),
+        Program::of_member(
+            &serde_json::json!({"url": "https://up.example/rpc", "pin": {}}),
+            &Default::default()
+        ),
         None,
         "a registration with no command is no member"
     );
-    assert_eq!(Program::of_member(&serde_json::json!(["/bin/cat"])), None);
     assert_eq!(
-        Program::of_member(&serde_json::json!({"command": "cat", "pin": {}})),
+        Program::of_member(&serde_json::json!(["/bin/cat"]), &Default::default()),
+        None
+    );
+    assert_eq!(
+        Program::of_member(
+            &serde_json::json!({"command": "cat", "pin": {}}),
+            &Default::default()
+        ),
         Some(Err(ProgramRefused::NotAbsolute))
     );
     assert!(crate::section::member_program("settings.*"));
@@ -352,42 +380,59 @@ fn an_owned_path_is_its_own_namespace() {
 
 /// A program's `env` entry written as a secret REFERENCE is held as the reference
 #[test]
-fn a_programs_env_refsironment_is_held_as_its_reference() {
-    let p = Program::from_settings(&serde_json::json!({
+fn a_programs_environment_is_held_as_its_declared_reference() {
+    use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+    use crate::secret_ref::{SecretRef, Sugars};
+    let mut sources = Sugars::default();
+    sources
+        .declare(
+            "fixture-source",
+            &[
+                (REWRITE_SUGAR, "lookup".into(), "slot".into()),
+                (REWRITE_SUGAR_ROLE, "lookup".into(), SUGAR_ROLE_FILL.into()),
+            ],
+        )
+        .unwrap();
+    let template = SecretRef::template("Bearer ${SECRET_VAR}", &sources).unwrap();
+    let value = serde_json::json!({
         "command": "/usr/bin/server",
         (crate::conn::PROGRAM_ENV_KEY): {
-            "PLAIN": "v",
-            "KEY": {(crate::secret_ref::SECRET_MODULE_ENV): "SECRET_VAR"},
-            "T": crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")
+            "PLAIN": "v", "KEY": {"lookup": "SECRET_VAR"}, "T": template,
         }
-    }))
-    .expect("a program");
+    });
+    assert_eq!(
+        Program::from_settings(&value, &Sugars::default()),
+        Err(ProgramRefused::Env)
+    );
+    let p = Program::from_settings(&value, &sources).expect("declared source admits program");
     assert_eq!(p.env, vec![("PLAIN".to_owned(), "v".to_owned())]);
     assert_eq!(
         p.env_refs,
         vec![
             (
-                "KEY".to_owned(),
-                crate::secret_ref::SecretRef::env("SECRET_VAR")
+                "KEY".into(),
+                sources
+                    .reference_for_role(SUGAR_ROLE_FILL, "SECRET_VAR")
+                    .unwrap()
             ),
-            (
-                "T".to_owned(),
-                crate::secret_ref::SecretRef::template("Bearer ${SECRET_VAR}")
-            ),
+            ("T".into(), template),
         ]
     );
     let printed = format!("{p:?}");
-    assert!(printed.contains("KEY = env:SECRET_VAR"), "{printed}");
+    assert!(printed.contains("KEY"), "{printed}");
+    assert!(!printed.contains("SECRET_VAR"), "{printed}");
     for bad in [
         serde_json::json!(7),
         serde_json::json!(["x"]),
-        serde_json::json!({"nope": 1}),
+        serde_json::json!({"nope":1}),
     ] {
         assert_eq!(
-            Program::from_settings(&serde_json::json!({
-                "command": "/bin/x",
-                (crate::conn::PROGRAM_ENV_KEY): {"K": bad}
-            })),
+            Program::from_settings(
+                &serde_json::json!({
+                    "command":"/bin/x", (crate::conn::PROGRAM_ENV_KEY): {"K":bad}
+                }),
+                &sources
+            ),
             Err(ProgramRefused::Env)
         );
     }

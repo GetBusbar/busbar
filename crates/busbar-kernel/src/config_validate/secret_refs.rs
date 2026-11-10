@@ -119,17 +119,19 @@ pub(crate) fn registry_refusal_with(
         if r.is_none() {
             continue;
         }
-        if let Some(axis) = axis.filter(|a| a.answers(&r.module)) {
-            let settings = serde_json::Value::Object(r.settings.clone());
-            checked_reference_result(&what, axis.check(&r.module, &settings))?;
+        let module = r
+            .source_module()
+            .expect("non-keyless reference has a source");
+        if let Some(axis) = axis.filter(|a| a.answers(module)) {
+            checked_reference_result(&what, r.check_sources(axis))?;
         }
-        let linked = axis.is_some_and(|a| a.linked(&r.module));
+        let linked = axis.is_some_and(|a| a.linked(module));
         let row = if linked {
             None
         } else {
-            registry.resolve(&r.module)
+            registry.resolve(module)
         };
-        reference_module_row(&what, &r.module, linked, row)?;
+        reference_module_row(&what, module, linked, row)?;
     }
     Ok(())
 }
@@ -137,7 +139,10 @@ pub(crate) fn registry_refusal_with(
 pub(crate) fn builtins_resolve(cfg: &RootCfg) -> Result<(), String> {
     let builtins = crate::config::secret::SecretResolver::builtins_only();
     for (what, r) in boot_resolved_secret_refs(cfg) {
-        if !crate::config::secret::is_linked_secret(&r.module) {
+        if !r
+            .source_module()
+            .is_some_and(crate::config::secret::is_linked_secret)
+        {
             continue;
         }
         if let Err(e) =

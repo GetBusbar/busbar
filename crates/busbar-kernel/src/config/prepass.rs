@@ -372,15 +372,15 @@ mod source_declarations_tests {
             };
             let parsed = read(&sources).unwrap();
             let key = parsed.credentials.at_rest.unwrap().key;
-            assert_eq!(key.module, owner);
-            assert_eq!(key.settings[member], "descriptor");
+            assert_eq!(key.source_module(), Some(owner));
+            assert_eq!(key, sources.get(word).unwrap().reference("descriptor"));
             assert_eq!(
                 parsed.identity_providers["external"]
                     .token
                     .as_ref()
                     .unwrap()
-                    .module,
-                owner
+                    .source_module(),
+                Some(owner)
             );
             let error = read(&Sugars::default()).unwrap_err().to_string();
             assert!(error.contains("not declared"), "{error}");

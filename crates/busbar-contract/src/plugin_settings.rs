@@ -5,6 +5,8 @@
 //! Generic document serialization is intentionally supported; it is not an authorization to
 //! reconstruct and interpret an owner's schema in host code.
 
+mod owned;
+
 use serde::de::{self, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
@@ -144,8 +146,9 @@ impl Settings {
         for path in &paths {
             for at in fields::declared_references(&held.0 .0, path) {
                 let slot = fields::value_at_mut(&mut held.0 .0, &at).expect("matched position");
-                let reference: crate::secret_ref::SecretRef = serde_json::from_value(slot.clone())
-                    .map_err(|_| "invalid secret reference (value not echoed)".to_owned())?;
+                let reference: crate::secret_ref::SecretRef =
+                    crate::secret_ref::context::deserialize(Tree(slot.clone()), rules.sources)
+                        .map_err(|_| "invalid secret reference (value not echoed)".to_owned())?;
                 let field = at.join(".");
                 let secret = rules.secrets.contains(path);
                 if secret {
@@ -268,12 +271,15 @@ impl Settings {
         for path in declared {
             for at in crate::secret_fields::declared_references(&tree.0, path) {
                 if let Some(value) = crate::secret_fields::value_at_mut(&mut tree.0, &at) {
-                    if let Ok(reference) = crate::secret_ref::context::deserialize::<
+                    let reference = crate::secret_ref::context::deserialize::<
                         crate::secret_ref::SecretRef,
                         _,
-                    >(value.clone(), sources)
-                    {
-                        modules.insert(reference.module);
+                    >(Tree(value.clone()), sources)
+                    .map_err(|_| {
+                        "invalid declared source reference (value not echoed)".to_owned()
+                    })?;
+                    if let Some(module) = reference.source_module() {
+                        modules.insert(module.to_owned());
                     }
                 }
             }
@@ -320,7 +326,7 @@ impl Settings {
                             && crate::secret_ref::context::deserialize::<
                                 crate::secret_ref::SecretRef,
                                 _,
-                            >(value.clone(), sources)
+                            >(Tree(value.clone()), sources)
                             .is_ok() =>
                     {
                         return None
@@ -376,7 +382,7 @@ impl ResolvedSettings {
             let reference = crate::secret_ref::context::deserialize::<
                 crate::secret_ref::SecretRef,
                 _,
-            >(value.0.clone(), sources)
+            >(value, sources)
             .map_err(|_| {
                 format!("{prefix}.{at}: not a secret reference: a field is missing or has the wrong type (the decoder's text is withheld)")
             })?;
@@ -497,7 +503,7 @@ fn canonicalize(tree: &mut Value, sources: &crate::secret_ref::Sugars) -> Result
                     .is_some_and(|key| sources.get(key).is_some())
             {
                 let reference: crate::secret_ref::SecretRef =
-                    crate::secret_ref::context::deserialize(tree.clone(), sources).map_err(
+                    crate::secret_ref::context::deserialize(Tree(tree.clone()), sources).map_err(
                         |_| "invalid declared source reference (value not echoed)".to_owned(),
                     )?;
                 let canonical = serde_json::to_value(reference)
@@ -878,5 +884,65 @@ mod tests {
         );
         assert!(Settings::default().is_empty());
         assert!(serde_json::from_str::<Settings>(r#"["secret-canary"]"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod template_admission_tests {
+    use super::*;
+    struct MustNotResolve;
+    impl crate::secret::SecretResolve for MustNotResolve {
+        fn resolve(
+            &self,
+            _: &crate::secret_ref::SecretRef,
+        ) -> Result<crate::Secret<Vec<u8>>, String> {
+            panic!("unadmitted template reached its resolver")
+        }
+        fn resolve_string(
+            &self,
+            _: &crate::secret_ref::SecretRef,
+        ) -> Result<crate::Secret<String>, String> {
+            panic!("unadmitted template reached its resolver")
+        }
+    }
+    #[test]
+    fn forged_template_source_refuses_before_resolution_or_dependency_selection() {
+        use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+        let mut sources = crate::secret_ref::Sugars::default();
+        sources
+            .declare(
+                "admitted-source",
+                &[
+                    (REWRITE_SUGAR, "lookup".into(), "slot".into()),
+                    (REWRITE_SUGAR_ROLE, "lookup".into(), SUGAR_ROLE_FILL.into()),
+                ],
+            )
+            .unwrap();
+        for (owner, setting) in [
+            ("unadmitted-source", "slot"),
+            ("admitted-source", "other-slot"),
+        ] {
+            let settings: Settings =
+                serde_json::from_value(serde_json::json!({"token":{"template":{
+                    "text":"private-canary ${A}", "source":{"module":owner,"setting":setting}
+                }}}))
+                .unwrap();
+            let paths = ["token".to_owned()];
+            let error = settings
+                .resolve(
+                    &Resolution {
+                        owner: "receiving-owner",
+                        secrets: &paths,
+                        references: &[],
+                        sources: &sources,
+                    },
+                    &MustNotResolve,
+                    &crate::config_time::ConfigScope::config_time(),
+                )
+                .unwrap_err();
+            assert!(error.contains("invalid secret reference"), "{error}");
+            assert!(!error.contains("private-canary"));
+            assert!(settings.reference_modules(&paths, &sources).is_err());
+        }
     }
 }

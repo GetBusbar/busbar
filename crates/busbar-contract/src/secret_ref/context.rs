@@ -354,15 +354,20 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
         self.inner.visit_newtype_struct(value.into_deserializer())
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let mut object = serde_json::Map::new();
-        while let Some((key, value)) = map.next_entry::<String, serde_json::Value>()? {
-            if object.insert(key, value).is_some() {
+        use crate::plugin_settings::Tree;
+        use zeroize::Zeroizing;
+        let mut held = Tree::default();
+        while let Some((mut key, mut value)) = map.next_entry::<Zeroizing<String>, Tree>()? {
+            let object = held.0.as_object_mut().expect("reference map");
+            if object.contains_key(key.as_str()) {
                 return Err(de::Error::custom(
                     "duplicate secret-reference member (value not echoed)",
                 ));
             }
+            object.insert(std::mem::take(&mut *key), std::mem::take(&mut value.0));
         }
-        if !object.contains_key("module") && object.len() == 1 {
+        let object = held.0.as_object().expect("reference map");
+        if !object.contains_key("module") && !object.contains_key("template") && object.len() == 1 {
             let (word, value) = object.iter().next().expect("one entry");
             let sugar = self.sugars.get(word).ok_or_else(|| de::Error::custom(format!(
                 "secret source shorthand `{word}` is not declared by an admitted owner; use its canonical module/settings reference"
@@ -370,19 +375,22 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Reference<'_, V> {
             let value = value.as_str().filter(|s| !s.trim().is_empty()).ok_or_else(||
                 de::Error::custom("a declared secret shorthand requires a non-empty text value (value not echoed)"))?;
             let reference = sugar.reference(value);
-            object = serde_json::Map::from_iter([
-                (
-                    "module".to_owned(),
-                    serde_json::Value::String(reference.module),
-                ),
-                (
-                    "settings".to_owned(),
-                    serde_json::Value::Object(reference.settings),
-                ),
-            ]);
+            held = Tree(serde_json::to_value(reference).map_err(de::Error::custom)?);
+        }
+        if held
+            .0
+            .as_object()
+            .expect("reference map")
+            .contains_key("template")
+        {
+            let reference: super::SecretRef = serde::Deserialize::deserialize(held.clone())
+                .map_err(|_| de::Error::custom("malformed core template (value not echoed)"))?;
+            reference
+                .admitted_template(self.sugars)
+                .map_err(de::Error::custom)?;
         }
         self.inner
-            .visit_newtype_struct(serde_json::Value::Object(object).into_deserializer())
+            .visit_newtype_struct(held.into_deserializer())
             .map_err(de::Error::custom)
     }
 }
@@ -418,13 +426,16 @@ mod tests {
             );
             let mut decoder = serde_json::Deserializer::from_str(&raw);
             let result: Document = deserialize(&mut decoder, &sugars).unwrap();
-            assert_eq!(result.credential.module, owner);
-            assert_eq!(result.credential.settings[setting], "item");
+            assert_eq!(result.credential.source_module(), Some(owner));
+            assert_eq!(
+                result.credential,
+                sugars.get(word).unwrap().reference("item")
+            );
             assert_eq!(result.ordinary[word], "untouched");
             assert!(result.nested[0].is_none());
             assert_eq!(
-                result.nested[1].as_ref().unwrap().settings[setting],
-                "other"
+                result.nested[1].as_ref().unwrap(),
+                &sugars.get(word).unwrap().reference("other")
             );
         }
     }

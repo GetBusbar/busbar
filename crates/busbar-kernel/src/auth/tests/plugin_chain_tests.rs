@@ -60,11 +60,10 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
 fn chain_open_wipes_the_resolved_settings() {
     fn wiped_when_dropped<T: zeroize::ZeroizeOnDrop>(_: &T) {}
     let var = format!("BUSBAR_CHAIN_WIPE_{}", std::process::id());
-    std::env::set_var(&var, "chain-open-secret\n");
     let settings: serde_json::Map<String, serde_json::Value> = [
         (
             "client_secret".to_string(),
-            serde_json::json!({ "env": var }),
+            serde_json::to_value(crate::config::secret::fixed_reference(&var)).unwrap(),
         ),
         (
             "issuer".to_string(),
@@ -77,12 +76,11 @@ fn chain_open_wipes_the_resolved_settings() {
         &crate::config::secret::test_settings(&settings),
         &["client_secret".to_string()],
         &[],
-        "busbar-auth-oidc",
-        &crate::config::secret::actual_product_resolver(),
+        "auth-witness",
+        &crate::config::secret::fixed_value(&var, b"chain-open-secret\n"),
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("the declared reference resolves");
-    std::env::remove_var(&var);
     assert_eq!(
         (&crate::config::secret::test_resolved_value(&resolved))["client_secret"],
         serde_json::json!("chain-open-secret"),

@@ -3310,8 +3310,11 @@ fn token_exchange_binding(
         .cloned()
         .ok_or_else(|| format!("member '{entry}': its token exchange states no subject token"))
         .and_then(|v| {
-            serde_yaml::from_value(v)
-                .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
+            busbar_contract::secret_ref::context::deserialize(
+                v,
+                &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
+            )
+            .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
         })?;
     let credential = reach
         .secrets
@@ -3400,7 +3403,11 @@ fn upstream_credential(
             )
         })
         .and_then(|v| {
-            serde_yaml::from_value(v).map_err(|_| {
+            busbar_contract::secret_ref::context::deserialize(
+                v,
+                &busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
+            )
+            .map_err(|_| {
                 format!(
                     "member '{member_name}': its \
                      `{UPSTREAM_CREDENTIAL_KEY}.{CREDENTIAL_SECRET_KEY}` is not a secret \
@@ -4235,8 +4242,16 @@ fn registration_anchors(
                     .cloned()
                     .ok_or_else(|| format!("member '{entry}': `{key}.{half}:` is required"))
                     .and_then(|v| {
-                        serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(v)
-                            .map_err(|e| format!("member '{entry}': `{key}.{half}:` {e}"))
+                        busbar_contract::secret_ref::context::deserialize::<
+                            busbar_contract::secret_ref::SecretRef,
+                            _,
+                        >(
+                            v,
+                            &busbar_contract::secret::SecretAxis::sugars(
+                                crate::root::linked::secret_rows(),
+                            ),
+                        )
+                        .map_err(|e| format!("member '{entry}': `{key}.{half}:` {e}"))
                     })
             };
             let (cert, private) = (reference("cert")?, reference("key")?);

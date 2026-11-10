@@ -1026,7 +1026,7 @@ pub(crate) fn build_secret_resolver(
     Ok(config::secret::SecretResolver::with_scoped_plugin(
         Box::new(
             move |module: &str,
-                  settings: &str,
+                  settings: &busbar_contract::plugin_settings::Settings,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
                   -> Result<config::secret::Held, config::secret::SecretRefused> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
@@ -1082,7 +1082,7 @@ impl OpenedSecrets {
     pub(crate) fn resolve(
         &self,
         key: &str,
-        settings: &str,
+        settings: &busbar_contract::plugin_settings::Settings,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
     ) -> Result<config::secret::Held, config::secret::SecretRefused> {
@@ -1093,9 +1093,17 @@ impl OpenedSecrets {
                 text,
             })?;
 
+        let encoded = settings
+            .encode()
+            .map_err(|_| config::secret::SecretRefused {
+                error_kind: busbar_contract::abi::secret::ERROR_KIND_INVALID,
+                text: "source settings could not be encoded".into(),
+            })?;
+        let seal = crate::seal::lend();
+        let encoded = encoded.expose(&seal);
         match scope {
-            Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
-            None => calls.resolve(settings.as_bytes()),
+            Some(scope) => calls.resolve_at_config(encoded, scope),
+            None => calls.resolve(encoded),
         }
     }
 }

@@ -18,7 +18,7 @@ use crate::plugin_settings::Settings;
 /// ```compile_fail,E0308
 /// use busbar_contract::{conn::{DeclaredConns, admissions::AdmissionAuthority}, plugin::KernelSeal};
 /// fn forge(seal: &dyn KernelSeal, table: std::sync::Arc<dyn DeclaredConns>) {
-///     let _ = AdmissionAuthority::issue(seal, table);
+///     let _ = AdmissionAuthority::issue(seal, table, Default::default());
 /// }
 /// ```
 /// Nor can a caller install its own callback through a field literal:
@@ -31,18 +31,27 @@ use crate::plugin_settings::Settings;
 #[derive(Clone)]
 pub struct AdmissionAuthority {
     table: Arc<dyn DeclaredConns>,
+    sources: Arc<crate::secret_ref::Sugars>,
 }
 
 impl AdmissionAuthority {
     /// Issue only while holding the kernel's concrete root minter, never a generic seal/grant.
-    pub fn issue(_: &crate::caps::KernelSeal, table: Arc<dyn DeclaredConns>) -> Self {
-        Self { table }
+    pub fn issue(
+        _: &crate::caps::KernelSeal,
+        table: Arc<dyn DeclaredConns>,
+        sources: crate::secret_ref::Sugars,
+    ) -> Self {
+        Self {
+            table,
+            sources: Arc::new(sources),
+        }
     }
 
     /// Bind the validated instance identity and its admitted declaration once.
     pub fn bind(&self, owner: InstanceId, needs: &[ReadNeed]) -> EnforcedAdmissions {
         EnforcedAdmissions {
             table: Arc::clone(&self.table),
+            sources: Arc::clone(&self.sources),
             owner,
             needs: Arc::from(needs),
             lineage: Arc::new(()),
@@ -64,6 +73,7 @@ impl std::fmt::Debug for AdmissionAuthority {
 #[derive(Clone)]
 pub struct EnforcedAdmissions {
     table: Arc<dyn DeclaredConns>,
+    sources: Arc<crate::secret_ref::Sugars>,
     owner: InstanceId,
     needs: Arc<[ReadNeed]>,
     lineage: Arc<()>,
@@ -125,8 +135,8 @@ impl EnforcedAdmissions {
         }) {
             return Err(ConnError::NotOwner);
         }
-        let document = settings.map(|settings| &settings.0 .0);
-        let owned = owned.map(|settings| &settings.0 .0);
+        let document = settings.map(|settings| &settings.0.0);
+        let owned = owned.map(|settings| &settings.0.0);
         let mut results = Vec::new();
         for (index, need) in self.needs.iter().enumerate() {
             if need.target_from.is_empty() && need.trust_from.is_empty() {
@@ -134,29 +144,35 @@ impl EnforcedAdmissions {
             }
             let id = NeedId(u32::try_from(index).unwrap_or(u32::MAX));
             if crate::section::member_program(&need.target_from) {
-                let programs: Vec<_> = document
+                let programs: Result<Vec<_>, _> = document
                     .and_then(serde_json::Value::as_object)
                     .into_iter()
                     .flatten()
                     .filter_map(|(name, value)| {
-                        Some((name.clone(), Program::of_member(value)?.ok()?))
+                        Program::of_member(value, &self.sources)
+                            .map(|program| program.map(|program| (name.clone(), program)))
                     })
                     .collect();
-                let answer = match predecessor {
-                    Some(previous) => self.table.declare_member_programs_from(
-                        previous.owner,
-                        self.owner,
-                        id,
-                        need,
-                        &programs,
-                    ),
-                    None => self
+                let answer = match (programs, predecessor) {
+                    (Err(_), _) => Err(AdmissionRefused::ProgramMalformed),
+                    (Ok(programs), Some(previous)) => self
                         .table
-                        .declare_member_programs(self.owner, id, need, &programs),
+                        .declare_member_programs_from(
+                            previous.owner,
+                            self.owner,
+                            id,
+                            need,
+                            &programs,
+                        )
+                        .map_err(AdmissionRefused::Connection),
+                    (Ok(programs), None) => self
+                        .table
+                        .declare_member_programs(self.owner, id, need, &programs)
+                        .map_err(AdmissionRefused::Connection),
                 };
                 results.push(AdmittedNeed {
                     need: id,
-                    result: answer.map_err(AdmissionRefused::Connection),
+                    result: answer,
                     report: true,
                     trust_refused_at: None,
                 });
@@ -164,15 +180,12 @@ impl EnforcedAdmissions {
             }
             let value = document.and_then(|doc| setting(doc, &need.target_from));
             if let Some(value) = value.filter(|value| value.is_object()) {
-                let answer = match Program::from_settings(value) {
+                let answer = match Program::from_settings(value, &self.sources) {
                     Ok(program) => self
                         .table
                         .declare_program(self.owner, id, need, &program)
                         .map_err(AdmissionRefused::Connection),
-                    Err(_) => self
-                        .table
-                        .declare(self.owner, id, need, None, None)
-                        .map_err(|_| AdmissionRefused::ProgramMalformed),
+                    Err(_) => Err(AdmissionRefused::ProgramMalformed),
                 };
                 results.push(AdmittedNeed {
                     need: id,
@@ -236,7 +249,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
-    struct Table(AtomicUsize);
+    struct Table(AtomicUsize, std::sync::Mutex<Vec<Program>>);
     impl Conns for Table {
         fn open(&self, _: InstanceId, _: NeedId, _: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
             Err(ConnError::Refused)
@@ -296,6 +309,31 @@ mod tests {
         fn declared(&self, _: InstanceId, _: NeedId) -> Option<Result<(), ConnError>> {
             None
         }
+        fn declare_program(
+            &self,
+            _: InstanceId,
+            _: NeedId,
+            _: &ReadNeed,
+            program: &Program,
+        ) -> Result<(), ConnError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            self.1.lock().unwrap().push(program.clone());
+            Ok(())
+        }
+        fn declare_member_programs(
+            &self,
+            _: InstanceId,
+            _: NeedId,
+            _: &ReadNeed,
+            programs: &[(String, Program)],
+        ) -> Result<(), ConnError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            self.1
+                .lock()
+                .unwrap()
+                .extend(programs.iter().map(|(_, p)| p.clone()));
+            Ok(())
+        }
     }
 
     fn need() -> ReadNeed {
@@ -324,6 +362,7 @@ mod tests {
         // The unit witness is inside the issuer module; external construction is compile-fail.
         let authority = AdmissionAuthority {
             table: table.clone(),
+            sources: Arc::default(),
         };
         let first = authority.bind(InstanceId(1), &[need()]);
         let second = first.successor(InstanceId(2));
@@ -353,5 +392,97 @@ mod tests {
         assert_eq!(results[0].result, Err(AdmissionRefused::TargetUnresolved));
         assert!(results[0].report);
         assert!(!format!("{first:?} {results:?}").contains("admitted-target-canary"));
+    }
+
+    #[test]
+    fn malformed_programs_are_refused_before_any_table_admission() {
+        for members in [false, true] {
+            let table = Arc::new(Table::default());
+            let authority = AdmissionAuthority {
+                table: table.clone(),
+                sources: Arc::default(),
+            };
+            let mut declaration = need();
+            if members {
+                declaration.target_from = crate::section::MEMBER_PROGRAM.into();
+            }
+            let first = authority.bind(InstanceId(1), &[declaration]);
+            let second = first.successor(InstanceId(2));
+            let document = if members {
+                // The valid peer must not conceal the malformed member or be admitted alone.
+                serde_json::json!({"valid": {"command":"/bin/valid"},
+                    "malformed": {"command":"relative-command"}})
+            } else {
+                serde_json::json!({"destination":{"command":"relative-command"}})
+            };
+            let settings: Settings = serde_json::from_value(document).unwrap();
+            for predecessor in [None, Some(&first)] {
+                let results = second.apply(Some(&settings), None, predecessor).unwrap();
+                assert_eq!(results[0].result, Err(AdmissionRefused::ProgramMalformed));
+                assert!(results[0].report);
+                assert_eq!(table.0.load(Ordering::SeqCst), 0);
+            }
+            assert!(table.1.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn program_source_ownership_is_captured_by_the_admission_authority() {
+        use crate::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+        use crate::secret_ref::Sugars;
+        let mut sources = Sugars::default();
+        sources
+            .declare(
+                "fixture-source",
+                &[
+                    (REWRITE_SUGAR, "lookup".into(), "slot".into()),
+                    (REWRITE_SUGAR_ROLE, "lookup".into(), SUGAR_ROLE_FILL.into()),
+                ],
+            )
+            .unwrap();
+        let reference = sources
+            .reference_for_role(SUGAR_ROLE_FILL, "credential-canary")
+            .unwrap();
+        for members in [false, true] {
+            let table = Arc::new(Table::default());
+            let authority = AdmissionAuthority {
+                table: table.clone(),
+                sources: Arc::new(sources.clone()),
+            };
+            let mut declaration = need();
+            if members {
+                declaration.target_from = crate::section::MEMBER_PROGRAM.into();
+            }
+            let first = authority.bind(InstanceId(1), &[declaration.clone()]);
+            let successor = first.successor(InstanceId(2));
+            let program = serde_json::json!({"command":"/bin/fixture",
+                "env":{"KEY":{"lookup":"credential-canary"}}});
+            let settings: Settings = serde_json::from_value(if members {
+                serde_json::json!({"member":program})
+            } else {
+                serde_json::json!({"destination":program})
+            })
+            .unwrap();
+            let result = successor
+                .apply(Some(&settings), None, Some(&first))
+                .unwrap();
+            assert_eq!(result[0].result, Ok(()));
+            assert_eq!(table.0.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                table.1.lock().unwrap()[0].env_refs,
+                vec![("KEY".into(), reference.clone())]
+            );
+            assert!(!format!("{successor:?} {result:?}").contains("credential-canary"));
+            let undeclared = AdmissionAuthority {
+                table: table.clone(),
+                sources: Arc::default(),
+            }
+            .bind(InstanceId(3), &[declaration]);
+            assert_eq!(
+                undeclared.apply(Some(&settings), None, None).unwrap()[0].result,
+                Err(AdmissionRefused::ProgramMalformed)
+            );
+            assert_eq!(table.0.load(Ordering::SeqCst), 1);
+        }
     }
 }

@@ -1457,18 +1457,12 @@ fn declared_setting_refusal(
     what: &str,
     r: &crate::config::SecretRef,
 ) -> Option<String> {
-    let sugar = sugars.get(&r.module)?;
-    match r.settings.get(&sugar.setting).and_then(|v| v.as_str()) {
-        None => Some(format!(
-            "{what}: secret module '{}' requires settings.{} ({})",
-            r.module, sugar.setting, sugar.names
-        )),
-        Some(v) if v.trim().is_empty() => Some(format!(
-            "{what}: secret module '{}' requires a NON-EMPTY settings.{} ({})",
-            r.module, sugar.setting, sugar.names
-        )),
-        Some(_) => None,
-    }
+    let source = r.source()?;
+    sugars
+        .iter()
+        .filter(|sugar| sugar.plugin == source.module)
+        .find_map(|sugar| sugar.reference_refusal(source))
+        .map(|reason| format!("{what}: {reason}"))
 }
 
 fn admin_root_segment() -> &'static str {

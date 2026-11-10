@@ -23,7 +23,11 @@ pub fn is_wildcard(path: &str) -> bool {
 /// Whether `v` is a secret reference by shape: an object that reads as a
 #[must_use]
 pub fn is_reference(v: &Value) -> bool {
-    v.is_object() && serde_json::from_value::<crate::secret_ref::SecretRef>(v.clone()).is_ok()
+    v.is_object()
+        && <crate::secret_ref::SecretRef as serde::Deserialize>::deserialize(
+            crate::plugin_settings::Tree(v.clone()),
+        )
+        .is_ok()
 }
 
 /// Whether the declared `path` names the position `at` (its segments, an array index in decimal).
@@ -68,7 +72,7 @@ pub fn undeclared_reference(settings: &Value, declared: &[String]) -> Option<Str
 #[must_use]
 pub fn undeclared_refusal(field: &str, plugin: &str) -> String {
     format!(
-        "{field}: this setting holds a secret reference ({{env:}}, {{file:}} or {{module:}}), but \
+        "{field}: this setting holds a secret reference, but \
          the plugin '{plugin}' did not declare it as a secret, so busbar will not resolve a secret \
          into it; write the value itself here instead (or, if the object is the plugin's own data, \
          wrap it as {{ literal: … }})"
@@ -143,7 +147,9 @@ pub fn resolve_references(
         let Some(slot) = at_mut(tree, &at) else {
             continue;
         };
-        let Ok(r) = serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone()) else {
+        let Ok(r) = <crate::secret_ref::SecretRef as serde::Deserialize>::deserialize(
+            crate::plugin_settings::Tree(slot.clone()),
+        ) else {
             continue;
         };
         *slot = Value::String(resolve(&field, &r)?);
@@ -184,7 +190,9 @@ pub fn resolve_declared_fields(
             let Some(slot) = at_mut(tree, &at) else {
                 continue;
             };
-            let Ok(r) = serde_json::from_value::<crate::secret_ref::SecretRef>(slot.clone()) else {
+            let Ok(r) = <crate::secret_ref::SecretRef as serde::Deserialize>::deserialize(
+                crate::plugin_settings::Tree(slot.clone()),
+            ) else {
                 continue;
             };
             *slot = Value::String(resolve(&field, &r)?);

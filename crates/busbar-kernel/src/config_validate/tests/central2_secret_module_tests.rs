@@ -90,10 +90,7 @@ fn semantic_reference_errors(cfg: &crate::config::RootCfg) -> Vec<String> {
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
     for module in ["vault", "acme-secret-vault"] {
-        let cfg = host_reference_input(crate::config::SecretRef {
-            module: module.to_string(),
-            settings: serde_json::Map::new(),
-        });
+        let cfg = host_reference_input(crate::config::secret::fixed_reference(module));
 
         assert!(
             semantic_reference_errors(&cfg).is_empty(),
@@ -114,10 +111,7 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 }
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
-    let cfg = host_reference_input(crate::config::SecretRef {
-        module: "vaultt".to_string(),
-        settings: serde_json::Map::new(),
-    });
+    let cfg = host_reference_input(crate::config::secret::fixed_reference("vaultt"));
 
     assert!(
         semantic_reference_errors(&cfg).is_empty(),
@@ -133,10 +127,10 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     );
 }
 #[test]
-fn secret_ref_builtin_modules_pass_with_empty_registry() {
+fn secret_ref_admitted_linked_module_passes_with_empty_dropin_registry() {
     assert!(
-        reference_module_row("providers.acme.api_key", "env", true, None).is_ok(),
-        "a built-in env ref must pass the pre-flight with no plugins loaded"
+        reference_module_row("providers.acme.api_key", "linked-source", true, None).is_ok(),
+        "an admitted linked source must pass without a dropped-in registry row"
     );
 }
 #[test]

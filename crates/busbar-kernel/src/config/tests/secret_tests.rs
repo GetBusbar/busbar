@@ -4,44 +4,11 @@
 use super::*;
 
 #[test]
-fn env_whitespace_only_name_is_rejected() {
-    for bad in ["", "   ", "\t\n"] {
-        let r = SecretRef::env(bad);
-        let err = actual_product_resolver().resolve(&r).expect_err(&format!(
-            "whitespace-only env name {bad:?} must be rejected"
-        ));
-        assert!(
-            err.contains("requires settings.key"),
-            "whitespace-only env name {bad:?} must fail the settings-shape check, got: {err}"
-        );
-    }
-}
-
-#[test]
-fn file_whitespace_only_path_is_rejected() {
-    for bad in ["", "   ", "\t\n"] {
-        let r = SecretRef::file(bad);
-        let err = actual_product_resolver()
-            .resolve_at_config(
-                &r,
-                &busbar_contract::config_time::ConfigScope::config_time(),
-            )
-            .expect_err(&format!(
-                "whitespace-only file path {bad:?} must be rejected"
-            ));
-        assert!(
-            err.contains("requires settings.path"),
-            "whitespace-only file path {bad:?} must fail the settings-shape check, got: {err}"
-        );
-    }
-}
-
-#[test]
 fn none_reference_has_no_value_to_resolve() {
     let r = SecretRef::none();
-    let resolver = actual_product_resolver();
+    let resolver = SecretResolver::builtins_only();
     for err in [
-        actual_product_resolver().resolve(&r).unwrap_err(),
+        SecretResolver::builtins_only().resolve(&r).unwrap_err(),
         resolver.resolve(&r).unwrap_err(),
         resolver.resolve_string(&r).unwrap_err(),
     ] {
@@ -53,34 +20,39 @@ fn none_reference_has_no_value_to_resolve() {
 }
 
 #[test]
-fn deserialize_accepts_canonical_and_sugar_rejects_malformed() {
-    let r: SecretRef = serde_yaml::from_str("{ env: MY_VAR }").unwrap();
-    assert_eq!(r, SecretRef::env("MY_VAR"));
-    assert_eq!(r.env_var(), Some("MY_VAR"));
-    let r: SecretRef = serde_yaml::from_str("{ file: /run/secrets/x }").unwrap();
-    assert_eq!(r, SecretRef::file("/run/secrets/x"));
-    assert_eq!(r.file_path(), Some("/run/secrets/x"));
-    let r: SecretRef =
-        serde_yaml::from_str("{ module: vault, settings: { path: kv/data/x } }").unwrap();
-    assert_eq!(r.module, "vault");
+fn deserialize_accepts_canonical_and_declared_shorthand_rejects_malformed() {
+    let r = fixture_authored("{ lookup: MY_VAR }").unwrap();
     assert_eq!(
-        r.settings.get("path").and_then(|v| v.as_str()),
-        Some("kv/data/x")
+        r,
+        fixture_sources().get("lookup").unwrap().reference("MY_VAR")
     );
-
+    assert_eq!(r.source_module(), Some("first-source"));
+    let r = fixture_authored("{ artifact: descriptor }").unwrap();
+    assert_eq!(
+        r,
+        fixture_sources()
+            .get("artifact")
+            .unwrap()
+            .reference("descriptor")
+    );
+    assert_eq!(r.source_module(), Some("second-source"));
+    let r: SecretRef =
+        serde_yaml::from_str("{module: independent-source, settings: {slot: opaque}}").unwrap();
+    assert_eq!(r.source_module(), Some("independent-source"));
+    assert_eq!(
+        serde_json::to_value(&r.source().unwrap().settings).unwrap(),
+        serde_json::json!({"slot":"opaque"})
+    );
     for bad in [
-        "{ env: A, file: B }",
-        "{ module: vault, env: A }",
-        "{ env: A, settings: {} }",
-        "{ unknown_key: A }",
+        "{lookup: A, artifact: B}",
+        "{module: independent-source, lookup: A}",
+        "{lookup: A, settings: {}}",
+        "{unknown_key: A}",
         "{}",
-        "{ env: \"\" }",
-        "{ module: \"\" }",
+        "{lookup: ''}",
+        "{module: ''}",
         "plain-string",
     ] {
-        assert!(
-            serde_yaml::from_str::<SecretRef>(bad).is_err(),
-            "must reject: {bad}"
-        );
+        assert!(fixture_authored(bad).is_err(), "must reject: {bad}");
     }
 }

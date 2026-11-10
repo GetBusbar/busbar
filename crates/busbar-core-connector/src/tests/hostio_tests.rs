@@ -25,8 +25,11 @@ fn a_manually_constructed_program_cannot_bypass_the_working_directory_guard() {
     worker().block_on(async {
         let io = HostIo::new();
         for directory in ["relative", "", " /tmp", "/tmp ", "/tmp\0invalid"] {
-            let mut program =
-                Program::from_settings(&serde_json::json!({"command": "/bin/cat"})).unwrap();
+            let mut program = Program::from_settings(
+                &serde_json::json!({"command": "/bin/cat"}),
+                &Default::default(),
+            )
+            .unwrap();
             program.cwd = Some(directory.to_owned());
             io.admit_for(
                 ticket(94),
@@ -59,8 +62,8 @@ fn a_manually_constructed_program_cannot_bypass_the_working_directory_guard() {
 fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_owner() {
     worker().block_on(async {
         let io = HostIo::new();
-        let old = Program::from_settings(&serde_json::json!({"command": "/bin/cat"})).unwrap();
-        let new = Program::from_settings(&serde_json::json!({"command": "/bin/cat", "cwd": "/", "env": {"PRIVATE": "replacement-value"}})).unwrap();
+        let old = Program::from_settings(&serde_json::json!({"command": "/bin/cat"}), &Default::default()).unwrap();
+        let new = Program::from_settings(&serde_json::json!({"command": "/bin/cat", "cwd": "/", "env": {"PRIVATE": "replacement-value"}}), &Default::default()).unwrap();
         let held = crate::spawn_env::HeldEnv::written_only();
         io.admit_for(ticket(93), Admission::Spawn(old, held.clone()), Some(OWNER));
         let old_handle = io.spawn(OWNER, ticket(93), &Spawn { program: "/bin/cat", args: &[], env: &[] }).unwrap();
@@ -84,7 +87,11 @@ fn replacing_a_ticket_grant_does_not_lend_the_new_suppliers_program_to_the_old_o
 fn an_omitted_program_directory_inherits_and_a_missing_directory_spawns_nothing() {
     worker().block_on(async {
         let io = HostIo::new();
-        let program = Program::from_settings(&serde_json::json!({"command": "/bin/pwd"})).unwrap();
+        let program = Program::from_settings(
+            &serde_json::json!({"command": "/bin/pwd"}),
+            &Default::default(),
+        )
+        .unwrap();
         io.admit_for(
             ticket(91),
             Admission::Spawn(program.clone(), crate::spawn_env::HeldEnv::written_only()),
@@ -200,10 +207,13 @@ fn an_admitted_program_runs_in_its_configured_working_directory() {
         ));
         std::fs::create_dir(&directory).unwrap();
         let directory = directory.canonicalize().unwrap();
-        let program = Program::of_member(&serde_json::json!({
-            "command": "/bin/pwd",
-            "cwd": directory.to_str().unwrap(),
-        }))
+        let program = Program::of_member(
+            &serde_json::json!({
+                "command": "/bin/pwd",
+                "cwd": directory.to_str().unwrap(),
+            }),
+            &Default::default(),
+        )
         .unwrap()
         .unwrap();
         io.admit(

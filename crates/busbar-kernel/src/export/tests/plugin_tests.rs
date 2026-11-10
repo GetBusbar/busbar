@@ -658,22 +658,34 @@ fn settings_of(v: Value) -> serde_json::Map<String, Value> {
 
 #[test]
 fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
-    let resolver = crate::config::secret::actual_product_resolver();
+    let (url, token) = (
+        format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
+        format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
+    );
+    let resolver = crate::config::secret::fixed_resolver(vec![
+        (
+            crate::config::secret::fixed_reference(&url),
+            Ok(busbar_contract::redacted::Secret::new(
+                b"https://siem.example/in".to_vec(),
+            )),
+        ),
+        (
+            crate::config::secret::fixed_reference(&token),
+            Ok(busbar_contract::redacted::Secret::new(
+                b"Bearer t0k".to_vec(),
+            )),
+        ),
+    ]);
     let sink_settings =
         |axis: &dyn ExportAxis,
          module: &str,
          settings: &busbar_contract::plugin_settings::Settings| {
             sink_settings_with_resolver(axis, module, settings, &resolver)
         };
-    let (url, token) = (
-        format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
-        format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
-    );
-    std::env::set_var(&url, "https://siem.example/in");
-    std::env::set_var(&token, "Bearer t0k");
+
     let written = settings_of(serde_json::json!({
-        "url": { "env": url },
-        "auth_header": { "name": "Authorization", "value": { "env": token } },
+        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url)).unwrap(),
+        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token)).unwrap() },
         "batch": 10,
     }));
     let handed = sink_settings(
@@ -695,7 +707,10 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
             "batch": 10,
         })
     );
-    assert_eq!(written["url"], serde_json::json!({ "env": url }));
+    assert_eq!(
+        written["url"],
+        serde_json::to_value(crate::config::secret::fixed_reference(&url)).unwrap()
+    );
 
     let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
     assert_eq!(
@@ -710,7 +725,14 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         &Value::Object(literal.clone())
     );
 
-    std::env::remove_var(&url);
+    let resolver = crate::config::secret::fixed_value(&token, b"Bearer t0k");
+    let sink_settings =
+        |axis: &dyn ExportAxis,
+         module: &str,
+         settings: &busbar_contract::plugin_settings::Settings| {
+            sink_settings_with_resolver(axis, module, settings, &resolver)
+        };
+
     let err = sink_settings(
         &DeclaringAxis,
         "declaring-sink",
@@ -719,9 +741,9 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     .unwrap_err();
     assert!(err.contains("url"), "{err}");
     assert!(!err.contains("Bearer t0k"), "{err}");
-    std::env::remove_var(&token);
 
-    let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
+    let undeclared =
+        settings_of(serde_json::json!({ "url": { "module": "unbound-source", "settings": {} } }));
     assert_eq!(
         &crate::config::secret::test_resolved_value(
             &sink_settings(
@@ -737,22 +759,34 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
 #[test]
 fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
-    let resolver = crate::config::secret::actual_product_resolver();
+    let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
+    let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
+    let url = "https://classification.example/collector";
+    let token = "Bearer export-classification-fixture";
+    let resolver = crate::config::secret::fixed_resolver(vec![
+        (
+            crate::config::secret::fixed_reference(&url_var),
+            Ok(busbar_contract::redacted::Secret::new(
+                url.as_bytes().to_vec(),
+            )),
+        ),
+        (
+            crate::config::secret::fixed_reference(&token_var),
+            Ok(busbar_contract::redacted::Secret::new(
+                token.as_bytes().to_vec(),
+            )),
+        ),
+    ]);
     let sink_settings =
         |axis: &dyn ExportAxis,
          module: &str,
          settings: &busbar_contract::plugin_settings::Settings| {
             sink_settings_with_resolver(axis, module, settings, &resolver)
         };
-    let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
-    let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
-    let url = "https://classification.example/collector";
-    let token = "Bearer export-classification-fixture";
-    std::env::set_var(&url_var, url);
-    std::env::set_var(&token_var, token);
+
     let written = settings_of(serde_json::json!({
-        "url": { "env": url_var },
-        "auth_header": { "name": "Authorization", "value": { "env": token_var } },
+        "url": serde_json::to_value(crate::config::secret::fixed_reference(&url_var)).unwrap(),
+        "auth_header": { "name": "Authorization", "value": serde_json::to_value(crate::config::secret::fixed_reference(&token_var)).unwrap() },
     }));
     let output = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
     struct Output(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -779,8 +813,6 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
             &crate::config::secret::test_settings(&written),
         )
     });
-    std::env::remove_var(&url_var);
-    std::env::remove_var(&token_var);
     let handed = handed.expect("the two references resolve");
     assert_eq!(
         (&crate::config::secret::test_resolved_value(&handed))["url"],
@@ -790,10 +822,13 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         (&crate::config::secret::test_resolved_value(&handed))["auth_header"]["value"],
         token
     );
-    assert_eq!(written["url"], serde_json::json!({ "env": url_var }));
+    assert_eq!(
+        written["url"],
+        serde_json::to_value(crate::config::secret::fixed_reference(&url_var)).unwrap()
+    );
     assert_eq!(
         written["auth_header"]["value"],
-        serde_json::json!({ "env": token_var })
+        serde_json::to_value(crate::config::secret::fixed_reference(&token_var)).unwrap()
     );
     let literal = settings_of(serde_json::json!({
         "url": "https://literal.example/collector",

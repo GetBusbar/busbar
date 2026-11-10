@@ -764,11 +764,36 @@ fn the_private_destinations_fixture_allows_exactly_its_private_upstreams() {
     assert!(d["advanced"]["block_private_addresses"].is_null());
 }
 
+fn lift_sources() -> busbar_contract::secret_ref::Sugars {
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+    };
+    let mut sources = busbar_contract::secret_ref::Sugars::default();
+    for (owner, word, role) in [
+        ("fill-owner", "lookup", SUGAR_ROLE_FILL),
+        ("artifact-owner", "artifact", SUGAR_ROLE_PATH),
+    ] {
+        sources
+            .declare(
+                owner,
+                &[
+                    (REWRITE_SUGAR, word.into(), "slot".into()),
+                    (REWRITE_SUGAR_ROLE, word.into(), role.into()),
+                ],
+            )
+            .unwrap();
+    }
+    sources
+}
+
 struct SecretLift {
     refuse: bool,
     observed: std::cell::RefCell<Vec<u8>>,
 }
 impl MigrateHost for SecretLift {
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        Ok(lift_sources())
+    }
     fn migrate(
         &self,
         _: &str,
@@ -824,8 +849,14 @@ fn cold_secret_lift_consumes_need_before_emitting_configuration_and_redacts_repo
     assert_eq!(host.observed.borrow().as_slice(), literal.as_bytes());
     let parsed: serde_yaml::Value = serde_yaml::from_str(&migrated.yaml).unwrap();
     assert_eq!(
-        parsed["store"]["settings"]["token"]["file"].as_str(),
-        Some("/private/migration-secret")
+        serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(
+            parsed["store"]["settings"]["token"].clone()
+        )
+        .unwrap(),
+        lift_sources()
+            .get("artifact")
+            .unwrap()
+            .reference("/private/migration-secret")
     );
     assert_eq!(parsed["store"]["settings"]["keep"].as_u64(), Some(7));
     assert!(!migrated.yaml.contains("DO_NOT_EXPAND"));
@@ -874,6 +905,9 @@ fn plugin_migration_numbers_remain_scalars_and_refuse_lossy_values() {
 
 struct TemplateLift;
 impl MigrateHost for TemplateLift {
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        Ok(lift_sources())
+    }
     fn resolved_authored_scalar(&self, _: &str) -> Result<Option<serde_json::Value>, String> {
         Ok(Some(serde_json::Value::String("runtime-secret".into())))
     }
@@ -899,7 +933,7 @@ impl MigrateHost for TemplateLift {
 }
 
 #[test]
-fn authored_secret_substitutions_keep_live_environment_bindings() {
+fn authored_secret_substitutions_keep_admitted_source_bindings() {
     for (source, compound) in [("${TOKEN}", false), ("Bearer ${TOKEN}", true)] {
         let raw = format!("store: {{module: secret-lift-test, settings: {{token: '{source}'}}}}");
         let output = migrate_config_with(&raw, &TemplateLift).unwrap();
@@ -907,9 +941,15 @@ fn authored_secret_substitutions_keep_live_environment_bindings() {
         let secret: busbar_contract::secret_ref::SecretRef =
             serde_yaml::from_value(doc["store"]["settings"]["token"].clone()).unwrap();
         if compound {
-            assert_eq!(secret.template_text(), Some(source));
+            assert_eq!(
+                secret,
+                busbar_contract::secret_ref::SecretRef::template(source, &lift_sources()).unwrap()
+            );
         } else {
-            assert_eq!(secret.module, "env");
+            assert_eq!(
+                secret,
+                lift_sources().get("lookup").unwrap().reference("TOKEN")
+            );
         }
         assert!(!output.yaml.contains("runtime-secret"));
     }
