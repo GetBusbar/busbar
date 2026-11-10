@@ -346,8 +346,8 @@ mod ordinary_suite_hook_ticket_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/actual_store.rs"]
-mod actual_store;
+#[path = "tests/neutral_store.rs"]
+mod neutral_store;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -356,13 +356,8 @@ mod neutral_secret;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/actual_exports.rs"]
-mod actual_exports;
-
-#[cfg(test)]
-#[allow(unsafe_code)]
-#[path = "tests/store_memory_facts_actual.rs"]
-mod store_memory_facts_actual;
+#[path = "tests/neutral_export.rs"]
+mod neutral_export;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
