@@ -711,11 +711,13 @@ impl Breaker for WalkCells {
                 );
             }
             Outcome::HardDown => {
-                let _ = store.record_hard_down_all_cells(
+                if !store.record_hard_down_all_cells(
                     lane,
                     "health-probe hard-down (auth/billing)",
                     now,
-                );
+                ) {
+                    tracing::warn!(lane, "health-probe hard-down recording had no effect");
+                }
             }
             Outcome::RecordNothing => {}
         }

@@ -282,17 +282,21 @@ pub(crate) fn answer_for(outcome: Outcome) -> AdminAnswer {
             RefusalClass::QuotaExhausted | RefusalClass::Busy => (429, "rate_limited"),
 
             RefusalClass::Unavailable => (503, "unavailable"),
-            RefusalClass::Rejected
-            | RefusalClass::Unauthenticated
-            | RefusalClass::Forbidden
-            | RefusalClass::TooLarge
-            | RefusalClass::Throttled
-            | RefusalClass::Unreachable
-            | RefusalClass::Timeout
-            | RefusalClass::PlaneFault
-            | RefusalClass::NodeFault => (403, "forbidden"),
+            RefusalClass::Unauthenticated => (401, "unauthenticated"),
+
+            RefusalClass::Rejected | RefusalClass::Forbidden => (403, "forbidden"),
+
+            RefusalClass::TooLarge => (413, "too_large"),
+
+            RefusalClass::Throttled => (429, "rate_limited"),
+
+            RefusalClass::Timeout => (504, "timeout"),
+
+            RefusalClass::Unreachable | RefusalClass::PlaneFault | RefusalClass::NodeFault => {
+                (502, "upstream_error")
+            }
         },
-        _ => (403, "forbidden"),
+        _ => (500, "internal_error"),
     };
     error_answer(status, code)
 }

@@ -593,12 +593,16 @@ impl<C: Output> CallerEnd for FramedOutput<C> {
 
     fn head(&self, status: u32, mut fields: HeadFields) {
         fields.extend(self.opening.iter().cloned());
+        fields.retain(|(name, _)| !name.eq_ignore_ascii_case(b"content-length"));
         self.inner.head(status, fields);
     }
     async fn write(&self, bytes: &[u8]) -> bool {
         self.framed(bytes, true).await
     }
     async fn write_piece(&self, bytes: &[u8], _text: bool, end: bool) -> bool {
+        if bytes.is_empty() && !end {
+            return true;
+        }
         self.framed(bytes, end).await
     }
     fn final_status(&self, status: u32, message: &[u8], details: &[u8]) {

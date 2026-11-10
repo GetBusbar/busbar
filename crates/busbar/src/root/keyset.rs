@@ -15,7 +15,7 @@ pub const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller-ref ma
 
 #[must_use]
 pub fn fingerprint_of(key: &AuditVerifyingKey) -> [u8; 32] {
-    let raw = hex::decode(key.public_key_hex()).unwrap_or_default();
+    let raw = hex::decode(key.public_key_hex()).expect("AuditVerifyingKey holds valid hex");
     busbar_contract::abi::sdk::digest::sha256(&raw)
 }
 

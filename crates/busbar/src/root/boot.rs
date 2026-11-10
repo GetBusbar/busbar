@@ -1188,12 +1188,18 @@ static PROVIDER_URLS: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Ve
 
 pub fn note_provider_urls(urls: impl IntoIterator<Item = String>) {
     let next = urls.into_iter().collect();
-    let previous = std::mem::replace(&mut *PROVIDER_URLS.write().expect("provider URLs"), next);
+    let previous = std::mem::replace(
+        &mut *PROVIDER_URLS.write().unwrap_or_else(|p| p.into_inner()),
+        next,
+    );
     drop(previous);
 }
 
 fn transport_uses() -> Uses {
-    let urls = PROVIDER_URLS.read().expect("provider URLs").clone();
+    let urls = PROVIDER_URLS
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     transport_uses_for(&config_path(), &urls)
 }
 
@@ -1322,7 +1328,7 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 pub fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
-    if let Some(opened) = WIRES.lock().expect("transport inventory").clone() {
+    if let Some(opened) = WIRES.lock().unwrap_or_else(|p| p.into_inner()).clone() {
         return opened;
     }
     let opened = open_dropped_transports(settings).unwrap_or_else(|refusal| {
@@ -1330,7 +1336,7 @@ pub fn dropped_transports(
         std::process::exit(2);
     });
     let retained = {
-        let mut wires = WIRES.lock().expect("transport inventory");
+        let mut wires = WIRES.lock().unwrap_or_else(|p| p.into_inner());
         wires.get_or_insert_with(|| opened.clone()).clone()
     };
 
@@ -1389,7 +1395,10 @@ fn publish_transport_inventory(
     wires: &std::sync::Mutex<Option<crate::root::registry::Dropped>>,
     dropped: crate::root::registry::Dropped,
 ) {
-    let previous = wires.lock().expect("transport inventory").replace(dropped);
+    let previous = wires
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(dropped);
     drop(previous);
 }
 
