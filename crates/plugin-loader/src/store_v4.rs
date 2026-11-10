@@ -451,7 +451,9 @@ impl PersistenceBackend for LoadedPersistence {
                         value: Blob::ABSENT,
                     },
                 ),
-                bytes: presized_bytes(request.max_bytes, self.limits),
+                // The page limit is admission, not the expected answer size. Start
+                // small (including empty scans); Short grows the retained buffer.
+                bytes: presized_bytes(request.max_bytes.min(INITIAL_VALUE_BYTES), self.limits),
                 source: request,
             })
             .await
@@ -598,7 +600,7 @@ fn grow<T: Copy>(
     *bytes = new_bytes;
     Ok(())
 }
-/// Initial per-address value budget for a read; larger values take the Short retry.
+/// Initial byte budget per read address or scan; larger answers take the Short retry.
 const INITIAL_VALUE_BYTES: usize = 4096;
 
 /// Zeroed output bytes sized up front, capped by the output byte limit.
