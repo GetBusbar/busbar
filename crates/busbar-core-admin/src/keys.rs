@@ -1292,8 +1292,6 @@ async fn update_key_owned(
         }
 
 
-        Err(e @ AdminError::Validation(_)) => key_err(who, &e, Cond::RebindTargetMissing),
-        Err(e @ AdminError::Conflict(_)) => key_err(who, &e, Cond::GovernanceOff),
         Err(e) => {
             record_key_refusal(who);
             crate::v1::json::err_json(&e)

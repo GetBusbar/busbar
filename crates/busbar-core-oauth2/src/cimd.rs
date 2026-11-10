@@ -413,6 +413,19 @@ fn is_absolute_uri(value: &str) -> bool {
             .all(|b| b != b'#' && (0x21..=0x7e).contains(&b))
 }
 
+/// OAuth 2.1 section 2.3.1: redirect URIs must use https, http on loopback, or a
+/// private-use scheme. Reject schemes that would be dangerous in a browser context.
+fn is_safe_redirect_scheme(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once(':') else {
+        return false;
+    };
+    let scheme_lower = scheme.to_ascii_lowercase();
+    !matches!(
+        scheme_lower.as_str(),
+        "javascript" | "data" | "vbscript" | "file" | "about" | "blob"
+    )
+}
+
 fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, String> {
     let doc: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| format!("not JSON: {e}"))?;
@@ -460,7 +473,11 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
                 {
                     Err("redirect_uris entries carry no backslash and no userinfo".to_string())
                 }
-                Some(s) if is_absolute_uri(s) => Ok(s.to_string()),
+                Some(s) if is_absolute_uri(s) && is_safe_redirect_scheme(s) => Ok(s.to_string()),
+                Some(s) if is_absolute_uri(s) => {
+                    Err("redirect_uris entries must use https, http, or a private-use scheme"
+                        .to_string())
+                }
                 _ => Err("redirect_uris entries must be absolute, fragment-free URIs".to_string()),
             })
             .collect::<Result<_, _>>()?,

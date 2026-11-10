@@ -76,7 +76,7 @@ impl<V: Clone> IdempotencyCache<V> {
         now: u64,
     ) -> Result<Probe<'_, V>, BindingMismatch> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|_, (t, v, _)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
+        guard.retain(|_, (t, _, _)| now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
         if let Some((_, _, held)) = guard.get(&key) {
             if fingerprint.is_some() && held != &fingerprint {
                 return Err(BindingMismatch);
