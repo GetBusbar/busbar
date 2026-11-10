@@ -135,3 +135,51 @@ fn span_records_read_from_the_statement_extensions() {
         assert!(stated(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
 }
+
+#[test]
+fn strict_lookup_rejects_truncation_and_duplicate_target_but_preserves_unknowns() {
+    use super::{unique, LookupError};
+    let prefix = encode(&[("unknown", b"one"), ("unknown", b"two")]);
+    let target = encode(&[("feature", b"payload")]);
+    let mut blob = prefix.clone();
+    blob.extend_from_slice(&target);
+    assert_eq!(unique(&prefix, "feature"), Ok(None));
+    assert_eq!(unique(&blob, "feature"), Ok(Some(&b"payload"[..])));
+    for end in 1..target.len() {
+        let mut truncated = prefix.clone();
+        truncated.extend_from_slice(&target[..end]);
+        assert_eq!(unique(&truncated, "feature"), Err(LookupError::Truncated));
+    }
+    blob.extend_from_slice(&target);
+    assert_eq!(unique(&blob, "feature"), Err(LookupError::Duplicate));
+    let mut trailing = target;
+    trailing.push(0);
+    assert_eq!(unique(&trailing, "feature"), Err(LookupError::Truncated));
+    assert_eq!(
+        unique(&encode(&[("feature", b"")]), "feature"),
+        Ok(Some(&b""[..]))
+    );
+}
+
+#[test]
+fn feature_detection_sees_a_truncated_value_but_never_a_key_inside_a_value() {
+    use super::{present, unique};
+    let target = encode(&[("feature", b"payload")]);
+    let unrelated = encode(&[("unknown", &target)]);
+    assert!(!present(&unrelated, &["feature"]));
+    for end in 0..target.len() {
+        let mut blob = unrelated.clone();
+        blob.extend_from_slice(&target[..end]);
+        assert_eq!(
+            present(&blob, &["other", "feature"]),
+            end >= 2 + "feature".len()
+        );
+        if end != 0 {
+            assert!(unique(&blob, "feature").is_err());
+        }
+    }
+    let mut invalid_prefix = unrelated;
+    invalid_prefix.extend_from_slice(&[0xff, 0xff]);
+    invalid_prefix.extend_from_slice(&target);
+    assert!(!present(&invalid_prefix, &["feature"]));
+}

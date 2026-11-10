@@ -46,20 +46,7 @@ pub enum Error {
 
 /// One feature entry, with complete framing and no duplicate known keys.
 pub fn entry<'a>(bytes: &'a [u8], key: &str) -> Result<Option<&'a [u8]>, Error> {
-    let mut found = None;
-    let mut read = 0usize;
-    for (name, value) in extensions::entries(bytes) {
-        read = read
-            .checked_add(6 + name.len() + value.len())
-            .ok_or(Error::Invalid)?;
-        if name == key.as_bytes() && found.replace(value).is_some() {
-            return Err(Error::Invalid);
-        }
-    }
-    if read != bytes.len() {
-        return Err(Error::Invalid);
-    }
-    Ok(found)
+    extensions::unique(bytes, key).map_err(|_| Error::Invalid)
 }
 
 fn capability(bytes: &[u8]) -> Result<Capability, Error> {
@@ -111,25 +98,8 @@ fn append(prior: &[u8], key: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// Detect the actual key even if its value is truncated, without matching bytes inside values.
-pub fn present(mut bytes: &[u8], name: &str) -> bool {
-    while bytes.len() >= 2 {
-        let len = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
-        let Some(key) = bytes.get(2..2 + len) else {
-            return false;
-        };
-        if key == name.as_bytes() {
-            return true;
-        }
-        let Some(size) = bytes.get(2 + len..6 + len) else {
-            return false;
-        };
-        let size = u32::from_le_bytes(size.try_into().expect("four bytes")) as usize;
-        let Some(rest) = (6 + len).checked_add(size).and_then(|end| bytes.get(end..)) else {
-            return false;
-        };
-        bytes = rest;
-    }
-    false
+pub fn present(bytes: &[u8], name: &str) -> bool {
+    extensions::present(bytes, &[name])
 }
 
 pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, Error> {

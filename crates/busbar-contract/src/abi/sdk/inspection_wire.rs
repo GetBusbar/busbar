@@ -458,23 +458,7 @@ fn value<'a>(blob: &'a [u8], key: &str) -> Result<Option<&'a [u8]>, InspectionEr
     if blob.len() > MAX_BYTES {
         return Err(InspectionError::Invalid);
     }
-    let mut at = 0usize;
-    let mut found = None;
-    for (k, v) in extensions::entries(blob) {
-        at = at
-            .checked_add(2 + k.len() + 4 + v.len())
-            .ok_or(InspectionError::Invalid)?;
-        if k == key.as_bytes() {
-            if found.is_some() {
-                return Err(InspectionError::Invalid);
-            }
-            found = Some(v);
-        }
-    }
-    if at != blob.len() {
-        return Err(InspectionError::Invalid);
-    }
-    Ok(found)
+    extensions::unique(blob, key).map_err(|_| InspectionError::Invalid)
 }
 fn append(blob: &[u8], key: &str, bytes: &[u8]) -> Result<Vec<u8>, InspectionError> {
     if let Some(existing) = value(blob, key)? {

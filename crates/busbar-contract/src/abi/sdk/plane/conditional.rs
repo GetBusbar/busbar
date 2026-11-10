@@ -341,32 +341,13 @@ impl<'a> Read<'a> {
 }
 /// Read a unique feature entry, rejecting truncated or duplicate feature envelopes.
 pub fn entry<'a>(bytes: &'a [u8], key: &str) -> Result<Option<&'a [u8]>, &'static str> {
-    let mut rest = bytes;
-    let mut found = None;
-    while !rest.is_empty() {
-        let mut r = Read(rest);
-        let n = u16::from_le_bytes(r.take(2)?.try_into().map_err(|_| INVALID)?) as usize;
-        let name = r.take(n)?;
-        let n = r.u32()? as usize;
-        let value = r.take(n)?;
-        if name == key.as_bytes() {
-            if found.is_some() {
-                return Err(INVALID);
-            }
-            found = Some(value);
-        }
-        rest = r.0;
-    }
-    Ok(found)
+    extensions::unique(bytes, key).map_err(|_| INVALID)
 }
 /// Whether any feature key occurs, including a truncated feature value.
-pub fn present(mut bytes: &[u8]) -> bool {
-    while bytes.len() >= 2 {
-        let n = u16::from_le_bytes([bytes[0], bytes[1]]) as usize;
-        let Some(key) = bytes.get(2..2 + n) else {
-            return false;
-        };
-        if [
+pub fn present(bytes: &[u8]) -> bool {
+    extensions::present(
+        bytes,
+        &[
             CAPABILITY,
             REQUIRED_KINDS,
             INTENT,
@@ -375,22 +356,8 @@ pub fn present(mut bytes: &[u8]) -> bool {
             SETTLEMENT_ACK,
             OBSERVE,
             OBSERVED,
-        ]
-        .iter()
-        .any(|k| key == k.as_bytes())
-        {
-            return true;
-        }
-        let Some(v) = bytes.get(2 + n..6 + n) else {
-            return false;
-        };
-        let nvalue = u32::from_le_bytes(v.try_into().expect("four bytes")) as usize;
-        let Some(rest) = (6 + n).checked_add(nvalue).and_then(|n| bytes.get(n..)) else {
-            return false;
-        };
-        bytes = rest;
-    }
-    false
+        ],
+    )
 }
 /// Encode the host capability as an extension entry.
 pub fn encode_capability(c: Capability) -> Vec<u8> {
