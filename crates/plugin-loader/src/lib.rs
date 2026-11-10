@@ -393,3 +393,8 @@ mod ordinary_declared_metadata;
 #[allow(unsafe_code)]
 #[path = "tests/retired_store_fixture.rs"]
 mod retired_store_fixture;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+#[path = "tests/neutral_transport.rs"]
+mod neutral_transport;

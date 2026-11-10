@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use busbar_contract::abi::mechanism::{KindCode, DOOR_SYMBOL};
-use busbar_contract::abi::sdk::door::RawDoorFn;
+use busbar_contract::abi::mechanism::KindCode;
 
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
@@ -15,18 +13,8 @@ use crate::dispatch::{
 
 #[test]
 fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
-    let path = std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
-        .map(PathBuf::from)
-        .expect("BUSBAR_TEST_TCP_CDYLIB must name the qualified real TCP image");
-    let image = crate::dlopen_on_worker(path.as_os_str()).expect("the real TCP image loads");
-    // SAFETY: the qualified image exports the mechanism's typed door symbol. The image
-    // remains live until both load attempts and their immutable Statement have been dropped.
-    let door = unsafe {
-        *image
-            .get::<RawDoorFn>(DOOR_SYMBOL)
-            .expect("the real TCP door")
-    };
-    let row = LinkedRow::of_raw(door).expect("the actual TCP door states itself");
+    let path = crate::neutral_transport::cdylib();
+    let row = LinkedRow::of(crate::neutral_transport::door).expect("the SDK witness states itself");
     let dispatcher = Arc::new(Dispatcher::new(
         DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
@@ -46,7 +34,10 @@ fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
         }) => {
             assert_eq!((stated, asked), want);
         }
-        other => panic!("the linked TCP door loaded as a hook: {:?}", other.err()),
+        other => panic!(
+            "the linked witness door loaded as a hook: {:?}",
+            other.err()
+        ),
     }
     match load_dropped::<Hook>(&path, &row.statement, bind()) {
         Err(LoadError::ManifestKind {
@@ -56,7 +47,7 @@ fn the_door_asked_for_as_another_kind_is_refused_both_ways() {
             assert_eq!((stated, asked), want);
         }
         other => panic!(
-            "the dropped-in TCP door loaded as a hook: {:?}",
+            "the dropped-in witness door loaded as a hook: {:?}",
             other.err()
         ),
     }

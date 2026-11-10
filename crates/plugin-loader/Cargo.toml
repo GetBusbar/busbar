@@ -120,3 +120,8 @@ windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
+
+[[example]]
+name = "neutral_transport_door"
+path = "tests/fixtures/neutral_transport_door.rs"
+crate-type = ["cdylib"]

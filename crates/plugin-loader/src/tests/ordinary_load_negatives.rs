@@ -4,14 +4,14 @@
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use busbar_contract::abi::mechanism::call::{AbiStr, DeadlineClass, OutHead, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorParts, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::lifecycle::{slot, ValidateIn};
 use busbar_contract::abi::mechanism::rendering::read;
-use busbar_contract::abi::mechanism::{KindCode, DOOR_SYMBOL};
+use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::auth::LoginOutcome;
@@ -28,39 +28,23 @@ use crate::dispatch::{
 
 const WITHIN: Duration = Duration::from_secs(5);
 
-fn tcp_path() -> PathBuf {
-    std::env::var_os("BUSBAR_TEST_TCP_CDYLIB")
-        .map(PathBuf::from)
-        .expect("BUSBAR_TEST_TCP_CDYLIB must name the qualified real TCP image")
+fn witness_path() -> PathBuf {
+    crate::neutral_transport::cdylib()
+}
+fn witness_entry() -> RawDoorFn {
+    crate::dispatch::load::raw(crate::neutral_transport::door)
 }
 
-fn tcp_entry() -> RawDoorFn {
-    static IMAGE: OnceLock<(libloading::Library, RawDoorFn)> = OnceLock::new();
-    IMAGE
-        .get_or_init(|| {
-            let lib =
-                crate::dlopen_on_worker(tcp_path().as_os_str()).expect("the real TCP image loads");
-            // SAFETY: the qualified image exports the mechanism's typed door symbol. IMAGE keeps
-            // the library and all of its descriptor data live until process exit.
-            let entry = unsafe {
-                *lib.get::<RawDoorFn>(DOOR_SYMBOL)
-                    .expect("the real TCP door")
-            };
-            (lib, entry)
-        })
-        .1
-}
-
-fn tcp_parts() -> DoorParts {
-    let ptr = enter_door(tcp_entry());
-    validate_door::<Transport>(ptr).expect("the unmodified real TCP descriptor validates");
+fn witness_parts() -> DoorParts {
+    let ptr = enter_door(witness_entry());
+    validate_door::<Transport>(ptr).expect("the unmodified neutral transport descriptor validates");
     read_door(ptr, Some(KindCode::Transport))
-        .expect("the real TCP head validates")
+        .expect("the neutral transport head validates")
         .0
 }
 
 fn descriptor(parts: DoorParts) -> &'static Door {
-    // SAFETY: all retained pointers originate in the process-held real image or explicitly
+    // SAFETY: all retained pointers originate in the static SDK witness or explicitly
     // leaked immutable metadata below. Only checked numeric metadata is made incompatible;
     // no malformed operation table is entered.
     Box::leak(Box::new(unsafe { Door::__from_parts(parts) }))
@@ -89,8 +73,8 @@ fn bind(d: &Dispatcher) -> Bind {
 }
 
 #[test]
-fn actual_transport_kind_abi_versions_above_and_below_are_refused() {
-    let real = tcp_parts();
+fn transport_kind_abi_versions_above_and_below_are_refused() {
+    let real = witness_parts();
     let host = KindCode::Transport.abi_version();
     for stated in [host - 1, host + 1] {
         let door = descriptor(DoorParts {
@@ -109,8 +93,8 @@ fn actual_transport_kind_abi_versions_above_and_below_are_refused() {
 }
 
 #[test]
-fn actual_transport_incompatible_layouts_are_refused_with_the_rebuild_reason() {
-    let real = tcp_parts();
+fn transport_incompatible_layouts_are_refused_with_the_rebuild_reason() {
+    let real = witness_parts();
     let host = KindCode::Transport.layout_fingerprint();
     for stated in [host ^ 1, 0] {
         let door = descriptor(DoorParts {
@@ -138,11 +122,11 @@ fn actual_transport_incompatible_layouts_are_refused_with_the_rebuild_reason() {
 }
 
 #[test]
-fn actual_transport_frame_piece_stride_is_checked_before_use() {
-    let real = tcp_parts();
-    // SAFETY: tcp_parts validated the complete live Statement and transport tail.
+fn transport_frame_piece_stride_is_checked_before_use() {
+    let real = witness_parts();
+    // SAFETY: witness_parts validated the complete live Statement and transport tail.
     let st = unsafe { real.statement.read_unaligned() };
-    // SAFETY: the validated transport tail is complete and kept live by IMAGE.
+    // SAFETY: the validated transport tail is complete and kept live by the static SDK witness.
     let tail = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
     let host = std::mem::size_of::<FramePiece>() as u32;
     let stated = host - 8;
@@ -174,8 +158,8 @@ fn actual_transport_frame_piece_stride_is_checked_before_use() {
 }
 
 #[test]
-fn actual_transport_is_refused_as_each_other_kind() {
-    let ptr = enter_door(tcp_entry());
+fn transport_is_refused_as_each_other_kind() {
+    let ptr = enter_door(witness_entry());
     for want in KindCode::ALL
         .into_iter()
         .filter(|k| *k != KindCode::Transport)
@@ -191,8 +175,8 @@ fn actual_transport_is_refused_as_each_other_kind() {
 }
 
 extern "C" fn another_version() -> *const Door {
-    let real = tcp_parts();
-    // SAFETY: tcp_parts validated this process-held Statement.
+    let real = witness_parts();
+    // SAFETY: witness_parts validated this process-held Statement.
     let st = unsafe { real.statement.read_unaligned() };
     let st = Box::leak(Box::new(Statement {
         version: AbiStr {
@@ -210,25 +194,26 @@ extern "C" fn another_version() -> *const Door {
 #[test]
 fn actual_door_and_valid_but_different_row_or_manifest_statements_must_match() {
     let d = dispatcher();
-    let actual = LinkedRow::of_raw(tcp_entry()).expect("the actual TCP Statement renders");
+    let actual =
+        LinkedRow::of_raw(witness_entry()).expect("the neutral transport Statement renders");
     let other = LinkedRow::of_raw(another_version).expect("the changed version renders");
     read(&other.statement).expect("the changed Statement is independently well formed");
     assert_ne!(actual.statement, other.statement);
     drop(load_linked::<Transport>(&actual, bind(&d)).expect("the honest linked row loads"));
     drop(
-        load_dropped::<Transport>(&tcp_path(), &actual.statement, bind(&d))
+        load_dropped::<Transport>(&witness_path(), &actual.statement, bind(&d))
             .expect("the honest dropped manifest loads"),
     );
     let lying = LinkedRow {
         statement: other.statement.clone(),
-        door: tcp_entry(),
+        door: witness_entry(),
     };
     assert_eq!(
         load_linked::<Transport>(&lying, bind(&d)).err(),
         Some(LoadError::StatementMismatch)
     );
     assert_eq!(
-        load_dropped::<Transport>(&tcp_path(), &other.statement, bind(&d)).err(),
+        load_dropped::<Transport>(&witness_path(), &other.statement, bind(&d)).err(),
         Some(LoadError::StatementMismatch)
     );
     let lying_door = LinkedRow {
@@ -260,9 +245,9 @@ unsafe extern "C" fn ready_fails(_: *mut c_void, _: *const c_void, out: *mut c_v
 }
 
 #[test]
-fn actual_transport_lifecycle_surrounds_one_failed_ready_without_retry() {
+fn transport_lifecycle_surrounds_one_failed_ready_without_retry() {
     let d = dispatcher();
-    let mut validated = validate_door::<Transport>(enter_door(tcp_entry())).unwrap();
+    let mut validated = validate_door::<Transport>(enter_door(witness_entry())).unwrap();
     validated.ready = Some(ready_fails);
     let p = Plugin::<Transport>::bind(validated, None, bind(&d)).unwrap();
     let mut open = open_frame(crate::dispatch::lifecycle::blob(
@@ -324,7 +309,7 @@ impl Answering<ValidateIn, OutHead> for FaultAnswer {
 #[test]
 fn counted_raw_fault_crosses_the_dispatcher_and_sets_the_generic_login_call_flag() {
     let d = dispatcher();
-    let mut validated = validate_door::<Transport>(enter_door(tcp_entry())).unwrap();
+    let mut validated = validate_door::<Transport>(enter_door(witness_entry())).unwrap();
     validated.slots[slot::VALIDATE as usize] = raw_fault;
     let p = Plugin::<Transport>::bind(validated, None, bind(&d)).unwrap();
     let before = FAULT_CALLS.load(Ordering::SeqCst);
