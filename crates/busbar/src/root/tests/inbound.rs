@@ -293,7 +293,8 @@ async fn app_generation(
     (Arc::new(app), listener_config, book)
 }
 
-use crate::root::test_plugins::application_listener::actual_listener_with_routers;
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(inbound);
 
 async fn actual_listener(
     app: Arc<busbar_kernel::state::App>,
