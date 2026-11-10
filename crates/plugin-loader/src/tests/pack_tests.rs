@@ -301,9 +301,9 @@ fn pack_cli_signs_the_former_names() {
             "--lib",
             &lib_path.to_string_lossy(),
             "--name",
-            "busbar-hook-webrequest",
+            "busbar-hook-sample-hook",
             "--alias",
-            "webrequest",
+            "sample-hook",
             "--kind",
             "hook",
             "--version",
@@ -326,14 +326,14 @@ fn pack_cli_signs_the_former_names() {
             .map(|t| busbar_plugin_loader::tarball::unpack(&t).unwrap().manifest);
         (code, unpacked)
     };
-    let (code, packed) = pack_with(&["busbar-webrequest", "busbar-webrequest-hook"]);
+    let (code, packed) = pack_with(&["busbar-sample-hook", "busbar-sample-hook-hook"]);
     assert_eq!(code, ExitCode::SUCCESS);
     let m = packed.expect("the tarball was written");
     assert_eq!(
         m.former_names,
-        ["busbar-webrequest", "busbar-webrequest-hook"]
+        ["busbar-sample-hook", "busbar-sample-hook-hook"]
     );
-    assert!(m.answers_to("busbar-webrequest") && m.answers_to("webrequest"));
+    assert!(m.answers_to("busbar-sample-hook") && m.answers_to("sample-hook"));
 
     let (code, packed) = pack_with(&[]);
     assert_eq!(code, ExitCode::SUCCESS);
@@ -345,7 +345,11 @@ fn pack_cli_signs_the_former_names() {
             .contains("former_names")
     );
 
-    for bad in ["Busbar_WebRequest", "busbar-hook-webrequest", "webrequest"] {
+    for bad in [
+        "Busbar_SampleHook",
+        "busbar-hook-sample-hook",
+        "sample-hook",
+    ] {
         let (code, packed) = pack_with(&[bad]);
         assert_eq!(code, ExitCode::FAILURE, "{bad}");
         assert!(
@@ -450,11 +454,11 @@ fn flag_parsing() {
 
     let former: Vec<String> = [
         "--former-name",
-        "busbar-webrequest",
+        "busbar-sample-hook",
         "--name",
-        "busbar-hook-webrequest",
+        "busbar-hook-sample-hook",
         "--former-name",
-        "busbar-webrequest-hook",
+        "busbar-sample-hook-hook",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -462,10 +466,10 @@ fn flag_parsing() {
     let f = parse_flags(&former).unwrap();
     assert_eq!(
         f.former_names,
-        ["busbar-webrequest", "busbar-webrequest-hook"]
+        ["busbar-sample-hook", "busbar-sample-hook-hook"]
     );
     assert!(!f.map.contains_key(FORMER_NAME));
-    assert_eq!(f.map["name"], "busbar-hook-webrequest");
+    assert_eq!(f.map["name"], "busbar-hook-sample-hook");
     assert!(parse_flags(&["--former-name".to_string()]).is_err());
 }
 
