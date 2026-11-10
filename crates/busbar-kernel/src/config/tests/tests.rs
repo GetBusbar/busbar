@@ -860,8 +860,8 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
-    let client_tokens = deploy.identity_providers["tokens"]
-        .settings
+    let written = serde_json::to_value(&deploy.identity_providers["tokens"].settings).unwrap();
+    let client_tokens = written
         .get("client_tokens")
         .and_then(|v| v.as_array())
         .expect("client_tokens must deserialize as a JSON array");
@@ -904,7 +904,10 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
         .expect("unguarded splice must parse and deserialize");
     let settings = &deploy.identity_providers["ad"].settings;
     assert_eq!(
-        settings.get("evil_key").and_then(|v| v.as_str()),
+        serde_json::to_value(settings)
+            .unwrap()
+            .get("evil_key")
+            .and_then(|v| v.as_str()),
         Some("evil_val"),
         "sanity: an UNGUARDED splice really does inject a sibling settings key through full real \
          deserialization"
@@ -1358,7 +1361,7 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
             max_admin_scope: None,
             token: Some(SecretRef::env("BUSBAR_T_DEBUG_SECRET")),
             browser_login: None,
-            settings: serde_json::Map::new(),
+            settings: serde_json::Map::new().into(),
         },
     );
     deploy.tls = Some(TlsCfg {
@@ -2026,12 +2029,15 @@ advanced:
     assert_eq!(store.module, "acme-durable");
 
     assert_eq!(
-        store.settings.get("db_path").and_then(|v| v.as_str()),
+        serde_json::to_value(&store.settings)
+            .unwrap()
+            .get("db_path")
+            .and_then(|v| v.as_str()),
         Some("/var/lib/busbar/gov.db")
     );
     assert_eq!(
-        store
-            .settings
+        serde_json::to_value(&store.settings)
+            .unwrap()
             .get("busy_timeout_ms")
             .and_then(|v| v.as_i64()),
         Some(250)
@@ -2097,8 +2103,8 @@ fn test_resolve_builds_registry_from_named_defs() {
     );
 
     assert_eq!(
-        cfg.hooks["pii-eng"]
-            .settings
+        serde_json::to_value(&cfg.hooks["pii-eng"].settings)
+            .unwrap()
             .get("team")
             .and_then(|v| v.as_str()),
         Some("alpha")
@@ -2254,15 +2260,24 @@ test-idp-double:
     );
 
     assert_eq!(
-        method.settings.get("issuer").and_then(|v| v.as_str()),
+        serde_json::to_value(&method.settings)
+            .unwrap()
+            .get("issuer")
+            .and_then(|v| v.as_str()),
         Some("https://idp.example/")
     );
     assert_eq!(
-        method.settings.get("audience").and_then(|v| v.as_str()),
+        serde_json::to_value(&method.settings)
+            .unwrap()
+            .get("audience")
+            .and_then(|v| v.as_str()),
         Some("busbar")
     );
 
-    assert!(!method.settings.contains_key("browser_login"));
+    assert!(!method
+        .settings
+        .key_names()
+        .contains(&"browser_login".to_owned()));
 }
 
 #[test]

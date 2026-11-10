@@ -787,6 +787,8 @@ pub struct Opening<'a> {
     /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
     /// `open` is handed.
     pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
+    /// Source shorthand admitted from the loaded source declarations.
+    pub sources: &'a busbar_contract::secret_ref::Sugars,
     /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
     /// secret resolves through it, so a source that reads the disk answers on the host's lane.
     pub scope: &'a busbar_contract::config_time::ConfigScope,
@@ -843,26 +845,41 @@ fn open_ready<K: crate::dispatch::Kind>(
             e.at
         )
     })?;
-    let mut block = instance_settings(opening.doc, K::CODE, instance)
-        .map(|(v, _)| v.clone())
-        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    if let Some(at) = busbar_contract::secret_fields::undeclared_reference(&block, &keys) {
-        let field = instance_settings(opening.doc, K::CODE, instance).map_or_else(
-            || format!("settings.{at}"),
-            |(_, base)| format!("{base}.{at}"),
-        );
-        return Err(busbar_contract::secret_fields::undeclared_refusal(
-            &field, &c.name,
-        ));
-    }
-    let mut held = Secrets(resolve_secrets(
-        &mut block,
+    let (block, base) = instance_settings(opening.doc, K::CODE, instance)
+        .map(|(value, base)| {
+            (
+                busbar_contract::plugin_settings::ResolvedSettings::from(value.clone()),
+                base,
+            )
+        })
+        .unwrap_or_else(|| (Default::default(), "settings".to_owned()));
+    let (remaining, held) = busbar_contract::auth_calls::prepare_references(
+        &block,
         &keys,
+        opening.sources,
+        &c.name,
+        &base,
         opening.secrets,
         opening.scope,
-    )?);
-    let blobs = held.blobs();
-    let settings = serde_json::to_vec(&block).unwrap_or_default();
+    )?;
+    let settings = remaining.encode().map_err(|error| error.to_string())?;
+    let seal = opening
+        .dispatcher
+        .seal()
+        .ok_or("auth opening requires the host settings seal")?;
+    let blobs: Vec<_> = held
+        .iter()
+        .map(|secret| {
+            let bytes = secret.expose(seal);
+            Blob {
+                ptr: bytes.as_ptr(),
+                len: bytes.len(),
+                fmt: busbar_contract::abi::mechanism::call::BLOB_OCTETS,
+                flags: busbar_contract::abi::mechanism::call::BLOB_SECRET,
+            }
+        })
+        .collect();
+    let settings = settings.expose(seal);
     let mut i: OpenIn = blank_in();
     i.settings = Blob {
         ptr: settings.as_ptr(),
@@ -884,70 +901,6 @@ fn open_ready<K: crate::dispatch::Kind>(
     }
     drop(lease);
     plugin.ready(opening.dispatcher, crate::dispatch::ready::READY_DEADLINE)
-}
-
-pub fn resolve_secrets(
-    block: &mut serde_json::Value,
-    keys: &[String],
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<Vec<busbar_contract::redacted::Secret<Vec<u8>>>, String> {
-    busbar_contract::secret_fields::lend(
-        block,
-        keys,
-        false,
-        |path, found| resolve_one(found, path, resolver, scope),
-        |at, found| resolve_one(Some(found), at, resolver, scope),
-    )
-}
-
-fn resolve_one(
-    found: Option<serde_json::Value>,
-    path: &str,
-    resolver: &dyn busbar_contract::secret::SecretResolve,
-    scope: &busbar_contract::config_time::ConfigScope,
-) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-    let Some(found) = found else {
-        return Ok(busbar_contract::redacted::Secret::default());
-    };
-    let r: busbar_contract::secret_ref::SecretRef =
-        serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
-    resolver
-        .resolve_at_config(&r, scope)
-        .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
-}
-
-pub(crate) fn not_a_reference(at: String) -> impl FnOnce(serde_json::Error) -> String {
-    move |e: serde_json::Error| {
-        let class = match e.classify() {
-            serde_json::error::Category::Io => "the value could not be read",
-            serde_json::error::Category::Syntax | serde_json::error::Category::Eof => {
-                "it is not well-formed"
-            }
-            serde_json::error::Category::Data => "a field is missing or has the wrong type",
-        };
-        format!("{at}: not a secret reference: {class} (the decoder's text is withheld)")
-    }
-}
-
-struct Secrets(Vec<busbar_contract::redacted::Secret<Vec<u8>>>);
-
-impl Secrets {
-    fn blobs(&mut self) -> Vec<busbar_contract::abi::mechanism::call::Blob> {
-        use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS, BLOB_SECRET};
-        self.0
-            .iter_mut()
-            .map(|b| {
-                let (ptr, len) = b.lend_mut();
-                Blob {
-                    ptr: ptr.cast_const(),
-                    len,
-                    fmt: BLOB_OCTETS,
-                    flags: BLOB_SECRET,
-                }
-            })
-            .collect()
-    }
 }
 
 fn bind_one(c: &Candidate, bind: Bind) -> Result<Bound, String> {

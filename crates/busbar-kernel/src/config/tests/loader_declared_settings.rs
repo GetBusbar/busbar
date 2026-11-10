@@ -31,7 +31,7 @@ fn a_reference_at_a_declared_field_resolves_as_the_kernel_resolves_it() {
         "dsn": {"env":"PG_DSN"}, "replicas":[{"password":{"env":"R1"}}], "pool":4
     }));
     let out = resolve_settings(
-        &written,
+        &crate::config::secret::test_settings(&written),
         &["dsn".into(), "replicas.*.password".into()],
         &[],
         "declaring-store",
@@ -39,7 +39,7 @@ fn a_reference_at_a_declared_field_resolves_as_the_kernel_resolves_it() {
         &scope(),
     )
     .expect("declared");
-    let v = out.as_value();
+    let v = &crate::config::secret::test_resolved_value(&out);
     assert!(
         v["dsn"]
             .as_str()
@@ -57,8 +57,15 @@ fn a_reference_at_a_declared_field_resolves_as_the_kernel_resolves_it() {
 #[test]
 fn a_reference_at_an_undeclared_field_is_refused_as_the_kernel_refuses_it() {
     let written = settings(serde_json::json!({"dsn":{"env":"PG_DSN"}}));
-    let err = resolve_settings(&written, &[], &[], "silent-store", &resolver(), &scope())
-        .expect_err("undeclared");
+    let err = resolve_settings(
+        &crate::config::secret::test_settings(&written),
+        &[],
+        &[],
+        "silent-store",
+        &resolver(),
+        &scope(),
+    )
+    .expect_err("undeclared");
     assert!(
         err.contains("settings.dsn")
             && err.contains("silent-store")
@@ -70,7 +77,7 @@ fn a_reference_at_an_undeclared_field_is_refused_as_the_kernel_refuses_it() {
 fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     let written = settings(serde_json::json!({"url":{"env":"STORE_URL"},"password":{"env":"PW"}}));
     let out = resolve_settings(
-        &written,
+        &crate::config::secret::test_settings(&written),
         &["password".into()],
         &["url".into()],
         "referencing-store",
@@ -78,7 +85,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
         &scope(),
     )
     .expect("resolves");
-    let v = out.as_value();
+    let v = &crate::config::secret::test_resolved_value(&out);
     assert!(
         v["url"]
             .as_str()
@@ -87,7 +94,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     );
     let literal = settings(serde_json::json!({"url":"postgres://db:5432/busbar"}));
     let out = resolve_settings(
-        &literal,
+        &crate::config::secret::test_settings(&literal),
         &["password".into()],
         &["url".into()],
         "referencing-store",
@@ -96,7 +103,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     )
     .expect("as written");
     assert_eq!(
-        out.as_value()["url"],
+        (&crate::config::secret::test_resolved_value(&out))["url"],
         serde_json::json!("postgres://db:5432/busbar")
     );
 }

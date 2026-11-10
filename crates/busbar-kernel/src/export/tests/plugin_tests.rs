@@ -605,10 +605,20 @@ async fn a_delivery_before_start_never_overrides_the_sinks_stated_admission() {
 struct DeclaringAxis;
 
 impl ExportAxis for DeclaringAxis {
-    fn probe(&self, _: &str, _: &str, _: &Value) -> Option<busbar_contract::export_calls::Probed> {
+    fn probe(
+        &self,
+        _: &str,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Option<busbar_contract::export_calls::Probed> {
         None
     }
-    fn check(&self, _: &str, _: u32, _: &[(String, &Value)]) -> Option<Vec<String>> {
+    fn check(
+        &self,
+        _: &str,
+        _: u32,
+        _: &[(String, &busbar_contract::plugin_settings::ResolvedSettings)],
+    ) -> Option<Vec<String>> {
         None
     }
     fn open(
@@ -649,9 +659,12 @@ fn settings_of(v: Value) -> serde_json::Map<String, Value> {
 #[test]
 fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
     let resolver = crate::config::secret::actual_product_resolver();
-    let sink_settings = |axis: &dyn ExportAxis, module, settings| {
-        sink_settings_with_resolver(axis, module, settings, &resolver)
-    };
+    let sink_settings =
+        |axis: &dyn ExportAxis,
+         module: &str,
+         settings: &busbar_contract::plugin_settings::Settings| {
+            sink_settings_with_resolver(axis, module, settings, &resolver)
+        };
     let (url, token) = (
         format!("BUSBAR_T_REFCAP_EXPORT_URL_{}", std::process::id()),
         format!("BUSBAR_T_REFCAP_EXPORT_TOKEN_{}", std::process::id()),
@@ -663,14 +676,19 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
         "auth_header": { "name": "Authorization", "value": { "env": token } },
         "batch": 10,
     }));
-    let handed = sink_settings(&DeclaringAxis, "declaring-sink", &written).expect("resolves");
+    let handed = sink_settings(
+        &DeclaringAxis,
+        "declaring-sink",
+        &crate::config::secret::test_settings(&written),
+    )
+    .expect("resolves");
     let diagnostic = format!("{handed:?}");
     assert!(
         !diagnostic.contains("Bearer t0k"),
         "the settings owner must not expose a resolved credential through Debug"
     );
     assert_eq!(
-        handed.as_value(),
+        (&crate::config::secret::test_resolved_value(&handed)),
         &serde_json::json!({
             "url": "https://siem.example/in",
             "auth_header": { "name": "Authorization", "value": "Bearer t0k" },
@@ -681,23 +699,38 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 
     let literal = settings_of(serde_json::json!({ "url": "https://collector.example/v1/traces" }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+        &crate::config::secret::test_resolved_value(
+            &sink_settings(
+                &DeclaringAxis,
+                "declaring-sink",
+                &crate::config::secret::test_settings(&literal)
+            )
             .expect("as written")
-            .as_value(),
+        ),
         &Value::Object(literal.clone())
     );
 
     std::env::remove_var(&url);
-    let err = sink_settings(&DeclaringAxis, "declaring-sink", &written).unwrap_err();
+    let err = sink_settings(
+        &DeclaringAxis,
+        "declaring-sink",
+        &crate::config::secret::test_settings(&written),
+    )
+    .unwrap_err();
     assert!(err.contains("url"), "{err}");
     assert!(!err.contains("Bearer t0k"), "{err}");
     std::env::remove_var(&token);
 
     let undeclared = settings_of(serde_json::json!({ "url": { "env": "NEVER_READ" } }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "silent-sink", &undeclared)
+        &crate::config::secret::test_resolved_value(
+            &sink_settings(
+                &DeclaringAxis,
+                "silent-sink",
+                &crate::config::secret::test_settings(&undeclared)
+            )
             .expect("as written")
-            .as_value(),
+        ),
         &Value::Object(undeclared.clone())
     );
 }
@@ -705,9 +738,12 @@ fn a_reference_at_a_reference_capable_url_reaches_the_sink_resolved() {
 #[test]
 fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
     let resolver = crate::config::secret::actual_product_resolver();
-    let sink_settings = |axis: &dyn ExportAxis, module, settings| {
-        sink_settings_with_resolver(axis, module, settings, &resolver)
-    };
+    let sink_settings =
+        |axis: &dyn ExportAxis,
+         module: &str,
+         settings: &busbar_contract::plugin_settings::Settings| {
+            sink_settings_with_resolver(axis, module, settings, &resolver)
+        };
     let url_var = format!("BUSBAR_T_EXPORT_CLASS_URL_{}", std::process::id());
     let token_var = format!("BUSBAR_T_EXPORT_CLASS_TOKEN_{}", std::process::id());
     let url = "https://classification.example/collector";
@@ -737,13 +773,23 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         .with_writer(move || Output(writing.clone()))
         .finish();
     let handed = tracing::subscriber::with_default(subscriber, || {
-        sink_settings(&DeclaringAxis, "declaring-sink", &written)
+        sink_settings(
+            &DeclaringAxis,
+            "declaring-sink",
+            &crate::config::secret::test_settings(&written),
+        )
     });
     std::env::remove_var(&url_var);
     std::env::remove_var(&token_var);
     let handed = handed.expect("the two references resolve");
-    assert_eq!(handed.as_value()["url"], url);
-    assert_eq!(handed.as_value()["auth_header"]["value"], token);
+    assert_eq!(
+        (&crate::config::secret::test_resolved_value(&handed))["url"],
+        url
+    );
+    assert_eq!(
+        (&crate::config::secret::test_resolved_value(&handed))["auth_header"]["value"],
+        token
+    );
     assert_eq!(written["url"], serde_json::json!({ "env": url_var }));
     assert_eq!(
         written["auth_header"]["value"],
@@ -754,9 +800,14 @@ fn export_reference_diagnostics_keep_secret_and_plain_fields_distinct() {
         "auth_header": { "name": "Authorization", "value": "Bearer literal-fixture" },
     }));
     assert_eq!(
-        sink_settings(&DeclaringAxis, "declaring-sink", &literal)
+        &crate::config::secret::test_resolved_value(
+            &sink_settings(
+                &DeclaringAxis,
+                "declaring-sink",
+                &crate::config::secret::test_settings(&literal)
+            )
             .expect("existing literal settings still pass through")
-            .as_value(),
+        ),
         &Value::Object(literal.clone())
     );
     let captured = String::from_utf8(output.lock().unwrap().clone()).expect("UTF-8 diagnostics");
@@ -836,9 +887,13 @@ fn export_restart_metadata_compares_boot_membership_module_and_effective_project
     assert!(!definition_requires_restart("sink", None, None));
 
     let mut settings_only = desired.clone();
-    settings_only
+    settings_only.settings = settings_only
         .settings
-        .insert("destination".into(), "after".into());
+        .edit(
+            &serde_json::from_value(serde_json::json!({"destination": "after"})).unwrap(),
+            &[],
+        )
+        .unwrap();
     assert!(!definition_requires_restart(
         "sink",
         boot,

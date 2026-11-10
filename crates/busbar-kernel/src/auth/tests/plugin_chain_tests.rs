@@ -5,7 +5,7 @@ use crate::config::{AuthCfg, AuthChainEntry};
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
-    entry.settings = settings;
+    entry.settings = settings.into();
     AuthCfg {
         chain: vec![entry],
         ..AuthCfg::default_none()
@@ -74,7 +74,7 @@ fn chain_open_wipes_the_resolved_settings() {
     .into_iter()
     .collect();
     let mut resolved = crate::config::secret::resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &["client_secret".to_string()],
         &[],
         "busbar-auth-oidc",
@@ -84,7 +84,7 @@ fn chain_open_wipes_the_resolved_settings() {
     .expect("the declared reference resolves");
     std::env::remove_var(&var);
     assert_eq!(
-        resolved.as_value()["client_secret"],
+        (&crate::config::secret::test_resolved_value(&resolved))["client_secret"],
         serde_json::json!("chain-open-secret"),
         "the plugin is handed the resolved value"
     );
@@ -93,8 +93,7 @@ fn chain_open_wipes_the_resolved_settings() {
 
     zeroize::Zeroize::zeroize(&mut resolved);
     assert!(
-        !resolved
-            .as_value()
+        !(&crate::config::secret::test_resolved_value(&resolved))
             .to_string()
             .contains("chain-open-secret"),
         "the wipe left the secret: {resolved:?}"

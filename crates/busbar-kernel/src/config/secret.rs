@@ -321,3 +321,21 @@ pub(crate) fn actual_product_resolver() -> SecretResolver {
 pub(crate) fn install_normal_root_metadata() {
     super::tests::install_normal_root_metadata();
 }
+
+#[cfg(test)]
+pub(crate) fn test_settings(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> busbar_contract::plugin_settings::Settings {
+    map.clone().into()
+}
+#[cfg(test)]
+pub(crate) fn test_settings_value(
+    value: &serde_json::Value,
+) -> busbar_contract::plugin_settings::Settings {
+    serde_json::from_value(value.clone()).expect("fixture settings are an object")
+}
+#[cfg(test)]
+pub(crate) fn test_resolved_value(settings: &ResolvedSettings) -> serde_json::Value {
+    let encoded = settings.encode().expect("fixture settings encode");
+    serde_json::from_slice(encoded.expose(&crate::seal::lend())).expect("fixture settings decode")
+}

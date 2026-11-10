@@ -44,7 +44,13 @@ impl HookCalls for Seen {
     fn notify(&self, _: Arc<NotifyFrame>, _: Duration) -> Pending<()> {
         Box::pin(std::future::ready(()))
     }
-    fn configure(&self, _: &str, _: &str, _: u64, _: Duration) -> Pending<Result<(), String>> {
+    fn configure(
+        &self,
+        _: &str,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
+        _: u64,
+        _: Duration,
+    ) -> Pending<Result<(), String>> {
         Box::pin(std::future::ready(Ok(())))
     }
     fn status(&self, _: Duration) -> Pending<Option<Vec<u8>>> {

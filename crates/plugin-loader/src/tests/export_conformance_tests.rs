@@ -739,7 +739,7 @@ fn a_sink_validates_its_settings_the_same_through_either_door() {
     let refused = serde_json::json!({ "path": 7 });
     let accepted = serde_json::json!({ "path": "/var/log/busbar/requests.jsonl", "rotate_mb": 64 });
     let [linked, dropped] = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher());
+        let rows = ExportRows::new(&registry, dispatcher()).with_disk(crate::dispatch::test_disk_authority());
         let transcript = serde_json::json!({
             "accepted": rows.probe(name, "tail", &crate::dispatch::test_settings(&accepted)),
             "refused": rows.probe(name, "tail", &crate::dispatch::test_settings(&refused)),
@@ -782,7 +782,7 @@ fn a_declared_diagnostic_is_stated_and_raised_the_same_through_either_door() {
     let [linked, dropped] = doors.map(|registry| {
         let tape = Arc::new(Tape::default());
         let far = Arc::new(Far::default());
-        let rows = ExportRows::new(&registry, dispatcher())
+        let rows = ExportRows::new(&registry, dispatcher()).with_disk(crate::dispatch::test_disk_authority())
             .with_envelope(tape.clone())
             .with_conns(crate::dispatch::test_admissions(far.clone()));
         let first_party = rows.first_party(name);
@@ -832,6 +832,7 @@ fn a_sinks_outbound_request_is_carried_by_the_host_the_same_through_either_door(
         let tape = Arc::new(Tape::default());
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
             .with_envelope(tape.clone())
             .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
@@ -916,8 +917,10 @@ fn a_sink_starts_and_checks_the_same_through_either_door() {
         .iter()
         .zip(hooks.iter())
         .map(|(file, hook)| {
-            let f = ExportRows::new(file, dispatcher());
+            let f = ExportRows::new(file, dispatcher())
+                .with_disk(crate::dispatch::test_disk_authority());
             let h = ExportRows::new(hook, dispatcher())
+                .with_disk(crate::dispatch::test_disk_authority())
                 .with_conns(crate::dispatch::test_admissions(Arc::new(Far::default())));
             format!(
                 "{:?} {:?} {:?} {:?} {:?}",
@@ -979,6 +982,7 @@ fn a_declared_egress_policy_is_granted_to_a_first_party_sink_only() {
     let [linked, dropped] = doors.map(|registry| {
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
             .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
                 name,
@@ -1047,6 +1051,7 @@ fn a_sinks_deliveries_in_flight_reach_its_admission_bound_past_the_blocking_pool
         let far = Arc::new(Far::default());
         assert!(far.waker.set(d.conn_waker()).is_ok());
         let sink = ExportRows::new(&registry, d)
+            .with_disk(crate::dispatch::test_disk_authority())
             .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
                 name,
@@ -1110,6 +1115,7 @@ fn dropping_an_instance_whose_delivery_never_wakes_returns() {
 
     let far = Arc::new(Far::default());
     let sink = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
         .with_conns(crate::dispatch::test_admissions(far.clone()))
         .open(
             name,
@@ -1152,6 +1158,7 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
             .is_some_and(|r| r.first_party()));
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
             .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(
                 "k9e2-otlp",
@@ -1178,6 +1185,7 @@ fn a_loopback_collector_the_operator_trusted_loads_first_party_or_not() {
     let row = registry.resolve("k9e2-third-otlp").expect("admitted");
     assert!(!row.first_party());
     ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
         .with_conns(crate::dispatch::test_admissions(Arc::new(Far::default())))
         .open(
             "k9e2-third-otlp",
@@ -1337,6 +1345,7 @@ fn a_closed_span_reaches_a_collector_the_same_through_either_door() {
         let tape = Arc::new(Tape::default());
         let far = Arc::new(Far::default());
         let sink = ExportRows::new(&registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
             .with_envelope(tape.clone())
             .with_conns(crate::dispatch::test_admissions(far.clone()))
             .open(

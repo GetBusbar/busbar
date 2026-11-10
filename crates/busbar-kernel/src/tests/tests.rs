@@ -662,7 +662,7 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
         module: module.to_string(),
         max_admin_scope: cap.map(str::to_string),
         token: None,
-        settings: serde_json::Map::new(),
+        settings: serde_json::Map::new().into(),
     };
     let mut auth = AuthCfg::default_none();
 

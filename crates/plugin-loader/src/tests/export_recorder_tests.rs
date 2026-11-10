@@ -139,7 +139,8 @@ fn config_probe_carries_the_declaration_or_reports_its_refusal() {
         DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
     ));
-    let rows = crate::export_axis::ExportRows::new(&registry, d);
+    let rows = crate::export_axis::ExportRows::new(&registry, d)
+        .with_disk(crate::dispatch::test_disk_authority());
     let (streams, problems, recorder) = rows
         .probe(
             "neutral-recorder",

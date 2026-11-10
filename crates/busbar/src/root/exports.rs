@@ -49,9 +49,14 @@ impl ExportAxis for RootExports {
             rows().ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
         let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
             crate::root::connector::the().clone();
-        rows.with_logs(crate::root::linked::logs())
-            .with_conns(crate::root::connector::admit(conns))
-            .open(module, label, settings)
+        rows.with_disk(
+            busbar_contract::services::disk_admission::DiskAuthority::issue(
+                &busbar_kernel::seal::acquire(),
+            ),
+        )
+        .with_logs(crate::root::linked::logs())
+        .with_conns(crate::root::connector::admit(conns))
+        .open(module, label, settings)
     }
 
     fn linked(&self, module: &str) -> bool {

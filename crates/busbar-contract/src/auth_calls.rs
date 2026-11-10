@@ -713,3 +713,23 @@ pub trait OutboundAuth: Send + Sync {
 
 /// Admission of declared identity-domain configuration metadata.
 pub mod domain;
+
+/// Prepare authored auth settings and declared credential slots for the lifecycle ABI.
+/// Resolution returns guarded values; exact credential positions are stripped from settings.
+pub fn prepare_references(
+    settings: &crate::plugin_settings::ResolvedSettings,
+    references: &[String],
+    sources: &crate::secret_ref::Sugars,
+    owner: &str,
+    field_base: &str,
+    resolver: &dyn crate::secret::SecretResolve,
+    scope: &crate::config_time::ConfigScope,
+) -> Result<crate::plugin_settings::LentSettings, String> {
+    settings.lend_references_with(
+        references,
+        sources,
+        owner,
+        &|reference| resolver.resolve_at_config(reference, scope),
+        crate::plugin_settings::ReferenceDelivery::Strip(field_base),
+    )
+}

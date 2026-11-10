@@ -27,7 +27,7 @@ impl AuthAxis for Echoing {
         &self,
         _: &str,
         _: &str,
-        _: &serde_json::Value,
+        _: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<std::sync::Arc<dyn busbar_contract::auth_calls::AuthCalls>, String> {
         Err("no inbound row".to_string())
     }

@@ -379,6 +379,8 @@ pub struct NestAsk {
     pub body: Vec<u8>,
 }
 
+pub mod disk_admission;
+
 /// A DESTINATION the host bound for an opened instance (THE DESIGN, host service `disk.append`): the
 /// file the operator's configuration gives a key the plugin's manifest declares, and the rotation
 /// the host applies to it. The plugin names the key; nothing here comes from the plugin.

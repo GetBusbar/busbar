@@ -916,11 +916,16 @@ impl busbar_contract::secret::SecretResolve for Resolver {
         r: &busbar_contract::secret_ref::SecretRef,
     ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
         use crate::dispatch::ready::ready_plugins::auth;
-        match r.env_var() {
-            Some("OIDC_SECRET") => Ok(busbar_contract::redacted::Secret::new(
+        let admitted: busbar_contract::secret_ref::SecretRef = serde_json::from_value(
+            serde_json::json!({"module":"ready-secret-source", "settings":{"slot":"available"}}),
+        )
+        .unwrap();
+        if r == &admitted {
+            Ok(busbar_contract::redacted::Secret::new(
                 auth::SECRET.to_vec(),
-            )),
-            _ => Err(format!("{} is not set", r.describe())),
+            ))
+        } else {
+            Err(format!("{} is not set", r.describe()))
         }
     }
 
@@ -964,6 +969,7 @@ fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> 
             doc: &plan,
             dispatcher: &d,
             secrets: &Resolver,
+            sources: &busbar_contract::secret_ref::Sugars::default(),
             scope: &busbar_contract::config_time::ConfigScope::config_time(),
         }),
     })
@@ -1003,14 +1009,14 @@ fn red_an_auth_door_declaring_a_secret_ref_is_handed_it_resolved_at_open() {
         boot_auth(
             with_secret::door,
             SECRET_NAME,
-            r#"{"issuer": "https://idp", "client_secret": {"env": "OIDC_SECRET"}}"#
+            r#"{"issuer": "https://idp", "client_secret": {"module":"ready-secret-source","settings":{"slot":"available"}}}"#
         ),
         Ok(1)
     );
     let unresolved = boot_auth(
         with_secret::door,
         SECRET_NAME,
-        r#"{"client_secret": {"env": "NOT_SET"}}"#,
+        r#"{"client_secret": {"module":"ready-secret-source","settings":{"slot":"missing"}}}"#,
     )
     .unwrap_err();
     assert!(
@@ -1130,7 +1136,7 @@ fn a_plane_the_configuration_does_not_use_is_never_bound() {
 #[test]
 fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
-    for (keys, mut block, at) in [
+    for (keys, block, at) in [
         (
             vec!["client_secret".to_string()],
             doc(r#"{"client_secret": "pasted-pw-7b"}"#),
@@ -1142,7 +1148,16 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_as_an_exact_one_is() 
             "settings.hosts.0.password",
         ),
     ] {
-        let Err(e) = resolve_secrets(&mut block, &keys, &Resolver, &scope) else {
+        let block = busbar_contract::plugin_settings::ResolvedSettings::from(block);
+        let Err(e) = busbar_contract::auth_calls::prepare_references(
+            &block,
+            &keys,
+            &busbar_contract::secret_ref::Sugars::default(),
+            "test-owner",
+            "settings",
+            &Resolver,
+            &scope,
+        ) else {
             panic!("a literal at {at} refuses");
         };
         assert!(

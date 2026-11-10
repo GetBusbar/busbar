@@ -33,6 +33,7 @@ pub struct ExportRows<'r> {
     logs: Option<&'r PluginLogConfig>,
 
     conns: Option<AdmissionAuthority>,
+    disk: Option<busbar_contract::services::disk_admission::DiskAuthority>,
 
     envelope: Option<Arc<dyn EnvelopeSink>>,
 }
@@ -51,6 +52,7 @@ impl<'r> ExportRows<'r> {
             dispatcher,
             logs: None,
             conns: None,
+            disk: None,
             envelope: None,
         }
     }
@@ -64,6 +66,15 @@ impl<'r> ExportRows<'r> {
     #[must_use]
     pub fn with_conns(mut self, conns: AdmissionAuthority) -> Self {
         self.conns = Some(conns);
+        self
+    }
+
+    #[must_use]
+    pub fn with_disk(
+        mut self,
+        authority: busbar_contract::services::disk_admission::DiskAuthority,
+    ) -> Self {
+        self.disk = Some(authority);
         self
     }
 
@@ -306,7 +317,13 @@ impl<'r> ExportRows<'r> {
             &row.manifest.declares.metrics,
         )?;
 
-        p.grant_destinations(&row.manifest.declares);
+        if !row.manifest.declares.destinations.is_empty() {
+            let authority = self
+                .disk
+                .as_ref()
+                .ok_or("export disk destinations require kernel admission authority")?;
+            p.grant_destinations(authority, &row.manifest.declares);
+        }
 
         let opened =
             ExportInstance::open(p, self.dispatcher.clone(), text.expose(seal))?.holding(grant);

@@ -48,6 +48,11 @@ pub type ReferenceResolver<'a> =
 /// Settings and ordered sealed credential slots prepared for a kind's lending ABI.
 pub type LentSettings = (ResolvedSettings, Vec<crate::Secret<Vec<u8>>>);
 
+pub(crate) enum ReferenceDelivery<'a> {
+    Retain,
+    Strip(&'a str),
+}
+
 impl Settings {
     /// Public configuration member names, for diagnostics and redacted admin projections.
     pub fn key_names(&self) -> Vec<String> {
@@ -139,14 +144,23 @@ impl Settings {
         for path in &paths {
             for at in fields::declared_references(&held.0 .0, path) {
                 let slot = fields::value_at_mut(&mut held.0 .0, &at).expect("matched position");
-                let reference = serde_json::from_value(slot.clone())
+                let reference: crate::secret_ref::SecretRef = serde_json::from_value(slot.clone())
                     .map_err(|_| "invalid secret reference (value not echoed)".to_owned())?;
+                let field = at.join(".");
+                let secret = rules.secrets.contains(path);
+                if secret {
+                    tracing::info!(setting = field.as_str(), reference = %reference.describe(),
+                        "plugin setting resolved as a SECRET REFERENCE at a field the plugin declares secret");
+                } else {
+                    tracing::info!(setting = field.as_str(), reference = %reference.describe(),
+                        "plugin setting resolved as a REFERENCE at a field the plugin declares reference-capable (not secret)");
+                }
                 let mut value = resolver
                     .resolve_string_at_config(&reference, scope)
                     .map_err(|error| {
                         format!(
-                            "plugin setting '{}' is a reference that did not resolve: {error}",
-                            at.join(".")
+                            "plugin setting '{field}' is a {}reference that did not resolve: {error}",
+                            if secret { "secret " } else { "" }
                         )
                     })?;
                 wipe(slot);
@@ -189,33 +203,13 @@ impl Settings {
         owner: &str,
         resolve: &ReferenceResolver<'_>,
     ) -> Result<LentSettings, String> {
-        let mut settings = self.0.clone();
-        canonicalize(&mut settings.0, sources)?;
-        if let Some(at) = crate::secret_fields::undeclared_reference(&settings.0, declared) {
-            return Err(crate::secret_fields::undeclared_refusal(
-                &format!("secrets.{owner}.settings.{at}"),
-                owner,
-            ));
-        }
-        let reference = |at: &str, value: Value| {
-            let value = Tree(value);
-            let reference = crate::secret_ref::context::deserialize::<
-                crate::secret_ref::SecretRef,
-                _,
-            >(value.0.clone(), sources)
-            .map_err(|_| {
-                format!("secrets.{owner}.settings.{at}: expected a declared secret reference")
-            })?;
-            resolve(&reference).map_err(|error| format!("secrets.{owner}.settings.{at}: {error}"))
-        };
-        let secrets = crate::secret_fields::lend(
-            &mut settings.0,
+        self.prepare().lend_references_with(
             declared,
-            true,
-            |at, value| value.map_or(Ok(crate::Secret::default()), |value| reference(at, value)),
-            reference,
-        )?;
-        Ok((ResolvedSettings(settings), secrets))
+            sources,
+            owner,
+            resolve,
+            ReferenceDelivery::Retain,
+        )
     }
 
     /// Public generation snapshot, additionally excluding credential-like keys and references.
@@ -351,6 +345,54 @@ impl From<Value> for ResolvedSettings {
 }
 
 impl ResolvedSettings {
+    pub(crate) fn lend_references_with(
+        &self,
+        declared: &[String],
+        sources: &crate::secret_ref::Sugars,
+        owner: &str,
+        resolve: &ReferenceResolver<'_>,
+        delivery: ReferenceDelivery<'_>,
+    ) -> Result<LentSettings, String> {
+        let prefix = match delivery {
+            ReferenceDelivery::Retain => format!("secrets.{owner}.settings"),
+            ReferenceDelivery::Strip(_) => "settings".to_owned(),
+        };
+        let mut settings = self.0.clone();
+        canonicalize(&mut settings.0, sources)?;
+        if let Some(at) = crate::secret_fields::undeclared_reference(&settings.0, declared) {
+            return Err(crate::secret_fields::undeclared_refusal(
+                &format!(
+                    "{}.{at}",
+                    match delivery {
+                        ReferenceDelivery::Retain => prefix.as_str(),
+                        ReferenceDelivery::Strip(base) => base,
+                    }
+                ),
+                owner,
+            ));
+        }
+        let reference = |at: &str, value: Value| {
+            let value = Tree(value);
+            let reference = crate::secret_ref::context::deserialize::<
+                crate::secret_ref::SecretRef,
+                _,
+            >(value.0.clone(), sources)
+            .map_err(|_| {
+                format!("{prefix}.{at}: not a secret reference: a field is missing or has the wrong type (the decoder's text is withheld)")
+            })?;
+            resolve(&reference)
+                .map_err(|error| format!("{prefix}.{at}: the secret did not resolve: {error}"))
+        };
+        let secrets = crate::secret_fields::lend(
+            &mut settings.0,
+            declared,
+            matches!(delivery, ReferenceDelivery::Retain),
+            |at, value| value.map_or(Ok(crate::Secret::default()), |value| reference(at, value)),
+            reference,
+        )?;
+        Ok((ResolvedSettings(settings), secrets))
+    }
+
     /// Encode the resolved settings for the receiving kind boundary.
     pub fn encode(&self) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
         self.0.encode()
@@ -737,6 +779,66 @@ mod tests {
         assert!(!refused.contains("inline-canary"));
         assert!(refused.contains("REFERENCE"));
     }
+    /// A resolver whose config-time text comes from an allocation it records: where the value it
+    /// handed out lives.
+    #[derive(Default)]
+    struct Recorded(std::sync::Mutex<Vec<usize>>);
+
+    impl busbar_contract::secret::SecretResolve for Recorded {
+        fn resolve(
+            &self,
+            _secret: &crate::secret_ref::SecretRef,
+        ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+            Err("refused off config time".to_string())
+        }
+
+        fn resolve_string(
+            &self,
+            _secret: &crate::secret_ref::SecretRef,
+        ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+            Err("refused off config time".to_string())
+        }
+
+        fn resolve_string_at_config(
+            &self,
+            _secret: &crate::secret_ref::SecretRef,
+            _scope: &busbar_contract::config_time::ConfigScope,
+        ) -> Result<busbar_contract::redacted::Secret<String>, String> {
+            let text = String::from("MOVED-NEVER-COPIED");
+            self.0.lock().unwrap().push(text.as_ptr() as usize);
+            Ok(busbar_contract::redacted::Secret::new(text))
+        }
+    }
+
+    #[test]
+    fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
+        let reference =
+            serde_json::json!({"module":"allocation-source","settings":{"slot":"unused"}});
+        let settings: Settings = serde_json::from_value(
+            serde_json::json!({"licenseKey":reference.clone(),"url":reference}),
+        )
+        .unwrap();
+        let resolver = Recorded::default();
+        let out = settings
+            .resolve(
+                &Resolution {
+                    owner: "test-plugin",
+                    secrets: &["licenseKey".into()],
+                    references: &["url".into()],
+                    sources: &crate::secret_ref::Sugars::default(),
+                },
+                &resolver,
+                &crate::config_time::ConfigScope::config_time(),
+            )
+            .expect("resolves");
+        let handed = resolver.0.lock().unwrap().clone();
+        let held: Vec<usize> = ["licenseKey", "url"]
+            .iter()
+            .map(|k| out.0 .0[*k].as_str().expect("a string").as_ptr() as usize)
+            .collect();
+        assert_eq!(held, handed, "each value is the resolver's own allocation");
+    }
+
     #[test]
     fn explicit_edits_and_lending_preserve_custody_and_document_semantics() {
         let original: Settings = serde_json::from_value(serde_json::json!({
