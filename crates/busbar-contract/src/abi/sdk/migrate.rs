@@ -199,18 +199,18 @@ impl Serialize for MigrationAuthoring<'_> {
 /// A resolved credential lent only to its receiving migration owner. It cannot be
 /// constructed by callers, serialized, or logged. The borrow expires with MIGRATE.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// fn serialize(value: busbar_contract::abi::sdk::migrate::MigrationCredential<'_, busbar_contract::plugin::markers::AuthKind>) {
 ///     let _ = serde_json::to_value(value);
 /// }
 /// ```
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// fn inspect(value: busbar_contract::abi::sdk::migrate::MigrationFile<'_>) { println!("{value:?}"); }
 /// ```
 ///
-/// ```compile_fail
+/// ```compile_fail,E0451
 /// let credential = busbar_contract::abi::sdk::migrate::MigrationCredential {
-///     text: "secret", kind: std::marker::PhantomData::<busbar_contract::plugin::markers::AuthKind>,
+///     text: "secret", file: None, kind: std::marker::PhantomData::<busbar_contract::plugin::markers::AuthKind>,
 /// };
 /// ```
 #[allow(missing_debug_implementations)]
@@ -227,6 +227,11 @@ impl<K: crate::plugin::KindMarker> MigrationCredential<'_, K> {
     }
     /// Request one host-mediated read of exactly this credential's filename.
     /// The owner cannot substitute a path or repeat a read after continuation.
+    /// ```compile_fail,E0061
+    /// fn substitute(value: busbar_contract::abi::sdk::migrate::MigrationCredential<'_, busbar_contract::plugin::markers::AuthKind>) {
+    ///     let _ = value.request_file("/unrelated-file");
+    /// }
+    /// ```
     pub fn request_file(&self) -> Result<CredentialMigration, CredentialRefusal> {
         if self.file.is_some() {
             return Err(CredentialRefusal);
@@ -310,7 +315,7 @@ impl CredentialMigration {
 }
 
 /// Host custody of an approved credential source, with no plaintext path accessor.
-/// ```compile_fail
+/// ```compile_fail,E0616
 /// fn inspect(answer: busbar_contract::abi::sdk::migrate::MigratedCredential) { let _ = answer.path; }
 /// ```
 pub struct MigratedCredential {
@@ -329,7 +334,8 @@ impl MigratedCredential {
     ) -> Result<Option<crate::secret_ref::SecretRef>, String> {
         self.path
             .map(|path| {
-                sources.reference_for_role(crate::abi::mechanism::door::SUGAR_ROLE_PATH, &path)
+                sources
+                    .reference_for_role(crate::abi::mechanism::door::SUGAR_ROLE_PATH, path.as_str())
             })
             .transpose()
     }
