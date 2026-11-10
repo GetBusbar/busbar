@@ -160,7 +160,7 @@
       "repo": "GetBusbar/busbar-export-otlp",
       "script": "testing/weaver-conformance/run.py",
       "script_sha256": "44dce2166090fcd6270c0460189a399a5f4603db8d6bb4533423cb4c00e8d3a7",
-      "source_commit": "0510ab978a10b1af7049148a731c17c2d67f5dfd",
+      "source_commit": "bdc679bd89c78535dad3fb592c5daa64beadfd5d",
       "stage": "qa"
     },
     "otlp": {
@@ -170,7 +170,7 @@
       "repo": "GetBusbar/busbar-export-otlp",
       "script": "testing/otlp-conformance/run.sh",
       "script_sha256": "c2ab6b74e48107390f9bcd32f2a58ffc8ecf0b11ee015bdd0aca33c0282276cd",
-      "source_commit": "0510ab978a10b1af7049148a731c17c2d67f5dfd",
+      "source_commit": "bdc679bd89c78535dad3fb592c5daa64beadfd5d",
       "stage": "qa"
     },
     "sbom": {

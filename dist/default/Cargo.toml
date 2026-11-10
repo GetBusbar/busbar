@@ -920,8 +920,8 @@ busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev 
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "f95f89f3f80379ca0967a19f1c748dbe178d1578" }
 busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c2e2b1fd5b28f77355a7c928d202282e49da44c6" }
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "c2e2b1fd5b28f77355a7c928d202282e49da44c6" }
-busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "0510ab978a10b1af7049148a731c17c2d67f5dfd" }
-busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "0510ab978a10b1af7049148a731c17c2d67f5dfd" }
+busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "bdc679bd89c78535dad3fb592c5daa64beadfd5d" }
+busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "bdc679bd89c78535dad3fb592c5daa64beadfd5d" }
 busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1e592a501b6fd22238e7fceb0ce45a02f68767e1" }
 busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "1e592a501b6fd22238e7fceb0ce45a02f68767e1" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
