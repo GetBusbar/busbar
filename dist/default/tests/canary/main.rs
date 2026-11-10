@@ -137,7 +137,7 @@ fn self_test_the_search_finds_what_was_planted() {
 fn self_test_unexpected_hits_fail_and_required_deliveries_must_arrive() {
     let c = Canary::new("strict").delivered_to("abi:open.secrets[0]", "receiving-owner");
     let required = Sink::text("abi:open.secrets[0]", "receiving-owner", c.value.clone());
-    assert!(canary::judge(&c, &canary::search(&c, &[required.clone()])).ok);
+    assert!(canary::judge(&c, &canary::search(&c, std::slice::from_ref(&required))).ok);
     assert!(
         !canary::judge(&c, &[]).ok,
         "a missing required delivery cannot pass"
