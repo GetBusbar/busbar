@@ -49,7 +49,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2",
+      "script_sha256": "b40396d9fbc0ccb30d6a7fcc0e69d3082726808d4a1f43cc1d655cbe06417554",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -149,7 +149,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "5956f5be7810f09da4facec772b24e76e39dff1c472d6822c8facb97f67c84b2",
+      "script_sha256": "b40396d9fbc0ccb30d6a7fcc0e69d3082726808d4a1f43cc1d655cbe06417554",
       "source_commit": "checkout",
       "stage": "qa"
     },

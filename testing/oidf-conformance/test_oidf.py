@@ -2,6 +2,8 @@
 """python3 -I testing/oidf-conformance/test_oidf.py: the OIDF rig finds busbar's OIDC module at the
 rev busbar SHIPS (dist/default's lock, held to release/plugin-pins.tsv when that names it)."""
 import json
+import hashlib
+import io
 import re
 import sys
 import tempfile
@@ -38,6 +40,49 @@ def checkout(lock=LOCK, pins=None):
         (d / "release").mkdir()
         (d / "release" / "plugin-pins.tsv").write_text(pins)
     return d
+
+
+class ComposeTool(unittest.TestCase):
+    def test_existing_plugin_needs_no_download(self):
+        with mock.patch.object(oidf, "run", return_value=0), mock.patch.object(oidf.urllib.request, "urlopen") as fetch:
+            self.assertEqual(oidf.compose_command("unused", "unused"), ["docker", "compose"])
+            fetch.assert_not_called()
+
+    def test_missing_plugin_uses_only_digest_verified_run_local_binary(self):
+        payload = b"official-compose-fixture"
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(oidf.platform, "system", return_value="Linux"), \
+                mock.patch.object(oidf.platform, "machine", return_value="x86_64"), \
+                mock.patch.dict(oidf.COMPOSE_SHA256, {"x86_64": hashlib.sha256(payload).hexdigest()}), \
+                mock.patch.object(oidf.urllib.request, "urlopen", return_value=io.BytesIO(payload)) as fetch, \
+                mock.patch.object(oidf, "run", side_effect=[1, 0]) as run:
+            binary = str(Path(directory) / "docker-compose")
+            self.assertEqual(oidf.compose_command(directory, "log"), [binary])
+            self.assertEqual(Path(binary).read_bytes(), payload)
+            self.assertTrue(Path(binary).stat().st_mode & 0o100)
+            self.assertIn("/v2.39.4/docker-compose-linux-x86_64", fetch.call_args.args[0])
+            self.assertEqual(run.call_args.args[0], [binary, "version"])
+
+    def test_wrong_digest_is_never_executed(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(oidf.platform, "system", return_value="Linux"), \
+                mock.patch.object(oidf.platform, "machine", return_value="x86_64"), \
+                mock.patch.object(oidf.urllib.request, "urlopen", return_value=io.BytesIO(b"tampered")), \
+                mock.patch.object(oidf, "run", return_value=1) as run:
+            with self.assertRaisesRegex(oidf.Refused, "unexpected sha256"):
+                oidf.compose_command(directory, "log")
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_fallback_applies_to_operations_and_review_images(self):
+        with mock.patch.object(oidf, "compose_file", return_value="compose.json"), \
+                mock.patch.object(oidf, "run", return_value=0) as run, \
+                mock.patch.object(oidf, "capture", return_value=(0, "[]", "")) as capture:
+            suite = oidf.Suite("work", "pki", "source", "wheels", "log", compose=["/run/docker-compose"])
+            suite.compose("down")
+            suite.images("test-id")
+            self.assertEqual(run.call_args.args[0][0], "/run/docker-compose")
+            self.assertEqual(capture.call_args.args[0][0], "/run/docker-compose")
 
 
 class ShippedPin(unittest.TestCase):
