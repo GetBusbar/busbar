@@ -54,6 +54,23 @@ fn every_piece_lends_the_units_claim_dialect_and_caller_reference() {
 }
 
 #[test]
+fn every_piece_preserves_host_recovery_capability_bytes() {
+    let mut b = bufs(0);
+    b.extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+        busbar_contract::abi::sdk::recovery::CAPABILITY,
+        &[1],
+    )]);
+    for from in [FROM_CALLER, FROM_FAR_END, FROM_KERNEL] {
+        let (input, _) = frame(&mut b, &piece(from, 0, false), 1);
+        // SAFETY: frame borrows the extension allocation retained in `b`.
+        let ext = unsafe {
+            std::slice::from_raw_parts(input.head.extensions.ptr, input.head.extensions.len)
+        };
+        assert!(busbar_contract::abi::sdk::recovery::supported(ext));
+    }
+}
+
+#[test]
 fn only_an_attempt_names_its_member_and_pool() {
     let mut b = bufs(0);
     let (i, _) = frame(&mut b, &piece(FROM_KERNEL, 1, false), 9);

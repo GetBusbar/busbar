@@ -146,6 +146,18 @@ pub struct Work {
     /// The unit that opened it, in this process; `None` for a handle read from the store (no
     /// unit outlives the process that admitted it). Not part of the row.
     pub opened_by: Option<u64>,
+    /// Host-captured original identity for explicitly opted-in recovery.
+    pub recovery: Option<RecoveryBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryBinding {
+    pub principal: String,
+    pub generation: String,
+    pub created_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
 }
 
 impl Work {
@@ -165,7 +177,11 @@ impl Work {
             return None;
         }
         let mut b = Vec::with_capacity(53 + kind.len() + self.record.len());
-        b.push(ROW_VERSION);
+        b.push(if self.recovery.is_some() {
+            2
+        } else {
+            ROW_VERSION
+        });
         b.push(self.state());
         b.extend_from_slice(&self.opened_ms.to_be_bytes());
         b.extend_from_slice(&self.settled_ms.to_be_bytes());
@@ -174,13 +190,16 @@ impl Work {
         b.extend_from_slice(kind);
         b.extend_from_slice(&u16::try_from(self.record.len()).ok()?.to_be_bytes());
         b.extend_from_slice(&self.record);
+        if let Some(binding) = &self.recovery {
+            b.extend_from_slice(&serde_json::to_vec(binding).ok()?);
+        }
         RecordBytes::new(b).ok()
     }
 
     #[must_use]
     pub fn read(instance: &Arc<str>, reference: Reference, row: &[u8]) -> Option<Self> {
         let (&version, rest) = row.split_first()?;
-        if version != ROW_VERSION {
+        if version != ROW_VERSION && version != 2 {
             return None;
         }
         let (&state, rest) = rest.split_first()?;
@@ -194,10 +213,26 @@ impl Work {
         let kind = std::str::from_utf8(rest.get(..usize::from(kind_len))?).ok()?;
         let rest = rest.get(usize::from(kind_len)..)?;
         let len = usize::from(u16::from_be_bytes(rest.get(..2)?.try_into().ok()?));
-        let record = rest.get(2..)?;
-        if record.len() != len {
-            return None;
-        }
+        let bytes = rest.get(2..)?;
+        let record = bytes.get(..len)?;
+        let recovery = if version == 2 {
+            let binding: RecoveryBinding = serde_json::from_slice(bytes.get(len..)?).ok()?;
+            if binding.principal.is_empty()
+                || binding.generation.is_empty()
+                || owner_of(Some(&binding.principal)) != owner
+                || busbar_contract::abi::sdk::recovery::poll_target(record)
+                    .ok()??
+                    .is_empty()
+            {
+                return None;
+            }
+            Some(binding)
+        } else {
+            if bytes.len() != len {
+                return None;
+            }
+            None
+        };
         let live = match state {
             WORK_LIVE => true,
             WORK_SETTLED => false,
@@ -214,6 +249,7 @@ impl Work {
             record: record.to_vec(),
             bound: None,
             opened_by: None,
+            recovery,
         })
     }
 }
@@ -429,6 +465,7 @@ impl WorkBook {
         settled.live = false;
         settled.settled_ms = now_ms;
         settled.record = record;
+        settled.recovery = None;
         book.settling.insert(handle);
         Ok(settled)
     }

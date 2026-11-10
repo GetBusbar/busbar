@@ -63,6 +63,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
             }
             Ok(Authenticated::Principal(principal)) => {
                 self.bind_authenticated_caller(&principal)
+                    .await
                     .map_err(stamped::<Verify>(seal, call))?;
                 if self.driver.authenticated_route {
                     self.resolve_authenticated_route(ctx, &principal)

@@ -645,6 +645,7 @@ fn a_row_round_trips_and_a_tombstone_reads_as_nothing() {
         record: b"rec".to_vec(),
         bound: None,
         opened_by: None,
+        recovery: None,
     };
     let row = w.row().unwrap();
     assert!(row.as_slice().len() <= busbar_contract::bounded::MAX_RECORD_BYTES);
@@ -652,6 +653,229 @@ fn a_row_round_trips_and_a_tombstone_reads_as_nothing() {
     assert_eq!(Work::read(&instance, [9; 16], &[]), None);
     assert_ne!(owner_of(Some("alice")), owner_of(None));
     assert_ne!(owner_of(Some("")), owner_of(None));
+}
+
+fn recovery_principal(r: &Rig) -> Arc<VirtualKey> {
+    r.s.set_recovery_scheduler_ready(true);
+    let key = Arc::new(VirtualKey {
+        id: "alice".into(),
+        generation_hash: "binding:alice:1".into(),
+        enabled: true,
+        created_at: 10,
+        ..VirtualKey::default()
+    });
+    r.s.units().admitted(
+        1,
+        UnitRecord {
+            principal: Some(key.clone()),
+            depth: 0,
+        },
+    );
+    r.s.attach_standing(Arc::new(|key, _| Some(key.clone())));
+    key
+}
+
+#[test]
+fn recovery_work_reopens_only_durable_original_owner_and_settles_normally() {
+    let r = rig();
+    let key = recovery_principal(&r);
+    ready(r.store.identity().put_key(&key)).unwrap();
+    let record = busbar_contract::abi::sdk::recovery::poll_record("/jobs/42").unwrap();
+    let (_, reference) = open(&r, 1, &record);
+    let restarted = rig_over(r.store.clone(), WorkBounds::default());
+    let gov = ready(crate::governance::GovState::new_with_core(
+        r.store.clone(),
+        None,
+        None,
+    ))
+    .unwrap();
+    let work = ready(restarted.s.recovery_work(&caller("inst"))).unwrap();
+    assert_eq!(work.len(), 1);
+    assert_eq!(work[0].target(), "/jobs/42");
+    assert_eq!(work[0].reference().as_bytes(), reference);
+    assert_eq!(work[0].restore(&gov, 1000).unwrap().id, "alice");
+    assert!(ready(restarted.s.recovery_work(&caller("other")))
+        .unwrap()
+        .is_empty());
+    assert!(
+        ready(restarted.s.recovery_work(&caller("inst")))
+            .unwrap()
+            .is_empty(),
+        "exclusive host owner"
+    );
+    drop(work);
+    gov.set_signing_key(Some(
+        crate::governance::signing::TokenSigner::from_secret_bytes(&[9; 32], "new"),
+    ));
+    let work = ready(restarted.s.recovery_work(&caller("inst"))).unwrap();
+    assert!(
+        work[0].restore(&gov, 1000).is_some(),
+        "signer rotation does not revoke original binding"
+    );
+    let found = find(&restarted, "inst", 1, &reference);
+    assert_eq!(found.outcome, Outcome::Ready);
+    assert_eq!(
+        settle(&restarted, "inst", Some(1), found.value, b"done").outcome,
+        Outcome::Ready
+    );
+    drop(work);
+    assert!(ready(restarted.s.recovery_work(&caller("inst")))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        state_and_record(&find(&restarted, "inst", 1, &reference)),
+        (WORK_SETTLED, b"done".to_vec())
+    );
+}
+
+#[test]
+fn recovery_work_refuses_missing_standing_and_reissued_or_disabled_identity() {
+    let r = rig();
+    assert!(!r.s.supports_unit_recovery(&caller("inst"), 1));
+    let record = busbar_contract::abi::sdk::recovery::poll_record("/jobs/42").unwrap();
+    assert_eq!(
+        run(|later| r
+            .s
+            .work_open(&caller("inst"), Some(1), "job", &record, later))
+        .outcome,
+        Outcome::Refused
+    );
+    let key = recovery_principal(&r);
+    assert!(r.s.supports_unit_recovery(&caller("inst"), 1));
+    assert!(!r.s.supports_unit_recovery(&caller("other"), 999));
+    ready(r.store.identity().put_key(&key)).unwrap();
+    open(&r, 1, &record);
+    let work = ready(r.s.recovery_work(&caller("inst"))).unwrap();
+    for mutate in [0, 1, 2, 3] {
+        let mut changed = (*key).clone();
+        match mutate {
+            0 => changed.enabled = false,
+            1 => changed.generation_hash = "replacement".into(),
+            2 => changed.created_at += 1,
+            _ => changed.expires_at = Some(500),
+        }
+        ready(r.store.identity().put_key(&changed)).unwrap();
+        let gov = ready(crate::governance::GovState::new_with_core(
+            r.store.clone(),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert!(work[0].restore(&gov, 1000).is_none());
+    }
+}
+
+#[test]
+fn recovery_capability_is_absent_for_external_identity_without_verified_expiry() {
+    let r = rig();
+    recovery_principal(&r);
+    let bindings = [(
+        "idp".into(),
+        [("reader".into(), crate::config::RoleBindingCfg::default())].into(),
+    )]
+    .into();
+    let mut key = crate::governance::synthesize_bound_key(
+        "idp",
+        &crate::auth::Principal {
+            id: "external".into(),
+            name: None,
+            roles: vec!["reader".into()],
+            ttl_secs: Some(900),
+        },
+        &bindings,
+    )
+    .unwrap();
+    r.s.units().admitted(
+        1,
+        UnitRecord {
+            principal: Some(key.clone()),
+            depth: 0,
+        },
+    );
+    assert!(
+        !r.s.supports_unit_recovery(&caller("inst"), 1),
+        "cache TTL must not enable recovery"
+    );
+    Arc::make_mut(&mut key).expires_at = Some(1100);
+    r.s.units().admitted(
+        1,
+        UnitRecord {
+            principal: Some(key),
+            depth: 0,
+        },
+    );
+    assert!(r.s.supports_unit_recovery(&caller("inst"), 1));
+    r.clock.store(1_100_000, Ordering::SeqCst);
+    assert!(!r.s.supports_unit_recovery(&caller("inst"), 1));
+}
+
+#[test]
+fn durable_caller_binding_survives_rekey_restart_and_remains_owner_scoped() {
+    let r = rig();
+    let old = crate::auth::CallerRefKey::derive(b"old signer").caller_ref("alice");
+    let new = crate::auth::CallerRefKey::derive(b"new signer").caller_ref("alice");
+    assert_ne!(old, new);
+    assert_eq!(
+        ready(r.s.resolve_caller_reference(&caller("inst"), "alice", &old)).unwrap(),
+        old
+    );
+    let restarted = rig_over(r.store.clone(), WorkBounds::default());
+    assert_eq!(
+        ready(
+            restarted
+                .s
+                .resolve_caller_reference(&caller("inst"), "alice", &new)
+        )
+        .unwrap(),
+        old
+    );
+    assert_eq!(
+        ready(
+            restarted
+                .s
+                .resolve_caller_reference(&caller("other"), "alice", &new)
+        )
+        .unwrap(),
+        new
+    );
+    let bob = crate::auth::CallerRefKey::derive(b"new signer").caller_ref("bob");
+    assert_eq!(
+        ready(
+            restarted
+                .s
+                .resolve_caller_reference(&caller("inst"), "bob", &bob)
+        )
+        .unwrap(),
+        bob
+    );
+    assert!(ready(
+        restarted
+            .s
+            .resolve_caller_reference(&caller("unadmitted"), "alice", &new)
+    )
+    .is_err());
+}
+
+#[test]
+fn recovery_work_scan_keeps_later_items_when_batches_are_bounded() {
+    let r = rig();
+    recovery_principal(&r);
+    for id in 0..12 {
+        open(
+            &r,
+            1,
+            &busbar_contract::abi::sdk::recovery::poll_record(&format!("/jobs/{id}")).unwrap(),
+        );
+    }
+    let first = ready(r.s.recovery_work(&caller("inst"))).unwrap();
+    let second = ready(r.s.recovery_work(&caller("inst"))).unwrap();
+    assert_eq!((first.len(), second.len()), (8, 4));
+    let references: std::collections::HashSet<_> =
+        first.iter().chain(&second).map(|w| w.reference()).collect();
+    assert_eq!(references.len(), 12);
+    assert!(ready(r.s.recovery_work(&caller("inst")))
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

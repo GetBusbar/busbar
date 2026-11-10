@@ -20,6 +20,10 @@ use busbar_contract::services::{
 #[path = "host_observations.rs"]
 mod observations_runtime;
 
+#[path = "host_recovery.rs"]
+mod recovery_runtime;
+pub use recovery_runtime::RecoveryWork;
+
 pub const QUEUE_FULL: &str = "the record write queue is full";
 
 use crate::host_records::{
@@ -625,6 +629,7 @@ pub const TICKET_NO_PRESS: &str = "this host mints no tickets";
 pub const TICKET_NOT_HELD: &str = "no ticket record is held for this unit";
 
 pub const RESERVED_RECORD_KINDS: &[&str] = &[
+    recovery_runtime::CALLERS,
     crate::governance::TICKET_RECORD_KIND,
     crate::host_work::WORK_SCHEMA.as_str(),
     crate::host_record_bootstrap::RECEIPT_SCHEMA.as_str(),
@@ -951,6 +956,7 @@ pub struct KernelServices {
     demotions: OnceLock<Demotions>,
 
     work: Arc<WorkBook>,
+    recovery: recovery_runtime::RecoveryRuntime,
     work_bounds: WorkBounds,
 
     bounds_of: Mutex<HashMap<Arc<str>, WorkBounds>>,
@@ -1077,6 +1083,7 @@ impl KernelServices {
             judge: None,
             demotions: OnceLock::new(),
             work: Arc::default(),
+            recovery: recovery_runtime::RecoveryRuntime::default(),
             work_bounds: WorkBounds::default(),
             bounds_of: Mutex::default(),
             nest: OnceLock::new(),
@@ -3614,6 +3621,10 @@ impl HostServices for KernelServices {
         record: &[u8],
         later: Later,
     ) -> Ran {
+        let recovery = match self.capture_recovery(caller, unit, record) {
+            Ok(binding) => binding,
+            Err(why) => return Ran::Now(Stored::refused(why)),
+        };
         match self.native_work_writer(caller) {
             Err(refused) => return Ran::Now(refused),
             Ok(Some(writer)) => {
@@ -3674,6 +3685,7 @@ impl HostServices for KernelServices {
                         record,
                         bound: None,
                         opened_by: unit,
+                        recovery,
                     };
                     let Some(row) = work.row() else {
                         owed.answer(Stored::refused(work_refusal::TOO_LONG));
@@ -3744,6 +3756,7 @@ impl HostServices for KernelServices {
                 record,
                 bound: None,
                 opened_by: unit,
+                recovery,
             };
             let Some(row) = work.row() else {
                 return Stored::refused(work_refusal::TOO_LONG);
