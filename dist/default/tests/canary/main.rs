@@ -23,7 +23,7 @@ pub const KINDS: &[&str] = &[
     "provider-url-userinfo-unreachable",
     "admin-token",
     "caller-cookie",
-    "caller-custom-auth-header",
+    "caller-declared-operator-credential",
     "refusal-inline-api-key",
     "refusal-webhook-auth-header-shape",
     "refusal-webhook-url-query-token",
@@ -62,7 +62,7 @@ fn served_node_sinks() {
         admin_token: canary("admin-token"),
         url_path_token: canary("export-url-path-token"),
         caller_cookie: canary("caller-cookie"),
-        caller_header: canary("caller-custom-auth-header"),
+        caller_operator_credential: canary("caller-declared-operator-credential"),
     };
     let (sinks, notes) = blackbox::node(&c);
     canary::sweep("served-node", &c.all(), &sinks, &notes);

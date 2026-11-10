@@ -109,7 +109,7 @@ pub struct NodeCanaries {
     pub admin_token: Canary,
     pub url_path_token: Canary,
     pub caller_cookie: Canary,
-    pub caller_header: Canary,
+    pub caller_operator_credential: Canary,
 }
 
 impl NodeCanaries {
@@ -123,12 +123,13 @@ impl NodeCanaries {
             self.admin_token.clone(),
             self.url_path_token.clone(),
             self.caller_cookie.clone(),
-            self.caller_header.clone(),
+            self.caller_operator_credential.clone(),
         ]
     }
 }
 
 pub const USERINFO_USER: &str = "canaryuser";
+const ORDINARY_HEADER_MARKER: &str = "ordinary-protocol-metadata";
 
 pub fn basic_form(pass: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(format!("{USERINFO_USER}:{pass}"))
@@ -424,7 +425,11 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
             &[
                 ("authorization", &key),
                 ("cookie", &cookie),
-                ("x-custom-auth", &c.caller_header.value),
+                // The configured admin-tokens authority declares this credential carrier.
+                // An undeclared header is ordinary metadata, so its spelling alone cannot
+                // grant confidentiality; exercise its forwarding separately below.
+                ("x-admin-token", &c.caller_operator_credential.value),
+                ("x-custom-auth", ORDINARY_HEADER_MARKER),
                 ("anthropic-version", "2023-06-01"),
             ],
             &format!(
@@ -486,6 +491,19 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
             "far-end:{name} did not receive its planted credential; its delivery was not exercised"
         );
         for req in seen.iter() {
+            let marker = req
+                .split_once("\r\n\r\n")
+                .map(|(headers, _)| headers)
+                .unwrap_or(req)
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(field, _)| field.eq_ignore_ascii_case("x-custom-auth"))
+                .map(|(_, value)| value.trim());
+            assert_eq!(
+                marker,
+                Some(ORDINARY_HEADER_MARKER),
+                "far-end:{name} must retain ordinary undeclared protocol metadata"
+            );
             sinks.push(Sink::text(format!("far-end:{name}"), *name, req.clone()));
         }
     }
