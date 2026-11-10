@@ -207,12 +207,12 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
             if m.name.starts_with("busbar_") {
                 continue;
             }
-            let prom_type = prom_type_of(m);
+            let distribution = distribution_kind(m);
             let entry = groups.entry(m.name.as_str()).or_insert_with(|| {
                 order.push(m.name.as_str());
-                (prom_type, m.help.as_deref(), Vec::new())
+                (distribution, m.help.as_deref(), Vec::new())
             });
-            if entry.0 != prom_type {
+            if entry.0 != distribution {
                 continue;
             }
             if entry.1.is_none() {
@@ -240,7 +240,7 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
         }
         out.push(Family {
             name: (*name).to_string(),
-            help: help.as_deref().map(escape_help),
+            help: help.map(str::to_owned),
             unit: None,
             kind: busbar_contract::export_calls::kind_of(ptype)
                 .unwrap_or(busbar_contract::abi::export::SCRAPE_KIND_UNTYPED),
@@ -250,7 +250,7 @@ fn fold_families<'a>(hooks: impl Iterator<Item = (&'a str, &'a [HookMetric])>) -
     out
 }
 
-fn prom_type_of(m: &HookMetric) -> &'static str {
+fn distribution_kind(m: &HookMetric) -> &'static str {
     match m.kind.as_str() {
         "counter" => "counter",
         "gauge" => "gauge",
@@ -326,17 +326,17 @@ fn render_labels(
     extra: &[(&str, &str)],
 ) -> Vec<(String, String)> {
     let mut parts: Vec<(String, String)> = Vec::new();
-    parts.push(("hook".to_string(), escape_label(hook)));
+    parts.push(("hook".to_string(), hook.to_owned()));
     if let Some(m) = labels {
         for (k, v) in m {
             if k == "hook" || extra.iter().any(|(ek, _)| ek == k) {
                 continue;
             }
-            parts.push((k.clone(), escape_label(v)));
+            parts.push((k.clone(), v.to_owned()));
         }
     }
     for (k, v) in extra {
-        parts.push(((*k).to_string(), escape_label(v)));
+        parts.push(((*k).to_string(), (*v).to_owned()));
     }
     parts
 }
@@ -349,28 +349,6 @@ fn sample_name(name: &str, suffix: &str) -> String {
     let mut out = Zeroizing::new(String::with_capacity(capacity));
     out.push_str(name);
     out.push_str(suffix);
-    std::mem::take(&mut *out)
-}
-
-fn escape_label(s: &str) -> String {
-    escape(s, true)
-}
-
-fn escape_help(s: &str) -> String {
-    escape(s, false)
-}
-
-fn escape(s: &str, quotes: bool) -> String {
-    let cap = s.len().checked_mul(2).expect("metric escape size overflow");
-    let mut out = Zeroizing::new(String::with_capacity(cap));
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '"' if quotes => out.push_str("\\\""),
-            c => out.push(c),
-        }
-    }
     std::mem::take(&mut *out)
 }
 

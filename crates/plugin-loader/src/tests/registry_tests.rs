@@ -98,7 +98,7 @@ fn supported_abi_is_one_version_per_kind() {
         ("secret", abi::secret::ABI_VERSION, 2),
         ("auth", abi::auth::ABI_VERSION, 3),
         ("hook", abi::hook::ABI_VERSION, 2),
-        ("export", abi::export::ABI_VERSION, 3),
+        ("export", abi::export::ABI_VERSION, 4),
         ("plane", abi::plane::ABI_VERSION, 1),
         ("transport", abi::transport::ABI_VERSION, 1),
     ];
@@ -142,6 +142,29 @@ fn a_1_5_5_json_contract_plugin_is_refused_at_boot_naming_the_rebuild() {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn an_export_with_preencoded_metric_semantics_is_refused() {
+    let release = key(1);
+    let dir = tmpdir("preencoded-export");
+    let mut m = manifest("export-prior-generation", "prior-generation", "busbar");
+    m.kind = "export".into();
+    m.abi_version = 3;
+    let m = sign(&release, m, b"prior export image");
+    write_tarball(&dir, "prior.tar.gz", &m, b"prior export image");
+    let errors = scan_and_validate(&dir, &policy(&release))
+        .expect_err("unchanged layout cannot admit incompatible metric semantics");
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0].contains("abi_version 3 is not supported"),
+        "{errors:?}"
+    );
+    assert!(
+        errors[0].contains("rebuild the plugin against the 1.6.0 SDK"),
+        "{errors:?}"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

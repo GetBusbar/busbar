@@ -1039,7 +1039,6 @@ loom = "0.7"
 # no I/O, no platform surface beyond the SIMD it selects at runtime.
 memchr = "2"
 metrics = "0.24.6"
-metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 metrics-util = { version = "0.20.4", default-features = false }
 # THE OAUTH 2.1 AUTHORIZATION SERVER (scope item A of 1.5.5).
 #

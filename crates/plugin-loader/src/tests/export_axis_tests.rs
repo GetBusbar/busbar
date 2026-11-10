@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use busbar_contract::abi::export::{ExportStream, CHECK_PHASE_INSTANCES};
 use busbar_contract::abi::mechanism::door::DoorFn;
-use busbar_contract::export_calls::parse_families;
 
 use super::*;
 use crate::actual_exports;
@@ -54,68 +53,6 @@ fn dispatcher() -> Arc<Dispatcher> {
         DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
     ))
-}
-
-const EXPOSITION: &str = "\
-# TYPE busbar_requests_total counter
-busbar_requests_total{pool=\"a\\\"b\",outcome=\"ok\"} 3
-
-# HELP busbar_lane_state lane health
-# TYPE busbar_lane_state gauge
-busbar_lane_state{lane=\"x\"} 2
-
-# TYPE busbar_request_duration_seconds histogram
-busbar_request_duration_seconds_bucket{le=\"+Inf\"} 2
-busbar_request_duration_seconds_sum 0.75
-busbar_request_duration_seconds_count 2
-
-";
-
-#[test]
-fn the_scrape_sink_answers_the_same_through_either_door() {
-    let row = actual_exports::prometheus::NAME;
-    let doors = both(
-        row,
-        actual_exports::prometheus::door,
-        actual_exports::prometheus::path(),
-    );
-    let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher())
-            .with_conns(Arc::new(crate::needs_restated::Inert));
-        let module = row;
-        let good = serde_json::json!({ "buffer_seconds": 60 });
-        let (streams, clean, _) = rows.probe(module, "metrics", &good).expect("an export row");
-        assert_eq!(streams, Some(vec![ExportStream::Metrics as u8]));
-        assert!(clean.is_empty(), "{clean:?}");
-        let bad = serde_json::json!({ "buffer_seconds": 60, "bogus": 1 });
-        let (_, refused, _) = rows.probe(module, "metrics", &bad).expect("an export row");
-        assert_eq!(
-            refused,
-            vec![
-                "export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or \
-                 `key_gauge_limit`"
-                    .to_string()
-            ]
-        );
-        let zero = serde_json::json!({ "buffer_seconds": 0 });
-        let (_, zero, _) = rows.probe(module, "metrics", &zero).expect("an export row");
-        assert!(
-            zero.len() == 1 && zero[0].starts_with("the `module: prometheus` export instance"),
-            "the whole sentence, unprefixed: {zero:?}"
-        );
-        let sink = rows
-            .open(module, "export.metrics", &good)
-            .expect("the sink opens");
-        let families = parse_families(EXPOSITION).expect("the snapshot reads");
-        let body = sink.scrape(&families).expect("the sink renders");
-        assert_eq!(body, EXPOSITION.as_bytes(), "the recorder's bytes, back");
-        assert!(rows
-            .check(module, CHECK_PHASE_INSTANCES, &[("metrics".into(), &good)])
-            .expect("an export row")
-            .is_empty());
-        format!("{refused:?} {zero:?} {}", String::from_utf8_lossy(&body))
-    });
-    assert_eq!(transcripts[0], transcripts[1], "both doors answer the same");
 }
 
 #[test]

@@ -1,0 +1,491 @@
+[
+  {
+    "name": "busbar.eq-dotted:name",
+    "help": null,
+    "unit": null,
+    "kind": 0,
+    "samples": [
+      {
+        "name": "busbar.eq-dotted:name",
+        "labels": [
+          [
+            "9key",
+            "v"
+          ]
+        ],
+        "value": "5"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_requests_total",
+    "help": "requests, by \"pool\"\nand \\ outcome",
+    "unit": null,
+    "kind": 0,
+    "samples": [
+      {
+        "name": "busbar_eq_requests_total",
+        "labels": [
+          [
+            "pool",
+            "a\"b\\c\nd"
+          ],
+          [
+            "outcome",
+            "ok"
+          ]
+        ],
+        "value": "3"
+      },
+      {
+        "name": "busbar_eq_requests_total",
+        "labels": [
+          [
+            "pool",
+            "back\\slash"
+          ],
+          [
+            "outcome",
+            "ok"
+          ]
+        ],
+        "value": "2"
+      },
+      {
+        "name": "busbar_eq_requests_total",
+        "labels": [
+          [
+            "pool",
+            "plain"
+          ],
+          [
+            "outcome",
+            "ok"
+          ]
+        ],
+        "value": "1"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_unlabelled_total",
+    "help": null,
+    "unit": null,
+    "kind": 0,
+    "samples": [
+      {
+        "name": "busbar_eq_unlabelled_total",
+        "labels": [],
+        "value": "0"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_big",
+    "help": null,
+    "unit": null,
+    "kind": 1,
+    "samples": [
+      {
+        "name": "busbar_eq_big",
+        "labels": [
+          [
+            "key",
+            "max"
+          ]
+        ],
+        "value": "9223372036854776000"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_gauge",
+    "help": "a gauge",
+    "unit": null,
+    "kind": 1,
+    "samples": [
+      {
+        "name": "busbar_eq_gauge",
+        "labels": [
+          [
+            "key",
+            "a"
+          ]
+        ],
+        "value": "1.5"
+      },
+      {
+        "name": "busbar_eq_gauge",
+        "labels": [
+          [
+            "key",
+            "b"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_gauge",
+        "labels": [
+          [
+            "key",
+            "c"
+          ]
+        ],
+        "value": "1000000000000000000000"
+      },
+      {
+        "name": "busbar_eq_gauge",
+        "labels": [
+          [
+            "key",
+            "d"
+          ]
+        ],
+        "value": "-3"
+      },
+      {
+        "name": "busbar_eq_gauge",
+        "labels": [
+          [
+            "key",
+            "e"
+          ]
+        ],
+        "value": "0.30000000000000004"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_duration_seconds",
+    "help": "latency",
+    "unit": null,
+    "kind": 3,
+    "samples": [
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0"
+          ]
+        ],
+        "value": "0.001"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0.5"
+          ]
+        ],
+        "value": "0.24999858787871077"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0.9"
+          ]
+        ],
+        "value": "0.5000235871811435"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0.95"
+          ]
+        ],
+        "value": "0.5000235871811435"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0.99"
+          ]
+        ],
+        "value": "0.5000235871811435"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "0.999"
+          ]
+        ],
+        "value": "0.5000235871811435"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ],
+          [
+            "quantile",
+            "1"
+          ]
+        ],
+        "value": "2"
+      },
+      {
+        "name": "busbar_eq_duration_seconds_sum",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ]
+        ],
+        "value": "2.751"
+      },
+      {
+        "name": "busbar_eq_duration_seconds_count",
+        "labels": [
+          [
+            "pool",
+            "p"
+          ]
+        ],
+        "value": "4"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0"
+          ]
+        ],
+        "value": "7"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0.5"
+          ]
+        ],
+        "value": "6.999928967377545"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0.9"
+          ]
+        ],
+        "value": "6.999928967377545"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0.95"
+          ]
+        ],
+        "value": "6.999928967377545"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0.99"
+          ]
+        ],
+        "value": "6.999928967377545"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "0.999"
+          ]
+        ],
+        "value": "6.999928967377545"
+      },
+      {
+        "name": "busbar_eq_duration_seconds",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ],
+          [
+            "quantile",
+            "1"
+          ]
+        ],
+        "value": "7"
+      },
+      {
+        "name": "busbar_eq_duration_seconds_sum",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ]
+        ],
+        "value": "7"
+      },
+      {
+        "name": "busbar_eq_duration_seconds_count",
+        "labels": [
+          [
+            "pool",
+            "q"
+          ]
+        ],
+        "value": "1"
+      }
+    ]
+  },
+  {
+    "name": "busbar_eq_idle_seconds",
+    "help": null,
+    "unit": null,
+    "kind": 3,
+    "samples": [
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0.5"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0.9"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0.95"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0.99"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "0.999"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds",
+        "labels": [
+          [
+            "quantile",
+            "1"
+          ]
+        ],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds_sum",
+        "labels": [],
+        "value": "0"
+      },
+      {
+        "name": "busbar_eq_idle_seconds_count",
+        "labels": [],
+        "value": "0"
+      }
+    ]
+  }
+]

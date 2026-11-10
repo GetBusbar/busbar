@@ -66,8 +66,9 @@ pub mod validate;
 use super::mechanism::door::KindTailHead;
 use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 
-/// The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan.
-pub const ABI_VERSION: u32 = 3;
+/// The export kind's ABI version. Version 4 carries raw metric text; version 3 supplied
+/// text escaped for one particular wire format and cannot be mixed with this contract.
+pub const ABI_VERSION: u32 = 4;
 
 /// The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x95a37b669466aab6;
@@ -573,12 +574,12 @@ impl ExportField {
 /// the text format reproduces the host's exposition byte for byte.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricFamily {
-    /// The family name, as its `# TYPE` line spells it.
+    /// The raw metric family name; the exporter owns wire identifier normalization.
     pub name: String,
     /// `counter` | `gauge` | `histogram` | `summary` | `untyped`.
     #[serde(rename = "type")]
     pub kind: String,
-    /// The `# HELP` text, when the recorder has one (as written: escaped, one line).
+    /// The raw help text, when present; the exporter owns wire escaping.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
     /// The samples, in order.
@@ -601,8 +602,8 @@ impl MetricFamily {
 pub struct MetricSample {
     /// The series name — the family name, or it with `_bucket` / `_sum` / `_count`.
     pub name: String,
-    /// The labels in order, each value as the exposition writes it (escaped), `le` / `quantile`
-    /// included where the recorder wrote them.
+    /// Raw label keys and values in order, including any distribution coordinates.
+    /// The exporter owns wire identifier normalization and escaping.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<(String, String)>,
     /// The value, in the recorder's own spelling.

@@ -301,7 +301,7 @@ extern "C" {
 #define BB_HOOK_HARD_MAX_SIGNALS UINT64_C(1024) /* The most signal entries one view may carry (a FAULT ceiling: the catalog holds ten signals). */
 
 /* export */
-#define BB_EXPORT_ABI_VERSION UINT32_C(3) /* The export kind's ABI version, `3`: `2` was the JSON export contract's, refused at scan. */
+#define BB_EXPORT_ABI_VERSION UINT32_C(4) /* The export kind's ABI version. Version 4 carries raw metric text; version 3 supplied */
 #define BB_EXPORT_LAYOUT_FINGERPRINT UINT64_C(0x95a37b669466aab6) /* The export kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of */
 #define BB_EXPORT_SLOT_DELIVER UINT32_C(9) /* `deliver`. */
 #define BB_EXPORT_SLOT_SCRAPE UINT32_C(10) /* `scrape`. */
@@ -317,6 +317,7 @@ extern "C" {
 #define BB_EXPORT_SCRAPE_FLAG_HOOK_FAMILIES UINT32_C(2) /* [`super::mechanism::call::InHead::flags`] on `scrape`: the families are the HOOK families. */
 #define BB_EXPORT_CHECK_PHASE_LIMITS UINT32_C(0) /* [`CheckIn::phase`]: among the operational limits' checks (a bound this sink's instances */
 #define BB_EXPORT_CHECK_PHASE_INSTANCES UINT32_C(1) /* [`CheckIn::phase`]: after the limits, each instance's own settings — the OLD */
+#define BB_EXPORT_CHECK_PHASE_RECORDER UINT32_C(2) /* Immutable recorder declaration after validated OPEN. Only called when Statement */
 #define BB_EXPORT_ROUTE_AUTH_NONE UINT32_C(0) /* [`Route::auth`]: no auth required before `serve` — OLD `RouteAuth::None`. */
 #define BB_EXPORT_ROUTE_AUTH_KEY UINT32_C(1) /* [`Route::auth`]: a data-plane key required before `serve` — OLD `RouteAuth::Key`. */
 #define BB_EXPORT_ROUTE_AUTH_ADMIN UINT32_C(2) /* [`Route::auth`]: admin auth required, reachable only on the admin listener — OLD */
@@ -329,7 +330,7 @@ extern "C" {
 #define BB_PLANE_MAX_UNITS UINT64_C(64) /* The most unit counts one answer may carry. */
 #define BB_PLANE_MAX_FIELDS UINT64_C(1024) /* The most head fields one answer may carry. */
 #define BB_PLANE_MAX_RECORDS UINT64_C(1024) /* The most record writes one answer may carry. */
-#define BB_PLANE_MAX_ROUTES UINT64_C(1024) /* The most claims or admin routes one snapshot may carry. */
+#define BB_PLANE_MAX_ROUTES UINT64_C(1024) /* The most claims, admin routes or listed names one snapshot may carry, and the most admin routes */
 #define BB_PLANE_MAX_SESSIONS UINT64_C(1024) /* The most ready sessions one `drive` answer may name. */
 #define BB_PLANE_MAX_SIGNALS UINT64_C(64) /* The most signals one `project` answer may carry. */
 #define BB_PLANE_MAX_TURNS UINT64_C(0x10000) /* The most prompt turns one `project` answer may carry. */
@@ -2978,7 +2979,7 @@ struct bb_transport_FaultRow {
     uint32_t fault;
 };
 
-/* One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to */
+/* One operator setting the transport reads, at its 1.5.5 path (the connector deals the value to */
 struct bb_transport_SettingDecl {
     bb_mech_AbiStr path;
     uint32_t kind;

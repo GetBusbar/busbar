@@ -1,5 +1,4 @@
 use super::*;
-use metrics_exporter_prometheus::formatting as reference;
 
 fn ordered_families(families: &[Family]) -> Vec<Family> {
     let mut ordered = families.to_vec();
@@ -22,152 +21,65 @@ fn ordered_families(families: &[Family]) -> Vec<Family> {
 }
 
 fn workload() {
-    metrics::describe_counter!(
-        "busbar_eq_requests_total",
-        "requests, by \"pool\"\nand \\ outcome"
-    );
-    metrics::describe_gauge!("busbar_eq_gauge", metrics::Unit::Count, "a gauge");
-    metrics::describe_histogram!(
-        "busbar_eq_duration_seconds",
-        metrics::Unit::Seconds,
-        "latency"
-    );
-    // Values affected by the historical sanitizer bug are covered by the protocol tests below.
-    for (pool, n) in [("a\"b\\c\nd", 3), ("plain", 1), ("back\\slash", 2)] {
-        metrics::counter!("busbar_eq_requests_total", "pool" => pool, "outcome" => "ok")
-            .increment(n);
-    }
-    metrics::counter!("busbar_eq_unlabelled_total").absolute(0);
-    metrics::counter!("busbar.eq-dotted:name", "9key" => "v").increment(5);
-    for (key, v) in [
-        ("a", 1.5),
-        ("b", 0.0),
-        ("c", 1e21),
-        ("d", -3.0),
-        ("e", 0.1 + 0.2),
-    ] {
-        metrics::gauge!("busbar_eq_gauge", "key" => key).set(v);
-    }
-    metrics::gauge!("busbar_eq_big", "key" => "max").set(i64::MAX as f64);
-    for (pool, xs) in [("p", vec![0.001, 0.25, 0.5, 2.0]), ("q", vec![7.0])] {
-        for x in xs {
-            metrics::histogram!("busbar_eq_duration_seconds", "pool" => pool).record(x);
+    let recording: Vec<serde_json::Value> =
+        serde_json::from_str(busbar_contract::abi::sdk::test_support::metrics::RECORDING)
+            .expect("the kind's neutral recording");
+    for record in recording {
+        let name = record["name"].as_str().unwrap().to_owned();
+        let labels: Vec<(String, String)> = record["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|pair| {
+                (
+                    pair[0].as_str().unwrap().to_owned(),
+                    pair[1].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        match record["op"].as_str().unwrap() {
+            "describe" => {
+                let help = record["help"].as_str().unwrap().to_owned();
+                match record["kind"].as_str().unwrap() {
+                    "counter" => metrics::describe_counter!(name, help),
+                    "gauge" => metrics::describe_gauge!(name, help),
+                    "histogram" => metrics::describe_histogram!(name, help),
+                    other => panic!("unknown recording kind: {other}"),
+                }
+            }
+            "counter" => {
+                metrics::counter!(name, &labels).increment(record["value"].as_u64().unwrap())
+            }
+            "gauge" => metrics::gauge!(name, &labels).set(record["value"].as_f64().unwrap()),
+            "histogram" => {
+                metrics::histogram!(name, &labels).record(record["value"].as_f64().unwrap())
+            }
+            "register_histogram" => {
+                let _registered = metrics::histogram!(name, &labels);
+            }
+            other => panic!("unknown recording operation: {other}"),
         }
     }
-    let _registered_only = metrics::histogram!("busbar_eq_idle_seconds");
 }
 
 #[test]
-fn source_matches_historical_recorder_for_unaffected_values() {
-    let width = Duration::from_secs(20);
-    let old = metrics_exporter_prometheus::PrometheusBuilder::new()
-        .set_bucket_duration(width)
-        .expect("a bucket width")
-        .set_bucket_count(std::num::NonZeroU32::new(3).expect("non-zero"))
-        .idle_timeout(
-            metrics_util::MetricKindMask::GAUGE,
-            Some(Duration::from_secs(60)),
-        )
-        .build_recorder();
+fn source_preserves_the_kinds_raw_metric_vector() {
     let source: &'static Source = Box::leak(Box::new(Source::new(
-        width,
-        std::num::NonZeroU32::new(3).expect("non-zero"),
+        Duration::from_secs(20),
+        std::num::NonZeroU32::new(3).unwrap(),
         Duration::from_secs(60),
     )));
-    metrics::with_local_recorder(&old, workload);
     metrics::with_local_recorder(&source, workload);
-
-    let text = old.handle().render();
-    let was = busbar_contract::export_calls::parse_families(&text).expect("1.5.5's text snapshots");
-    let now = source.snapshot();
+    let expected: Vec<Family> =
+        serde_json::from_str(busbar_contract::abi::sdk::test_support::metrics::SNAPSHOT)
+            .expect("the kind's raw snapshot vector");
+    let actual = source.snapshot();
+    assert_eq!(ordered_families(&actual), ordered_families(&expected));
     assert_eq!(
-        ordered_families(&now),
-        ordered_families(&was),
-        "1.5.5 wrote:\n{text}"
+        actual.len(),
+        7,
+        "all recorded metric families, including idle histogram"
     );
-    assert!(
-        now.iter().flat_map(|family| &family.samples).any(|sample| {
-            sample
-                .labels
-                .iter()
-                .any(|(key, value)| key == "quantile" && value == "0.999")
-        }) && now.len() >= 6,
-        "the proof is not vacuous:\n{now:?}"
-    );
-    let kinds: Vec<u8> = now.iter().map(|f| f.kind).collect();
-    assert!(
-        kinds.windows(2).all(|w| w[0] <= w[1]),
-        "the snapshot is kind then name: {kinds:?}"
-    );
-}
-
-// Decode the protocol grammar independently of either exporter sanitizer. Family label values
-// are already escaped; a Prometheus text consumer must recover the original recorder identity.
-fn decode_escaped(value: &str, quotes: bool) -> String {
-    let mut decoded = String::new();
-    let mut chars = value.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '\\' => decoded.push(match chars.next().expect("complete escape") {
-                '\\' => '\\',
-                'n' => '\n',
-                '"' if quotes => '"',
-                other => panic!("invalid escape: {other:?}"),
-            }),
-            '\n' => panic!("unescaped newline"),
-            '"' if quotes => panic!("unescaped label quote"),
-            other => decoded.push(other),
-        }
-    }
-    decoded
-}
-
-#[test]
-fn raw_values_escape_once_and_roundtrip_through_the_protocol() {
-    // Explicit wire expectations cover slash runs, slash-before-quote/newline, and literal \\n.
-    for (raw, label, help) in [
-        ("", "", ""),
-        ("plain", "plain", "plain"),
-        ("a\"b", "a\\\"b", "a\"b"),
-        ("a\\b", "a\\\\b", "a\\\\b"),
-        ("a\\\\b", "a\\\\\\\\b", "a\\\\\\\\b"),
-        ("a\\\"b", "a\\\\\\\"b", "a\\\\\"b"),
-        ("a\\nb", "a\\\\nb", "a\\\\nb"),
-        ("line\nfeed", "line\\nfeed", "line\\nfeed"),
-        ("trailing\\", "trailing\\\\", "trailing\\\\"),
-        ("\\\\\\", "\\\\\\\\\\\\", "\\\\\\\\\\\\"),
-        ("\\\n", "\\\\\\n", "\\\\\\n"),
-        ("ünï\"cødé\\", "ünï\\\"cødé\\\\", "ünï\"cødé\\\\"),
-    ] {
-        assert_eq!(escaped(raw, true), label, "label: {raw:?}");
-        assert_eq!(escaped(raw, false), help, "help: {raw:?}");
-        assert_eq!(decode_escaped(label, true), raw);
-        assert_eq!(decode_escaped(help, false), raw);
-    }
-}
-
-#[test]
-fn metric_and_label_names_keep_existing_sanitization() {
-    for s in [
-        "busbar_ok",
-        "busbar:ok",
-        "9lead",
-        "a.b-c",
-        ":colon",
-        "ü",
-        "",
-    ] {
-        assert_eq!(
-            sanitized(s, true),
-            reference::sanitize_metric_name(s),
-            "{s:?}"
-        );
-        assert_eq!(
-            sanitized(s, false),
-            reference::sanitize_label_key(s),
-            "{s:?}"
-        );
-    }
 }
 
 #[test]
@@ -249,7 +161,7 @@ fn raw_label_values_keep_distinct_exported_series() {
                         .iter()
                         .find(|(key, _)| key == "identity")
                         .unwrap();
-                    (decode_escaped(&label.1, true), sample.value.as_str())
+                    (label.1.clone(), sample.value.as_str())
                 })
                 .collect();
             identities.sort();
@@ -333,7 +245,7 @@ fn raw_duplicate_labels_keep_registry_identity_and_existing_display_semantics() 
 }
 
 #[test]
-fn series_order_remains_presentation_order_with_deterministic_raw_ties() {
+fn series_order_uses_raw_labels_without_wire_encoding() {
     const COUNTER: &str = "busbar_identity_order";
     let source = identity_source();
 
@@ -353,6 +265,6 @@ fn series_order_remains_presentation_order_with_deterministic_raw_ties() {
             .iter()
             .map(|sample| sample.value.as_str())
             .collect();
-        assert_eq!(values, ["17", "31", "23", "19"]);
+        assert_eq!(values, ["19", "17", "31", "23"]);
     }
 }
