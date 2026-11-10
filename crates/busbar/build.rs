@@ -52,6 +52,9 @@ include!("src/linked_gen.rs");
 #[path = "src/link_policy.rs"]
 mod link_policy;
 
+#[path = "src/test_source_gen.rs"]
+mod test_source_gen;
+
 fn main() {
     println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
@@ -63,6 +66,10 @@ fn main() {
         println!("cargo::rustc-cfg=distribution_root");
     }
     let core = core_dir(&manifest);
+    println!(
+        "cargo:rerun-if-changed={}",
+        core.join("src/test_source_gen.rs").display()
+    );
     println!("cargo:rerun-if-changed={}", core.join("build.rs").display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -255,24 +262,26 @@ fn main() {
     }
     let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(out_dir.join("door_cells.rs"), cells).expect("write door_cells.rs");
+    let test_owners = test_source_gen::Owners::load(&manifest);
     std::fs::write(
         out_dir.join("root_test_sources.rs"),
-        test_sources_source(&manifest, "root-test-sources", "__busbar_root_tests", false),
+        test_sources_source(&manifest, &test_owners, "root-test-sources", "root", false),
     )
     .expect("write root_test_sources.rs");
     std::fs::write(
         out_dir.join("common_test_sources.rs"),
         test_sources_source(
             &manifest,
+            &test_owners,
             "test-common-sources",
-            "__busbar_common_tests",
+            "common",
             true,
         ),
     )
     .expect("write common_test_sources.rs");
     std::fs::write(
         out_dir.join("context_test_sources.rs"),
-        context_test_sources_source(&manifest),
+        context_test_sources_source(&manifest, &test_owners),
     )
     .expect("write context_test_sources.rs");
     std::fs::write(out_dir.join("door_cells_files.rs"), cells_files)
@@ -413,23 +422,18 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
-// A source-only fixture can be a dev-dependency, whose links metadata Cargo does
-// not pass to this build script. Its owner exports the source inclusion macro;
-// the package-literal arm checks the explicit roster against the actual owner.
-fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: bool) -> String {
+// Owners declare source-only test paths in package metadata, without exporting
+// test helpers through a production plugin library.
+fn test_sources_source(
+    manifest: &str,
+    owners: &test_source_gen::Owners,
+    table: &str,
+    source: &str,
+    reexport: bool,
+) -> String {
     let mut out = format!("// @generated from package.metadata.busbar.{table}.\n");
     for (module, krate) in metadata_map(manifest, &format!("package.metadata.busbar.{table}")) {
-        assert!(
-            !module.is_empty()
-                && module.bytes().enumerate().all(|(i, b)| b == b'_'
-                    || b.is_ascii_alphabetic()
-                    || (i > 0 && b.is_ascii_digit())),
-            "invalid test source module: {module}"
-        );
-        out.push_str(&format!(
-            "{}::{macro_name}!({module}, {krate:?});\n",
-            ident(&krate)
-        ));
+        out.push_str(&owners.module(&krate, source, &module));
         if reexport {
             out.push_str(&format!(
                 "#[allow(unused_imports, reason = \"Owner test helpers are shared by independently compiled harnesses.\")]\n\
@@ -443,19 +447,13 @@ fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: 
 // The same source-owner boundary can mount tests beneath private host modules.
 // Context names are assembly data. Assemblies must account for every mounted context;
 // neutral core builds do not acquire source owners merely by mounting a context.
-fn context_test_sources_source(manifest: &str) -> String {
+fn context_test_sources_source(manifest: &str, owners: &test_source_gen::Owners) -> String {
     let mut out = String::from("// @generated from package.metadata.busbar.test-source-contexts.\n#[allow(unused_macros)]\nmacro_rules! owner_test_sources {\n");
     for (context, owner) in metadata_map(manifest, "package.metadata.busbar.test-source-contexts") {
-        assert!(
-            !context.is_empty()
-                && context.bytes().enumerate().all(|(i, b)| b == b'_'
-                    || b.is_ascii_alphabetic()
-                    || (i > 0 && b.is_ascii_digit())),
-            "invalid test source context: {context}"
-        );
+        test_source_gen::identifier(&context);
         out.push_str(&format!(
-            "    ({context}) => {{ {}::__busbar_context_tests!({context}, {owner:?}); }};\n",
-            ident(&owner)
+            "    ({context}) => {{ {} }};\n",
+            owners.context(&owner, &context)
         ));
     }
     if metadata_value(manifest, "package.metadata.busbar.core", "dir").is_some() {

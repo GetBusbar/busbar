@@ -20,6 +20,10 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[[test]]
+name = "test_source_gen"
+path = "src/test_source_gen_tests.rs"
+
 [dependencies]
 async-trait = { workspace = true }
 busbar-core-oauth2 = { path = "../busbar-core-oauth2" }
@@ -68,6 +72,9 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 default = ["root-admin"]
 root-admin = ["dep:tower"]
 test-harness = []
+
+[build-dependencies]
+serde_json = { workspace = true }
 
 [dev-dependencies]
 busbar-core-admin = { path = "../busbar-core-admin", default-features = false, features = ["test-support"] }

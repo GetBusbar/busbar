@@ -396,7 +396,8 @@ async fn owner_plane_with_store(
         default_grant: vec![SCOPE.into()],
         ..Default::default()
     };
-    let block = serde_yaml::to_value(config).expect("owner config serializes");
+    let block = serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
+        .expect("owner config serializes");
     crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),
@@ -475,12 +476,13 @@ async fn an_unencodable_login_redirect_fails_closed_rather_than_proceeding() {
 
 #[tokio::test]
 async fn issued_code_tokens_retain_their_live_private_records_for_each_default_scope() {
-    let block = serde_yaml::to_value(OauthAsCfg {
+    let config = OauthAsCfg {
         issuer: "https://as.example.com".into(),
         default_grant: vec!["read".into(), "write".into()],
         ..Default::default()
-    })
-    .unwrap();
+    };
+    let block =
+        serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal())).unwrap();
     let opaque = crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),
