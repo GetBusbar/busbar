@@ -12,38 +12,37 @@ mod blackbox;
 mod canary;
 mod recorder;
 
-use canary::{Canary, Expect, Sink};
+use canary::{Canary, Sink};
 
-pub const EXPECT: &[(&str, Expect)] = &[
-    ("provider-key-env-ref", Expect::Clean),
-    ("provider-key-file-ref", Expect::Clean),
-    ("plugin-setting-interp", Expect::Leaks),
-    ("export-url-path-token", Expect::Leaks),
-    ("provider-url-userinfo", Expect::Clean),
-    ("provider-url-userinfo-unreachable", Expect::Clean),
-    ("admin-token", Expect::Clean),
-    ("caller-cookie", Expect::Clean),
-    ("caller-custom-auth-header", Expect::Leaks),
-    ("refusal-inline-api-key", Expect::Clean),
-    ("refusal-webhook-auth-header-shape", Expect::Leaks),
-    ("refusal-webhook-url-query-token", Expect::Clean),
-    ("refusal-base-url-userinfo", Expect::Clean),
-    ("refusal-signing-key-file-content", Expect::Clean),
-    ("abi-secret-refs-file-ref", Expect::Leaks),
-    ("abi-settings-env-ref", Expect::Leaks),
-    ("abi-settings-env-template", Expect::Clean),
-    ("abi-settings-interp", Expect::Leaks),
-    ("abi-outbound-credential", Expect::Leaks),
-    ("abi-passthrough-caller-credential", Expect::Leaks),
+pub const KINDS: &[&str] = &[
+    "provider-key-env-ref",
+    "provider-key-file-ref",
+    "plugin-setting-interp",
+    "export-url-path-token",
+    "provider-url-userinfo",
+    "provider-url-userinfo-unreachable",
+    "admin-token",
+    "caller-cookie",
+    "caller-custom-auth-header",
+    "refusal-inline-api-key",
+    "refusal-webhook-auth-header-shape",
+    "refusal-webhook-url-query-token",
+    "refusal-base-url-userinfo",
+    "refusal-signing-key-file-content",
+    "abi-secret-refs-file-ref",
+    "abi-settings-env-ref",
+    "abi-settings-env-template",
+    "abi-settings-interp",
+    "abi-outbound-credential",
+    "abi-passthrough-caller-credential",
 ];
 
 pub fn canary(kind: &'static str) -> Canary {
-    let expect = EXPECT
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, e)| *e)
-        .unwrap_or_else(|| panic!("canary kind `{kind}` has no EXPECT row"));
-    Canary::new(kind, expect)
+    assert!(
+        KINDS.contains(&kind),
+        "canary kind `{kind}` is not registered"
+    );
+    Canary::new(kind)
 }
 
 #[test]
@@ -53,12 +52,12 @@ fn served_node_sinks() {
     let dead = canary("provider-url-userinfo-unreachable");
     let dead_form = blackbox::basic_form(&dead.value);
     let c = blackbox::NodeCanaries {
-        env_ref: canary("provider-key-env-ref").delivered_to("far-end:mock"),
-        file_ref: canary("provider-key-file-ref").delivered_to("far-end:mockfile"),
+        env_ref: canary("provider-key-env-ref").delivered_to("far-end:mock", "mock"),
+        file_ref: canary("provider-key-file-ref").delivered_to("far-end:mockfile", "mockfile"),
         interp: canary("plugin-setting-interp"),
         userinfo: userinfo
             .also(userinfo_form)
-            .delivered_to("far-end:mockuser"),
+            .delivered_to("far-end:mockuser", "mockuser"),
         userinfo_dead: dead.also(dead_form),
         admin_token: canary("admin-token"),
         url_path_token: canary("export-url-path-token"),
@@ -98,8 +97,8 @@ fn abi_crossings() {
 
 #[test]
 fn self_test_the_search_finds_what_was_planted() {
-    let c = Canary::new("self-test", Expect::Clean).also("ZW5jb2RlZA".into());
-    let other = Canary::new("self-test-absent", Expect::Clean);
+    let c = Canary::new("self-test").also("ZW5jb2RlZA".into());
+    let other = Canary::new("self-test-absent");
     let sinks = vec![
         Sink::text("log:a", "x", format!("line one\nkey={} here\n", c.value)),
         Sink::raw(
@@ -112,12 +111,19 @@ fn self_test_the_search_finds_what_was_planted() {
         Sink::text("far-end:e", "v", c.value.clone()),
         Sink::text("far-end:elsewhere", "another provider", c.value.clone()),
     ];
-    let hits = canary::search(&c.clone().delivered_to("far-end:e"), &sinks);
+    let hits = canary::search(&c, &sinks);
     let found: Vec<&str> = hits.iter().map(|h| h.sink.as_str()).collect();
     assert_eq!(
         found,
-        ["log:a", "abi:b", "log:c", "log:d", "far-end:elsewhere"],
-        "a designed destination does not exempt another provider with the same name prefix: {hits:?}"
+        [
+            "log:a",
+            "abi:b",
+            "log:c",
+            "log:d",
+            "far-end:e",
+            "far-end:elsewhere"
+        ],
+        "search records every crossing, including required deliveries: {hits:?}"
     );
     assert_eq!(hits[0].at, "x line 2", "the hit names its line");
     assert!(
@@ -128,32 +134,45 @@ fn self_test_the_search_finds_what_was_planted() {
 }
 
 #[test]
-fn self_test_the_verdicts_hold_the_expectation() {
-    let hit = vec![canary::Hit {
-        sink: "log:a".into(),
-        at: "x".into(),
-        context: "c".into(),
-    }];
-    let strict = Canary::new("strict", Expect::Clean);
-    let xfail = Canary::new("xfail", Expect::Leaks);
-    assert!(!canary::judge(&strict, &hit).ok);
+fn self_test_unexpected_hits_fail_and_required_deliveries_must_arrive() {
+    let c = Canary::new("strict").delivered_to("abi:open.secrets[0]", "receiving-owner");
+    let required = Sink::text("abi:open.secrets[0]", "receiving-owner", c.value.clone());
+    assert!(canary::judge(&c, &canary::search(&c, &[required.clone()])).ok);
+    assert!(
+        !canary::judge(&c, &[]).ok,
+        "a missing required delivery cannot pass"
+    );
+    for other in [
+        Sink::text("abi:open.secrets[0]", "different-owner", c.value.clone()),
+        Sink::text("abi:open.settings", "receiving-owner", c.value.clone()),
+        Sink::text("log:node", "receiving-owner", c.value.clone()),
+        Sink::text("refusal:open", "receiving-owner", c.value.clone()),
+    ] {
+        let hits = canary::search(&c, &[required.clone(), other]);
+        assert!(
+            !canary::judge(&c, &hits).ok,
+            "an unexpected secret crossing always fails: {hits:?}"
+        );
+    }
+    let strict = Canary::new("no-deliveries");
+    let hits = canary::search(
+        &strict,
+        &[Sink::text("log:node", "host", strict.value.clone())],
+    );
+    assert!(!canary::judge(&strict, &hits).ok);
     assert!(canary::judge(&strict, &[]).ok);
-    let v = canary::judge(&xfail, &hit);
-    assert!(v.ok && v.text.contains("XFAIL") && v.text.contains("log:a"));
-    let v = canary::judge(&xfail, &[]);
-    assert!(v.ok && v.text.contains("flip to Expect::Clean"));
-    for (kind, _) in EXPECT {
+    for kind in KINDS {
         assert_eq!(
-            EXPECT.iter().filter(|(k, _)| k == kind).count(),
+            KINDS.iter().filter(|k| *k == kind).count(),
             1,
-            "one EXPECT row per kind: {kind}"
+            "one registered kind: {kind}"
         );
     }
 }
 
 #[test]
 fn self_test_a_black_box_sink_finds_a_planted_value() {
-    let c = Canary::new("self-test-provider-name", Expect::Leaks);
+    let c = Canary::new("self-test-provider-name");
     let dir = blackbox::scratch("self-test");
     std::fs::write(dir.join("providers.yaml"), "").expect("providers.yaml");
     std::fs::write(
@@ -188,14 +207,14 @@ fn self_test_a_black_box_sink_finds_a_planted_value() {
 
 #[test]
 fn self_test_the_shim_records_a_planted_crossing() {
-    let c = Canary::new("self-test-shim", Expect::Leaks);
+    let c = Canary::new("self-test-shim");
     let (sinks, _) = abi::run(&abi::AbiCanaries {
         secret_ref_file: c.clone(),
-        settings_env_ref: Canary::new("self-test-unused-1", Expect::Leaks),
-        settings_template: Canary::new("self-test-unused-2", Expect::Leaks),
-        settings_interp: Canary::new("self-test-unused-3", Expect::Leaks),
-        outbound_credential: Canary::new("self-test-unused-4", Expect::Leaks),
-        passthrough: Canary::new("self-test-unused-5", Expect::Leaks),
+        settings_env_ref: Canary::new("self-test-unused-1"),
+        settings_template: Canary::new("self-test-unused-2"),
+        settings_interp: Canary::new("self-test-unused-3"),
+        outbound_credential: Canary::new("self-test-unused-4"),
+        passthrough: Canary::new("self-test-unused-5"),
     });
     let hits = canary::search(&c, &sinks);
     let (signing_secret_sink, signing_secret_plugin) = abi::signing_secret_crossing();

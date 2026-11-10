@@ -4,13 +4,11 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-/// What a canary is expected to do today.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Expect {
-    /// A known leak (XFAIL): hits are listed, and the canary passes while they exist.
-    Leaks,
-    /// Strict: a single hit fails.
-    Clean,
+/// One required delivery to the exact recipient at the exact boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    pub sink: String,
+    pub owner: String,
 }
 
 /// One planted credential.
@@ -23,14 +21,12 @@ pub struct Canary {
     /// The searched forms: the value's unique hex tail (so a canary found wrapped, prefixed or
     /// truncated at its head is still found), plus any derived encodings ([`Canary::also`]).
     pub forms: Vec<String>,
-    /// Sinks that are this credential's DESIGNED destination, not a leak (a provider key at its
-    /// own provider's far end). Matched against the sink's complete name.
-    pub delivered_to: Vec<&'static str>,
-    pub expect: Expect,
+    /// Required authorized deliveries; every other observed crossing is a failure.
+    pub deliveries: Vec<Delivery>,
 }
 
 impl Canary {
-    pub fn new(kind: &'static str, expect: Expect) -> Self {
+    pub fn new(kind: &'static str) -> Self {
         let mut raw = [0u8; 8];
         getrandom::fill(&mut raw).expect("random bytes for a canary");
         let tail = hex::encode(raw);
@@ -42,8 +38,7 @@ impl Canary {
             kind,
             value: format!("CANARY-{slug}-{tail}"),
             forms: vec![tail],
-            delivered_to: Vec::new(),
-            expect,
+            deliveries: Vec::new(),
         }
     }
 
@@ -52,8 +47,16 @@ impl Canary {
         self
     }
 
-    pub fn delivered_to(mut self, sink: &'static str) -> Self {
-        self.delivered_to.push(sink);
+    pub fn delivered_to(mut self, sink: impl Into<String>, owner: impl Into<String>) -> Self {
+        let delivery = Delivery {
+            sink: sink.into(),
+            owner: owner.into(),
+        };
+        assert!(
+            !self.deliveries.contains(&delivery),
+            "one requirement per exact delivery"
+        );
+        self.deliveries.push(delivery);
         self
     }
 }
@@ -91,6 +94,8 @@ impl Sink {
 pub struct Hit {
     pub sink: String,
     pub at: String,
+    /// Exact recipient metadata, before diagnostic line numbers are added.
+    pub owner: String,
     /// The line it sat on (the canary's forms masked), for the report.
     pub context: String,
 }
@@ -98,14 +103,12 @@ pub struct Hit {
 pub fn search(canary: &Canary, sinks: &[Sink]) -> Vec<Hit> {
     let mut hits = Vec::new();
     for sink in sinks {
-        if canary.delivered_to.iter().any(|d| sink.name == *d) {
-            continue;
-        }
         let text = String::from_utf8_lossy(&sink.bytes);
         for (no, line) in text.lines().enumerate() {
             if canary.forms.iter().any(|f| line.contains(f.as_str())) {
                 hits.push(Hit {
                     sink: sink.name.clone(),
+                    owner: sink.at.clone(),
                     at: if text.lines().nth(1).is_some() {
                         format!("{} line {}", sink.at, no + 1)
                     } else {
@@ -138,20 +141,47 @@ pub struct Verdict {
 
 pub fn judge(canary: &Canary, hits: &[Hit]) -> Verdict {
     let mut text = String::new();
-    let status = match (canary.expect, hits.is_empty()) {
-        (Expect::Leaks, false) => "XFAIL (known leak)",
-        (Expect::Leaks, true) => "NOW CLEAN: flip to Expect::Clean",
-        (Expect::Clean, true) => "clean",
-        (Expect::Clean, false) => "FAIL (expected clean, leaked)",
-    };
-    let _ = writeln!(text, "[{}] {} hit(s): {status}", canary.kind, hits.len());
-    for h in hits {
-        let _ = writeln!(text, "    {} @ {}: {}", h.sink, h.at, h.context);
-    }
-    Verdict {
-        ok: !(canary.expect == Expect::Clean && !hits.is_empty()),
+    let matches =
+        |delivery: &Delivery, hit: &Hit| delivery.sink == hit.sink && delivery.owner == hit.owner;
+    let unexpected: Vec<_> = hits
+        .iter()
+        .filter(|hit| {
+            !canary
+                .deliveries
+                .iter()
+                .any(|delivery| matches(delivery, hit))
+        })
+        .collect();
+    let missing: Vec<_> = canary
+        .deliveries
+        .iter()
+        .filter(|delivery| !hits.iter().any(|hit| matches(delivery, hit)))
+        .collect();
+    let ok = unexpected.is_empty() && missing.is_empty();
+    let _ = writeln!(
         text,
+        "[{}] {} unexpected hit(s), {} missing required deliveries: {}",
+        canary.kind,
+        unexpected.len(),
+        missing.len(),
+        if ok { "clean" } else { "FAIL" }
+    );
+    for delivery in &canary.deliveries {
+        let count = hits.iter().filter(|hit| matches(delivery, hit)).count();
+        let _ = writeln!(
+            text,
+            "    required {} @ {}: {count} observed hit(s)",
+            delivery.sink, delivery.owner
+        );
     }
+    for hit in unexpected {
+        let _ = writeln!(
+            text,
+            "    unexpected {} @ {}: {}",
+            hit.sink, hit.at, hit.context
+        );
+    }
+    Verdict { ok, text }
 }
 
 pub fn report_dir() -> PathBuf {
@@ -209,6 +239,6 @@ pub fn sweep(scenario: &str, canaries: &[Canary], sinks: &[Sink], notes: &[Strin
     println!("{report}(written to {})", file.display());
     assert!(
         failed.is_empty(),
-        "canaries expected CLEAN leaked in scenario {scenario}: {failed:?}\n{report}"
+        "canary delivery contract failed in scenario {scenario}: {failed:?}\n{report}"
     );
 }
