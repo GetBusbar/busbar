@@ -1,0 +1,34 @@
+{
+  "schema": "busbar.native-toolchain-pins/1",
+  "rust": "1.98.0",
+  "platforms": {
+    "linux/arm64": {
+      "base": "docker.io/library/rust@sha256:56bfc6a715db852bdafd5e4bdf68ef7abceb791e77c47e5d87c7e861702a9ca6",
+      "triple": "aarch64-unknown-linux-gnu",
+      "components": {
+        "clippy": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/clippy-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "bc9b5636170e4b067794bfb8962c6f22b2aee5cb7358f4d9523072bb2976062a"
+        },
+        "rustfmt": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustfmt-1.98.0-aarch64-unknown-linux-gnu.tar.xz",
+          "sha256": "8da40e8c7eb1a7619f6b2c74c6351d288a6d8c4e06324fb5a60c14290219c47e"
+        }
+      }
+    },
+    "linux/amd64": {
+      "base": "docker.io/library/rust@sha256:4e4a7e7939c17991ab35f2b8c2e67593980f771d28f6b1254b1850f860fd0c7f",
+      "triple": "x86_64-unknown-linux-gnu",
+      "components": {
+        "clippy": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/clippy-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "646c6bd2450ea4c32a3c78ad7a3727294eea1f1519718a3f1487424021695ffa"
+        },
+        "rustfmt": {
+          "url": "https://static.rust-lang.org/dist/2026-08-20/rustfmt-1.98.0-x86_64-unknown-linux-gnu.tar.xz",
+          "sha256": "8922a03e68265a74a8040590e28b173fb5d9d49655bb6eacfd880fbd3bef0dc3"
+        }
+      }
+    }
+  }
+}
