@@ -1052,7 +1052,15 @@ impl GovState {
     ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
         let chain = match cost.chain_for(key) {
             Ok(c) => c,
-            Err(_) => return Vec::new(),
+            Err(group) => {
+                tracing::warn!(
+                    key = %key.id,
+                    group = group,
+                    "budget_state: cost chain unavailable for key; \
+                     hooks will see an empty budget list"
+                );
+                return Vec::new();
+            }
         };
         let mut out = Vec::with_capacity(chain.len());
         for bucket in chain.iter() {
@@ -1510,19 +1518,21 @@ impl GovState {
             let Some(cell) = map.get_mut(bucket_id) else {
                 continue; // swept: nothing in memory holds the count any more
             };
-            if cell.window_start == *window {
-                cell.requests = cell.requests.saturating_sub(1);
-                cell.dirty = true;
-            } else if cell.window_start > *window {
-                cell.park(
-                    *window,
-                    UsageDelta {
-                        requests: -1,
-                        ..UsageDelta::default()
-                    },
-                );
-                cell.dirty = true;
-            }
+            cell.mutate(|cell| {
+                if cell.window_start == *window {
+                    cell.requests = cell.requests.saturating_sub(1);
+                    cell.dirty = true;
+                } else if cell.window_start > *window {
+                    cell.park(
+                        *window,
+                        UsageDelta {
+                            requests: -1,
+                            ..UsageDelta::default()
+                        },
+                    );
+                    cell.dirty = true;
+                }
+            });
         }
     }
 

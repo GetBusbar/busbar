@@ -725,9 +725,17 @@ impl<'u> Pumping<'u> {
         let cancelled = match done.map(|d| (d.disposition, d.outcome)) {
             Some((Some(d), _)) => Some((d, std::mem::take(&mut self.cancel_writes))),
             Some((None, AbiOutcome::Fault)) => None,
-
-            _ if self.lock().close == Close::Closed => None,
-            _ => self.cancel_now().await.map(|c| (c.disposition, c.writes)),
+            Some((
+                None,
+                AbiOutcome::Ready | AbiOutcome::Pending | AbiOutcome::Failed | AbiOutcome::Refused,
+            ))
+            | None => {
+                if self.lock().close == Close::Closed {
+                    None
+                } else {
+                    self.cancel_now().await.map(|c| (c.disposition, c.writes))
+                }
+            }
         };
 
         if let Some((_, writes)) = &cancelled {

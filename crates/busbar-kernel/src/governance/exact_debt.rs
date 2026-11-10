@@ -655,7 +655,17 @@ impl GovState {
             let correction_debt = if correcting {
                 match Self::take_correction_positives(cell, window) {
                     Ok(Some(debt)) => Some(debt),
-                    Ok(None) | Err(_) => continue,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        tracing::warn!(
+                            bucket = bucket,
+                            window = window,
+                            error = ?e,
+                            "take_correction_positives failed; \
+                             skipping bucket this flush cycle"
+                        );
+                        continue;
+                    }
                 }
             } else {
                 None
