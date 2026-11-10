@@ -23,11 +23,14 @@ from check import read
 
 
 class GitLab:
-    def __init__(self, server):
+    def __init__(self, server, *, token=None):
         parsed = urllib.parse.urlsplit(server)
         if parsed.scheme != 'https' or parsed.path not in ('', '/'):
             raise ValueError('an HTTPS GitLab origin is required')
         self.server = server.rstrip('/')
+        if token is not None:
+            self.token = token
+            return
         result = subprocess.run(['git', 'credential', 'fill'], input=f'protocol=https\nhost={parsed.netloc}\n\n',
                                 text=True, capture_output=True, check=True)
         fields = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
@@ -58,6 +61,17 @@ class GitLab:
             if len(rows) < 100:
                 return result
             page += 1
+
+
+def group_protection_reader(operator, keychain_service):
+    """Use the separately authorized read credential only for group protection lookup."""
+    if not keychain_service:
+        return operator
+    result = subprocess.run(['security', 'find-generic-password', '-s', keychain_service, '-w'],
+                            text=True, capture_output=True, check=False)
+    if result.returncode or not result.stdout.strip():
+        raise RuntimeError('group-protection read credential could not be loaded')
+    return GitLab(operator.server, token=result.stdout.strip())
 
 
 def encoded(value):
@@ -249,6 +263,8 @@ def main():
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('action', choices=('inspect', 'apply', 'merge'))
+    parser.add_argument('--group-read-keychain-service',
+                        help='Optional macOS Keychain service for group-protection reads only')
     parser.add_argument('--repository')
     parser.add_argument('--merge-request', type=int)
     parser.add_argument('--merge-user-id', type=int, action='append', required=True,
@@ -265,11 +281,12 @@ def main():
             raise ValueError('repository is outside this admission policy')
         repositories = [args.repository]
     api = GitLab(args.server)
+    group_api = group_protection_reader(api, args.group_read_keychain_service)
     merge_users = set(args.merge_user_id)
     report = {'policy_revision': args.policy_revision, 'projects': [], 'groups': {}, 'owner_dependencies': []}
     for group in ('GetBusbar', 'BusbarInc'):
         try:
-            report['groups'][group] = api.all('groups/' + encoded(group) + '/protected_branches')
+            report['groups'][group] = group_api.all('groups/' + encoded(group) + '/protected_branches')
         except RuntimeError as error:
             report['owner_dependencies'].append(str(error))
     if args.action in ('apply', 'merge'):
