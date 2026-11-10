@@ -284,7 +284,7 @@ fn stop(child: &mut Child) {
 
 pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     let mut sinks = Vec::new();
-    let mut notes = Vec::new();
+    let notes = Vec::new();
     let dir = scratch("node");
     let ends = [
         ("mock", far_end()),
@@ -452,13 +452,18 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         sinks.push(Sink::text(format!("admin:GET {view}"), *view, answer));
     }
 
-    wait_for(Duration::from_secs(5), || {
-        std::fs::read_to_string(&reqlog).is_ok_and(|t| t.lines().count() >= 4)
-    });
-    match std::fs::read_to_string(&reqlog) {
-        Ok(t) => sinks.push(Sink::text("export:request-log-file", "reqlog.jsonl", t)),
-        Err(e) => notes.push(format!("the request-log export wrote nothing: {e}")),
-    }
+    assert!(
+        wait_for(Duration::from_secs(5), || {
+            std::fs::read_to_string(&reqlog).is_ok_and(|t| t.lines().count() >= 4)
+        }),
+        "all four requests must reach the request-log sink; log:\n{}",
+        read_log()
+    );
+    sinks.push(Sink::text(
+        "export:request-log-file",
+        "reqlog.jsonl",
+        std::fs::read_to_string(&reqlog).expect("the request-log export exists"),
+    ));
 
     std::thread::sleep(Duration::from_millis(500));
     stop(&mut child.0);
