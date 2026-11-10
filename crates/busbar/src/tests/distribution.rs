@@ -1,6 +1,3 @@
-#[path = "../../../../dist/default/tests/product/auth_plugin_chain.rs"]
-mod auth_plugin_chain;
-
 #[path = "../../../../dist/default/tests/product/auth_plugin_chain_trust.rs"]
 mod auth_plugin_chain_trust;
 
