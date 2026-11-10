@@ -26,7 +26,7 @@
     {
       "repo": "busbar-auth-ldap",
       "url": "https://github.com/GetBusbar/busbar-auth-ldap",
-      "commit": "f08e32c80ac4867631c374f1d28872c5469966c3",
+      "commit": "81fc292f3f8dc3f94a29b3dbaca4130e4317083b",
       "package": "busbar-auth-ldap-plugin",
       "kind": "auth",
       "alias": "ldap",
@@ -37,7 +37,7 @@
     {
       "repo": "busbar-auth-sigv4",
       "url": "https://github.com/GetBusbar/busbar-auth-sigv4",
-      "commit": "5292f8602c2c631c62d9dc7bbd7c9ec161a5aa82",
+      "commit": "4190ba79f8040d4baa3a9bacb64c1e8e4464f38a",
       "package": "busbar-auth-sigv4-plugin",
       "kind": "auth",
       "alias": "sigv4",
@@ -235,7 +235,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "a19699f8a0f2bc24ecaf9df8c859da4ae2bcfefe",
+      "commit": "54d8254ee5c46f3583feecec3391f316525e6330",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
