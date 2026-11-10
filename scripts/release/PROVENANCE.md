@@ -186,3 +186,301 @@ https://slsa.dev/spec/v1.2/provenance
 https://docs.sigstore.dev/cosign/signing/signing_with_blobs/
 https://docs.sigstore.dev/cosign/verifying/verify/
 https://github.com/sigstore/cosign/blob/v3.1.4/cmd/cosign/cli/attest/attest_blob.go
+
+GitLab-native signing design (2026-11-10; proposed, not activated)
+
+Decision: use GitLab to authorize a separate release-attestation signer. Prefer a
+purpose-specific non-exportable KMS key and Cosign DSSE bundles as the first
+release path; retain self-hosted Fulcio as an alternative if certificate-based
+GitLab identity is required. GitHub remains an optional artifact distributor.
+Neither GitHub Actions nor `gh attestation` participates in trust or production.
+The public OIDC discovery endpoint was read on 2026-11-10 and returned exactly:
+  issuer: https://github.com
+  jwks_uri: https://github.com/oauth/discovery/keys
+Re-read authenticated HTTPS discovery during activation, verify JWT signatures
+against that issuer's JWKS, and reject issuer aliases or trailing-slash changes.
+Never accept a decoded JWT without signature, audience and lifetime validation.
+
+Trust and job separation
+
+Proposed signing project: GetBusbar/release-signing (not created by this work).
+Its local .gitlab-ci.yml is owner-controlled, on protected main, pinned by an
+independently approved commit. Only this dedicated project gets signer access.
+Build projects, MR pipelines, fork pipelines and ordinary developers cannot
+modify its configuration, trigger arbitrary scripts, choose an identity, change
+trust roots, or provide pipeline variables overriding the approved manifest.
+Keep id_tokens in this signing project's own top-level file: do not reuse the
+external architecture CI include as a signing identity. GitLab documents identity
+limitations for externally included signing configuration.
+
+The signer job receives a controller-selected inventory digest, reads completed
+GitLab jobs by immutable project/pipeline/job ID, verifies their actual status,
+source vector and policy revision, then fetches artifacts by those job IDs. No
+branch-name "latest artifact", CI dotenv from candidate output, executable from
+a build artifact, or candidate script runs here. Restrict job-token artifact
+access to the specific producer projects. Disable untrusted pipelines on this
+project and protect the release-attestation environment. Use a fresh signer VM
+with no shared HOME, Cargo cache, workspace, daemon or mounted build-worker disk.
+The signer holds no merge credential; the publisher receives verified bundles
+and cannot use the signer key. Main re-verifies the identical QA bytes and plans;
+it does not rebuild or rewrite a QA statement to claim a new build.
+
+Artifact transfer does not establish build integrity. The trusted controller
+must observe command execution and collect outputs outside candidate-writable
+namespaces. A separate signing job stops post-build credential theft, but cannot
+make a candidate-written receipt authoritative. Reject a release until that
+controller boundary is qualified. The native constraints below are still real.
+
+KMS route (recommended deployment design)
+
+Use GitLab id_tokens with a single audience, chosen here as
+  https://github.com/busbar-release-attestation
+and a Google Workload Identity Federation provider with that exact allowed
+audience and the discovery issuer above. This is a proposed audience, not a
+claim that the provider already exists. GCP is an option consistent with the
+existing forge environment; no cloud project, account, key or role is inferred.
+An approved AWS KMS or OpenBao transit key can serve the same DSSE role if its
+separately reviewed federation and key policy provide equivalent restrictions.
+Cosign supports KMS handles; an OpenBao KV record is not a transit signing API.
+[Cosign KMS reference](https://docs.sigstore.dev/cosign/key_management/overview/)
+
+For GCP, map google.subject=assertion.sub and job_project_id/project_id,
+project_path, ref_path, ref_protected, ci_config_sha, pipeline_source,
+environment and environment_protected. The provider's attribute condition must
+require ALL of the following; missing claims refuse:
+  job_project_id == independently recorded numeric signing project ID
+  project_id == that same ID
+  project_path == "GetBusbar/release-signing"
+  ref_path == "refs/heads/main" AND ref_protected == "true"
+  ci_config_sha == the approved signer-config commit
+  pipeline_source == "api"
+  environment == "release-attestation" AND environment_protected == "true"
+Pin actual types from a signature-validated token on the deployed GitLab version;
+GitLab added job_project_id in 18.4. Do not silently drop unavailable claims.
+The controller starts the API pipeline only for an approved immutable inventory.
+Restrict impersonation of a dedicated signer service account to this provider
+and project identity, and grant that account only asymmetric signing/public-key
+read on the dedicated release-attestation CryptoKey, never key administration,
+key creation, private-key export, storage write or broad project roles. The key
+version is part of the approved trust tuple. A candidate VM must have neither
+this federation identity nor an attached signing-capable service account.
+[GitLab ID-token claims](https://docs.gitlab.com/ci/secrets/id_token_authentication/)
+[Google federation configuration](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
+
+Protected job sketch, intentionally not included in active CI:
+  attest-qa:
+    environment: release-attestation
+    id_tokens:
+      RELEASE_ID_TOKEN:
+        aud: https://github.com/busbar-release-attestation
+    # local immutable signer code exchanges ID token via federation, then runs
+    # the pinned producer/signing adapter; no candidate checkout or shell import.
+
+Short-lived credentials go in a mode-0600 task-local file for ADC; no token in
+command-line arguments, debug logs, artifacts or dotenv. Expire/remove credentials
+when the one-shot job finishes. Public verification pins the exported public
+key's DER SHA-256 from an independently approved custody record; downloading a
+public key beside an untrusted bundle is not a trust bootstrap. The KMS signature
+proves possession of that key, not a Fulcio OIDC identity. GitLab authorization
+and KMS audit logs remain separate private operational evidence.
+
+After the owner approves actual key and log configuration, the signing command
+shape is (variables here denote protected configuration, not candidate values):
+  cosign attest-blob --statement provenance.intoto.json \
+    --key "$RELEASE_KMS_URI" --bundle provenance.sigstore.json \
+    --signing-config signing-config.json --trusted-root trusted-root.json \
+    --oidc-disable-ambient-providers --yes
+Retain Rekor inclusion proof and checkpoint and verify immediately. Public
+logging discloses the signed statement and public key; use a private Rekor root
+if that disclosure is not approved. A private log must have retained durable
+state, independently distributed trusted keys and checkpoint monitoring; an
+unmonitored operator-controlled log is not independent public transparency.
+
+The current `native_provenance.py` key mode deliberately pins the existing
+Ed25519 TOOLING_KEY and therefore CANNOT be pointed at an arbitrary release KMS
+key. Activation requires a versioned release-specific trust schema supporting
+the selected key algorithm/fingerprint, while preserving the tooling adapter's
+purpose and tests. Do not change TOOLING_KEY to reuse the plugin trust root or
+silently broaden all tooling trust. The existing `sign-kms.sh` signs plugin key
+documents and is not a release-attestation DSSE adapter.
+
+Fulcio route (alternative, explicit new infrastructure decision)
+
+The public Sigstore Fulcio service does not trust arbitrary Self-Managed GitLab
+issuers. Either operate approved Fulcio + Rekor + CT services, or obtain explicit
+trust onboarding; merely setting --certificate-oidc-issuer does not onboard it.
+For a self-hosted stack, configure the exact issuer https://github.com,
+client-id sigstore, ci-provider GitLab claim mapping, and use id_tokens aud:
+sigstore only in the protected signing project. Preserve trusted Fulcio CA chain,
+CT public keys and Rekor public keys in an independently pinned trusted_root.json,
+plus signing endpoints in signing-config.json. Keep CA/log keys and persisted
+log state under separate custody from build and signer workers. Never disable
+SCT or tlog verification to work around an incomplete deployment.
+[GitLab Self-Managed Sigstore setup](https://docs.gitlab.com/ci/yaml/signing_self_hosted/)
+[Cosign custom trust configuration](https://docs.sigstore.dev/cosign/system_config/custom_components/)
+
+With the proposed local signing configuration, the EXACT allowed certificate
+identity is:
+  https://github.com/GetBusbar/release-signing//.gitlab-ci.yml@refs/heads/main
+and the EXACT allowed issuer is:
+  https://github.com
+The double slash is intentional. Verify this expected identity against a staging
+certificate before activation, without logging JWTs. No broad regex, project-only
+identity, GitLab.com issuer or candidate-controlled ci_config_ref_uri is accepted.
+Fulcio maps GitLab ci_config_ref_uri to SAN; the GitLab JWT sub alone is NOT the
+certificate identity. Pin the expected config digest and authenticated execution
+claims at signer authorization; issuer + SAN verification by itself does not
+verify protected-ref status, source commit or intended release inventory.
+Standard certificate extensions expose signer/source project URLs, commit, ref,
+job URL and visibility: using the dedicated signing project avoids exposing the
+private source repository through the signing job's certificate, but still
+reveals the signer project/forge hostname. Approve that exact metadata first.
+[Fulcio GitLab identity mapping](https://github.com/sigstore/fulcio/blob/main/docs/oidc.md#gitlab)
+
+Private source, SBOMs and artifact binding
+
+The public predicate contains the public artifact name + actual SHA-256, source
+commit/content digests, public-safe builder URN, build recipe/toolchain/lockgraph
+hashes and opaque invocation ID. Keep source archives, file maps, internal GitLab
+job URLs, paths, usernames, tokens, recipe text and dependency-server credentials
+private. Hashes commit to private inputs; they do not prove those inputs were
+actually used. The protected controller and qualified execution boundary provide
+that linkage. Review SBOM fields before publication: package names, versions,
+licenses, purls and source URLs may disclose private dependency inventory.
+
+Use one SLSA statement per final downloadable artifact. OCI subjects must bind
+the registry index digest AND the platform manifest digests actually shipped;
+SHA-256 of an OCI tar is useful transport evidence but is not the registry digest.
+Produce a separate signed release-evidence statement whose subject is the final
+canonical release inventory. Its inventory lists every artifact, corresponding
+SBOM SHA-256, OCI index/platform digest, provenance statement/bundle digest,
+source/policy revision, conformance receipt digest, scanner tool/database digest
+and scan timestamp. The inventory is generated by trusted collection, never by
+letting candidate.json define its own required subjects. Publish the inventory,
+bundle, artifact provenance bundles and SBOMs together, with immutable digest
+addressing and supported-release-lifetime retention.
+
+Bind the SBOM to its artifact in that inventory and a CycloneDX in-toto statement
+with the artifact as subject. Signing an unrelated SBOM file alone is insufficient.
+The producer must compare SBOM package closure with actual resolved/build and
+image contents before signing. Trivy G-S scans the SBOM and OCI bytes, refuses
+known HIGH/CRITICAL findings and records hashes, but cannot detect a dependency
+omitted from a supplied SBOM. Existing G-3/G-4/G-8/G-10 and conformance retain
+closure responsibility. The current provenance v1 adapter has six fixed input
+digests and does not yet emit this aggregate inventory or CycloneDX statement;
+these are explicit activation implementation steps, not hidden claims of support.
+
+Consumer commands replacing `gh attestation`
+
+A consumer installs independently authenticated release trust (Cosign executable,
+public key or Fulcio root, Rekor/CT trust, accepted builder/build-type and source
+policy) before downloading candidate-controlled data. For the proposed KMS path:
+  cosign verify-blob-attestation --bundle provenance.sigstore.json \
+    --key release-attestation.pub --trusted-root trusted-root.json \
+    --type https://slsa.dev/provenance/v1 ./busbar-TARGET.tar.gz
+For the Fulcio alternative:
+  cosign verify-blob-attestation --bundle provenance.sigstore.json \
+    --trusted-root trusted-root.json --type https://slsa.dev/provenance/v1 \
+    --certificate-oidc-issuer https://github.com \
+    --certificate-identity 'https://github.com/GetBusbar/release-signing//.gitlab-ci.yml@refs/heads/main' \
+    ./busbar-TARGET.tar.gz
+For a registry attestation, use `cosign verify-attestation --type
+https://slsa.dev/provenance/v1` with the same approved trust selector and the full
+`REGISTRY/IMAGE@sha256:DIGEST`, never a tag. Exact flags above were checked against
+installed Cosign 3.1.4 help; live GitLab certificates/KMS bundles have not been
+produced. The existing fixture proves real offline DSSE verification only.
+[Cosign verification reference](https://docs.sigstore.dev/cosign/verifying/verify/)
+
+Cryptographic success alone is insufficient. Apply the repository verifier's
+expected plan comparison to require the exact builder_id, buildType, source
+commit, target, six input digests, artifact digest and QA-qualified inventory.
+The public consumer adapter must additionally verify the aggregate release
+inventory and SBOM-to-artifact mapping. Refuse missing/extra subjects, wrong
+builder/predicate, substituted source/policy/target, stale scan evidence,
+untrusted key/root, missing log proof or changed QA artifact. No
+--insecure-ignore-tlog, issuer wildcard or trust-on-first-download fallback.
+
+Activation work, with exact missing inputs
+
+1. Qualify the native controller/candidate isolation below and produce completed
+   independent plan/receipt/input files for each immutable artifact.
+2. Record owner-approved signing project numeric ID, immutable local config SHA,
+   protected-ref/environment policy and controller invocation authority. Validate
+   actual token claims and exact issuer before creating federation bindings.
+3. Record selected cloud project/account, federation provider resource, signer
+   service account, dedicated key/version URI, key algorithm + DER fingerprint,
+   custody/rotation/revocation owner, and signer runtime image/executable digests.
+   These values are not available from source; none was guessed or provisioned.
+4. Select public or private log, approve exact published metadata, pin trust and
+   signing configuration bytes, retention and checkpoint monitoring responsibility.
+5. Implement the release-specific KMS trust adapter (or activate the independently
+   managed Fulcio roots/identity), aggregate inventory and SBOM statement emitter,
+   consumer policy verifier, and protected artifact transfer. The standalone
+   plugin-release G-S validator now accepts artifact-bound per-target SBOMs, but
+   the protected producer must still emit them from actual build closure. Prove real staging
+   negative cases: wrong issuer/ref/config/project/key, tampered artifact/SBOM,
+   forged receipt, missing subject and QA/main substitution.
+6. Only after explicit QA/main authorization wire protected signer/publisher jobs
+   and replace G-9's refusal with mandatory verification for every final subject.
+   This source change does not schedule or run production signing or promotion.
+
+Native boundary required before provenance activation
+
+The existing runner32 manager was read back on 2026-11-10: instance executor,
+capacity_per_instance=1, max_use_count=1, idle_count=0 and no external cache. That
+prevents cross-job host/daemon reuse and supports the separate security-scans job.
+It does not protect a controller from code in its own job. Native.run launches
+candidate Cargo build scripts/tests under the controller UID; architecture/check.py
+also compiles and loads candidate code; ci-product-inputs.sh builds candidates and
+returns an environment shell file currently sourced by the controller. Candidate
+conformance launchers use Docker. HOME/Cargo/toolchain directories and receipts
+are not separated from that process authority. The worker's Docker group grants
+host-root control through its socket. Clearing env vars is not confinement.
+
+Implement the boundary as three explicit roles on the existing one-job workers:
+(a) a trusted fetch/fixture/receipt controller, (b) an unprivileged candidate
+sandbox with private PID/mount/user namespaces and writable source/build/cache
+only, and (c) a separate artifact verifier/signer job. Keep policy/interpreter,
+expected inputs and receipt output outside candidate-writable mounts. Supply
+only read-only pinned toolchain and per-job dependency inputs. Never bind the
+host Docker socket or controller HOME. Kill/reap all sandbox descendants before
+collecting regular-file outputs, rejecting links/devices/path traversal, and
+hash the collected bytes independently. Keep metadata-service access and source
+fetch credentials outside the sandbox; use an explicit dependency egress policy.
+
+Split check.py's candidate compile/execute calls from its trusted policy judgment;
+move candidate results across a data-only interface. Replace shell `source` of
+product-input output with strict JSON/path validation. Run fixture Docker
+operations only in the trusted controller and expose the required service ports
+to the candidate namespace. For conformance suites that themselves create
+containers, provide a separate nested/rootless daemon confined to the candidate
+sandbox, or move their container lifecycle into a trusted fixture API. Preserve
+all existing conformance assertions, TSan functionality and native ABI targets.
+A separate verifier must not treat a candidate-authored JUnit or receipt as proof
+that execution happened; controller-observed argv, exit, lifecycle and collected
+outputs remain distinct from test-program assertions.
+
+The current native worker recipe has Docker/Python/util-linux/Rust/Node, but no
+bwrap/nsjail/runsc candidate execution contract or pinned build container image.
+The separate existing runsc sandbox profile has incompatible host fixture
+networking and TSan personality requirements. Therefore switching a tag or
+wrapping Popen while passing the host socket cannot safely activate this design.
+Before native confinement can run: build/pin a compatible toolchain sandbox on
+existing dev infrastructure, implement the controller interfaces above, and
+prove candidate attempts to write policy/receipts, read controller credentials,
+use host Docker/metadata, persist children or replace artifacts all fail while
+the required fixture and TSan witnesses still pass. No new cloud provisioning
+is inherently required, but the runtime/interface work is not implemented here.
+
+Assurance language
+
+A signature proves approved-key possession and payload integrity. Provenance
+records a builder's claims about a build. An SBOM describes an inventory. Scanner
+passes mean no findings under the named rules/database at that time. None is
+proof of no vulnerabilities, correctness, reproducibility, complete SBOM closure,
+independent audit or formal certification. Do not claim a SLSA Build level until
+the deployed builder and provenance satisfy its assessed requirements; use
+slsa_build_level: not-assessed meanwhile. SLSA schema v1 is not "SLSA level 1".
+FIPS validates specified cryptographic modules/configurations, not a Rust project
+or the presence of a KMS key; no FIPS/SOC2/ISO certification follows from this work.
+[SLSA build requirements](https://slsa.dev/spec/v1.2/build-requirements)

@@ -59,7 +59,9 @@ native-qualification:
           if actual != match[1]:
               raise SystemExit('trusted policy checkout mismatch')
           command = ['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
-          if os.environ['CI_JOB_NAME'] == 'core-conformance':
+          if os.environ['CI_JOB_NAME'] == 'security-scans':
+              command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
+          elif os.environ['CI_JOB_NAME'] == 'core-conformance':
               command.append('--conformance-only')
           elif os.environ['CI_JOB_NAME'] == 'external-conformance':
               command.append('--external-conformance')
@@ -74,6 +76,19 @@ native-qualification:
     access: developer
     expire_in: 30 days
     paths: [boundary-evidence/]
+
+# Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
+# max_use_count=1, no shared cache). This job never executes candidate processes.
+# Keep that lifecycle contract when changing the runner behind this tag.
+security-scans:
+  extends: native-qualification
+  tags: [busbar-native-admission]
+  timeout: 1h
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 1 year
+    paths: [boundary-evidence/security.json]
 
 # Conformance is mandatory alongside native qualification. API runs remain useful
 # diagnostics, but cannot replace these same-pipeline publication prerequisites.

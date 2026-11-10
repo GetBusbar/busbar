@@ -839,6 +839,33 @@ def gc_conformance(inp: Inputs, cj: dict, vd: Verdict) -> None:
     vd.ok("G-C")
 
 
+def gs_security(inp: Inputs, vd: Verdict) -> dict:
+    """Judge actual SBOM/image bytes in pinned, network-disabled scan containers."""
+    # The publishing checkout is owner-selected trusted tooling, never a build worker.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'security'))
+    from artifacts import scan_candidate
+    platforms = [row['target'].removeprefix('image-').replace('-', '/')
+                 for row in release_targets(inp.root) if row.get('kind') == 'image']
+    try:
+        evidence = scan_candidate(inp.root, inp.cand, platforms)
+    except (ValueError, OSError, subprocess.SubprocessError, KeyError, TypeError, AttributeError):
+        # Scanner reports can contain secrets or source snippets. Keep them out of logs.
+        raise CannotRun('G-S security scans failed or could not complete; no signing/publication allowed') from None
+    vd.ok('G-S')
+    return evidence
+
+
+def gs_plugin_security(inp, vd, directory, names, repository, version, source):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'security'))
+    from artifacts import scan_plugin_candidate
+    try:
+        evidence = scan_plugin_candidate(inp.root, directory, names, repository, version, source)
+    except (ValueError, OSError, subprocess.SubprocessError, KeyError, TypeError, AttributeError):
+        raise CannotRun('G-S plugin SBOM evidence missing, mismatched or scan failed; no signing/publication allowed') from None
+    vd.ok('G-S')
+    return evidence
+
+
 def verify_all(inp: Inputs) -> tuple:
     vd = Verdict()
     try:
@@ -861,12 +888,13 @@ def verify_all(inp: Inputs) -> tuple:
     g2_not_published(inp, cj, vd)
     g12_test_kit(inp, cj, vd)
     gc_conformance(inp, cj, vd)
+    security = gs_security(inp, vd) if not vd.refusals else None
     repro = g13_rebuild(inp, vd)
     if (inp.cand / "provenance").exists():
         vd.refuse("G-9", "provenance/", "no provenance (G-9 is not in 1.6.0's rule set)", "present",
                   "Land G-9 with ModernCI's pinned builder key before shipping provenance; an unchecked file is never published.")
     # G-0: every class ran on something.
-    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14", "G-15", "G-C"):
+    for rule in ("G-1", "G-2", "G-3", "G-4", "G-5", "G-6", "G-8", "G-10", "G-11", "G-12", "G-14", "G-15", "G-C", "G-S"):
         if not vd.checked.get(rule):
             vd.refuse("G-0", rule, "at least one subject checked", "none", "A rule that checked nothing is not a pass.")
     vd.evidence = {
@@ -877,6 +905,7 @@ def verify_all(inp: Inputs) -> tuple:
         "release_signed_by_hardware_key": "pending-sign",
         "sbom": not any(x.split()[1] == "G-8" for x in vd.refusals),
         "slsa_provenance": "not-run",
+        "security_scans": security,
         "transparency_log": "pending-upload",
         "reproducible": {"true": "not-proven", "false": False, "not-run": "not-run"}[repro] if repro != "true" else "second-build-matched",
         "local_spot_rebuild": "not-run",
@@ -1192,22 +1221,40 @@ def cmd_plugin_release(inp: Inputs, out: Path, repo: str, tag: str, plugins: Pat
             vd.refuse("G-5", n, f"unsigned busbar plugin {repo} {ver}", outp, "Re-run the plugin's release workflow.")
     if vd.refusals:
         return finish(vd)
+    security = gs_plugin_security(inp, vd, dl, want, 'GetBusbar/' + repo, ver, commit)
     out.mkdir(parents=True, exist_ok=True)
     seal_release(inp, vd, [(dl / f"{repo}-{ver}-{t}.tar.gz", t, repo, ver) for t, _, _ in PLUGIN_TARGETS], out, k1_cmd)
     if vd.refusals:
         return finish(vd)
     signed = out / "signed"
     sums = out / "SHA256SUMS"
-    write_sums(sums, sorted(signed.iterdir()))
-    k2_sign_and_check(inp, k2_key, [sums])
+    security['signed_artifacts'] = {p.name: sha256_file(p) for p in sorted(signed.iterdir())}
+    sboms = []
+    for row in security['subjects'].values():
+        source_bom, destination = dl / row['sbom'], out / row['sbom']
+        shutil.copyfile(source_bom, destination)
+        if sha256_file(destination) != row['sbom_sha256']:
+            raise CannotRun('G-S plugin SBOM changed after scanning')
+        sboms.append(destination)
+    security_file = out / 'plugin-security.json'
+    security_file.write_text(json.dumps(security, indent=2, sort_keys=True) + '\n')
+    write_sums(sums, [*sorted(signed.iterdir()), *sboms, security_file])
+    k2_sign_and_check(inp, k2_key, [sums, security_file])
+    published = [*sorted(signed.iterdir()), *sboms, sums, Path(str(sums) + '.sig'),
+                 security_file, Path(str(security_file) + '.sig')]
     if not inp.net.release_exists(f"GetBusbar/{repo}", tag):
         run([tool("gh"), "release", "create", tag, "-R", f"GetBusbar/{repo}", "--draft", "--target", commit,
              "--title", f"{repo} {tag}", "--notes-file", "-"], stdin=b"Signed with the busbar plugin key.", check=True)
     run([tool("gh"), "release", "upload", tag, "-R", f"GetBusbar/{repo}", "--clobber",
-         *map(str, sorted(signed.iterdir())), str(sums), str(sums) + ".sig"], check=True)
+         *map(str, published)], check=True)
     run([tool("gh"), "release", "edit", tag, "-R", f"GetBusbar/{repo}", "--draft=false", "--latest"], check=True)
     back = Path(tempfile.mkdtemp())
     run([tool("gh"), "release", "download", tag, "-R", f"GetBusbar/{repo}", "-D", str(back)], check=True)
+    for local in published:
+        downloaded = back / local.name
+        if not downloaded.is_file() or sha256_file(downloaded) != sha256_file(local):
+            vd.refuse('G-S', local.name, 'exact signed plugin release bytes', 'missing or changed',
+                      'Restore the verified plugin artifact, SBOM and security evidence set.')
     for n in sorted(want):
         target = n[len(f"{repo}-{ver}-"):-len(".tar.gz")]
         code, outp = pack_out(inp, ["verify", str(back / n), "--keys", inp.trust["k1"], "--target", target,
