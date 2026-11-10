@@ -194,7 +194,10 @@ async fn unchanged_admin_reload_retries_at_rest_maintenance_after_store_recovery
         let old_keys = AtRestKeys::new(&[3_u8; 32], None);
         core.identity()
             .put_credential(&CredentialSecret {
-                secret: old_keys.seal(&meta, b"recoverable-test-secret").unwrap(),
+                secret: old_keys
+                    .seal(&meta, b"recoverable-test-secret")
+                    .unwrap()
+                    .into(),
                 meta,
             })
             .await

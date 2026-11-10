@@ -103,7 +103,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         protocol: protocol.into(),
         base_url: base_url.into(),
 
-        api_key: config::SecretRef::env(api_key_env),
+        api_key: crate::distribution::config_validation_application::source_fill(api_key_env),
         health: None,
         error_map,
         path: None,
@@ -195,7 +195,9 @@ fn make_auth_chain(
         .collect();
 
     if modules.contains(&busbar_kernel::config::KEYS_MODULE) {
-        auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+        auth.signing_key = Some(
+            crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"),
+        );
         auth.admin_auth = vec![];
     }
     auth
@@ -1099,7 +1101,7 @@ fn test_validate_operator_token_secret_module_checked() {
     let mut entry = config::AuthChainEntry::bare(config::operator_provider());
     entry.token = Some(config::SecretRef {
         module: "env".to_string(),
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
     });
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth);
@@ -1119,7 +1121,8 @@ fn test_validate_rejects_admin_token_without_module() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare(config::operator_provider());
-    entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+    entry.token =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
     cfg.auth = Some(auth.clone());
 
@@ -1141,7 +1144,8 @@ fn test_validate_rejects_admin_token_without_module() {
 
     let missing = "absent-admin-auth-module";
     let mut entry = config::AuthChainEntry::bare(missing);
-    entry.token = Some(config::SecretRef::env("BUSBAR_ADMIN_TOKEN"));
+    entry.token =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_ADMIN_TOKEN"));
     auth.admin_auth = vec![entry];
     let err = busbar_kernel::auth::AdminAuthChain::build(&auth, &registry, &secrets)
         .expect_err("a configured admin token must never hide an absent auth module");
@@ -1253,7 +1257,8 @@ fn test_1_5_2_keys_chain_without_mint_path_is_boot_error() {
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.signing_key =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth);
     let errs =
         validate(&cfg).expect_err("keys chain with no usable mint path must fail validation");
@@ -1291,7 +1296,8 @@ fn test_keys_chain_without_signing_key_is_boot_error() {
         busbar_kernel::config::KEYS_MODULE,
     )];
     auth_ok.admin_auth = vec![];
-    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth_ok.signing_key =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
     cfg.auth = Some(auth_ok);
     assert!(
         validate(&cfg).is_ok(),
@@ -1324,7 +1330,8 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
     auth.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth.signing_key =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
 
     auth.admin_auth = vec![busbar_kernel::config::AuthChainEntry::bare(
         "test-external-idp",
@@ -1342,7 +1349,8 @@ fn test_1_5_2_keys_chain_external_admin_needs_full_scope_to_mint() {
     auth_ok.chain = vec![busbar_kernel::config::AuthChainEntry::bare(
         busbar_kernel::config::KEYS_MODULE,
     )];
-    auth_ok.signing_key = Some(config::SecretRef::env("BUSBAR_SIGNING_KEY"));
+    auth_ok.signing_key =
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_SIGNING_KEY"));
     let mut admin = busbar_kernel::config::AuthChainEntry::bare("test-external-idp");
     admin.max_admin_scope = Some("full".to_string());
     auth_ok.admin_auth = vec![admin];
@@ -1360,7 +1368,8 @@ fn test_validate_token_on_non_operator_entry_rejected() {
     let mut cfg = make_root_cfg(providers, models, pools);
     let mut auth = config::AuthCfg::default_none();
     let mut entry = config::AuthChainEntry::bare("keys");
-    entry.token = Some(config::SecretRef::env("MISPLACED_SECRET"));
+    entry.token =
+        Some(crate::distribution::config_validation_application::source_fill("MISPLACED_SECRET"));
     auth.chain = vec![entry];
     cfg.auth = Some(auth);
     let errs = validate(&cfg).expect_err("token on a non-operator entry must fail validation");
@@ -2496,7 +2505,7 @@ fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
         prompt: config::PromptAccess::No,
         user: config::UserAccess::No,
         priority: 0,
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
         on_empty: None,
         global: false,
         default: false,
@@ -3619,7 +3628,7 @@ fn test_validate_rejects_empty_store_module() {
     let mut cfg = cost_cfg(&["m"]);
     cfg.store = Some(config::StoreCfg {
         module: "   ".to_string(),
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
     });
     let errs = validate(&cfg).expect_err("an empty store.module must fail validation");
     assert!(
@@ -3878,7 +3887,7 @@ fn test_validate_secret_module_resolvability() {
     let (mut providers, models, pools) = valid_maps();
     providers.get_mut("myprovider").unwrap().api_key = config::SecretRef {
         module: "vault".to_string(),
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
     };
     let cfg = make_root_cfg(providers, models, pools);
     assert!(
@@ -3892,15 +3901,15 @@ fn test_validate_secret_module_resolvability() {
     cfg.tls = Some(config::TlsCfg {
         cert: config::SecretRef {
             module: "vault".to_string(),
-            settings: serde_json::Map::new(),
+            settings: Default::default(),
         },
         key: config::SecretRef {
             module: "file".to_string(),
-            settings: serde_json::Map::new(),
+            settings: Default::default(),
         },
         client_ca: Some(config::SecretRef {
             module: "env".to_string(),
-            settings: serde_json::Map::new(),
+            settings: Default::default(),
         }),
     });
     let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
@@ -3923,9 +3932,15 @@ fn test_validate_secret_module_resolvability() {
     let (providers, models, pools) = valid_maps();
     let mut cfg = make_root_cfg(providers, models, pools);
     cfg.tls = Some(config::TlsCfg {
-        cert: config::SecretRef::file("/run/secrets/tls-cert.pem"),
-        key: config::SecretRef::file("/run/secrets/tls-key.pem"),
-        client_ca: Some(config::SecretRef::env("BUSBAR_CLIENT_CA_PEM")),
+        cert: crate::distribution::config_validation_application::source_path(
+            "/run/secrets/tls-cert.pem",
+        ),
+        key: crate::distribution::config_validation_application::source_path(
+            "/run/secrets/tls-key.pem",
+        ),
+        client_ca: Some(
+            crate::distribution::config_validation_application::source_fill("BUSBAR_CLIENT_CA_PEM"),
+        ),
     });
     assert!(
         validate(&cfg).is_ok(),
@@ -3938,7 +3953,7 @@ fn test_validate_secret_module_resolvability() {
     let mut auth = config::AuthCfg::default_none();
     auth.signing_key = Some(config::SecretRef {
         module: "vault".to_string(),
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
     });
     cfg.auth = Some(auth);
     assert!(
@@ -4058,8 +4073,8 @@ store:
 "#;
     let cfg = resolve_yaml(yaml).expect("the vault-api_key config must resolve");
     assert_eq!(
-        cfg.providers.get("acme").unwrap().api_key.module,
-        "acme-vault",
+        cfg.providers.get("acme").unwrap().api_key.source_module(),
+        Some("acme-vault"),
         "the plugin-backed secret module survived resolution"
     );
     assert!(
@@ -4561,4 +4576,26 @@ fn deferred_oauth_credential_does_not_hide_invalid_endpoint_settings() {
             );
         }
     }
+}
+
+// Host fixtures obtain references from the admitted source grammar, without naming a backend.
+pub(super) fn source_fill(value: impl AsRef<str>) -> config::SecretRef {
+    source_role(
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+        value,
+    )
+}
+pub(super) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
+    source_role(
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+        value,
+    )
+}
+fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
+    use busbar_contract::secret::SecretAxis as _;
+    crate::dist_root_install::install();
+    crate::root::linked::secret_rows()
+        .sugars()
+        .reference_for_role(role, value.as_ref())
+        .expect("the admitted source declares the fixture's role")
 }

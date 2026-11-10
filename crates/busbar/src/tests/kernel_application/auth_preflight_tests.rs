@@ -7,7 +7,7 @@ use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
-    entry.settings = settings;
+    entry.settings = settings.into();
     AuthCfg {
         chain: vec![entry],
         ..AuthCfg::default_none()

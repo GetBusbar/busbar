@@ -116,7 +116,10 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     assert_eq!(data.module, "ad");
     assert_eq!(data.max_admin_scope.as_deref(), Some("full"));
     assert_eq!(
-        data.settings.get("server").and_then(|v| v.as_str()),
+        serde_json::to_value(data.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("server")
+            .and_then(|v| v.as_str()),
         Some("ldaps://corp")
     );
     assert_eq!(
@@ -125,8 +128,8 @@ fn test_identity_provider_definition_is_referenced_by_name_from_both_planes() {
     );
 
     assert_eq!(
-        auth.admin_auth[0].token.as_ref().and_then(|t| t.env_var()),
-        Some("BUSBAR_T_AD_TOKEN")
+        auth.admin_auth[0].token,
+        Some(crate::distribution::config_validation_application::source_fill("BUSBAR_T_AD_TOKEN"))
     );
 }
 
@@ -374,7 +377,10 @@ fn secrets_block_stays_module_keyed_by_design() {
         .get("vault")
         .expect("keyed by the MODULE name, not an instance name");
     assert_eq!(
-        vault.settings.get("address").and_then(|v| v.as_str()),
+        serde_json::to_value(vault.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("address")
+            .and_then(|v| v.as_str()),
         Some("https://vault.internal")
     );
 
@@ -521,7 +527,9 @@ fn test_otlp_folds_into_an_export_instance() {
             (
                 p.name.as_str(),
                 p.def.module.as_str(),
-                p.def.settings.get("url"),
+                serde_json::to_value(p.def.settings.authoring(&busbar_kernel::seal::acquire()))
+                    .unwrap()
+                    .get("url"),
             )
         })
         .collect();

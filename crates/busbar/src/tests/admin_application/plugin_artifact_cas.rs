@@ -182,8 +182,14 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
         .unwrap();
     assert_eq!(row["archive_sha256"], digest);
     let version = handle.load().config_version;
-    let before_overlay =
-        serde_json::to_value(overlay.read_required_async().await.unwrap()).unwrap();
+    let before_overlay = serde_json::to_value(
+        overlay
+            .read_required_async()
+            .await
+            .unwrap()
+            .authoring(&busbar_kernel::seal::acquire()),
+    )
+    .unwrap();
     let mut replacement = archive.clone();
     // Gzip mtime belongs to the archive, outside the signed member. Same library, different archive.
     replacement[4..8].copy_from_slice(&42_u32.to_le_bytes());
@@ -265,7 +271,14 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
     assert_eq!(std::fs::read(&path).unwrap(), replacement);
     assert_eq!(handle.load().config_version, version);
     assert_eq!(
-        serde_json::to_value(overlay.read_required_async().await.unwrap()).unwrap(),
+        serde_json::to_value(
+            overlay
+                .read_required_async()
+                .await
+                .unwrap()
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap(),
         before_overlay
     );
     body(

@@ -292,7 +292,7 @@ fn a_linked_rows_refusals_print_its_key() {
         cfg.secrets.clear();
         cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef {
             module: word.to_string(),
-            ..busbar_kernel::config::SecretRef::env("K")
+            ..crate::distribution::config_validation_application::source_fill("K")
         };
         let refused = refusal(&cfg);
         assert!(

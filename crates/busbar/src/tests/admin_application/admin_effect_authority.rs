@@ -231,11 +231,19 @@ async fn actual_store_queued_effect_rechecks_revoked_provider_and_preserves_comm
                             .admin_scope = Some("full".into());
                     }
                     "provider-settings" => {
-                        next.identity_providers
+                        next.identity_providers.get_mut(operator).unwrap().settings = next
+                            .identity_providers
                             .get_mut(operator)
                             .unwrap()
                             .settings
-                            .insert("replacement".into(), serde_json::json!(true));
+                            .edit(
+                                &serde_json::from_value(
+                                    serde_json::json!({("replacement"): serde_json::json!(true)}),
+                                )
+                                .unwrap(),
+                                &[],
+                            )
+                            .unwrap();
                     }
                     _ => {
                         next.identity_providers.shift_remove(operator);

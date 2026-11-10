@@ -1010,9 +1010,16 @@ async fn build_with_hook_caps_oversized_settings() {
 
     let mut too_many = hook(&hook_module, HookKind::Tap, false);
     for i in 0..=256 {
-        too_many
+        too_many.settings = too_many
             .settings
-            .insert(format!("k{i}"), serde_json::json!(1));
+            .edit(
+                &serde_json::from_value(
+                    serde_json::json!({(format!("k{i}")): serde_json::json!(1)}),
+                )
+                .unwrap(),
+                &[],
+            )
+            .unwrap();
     }
     assert!(
         matches!(
@@ -1023,19 +1030,31 @@ async fn build_with_hook_caps_oversized_settings() {
     );
 
     let mut too_big = hook(&hook_module, HookKind::Tap, false);
-    too_big.settings.insert(
-        "blob".to_string(),
-        serde_json::json!("x".repeat((64 * 1024) + 1)),
-    );
+    too_big.settings = too_big
+        .settings
+        .edit(
+            &serde_json::from_value(
+                serde_json::json!({("blob"): serde_json::json!("x".repeat((64 * 1024) + 1))}),
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
     assert!(matches!(
         build_with_hook(&app, "big", too_big),
         Err(AdminError::Validation(_))
     ));
 
     let mut ok = hook(&hook_module, HookKind::Tap, false);
-    ok.settings.insert(
-        "url".to_string(),
-        serde_json::json!("http://127.0.0.1:1/hook"),
-    );
+    ok.settings = ok
+        .settings
+        .edit(
+            &serde_json::from_value(
+                serde_json::json!({("url"): serde_json::json!("http://127.0.0.1:1/hook")}),
+            )
+            .unwrap(),
+            &[],
+        )
+        .unwrap();
     assert!(build_with_hook(&app, "fine", ok).is_ok());
 }

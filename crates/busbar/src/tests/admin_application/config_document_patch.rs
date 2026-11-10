@@ -655,7 +655,9 @@ async fn document_patch_is_durable_conditional_and_preserves_hidden_base_configu
         .unwrap();
     assert_eq!(
         signing,
-        &busbar_kernel::config::SecretRef::file(signing_key.to_string_lossy())
+        &crate::distribution::config_validation_application::source_path(
+            signing_key.to_string_lossy()
+        )
     );
     assert!(!serde_json::to_string(&get(&client, &endpoint).await)
         .unwrap()

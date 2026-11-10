@@ -990,8 +990,12 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
 
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let before =
-        serde_json::to_value(busbar_kernel::config::overlay::read_async(&overlay).await).unwrap();
+    let before = serde_json::to_value(
+        busbar_kernel::config::overlay::read_async(&overlay)
+            .await
+            .authoring(&busbar_kernel::seal::acquire()),
+    )
+    .unwrap();
     for value in [
         serde_json::json!(true),
         serde_json::json!(false),
@@ -1009,8 +1013,12 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
                 .unwrap();
             assert_eq!(put.status().as_u16(), 400, "{:?}", put.text().await);
             assert_eq!(
-                serde_json::to_value(busbar_kernel::config::overlay::read_async(&overlay).await)
-                    .unwrap(),
+                serde_json::to_value(
+                    busbar_kernel::config::overlay::read_async(&overlay)
+                        .await
+                        .authoring(&busbar_kernel::seal::acquire())
+                )
+                .unwrap(),
                 before,
                 "a retired request field must be refused before any Store mutation"
             );

@@ -72,11 +72,24 @@ fn export_named_map_allows_two_instances_of_one_module() {
     assert_eq!(export.plugins[1].name, "req-siem");
 
     assert_eq!(
-        export.plugins[0].def.settings.get("delivery_timeout_secs"),
+        serde_json::to_value(
+            export.plugins[0]
+                .def
+                .settings
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap()
+        .get("delivery_timeout_secs"),
         None
     );
     assert_eq!(
-        export.plugins[1].def.settings["delivery_timeout_secs"],
+        serde_json::to_value(
+            export.plugins[1]
+                .def
+                .settings
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap()["delivery_timeout_secs"],
         serde_json::json!(9)
     );
 

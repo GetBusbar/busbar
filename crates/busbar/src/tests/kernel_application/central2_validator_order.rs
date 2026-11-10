@@ -100,7 +100,8 @@ fn secrets_block_rejects_builtin_resolver_names() {
     .expect("the product deployment parses");
         let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
             .expect("the product deployment resolves");
-        cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env("K");
+        cfg.providers.get_mut("acme").unwrap().api_key =
+            crate::distribution::config_validation_application::source_fill("K");
         let plugins_cfg = crate::root::test_plugins::trusted_config(&directory);
         cfg.secrets.insert(
             reserved.to_string(),
@@ -255,7 +256,7 @@ fn one_validator_refuses_in_one_order() {
 
     cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef {
         module: "typo-ref".to_string(),
-        ..busbar_kernel::config::SecretRef::env("K")
+        ..crate::distribution::config_validation_application::source_fill("K")
     };
     cfg.secrets.insert(
         "typo-vault".to_string(),
@@ -296,7 +297,8 @@ fn one_validator_refuses_in_one_order() {
     assert!(std::env::var_os(var).is_none());
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("fresh ordinary config resolves");
-    cfg.providers.get_mut("acme").unwrap().api_key = busbar_kernel::config::SecretRef::env(var);
+    cfg.providers.get_mut("acme").unwrap().api_key =
+        crate::distribution::config_validation_application::source_fill(var);
     assert!(check(&cfg, &busbar_kernel::config_validate::no_root_rules, false).is_ok());
     match check(&cfg, &busbar_kernel::config_validate::no_root_rules, true) {
         Err(busbar_kernel::config_validate::Refusal::Unresolved(e)) => {
