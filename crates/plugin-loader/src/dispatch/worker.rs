@@ -1479,6 +1479,18 @@ impl Worker {
         st.crossing = Some(instance.clone());
 
         let entry = st.entries.get(idx as usize);
+        let read_only_route = instance.kind == busbar_contract::abi::mechanism::KindCode::Plane
+            && (s == busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE
+                || (matches!(s, slot::CANCEL | slot::RELEASE)
+                    && entry.is_some_and(|entry| {
+                        entry.current.as_ref().is_some_and(|current| {
+                            current.meta.slot
+                                == busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE
+                        }) || entry.queue.iter().any(|(meta, _)| {
+                            meta.slot == busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE
+                        })
+                    })));
+        let _read_only_route = read_only_route.then(|| super::access::inherit_read_only(true));
         let tracing = entry.and_then(|e| {
             e.current
                 .as_ref()

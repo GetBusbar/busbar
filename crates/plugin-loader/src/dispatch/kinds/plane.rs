@@ -47,6 +47,7 @@ unsafe impl InFrame for PlaneOpenIn {}
 unsafe impl InFrame for PlaneDriveIn {}
 unsafe impl InFrame for plane::PlaneCancelIn {}
 unsafe impl InFrame for ArriveIn {}
+unsafe impl InFrame for plane::AuthenticatedRouteIn {}
 unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
 unsafe impl InFrame for ServeIn {}
@@ -57,6 +58,7 @@ unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for PlaneDriveOut {}
 unsafe impl OutFrame for plane::PlaneCancelOut {}
 unsafe impl OutFrame for ArriveOut {}
+unsafe impl OutFrame for plane::AuthenticatedRouteOut {}
 unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
@@ -316,6 +318,7 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
             _ => return Err("invalid conditional record capability".into()),
         };
         decl.conditional_record_kinds = conditional::required_kinds(extensions)?;
+        decl.conditional_records_optional = conditional::optional(extensions)?;
         if decl
             .conditional_record_kinds
             .iter()
@@ -624,7 +627,9 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         })
         .collect();
     InstanceDecl {
+        authenticated_route: t.flags & plane::TAIL_AUTHENTICATED_ROUTE != 0,
         conditional_records: false,
+        conditional_records_optional: false,
         conditional_record_kinds: Vec::new(),
         label: Arc::from(""),
         record_kinds: words(t.record_kinds, t.record_kinds_len),
@@ -1277,7 +1282,9 @@ impl Kind for Plane {
     }
 
     fn optional_by_statement(s: u32, st: &Statement) -> bool {
-        s == slot::SERVE && tail_facts(st).is_ok_and(|facts| facts.served.admin_routes.is_empty())
+        (s == slot::SERVE && tail_facts(st).is_ok_and(|facts| facts.served.admin_routes.is_empty()))
+            || (s == slot::AUTHENTICATED_ROUTE
+                && tail_facts(st).is_ok_and(|facts| !facts.declared.authenticated_route))
     }
 
     fn op_name(s: u32) -> &'static str {
@@ -1290,6 +1297,7 @@ impl Kind for Plane {
             slot::START => "start",
             slot::PROJECT => "project",
             slot::CATALOG => "catalog",
+            slot::AUTHENTICATED_ROUTE => "authenticated_route",
             _ => lifecycle_name(s),
         }
     }
@@ -1297,6 +1305,29 @@ impl Kind for Plane {
     fn check(a: &Answer) -> Result<(), Fault> {
         match a.slot {
             slot::ARRIVE => arrive(a),
+            slot::AUTHENTICATED_ROUTE => {
+                let i = a.input::<plane::AuthenticatedRouteIn>()?;
+                let o = a.out::<plane::AuthenticatedRouteOut>()?;
+                if i.unit == 0
+                    || i.head.ticket.is_none()
+                    || i.caller_ref.len == 0
+                    || !a
+                        .context::<PlaneFacts>()
+                        .is_some_and(|f| f.declared.authenticated_route)
+                {
+                    return Err(fault(Rule::Missing, "authenticated_route.authority"));
+                }
+                // SAFETY: these are the host's retained output bytes, bounded before reading.
+                let entry = unsafe {
+                    reported(
+                        i.entry_buf.cast_const(),
+                        u64::from(o.entry_written),
+                        i.entry_cap as u64,
+                        "authenticated_route.entry",
+                    )
+                }?;
+                plane::check::check_authenticated_route(a.outcome, o, entry, i.entry_cap)
+            }
             slot::ON_PIECE => on_piece(a),
             slot::REFUSAL => {
                 let i = a.input::<RefusalIn>()?;
@@ -1464,6 +1495,9 @@ impl Kind for Plane {
         let key = unsafe {
             match s {
                 slot::ARRIVE => read::<ArriveIn>(input, in_size).map(|i| i.unit),
+                slot::AUTHENTICATED_ROUTE => {
+                    read::<plane::AuthenticatedRouteIn>(input, in_size).map(|i| i.unit)
+                }
                 slot::ON_PIECE => read::<OnPieceIn>(input, in_size).map(|i| i.unit),
                 slot::PROJECT => read::<ProjectIn>(input, in_size).map(|i| i.unit),
                 slot::REFUSAL => read::<RefusalIn>(input, in_size).map(|i| i.unit),
@@ -1674,7 +1708,16 @@ fn arrive(a: &Answer) -> Result<(), Fault> {
             "arrive.units",
         )
     }?;
-    check_arrive(a.outcome, o, units, cap, bounds(a)?)
+    check_arrive(a.outcome, o, units, cap, bounds(a)?)?;
+    if o.route == plane::ROUTE_AUTHENTICATED
+        && (!a.has_operation(slot::AUTHENTICATED_ROUTE)
+            || !a
+                .context::<PlaneFacts>()
+                .is_some_and(|f| f.declared.authenticated_route))
+    {
+        return Err(fault(Rule::Missing, "arrive.authenticated_route"));
+    }
+    Ok(())
 }
 
 fn on_piece(a: &Answer) -> Result<(), Fault> {
@@ -2050,6 +2093,29 @@ fn conditional_statement_requires_its_own_format_and_preserves_unrelated_extensi
         flags: 0,
     };
     assert!(!tail_facts(&statement).unwrap().declared.conditional_records);
+}
+
+#[cfg(test)]
+#[test]
+fn conditional_optional_statement_keeps_capability_and_rejects_orphan_marker() {
+    use busbar_contract::abi::{mechanism::call::BLOB_OCTETS, sdk::plane::conditional};
+    // SAFETY: fixture Statement remains process-static for this copy and call.
+    let mut statement = unsafe { *crate::plane_door_plugin::door().parts().statement };
+    let encoded = conditional::optional_statement(&[]).unwrap();
+    statement.extensions = Blob {
+        ptr: encoded.as_ptr(),
+        len: encoded.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let facts = tail_facts(&statement).unwrap();
+    assert!(facts.declared.conditional_records);
+    assert!(facts.declared.conditional_records_optional);
+    let orphan =
+        busbar_contract::abi::mechanism::extensions::encode(&[(conditional::OPTIONAL, b"1")]);
+    statement.extensions.ptr = orphan.as_ptr();
+    statement.extensions.len = orphan.len();
+    assert!(tail_facts(&statement).is_err());
 }
 
 #[cfg(test)]

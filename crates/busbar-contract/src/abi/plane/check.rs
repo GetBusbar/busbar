@@ -224,6 +224,7 @@ pub fn check_arrive(
             ROUTE_LOCAL,
             ROUTE_SCOPE,
             ROUTE_SCOPE_LOCAL,
+            super::ROUTE_AUTHENTICATED,
         ]
         .contains(&out.route)
         {
@@ -244,7 +245,9 @@ pub fn check_arrive(
             return Err(fault(Rule::OverMax, "arrive.affinity"));
         }
 
-        if out.route == ROUTE_LOCAL && (out.pool.len != 0 || !out.pool.ptr.is_null()) {
+        if matches!(out.route, ROUTE_LOCAL | super::ROUTE_AUTHENTICATED)
+            && (out.pool.len != 0 || !out.pool.ptr.is_null())
+        {
             return Err(fault(Rule::Contradiction, "arrive.pool"));
         }
     } else if about_entry {
@@ -277,6 +280,52 @@ pub fn check_arrive(
         if out.head.error.len as u64 > MAX_REFUSAL_TEXT {
             return Err(fault(Rule::OverMax, "arrive.refusal_text"));
         }
+    }
+    Ok(())
+}
+
+/// The authenticated continuation can publish only one bounded destination entry or a refusal.
+pub fn check_authenticated_route(
+    outcome: Outcome,
+    out: &super::AuthenticatedRouteOut,
+    entry: &[u8],
+    capacity: usize,
+) -> Result<(), Fault> {
+    if out._reserved != [0; 3] {
+        return Err(fault(Rule::UnknownCode, "authenticated_route.reserved"));
+    }
+    if out.head.extensions.len != 0 {
+        return Err(fault(Rule::Contradiction, "authenticated_route.extensions"));
+    }
+    if out.entry_written as usize > capacity
+        || out.entry_written as usize > super::MAX_ROUTE_ENTRY_BYTES
+        || out.entry_written as usize > entry.len()
+    {
+        return Err(fault(Rule::OverMax, "authenticated_route.entry"));
+    }
+    if outcome == Outcome::Ready {
+        if !matches!(out.route, ROUTE_DIRECT | ROUTE_POOL)
+            || out.entry_written == 0
+            || std::str::from_utf8(&entry[..out.entry_written as usize]).is_err()
+            || entry[..out.entry_written as usize].contains(&0)
+        {
+            return Err(fault(Rule::Contradiction, "authenticated_route.entry"));
+        }
+    } else if out.entry_written != 0 || out.route != 0 {
+        return Err(fault(Rule::Contradiction, "authenticated_route.entry"));
+    }
+    if outcome == Outcome::Refused {
+        if out.refusal == 0 {
+            return Err(fault(Rule::Missing, "authenticated_route.refusal"));
+        }
+        code(
+            u64::from(out.refusal_status),
+            400,
+            499,
+            "authenticated_route.refusal_status",
+        )?;
+    } else if out.refusal != 0 || out.refusal_status != 0 {
+        return Err(fault(Rule::Contradiction, "authenticated_route.refusal"));
     }
     Ok(())
 }
@@ -1261,7 +1310,13 @@ pub fn check_admin_routes(routes: &[AdminRoute]) -> Result<(), Fault> {
 pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     bits(
         u64::from(t.flags),
-        u64::from(TAIL_FALLBACK | TAIL_PROBES | TAIL_HOOKS_GATED | TAIL_REFUSED_PIECE),
+        u64::from(
+            TAIL_FALLBACK
+                | TAIL_PROBES
+                | TAIL_HOOKS_GATED
+                | TAIL_REFUSED_PIECE
+                | super::TAIL_AUTHENTICATED_ROUTE,
+        ),
         "tail.flags",
     )?;
     let ingress = INGRESS_REQUEST_RESPONSE

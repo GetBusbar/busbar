@@ -12,6 +12,10 @@ use zeroize::{Zeroize, Zeroizing};
 pub const CAPABILITY: &str = "busbar.plane.record-transaction/1";
 /// Statement-only guarded record kind indices: count followed by little-endian u32 indices.
 pub const REQUIRED_KINDS: &str = "busbar.plane.record-transaction.required-kinds/1";
+/// Statement-only opt-in: unrelated operations may run without transactional storage.
+/// Guarded kinds still forbid ordinary writes; each conditional operation requires
+/// the actual host capability before any dependent external effect.
+pub const OPTIONAL: &str = "busbar.plane.record-transaction.optional/1";
 /// Pending logical intent.
 pub const INTENT: &str = "busbar.plane.record-transaction";
 /// Definitive result of the exact pending intent.
@@ -350,6 +354,7 @@ pub fn present(bytes: &[u8]) -> bool {
         &[
             CAPABILITY,
             REQUIRED_KINDS,
+            OPTIONAL,
             INTENT,
             RESULT,
             SETTLEMENT,
@@ -394,6 +399,36 @@ pub fn statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
     let encoded = extensions::encode(&[(CAPABILITY, b"1"), (REQUIRED_KINDS, &value)]);
     required_kinds(&encoded)?;
     Ok(encoded)
+}
+/// Declare an optional transactional feature without weakening its guarded kinds.
+/// Older hosts conservatively keep the original mandatory storage requirement.
+pub fn optional_statement(kinds: &[u32]) -> Result<Vec<u8>, &'static str> {
+    let mut encoded = statement(kinds)?;
+    encoded.extend_from_slice(&extensions::encode(&[(OPTIONAL, b"1")]));
+    Ok(encoded)
+}
+/// Read the strict optional-storage marker; absence preserves mandatory admission.
+pub fn optional(bytes: &[u8]) -> Result<bool, &'static str> {
+    match entry(bytes, OPTIONAL)? {
+        None => Ok(false),
+        Some(b"1") => Ok(true),
+        Some(_) => Err(INVALID),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn optional_statement_preserves_guards_and_rejects_ambiguous_markers() {
+    let encoded = optional_statement(&[1, 4]).unwrap();
+    assert_eq!(entry(&encoded, CAPABILITY), Ok(Some(b"1".as_slice())));
+    assert_eq!(required_kinds(&encoded), Ok(vec![1, 4]));
+    assert_eq!(optional(&encoded), Ok(true));
+    assert_eq!(optional(&statement(&[1, 4]).unwrap()), Ok(false));
+    assert!(optional_statement(&[1, 1]).is_err());
+    assert!(optional(&extensions::encode(&[(OPTIONAL, b"0")])).is_err());
+    let mut duplicated = encoded;
+    duplicated.extend_from_slice(&extensions::encode(&[(OPTIONAL, b"1")]));
+    assert!(optional(&duplicated).is_err());
 }
 /// Read the host capability. Absence means unsupported, never a fallback to ordinary writes.
 pub fn read_capability(bytes: &[u8]) -> Result<Option<Capability>, &'static str> {

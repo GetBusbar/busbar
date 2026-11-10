@@ -853,6 +853,16 @@ fn missing_store_capability_refuses_before_transaction_dispatch() {
     )
     .unwrap();
     assert!(!host.supports_record_transactions());
+    assert_eq!(
+        host.record_write(
+            &caller(),
+            "state",
+            b"entry",
+            RecordBytes::new(b"forbidden".to_vec()).unwrap(),
+            Box::new(|_| panic!("guarded ordinary write cannot dispatch")),
+        ),
+        Err("this record kind requires conditional publication")
+    );
     let mut candidate = logical();
     candidate.chains.clear();
     assert!(host

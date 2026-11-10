@@ -4087,3 +4087,59 @@ fn class_parent_declarations_require_a_same_family_forest() {
     // SAFETY: all strings in these fixture declarations are static literals.
     assert!(unsafe { check_class_parents(&[], &[classes[0], classes[0]], &[]) }.is_err());
 }
+
+#[test]
+fn authenticated_route_only_names_one_bounded_verified_destination() {
+    let mut out: AuthenticatedRouteOut = z();
+    out.entry_written = 5;
+    out.route = ROUTE_DIRECT;
+    assert!(check_authenticated_route(Ready, &out, b"entry", 5).is_ok());
+    for route in [
+        ROUTE_LOCAL,
+        ROUTE_SCOPE,
+        ROUTE_SCOPE_LOCAL,
+        ROUTE_AUTHENTICATED,
+        255,
+    ] {
+        out.route = route;
+        assert!(check_authenticated_route(Ready, &out, b"entry", 5).is_err());
+    }
+    out.route = ROUTE_POOL;
+    assert!(check_authenticated_route(Ready, &out, b"entry", 4).is_err());
+    assert!(check_authenticated_route(Ready, &out, b"en\0ry", 5).is_err());
+    assert!(check_authenticated_route(Ready, &out, &[255; 5], 5).is_err());
+    out.entry_written = 0;
+    assert!(check_authenticated_route(Ready, &out, b"", 0).is_err());
+}
+
+#[test]
+fn authenticated_route_pending_and_refusal_cannot_smuggle_route_or_extensions() {
+    let mut out: AuthenticatedRouteOut = z();
+    assert!(check_authenticated_route(Pending, &out, b"", 0).is_ok());
+    out.entry_written = 1;
+    assert!(check_authenticated_route(Pending, &out, b"x", 1).is_err());
+    out.entry_written = 0;
+    out.refusal = 1;
+    out.refusal_status = 404;
+    assert!(check_authenticated_route(Refused, &out, b"", 0).is_ok());
+    assert!(check_authenticated_route(Ready, &out, b"", 0).is_err());
+    out.refusal_status = 200;
+    assert!(check_authenticated_route(Refused, &out, b"", 0).is_err());
+    out.refusal_status = 404;
+    out.head.extensions.len = 1;
+    assert!(check_authenticated_route(Refused, &out, b"", 0).is_err());
+}
+
+#[test]
+fn authenticated_route_arrival_has_no_premature_entry() {
+    let mut out: ArriveOut = z();
+    out.route = ROUTE_AUTHENTICATED;
+    let bounds = Bounds {
+        op_classes: 1,
+        dialects: 1,
+        ..Bounds::default()
+    };
+    assert!(check_arrive(Ready, &out, &[], 0, &bounds).is_ok());
+    out.pool = AbiStr::over(b"premature");
+    assert!(check_arrive(Ready, &out, &[], 0, &bounds).is_err());
+}

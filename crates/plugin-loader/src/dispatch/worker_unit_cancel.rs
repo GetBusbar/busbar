@@ -608,6 +608,7 @@ pub(super) fn cancel_orphan(mut orphan: Orphan) {
         instance.cancel_abandoned(
             *ticket,
             current.meta.class,
+            current.meta.slot,
             unit,
             current.meta.framing.clone(),
         )

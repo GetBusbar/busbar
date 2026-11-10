@@ -1371,6 +1371,7 @@ macro_rules! export_plugin {
             $(start: $start:ty,)?
             project: $project:ty
             $(, catalog: $catalog:ty)?
+            $(, authenticated_route: $authenticated_route:ty)?
             $(,)?
         } $(,)?
     ) => {
@@ -1388,6 +1389,7 @@ macro_rules! export_plugin {
                 start: $crate::export_plugin!(@or $crate::abi::sdk::plane_life::Inert $(, $start)?),
                 project: $project,
                 $(catalog: $catalog,)?
+                $(authenticated_route: $authenticated_route,)?
             },
         }
     };

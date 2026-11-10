@@ -4127,3 +4127,101 @@ fn hook_child_requires_exact_invocation_and_kind_and_replays_one_service_result(
     assert!(host_slots(KindCode::Hook).unit_nest.is_none());
     assert!(host_slots(KindCode::Plane).hook_child.is_none());
 }
+
+#[test]
+fn authenticated_route_rejects_cached_mutation_callbacks_including_exact_and_unticketed() {
+    use busbar_contract::abi::{host::access, mechanism::KindCode};
+    for kind in [
+        KindCode::Plane,
+        KindCode::Auth,
+        KindCode::Hook,
+        KindCode::Transport,
+        KindCode::Export,
+    ] {
+        let d = double_for(kind);
+        let _phase = crate::dispatch::access::enter_kind(
+            KindCode::Plane,
+            busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE,
+        );
+        // Even a nested lifecycle call with a cached different-kind HostCtx cannot widen it.
+        let _nested = crate::dispatch::access::enter_kind(
+            kind,
+            busbar_contract::abi::mechanism::lifecycle::slot::TICK,
+        );
+        for (service, callback) in slots_of(&HOST_SLOTS).into_iter().enumerate() {
+            let policy = access::service(service as u32).unwrap();
+            if matches!(policy.name, "CLOCK_NOW" | "RECORDS_GET" | "RECORDS_LIST") {
+                continue;
+            }
+            for ticket in [TICKET, Ticket::NONE] {
+                let mut input = [0u64; 64];
+                let header = head(service as u32, ticket, 0, size_of_val(&input));
+                // SAFETY: aligned initialized storage covers each frame; forbidden operations
+                // must refuse before inspecting its payload or entering the provider.
+                unsafe {
+                    input.as_mut_ptr().cast::<ServiceHead>().write(header);
+                }
+                let mut out = blank();
+                let result = unsafe { callback.unwrap()(d.ctx, input.as_ptr().cast(), &mut out) };
+                assert_eq!(
+                    result.outcome(),
+                    Outcome::Refused,
+                    "{kind:?} {} {ticket:?}",
+                    policy.name
+                );
+            }
+        }
+        assert_eq!(d.route.provider.judged.load(Ordering::SeqCst), 0);
+        assert_eq!(d.route.provider.filled.load(Ordering::SeqCst), 0);
+        assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+        assert!(d.route.provider.appended.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn authenticated_route_preserves_declared_record_reads_but_no_connector_or_extension_authority() {
+    use busbar_contract::abi::{host::access, mechanism::KindCode};
+    let d = double();
+    let _phase = crate::dispatch::access::enter_kind(
+        KindCode::Plane,
+        busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE,
+    );
+    let s = sdk(&d);
+    let mut buf = [0u8; 16];
+    assert_eq!(
+        s.records_get(ticketed(0), "approval", b"k1", &mut buf),
+        std::task::Poll::Ready(Ok(Some(&b"=v"[..])))
+    );
+    let (mut buf, mut spans) = ([0u8; 16], [NO_SPAN; 4]);
+    assert!(matches!(
+        s.records_list(ticketed(1), "task", b"", None, 2, (&mut buf, &mut spans)),
+        std::task::Poll::Ready(Ok(_))
+    ));
+    for policy in access::CONNECTORS.iter().chain(access::IO) {
+        assert!(
+            crate::dispatch::access::admit(
+                d.wake,
+                Some(policy),
+                crate::dispatch::access::operation()
+            )
+            .is_err(),
+            "{}",
+            policy.name
+        );
+    }
+    for operation in [
+        access::Extension::InspectWork,
+        access::Extension::InspectCarrierSessions,
+        access::Extension::ObserveRecordChain,
+        access::Extension::CommitRecords,
+        access::Extension::AcknowledgeSettlement,
+        access::Extension::UsageObservation,
+    ] {
+        assert!(crate::dispatch::access::admit(
+            d.wake,
+            Some(&access::extension(operation)),
+            crate::dispatch::access::operation()
+        )
+        .is_err());
+    }
+}

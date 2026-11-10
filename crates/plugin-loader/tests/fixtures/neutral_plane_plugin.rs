@@ -58,6 +58,7 @@ const TAIL: &PlaneTail = &{
         .with_op_classes(CLASSES)
         .with_record_kinds(RECORDS)
         .with_admin_routes(ROUTES);
+    tail.flags |= TAIL_AUTHENTICATED_ROUTE;
     tail.ingress = INGRESS_REQUEST_RESPONSE;
     tail.dispatch_shape = SHAPE_PIECEWISE;
     tail.answer_layout = ANSWER_LAYOUT;
@@ -79,6 +80,12 @@ const STATEMENT: Statement = statement(NAME, "1.6.0", 64)
 #[derive(Default)]
 pub struct Witness {
     generations: Generations<PlaneSnapshot>,
+    raw_identity: Option<(
+        busbar_contract::abi::mechanism::ticket::HostCtx,
+        busbar_contract::abi::host::service::ServiceFn,
+    )>,
+    host:
+        Option<busbar_contract::abi::sdk::conn::Host<busbar_contract::plugin::markers::PlaneKind>>,
 }
 fn published() -> Published<()> {
     Published {
@@ -98,8 +105,8 @@ impl PlaneLife for Witness {
         &self.generations
     }
     fn open(
-        _: &Lent<'_, PlaneOpenIn>,
-        _: Option<
+        input: &Lent<'_, PlaneOpenIn>,
+        host: Option<
             busbar_contract::abi::sdk::lent::KindHostLoan<
                 '_,
                 busbar_contract::plugin::markers::PlaneKind,
@@ -107,7 +114,15 @@ impl PlaneLife for Witness {
         >,
     ) -> Result<Opened<Self>, Refusal> {
         Ok(Opened {
-            plane: Self::default(),
+            plane: Self {
+                host: host.map(busbar_contract::abi::sdk::conn::Host::of),
+                // SAFETY: open lends the host table and connector table for the instance's life.
+                raw_identity: unsafe { input.open.host.as_ref() }.and_then(|tables| {
+                    unsafe { tables.conns.as_ref() }
+                        .and_then(|conns| conns.identity.map(|identity| (tables.ctx, identity)))
+                }),
+                ..Self::default()
+            },
             first: published(),
         })
     }
@@ -116,10 +131,50 @@ impl PlaneLife for Witness {
         Ok(published())
     }
     fn cancel(
-        _: Instance<'_, Self, busbar_contract::plugin::markers::PlaneKind>,
-        _: Lent<'_, PlaneCancelIn>,
+        instance: Instance<'_, Self, busbar_contract::plugin::markers::PlaneKind>,
+        input: Lent<'_, PlaneCancelIn>,
         mut out: Out<'_, PlaneCancelOut>,
     ) -> Outcome {
+        if input.unit() == 43 {
+            use busbar_contract::abi::host::{
+                conn::connector,
+                service::{ServiceHead, ServiceOut},
+            };
+            use busbar_contract::abi::mechanism::{call::RawOutcome, ticket::CompletionHandle};
+            let Some((ctx, identity)) = instance.get().and_then(|i| i.raw_identity) else {
+                return Outcome::Failed;
+            };
+            let mut value = connector::ProcessIdentity {
+                size: std::mem::size_of::<connector::ProcessIdentity>() as u32,
+                _reserved: 0,
+                pid: 0,
+                os_user: AbiStr::ZERO,
+                program: AbiStr::ZERO,
+            };
+            let input = connector::IdentityIn {
+                head: ServiceHead {
+                    size: std::mem::size_of::<connector::IdentityIn>() as u32,
+                    op: connector::service::IDENTITY,
+                    handle: CompletionHandle::ZERO,
+                },
+                identity: std::ptr::from_mut(&mut value),
+            };
+            let mut answer = ServiceOut {
+                size: std::mem::size_of::<ServiceOut>() as u32,
+                ..ServiceOut::ZERO
+            };
+            // SAFETY: both call frames and the identity output remain valid for this synchronous call.
+            let result = unsafe { identity(ctx, std::ptr::from_ref(&input).cast(), &mut answer) };
+            let expected = b"this kind or lifecycle phase has no authority for the host operation";
+            if result != RawOutcome::of(Outcome::Refused) || answer.error.len != expected.len() {
+                return Outcome::Failed;
+            }
+            // SAFETY: a refused service lends its error text for the process's life.
+            if unsafe { std::slice::from_raw_parts(answer.error.ptr, answer.error.len) } != expected
+            {
+                return Outcome::Failed;
+            }
+        }
         out.set(|o| &o.cancel.disposition, CANCEL_ABORTED);
         Outcome::Ready
     }
@@ -135,6 +190,41 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for Refuses<I, O> {
         Outcome::Refused
     }
 }
+pub struct AuthenticatedRoute;
+impl SafeSlot for AuthenticatedRoute {
+    type Kind = busbar_contract::plugin::markers::PlaneKind;
+    type In = AuthenticatedRouteIn;
+    type Out = AuthenticatedRouteOut;
+    type State = Witness;
+    fn call(
+        instance: Instance<'_, Witness, Self::Kind>,
+        input: Lent<'_, Self::In>,
+        mut out: Out<'_, Self::Out>,
+    ) -> Outcome {
+        if !matches!(input.unit(), 42 | 43) || input.caller_ref().bytes() != b"verified-caller" {
+            return Outcome::Failed;
+        }
+        if input.unit() == 43 {
+            return Outcome::Pending;
+        }
+        if input.head().flags() & busbar_contract::abi::mechanism::call::FLAG_RESUME == 0 {
+            let Some(host) = instance.get().and_then(|i| i.host.as_ref()) else {
+                return Outcome::Failed;
+            };
+            host.wake(input.head().ticket());
+            return Outcome::Pending;
+        }
+        let mut entry = input.entry_buf();
+        entry.extend(b"stored-entry");
+        if !entry.fits() {
+            return Outcome::Failed;
+        }
+        out.set(|o| &o.entry_written, b"stored-entry".len() as u32);
+        out.set(|o| &o.route, ROUTE_DIRECT);
+        Outcome::Ready
+    }
+}
+
 type Refuse<I, O> = busbar_contract::abi::sdk::Safe<Refuses<I, O>>;
 busbar_contract::plugin_door! {
     ops: Ops,
@@ -148,5 +238,6 @@ busbar_contract::plugin_door! {
         serve: Refuse<ServeIn, ServeOut>,
         hydrate: busbar_contract::abi::sdk::plane_life::Inert,
         start: busbar_contract::abi::sdk::plane_life::Inert,
+        authenticated_route: busbar_contract::abi::sdk::Safe<AuthenticatedRoute>,
     },
 }

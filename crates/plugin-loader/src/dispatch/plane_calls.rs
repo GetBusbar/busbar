@@ -11,12 +11,12 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{DeadlineClass, Outcome};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    RefusalStatus, ServeIn, ServeOut,
+    slot, ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, OnPieceIn, OnPieceOut,
+    ProjectIn, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
 };
 use busbar_contract::plane_calls::{
-    Answered, ArrivedTrust, CancelWrite, Cancelled, Grow, InstanceDecl, Lent, PieceInFlight,
-    PlaneCalls, ServeInFlight,
+    Answered, ArrivedTrust, AuthenticatedRouteInFlight, CancelWrite, Cancelled, Grow, InstanceDecl,
+    Lent, PieceInFlight, PlaneCalls, ServeInFlight,
 };
 
 use super::kinds::plane::Plane;
@@ -90,6 +90,31 @@ impl PlaneCalls for PlaneInstance {
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome {
         self.pure(slot::ARRIVE, input, out, grow)
+    }
+
+    fn authenticated_route(
+        &self,
+        ticket: Ticket,
+        mut input: AuthenticatedRouteIn,
+        out: AuthenticatedRouteOut,
+        lent: Lent,
+    ) -> Option<Box<dyn AuthenticatedRouteInFlight>> {
+        if !self.plugin.declared().authenticated_route {
+            return None;
+        }
+        let deadline = input.head.deadline_ns;
+        input.head = in_head();
+        input.head.deadline_ns = deadline;
+        let reply = self.dispatcher.submit_unit(
+            &*self.plugin,
+            ticket,
+            slot::AUTHENTICATED_ROUTE,
+            Frame::new(input, out),
+            DeadlineClass::Call,
+            deadline,
+            lent,
+        );
+        Some(Box::new(InFlight { reply, done: None }))
     }
 
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>> {
@@ -307,6 +332,12 @@ impl<I: InFrame, O: OutFrame> InFlight<I, O> {
             .filter(|d| d.retirement.is_none())
             .and_then(|d| d.frame.as_ref())
             .map(|f| f.out)
+    }
+}
+
+impl AuthenticatedRouteInFlight for InFlight<AuthenticatedRouteIn, AuthenticatedRouteOut> {
+    fn out(&self) -> Option<AuthenticatedRouteOut> {
+        self.answer_out()
     }
 }
 

@@ -11,8 +11,8 @@ use std::sync::Arc;
 use crate::abi::mechanism::call::Outcome;
 use crate::abi::mechanism::ticket::Ticket;
 use crate::abi::plane::{
-    ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, ProjectIn, ProjectOut, RefusalIn, RefusalOut,
-    ServeIn, ServeOut,
+    ArriveIn, ArriveOut, AuthenticatedRouteIn, AuthenticatedRouteOut, OnPieceIn, OnPieceOut,
+    ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut,
 };
 
 /// How one ticketed op ended, as the host's dispatcher judged it.
@@ -107,6 +107,12 @@ impl CancelWrite {
             })
             .collect()
     }
+}
+
+/// One authenticated route continuation, on its immutable unit ticket.
+pub trait AuthenticatedRouteInFlight: Future<Output = Answered> + Send + Unpin {
+    /// Validated host-owned output, absent before settlement.
+    fn out(&self) -> Option<AuthenticatedRouteOut>;
 }
 
 /// One `serve` in flight on its ticket. Dropping it before it answered is a client drop.
@@ -298,8 +304,12 @@ impl std::fmt::Debug for PlaneRegistration {
 /// instance from these and its configured section.
 #[derive(Debug, Clone, Default)]
 pub struct InstanceDecl {
+    /// The Statement opts into the authenticated read-only route continuation.
+    pub authenticated_route: bool,
     /// Explicit protocol support, carried by the Statement extensions.
     pub conditional_records: bool,
+    /// The guarded feature is optional; its individual calls still require capability.
+    pub conditional_records_optional: bool,
     /// Declared kind indices guarded against ordinary writes and purge.
     pub conditional_record_kinds: Vec<u32>,
     /// The host's label for the instance: the key every caller-scoped host service answers by.
@@ -351,6 +361,18 @@ pub trait PlaneCalls: Send + Sync {
         out: &mut ArriveOut,
         grow: Grow<'_, ArriveIn, ArriveOut>,
     ) -> Outcome;
+
+    /// Resolve a deferred route on a request ticket. Absent for planes which did not opt in.
+    fn authenticated_route(
+        &self,
+        ticket: Ticket,
+        input: AuthenticatedRouteIn,
+        out: AuthenticatedRouteOut,
+        lent: Lent,
+    ) -> Option<Box<dyn AuthenticatedRouteInFlight>> {
+        let _ = (ticket, input, out, lent);
+        None
+    }
 
     /// The pool a READY `arrive` named ([`ArriveOut::pool`]), copied out of the
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>>;
