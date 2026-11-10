@@ -134,9 +134,6 @@ mod plane_driver_hooks;
 #[path = "kernel_application/plane_driver_host.rs"]
 mod plane_driver_host;
 
-#[path = "kernel_application/plane_driver_serve.rs"]
-mod plane_driver_serve;
-
 #[path = "admin_application/admin_configuration_contracts.rs"]
 mod admin_configuration_contracts;
 
@@ -292,9 +289,6 @@ mod misc_boot;
 #[path = "kernel_application/misc_ingress_terminal.rs"]
 mod misc_ingress_terminal;
 
-#[path = "kernel_application/misc_operation.rs"]
-mod misc_operation;
-
 #[path = "kernel_application/misc_router_door.rs"]
 mod misc_router_door;
 
@@ -310,20 +304,8 @@ mod kernel_application_exports_projection;
 #[path = "kernel_application/hooks_runtime_replies.rs"]
 mod kernel_application_hooks_runtime_replies;
 
-#[path = "admin_application/admin_config_history_and_overlay.rs"]
-mod admin_application_admin_config_history_and_overlay;
-
 #[path = "admin_application/admin_corrupt_overlay_refusals.rs"]
 mod admin_application_admin_corrupt_overlay_refusals;
-
-#[path = "admin_application/admin_hook_crud_contracts.rs"]
-mod admin_application_admin_hook_crud_contracts;
-
-#[path = "admin_application/admin_hook_overlay_reset.rs"]
-mod admin_application_admin_hook_overlay_reset;
-
-#[path = "admin_application/admin_hook_read_metadata.rs"]
-mod admin_application_admin_hook_read_metadata;
 
 #[path = "admin_application/admin_key_mutation_gates.rs"]
 mod admin_application_admin_key_mutation_gates;
@@ -348,9 +330,6 @@ mod admin_application_admin_restart_idempotency;
 
 #[path = "admin_application/admin_rotate_pool_ceilings.rs"]
 mod admin_application_admin_rotate_pool_ceilings;
-
-#[path = "admin_application/admin_scope_ladder.rs"]
-mod admin_application_admin_scope_ladder;
 
 #[path = "admin_application/admin_usage_model_key.rs"]
 mod admin_application_admin_usage_model_key;
@@ -406,17 +385,11 @@ mod kernel_application_central2_handler_panic;
 #[path = "kernel_application/central2_generation_limits.rs"]
 mod kernel_application_central2_generation_limits;
 
-#[path = "admin_application/admin_hook_replacement.rs"]
-mod admin_application_admin_hook_replacement;
-
 #[path = "kernel_application/external_preflight.rs"]
 mod kernel_application_external_preflight;
 
 #[path = "admin_application/admin_credential_cache.rs"]
 mod admin_application_admin_credential_cache;
-
-#[path = "admin_application/admin_hook_settings_ack.rs"]
-mod admin_application_admin_hook_settings_ack;
 
 #[path = "admin_application/admin_openapi_route_parity.rs"]
 mod admin_application_admin_openapi_route_parity;
@@ -435,9 +408,6 @@ mod admin_application_admin_custody_outcomes;
 
 #[path = "kernel_application/external_plane_driver_actual.rs"]
 mod kernel_application_external_plane_driver_actual;
-
-#[path = "admin_application/admin_hook_timeout.rs"]
-mod admin_application_admin_hook_timeout;
 
 #[path = "kernel_application/external_accepted_events.rs"]
 mod kernel_application_external_accepted_events;
@@ -486,3 +456,7 @@ mod admin_installed_schema;
 
 #[path = "admin_application/admin_effect_authority.rs"]
 mod admin_effect_authority;
+
+// Source owners supply product fixtures and scenarios in this original test scope.
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(admin_application);
