@@ -73,7 +73,7 @@ name = "json_contract_auth"
 path = "tests/fixtures/json_contract_auth.rs"
 crate-type = ["cdylib"]
 
-# Adversarial metadata-only descriptor forwarding to the qualified actual Ranking image.
+# Hook route metadata witness using the neutral SDK fixture.
 [[example]]
 name = "hook_metadata_boundary"
 path = "tests/fixtures/hook_metadata_boundary.rs"
@@ -124,4 +124,24 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 [[example]]
 name = "neutral_transport_door"
 path = "tests/fixtures/neutral_transport_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "neutral_auth_door"
+path = "tests/fixtures/neutral_auth_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "hook_door"
+path = "tests/fixtures/hook_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "neutral_export_disk_door"
+path = "tests/fixtures/neutral_export_disk_door.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "neutral_export_routes_door"
+path = "tests/fixtures/neutral_export_routes_door.rs"
 crate-type = ["cdylib"]
