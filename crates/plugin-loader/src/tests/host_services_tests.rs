@@ -3692,6 +3692,9 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
     ]
 }
 
+#[path = "kind_boundary_loaded_tests.rs"]
+mod kind_boundary_loaded_tests;
+
 #[test]
 fn cached_callbacks_cannot_cross_kind_boundaries_including_exact_and_unticketed_paths() {
     use busbar_contract::abi::{host::access, mechanism::KindCode};

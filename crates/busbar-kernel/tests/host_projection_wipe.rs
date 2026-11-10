@@ -60,6 +60,7 @@ fn projection() -> Projection {
         max_tokens: Some(7),
         has_tools: true,
         stream: false,
+        text_complete: true,
         system: Some("private-system".to_string()),
         turns: vec![("private-author".to_string(), "private-text".to_string())],
         end_user: Some("private-user".to_string()),
