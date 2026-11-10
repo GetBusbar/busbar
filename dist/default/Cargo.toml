@@ -926,12 +926,12 @@ busbar-auth-admin-tokens-plugin = { git = "https://github.com/GetBusbar/busbar-a
 # token exchange in the default class named per request (a private IdP refused unless allowlisted).
 busbar-auth-oidc = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "54d8254ee5c46f3583feecec3391f316525e6330" }
 busbar-auth-oidc-plugin = { git = "https://github.com/GetBusbar/busbar-auth-oidc", rev = "54d8254ee5c46f3583feecec3391f316525e6330" }
-busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "1932eb5295484cd3f3302abae40111ad0717f500" }
-busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "1932eb5295484cd3f3302abae40111ad0717f500" }
+busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "7dbde02ae8fa43628ceb4dbf1f282446d6d9abac" }
+busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "7dbde02ae8fa43628ceb4dbf1f282446d6d9abac" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "cdb65fca46da1c059567f5f32385e6f86a132069" }
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "cdb65fca46da1c059567f5f32385e6f86a132069" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "e9849589a524ff6ce93043a58ee531ec7e41c317" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "e9849589a524ff6ce93043a58ee531ec7e41c317" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0cb0c4fe1004306e535928aeb65d36f79a57886d" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "0cb0c4fe1004306e535928aeb65d36f79a57886d" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; kernel tests answer the axis with the external testkit's
 # double (`busbar_kernel_testkit::test_support::secrets`), naming neither. One rev each.

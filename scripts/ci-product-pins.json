@@ -59,7 +59,7 @@
     {
       "repo": "busbar-export-file",
       "url": "https://github.com/GetBusbar/busbar-export-file",
-      "commit": "1932eb5295484cd3f3302abae40111ad0717f500",
+      "commit": "7dbde02ae8fa43628ceb4dbf1f282446d6d9abac",
       "package": "busbar-export-file-plugin",
       "kind": "export",
       "alias": "file",
@@ -70,7 +70,7 @@
     {
       "repo": "busbar-export-prometheus",
       "url": "https://github.com/GetBusbar/busbar-export-prometheus",
-      "commit": "e9849589a524ff6ce93043a58ee531ec7e41c317",
+      "commit": "0cb0c4fe1004306e535928aeb65d36f79a57886d",
       "package": "busbar-export-prometheus-plugin",
       "kind": "export",
       "alias": "prometheus",
