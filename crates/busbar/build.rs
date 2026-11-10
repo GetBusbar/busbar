@@ -442,6 +442,7 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
          door's `links` metadata.\n",
     );
     let mut driven: Vec<String> = Vec::new();
+    let mut configs: Vec<String> = Vec::new();
 
     let mut blackbox: Vec<String> = Vec::new();
     let mut rig = false;
@@ -480,6 +481,7 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
         let module = ident(&feature);
         out.push_str(&format!("#[path = {at:?}]\npub(crate) mod {module};\n"));
         driven.push(format!(".chain({module}::secret_source_driven())"));
+        configs.push(format!("        {module}::minimal_valid_config(),\n"));
     }
     out.push_str(&format!(
         "/// The Statement names the door planes' own root cells drive through the secret-source scan.\n\
@@ -487,6 +489,12 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
          pub(crate) fn door_cells_secret_driven() -> Vec<String> {{\n    \
          std::iter::empty::<String>(){}.collect()\n}}\n",
         driven.concat()
+    ));
+
+    out.push_str(&format!(
+        "/// Minimal sections supplied by the linked plane test owners.\n\
+         pub(crate) fn door_cells_minimal_configs() -> Vec<(&'static str, ::serde_json::Value)> {{\n    vec![\n{}    ]\n}}\n",
+        configs.concat()
     ));
 
     let files = format!(
