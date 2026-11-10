@@ -815,10 +815,16 @@ async fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need(
         return;
     }
     use crate::root::test_plugins as fixtures;
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
-            .expect("the qualified actual Prometheus exporter image"),
-    );
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(crate::root::loader::plugin_library_filename(
+            "neutral_export_routes_door",
+        ));
     let bytes = std::fs::read(&path).expect("the actual exporter image reads");
     let rendering = crate::root::loader::dispatch::rendering_of_library(&path)
         .expect("the actual image exports a descriptor")
@@ -854,7 +860,7 @@ async fn actual_nonempty_export_descriptor_supplies_the_candidate_listener_need(
 
     candidate_mut.hook_env.registry = Arc::new(crate::root::loader::PluginRegistry::empty());
     candidate_mut.export_defs = serde_json::from_value(serde_json::json!({
-        "actual-metrics": {"module": stated.name.clone(), "settings": {"buffer_seconds": 60}}
+        "actual-metrics": {"module": stated.name.clone(), "settings": {}}
     }))
     .expect("the actual export instance configuration");
     let actual = plan

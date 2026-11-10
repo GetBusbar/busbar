@@ -566,3 +566,6 @@ pub fn neutral_frame_door() -> Option<(Plugin<Transport>, &'static str)> {
         .filter(|p| p.file_name().is_some_and(|n| n == file.as_str()))
         .find_map(|p| transport_door(&p))
 }
+
+#[path = "../../../../plugin-loader/tests/fixtures/neutral_export_routes_plugin.rs"]
+pub(crate) mod neutral_export_routes;

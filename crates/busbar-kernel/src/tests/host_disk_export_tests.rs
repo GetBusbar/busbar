@@ -22,9 +22,9 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::export_calls::{Delivered, ExportCalls};
 use busbar_plugin_loader::dispatch::kinds::export::Export;
 use busbar_plugin_loader::dispatch::{
-    load_dropped, load_dropped_bytes, load_linked, rendering_of, rendering_of_library, Bind,
-    ConnTable, Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow,
-    Metric, NoSink, Plugin,
+    load_dropped_bytes, load_linked, rendering_of, rendering_of_library, Bind, ConnTable,
+    Diagnostic, DispatchConfig, Dispatcher, Dropped, EnvelopeSink, Frame, LinkedRow, Metric,
+    Plugin,
 };
 use busbar_plugin_loader::export_axis::ExportRows;
 use busbar_plugin_loader::export_door::ExportInstance;
@@ -34,53 +34,26 @@ use busbar_plugin_loader::{LinkedPlugin, PluginRegistry};
 use crate::host_disk::{append, Append, DiskLane, LANE_BOUND};
 use crate::host_services::KernelServices;
 
-const FILE_DOOR: DoorFn = file_door;
-
-fn input(variable: &str) -> PathBuf {
-    let path = std::env::var_os(variable)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("{variable} must name the fresh actual product input"));
+#[path = "../../../plugin-loader/tests/fixtures/neutral_export_disk_plugin.rs"]
+mod witness;
+const FILE_DOOR: DoorFn = witness::door;
+fn witness_path() -> PathBuf {
+    let path = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples")
+        .join(busbar_plugin_loader::plugin_library_filename(
+            "neutral_export_disk_door",
+        ));
     assert!(
         path.is_absolute() && path.is_file(),
-        "{variable} must be an absolute file: {}",
+        "build neutral_export_disk_door first: {}",
         path.display()
     );
     path
-}
-
-extern "C" fn file_door() -> &'static Door {
-    static IMAGE: OnceLock<(Plugin<Export>, Arc<Dispatcher>, usize)> = OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let path = input("BUSBAR_TEST_EXPORT_FILE_CDYLIB");
-        let stated = rendering_of_library(&path)
-            .expect("read the actual file Statement")
-            .expect("the actual file image exports its door");
-        let dispatcher = Arc::new(Dispatcher::new(
-            DispatchConfig::default(),
-            crate::host_services::caller_binding(),
-        ));
-        let held = load_dropped::<Export>(
-            &path,
-            &stated,
-            Bind {
-                instance: Arc::from("file-descriptor-holder"),
-                max_inflight_cap: 1,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns: ConnTable::NoNeeds,
-            },
-        )
-        .expect("hold the actual file image");
-        let address = busbar_plugin_loader::dispatch::load::door_addresses_of_library(&path)
-            .expect("read the held image's addresses")
-            .expect("the actual file door")
-            .0;
-        assert_ne!(address, 0);
-        (held, dispatcher, address)
-    });
-    // SAFETY: the loader validated this actual descriptor; IMAGE holds its library and
-    // dispatcher for the process, and the descriptor is immutable product data.
-    unsafe { &*(image.2 as *const Door) }
 }
 
 #[derive(Default)]
@@ -122,11 +95,7 @@ impl EnvelopeSink for Tape {
 }
 
 fn file_declaration() -> Declares {
-    Declares::from_declares_json(
-        &std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_DECLARES"))
-            .expect("the actual file declaration"),
-    )
-    .expect("the actual file declaration parses")
+    Declares::from_declares_json(br#"{"destinations":["output"],"keep":{"output":9},"metrics":[{"name":"witness_dropped_total","type":"counter"}]}"#).unwrap()
 }
 fn file_declares() -> Declares {
     let mut declared = file_declaration();
@@ -134,20 +103,13 @@ fn file_declares() -> Declares {
     declared
 }
 fn file_manifest(name: &str, declares: Declares) -> Manifest {
-    let mut manifest: Manifest = serde_json::from_slice(
-        &std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_MANIFEST"))
-            .expect("the actual file manifest"),
-    )
-    .expect("the actual manifest parses");
-    manifest.name = name.into();
-    manifest.alias = name.into();
-    // This fixture compares first-party grants through both doors. Qualification
-    // manifests have their own publisher; explicit third-party cases override this.
-    manifest.publisher = busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER.into();
+    let mut manifest: Manifest = serde_json::from_value(serde_json::json!({
+        "name":name,"alias":name,"kind":"export","version":"1.6.0","publisher":"busbar",
+        "abi_version":busbar_contract::abi::export::ABI_VERSION,"sha256":""
+    }))
+    .unwrap();
     manifest.declares = declares;
-    manifest.statement = Some(hex::encode(
-        rendering_of(FILE_DOOR).expect("the actual file Statement"),
-    ));
+    manifest.statement = Some(hex::encode(rendering_of(FILE_DOOR).unwrap()));
     manifest
 }
 fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
@@ -161,9 +123,9 @@ fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
         busbar_plugin_loader::sign::SigningKey::from_bytes(&[22; 32])
     };
     let publisher = (manifest.publisher.clone(), signer.verifying_key());
-    let bytes = std::fs::read(input("BUSBAR_TEST_EXPORT_FILE_CDYLIB")).unwrap();
+    let bytes = std::fs::read(witness_path()).unwrap();
     let signed = busbar_plugin_loader::sign::sign(&signer, manifest, &bytes);
-    let dir = scratch("actual-file-package");
+    let dir = scratch("neutral-disk-package");
     std::fs::write(
         dir.join("exporter.tar.gz"),
         busbar_plugin_loader::tarball::package(&signed, "exporter", &bytes).unwrap(),
@@ -186,15 +148,20 @@ fn file_registries(manifest: Manifest) -> [PluginRegistry; 2] {
     [linked, dropped]
 }
 fn renaming(mut declared: Declares) -> Declares {
-    declared.keep.insert("path".into(), 2);
+    declared.keep.insert("output".into(), 2);
     declared
 }
 fn dispatcher() -> Arc<Dispatcher> {
-    Arc::new(Dispatcher::with_services(
+    let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::new(KernelServices::new()),
         crate::host_services::caller_binding(),
-    ))
+    ));
+    assert!(
+        dispatcher.lend_seal(crate::seal::lend()),
+        "the test kernel lends its settings seal"
+    );
+    dispatcher
 }
 fn instance_label(base: &str) -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -213,13 +180,13 @@ fn bind(label: &str, tape: Arc<Tape>, dispatcher: &Dispatcher) -> Bind {
     }
 }
 fn load_file(dropped: bool, dispatcher: &Dispatcher, tape: Arc<Tape>) -> Plugin<Export> {
-    let binding = bind("actual-file-host-policy", tape, dispatcher);
+    let binding = bind("neutral-disk-host-policy", tape, dispatcher);
     if dropped {
-        let path = input("BUSBAR_TEST_EXPORT_FILE_CDYLIB");
+        let path = witness_path();
         let stated = rendering_of_library(&path).unwrap().unwrap();
         load_dropped_bytes::<Export>(
             &std::fs::read(path).unwrap(),
-            "actual-file-host-policy",
+            "neutral-disk-host-policy",
             &stated,
             binding,
         )
@@ -239,7 +206,7 @@ fn opened(
         &renaming(file_declares()),
     );
     ExportInstance::open(plugin, dispatcher, settings.to_string().as_bytes())
-        .expect("the actual file sink opens")
+        .expect("the neutral disk sink opens")
 }
 fn until(what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -292,7 +259,7 @@ fn scratch(tag: &str) -> PathBuf {
     super::dir(tag)
 }
 fn file_settings(path: &Path) -> serde_json::Value {
-    serde_json::json!({"path": path.display().to_string(), "rotate_mb": 1})
+    serde_json::json!({"output": path.display().to_string(), "rotate_mb": 1})
 }
 fn script(sink: &dyn ExportCalls, path: &Path) {
     for n in 1..=3 {
@@ -322,11 +289,8 @@ fn run_compiled_in(path: &Path) -> Vec<String> {
 fn run_dropped_in(path: &Path) -> Vec<String> {
     run_origin(true, path)
 }
-fn rotated_record(path: &Path) -> String {
-    format!(
-        "log 0 busbar_export_file: request-log file rotated by rename path={p} archive={p}.1",
-        p = path.display()
-    )
+fn rotated_record(_: &Path) -> String {
+    "diag 0 0 witness host rotated".into()
 }
 
 #[test]
@@ -372,7 +336,7 @@ fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
     let row = LinkedRow::of(FILE_DOOR).expect("the door states its Statement");
     let plugin = load_linked::<Export>(&row, bind("keep0", tape.clone(), &d)).expect("loads");
     let mut declares = file_declares();
-    declares.keep.insert("path".to_string(), 0);
+    declares.keep.insert("output".to_string(), 0);
     plugin.grant_destinations(
         &busbar_contract::services::disk_admission::DiskAuthority::issue(&crate::seal::acquire()),
         &declares,
@@ -457,7 +421,7 @@ fn declared_destination_writes_and_undeclared_destination_refuses_each_delivery_
             if declared {
                 ns(&path) == Some(vec![3, 4]) && !archive(&path, 1).exists()
             } else {
-                tape.count("BUSBAR-7074") == 4
+                tape.count("BUSBAR-9903") == 4
             }
         });
         drop(sink);
@@ -467,13 +431,13 @@ fn declared_destination_writes_and_undeclared_destination_refuses_each_delivery_
     let dropped = run(true, true);
     assert!(linked.contains(r#""archive":null"#), "{linked}");
     assert!(linked.contains(r#""live":[3,4]"#), "{linked}");
-    assert!(!linked.contains("request-log file rotated"), "{linked}");
+    assert!(!linked.contains("witness host rotated"), "{linked}");
     assert_eq!(linked, dropped, "both doors write and rotate the same");
     for dropped in [false, true] {
         let refused = run(dropped, false);
         assert!(refused.contains(r#""live":null"#), "{refused}");
         assert_eq!(
-            refused.matches("BUSBAR-7074").count(),
+            refused.matches("BUSBAR-9903").count(),
             4,
             "one refusal line per delivery: {refused}"
         );
@@ -629,7 +593,7 @@ impl PendingDiskDelivery {
             use std::io::Write as _;
             let _ = writeln!(
                 std::io::stderr(),
-                "actual exporter cancellation answered {:?}; stopping with both frames owned",
+                "neutral witness cancellation answered {:?}; stopping with both frames owned",
                 called.outcome
             );
             std::process::abort();
@@ -686,7 +650,7 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
         drop(fresh);
         assert_eq!(ns(&a), Some(vec![1]));
         assert_eq!(ns(&b), Some(vec![2]));
-        let rejected = serde_json::json!({"path":c,"bogus":1});
+        let rejected = serde_json::json!({"output":c,"reject":1});
         assert_ne!(refresh(sink.plugin(), &rejected, 3), Outcome::Ready);
 
         let mut cancelled = PendingDiskDelivery::new(Arc::clone(&sink), &d, b"{\"n\":3}\n", 6);
@@ -719,7 +683,7 @@ fn pending_export_disk_append_keeps_old_path_and_cancelled_late_reply_cannot_rea
 }
 
 #[test]
-fn two_actual_file_instances_progress_independently_while_one_destination_is_blocked() {
+fn two_export_instances_progress_independently_while_one_destination_is_blocked() {
     use crate::host_disk::lane_tests::hold_destination;
     use busbar_contract::services::{DiskDest, DiskRotate};
 
@@ -735,7 +699,7 @@ fn two_actual_file_instances_progress_independently_while_one_destination_is_blo
         let held = hold_destination(
             &lane,
             DiskDest {
-                key: "path".into(),
+                key: "output".into(),
                 path: a.display().to_string(),
                 rotate_at: None,
                 rotate: DiskRotate::Truncate,
@@ -819,7 +783,7 @@ fn accepted_event_json_reaches_the_actual_disk_lane_unchanged() {
     let (sent, received) = std::sync::mpsc::sync_channel(1);
     let result = services.disk_append(
         &DiskDest {
-            key: "path".into(),
+            key: "output".into(),
             path: path.display().to_string(),
             rotate_at: None,
             rotate: DiskRotate::Truncate,
@@ -879,7 +843,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
             "folds": tape.seen(),
         })
         .to_string();
-        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+        ({ let row = registry.resolve(name).expect("the neutral witness row resolves");
  serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
  "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
@@ -890,7 +854,7 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
         linked.0
     );
     assert!(
-        linked.1.contains("request-log file rotated by rename"),
+        linked.1.contains("witness host rotated"),
         "the linked sink reported the rotation its deliveries caused: {}",
         linked.1
     );
@@ -916,9 +880,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         .collect();
 
     assert!(
-        series
-            .iter()
-            .any(|(n, _)| n == "busbar_file_logs_dropped_total"),
+        series.iter().any(|(n, _)| n == "witness_dropped_total"),
         "{series:?}"
     );
     let name = "s1-fixture";
@@ -954,7 +916,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         );
         let transcript =
             serde_json::json!({ "granted": granted, "folds": tape.seen() }).to_string();
-        ({ let row = registry.resolve(name).expect("the actual exporter row resolves");
+        ({ let row = registry.resolve(name).expect("the neutral witness row resolves");
  serde_json::json!({"manifest": Manifest { sha256: String::new(), signature: String::new(), ..row.manifest.clone() },
  "alias_resolves_to": registry.resolve(&row.manifest.alias).map(|alias| alias.manifest.name.clone()) }).to_string() }, transcript)
     });
@@ -963,8 +925,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         serde_json::json!(vec![true; series.len()])
     );
     assert!(
-        linked.1.contains(&every_granted)
-            && linked.1.contains("request-log file rotated by rename"),
+        linked.1.contains(&every_granted) && linked.1.contains("witness host rotated"),
         "the linked door grants every declared series and the sink reports: {}",
         linked.1
     );

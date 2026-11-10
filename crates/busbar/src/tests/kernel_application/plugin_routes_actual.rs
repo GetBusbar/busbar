@@ -7,15 +7,8 @@ use std::sync::Arc;
 fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteTable> {
     use crate::root::loader::dispatch::{
         kinds::export::{Export, ExportFacts},
-        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
-            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
-    );
-    let statement = rendering_of_library(&path)
-        .expect("the actual exporter statement reads")
-        .expect("the actual exporter carries its statement");
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
 
@@ -32,9 +25,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         busbar_kernel::host_services::caller_binding(),
     ));
     crate::root::connector::install_io(&dispatcher);
-    let plugin = load_dropped::<Export>(
-        &path,
-        &statement,
+    let plugin = load_linked::<Export>(
+        &LinkedRow::of(neutral_routes::door).expect("the SDK witness descriptor"),
         Bind {
             instance: "serve-http-metrics".into(),
             max_inflight_cap: 64,
@@ -46,29 +38,25 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             )),
         },
     )
-    .expect("the actual HTTP exporter loads through its memory ABI");
+    .expect("the neutral SDK witness loads through its memory ABI");
     let routes = plugin
         .context::<ExportFacts>()
-        .expect("the actual exporter declares its routes")
+        .expect("the neutral SDK witness declares its routes")
         .routes
         .clone();
     assert!(
-        routes.iter().any(|route| route.path == "/metrics"),
-        "the actual exporter declares the scrape route"
+        routes.iter().any(|route| route.path == "/capture"),
+        "the neutral SDK witness declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(
-            plugin,
-            dispatcher,
-            br#"{"buffer_seconds":60}"#,
-        )
-        .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the neutral SDK witness opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
         .into_iter()
         .map(|mut route| {
-            if route.path == "/metrics/hooks" {
+            if route.path == "/retained" {
                 route.auth = busbar_contract::abi::mechanism::route::RouteAuth::Admin;
             }
             busbar_kernel::plugin_routes::RouteDecl {
@@ -76,7 +64,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
                 source_instance: "serve-http-metrics".into(),
                 dispatch_available: true,
                 kind: busbar_kernel::plugin_routes::RouteKind::Export,
-                scrape: matches!(route.path.as_str(), "/metrics" | "/metrics/hooks"),
+                scrape: matches!(route.path.as_str(), "/capture" | "/retained"),
                 persistent: false,
                 route,
                 dispatch: dispatch.clone(),
@@ -85,7 +73,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         .collect();
     std::sync::Arc::new(
         busbar_kernel::plugin_routes::build_route_table(declarations)
-            .expect("the actual export routes obey the product namespace rules"),
+            .expect("the witness routes obey the namespace rules"),
     )
 }
 
@@ -206,7 +194,7 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
         axum::serve(admin_listener, admin_router).await.unwrap()
     }));
     let client = reqwest::Client::new();
-    let path = "/metrics/hooks";
+    let path = "/retained";
     assert_eq!(
         client
             .get(format!("http://{address}{path}"))
@@ -228,17 +216,17 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     assert_eq!(
         admin_crossing.status().as_u16(),
         200,
-        "the plugin auth:admin dispatcher reaches the actual exporter on the admin listener"
+        "the plugin auth:admin dispatcher reaches the neutral SDK witness on the admin listener"
     );
     assert_eq!(
-        admin_crossing.headers()["content-type"],
-        "text/plain; version=0.0.4; charset=utf-8"
+        admin_crossing.headers()["content-length"],
+        neutral_routes::BODY.len().to_string()
     );
     assert!(
-        admin_crossing.bytes().await.unwrap().is_empty(),
-        "the real exporter renders the empty hook snapshot across plugin dispatch"
+        admin_crossing.bytes().await.unwrap().as_ref() == neutral_routes::BODY,
+        "the witness response passes unchanged across plugin dispatch"
     );
-    let url = format!("http://{address}/metrics");
+    let url = format!("http://{address}/capture");
     let first = client.get(&url).send().await.unwrap();
     assert_eq!(
         first.status().as_u16(),
@@ -247,8 +235,8 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     );
     let body = first.text().await.unwrap();
     assert!(
-        body.contains("# HELP") || body.contains("# TYPE"),
-        "the actual owner emits Prometheus exposition: {body}"
+        body.as_bytes() == neutral_routes::BODY,
+        "the witness responds: {body}"
     );
     assert_eq!(
         client.head(&url).send().await.unwrap().status().as_u16(),
@@ -275,3 +263,5 @@ async fn actual_export_dispatch_resolves_the_live_table_on_the_same_listener() {
     );
     println!("actual plugin route swap completed");
 }
+
+use crate::root::test_plugins::neutral_export_routes as neutral_routes;
