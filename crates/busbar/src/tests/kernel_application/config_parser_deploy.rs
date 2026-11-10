@@ -529,7 +529,8 @@ fn test_otlp_folds_into_an_export_instance() {
                 p.def.module.as_str(),
                 serde_json::to_value(p.def.settings.authoring(&busbar_kernel::seal::acquire()))
                     .unwrap()
-                    .get("url"),
+                    .get("url")
+                    .cloned(),
             )
         })
         .collect();
@@ -538,7 +539,7 @@ fn test_otlp_folds_into_an_export_instance() {
         vec![(
             "traces",
             "otlp",
-            Some(&serde_json::json!("http://localhost:4318/v1/traces"))
+            Some(serde_json::json!("http://localhost:4318/v1/traces"))
         )]
     );
 }
