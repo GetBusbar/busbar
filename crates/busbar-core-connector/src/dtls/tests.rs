@@ -566,9 +566,13 @@ fn the_session_cert_shows_only_its_fingerprint_and_dimpl_never_holds_the_key() {
         profile: SrtpProfile::AeadAes128Gcm,
         material: Zeroizing::new(vec![0xAB; 56]),
     };
+    let debug = format!("{k:?}");
     assert!(
-        !format!("{k:?}").contains("171"),
-        "keying material never printed"
+        !debug.contains("171")
+            && !debug.contains("ab")
+            && !debug.contains("AB")
+            && !debug.contains("0xab"),
+        "keying material leaked in Debug output: {debug}"
     );
 }
 

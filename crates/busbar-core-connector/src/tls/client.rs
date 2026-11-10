@@ -367,8 +367,14 @@ impl rustls::client::ResolvesClientCert for Presenting {
     fn resolve(
         &self,
         _root_hint_subjects: &[&[u8]],
-        _sigschemes: &[rustls::SignatureScheme],
+        sigschemes: &[rustls::SignatureScheme],
     ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        // Only mark as presented when the key can actually sign with one of
+        // the offered schemes.  If it cannot, rustls sends an empty
+        // Certificate message -- setting the flag before that check would
+        // make ConnFacts.client_identity report a presentation that never
+        // happened.
+        self.identity.key.choose_scheme(sigschemes)?;
         self.presented
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Some(Arc::clone(&self.identity))

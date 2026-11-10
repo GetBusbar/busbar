@@ -329,12 +329,11 @@ impl Listening {
                     listener,
                     side,
                     ..
-                } => {
-                    std::task::ready!(accept_through(via, *listener, side, cx))
+                } => std::task::ready!(accept_through(via, *listener, side, cx))
+                    .map_err(std::io::Error::other),
+                Source::Host(l) => {
+                    std::task::ready!(l.poll_accept(cx)).map(|(s, peer)| (Got::Host(s), peer))
                 }
-                Source::Host(l) => std::task::ready!(l.poll_accept(cx))
-                    .map(|(s, peer)| (Got::Host(s), peer))
-                    .map_err(|e| e.to_string()),
             };
             match got {
                 Ok((got, peer)) => {
@@ -346,7 +345,7 @@ impl Listening {
                     return Poll::Ready((got, peer, slot));
                 }
                 Err(e) => {
-                    if let Some(d) = self.next_delay(&std::io::Error::other(e)) {
+                    if let Some(d) = self.next_delay(&e) {
                         self.sleep = Some(Box::pin(tokio::time::sleep(d)));
                     }
                 }

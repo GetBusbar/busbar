@@ -364,7 +364,11 @@ impl UpstreamLeg {
                 return Err(ConnError::Closed);
             }
             if g.fields {
-                lock(&self.channel).get_or_insert(g.stream);
+                // Stream 0 is the session/description stream; only a data
+                // stream should become the write channel.
+                if g.stream != 0 {
+                    lock(&self.channel).get_or_insert(g.stream);
+                }
                 drop(held);
                 drop(g);
                 drop(owner);
@@ -546,10 +550,15 @@ impl LegSink for UpstreamLeg {
         };
         let custody = match pairing.reserve_input_for(Leg::Upstream, across.bytes.capacity()) {
             Ok(custody) => custody,
-            Err(_) => {
+            Err(SubmitError::Exhausted) => {
                 pairing.close();
                 return;
             }
+            // Pending (back-pressure) or already Closed: drop the datagram, don't kill
+            // the connection.  The write path (below) maps Pending -> ConnError::Pending
+            // so the caller can retry; this fire-and-forget callback cannot retry, but
+            // losing a datagram is acceptable -- closing the whole session is not.
+            Err(SubmitError::Pending | SubmitError::Closed) => return,
         };
         let _ = pairing.submit_owned(Leg::Upstream, across, false, custody);
     }

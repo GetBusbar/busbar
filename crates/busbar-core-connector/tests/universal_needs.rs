@@ -510,8 +510,8 @@ fn the_head_words_reach_the_framer_byte_for_byte() {
     );
     let plain = socket_framer_door().expect("a socket-framing door is built beside the test");
     assert_eq!(
-        encode_head(plain.as_ref(), b"PATCH", b"/x", &[], b"body").ok(),
-        encode(plain.as_ref(), &[], b"body").ok()
+        encode_head(plain.as_ref(), b"PATCH", b"/x", &[], b"body").expect("encode_head"),
+        encode(plain.as_ref(), &[], b"body").expect("encode")
     );
 }
 
