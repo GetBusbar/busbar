@@ -739,6 +739,100 @@ async fn read_out(far: &EgressFarEnd<'_>, t: &Pass<Route>) {
 }
 
 #[tokio::test]
+async fn followup_readmits_and_records_each_exchange_without_replaying_the_request() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut next = request();
+    next.member = "m0".into();
+    next.pool = POOL.into();
+    next.target = b"/next".to_vec();
+    next.body = b"second".to_vec();
+    assert!(
+        !far.followup(&t, next.clone()).await,
+        "an unfinished response cannot continue"
+    );
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    assert!(far.followup(&t, next).await);
+    drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 2);
+    assert_eq!(opened[1].0, "https://a.test/v1/next");
+    assert_eq!(opened[1].2, b"second");
+    assert_eq!(
+        r.auth.calls.load(Ordering::SeqCst),
+        2,
+        "credentials are re-derived"
+    );
+    assert_eq!(
+        r.book.spent.load(Ordering::SeqCst),
+        2,
+        "each exchange spends admission budget"
+    );
+    let records = r.journal.0.lock().unwrap();
+    assert_eq!(
+        records.iter().map(|r| r.attempt).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+}
+
+#[tokio::test]
+async fn followup_refuses_a_changed_member_or_newly_open_breaker() {
+    for changed_member in [true, false] {
+        let r = rig(
+            &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await);
+        drain(&far, &t).await;
+        let mut next = request();
+        next.member = if changed_member { "other" } else { "m0" }.into();
+        next.pool = POOL.into();
+        if !changed_member {
+            r.book
+                .cooldown
+                .lock()
+                .unwrap()
+                .insert(DestinationId::new(1), u64::MAX);
+        }
+        assert!(!far.followup(&t, next).await);
+        assert_eq!(r.table.opened.lock().unwrap().len(), 1);
+        assert_eq!(r.journal.0.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn followup_rechecks_authorization_before_opening_another_exchange() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    r.auth.refuse.store(true, Ordering::SeqCst);
+    let mut next = request();
+    next.member = "m0".into();
+    next.pool = POOL.into();
+    assert!(!far.followup(&t, next).await);
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn one_attempt_end_to_end() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],

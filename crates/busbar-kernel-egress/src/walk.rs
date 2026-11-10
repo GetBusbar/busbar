@@ -308,6 +308,47 @@ impl Walk {
         }
     }
 
+    /// Admit a new exchange on a completed exchange's destination, without treating it as
+    /// failover. The caller supplies only its previously admitted member. Capacity, breaker,
+    /// hook restrictions and the original deadline all apply again.
+    pub fn continue_member(
+        &mut self,
+        ports: &WalkPorts<'_>,
+        pool_name: &str,
+        destination: DestinationId,
+        shape: &dyn Shape,
+        token: &Pass<Route>,
+    ) -> Option<Taken> {
+        let now = ports.clock.now_secs();
+        if matches!(self.phase, Phase::Shed(_))
+            || self.ctx.expired(now)
+            || !self.ctx.is_excluded(destination)
+        {
+            return None;
+        }
+        let pool = ports.pools.get(pool_name)?;
+        let primary = matches!(&self.phase, Phase::Primary(name) if name == pool_name);
+        let (members, _) = self.shaped(pool, Some(shape), primary).ok()?;
+        let member = members.into_iter().find(|m| m.destination == destination)?;
+        let mut ctx = self.ctx.continuing(destination);
+        let mut picked = pick_among(
+            &PickInput {
+                breaker: ports.breaker,
+                capacity: ports.capacity,
+                floor: &pool.floor,
+                pool: pool_name,
+                members: std::slice::from_ref(&member),
+                affinity: None,
+                preference: None,
+                now,
+                token,
+            },
+            &mut ctx,
+        )?;
+        let probe = picked.take_probe_epoch();
+        Some(self.take(pool_name, member.clone(), picked.permit, probe, !primary))
+    }
+
     /// THE ONE PICK, over `pool`'s members this unit has not tried: the walk's own pool
     fn pick(
         &mut self,

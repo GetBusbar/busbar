@@ -71,6 +71,14 @@ impl RequestCtx {
         self.excluded.contains(&destination)
     }
 
+    /// A completed exchange may continue on its admitted destination. Keep the original
+    /// deadline and all other exclusions; this does not reopen a failed-over destination.
+    pub(crate) fn continuing(&self, destination: DestinationId) -> Self {
+        let mut next = self.clone();
+        next.excluded.remove(&destination);
+        next
+    }
+
     /// Why each member was passed over on the last pick.
     #[must_use]
     pub fn excluded_reasons(&self) -> &[(DestinationId, Unavailable)] {

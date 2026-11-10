@@ -330,6 +330,7 @@ impl Egress {
                 walking: false,
                 walk_refusal: None,
                 live: None,
+                completed: None,
                 probe: None,
                 refused: None,
                 unsent: None,
@@ -368,6 +369,7 @@ impl Egress {
                 walking: false,
                 walk_refusal: None,
                 live: None,
+                completed: None,
                 probe: Some(member),
                 refused: None,
                 unsent: None,
@@ -464,6 +466,8 @@ struct State {
     retiring: usize,
     walk_refusal: Option<Shed>,
     live: Option<Live>,
+    // A fully consumed response can authorize one new exchange on this same member.
+    completed: Option<(String, Member, CallId)>,
     probe: Option<Member>,
 
     refused: Option<ReasonCode>,
@@ -1084,6 +1088,7 @@ impl EgressFarEnd<'_> {
                 return exhausted(&Shed::internal());
             }
             w.walking = true;
+            w.completed = None;
             Walking {
                 owner: self,
                 walk: w.walk.clone(),
@@ -2250,6 +2255,9 @@ impl FarEnd for EgressFarEnd<'_> {
                     live.probe = read.probe.take();
                 }
                 if ended {
+                    if fault == FAULT_NONE && !live.delivered {
+                        w.completed = Some((live.pool.clone(), live.member.clone(), live.call));
+                    }
                     w.live.take()
                 } else {
                     None
@@ -2300,6 +2308,37 @@ impl FarEnd for EgressFarEnd<'_> {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a {
         self.next_piece(token)
+    }
+
+    async fn followup<'a>(&'a self, token: &'a Pass<Route>, mut request: OutboundRequest) -> bool {
+        let taken = {
+            let mut w = self.lock();
+            if w.live.is_some() || w.walking || w.retiring != 0 || self.probe_of.is_some() {
+                return false;
+            }
+            let Some((pool, member, call)) = w.completed.take() else {
+                return false;
+            };
+            if call != token.call() || request.pool != pool || request.member != member.name {
+                return false;
+            }
+            // Shape consults this far end's locks, so call it outside the state lock.
+            w.walking = true;
+            (pool, member.destination, w.walk.clone())
+        };
+        let (pool, destination, walk) = taken;
+        let mut walking = Walking { owner: self, walk };
+        let ports = self.egress.ports(self.breaker());
+        let Some(taken) = walking
+            .walk
+            .continue_member(&ports, &pool, destination, self, token)
+        else {
+            return false;
+        };
+        request.attempt_no = taken.attempt;
+        self.admit_taken(taken, token.call());
+        drop(walking);
+        self.send_attempt(token, request).await
     }
 
     fn candidates(&self, _token: &Pass<Route>) -> Option<Candidates> {
