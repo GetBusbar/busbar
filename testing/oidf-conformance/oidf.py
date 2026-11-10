@@ -68,6 +68,7 @@ import hashlib
 import http.server
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
@@ -87,6 +88,12 @@ import zipfile
 SUITE_REPO = "https://gitlab.com/openid/conformance-suite.git"
 SUITE_TAG = "release-v5.3.3"
 SUITE_COMMIT = "7d420f716e49d44f8a6b04f0a3e240ad6d68ab55"
+# Official release asset digests; used only when the runner lacks the Compose plugin.
+COMPOSE_TAG = "v2.39.4"
+COMPOSE_SHA256 = {
+    "x86_64": "7af95166a730b87e172d4fc9aefea8725d3c6c7327d59149267b452114ddb7d4",
+    "aarch64": "49082844b87f03cdcd5f5bbef1ba8c9c897b7a2dfb80cea18d61ec8ca6117e0c",
+}
 # The suite's own published images at that release (registry.gitlab.com/openid/conformance-suite,
 # tag release-v5.3.3), pinned by their index digests.
 SERVER_IMAGE = ("registry.gitlab.com/openid/conformance-suite"
@@ -244,6 +251,38 @@ def sha256_file(path):
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def compose_command(work, log):
+    """Use the installed plugin or a verified, run-local official Compose binary."""
+    if run(["docker", "compose", "version"], log, timeout=30) == 0:
+        return ["docker", "compose"]
+    arch = platform.machine()
+    if platform.system() != "Linux" or arch not in COMPOSE_SHA256:
+        raise Refused("`docker compose` is unavailable and this platform has no pinned fallback", instrument=True)
+    binary = os.path.join(work, "docker-compose")
+    part = binary + ".part"
+    url = f"https://github.com/docker/compose/releases/download/{COMPOSE_TAG}/docker-compose-linux-{arch}"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, open(part, "wb") as out:
+            size = 0
+            while chunk := response.read(1 << 20):
+                size += len(chunk)
+                if size > 128 << 20:
+                    raise Refused("the pinned Compose download exceeds its size limit", instrument=True)
+                out.write(chunk)
+        if sha256_file(part) != COMPOSE_SHA256[arch]:
+            raise Refused("the pinned Compose download has an unexpected sha256", instrument=True)
+        os.chmod(part, 0o700)
+        os.replace(part, binary)
+    except OSError as error:
+        raise Refused(f"the pinned Compose download failed: {type(error).__name__}", instrument=True) from error
+    finally:
+        if os.path.exists(part):
+            os.unlink(part)
+    if run([binary, "version"], log, timeout=30) != 0:
+        raise Refused("the verified Compose binary could not run", instrument=True)
+    return [binary]
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -773,14 +812,15 @@ def compose_file(work, pki, suite_src, wheel_dir):
 
 
 class Suite:
-    def __init__(self, work, pki, suite_src, wheel_dir, log):
+    def __init__(self, work, pki, suite_src, wheel_dir, log, compose=None):
         self.work, self.log = work, log
         self.project = "oidf" + secrets.token_hex(4)
         self.file = compose_file(work, pki, suite_src, wheel_dir)
         self.up = False
+        self.command = compose or ["docker", "compose"]
 
     def compose(self, *args, log=None, timeout=None):
-        return run(["docker", "compose", "-p", self.project, "-f", self.file, *args], log or self.log, timeout=timeout)
+        return run([*self.command, "-p", self.project, "-f", self.file, *args], log or self.log, timeout=timeout)
 
     def start(self):
         rc = self.compose("up", "-d", "--quiet-pull", "mongodb", "server", "nginx", timeout=900)
@@ -822,7 +862,7 @@ class Suite:
     def images(self, test_id):
         """The images the suite holds for one module (`GET /api/log/<id>/images`: each entry's `img`
         is the data URI the browser's placeholder fill or an upload recorded)."""
-        rc, out, _ = capture(["docker", "compose", "-p", self.project, "-f", self.file, "exec", "-T", "server",
+        rc, out, _ = capture([*self.command, "-p", self.project, "-f", self.file, "exec", "-T", "server",
                               "curl", "-sk", f"{SUITE_BASE}api/log/{test_id}/images"])
         try:
             return json.loads(out) if rc == 0 else []
@@ -1045,8 +1085,7 @@ def run_all(work):
     for tool in ("docker", "git", "cargo"):
         if not shutil.which(tool):
             raise Refused(f"`{tool}` is not on PATH", instrument=True)
-    if run(["docker", "compose", "version"], log) != 0:
-        raise Refused("`docker compose` is not available", instrument=True)
+    compose = compose_command(work, log)
 
     say("fetching the suite's source and the runner's wheels")
     src = suite_source(cache, log)
@@ -1063,7 +1102,7 @@ def run_all(work):
     # URIs exactly.
     clients[1]["redirect_uri"] = callback + "?dummy1=lorem&dummy2=ipsum"
 
-    suite = Suite(work, pki, src, wheel_dir, log)
+    suite = Suite(work, pki, src, wheel_dir, log, compose=compose)
     try:
         say("starting the suite")
         suite.start()
