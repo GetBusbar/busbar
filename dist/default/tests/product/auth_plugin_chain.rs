@@ -3,7 +3,6 @@
 
 use crate::test_common as common;
 
-use busbar_contract::secret_ref::SECRET_MODULE_ENV;
 use busbar_kernel::auth::{AuthMiddleware, ChainVerdict};
 use busbar_kernel::config::{AuthCfg, AuthChainEntry, PluginsCfg};
 use std::path::{Path, PathBuf};
@@ -142,7 +141,7 @@ fn write_auth_plugin_with_root_secret_schema(dir: &Path, file: &str, name: &str,
 
 fn chain_with(module: &str, settings: serde_json::Map<String, serde_json::Value>) -> AuthCfg {
     let mut entry = AuthChainEntry::bare(module);
-    entry.settings = settings;
+    entry.settings = settings.into();
     AuthCfg {
         chain: vec![entry],
         ..AuthCfg::default_none()
@@ -190,7 +189,15 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
     let mut settings = settings();
     settings.insert(
         "ca_cert_pem".into(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
+        serde_json::to_value(
+            common::plugins::source_reference(
+                crate::root::linked::secret_rows(),
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+                &var,
+            )
+            .authoring(&busbar_kernel::seal::acquire()),
+        )
+        .expect("the admitted source reference serializes"),
     );
     let cfg = chain_with("ref-auth", settings);
     let err = AuthMiddleware::new(
@@ -208,7 +215,12 @@ fn auth_plugin_undeclared_setting_is_delivered_as_written_and_a_reference_there_
     );
     std::env::remove_var(&var);
 
-    let serialized = serde_json::to_string(&cfg.chain[0].settings).expect("serialize settings");
+    let serialized = serde_json::to_string(
+        &cfg.chain[0]
+            .settings
+            .authoring(&busbar_kernel::seal::acquire()),
+    )
+    .expect("serialize settings");
     assert!(
         serialized.contains(&var) && !serialized.contains("BEGIN CERTIFICATE"),
         "config keeps the ref, never the resolved secret: {serialized}"
@@ -264,7 +276,15 @@ fn auth_plugin_schema_marked_setting_is_not_declared_so_a_reference_there_is_ref
     let mut settings = settings();
     settings.insert(
         "audience".to_string(),
-        serde_json::json!({ SECRET_MODULE_ENV: var }),
+        serde_json::to_value(
+            common::plugins::source_reference(
+                crate::root::linked::secret_rows(),
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+                &var,
+            )
+            .authoring(&busbar_kernel::seal::acquire()),
+        )
+        .expect("the admitted source reference serializes"),
     );
     let cfg = chain_with("sec-auth", settings);
     let err = AuthMiddleware::new(

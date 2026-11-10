@@ -16,7 +16,8 @@ fn catalogue() -> busbar_kernel::diagnostics::Catalogue {
         since: "1.6.0",
         retired: false,
     };
-    busbar_kernel::diagnostics::Catalogue::lent(&[&FIXTURE])
+    static FIXTURES: [&Diagnostic; 1] = [&FIXTURE];
+    busbar_kernel::diagnostics::Catalogue::lent(&FIXTURES)
 }
 
 fn capture_log(max_level: tracing::Level, f: impl FnOnce()) -> Vec<String> {

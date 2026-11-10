@@ -209,7 +209,12 @@ async fn decide(
     rows: &[Row],
     budget: Duration,
 ) -> Result<RoutingDecision, String> {
-    let calls = axis.open(word, word, &serde_json::json!({ "policy": word }), budget)?;
+    let calls = axis.open(
+        word,
+        word,
+        &serde_json::json!({ "policy": word }).into(),
+        budget,
+    )?;
     let cands: Vec<Candidate<'_>> = rows.iter().map(cand).collect();
     let ctx = RoutingContext {
         pool: "p",
@@ -259,7 +264,7 @@ fn the_built_in_ranking_strategies_are_hook_words_of_one_linked_door_on_the_hook
         let opened = axis.open(
             name,
             name,
-            &serde_json::json!({ "policy": name }),
+            &serde_json::json!({ "policy": name }).into(),
             axis.call_budget(),
         );
         assert!(opened.is_ok(), "the strategy opens: {name}");

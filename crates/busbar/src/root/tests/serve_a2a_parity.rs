@@ -1035,7 +1035,9 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     let mut config = busbar_kernel::config::resolve(&deploy, &Default::default()).unwrap();
     let mut admin =
         busbar_kernel::config::AuthChainEntry::bare(busbar_kernel::config::operator_provider());
-    admin.token = Some(busbar_kernel::config::SecretRef::file(
+    admin.token = Some(crate::root::test_plugins::source_reference(
+        crate::root::linked::secret_rows(),
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         operator_file.to_string_lossy().into_owned(),
     ));
     let auth = config
@@ -1043,7 +1045,9 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
         .as_mut()
         .expect("the explicit normal auth config");
     auth.admin_auth = vec![admin];
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::file(
+    auth.signing_key = Some(crate::root::test_plugins::source_reference(
+        crate::root::linked::secret_rows(),
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         signing_file.to_string_lossy().into_owned(),
     ));
     config.per_request_fee = 1;
@@ -1074,8 +1078,10 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
     }
     let destinations = config.destinations();
     let transport_settings = crate::root::policy::client_settings(&config.limits);
+    let seal = busbar_kernel::seal::acquire();
     let store_fingerprint = busbar_kernel::host_record_bootstrap::store_fingerprint(
-        &serde_json::to_value(&config.store).expect("the actual effective Store selection"),
+        &serde_json::to_value(config.store.as_ref().map(|store| store.authoring(&seal)))
+            .expect("the actual effective Store selection"),
     );
     let fresh =
         crate::root::test_plugins::provision_fresh_application_store(&config, &plugins, &directory)

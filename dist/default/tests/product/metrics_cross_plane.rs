@@ -26,7 +26,11 @@ fn render() -> String {
         .open(
             "prometheus",
             "metrics-cross-plane",
-            &serde_json::json!({ "buffer_seconds": 60 }),
+            &busbar_contract::export_calls::ExportOpening::new(
+                serde_json::from_value(serde_json::json!({ "buffer_seconds": 60 }))
+                    .expect("the exporter settings are an object"),
+            )
+            .prepare(),
         )
         .expect("the actual linked scrape sink opens");
     let families = busbar_kernel::snapshot::snapshot().expect("the product recorder is installed");

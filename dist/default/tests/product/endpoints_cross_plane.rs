@@ -556,7 +556,7 @@ pools:
 }
 
 async fn models_ids(app: Arc<App>, gov: GovCtx) -> Vec<String> {
-    catalog_names(&app, &gov)
+    catalog_names(&app, &gov, linked::fallback().key)
 }
 
 #[tokio::test]
@@ -705,8 +705,8 @@ async fn test_v1_models_bytes_unchanged_when_no_plane_lists_a_name() {
         },
     ] {
         assert_eq!(
-            catalog_names(&quiet, &gov),
-            catalog_names(topology_app().await.as_ref(), &gov),
+            catalog_names(&quiet, &gov, linked::fallback().key),
+            catalog_names(topology_app().await.as_ref(), &gov, linked::fallback().key),
             "a plane listing nothing moves no name"
         );
     }

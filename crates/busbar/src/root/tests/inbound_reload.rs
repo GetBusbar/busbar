@@ -244,7 +244,7 @@ async fn app(
     .expect("the signed actual OIDC plugin is admitted");
     let mut auth = busbar_kernel::config::AuthCfg::default_none();
     let mut entry = busbar_kernel::config::AuthChainEntry::bare(provider.name);
-    entry.settings = common::credentials::settings(provider.name);
+    entry.settings = common::credentials::settings(provider.name).into();
     auth.chain.push(entry);
 
     app.auth = Arc::new(
