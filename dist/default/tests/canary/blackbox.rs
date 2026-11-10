@@ -541,7 +541,7 @@ fn webhook_readiness_refusal(dir: &Path, config: &str) -> String {
     let mut child = Reap(cmd.spawn().expect("spawn readiness probe"));
     let refused = wait_for(Duration::from_secs(30), || {
         std::fs::read_to_string(&path).is_ok_and(|text| {
-            text.contains("BUSBAR-7070") && text.contains("disabling this webhook exporter")
+            text.contains("settings.url 'http://hooks.canary.invalid/***?***': the connection was refused; disabling this webhook exporter")
         })
     });
     stop(&mut child.0);
