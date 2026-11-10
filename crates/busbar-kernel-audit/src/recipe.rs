@@ -234,9 +234,12 @@ pub fn digest_fields(record: &crate::record::AuditRecord) -> Vec<DigestField> {
                 .usage
                 .rate_card_version
                 .map(|key| {
-                    key.iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<String>()
+                    use std::fmt::Write;
+                    let mut s = String::with_capacity(key.len() * 2);
+                    for byte in key {
+                        let _ = write!(s, "{byte:02x}");
+                    }
+                    s
                 })
                 .unwrap_or_default();
             f.push(DigestField::text("rate_card_version", key));

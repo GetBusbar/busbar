@@ -40,7 +40,7 @@ pub fn least_bad(
     let now = ports.clock.now_secs();
     let mut ranked: Vec<&Member> = members
         .iter()
-        .filter(|m| ports.breaker.admissible(m.destination))
+        .filter(|m| m.weight != 0 && ports.breaker.admissible(m.destination))
         .collect();
     ranked.sort_by_key(|m| {
         ports

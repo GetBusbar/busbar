@@ -468,6 +468,14 @@ impl<'p> Parked<'p> {
             {
                 Ok(admit) => {
                     let Some(member) = members.iter().find(|m| m.destination == destination) else {
+                        if let Some(epoch) = admit.probe_epoch {
+                            ports.breaker.release_probe(
+                                &pool.name,
+                                destination,
+                                epoch,
+                                ports.clock.now_secs(),
+                            );
+                        }
                         break None;
                     };
                     break Some((member.clone(), permit, admit.probe_epoch));

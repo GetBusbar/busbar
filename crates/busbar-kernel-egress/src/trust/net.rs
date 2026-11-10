@@ -73,7 +73,7 @@ pub fn redact_userinfo(url: &str) -> String {
         Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
         None => ("", url),
     };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     match rest[..authority_end].rfind('@') {
         Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
         None => url.to_string(),

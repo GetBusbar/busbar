@@ -4,7 +4,7 @@
 //! THE THREE READS. What the node answers with; it never asks anyone anything.
 
 use crate::heads::SignedHead;
-use crate::recipe::{digest_fields, DigestField, DigestValue, DIGEST_RECIPE};
+use crate::recipe::{digest_fields, DigestField, DigestValue, DIGEST_RECIPE, DIGEST_RECIPE_V6};
 use crate::record::{AuditChain, AuditRecord};
 use crate::sign::{AuditKeySet, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 
@@ -188,12 +188,25 @@ pub fn head_body(chain: &AuditChain) -> String {
     out
 }
 
+/// The highest recipe version present in a slice of records, defaulting to v5.
+fn envelope_recipe(records: &[AuditRecord], from: u64, to: u64) -> &'static str {
+    if records
+        .iter()
+        .filter(|r| r.seq >= from && r.seq <= to)
+        .any(|r| matches!(r.recipe, crate::recipe::Recipe::V6))
+    {
+        DIGEST_RECIPE_V6
+    } else {
+        DIGEST_RECIPE
+    }
+}
+
 /// THE RANGE READ: records by position, `from` through `to` inclusive.
 #[must_use]
 pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u64) -> String {
     let mut out = String::new();
     out.push('{');
-    member_str(&mut out, "recipe", DIGEST_RECIPE);
+    member_str(&mut out, "recipe", envelope_recipe(records, from, to));
     out.push(',');
     member_str(&mut out, "signature_domain", SIGNATURE_DOMAIN);
     out.push(',');
