@@ -179,6 +179,17 @@ pub trait FarEnd: Sync {
         token: &'a Pass<Route>,
     ) -> impl Future<Output = Option<FarPiece>> + Send + 'a;
 
+    /// Start a fresh, admitted exchange on the member whose previous response completed.
+    /// Implementations must recheck admission and credentials, never reuse a dispatch record.
+    fn followup<'a>(
+        &'a self,
+        token: &'a Pass<Route>,
+        request: OutboundRequest,
+    ) -> impl Future<Output = bool> + Send + 'a {
+        let _ = (token, request);
+        async { false }
+    }
+
     fn remaining(&self, token: &Pass<Route>) -> Option<usize> {
         let _ = token;
         None
@@ -596,6 +607,8 @@ enum Toward<'r> {
     Caller,
 
     Session(&'r mut OutboundRequest),
+
+    Response(&'r mut OutboundRequest),
 
     Nowhere,
 }
@@ -1229,6 +1242,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
             }
             let mut first = true;
+            let mut exchanges = 1u64;
             loop {
                 let next = {
                     use tracing::Instrument as _;
@@ -1248,6 +1262,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
 
                 timing.piece(&piece);
                 if piece.fail_over && !run.lock().facts.streamed {
+                    if exchanges > 1 {
+                        return End::Failed(ReasonCode::DestinationUnreachable);
+                    }
                     failed = self.far.failure(run.token);
                     timing.finish("retry");
                     continue 'attempt;
@@ -1286,15 +1303,37 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     head,
                     reason: 0,
                 };
-                match self.push(run, far, &mut Toward::Caller).await {
+                let mut followup = OutboundRequest {
+                    member: String::from_utf8_lossy(&run.bufs.member).into_owned(),
+                    pool: String::from_utf8_lossy(&run.bufs.pool).into_owned(),
+                    ..OutboundRequest::default()
+                };
+                match self
+                    .push(run, far, &mut Toward::Response(&mut followup))
+                    .await
+                {
                     Step::End(end) => {
                         timing.ended(&end, run.lock().facts.cut);
                         return end;
                     }
                     Step::Retry => {
+                        if exchanges > 1 {
+                            return End::Failed(ReasonCode::DestinationUnreachable);
+                        }
                         failed = self.far.failure(run.token);
                         timing.finish("retry");
                         continue 'attempt;
+                    }
+                    Step::Answered(_) if !followup.verb.is_empty() => {
+                        exchanges += 1;
+                        if exchanges > busbar_contract::abi::plane::check::MAX_TURNS {
+                            return End::Failed(ReasonCode::PlanePanic);
+                        }
+                        match turn_wait(run, turn, self.far.followup(run.token, followup)).await {
+                            Ok(true) => first = true,
+                            Ok(false) => return End::Failed(ReasonCode::DestinationUnreachable),
+                            Err(end) => return end,
+                        }
                     }
                     Step::Answered(done) if done || piece.last => {
                         timing.ended(&End::Done, run.lock().facts.cut);
@@ -1357,10 +1396,29 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
-                    // An ordinary response leg cannot dispatch another request. Never
-                    // reinterpret bytes explicitly addressed upstream as caller output.
+                    // A caller-only leg cannot dispatch another request. Never reinterpret
+                    // bytes explicitly addressed upstream as caller output.
                     if out.flags & EMIT_TO_FAR_END != 0 && matches!(toward, Toward::Caller) {
                         return Step::End(End::Failed(ReasonCode::PlanePanic));
+                    }
+                    if out.flags & EMIT_TO_FAR_END != 0 {
+                        if let Toward::Response(request) = toward {
+                            let facts = run.lock();
+                            if facts.facts.headed
+                                || facts.facts.streamed
+                                || out.flags & EMIT_DONE != 0
+                                || piece.flags & PIECE_CUT != 0
+                                || (request.verb.is_empty()
+                                    && (piece.flags & PIECE_LAST == 0 || out.verb.len == 0))
+                            {
+                                return Step::End(End::Failed(ReasonCode::PlanePanic));
+                            }
+                        }
+                    }
+                    if let Toward::Response(request) = toward {
+                        if !request.verb.is_empty() && out.flags & EMIT_TO_FAR_END == 0 {
+                            return Step::End(End::Failed(ReasonCode::PlanePanic));
+                        }
                     }
                     if out.verdict == VERDICT_COUNT_REFUSED {
                         let detail = String::from_utf8_lossy(run.bufs.arena(out.fault_reason));
@@ -1434,7 +1492,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let emitted = &bufs.reply[..(out.emitted as usize).min(bufs.reply.len())];
             let caller_bound = match &*toward {
                 Toward::Caller => true,
-                Toward::Session(_) => out.flags & EMIT_TO_FAR_END == 0,
+                Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END == 0,
                 Toward::FarEnd(request) => {
                     out.flags & EMIT_TO_FAR_END == 0
                         && (out.flags & EMIT_DONE != 0
@@ -1514,12 +1572,14 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let far = match toward {
                 Toward::FarEnd(_) => true,
-                Toward::Session(_) => out.flags & EMIT_TO_FAR_END != 0,
+                Toward::Session(_) | Toward::Response(_) => out.flags & EMIT_TO_FAR_END != 0,
                 Toward::Caller | Toward::Nowhere => false,
             };
             match toward {
                 Toward::Nowhere => return Step::Answered(out.flags & EMIT_DONE != 0),
-                Toward::FarEnd(request) | Toward::Session(request) if far => {
+                Toward::FarEnd(request) | Toward::Session(request) | Toward::Response(request)
+                    if far =>
+                {
                     if out.flags & EMIT_TO_FAR_END != 0 {
                         if out.verb.len != 0 {
                             request.verb = bufs.arena(out.verb).to_vec();
