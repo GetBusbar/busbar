@@ -48,6 +48,7 @@ pub mod body;
 pub mod exchange;
 pub use safe::{Instance, Safe, SafeSlot};
 
+pub mod recovery;
 pub mod services;
 pub use services::{
     CredentialSecret, Judged, Minted, Names, Pend, Records, ServiceError, Services, Signature,

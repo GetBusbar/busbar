@@ -221,6 +221,20 @@ class DeclarationTests(unittest.TestCase):
         with self.assertRaisesRegex(Violation, 'shipping feature declaration'):
             self.check()
 
+    def test_optional_foreign_target_build_alias_cannot_enable_test_authority(self):
+        path = self.root / 'auth-alpha/Cargo.toml'
+        original = path.read_text()
+        for feature in ['test-seal', 'test-support']:
+            for table in ['dependencies', "target.'cfg(windows)'.dependencies", "target.'cfg(windows)'.build-dependencies"]:
+                with self.subTest(feature=feature, table=table):
+                    path.write_text(original + ('\n' if table == 'dependencies' else '\n[' + table + ']\n')
+                        + 'hidden-sdk={package="busbar-contract", optional=true, features=["' + feature + '"], '
+                        + self.sdk + '}\n')
+                    with self.assertRaisesRegex(Violation, 'shipping feature declaration'):
+                        self.check()
+        path.write_text(original)
+        self.assertEqual(len(self.check()), 2)
+
     def test_root_patch_and_config_replacement_are_rejected(self):
         path = self.root / 'Cargo.toml'
         original = path.read_text()

@@ -12,6 +12,17 @@ use crate::abi::mechanism::KindCode;
 
 /// Opaque process-local incarnation. Cloning preserves identity; reopening never does.
 /// This value is never serialized as a persistence key.
+///
+/// ```
+/// // BOUNDARY_INCARNATION_WITNESS
+/// use busbar_contract::services::{Caller, Incarnation};
+/// fn retain(caller: &Caller) -> Incarnation { caller.incarnation().clone() }
+/// ```
+/// ```compile_fail,E0423
+/// // BOUNDARY_INCARNATION_WITNESS
+/// use busbar_contract::services::Incarnation;
+/// let _ = Incarnation(std::sync::Arc::new(()));
+/// ```
 #[derive(Clone)]
 pub struct Incarnation(Arc<()>);
 impl PartialEq for Incarnation {
