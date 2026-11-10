@@ -13,7 +13,7 @@ use crate::dispatch::{
 };
 use crate::store_v4::{Limits, LoadedPersistence};
 
-use crate::actual_store;
+use crate::neutral_store;
 
 fn bind(d: &Dispatcher) -> Bind {
     Bind {
@@ -59,10 +59,10 @@ fn lifecycle_on_permanent_workers_open_and_close_from_a_throwaway_thread() {
                 DispatchConfig::default(),
                 busbar_contract::services::test_caller_binding(),
             ));
-            let row = LinkedRow::of(actual_store::door).expect("the store states its Statement");
+            let row = LinkedRow::of(neutral_store::door).expect("the store states its Statement");
             let plugin = load_linked::<Store>(&row, bind(&d)).expect("the door loads");
             let opened = plugin
-                .call(slot::OPEN, &mut open_frame(&actual_store::settings()))
+                .call(slot::OPEN, &mut open_frame(&neutral_store::settings()))
                 .outcome;
             let mut c: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
             let closed = plugin.call(slot::CLOSE, &mut c).outcome;
@@ -118,8 +118,8 @@ fn lifecycle_on_permanent_workers_the_assertion_trips_off_the_workers() {
 fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
     const ROUNDS: usize = 200;
     const THREADS: usize = 8;
-    let path = Arc::new(actual_store::path());
-    let stated = rendering_of(actual_store::door).expect("the store renders its Statement");
+    let path = Arc::new(neutral_store::path());
+    let stated = rendering_of(neutral_store::door).expect("the store renders its Statement");
     let stated = Arc::new(stated);
     let threads: Vec<_> = (0..THREADS)
         .map(|t| {
@@ -145,7 +145,7 @@ fn lifecycle_on_permanent_workers_dropped_store_200_rounds() {
                             .block_on(LoadedPersistence::open(
                                 p,
                                 d,
-                                &actual_store::settings(),
+                                &neutral_store::settings(),
                                 Limits {
                                     descriptor_bytes: 64 * 1024 * 1024,
                                     output_items: 4096,
@@ -246,7 +246,7 @@ mod failed_pending_open {
     extern "C" fn door() -> &'static Door {
         static DOOR: OnceLock<usize> = OnceLock::new();
         let address = *DOOR.get_or_init(|| {
-            let source = actual_store::door();
+            let source = neutral_store::door();
             // SAFETY: the fixture's admitted Store door contains this complete table.
             let mut ops = unsafe { *source.ops().cast::<busbar_contract::abi::store::v4::Ops>() };
             ops.head.open = kind_op::<

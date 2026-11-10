@@ -9,7 +9,7 @@ use busbar_contract::plugin_rows::{NeedLevel, PluginRows, Trust};
 use crate::{LinkedPlugin, PluginRegistry};
 
 fn registry() -> PluginRegistry {
-    let door = crate::actual_store::door;
+    let door = crate::neutral_store::door;
     PluginRegistry::empty()
         .link(vec![LinkedPlugin::store("the-store", door, true)])
         .expect("the linked row registers")
@@ -223,7 +223,7 @@ fn plugin_configuration_linked_discovery_uses_cached_statement_without_calling_d
     static CALLS: AtomicUsize = AtomicUsize::new(0);
     extern "C" fn counting_door() -> &'static busbar_contract::abi::mechanism::door::Door {
         CALLS.fetch_add(1, Ordering::SeqCst);
-        crate::actual_store::door()
+        crate::neutral_store::door()
     }
     let registry = PluginRegistry::empty()
         .link(vec![LinkedPlugin::store(

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Immutable declaration metadata through the actual SQLite operation table.
-use crate::actual_store;
+//! Immutable declaration metadata through the neutral SDK STORE operation table.
 use crate::dispatch::kinds::store_v4::StoreV4 as Store;
 use crate::dispatch::{
     load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
 };
+use crate::neutral_store;
 use busbar_contract::abi::mechanism::call::AbiStr;
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
 use busbar_contract::abi::sdk::door::abi_str;
@@ -14,18 +14,18 @@ use std::sync::{Arc, OnceLock};
 
 fn restated(slot: &OnceLock<usize>, refs: &'static [AbiStr]) -> &'static Door {
     let addr = *slot.get_or_init(|| {
-        let actual = *actual_store::door();
-        // SAFETY: the qualified image is retained; its immutable descriptor was validated.
-        let mut statement = unsafe { *actual.statement() };
+        let witness = *neutral_store::door();
+        // SAFETY: the SDK witness supplies static, initialized descriptor metadata.
+        let mut statement = unsafe { *witness.statement() };
         statement.secret_refs = refs.as_ptr();
         statement.secret_refs_len = refs.len();
         let statement = Box::leak(Box::new(statement));
-        // SAFETY: all operations remain the actual product's. Only the immutable metadata
+        // SAFETY: all operations remain the SDK witness's. Only the immutable metadata
         // under examination is replaced by permanently retained valid ABI strings.
         let door = unsafe {
             Door::__from_parts(DoorParts {
                 statement,
-                ..actual.parts()
+                ..witness.parts()
             })
         };
         Box::into_raw(Box::new(door)) as usize
@@ -48,7 +48,7 @@ fn load(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::dispatch:
         busbar_contract::services::test_caller_binding(),
     );
     load_linked::<Store>(
-        &LinkedRow::of(door).expect("actual descriptor states itself"),
+        &LinkedRow::of(door).expect("SDK descriptor states itself"),
         Bind {
             instance: Arc::from("declared-metadata"),
             max_inflight_cap: 8,
@@ -57,7 +57,7 @@ fn load(door: busbar_contract::abi::mechanism::door::DoorFn) -> crate::dispatch:
             conns: ConnTable::NoNeeds,
         },
     )
-    .expect("actual operation table loads with its declared metadata")
+    .expect("SDK operation table loads with its declared metadata")
 }
 #[test]
 fn a_store_door_states_its_declared_secret_paths() {
@@ -100,31 +100,31 @@ extern "C" fn observe_open(
             .collect()
     };
     *OPENED.lock().unwrap() = Some((bytes, secrets));
-    let actual = actual_store::door();
-    // SAFETY: the actual Store's operation table is validated and permanently retained.
-    let ops = unsafe { &*actual.ops().cast::<busbar_contract::abi::store::v4::Ops>() };
+    let witness = neutral_store::door();
+    // SAFETY: the SDK Store's operation table is validated and permanently retained.
+    let ops = unsafe { &*witness.ops().cast::<busbar_contract::abi::store::v4::Ops>() };
     // SAFETY: delegate the unchanged OPEN instance and live host input/output frames to
     // the retained Store operation; observation above neither mutates nor retains them.
-    unsafe { ops.head.open.expect("actual SQLite OPEN")(instance, input, out) }
+    unsafe { ops.head.open.expect("neutral SDK STORE OPEN")(instance, input, out) }
 }
 extern "C" fn observed_store() -> &'static Door {
     static SLOT: OnceLock<usize> = OnceLock::new();
     let ptr = *SLOT.get_or_init(|| {
-        let actual = *actual_store::door();
-        // SAFETY: qualified Store metadata and table are validated and retained.
+        let witness = *neutral_store::door();
+        // SAFETY: the SDK STORE metadata and table are static and initialized.
         let mut ops = unsafe {
-            actual
+            witness
                 .ops()
                 .cast::<busbar_contract::abi::store::v4::Ops>()
                 .read_unaligned()
         };
         ops.head.open = Some(observe_open);
         let ops = Box::leak(Box::new(ops));
-        // SAFETY: only a passive forwarding OPEN observer changes; genuine SQLite owns all behavior.
+        // SAFETY: only a passive forwarding OPEN observer changes; the SDK witness owns the response.
         let door = unsafe {
             Door::__from_parts(DoorParts {
                 ops: std::ptr::from_ref(ops).cast(),
-                ..actual.parts()
+                ..witness.parts()
             })
         };
         Box::into_raw(Box::new(door)) as usize
@@ -139,7 +139,7 @@ async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
         busbar_contract::services::test_caller_binding(),
     ));
     let plugin = load_linked::<Store>(
-        &LinkedRow::of(observed_store).expect("observed actual Store descriptor"),
+        &LinkedRow::of(observed_store).expect("observed SDK Store descriptor"),
         Bind {
             instance: Arc::from("observed-store-open"),
             max_inflight_cap: 8,
@@ -148,8 +148,8 @@ async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
             conns: ConnTable::NoNeeds,
         },
     )
-    .expect("actual Store operation table loads");
-    let settings = actual_store::settings();
+    .expect("SDK Store operation table loads");
+    let settings = neutral_store::settings();
     let opened = crate::store_v4::LoadedPersistence::open(
         plugin,
         dispatcher,
@@ -162,7 +162,7 @@ async fn the_store_host_lends_nothing_and_hands_the_settings_as_resolved() {
         },
     )
     .await
-    .expect("the production Store host opens its actual SQLite database");
+    .expect("the production Store host opens its neutral SDK STORE database");
 
     assert_eq!(*OPENED.lock().unwrap(), Some((settings, Vec::new())));
     drop(opened);
@@ -174,13 +174,13 @@ extern "C" fn referencing() -> &'static Door {
     let address = *SLOT.get_or_init(|| {
         use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
         use busbar_contract::abi::mechanism::extensions::{encode, EXT_REFERENCE_FIELDS};
-        let actual = *actual_store::door();
-        // SAFETY: actual Store descriptor was validated and remains retained.
-        let mut statement = unsafe { *actual.statement() };
+        let witness = *neutral_store::door();
+        // SAFETY: SDK Store descriptor was validated and remains retained.
+        let mut statement = unsafe { *witness.statement() };
         let original = if statement.extensions.len == 0 {
             Vec::new()
         } else {
-            // SAFETY: this valid immutable extension range belongs to the retained product.
+            // SAFETY: this valid immutable extension range belongs to the retained witness.
             unsafe {
                 std::slice::from_raw_parts(statement.extensions.ptr, statement.extensions.len)
             }
@@ -208,11 +208,11 @@ extern "C" fn referencing() -> &'static Door {
         statement.secret_refs = REFS.as_ptr();
         statement.secret_refs_len = REFS.len();
         let statement = Box::leak(Box::new(statement));
-        // SAFETY: genuine operations unchanged, only valid retained declaration metadata restated.
+        // SAFETY: SDK operations unchanged, only valid retained declaration metadata restated.
         let door = unsafe {
             Door::__from_parts(DoorParts {
                 statement,
-                ..actual.parts()
+                ..witness.parts()
             })
         };
         Box::into_raw(Box::new(door)) as usize
@@ -221,7 +221,7 @@ extern "C" fn referencing() -> &'static Door {
     unsafe { &*(address as *const Door) }
 }
 #[test]
-fn reference_capable_and_secret_fields_are_independently_read_from_the_actual_descriptor() {
+fn reference_capable_and_secret_fields_are_independently_read_from_the_declared_descriptor() {
     let plugin = load(referencing);
     assert_eq!(plugin.reference_fields(), ["url".to_string()]);
     assert_eq!(plugin.secret_refs(), ["password".to_string()]);
