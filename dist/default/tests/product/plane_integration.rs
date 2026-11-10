@@ -57,7 +57,7 @@ fn door_section_yaml(host: &str) -> String {
     )
 }
 
-fn agents_yaml(peer: &crate::root::door_steps::tests::tool_door::TlsToolServer) -> String {
+fn agents_yaml(peer: &crate::root::serve::plane_mcp_door::tool_door::TlsToolServer) -> String {
     format!(
         "agents:\n  planner: {{ url: \"https://127.0.0.1:{}/rpc\", pin: {{ mechanism: cert_spki, key: \"{}\" }} }}\n",
         peer.port, peer.pin
@@ -421,7 +421,7 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         );
         return;
     }
-    let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
+    let peer = crate::root::serve::plane_mcp_door::tool_door::TlsToolServer::new().await;
     let sections = format!(
         "{}{}",
         door_section_yaml("gw.example.com"),
@@ -735,7 +735,7 @@ mod metrics_scrape {
             busbar_kernel::snapshot::recorder_installed(),
             "the actual recorder is installed before plane traffic"
         );
-        let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
+        let peer = crate::root::serve::plane_mcp_door::tool_door::TlsToolServer::new().await;
         let sections = format!(
             "{}{}export:\n  metrics: {{module: prometheus, settings: {{buffer_seconds: 60}}}}\n",
             door_section_yaml("gateway.example.com"),

@@ -436,7 +436,7 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
         }
         rig |= std::fs::read_to_string(&at).is_ok_and(|text| text.contains("door_rig"));
         let module = ident(&feature);
-        out.push_str(&format!("#[path = {at:?}]\nmod {module};\n"));
+        out.push_str(&format!("#[path = {at:?}]\npub(crate) mod {module};\n"));
         driven.push(format!(".chain({module}::secret_source_driven())"));
     }
     out.push_str(&format!(
