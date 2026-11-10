@@ -283,6 +283,14 @@ class Gate(unittest.TestCase):
         self.w = World()
         self.cwd = os.getcwd()
         os.chdir(self.w.root)
+        # These offline release fixtures exercise the existing publication rules;
+        # scanner execution/failure is covered by test_security_gate/test_scanner_tools.
+        def security_fixture(_inp, verdict):
+            verdict.ok('G-S')
+            return {'schema': 'busbar.artifact-security/1', 'status': 'pass'}
+        scanner = mock.patch.object(pg, 'gs_security', side_effect=security_fixture)
+        scanner.start()
+        self.addCleanup(scanner.stop)
 
     def tearDown(self):
         os.chdir(self.cwd)

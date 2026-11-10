@@ -1,0 +1,4 @@
+# Candidate configuration and ignore files are never consulted.
+exit-code: 1
+format: json
+ignore-unfixed: false
