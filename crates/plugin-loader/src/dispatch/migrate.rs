@@ -18,15 +18,23 @@ pub fn migrate_door(
 }
 
 /// Cold reference discovery for a registered plane without selecting it for ordinary migration.
-pub fn migrate_references_door(door: RawDoorFn, settings: &serde_json::Value, from: &str)
-    -> Result<Option<MigrationAnswer>, String> {
+pub fn migrate_references_door(
+    door: RawDoorFn,
+    settings: &serde_json::Value,
+    from: &str,
+) -> Result<Option<MigrationAnswer>, String> {
     settings_migration(door, settings, from, true)
 }
 
-fn settings_migration(door: RawDoorFn, settings: &serde_json::Value, from: &str, references: bool)
-    -> Result<Option<MigrationAnswer>, String> {
+fn settings_migration(
+    door: RawDoorFn,
+    settings: &serde_json::Value,
+    from: &str,
+    references: bool,
+) -> Result<Option<MigrationAnswer>, String> {
     let section = zeroize::Zeroizing::new(serde_json::to_vec(settings).map_err(|e| e.to_string())?);
-    let Some((outcome, answer)) = call_migration(door, &section, BLOB_JSON, from, references)? else {
+    let Some((outcome, answer)) = call_migration(door, &section, BLOB_JSON, from, references)?
+    else {
         return Ok(None);
     };
     read_answer(outcome, &answer).map(Some)
@@ -41,9 +49,14 @@ pub fn migrate_credential_door(
     seal: &dyn busbar_contract::plugin::KernelSeal,
 ) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
     let refused = || "credential owner could not migrate the original reference".to_owned();
-    let Some((outcome, answer)) =
-        call_migration(door, credential.expose(seal).as_bytes(), BLOB_OCTETS, from, false)
-            .map_err(|_| refused())?
+    let Some((outcome, answer)) = call_migration(
+        door,
+        credential.expose(seal).as_bytes(),
+        BLOB_OCTETS,
+        from,
+        false,
+    )
+    .map_err(|_| refused())?
     else {
         return Err(refused());
     };
@@ -83,7 +96,11 @@ fn call_migration(
         ptr: from.as_ptr(),
         len: from.len(),
         fmt: BLOB_OCTETS,
-        flags: if references { busbar_contract::abi::sdk::migrate::REFERENCE_DISCOVERY } else { 0 },
+        flags: if references {
+            busbar_contract::abi::sdk::migrate::REFERENCE_DISCOVERY
+        } else {
+            0
+        },
     };
     let input = ValidateIn {
         head,
@@ -203,13 +220,22 @@ pub fn migrate_library(
 }
 
 /// Loaded-image counterpart of reference discovery.
-pub fn migrate_references_library(bytes: &[u8], display: &str, settings: &serde_json::Value, from: &str)
-    -> Result<Option<MigrationAnswer>, String> {
+pub fn migrate_references_library(
+    bytes: &[u8],
+    display: &str,
+    settings: &serde_json::Value,
+    from: &str,
+) -> Result<Option<MigrationAnswer>, String> {
     settings_migration_library(bytes, display, settings, from, true)
 }
 
-fn settings_migration_library(bytes: &[u8], display: &str, settings: &serde_json::Value, from: &str, references: bool)
-    -> Result<Option<MigrationAnswer>, String> {
+fn settings_migration_library(
+    bytes: &[u8],
+    display: &str,
+    settings: &serde_json::Value,
+    from: &str,
+    references: bool,
+) -> Result<Option<MigrationAnswer>, String> {
     let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` is held open until the
     // call below has returned.

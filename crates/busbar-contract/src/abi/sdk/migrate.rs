@@ -371,7 +371,9 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                     let from = String::from_utf8_lossy(from);
                     let migrated = if input.head.extensions.flags & REFERENCE_DISCOVERY != 0 {
                         M::migrate_references(section, &from)
-                    } else { M::migrate(section, &from) };
+                    } else {
+                        M::migrate(section, &from)
+                    };
                     match serde_json::to_vec(&migrated) {
                         Ok(bytes) => (Outcome::Ready, bytes),
                         Err(e) => (Outcome::Refused, format!("migrate: {e}").into_bytes()),

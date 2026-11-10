@@ -457,8 +457,15 @@ impl RootHost {
         from: &str,
         references: bool,
     ) -> Result<Option<(String, MigrationAnswer)>, String> {
-        use crate::root::loader::dispatch::{load::raw, migrate::{migrate_door, migrate_references_door}};
-        let migrate = if references { migrate_references_door } else { migrate_door };
+        use crate::root::loader::dispatch::{
+            load::raw,
+            migrate::{migrate_door, migrate_references_door},
+        };
+        let migrate = if references {
+            migrate_references_door
+        } else {
+            migrate_door
+        };
         if let Some((name, door)) = Self::linked_door(kind, module) {
             return Ok(migrate(raw(door), settings, from)?.map(|m| (name, m)));
         }
@@ -468,7 +475,11 @@ impl RootHost {
         }
         let local = self.local();
         if let Some(row) = local.resolve(module).filter(|r| r.manifest.kind == kind) {
-            let answer = if references { row.migrate_references(settings, from) } else { row.migrate(settings, from) }?;
+            let answer = if references {
+                row.migrate_references(settings, from)
+            } else {
+                row.migrate(settings, from)
+            }?;
             return Ok(answer.map(|m| (row.manifest.name.clone(), m)));
         }
 
@@ -478,7 +489,11 @@ impl RootHost {
         let Some(row) = fetched.resolve(module).filter(|r| r.manifest.kind == kind) else {
             return Ok(None);
         };
-        let answer = if references { row.migrate_references(settings, from) } else { row.migrate(settings, from) }?;
+        let answer = if references {
+            row.migrate_references(settings, from)
+        } else {
+            row.migrate(settings, from)
+        }?;
         Ok(answer.map(|m| (row.manifest.name.clone(), m)))
     }
 
@@ -766,8 +781,13 @@ impl MigrateHost for RootHost {
         }
     }
 
-    fn migrate_references(&self, kind: &str, module: &str, settings: &serde_json::Value, from: &str)
-        -> Result<Option<(String, MigrationAnswer)>, String> {
+    fn migrate_references(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         self.migrate_settings(kind, module, settings, from, true)
     }
 

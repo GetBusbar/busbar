@@ -195,8 +195,11 @@ impl LoadablePlugin {
     }
 
     /// Discover credential references in a registered owner's borrowed source sections.
-    pub fn migrate_references(&self, settings: &serde_json::Value, from: &str)
-        -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
+    pub fn migrate_references(
+        &self,
+        settings: &serde_json::Value,
+        from: &str,
+    ) -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
         use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
         match self.door() {
             Some(door) => migrate_references_door(door, settings, from),

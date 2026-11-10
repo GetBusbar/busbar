@@ -1066,3 +1066,128 @@ fn browser_client_id_projection_does_not_override_an_explicit_invalid_setting() 
     assert_eq!(todos.len(), 1);
     assert_eq!(serde_yaml::Value::Mapping(root), yaml(raw));
 }
+
+#[test]
+fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_a_plane() {
+    use busbar_contract::secret_ref::{SecretRef, Sugars};
+    struct References;
+    impl MigrateHost for References {
+        fn source_declarations(&self) -> Result<Sugars, String> {
+            use busbar_contract::abi::mechanism::door::{
+                REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_PATH,
+            };
+            let mut sources = Sugars::default();
+            sources.declare(
+                "artifact-owner",
+                &[
+                    (REWRITE_SUGAR, "artifact".into(), "path".into()),
+                    (
+                        REWRITE_SUGAR_ROLE,
+                        "artifact".into(),
+                        SUGAR_ROLE_PATH.into(),
+                    ),
+                ],
+            )?;
+            Ok(sources)
+        }
+        fn migrate(
+            &self,
+            _: &str,
+            _: &str,
+            _: &serde_json::Value,
+            _: &str,
+        ) -> Result<Option<(String, MigrationAnswer)>, String> {
+            panic!("inactive plane was selected")
+        }
+        fn migrate_references(
+            &self,
+            kind: &str,
+            module: &str,
+            settings: &serde_json::Value,
+            _: &str,
+        ) -> Result<Option<(String, MigrationAnswer)>, String> {
+            assert_eq!((kind, module), ("plane", "reference-witness"));
+            assert!(settings.get("pools").is_none());
+            let sources =
+                &settings[busbar_contract::abi::sdk::migrate::SOURCE_DOCUMENTS]["providers"];
+            assert!(sources["authored"]["selected"].is_object());
+            assert!(sources["catalog"].is_null());
+            let mut needs: Vec<_> = ["selected", "failed", "catalog-only"]
+                .into_iter()
+                .map(|name| MigrateNeed::MigrateCredential {
+                    path: vec!["providers".into(), name.into(), "api_key".into()],
+                    module: "credential-owner".into(),
+                })
+                .collect();
+            needs.push(MigrateNeed::MigrateCredential {
+                path: vec!["unrelated".into(), "api_key".into()],
+                module: "credential-owner".into(),
+            });
+            needs.push(MigrateNeed::AllowDestination("127.0.0.1".into()));
+            Ok(Some((
+                module.into(),
+                Migrated {
+                    settings: serde_json::json!({"injected":true}),
+                    report: vec!["ignored".into()],
+                    needs,
+                }
+                .into(),
+            )))
+        }
+        fn migrate_credential(
+            &self,
+            module: &str,
+            reference: &SecretRef,
+            from: &str,
+        ) -> Result<Option<SecretRef>, String> {
+            assert_eq!((module, from), ("credential-owner", "1.5.5"));
+            let sources = self.source_declarations()?;
+            if reference == &sources.get("artifact").unwrap().reference("old") {
+                Ok(Some(
+                    sources
+                        .get("artifact")
+                        .unwrap()
+                        .reference("/work/ key.json "),
+                ))
+            } else {
+                Err("PRIVATE_RESOLVER_ERROR".into())
+            }
+        }
+        fn repin(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+    let mut root: serde_yaml::Mapping = serde_yaml::from_str("providers:\n  selected: {api_key: {artifact: old}}\n  failed: {api_key: {artifact: PRIVATE_REFERENCE}}\nunrelated: {api_key: {artifact: old}}\n").unwrap();
+    let before = root.clone();
+    let (mut changes, mut todos, mut failures) = (vec![], vec![], vec![]);
+    super::migrate_over(
+        &mut root,
+        &References,
+        &mut super::Ledger {
+            changes: &mut changes,
+            todos: &mut todos,
+            failures: &mut failures,
+        },
+        &[super::PlaneFacts {
+            key: "reference-witness",
+            owns: vec!["pools"],
+            consumes: &["providers"],
+        }],
+    );
+    assert_ne!(
+        root["providers"]["selected"],
+        before["providers"]["selected"]
+    );
+    assert_eq!(root["providers"]["failed"], before["providers"]["failed"]);
+    assert_eq!(root["unrelated"], before["unrelated"]);
+    assert!(
+        !root.contains_key("pools")
+            && !root.contains_key("advanced")
+            && !root.contains_key("injected")
+    );
+    assert_eq!((changes.len(), todos.len(), failures.len()), (1, 1, 0));
+    assert!(!format!("{changes:?}{todos:?}").contains("PRIVATE_"));
+}

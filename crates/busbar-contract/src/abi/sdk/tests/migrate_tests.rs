@@ -400,3 +400,52 @@ fn secret_externalization_need_contains_only_the_relative_path() {
 type Instance<'a, T> = crate::abi::sdk::safe::Instance<'a, T, FixtureKind>;
 
 type FixtureKind = crate::plugin::markers::SecretKind;
+
+#[test]
+fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
+    struct Auth;
+    impl Migrate for Auth {
+        type Kind = crate::plugin::markers::AuthKind;
+        fn migrate(_: serde_json::Value, _: &str) -> Migrated {
+            panic!("wrong entry")
+        }
+        fn migrate_credential(
+            value: super::MigrationCredential<'_, Self::Kind>,
+            from: &str,
+        ) -> Result<super::CredentialMigration, super::CredentialRefusal> {
+            assert_eq!(value.text(), "SYNTHETIC_CREDENTIAL");
+            assert_eq!(from, "1.5.5");
+            Ok(super::CredentialMigration::unchanged())
+        }
+    }
+    let mut input = ValidateIn::default();
+    input.settings = Blob::of(b"SYNTHETIC_CREDENTIAL")
+        .with_fmt(BLOB_OCTETS)
+        .with_flags(crate::abi::mechanism::call::BLOB_SECRET);
+    input.head.extensions = Blob::of(b"1.5.5");
+    let mut buffer = [0; 256];
+    input.err_buf = buffer.as_mut_ptr();
+    input.err_cap = buffer.len();
+    let mut out = OutHead::default();
+    // SAFETY: all lent buffers live for each complete synchronous call.
+    let outcome = unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) };
+    assert_eq!(outcome, Outcome::Ready);
+    let answer: super::CredentialMigration =
+        serde_json::from_slice(&buffer[..out.error.len]).unwrap();
+    assert!(answer
+        .into_reference(&Default::default())
+        .unwrap()
+        .is_none());
+    input.settings.flags = 0;
+    // SAFETY: same complete frame, missing the required secret flag.
+    assert_eq!(
+        unsafe { Migrator::<Auth>::call(std::ptr::null_mut(), &input, &mut out) },
+        Outcome::Refused
+    );
+    input.settings.flags = crate::abi::mechanism::call::BLOB_SECRET;
+    // SAFETY: same frame; an unrelated kind must refuse before delivery.
+    assert_eq!(
+        unsafe { Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out) },
+        Outcome::Refused
+    );
+}
