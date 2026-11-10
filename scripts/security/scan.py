@@ -227,10 +227,26 @@ class Scanner:
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         return process.returncode, data, stderr_hash
 
+    def prepare_image(self, tool):
+        # Local immutable references are usable without any registry contact.
+        # Policy selects Google's existing Hub mirror; never retry anonymous Hub.
+        image = self.tools[tool]
+        inspect = [*self.docker, 'image', 'inspect', '--format', '{{json .RepoDigests}}', image]
+        result = subprocess.run(inspect, env=self.env, capture_output=True, timeout=30)
+        if result.returncode != 0:
+            subprocess.run([*self.docker, 'pull', image], env=self.env, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
+            result = subprocess.run(inspect, env=self.env, capture_output=True, timeout=30)
+        require(result.returncode == 0, 'pinned scanner image unavailable')
+        references = json.loads(result.stdout)
+        expected = image.split('@', 1)[1]
+        require(isinstance(references, list) and any(
+            isinstance(reference, str) and reference.rsplit('@', 1)[-1] == expected
+            for reference in references), 'scanner image digest differs from policy')
+
     def prepare(self):
         for tool in ('trivy', 'semgrep'):
-            subprocess.run([*self.docker, 'pull', self.tools[tool]], env=self.env,
-                           check=True, stdout=subprocess.DEVNULL, timeout=600)
+            self.prepare_image(tool)
         # Only this source-free container has network access. Scan containers cannot
         # contact registries, SaaS scanners, secret validation APIs or package servers.
         code, _, _ = self.container('trivy', ['image', '--download-db-only', '--disable-telemetry',
