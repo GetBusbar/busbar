@@ -379,8 +379,8 @@
   "c_witness": {
     "repo": "busbar-secret-c",
     "url": "https://github.com/GetBusbar/busbar-secret-c",
-    "commit": "f89d864f3b66b9f44b77efba4e5ec27bfdbc2908",
-    "sdk": "1aee6aac848ad7fc093bbdcadbacdcb9ddc6dfa0",
+    "commit": "75437abc9c4a345c270e4bf5ed5f03a24a21d2c6",
+    "sdk": "042049b9520f8ebefd5d589f36b904eca7ee4cb1",
     "kind": "secret",
     "language": "c",
     "header": "crates/busbar-contract/include/busbar_plugin.h"
