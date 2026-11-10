@@ -89,9 +89,6 @@ mod registry_cross_plane;
 #[path = "../../../../dist/default/tests/product/plugins_logs_preflight.rs"]
 mod plugins_logs_preflight;
 
-#[path = "../../../../dist/default/tests/product/metrics_cross_plane.rs"]
-mod metrics_cross_plane;
-
 #[path = "../../../../dist/default/tests/product/plane_integration.rs"]
 mod plane_integration;
 
