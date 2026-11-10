@@ -214,6 +214,12 @@ class Qualification:
             policy_sha256=digest(self.trusted / 'ci/architecture.toml'),
             config_uri=os.environ['CI_CONFIG_REF_URI'], pipeline_id=os.environ['CI_PIPELINE_ID'],
             job_id=os.environ['CI_JOB_ID'], job_url=os.environ['CI_JOB_URL'], steps=[])
+        # A fresh job VM does not separate candidate code from this controller.
+        # This development receipt must never substitute for independent host
+        # observation required by the protected release producer.
+        self.receipt['execution_boundary'] = {
+            'mode': 'host-subprocess', 'isolated': False, 'release_eligible': False,
+        }
         if self.evaluation_only:
             expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance)
             if (os.environ.get('CI_JOB_NAME') != expected_job
@@ -382,9 +388,8 @@ class Qualification:
         from native_fixtures import Services
         with Services(self, host, all_services=True):
             envfile = self.run('product-inputs', ['bash', str(self.trusted / 'scripts/ci-product-inputs.sh')])
-            path = envfile.read_text().strip()
-            raw = subprocess.check_output(['bash', '-c', 'source "$1"; env -0', 'product-inputs', path], env=self.env)
-            self.env.update(dict(value.decode().split('=', 1) for value in raw.split(b'\0') if value))
+            from native_product_inputs import load_product_inputs
+            self.env.update(load_product_inputs(envfile, self.work))
             self.receipt['product_input_bytes'] = {
                 key: Path(value).stat().st_size for key, value in self.env.items()
                 if key.startswith('BUSBAR_') and key.endswith(('_CDYLIB', '_PLUGIN'))
