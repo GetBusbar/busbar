@@ -8,8 +8,8 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 use super::reason_of;
 use super::units_bill;
 use super::{
-    AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, DialectAuth, OnPieceOut, OutField,
-    PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain,
+    AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, ClassParent, DialectAuth, OnPieceOut,
+    OutField, PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain,
     RecordRetention, RecordWrite, RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey,
     UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED,
     CHAIN_PIPE_SEPARATED, CLAIM_CATALOG, CLAIM_ENTRY, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN,
@@ -1317,6 +1317,7 @@ pub fn check_tail(t: &PlaneTail) -> Result<(), Fault> {
     )?;
     listed(t.admin_routes, t.admin_routes_len, "tail.admin_routes")?;
     listed(t.metric_lanes, t.metric_lanes_len, "tail.metric_lanes")?;
+    listed(t.class_parents, t.class_parents_len, "tail.class_parents")?;
     listed(
         t.streaming_content_types,
         t.streaming_content_types_len,
@@ -1409,6 +1410,62 @@ pub fn check_billable_classes(classes: &[BillableClass]) -> Result<(), Fault> {
     for c in classes {
         named(c.class, "billable_class.class")?;
         named(c.family, "billable_class.family")?;
+    }
+    Ok(())
+}
+
+/// Validate a forest of same-family class parents. Fees cannot participate. A child has at
+/// most one parent, so ancestors never double-count a raw class through multiple paths.
+///
+/// # Safety
+/// Every class/family and fee string must remain valid for reads throughout this call.
+///
+/// ```compile_fail,E0133
+/// use busbar_contract::abi::plane::check::check_class_parents;
+/// check_class_parents(&[], &[], &[]);
+/// ```
+pub unsafe fn check_class_parents(
+    parents: &[ClassParent],
+    classes: &[BillableClass],
+    fees: &[AbiStr],
+) -> Result<(), Fault> {
+    check_billable_classes(classes)?;
+    // SAFETY: caller guarantees the declaration's strings are live.
+    let bytes = |s: AbiStr| unsafe { s.bytes() };
+    for (i, class) in classes.iter().enumerate() {
+        if classes[..i]
+            .iter()
+            .any(|prior| bytes(prior.class) == bytes(class.class))
+        {
+            return Err(fault(Rule::Contradiction, "class_parent.classes"));
+        }
+    }
+    for (i, edge) in parents.iter().enumerate() {
+        index(edge.child, classes.len() as u64, "class_parent.child")?;
+        index(edge.parent, classes.len() as u64, "class_parent.parent")?;
+        let child = classes[edge.child as usize];
+        let parent = classes[edge.parent as usize];
+        if edge.child == edge.parent
+            || parents[..i].iter().any(|prior| prior.child == edge.child)
+            || bytes(child.family) != bytes(parent.family)
+            || fees
+                .iter()
+                .any(|fee| bytes(*fee) == bytes(child.class) || bytes(*fee) == bytes(parent.class))
+        {
+            return Err(fault(Rule::Contradiction, "class_parent"));
+        }
+    }
+    for edge in parents {
+        let mut ancestor = edge.parent;
+        for _ in 0..parents.len() {
+            if ancestor == edge.child {
+                return Err(fault(Rule::Contradiction, "class_parent.cycle"));
+            }
+            let Some(next) = parents.iter().find(|next| next.child == ancestor) else {
+                break;
+            };
+            ancestor = next.parent;
+        }
     }
     Ok(())
 }

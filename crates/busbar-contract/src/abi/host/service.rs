@@ -321,10 +321,12 @@ pub mod op {
     pub const WORK_STATUS: u32 = 34;
     /// `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody.
     pub const OUTBOUND_AUTHORIZE: u32 = 35;
+    /// Invocation-scoped, configured hook child dispatch.
+    pub const HOOK_CHILD: u32 = 36;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 36;
+pub const SERVICES: u32 = 37;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
@@ -531,6 +533,19 @@ pub struct SignIn {
     /// The bytes to sign.
     pub data: Blob,
     /// Where the key id and the signature go.
+    pub into: ServiceBufs,
+}
+
+/// [`op::HOOK_CHILD`]'s input: invoke one configured child through host-only invocation authority.
+/// No target, caller identity, credential or parent unit can be selected by the hook.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HookChildIn {
+    /// The calling hook operation's completion handle.
+    pub head: ServiceHead,
+    /// Owned by the host before the operation parks.
+    pub body: Blob,
+    /// Bounded response bytes; no credentials or response headers are returned.
     pub into: ServiceBufs,
 }
 
@@ -1840,6 +1855,8 @@ pub struct HostSlots {
     pub work_status: Option<ServiceFn>,
     /// [`op::OUTBOUND_AUTHORIZE`]. Optional size-checked tail addition.
     pub outbound_authorize: Option<ServiceFn>,
+    /// [`op::HOOK_CHILD`], optional size-checked tail.
+    pub hook_child: Option<ServiceFn>,
 }
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
@@ -2240,6 +2257,18 @@ pub unsafe fn check_sign(i: &SignIn, ret: RawOutcome, out: &ServiceOut) -> Resul
 /// On READY, if the reported span count is nonzero and within `i.into.spans_cap`,
 /// a non-NULL `i.into.spans` must point to that many aligned, initialized `ItemSpan`s,
 /// readable without concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_hook_child(
+    i: &HookChildIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: inherited from the caller's initialized result buffers.
+    unsafe { answer(ret, &i.head, out, into(op::HOOK_CHILD, i.into, ANY)) }
+}
+
+/// Validate a nested response.
+/// # Safety
+/// The caller lends initialized result spans for the duration of this check.
 pub unsafe fn check_unit_nest(
     i: &UnitNestIn,
     ret: RawOutcome,

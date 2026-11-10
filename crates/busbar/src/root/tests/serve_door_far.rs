@@ -383,6 +383,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         error_body_max: DEFAULT_ERROR_BODY_MAX,
     };
     let far = DoorFar {
+        observations: None,
         authorization: Arc::default(),
         egress: Some(&egress),
         steps: &steps,

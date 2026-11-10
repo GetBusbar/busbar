@@ -833,6 +833,43 @@ async fn followup_rechecks_authorization_before_opening_another_exchange() {
 }
 
 #[tokio::test]
+async fn host_member_binding_confines_candidates_dispatch_and_followup() {
+    let r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"other"])),
+            ("b.test", Script::Answer(200, None, vec![b"allowed"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(UnitRoute {
+        allowed_member: Some("m1".into()),
+        ..route()
+    });
+    let candidates = far.candidates(&t).unwrap();
+    assert_eq!(candidates.members.len(), 1);
+    assert_eq!(
+        candidates.members[0].idx, 1,
+        "hook indices retain original pool positions"
+    );
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m1"));
+    assert!(far.send(&t, request()).await);
+    drain(&far, &t).await;
+    let mut next = request();
+    next.pool = POOL.into();
+    next.member = "m1".into();
+    assert!(far.followup(&t, next).await);
+    drain(&far, &t).await;
+    assert!(matches!(far.member(&t, 3).await, Pick::Exhausted { .. }));
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 2);
+    assert!(opened
+        .iter()
+        .all(|row| row.0.starts_with("https://b.test/")));
+}
+
+#[tokio::test]
 async fn one_attempt_end_to_end() {
     let r = rig(
         &[("a.test", Script::Answer(200, None, vec![b"hel", b"lo"]))],
@@ -2241,6 +2278,100 @@ async fn a_required_restrict_refuses_at_the_fallback_pool() {
             text: "No upstream satisfies a required gate's restriction. Please retry shortly."
                 .to_string(),
         }
+    );
+}
+
+#[tokio::test]
+async fn prioritize_keeps_ranking_inside_groups_and_all_eligible_fallbacks() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Refused),
+            ("b.test", Script::Refused),
+            ("c.test", Script::Refused),
+            ("d.test", Script::Refused),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    r.egress.pools.get_mut(POOL).unwrap().failover.max_hops = 4;
+    let t = token();
+    let far = r.egress.unit(route());
+    far.constrain(
+        &t,
+        crate::plane_driver::Constraint {
+            prioritize: Some(vec![1, 2]),
+            order: Some(vec![3, 2, 1, 0]),
+            ..Default::default()
+        },
+    );
+    for (attempt, expected) in ["m2", "m1", "m3", "m0"].into_iter().enumerate() {
+        assert!(
+            matches!(far.member(&t, attempt as u32 + 1).await, Pick::Member { name, .. } if name == expected)
+        );
+        assert!(!far.send(&t, request()).await);
+    }
+}
+
+#[tokio::test]
+async fn prioritize_preserves_weighted_rotation_tiers_restrictions_and_affinity() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Refused),
+            ("b.test", Script::Refused),
+            ("c.test", Script::Refused),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let constraint = crate::plane_driver::Constraint {
+        prioritize: Some(vec![2, 1]),
+        ..Default::default()
+    };
+    let mut counts = [0; 3];
+    for _ in 0..12 {
+        let far = r.egress.unit(route());
+        far.constrain(&t, constraint.clone());
+        let Pick::Member { name, .. } = far.member(&t, 1).await else {
+            panic!("no member")
+        };
+        counts[name[1..].parse::<usize>().unwrap()] += 1;
+    }
+    assert_eq!(counts, [0, 8, 4], "SWRR uses weights 2:1, not source order");
+    r.egress.pools.get_mut(POOL).unwrap().members[1].tier = 9;
+    let far = r.egress.unit(route());
+    far.constrain(&t, constraint.clone());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m2"));
+    let far = r.egress.unit(UnitRoute {
+        affinity: Some(0),
+        ..route()
+    });
+    far.constrain(&t, constraint.clone());
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m0"),
+        "priority does not migrate affinity"
+    );
+    let far = r.egress.unit(route());
+    far.constrain(
+        &t,
+        crate::plane_driver::Constraint {
+            keep: Some(vec![0]),
+            ..constraint.clone()
+        },
+    );
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m0"),
+        "priority cannot bypass restrictions"
+    );
+    r.book.cooldown.lock().unwrap().extend([
+        (DestinationId::new(2), u64::MAX),
+        (DestinationId::new(3), u64::MAX),
+    ]);
+    let far = r.egress.unit(route());
+    far.constrain(&t, constraint);
+    assert!(
+        matches!(far.member(&t, 1).await, Pick::Member { name, .. } if name == "m0"),
+        "unavailable priority members retain healthy fallback"
     );
 }
 

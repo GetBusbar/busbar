@@ -804,6 +804,34 @@ async fn a_cancelled_stream_meters_only_a_reported_bill() {
 }
 
 #[tokio::test]
+async fn unit_spend_ceiling_cuts_independently_and_preserves_incurred_usage() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    r.money.limit_unit_spend(UnitKey::new(1), 50).unwrap();
+    assert!(r.money.limit_unit_spend(UnitKey::new(1), 100).is_err());
+    assert_eq!(
+        r.money.checkpoint(&ctx(1), &reported(49)),
+        Checkpoint::Continue
+    );
+    assert_eq!(r.money.checkpoint(&ctx(1), &reported(51)), Checkpoint::Cut);
+    assert_eq!(
+        r.money.last_counts(UnitKey::new(1))[0].amount,
+        51,
+        "ceiling never rewrites the actual provider obligation"
+    );
+}
+
+#[tokio::test]
+async fn unit_spend_ceiling_includes_request_fee() {
+    let r = rig(None, 1, ExhaustionMode::FinishUnit).await;
+    r.money.limit_unit_spend(UnitKey::new(1), 10_050).unwrap();
+    assert_eq!(
+        r.money.checkpoint(&ctx(1), &reported(49)),
+        Checkpoint::Continue
+    );
+    assert_eq!(r.money.checkpoint(&ctx(1), &reported(50)), Checkpoint::Cut);
+}
+
+#[tokio::test]
 async fn finish_unit_never_cuts() {
     let r = rig(Some(1), 0, ExhaustionMode::FinishUnit).await;
     assert_eq!(

@@ -6,7 +6,11 @@
 use serde::Deserialize as _;
 
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
-pub const RESERVED_SECTION_KEYS: &[&str] = &["hooks", UPSTREAM_CREDENTIALS_KEY];
+pub const RESERVED_SECTION_KEYS: &[&str] =
+    &["hooks", UPSTREAM_CREDENTIALS_KEY, USAGE_OBSERVATIONS_KEY];
+
+/// Host-only durable accounting policy, keyed by configured upstream member.
+pub const USAGE_OBSERVATIONS_KEY: &str = "usage_observations";
 
 /// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
@@ -173,6 +177,9 @@ where
         indexmap::IndexMap::deserialize(deserializer)?;
 
     for reserved in RESERVED_SECTION_KEYS {
+        if *reserved == USAGE_OBSERVATIONS_KEY {
+            continue;
+        }
         if raw
             .get(*reserved)
             .is_some_and(|v| matches!(v, serde_yaml::Value::Mapping(_)))
@@ -204,6 +211,7 @@ where
     };
 
     let mut entries = indexmap::IndexMap::new();
+    raw.shift_remove(USAGE_OBSERVATIONS_KEY);
     for (name, value) in raw {
         if RESERVED_SECTION_KEYS.contains(&name.as_str()) {
             return Err(D::Error::custom(reserved_name_refusal(

@@ -182,6 +182,12 @@ pub struct ServiceStore {
     shards: [Mutex<HashMap<Ticket, Held>>; SHARDS],
     /// The last epoch minted.
     epochs: AtomicU64,
+    children: Mutex<
+        HashMap<
+            (Ticket, busbar_contract::services::Incarnation),
+            Arc<dyn busbar_contract::services::HookChildInvocation>,
+        >,
+    >,
     /// The driver tickets' held exchanges, by handle (`super::held`).
     pub(crate) held: super::held::Held,
 }
@@ -189,6 +195,35 @@ pub struct ServiceStore {
 const SHARDS: usize = 16;
 
 impl ServiceStore {
+    pub(crate) fn bind_child(
+        &self,
+        ticket: Ticket,
+        caller: &Caller,
+        child: Arc<dyn busbar_contract::services::HookChildInvocation>,
+    ) {
+        self.children
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((ticket, caller.incarnation().clone()), child);
+    }
+    pub(crate) fn unbind_child(&self, ticket: Ticket) {
+        self.children
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .retain(|(t, _), _| *t != ticket);
+    }
+    fn child(
+        &self,
+        ticket: Ticket,
+        caller: &Caller,
+    ) -> Option<Arc<dyn busbar_contract::services::HookChildInvocation>> {
+        self.children
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(ticket, caller.incarnation().clone()))
+            .cloned()
+    }
+
     fn shard(&self, worker: u32) -> std::sync::MutexGuard<'_, HashMap<Ticket, Held>> {
         self.shards[worker as usize % SHARDS]
             .lock()
@@ -813,6 +848,9 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             work_status: busbar_contract::abi::host::access::service(op::WORK_STATUS)
                 .filter(|p| p.admits(kind))
                 .map(|_| work_status as svc::ServiceFn),
+            hook_child: busbar_contract::abi::host::access::service(op::HOOK_CHILD)
+                .filter(|p| p.admits(kind))
+                .map(|_| hook_child as svc::ServiceFn),
             outbound_authorize: busbar_contract::abi::host::access::service(op::OUTBOUND_AUTHORIZE)
                 .filter(|p| p.admits(kind))
                 .map(|_| outbound_authorize as svc::ServiceFn),
@@ -861,6 +899,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     ticket_take: Some(ticket_take),
     work_status: Some(work_status),
     outbound_authorize: Some(outbound_authorize),
+    hook_child: Some(hook_child),
 };
 
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
@@ -2310,6 +2349,19 @@ service! {
                 provider.unit_nest(caller, unit, ask, later)
             })
         }
+    }
+}
+
+service! {
+    hook_child, scoped, op::HOOK_CHILD, svc::HookChildIn, |served, route, head, caller, i| {
+        if check_bufs(&i.into).is_err() { return Answered::fault(); }
+        let Some(body) = blob_of(i.body, "hook_child.body") else { return Answered::fault(); };
+        let Some(child) = served.store.child(head.handle.ticket, caller) else {
+            return Answered::bare(Outcome::Refused, "no child grant on this hook invocation");
+        };
+        let req = Fp::of(&[&body]);
+        // SAFETY: checked caller-owned response buffers, retained only during this crossing.
+        unsafe { pended(&served, &route, &head, req, Some(&i.into), |later| child.request(caller, body, later)) }
     }
 }
 

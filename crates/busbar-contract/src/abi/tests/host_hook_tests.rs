@@ -77,7 +77,10 @@ fn a_decide_view_passes_the_prompt_check_and_carries_every_message() {
     let i = frame.input();
     assert_eq!(
         i.present,
-        VIEW_HAS_PROMPT | VIEW_HAS_USER | VIEW_HAS_BUDGET_REMAINING
+        VIEW_HAS_PROMPT
+            | VIEW_HAS_USER
+            | VIEW_HAS_BUDGET_REMAINING
+            | crate::abi::hook::VIEW_SUPPORTS_PRIORITIZE
     );
     assert_eq!(check_prompt_view(&i.prompt), Ok(()));
     assert_eq!(i.prompt.messages_len, 2);

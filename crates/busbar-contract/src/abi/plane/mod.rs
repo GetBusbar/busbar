@@ -249,6 +249,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(DialectAuth => dialect, flags, style, params),
     crate::layout_shape!(OpClass => op, name),
     crate::layout_shape!(BillableClass => class, family),
+    crate::layout_shape!(ClassParent => child, parent),
     crate::layout_shape!(RouteCost => class, _reserved, weight),
     crate::layout_shape!(RecordChain => kind, framing, flags, _reserved),
     crate::layout_shape!(RecordRetention => kind, rule),
@@ -264,7 +265,8 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         record_chains, record_chains_len, trust_keys, trust_keys_len, refusal_statuses,
         refusal_statuses_len, caller_credential_refusal, admin_routes, admin_routes_len,
         admin_openapi, stream_ceiling_secs, metric_lanes, metric_lanes_len, record_retentions,
-        record_retentions_len, streaming_content_types, streaming_content_types_len
+        record_retentions_len, streaming_content_types, streaming_content_types_len,
+        class_parents, class_parents_len
     ),
     crate::layout_shape!(Claim => verb, target, carrier, flags, refusal_dialect, _pad),
     crate::layout_shape!(AdminRoute => verb, target, flags, _reserved, audit_verb),
@@ -1133,6 +1135,28 @@ impl BillableClass {
     };
 }
 
+/// A declared reporting/cap parent for a disjoint raw class. Both indices name billable classes.
+/// The host adds each raw count to its ancestors only in derived views, never in pricing.
+/// Parents may receive their own disjoint raw counts (for legacy/unsplit usage). A plane must
+/// never emit an inclusive parent total alongside the children that comprise that total.
+/// Static declaration builders cannot retain a temporary edge list:
+///
+/// ```compile_fail,E0597
+/// use busbar_contract::abi::plane::{ClassParent, PlaneTail};
+/// fn dangling() -> PlaneTail {
+///     let edges = [ClassParent { child: 1, parent: 0 }];
+///     PlaneTail::EMPTY.with_class_parents(&edges)
+/// }
+/// ```
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassParent {
+    /// Child index into [`PlaneTail::billable_classes`].
+    pub child: u32,
+    /// Parent index into [`PlaneTail::billable_classes`].
+    pub parent: u32,
+}
+
 /// One term of the plane's route cost: `cheapest` = Σ price(class) × weight.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1465,6 +1489,11 @@ pub struct PlaneTail {
     pub streaming_content_types: *const AbiStr,
     /// How many streaming response media types.
     pub streaming_content_types_len: usize,
+    /// A forest of reporting/cap parents over the disjoint raw classes. Same-family only;
+    /// no fee classes, cycles or repeated children. NULL/0 = no parents. Append-only.
+    pub class_parents: *const ClassParent,
+    /// How many parent edges.
+    pub class_parents_len: usize,
 }
 
 impl PlaneTail {
@@ -1518,6 +1547,8 @@ impl PlaneTail {
         record_retentions_len: 0,
         streaming_content_types: std::ptr::null(),
         streaming_content_types_len: 0,
+        class_parents: std::ptr::null(),
+        class_parents_len: 0,
     };
 }
 
@@ -1576,6 +1607,8 @@ impl PlaneTail {
         record_retentions_len: 0,
         streaming_content_types: std::ptr::null(),
         streaming_content_types_len: 0,
+        class_parents: std::ptr::null(),
+        class_parents_len: 0,
     };
 
     abi_lists! {
@@ -1602,6 +1635,8 @@ impl PlaneTail {
             => refusal_statuses_ptr, with_refusal_statuses, with_raw_refusal_statuses;
         admin_routes, admin_routes_len: AdminRoute
             => admin_routes_ptr, with_admin_routes, with_raw_admin_routes;
+        class_parents, class_parents_len: ClassParent
+            => class_parents_ptr, with_class_parents, with_raw_class_parents;
         streaming_content_types, streaming_content_types_len: AbiStr
             => streaming_content_types_ptr, with_streaming_content_types, with_raw_streaming_content_types;
         metric_lanes, metric_lanes_len: AbiStr
@@ -2596,6 +2631,7 @@ const _: () = assert!(one_bit_each(&[
     super::hook::REQUEST_HAS_MAX_TOKENS,
     super::hook::REQUEST_HAS_TOOLS,
     super::hook::REQUEST_STREAM,
+    super::hook::REQUEST_TEXT_COMPLETE,
     PROJECT_REWRITE_NOT_APPLICABLE,
     PROJECT_FAULT_UNPARSEABLE,
 ]));

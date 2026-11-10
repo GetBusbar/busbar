@@ -11,6 +11,7 @@ mod govern;
 pub(crate) mod hooks;
 pub mod host;
 mod money;
+pub(crate) use money::observation_budget_id;
 mod needs;
 mod probe;
 pub mod registry;
@@ -60,8 +61,9 @@ pub use host::{
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
 pub use money::{
-    EndPost, FeeRefund, ParentMoney, PlaneMoney, ReservedRequestLineage, ReturnedTicketReservation,
-    SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
+    EndPost, FeeRefund, ObservationPolicy, ObservationRuntimeError, ParentMoney, PlaneMoney,
+    ReservedRequestLineage, ReturnedTicketReservation, SpentTicketReservation, TicketReservation,
+    UnitEnd, UnitMoney,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
@@ -592,6 +594,15 @@ pub fn sticky_hash(key: &[u8]) -> u64 {
 }
 
 pub trait DriverSteps {
+    /// Read authoritative delayed-accounting liability before synchronous admission.
+    fn prepare_admission<'a>(
+        &'a self,
+        _ctx: &'a UnitCtx,
+        _principal: &'a PrincipalId,
+        _destinations: &'a [VerifiedDestination],
+    ) -> impl std::future::Future<Output = Result<(), Refusal>> + Send + 'a {
+        std::future::ready(Ok(()))
+    }
     /// Remove the sole receipt for an already adopted ticket reservation.
     fn take_reserved_request_lineage(&self, _ctx: &UnitCtx) -> Option<ReservedRequestLineage> {
         None

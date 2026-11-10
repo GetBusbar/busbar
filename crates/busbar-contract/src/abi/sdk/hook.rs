@@ -24,8 +24,8 @@ use crate::abi::hook::{
     SIGNAL_TAG_I64, SIGNAL_TAG_STR, SIGNAL_TAG_U64, STAGE_AT_CANDIDATE, STAGE_AT_ROUTING,
     STAGE_HAS_ATTEMPT_NUMBER, STAGE_HAS_MODEL, STAGE_HAS_OUTCOME, STAGE_HAS_PREVIOUS_FAILURE,
     STAGE_HAS_PROJECTION, STAGE_HAS_REMAINING_CANDIDATES, STAGE_HAS_STATUS, VERB_ABSTAIN,
-    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
-    VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT, VIEW_HAS_USER,
+    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    VIEW_HAS_BUDGET_REMAINING, VIEW_HAS_PROMPT, VIEW_HAS_USER, VIEW_SUPPORTS_PRIORITIZE,
 };
 use crate::abi::mechanism::call::{AbiStr, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON};
 use crate::abi::mechanism::door::{KindTailHead, Statement};
@@ -500,6 +500,10 @@ pub enum Verdict {
     /// Prefer this order of candidate `idx`es (the host drops unknown ones and duplicates; an
     /// order that keeps none is an abstain).
     Prefer(Vec<usize>),
+    /// Prefer an unordered set, keeping ordinary ranking/weighted selection inside the set and
+    /// all other eligible candidates as fallback. Session affinity retains precedence. Requires
+    /// a host advertising [`VIEW_SUPPORTS_PRIORITIZE`]; older hosts fail the call safely.
+    Prioritize(Vec<usize>),
     /// No opinion.
     Abstain,
     /// Refuse the request. `status` is the hook's own opinion (the host clamps it to 400-499, and
@@ -537,11 +541,14 @@ pub enum RewriteVerdict {
 
 /// Lower `v` into `out` and the host buffers `input` lends ([`HostBuf`](crate::abi::sdk::HostBuf)). A buffer too small answers
 pub fn write_verdict(v: &Verdict, input: Lent<'_, DecideIn>, out: &mut DecideOut) -> Outcome {
+    if matches!(v, Verdict::Prioritize(_)) && input.present & VIEW_SUPPORTS_PRIORITIZE == 0 {
+        return Outcome::Failed;
+    }
     let mut order = input.order_buf();
     let mut reject = input.reject_message_buf();
     let mut tags = input.restrict_tags_buf();
     match v {
-        Verdict::Prefer(o) => {
+        Verdict::Prefer(o) | Verdict::Prioritize(o) => {
             for i in o {
                 if let Ok(i) = u32::try_from(*i) {
                     order.push(i);
@@ -566,6 +573,8 @@ pub fn write_verdict(v: &Verdict, input: Lent<'_, DecideIn>, out: &mut DecideOut
     match v {
         Verdict::Prefer(_) if order.asked() == 0 => out.verbs = VERB_ABSTAIN,
         Verdict::Prefer(_) => out.verbs = VERB_PREFER,
+        Verdict::Prioritize(_) if order.asked() == 0 => out.verbs = VERB_ABSTAIN,
+        Verdict::Prioritize(_) => out.verbs = VERB_PRIORITIZE,
         Verdict::Abstain => out.verbs = VERB_ABSTAIN,
         Verdict::Reject { status, .. } => {
             out.verbs = VERB_REJECT;
@@ -654,6 +663,8 @@ struct DecisionReply {
     #[serde(default)]
     order: Option<Vec<usize>>,
     #[serde(default)]
+    prioritize: Option<Vec<usize>>,
+    #[serde(default)]
     abstain: bool,
 }
 
@@ -722,6 +733,13 @@ pub fn lower_decide_reply(reply: Result<serde_json::Value, String>) -> Verdict {
     };
     if parsed.abstain {
         return Verdict::Abstain;
+    }
+    if let Some(set) = parsed.prioritize {
+        return if parsed.order.is_some() {
+            Verdict::Failed(INVALID_DECISION.into())
+        } else {
+            Verdict::Prioritize(set)
+        };
     }
     match parsed.order {
         Some(o) => Verdict::Prefer(o),

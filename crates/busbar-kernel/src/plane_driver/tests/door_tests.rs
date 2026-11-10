@@ -49,6 +49,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         dialect_flags: vec![0, 0],
         scope_kinds: vec!["member"],
         billable_classes: vec![("bytes", "byte")],
+        class_parents: vec![],
         fee_units: vec!["request"],
         record_kinds: vec!["member_row"],
         trust_keys: vec![
@@ -218,7 +219,20 @@ fn unpriced_and_fee_only_doors_add_no_resource_price_obligations() {
 
 #[test]
 fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
-    let decl = fold(registration("door-fold-row", "door_fold_row")).expect("folds");
+    let mut reg = registration("door-fold-row", "door_fold_row");
+    reg.billable_classes.push(("headers", "byte"));
+    reg.class_parents.push(busbar_contract::plane::ClassParent {
+        child: "headers",
+        parent: "bytes",
+    });
+    let decl = fold(reg).expect("folds");
+    assert_eq!(
+        decl.class_parents,
+        &[busbar_contract::plane::ClassParent {
+            child: "headers",
+            parent: "bytes"
+        }]
+    );
     assert_eq!(decl.key, "door-fold-row");
     assert_eq!(decl.config_section, "door_fold_row");
     assert_eq!(decl.scope_kinds, &["member"]);

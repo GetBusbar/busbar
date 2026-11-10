@@ -11,6 +11,7 @@ use crate::abi::sdk::publish::Keyed;
 use crate::abi::sdk::{lent::HostBuf, out::Out};
 
 pub mod conditional;
+pub mod observation;
 
 /// Settle every piece buffer together. If any buffer is short, all written counts are zero
 /// and all required counts are reported so the host can retry the complete answer atomically.

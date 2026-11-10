@@ -104,7 +104,9 @@ pub trait HookJournal: Send + Sync {
 fn head_of(decided: &Decided) -> HookHead {
     match decided {
         Decided::Reject | Decided::RejectRequest { .. } => HookHead::Veto,
-        Decided::Order { .. } | Decided::Restrict { .. } => HookHead::Modify,
+        Decided::Order { .. } | Decided::Prioritize { .. } | Decided::Restrict { .. } => {
+            HookHead::Modify
+        }
         Decided::Weighted => HookHead::Pass,
     }
 }
@@ -556,6 +558,9 @@ pub struct Constraint {
     pub keep: Option<Vec<usize>>,
     /// The order the walk tries them in (`None` = the walk's own pick).
     pub order: Option<Vec<usize>>,
+    /// An unordered preferred set; all other kept members remain fallback. Ordinary ranking,
+    /// configured tiers and weighted rotation apply inside each group; affinity keeps precedence.
+    pub prioritize: Option<Vec<usize>>,
     /// The policy that ordered or restricted, when one did.
     pub policy: Option<std::sync::Arc<str>>,
     /// Every restrict the hooks decided, re-applied to a fallback pool's members.
@@ -602,6 +607,8 @@ pub struct Projection {
     pub max_tokens: Option<u32>,
     /// The request declares tools.
     pub has_tools: bool,
+    /// Explicit plane assurance, never inferred from projected text being nonempty.
+    pub text_complete: bool,
     /// The caller asked for a stream.
     pub stream: bool,
     /// The prompt's system field.
@@ -653,6 +660,7 @@ impl Projection {
             total_chars: 0,
             max_tokens: None,
             has_tools: false,
+            text_complete: false,
             stream: false,
             system: None,
             turns: Vec::new(),
@@ -686,7 +694,19 @@ impl Projection {
         pool: &'a str,
         prompt: bool,
         identity: Option<CallerIdentity>,
+        requested: &RequestedSignals,
     ) -> RoutingRequest<'a> {
+        let prompt = prompt.then(|| self.prompt());
+        let mut signals = SignalBag::default();
+        if let Some(projected) = prompt
+            .as_ref()
+            .filter(|_| requested.wants(Signal::RequestTextComplete))
+        {
+            signals.push(
+                Signal::RequestTextComplete,
+                SignalValue::Bool(self.complete_text_projection(projected)),
+            );
+        }
         RoutingRequest {
             request_id,
             pool,
@@ -699,11 +719,23 @@ impl Projection {
             system_chars: 0,
             max_tokens: self.max_tokens,
             stream: self.stream,
-            prompt: prompt.then(|| self.prompt()),
+            prompt,
             identity,
-            signals: SignalBag::default(),
+            signals,
             session: self.session.as_deref(),
         }
+    }
+
+    fn complete_text_projection(&self, projected: &PromptProjection<'_>) -> bool {
+        self.text_complete
+            && !self.has_tools
+            && projected.system.as_deref() == self.system.as_deref()
+            && projected.messages.len() == self.turns.len()
+            && projected.messages.iter().zip(&self.turns).all(
+                |((role, text), (original_role, original_text))| {
+                    role == original_role && text == original_text
+                },
+            )
     }
 
     fn shape<'a>(&'a self, request_id: u64, pool: &'a str) -> StageShape<'a> {
@@ -797,6 +829,11 @@ fn stage_at<'a>(
 /// What one decision came to.
 #[derive(Debug, Clone, PartialEq)]
 enum Decided {
+    /// This unordered preferred set, composed with the ordinary routing policy.
+    Prioritize {
+        candidates: Vec<usize>,
+        name: std::sync::Arc<str>,
+    },
     /// This ranked order.
     Order {
         order: Vec<usize>,
@@ -846,6 +883,13 @@ fn map_answer(
     on_empty: &PolicyOnError,
 ) -> Decided {
     match answer {
+        RoutingDecision::Prioritize(set) => {
+            let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
+            match RoutingDecision::from_ranked(set, &valid) {
+                RoutingDecision::Prefer(candidates) => Decided::Prioritize { candidates, name },
+                _ => Decided::Weighted,
+            }
+        }
         RoutingDecision::Prefer(order) => {
             let valid: HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
             match RoutingDecision::from_ranked(order, &valid) {
@@ -929,6 +973,7 @@ impl Asked<'_> {
             self.pool,
             *send_prompt,
             send_user.then(|| self.identity()),
+            &self.hooks.requested,
         );
         let ctx = RoutingContext {
             pool: self.pool,
@@ -1013,7 +1058,14 @@ impl Asked<'_> {
         failed: std::sync::Arc<str>,
     ) -> Decided {
         for fb in chain {
+            let mut signals = SignalBag::default();
+            for (signal, value) in req.signals.iter() {
+                if fb.send_prompt || *signal != Signal::RequestTextComplete {
+                    signals.push(*signal, value.clone());
+                }
+            }
             let fb_req = RoutingRequest {
+                signals,
                 prompt: if fb.send_prompt {
                     req.prompt.clone()
                 } else {
@@ -1376,6 +1428,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             total_chars: usize::try_from(v.total_chars).unwrap_or(usize::MAX),
             max_tokens: (v.flags & REQUEST_HAS_MAX_TOKENS != 0).then_some(v.max_tokens),
             has_tools: v.flags & REQUEST_HAS_TOOLS != 0,
+            text_complete: v.flags & busbar_contract::abi::hook::REQUEST_TEXT_COMPLETE != 0,
             stream: v.flags & REQUEST_STREAM != 0,
             system: opt(o.prompt.system),
             turns,
@@ -1450,7 +1503,13 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         S: super::DriverSteps,
     {
         let mut ran = Vec::new();
-        let stage = self.run_request_stage(token, &mut ran).await;
+        let scope = crate::hook_child::Scope {
+            services: Arc::clone(&self.driver.services),
+            unit: self.lock().unit,
+        };
+        let stage = crate::hook_child::SCOPE
+            .scope(scope, self.run_request_stage(token, &mut ran))
+            .await;
         self.report_hooks(ran);
         stage
     }
@@ -1542,7 +1601,7 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         self.lock().hooked_pool.clone_from(&pool);
 
         for (timeout, hook) in &hooks.rewrites {
-            let req = view.request(hooks.request_id, &pool, true, None);
+            let req = view.request(hooks.request_id, &pool, true, None, &hooks.requested);
             if req.prompt.is_some() {
                 (hooks.reads)(hook.name(), None, &view.dialect, false)
                     .await
@@ -1759,6 +1818,23 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
             }
 
             for outcome in outcomes {
+                if let Decided::Prioritize { candidates, name } = &outcome {
+                    let filtered: Vec<usize> = candidates
+                        .iter()
+                        .copied()
+                        .filter(|i| keep.contains(i))
+                        .collect();
+                    if !filtered.is_empty() {
+                        constraint.prioritize = Some(filtered);
+                        constraint.policy = Some(Arc::clone(name));
+                        metrics::counter!(
+                            ROUTE_POLICY_SELECTIONS_TOTAL,
+                            "policy" => name.to_string(),
+                            "pool" => pool.to_string(),
+                        )
+                        .increment(1);
+                    }
+                }
                 if let Decided::Order { order, name } = outcome {
                     let filtered: Vec<usize> =
                         order.into_iter().filter(|i| keep.contains(i)).collect();
@@ -1793,6 +1869,17 @@ impl<S, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         let (decided, hook) = Box::pin(asked.decide(policy)).await;
         ran.extend(hook);
         match decided {
+            Decided::Prioritize { candidates, name } => {
+                metrics::counter!(
+                    ROUTE_POLICY_SELECTIONS_TOTAL,
+                    "policy" => name.to_string(),
+                    "pool" => pool.to_string(),
+                )
+                .increment(1);
+                constraint.prioritize = Some(candidates);
+                constraint.policy = Some(name);
+                Ok(())
+            }
             Decided::Order { order, name } => {
                 metrics::counter!(
                     ROUTE_POLICY_SELECTIONS_TOTAL,
@@ -1958,7 +2045,7 @@ fn fire_request_taps(hooks: &UnitHooks, view: &Projection, pool: &str) {
     }
     let firing: Vec<&TapEntry> = taps.iter().filter(|t| (hooks.groups)(&t.3)).collect();
     let frame = |with_prompt: bool| {
-        let req = view.request(hooks.request_id, pool, with_prompt, None);
+        let req = view.request(hooks.request_id, pool, with_prompt, None, &hooks.requested);
         busbar_contract::abi::host::hook::NotifyFrame::build(&req, None, with_prompt)
     };
     let shape_only = firing.iter().any(|t| !t.1).then(|| frame(false));
@@ -2152,6 +2239,7 @@ impl SessionStage {
                 &self.pool,
                 *send_prompt,
                 send_user.then(|| identity.clone()),
+                &hooks.requested,
             );
             if req.prompt.is_some()
                 && (hooks.reads)(
@@ -2216,7 +2304,7 @@ impl SessionStage {
             .take(most)
             .skip(from as usize)
         {
-            let req = view.request(hooks.request_id, &self.pool, true, None);
+            let req = view.request(hooks.request_id, &self.pool, true, None, &hooks.requested);
             if req.prompt.is_some()
                 && (hooks.reads)(hook.name(), None, &view.dialect, false)
                     .await
@@ -2281,3 +2369,7 @@ impl crate::host_units::UnitHookStage for SessionStage {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "tests/completeness_tests.rs"]
+mod completeness_tests;

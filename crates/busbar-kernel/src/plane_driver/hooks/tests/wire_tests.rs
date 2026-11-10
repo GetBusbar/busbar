@@ -326,10 +326,27 @@ fn norm(json: &str) -> RoutingDecision {
                 (VERB_ABSTAIN, 0, String::new(), vec![], vec![])
             }
             Verdict::Prefer(order) => (VERB_PREFER, 0, String::new(), vec![], order),
+            Verdict::Prioritize(order) => (
+                busbar_contract::abi::hook::VERB_PRIORITIZE,
+                0,
+                String::new(),
+                vec![],
+                order,
+            ),
             Verdict::Abstain => (VERB_ABSTAIN, 0, String::new(), vec![], vec![]),
             Verdict::Failed(why) => panic!("the reply failed to parse: {why}"),
         };
     answered(verbs, status, || message, || tags, || order, &cands)
+}
+
+#[test]
+fn prioritize_filters_unknown_and_duplicate_candidates_without_becoming_an_order() {
+    assert_eq!(
+        norm(r#"{"prioritize":[1,99,1,0]}"#),
+        RoutingDecision::Prioritize(vec![1, 0])
+    );
+    assert_eq!(norm(r#"{"prioritize":[99]}"#), RoutingDecision::Abstain);
+    assert_eq!(norm(r#"{"prioritize":[]}"#), RoutingDecision::Abstain);
 }
 
 fn transform(json: &str) -> TransformOutcome {

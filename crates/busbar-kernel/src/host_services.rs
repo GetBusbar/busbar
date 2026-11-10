@@ -17,6 +17,9 @@ use busbar_contract::services::{
     Reading, RecordsList, Stored,
 };
 
+#[path = "host_observations.rs"]
+mod observations_runtime;
+
 pub const QUEUE_FULL: &str = "the record write queue is full";
 
 use crate::host_records::{
@@ -128,6 +131,10 @@ pub struct Nest {
     pub principal: Option<Arc<busbar_contract::records::VirtualKey>>,
     /// The claim and body.
     pub ask: NestAsk,
+    /// Initiating hooks, inherited through ordinary nesting as well.
+    pub ancestry: Vec<Arc<str>>,
+    /// Configured hook authority, absent for ordinary plane nesting.
+    pub constraints: Option<crate::hook_child::Constraints>,
 }
 
 /// What a nested unit answered.
@@ -915,6 +922,7 @@ impl Drop for TrustDecisionGrant<'_> {
 }
 
 pub struct KernelServices {
+    observations: observations_runtime::ObservationRuntime,
     outbound: crate::host_outbound::Custody,
     origin: Instant,
     wall_ms: WallMs,
@@ -1046,6 +1054,7 @@ impl KernelServices {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            observations: observations_runtime::ObservationRuntime::default(),
             origin: Instant::now(),
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
@@ -1225,6 +1234,49 @@ impl KernelServices {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&session);
+    }
+
+    pub(crate) fn dispatch_hook_child(&self, nest: Nest, done: NestDone) {
+        let Some(route) = self.nest.get() else {
+            done(NestReply::Unserved(NO_NEST_ROUTE));
+            return;
+        };
+        let permit = match self.nested.enter(nest.depth as usize) {
+            Ok(permit) => permit,
+            Err(_) => {
+                done(NestReply::Unserved(NEST_TOO_DEEP));
+                return;
+            }
+        };
+        let pool = self.nested.clone();
+        struct Held {
+            pool: Arc<crate::pump::NestedPool>,
+            permit: Option<crate::pump::NestedPermit>,
+            done: Option<NestDone>,
+        }
+        impl Drop for Held {
+            fn drop(&mut self) {
+                if let Some(permit) = self.permit.take() {
+                    self.pool.leave(permit);
+                }
+                if let Some(done) = self.done.take() {
+                    done(NestReply::Failed(NEST_DROPPED));
+                }
+            }
+        }
+        impl Held {
+            fn answer(mut self, answer: NestReply) {
+                if let Some(done) = self.done.take() {
+                    done(answer);
+                }
+            }
+        }
+        let held = Held {
+            pool,
+            permit: Some(permit),
+            done: Some(done),
+        };
+        route.nest(nest, Box::new(move |answer| held.answer(answer)));
     }
 
     pub fn attach_nest(&self, route: Arc<dyn NestRoute>) -> bool {
@@ -2540,6 +2592,51 @@ pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
 }
 
 impl HostServices for KernelServices {
+    fn usage_observation_output_allowed(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        unit: Option<u64>,
+    ) -> bool {
+        self.observation_output_allowed(caller, ticket, unit)
+    }
+    fn usage_observation_retire(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        unit: Option<u64>,
+    ) {
+        self.observation_retire(caller, ticket, unit);
+    }
+    fn usage_observation_input(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        unit: Option<u64>,
+    ) -> Option<Vec<u8>> {
+        self.observation_input(caller, ticket, unit)
+    }
+    fn usage_observation_submit(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        unit: Option<u64>,
+        observation: busbar_contract::abi::sdk::plane::observation::Observation,
+        done: busbar_contract::services::ObservationDone,
+    ) -> Result<(), &'static str> {
+        self.observation_submit(caller, ticket, unit, observation, done)
+    }
+    fn usage_observation_scope(
+        &self,
+        caller: &Caller,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+        unit: Option<u64>,
+        request: busbar_contract::abi::sdk::plane::observation::ScopeRequest,
+        done: busbar_contract::services::ObservationDone,
+    ) -> Result<(), &'static str> {
+        self.observation_scope_request(caller, ticket, unit, request, done)
+    }
+
     fn observe_chain_life(
         &self,
         caller: &Caller,
@@ -3500,6 +3597,8 @@ impl HostServices for KernelServices {
                 parent,
                 depth,
                 principal: record.principal.clone(),
+                ancestry: self.units.child_ancestry(parent),
+                constraints: None,
                 ask,
             },
             Box::new(move |reply| owed.answer(reply)),

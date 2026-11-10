@@ -17,6 +17,10 @@ use crate::cost::CostModel;
 use crate::governance::{AdmitGrant, GovState};
 use crate::teller::{Ended, UnitCtx};
 
+mod observations;
+pub(crate) use observations::budget_id as observation_budget_id;
+pub use observations::{ObservationPolicy, ObservationRuntimeError};
+
 const NANOS_PER_MICRO: u128 = 1_000;
 
 pub trait EndPost: Send + Sync {
@@ -327,6 +331,11 @@ impl Drop for FeeParticipation {
 }
 
 struct Open {
+    spend_ceiling_micros: Option<u64>,
+    observation: Option<Arc<crate::persistence::observations::BoundScope>>,
+    observation_started: bool,
+    observation_pending: Option<observations::PendingObservation>,
+    observation_classes: std::collections::BTreeSet<u32>,
     checkpoint_id: [u8; 16],
     checkpoint_audit: Option<Vec<u8>>,
     identity: Arc<()>,
@@ -354,6 +363,11 @@ impl Open {
         checkpoint_audit: Option<Vec<u8>>,
     ) -> Self {
         Self {
+            spend_ceiling_micros: None,
+            observation: None,
+            observation_started: false,
+            observation_pending: None,
+            observation_classes: Default::default(),
             checkpoint_id: crate::door::op_id().0,
             checkpoint_audit,
             identity: Arc::new(()),
@@ -411,6 +425,23 @@ impl PlaneMoney {
     pub fn open_admitted(&self, key: UnitKey, mut money: UnitMoney, grant: Arc<AdmitGrant>) {
         money.charge = grant.charge().clone();
         self.open_with_grant(key, money, Some(grant));
+    }
+
+    /// Bound additional dispatch/output for one admitted unit. Actual incurred usage is
+    /// still settled even if a provider response crosses the configured ceiling.
+    pub fn limit_unit_spend(&self, key: UnitKey, ceiling_micros: u64) -> Result<(), ReasonCode> {
+        let mut units = self.shard(key);
+        let open = units.get_mut(&key).ok_or(ReasonCode::Unpriced)?;
+        if ceiling_micros == 0
+            || open.spend_ceiling_micros.is_some()
+            || open.ledgered
+            || open.finished
+            || !open.last.is_empty()
+        {
+            return Err(ReasonCode::Unpriced);
+        }
+        open.spend_ceiling_micros = Some(ceiling_micros);
+        Ok(())
     }
 
     fn open_with_grant(&self, key: UnitKey, money: UnitMoney, grant: Option<Arc<AdmitGrant>>) {
@@ -969,7 +1000,11 @@ impl MoneySeam for PlaneMoney {
         let Some(open) = all.get_mut(&ctx.key) else {
             return Checkpoint::Continue;
         };
-        if !adds_up(&open.money.classes, units) {
+        if !adds_up(&open.money.classes, units)
+            || units.iter().any(|u| {
+                units_bill(u.source) && u.amount != 0 && open.observation_classes.contains(&u.class)
+            })
+        {
             return Checkpoint::Unpriced;
         }
         open.last.clear();
@@ -988,6 +1023,26 @@ impl MoneySeam for PlaneMoney {
                 return Checkpoint::Unpriced;
             };
             self.gov.stage_unit_checkpoint(snapshot);
+        }
+        if let Some(ceiling) = open.spend_ceiling_micros {
+            let counts = reported(units);
+            let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(&open.money.lane);
+            let fee = u128::try_from(open.money.cost.request_fee_on(plane))
+                .ok()
+                .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
+            let total = named(&open.money.classes, &usage_only(&open.money, &counts))
+                .and_then(|counts| {
+                    open.money
+                        .cost
+                        .price_counts_nanos(&open.money.lane, &counts)
+                })
+                .zip(fee)
+                .and_then(|(usage, fee)| usage.checked_add(fee));
+            match total {
+                None => return Checkpoint::Unpriced,
+                Some(total) if total >= u128::from(ceiling) * 1_000 => return Checkpoint::Cut,
+                Some(_) => {}
+            }
         }
         if open.money.mode != ExhaustionMode::CutStream {
             return Checkpoint::Continue;

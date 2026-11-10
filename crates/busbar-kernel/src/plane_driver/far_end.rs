@@ -244,6 +244,9 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// Host-issued confinement of a nested dispatch to one configured member.
+    /// Hook rankings and pool spill cannot widen this binding.
+    pub allowed_member: Option<String>,
     /// Deployment-level requirement independent of the plane's selected binding.
     pub connection_required: bool,
     /// Live host request context; no binding crosses the plane ABI.
@@ -271,6 +274,7 @@ pub struct UnitRoute {
 impl Default for UnitRoute {
     fn default() -> Self {
         UnitRoute {
+            allowed_member: None,
             connection_required: false,
             authorization: None,
             unit: busbar_contract::UnitKey::new(0),
@@ -677,11 +681,34 @@ impl EgressFarEnd<'_> {
             return Ok((members, Vec::new()));
         };
         if primary {
+            // The preferred set is a group, never a ranking. Encode its lexicographic priority
+            // ahead of the configured tiers so the existing picker still applies ordinary rank
+            // or SWRR inside each group, plus its normal affinity and admission rules.
+            let tiers: Vec<(bool, u32)> =
+                c.prioritize.as_ref().map_or_else(Vec::new, |preferred| {
+                    let mut tiers: Vec<_> = members
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| (!preferred.contains(&i), m.tier))
+                        .collect();
+                    tiers.sort_unstable();
+                    tiers.dedup();
+                    tiers
+                });
             let kept: Vec<Member> = members
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| c.keep.as_ref().is_none_or(|k| k.contains(i)))
-                .map(|(_, m)| m.clone())
+                .map(|(i, m)| {
+                    let mut member = m.clone();
+                    if let Some(preferred) = &c.prioritize {
+                        member.tier = tiers
+                            .binary_search(&(!preferred.contains(&i), m.tier))
+                            .expect("every member's tier was collected")
+                            as u32;
+                    }
+                    member
+                })
                 .collect();
             let order: Vec<DestinationId> = c
                 .order
@@ -712,7 +739,13 @@ impl Shape for EgressFarEnd<'_> {
         members: Vec<Member>,
         primary: bool,
     ) -> Option<(Vec<Member>, Vec<DestinationId>)> {
-        self.constrained(members, primary).ok()
+        let (mut members, mut order) = self.constrained(members, primary).ok()?;
+        if let Some(allowed) = &self.route.allowed_member {
+            members
+                .retain(|m| super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes());
+            order.retain(|id| members.iter().any(|m| m.destination == *id));
+        }
+        Some((members, order))
     }
 }
 
@@ -2349,6 +2382,11 @@ impl FarEnd for EgressFarEnd<'_> {
             members: members
                 .iter()
                 .enumerate()
+                .filter(|(_, m)| {
+                    self.route.allowed_member.as_ref().is_none_or(|allowed| {
+                        super::route::operator_name(m.name.as_bytes()) == allowed.as_bytes()
+                    })
+                })
                 .map(|(idx, m)| {
                     let facts = self.facts_of(m);
                     let standing = self
@@ -2392,7 +2430,7 @@ impl FarEnd for EgressFarEnd<'_> {
         };
         let pool = self.egress.pools.get(name)?;
         let members = self
-            .constrained(pool.admissible_members().into_owned(), primary)
+            .shape(pool.admissible_members().into_owned(), primary)
             .map(|(members, _)| members)
             .unwrap_or_default();
         Some(

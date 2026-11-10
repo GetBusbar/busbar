@@ -896,6 +896,7 @@ fn compute_layout() -> String {
     record!(s, pkind::DialectAuth, [dialect, flags, style, params]);
     record!(s, pkind::OpClass, [op, name]);
     record!(s, pkind::BillableClass, [class, family]);
+    record!(s, pkind::ClassParent, [child, parent]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
     record!(s, pkind::RecordRetention, [kind, rule]);
@@ -961,7 +962,9 @@ fn compute_layout() -> String {
             record_retentions,
             record_retentions_len,
             streaming_content_types,
-            streaming_content_types_len
+            streaming_content_types_len,
+            class_parents,
+            class_parents_len
         ]
     );
     record!(
@@ -1409,6 +1412,7 @@ fn compute_layout() -> String {
     );
     record!(s, hsvc::SignIn, [head, data, into]);
     record!(s, hsvc::UnitNestIn, [head, verb, target, body, into]);
+    record!(s, hsvc::HookChildIn, [head, body, into]);
     record!(s, hsvc::WorkOpenIn, [head, kind, record, into]);
     record!(s, hsvc::WorkFindIn, [head, reference, into]);
     record!(s, hsvc::WorkStatusIn, [head, reference]);
@@ -1485,7 +1489,8 @@ fn compute_layout() -> String {
             ticket_mint,
             ticket_take,
             work_status,
-            outbound_authorize
+            outbound_authorize,
+            hook_child
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);

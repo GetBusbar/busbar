@@ -575,6 +575,15 @@ impl Inner {
                 )));
             };
             let mut call = call.watched(budget);
+            if let Some(child) = lent
+                .downcast_ref::<busbar_contract::abi::host::hook::DecideFrameLease>()
+                .and_then(|lease| lease.frame().child())
+            {
+                let caller = plugin
+                    .service_caller()
+                    .ok_or_else(|| Answered::Broken("hook child has no caller binding".into()))?;
+                call.bind_child(&caller, child);
+            }
             let mut slot_wait = SLOT_WAIT_FIRST;
             let mut retried_free = false;
             loop {
@@ -874,12 +883,15 @@ fn refused_order<O: 'static>(s: u32, out: &O, name: &str) -> Option<String> {
     }
     let out: &dyn std::any::Any = out;
     let o = out.downcast_ref::<DecideOut>()?;
-    (o.verbs & VERB_PREFER != 0 || o.order_written > 0 || o.order_needed > 0).then(|| {
-        format!(
-            "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
+    (o.verbs & (VERB_PREFER | busbar_contract::abi::hook::VERB_PRIORITIZE) != 0
+        || o.order_written > 0
+        || o.order_needed > 0)
+        .then(|| {
+            format!(
+                "hook plugin '{name}' declared `hook.orders: false` and answered an order: its \
              `decide` must always abstain, so the order is refused"
-        )
-    })
+            )
+        })
 }
 
 fn regrown<O: 'static>(frame: &DecideFrame, s: u32, out: &O) -> Option<Arc<DecideFrame>> {

@@ -23,6 +23,7 @@ fn plane(key: &'static str, record_kinds: &'static [&'static str]) -> PlaneDecla
         card_kid_prefix: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        class_parents: &[],
         fee_units: &[],
         metric_families: &[],
         record_kinds,

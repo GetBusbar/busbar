@@ -178,6 +178,7 @@ impl GovState {
         getrandom::fill(boot_caller_ref.as_mut_slice())
             .expect("OS randomness for the per-boot caller-reference key");
         Ok(Self {
+            observation_view: RwLock::default(),
             core,
             identity_claims: claims::AsyncClaimSet::new(),
             caches,
@@ -998,6 +999,7 @@ impl GovState {
         for (bucket_id, period, group) in buckets {
             let window = budget_window(period, now);
             let mut cell = self.stored_cell_async(&bucket_id, window).await?;
+            self.observation_total_async(&bucket_id, window).await?;
             if cell.requests == 0 && cell.models.is_empty() {
                 continue;
             }
@@ -1044,7 +1046,186 @@ impl GovState {
             }))
     }
 
+    /// Consult durable observation liability before ordinary admission. No process-local
+    /// zero default is used after restart; a failed authoritative read refuses spend.
+    pub async fn check_observation_admission(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+        estimate_minor: Option<i64>,
+    ) -> Result<(), LimitBlocked> {
+        use crate::persistence::observations::ObservationStore;
+        use busbar_kernel_ledger::cost::NANOS_PER_CENT;
+        if !ObservationStore::supports(&self.core) {
+            return Ok(());
+        }
+        let store = ObservationStore::open(self.core.clone()).expect("durability support checked");
+        let (plane, pool) = split_plane_lane(pool);
+        let chain = cost
+            .chain_for(key)
+            .map_err(|g| LimitBlocked::MissingGroup(g.to_string()))?;
+        let blocked = |bucket: &crate::cost::ChainBucket<'_>, metric| LimitBlocked::Limit {
+            group: bucket.group_name.unwrap_or(bucket.bucket_id).to_string(),
+            metric,
+            window: Some(bucket.window),
+            pool: bucket.scope.map(|s| s.value.clone()),
+            downgrade_to: None,
+            retry_after: None,
+        };
+        match store.has_accounting().await {
+            Ok(false) => return Ok(()),
+            Ok(true) => {}
+            Err(_) => {
+                return Err(chain.iter().find(|b| b.applies_to_pool(pool)).map_or_else(
+                    || LimitBlocked::MissingGroup("accounting unavailable".into()),
+                    |b| blocked(b, "budget"),
+                ))
+            }
+        }
+        let ordinary = self.ordinary_budget_state(cost, key, now);
+        for bucket in chain.iter().filter(|b| b.applies_to_pool(pool)) {
+            let window = budget_window(bucket.window, now);
+            let total = store
+                .budget(&crate::plane_driver::observation_budget_id(
+                    bucket.bucket_id,
+                    window,
+                ))
+                .await
+                .map_err(|_| blocked(bucket, "budget"))?;
+            self.cache_observation_total(bucket.bucket_id, window, total.clone());
+            let liability = total
+                .liability_nanos()
+                .map_err(|_| blocked(bucket, "budget"))?;
+            let ordinary_cell = self
+                .budget
+                .read(bucket.bucket_id)
+                .get(bucket.bucket_id)
+                .filter(|cell| cell.window_start == window)
+                .cloned()
+                .unwrap_or_default();
+            let observed_tokens = Count::total(
+                total
+                    .units
+                    .values()
+                    .flat_map(|units| units.iter())
+                    .filter(|(class, _)| is_token_class(class))
+                    .map(|(_, count)| *count),
+            )
+            .map_err(|_| blocked(bucket, "tokens"))?;
+            if !observed_tokens.is_zero()
+                && bucket.tokens_cap.is_some_and(|cap| {
+                    ordinary_cell
+                        .total_tokens()
+                        .checked_add(observed_tokens)
+                        .map_or(true, |n| n >= whole_count(cap))
+                })
+            {
+                return Err(blocked(bucket, "tokens"));
+            }
+            for cap in bucket.class_caps {
+                let observed = Count::total(
+                    total
+                        .units
+                        .iter()
+                        .map(|(lane, units)| class_total(lane, units, cap.class))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|_| blocked(bucket, cap.metric.as_str()))?,
+                )
+                .map_err(|_| blocked(bucket, cap.metric.as_str()))?;
+                if !observed.is_zero()
+                    && ordinary_cell
+                        .total_tier(cap.class)
+                        .checked_add(observed)
+                        .map_or(true, |n| n >= whole_count(cap.cap))
+                {
+                    return Err(blocked(bucket, cap.metric.as_str()));
+                }
+            }
+            // Let the ordinary governor retain its existing free, estimate and downgrade
+            // semantics when this cell has no delayed accounting liability.
+            if liability == 0 {
+                continue;
+            }
+            let Some(cap) = bucket.budget_cap else {
+                continue;
+            };
+            let estimate = match bucket.budget_admission {
+                crate::config::groups::AdmissionMode::Exact => Some(0),
+                crate::config::groups::AdmissionMode::Estimate => estimate_minor,
+            };
+            let ordinary_nanos = ordinary
+                .iter()
+                .find(|b| b.bucket_id == bucket.bucket_id)
+                .and_then(|b| u128::try_from(b.spend_micros_at_current_rate).ok())
+                .and_then(|v| v.checked_mul(1_000));
+            let used = ordinary_nanos.and_then(|ordinary| liability.checked_add(ordinary));
+            let added = estimate
+                .and_then(|estimate| cost.request_fee_on(plane).checked_add(estimate))
+                .and_then(|v| u128::try_from(v).ok())
+                .and_then(|v| v.checked_mul(NANOS_PER_CENT));
+            let cap_nanos = u128::try_from(cap)
+                .ok()
+                .and_then(|v| v.checked_mul(NANOS_PER_CENT));
+            if !used
+                .zip(added)
+                .zip(cap_nanos)
+                .is_some_and(|((used, added), cap)| {
+                    used < cap && used.checked_add(added).is_some_and(|v| v <= cap)
+                })
+            {
+                return Err(blocked(bucket, "budget"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cache_observation_total(
+        &self,
+        bucket: &str,
+        window: u64,
+        total: crate::persistence::observations::BudgetTotal,
+    ) {
+        self.observation_view
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((bucket.to_owned(), window), total);
+    }
+
+    /// Synchronous hook/stream view uses the last authoritative read. Admission itself
+    /// always refreshes above; this cache never proves that an unhydrated liability is zero.
     pub fn budget_state(
+        &self,
+        cost: &crate::cost::CostModel,
+        key: &VirtualKey,
+        now: u64,
+    ) -> Vec<busbar_contract::hooks::BudgetBucketState> {
+        let mut states = self.ordinary_budget_state(cost, key, now);
+        let observed = self
+            .observation_view
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        for state in &mut states {
+            if let Some(total) = observed.get(&(state.bucket_id.clone(), state.window_start)) {
+                let liability = total
+                    .liability_nanos()
+                    .ok()
+                    .and_then(|n| i64::try_from(n.div_ceil(1_000)).ok())
+                    .unwrap_or(i64::MAX);
+                state.spend_micros_at_current_rate =
+                    state.spend_micros_at_current_rate.saturating_add(
+                        i64::try_from(total.spent_nanos.div_ceil(1_000)).unwrap_or(i64::MAX),
+                    );
+                state.remaining_micros = state
+                    .remaining_micros
+                    .map(|n| n.saturating_sub(liability).max(0));
+            }
+        }
+        states
+    }
+
+    pub(crate) fn ordinary_budget_state(
         &self,
         cost: &crate::cost::CostModel,
         key: &VirtualKey,

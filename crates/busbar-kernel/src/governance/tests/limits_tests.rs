@@ -1168,6 +1168,7 @@ static TOKEN_FAMILY_PLANE: crate::plane_driver::registry::PlaneDecl =
                     family: "duration",
                 },
             ],
+            class_parents: &[],
             fee_units: &[],
             metric_families: &[],
             record_kinds: &[],
@@ -2258,4 +2259,211 @@ async fn exact_accrual_overflow_leaves_every_chain_bucket_and_meter_unchanged() 
         busbar_contract::count::MAX
     );
     assert!(g.pending_metering_totals().1.is_zero());
+}
+
+static CLASS_PARENT_PLANE: crate::plane_driver::registry::PlaneDecl =
+    crate::plane_driver::registry::PlaneDecl {
+        declaration: crate::plane_driver::registry::PlaneDeclaration {
+            key: "class-parent-plane",
+            fallback: true,
+            config_section: "streams",
+            scope_kinds: &[],
+            subject_noun: "stream",
+            admin_noun: "stream",
+            audit_kind: "stream",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[
+                crate::plane_driver::registry::BillableClass {
+                    class: "input",
+                    family: "token",
+                },
+                crate::plane_driver::registry::BillableClass {
+                    class: "part_a",
+                    family: "token",
+                },
+                crate::plane_driver::registry::BillableClass {
+                    class: "part_b",
+                    family: "token",
+                },
+                crate::plane_driver::registry::BillableClass {
+                    class: "batch",
+                    family: "token",
+                },
+            ],
+            class_parents: &[
+                busbar_contract::plane::ClassParent {
+                    child: "part_a",
+                    parent: "batch",
+                },
+                busbar_contract::plane::ClassParent {
+                    child: "part_b",
+                    parent: "batch",
+                },
+                busbar_contract::plane::ClassParent {
+                    child: "batch",
+                    parent: "input",
+                },
+            ],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };
+
+#[test]
+fn class_parent_totals_keep_raw_ledger_and_pricing_disjoint() {
+    const CHILD: &str = "BUSBAR_CLASS_PARENT_TOTALS";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::class_parent_totals_keep_raw_ledger_and_pricing_disjoint"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&CLASS_PARENT_PLANE]);
+    let counts = whole_counts(&BTreeMap::from([
+        ("part_a".into(), 3),
+        ("part_b".into(), 4),
+    ]));
+    let mut cell = BudgetCell::default();
+    cell.accrue_raw("subject", RawRateEra::legacy(100), &counts)
+        .unwrap();
+    assert_eq!(cell.total_tier("input"), whole_count(7));
+    assert_eq!(cell.total_tier("batch"), whole_count(7));
+    assert_eq!(cell.total_tokens(), whole_count(7));
+    assert_eq!(cell.models[0].cur, counts);
+    assert_eq!(
+        MeterCounts::request(&counts).tokens_input,
+        Count::ZERO,
+        "stored columns stay raw"
+    );
+    let series: BTreeMap<_, _> = token_series("subject", &counts).into_iter().collect();
+    assert_eq!(series["input"], whole_count(7));
+    assert_eq!(series["part_a"], whole_count(3));
+    let foreign = format!("other{PLANE_LANE_SEP}subject");
+    assert_eq!(class_total(&foreign, &counts, "input"), Ok(Count::ZERO));
+    // A new era and legacy unsplit raw usage each add once to caps and the raw total.
+    cell.accrue_raw(
+        "subject",
+        RawRateEra::legacy(200),
+        &whole_counts(&BTreeMap::from([("input".into(), 2)])),
+    )
+    .unwrap();
+    assert_eq!(cell.total_tier("input"), whole_count(9));
+    assert_eq!(cell.total_tokens(), whole_count(9));
+    assert_eq!(cell.models.len(), 2);
+    let overflow = BTreeMap::from([
+        ("part_a".into(), Count::from_micros(i128::MAX)),
+        ("part_b".into(), Count::ONE),
+    ]);
+    assert!(class_total("subject", &overflow, "input").is_err());
+}
+
+#[tokio::test]
+async fn class_parent_cap_refuses_disjoint_children_at_the_host_gate() {
+    const CHILD: &str = "BUSBAR_CLASS_PARENT_CAP_GATE";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::class_parent_cap_refuses_disjoint_children_at_the_host_gate"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::plane_driver::registry::publish_planes(&[&CLASS_PARENT_PLANE]);
+    let g = gov().await;
+    let cm = model(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![
+                limit(LimitMetric::TokensInput, 7, Some(LimitWindow::Minute)),
+                limit(LimitMetric::Tokens, 8, Some(LimitWindow::Minute)),
+            ],
+        ),
+    )]);
+    let key = key("class-parent-cap", Some("g"));
+    let now = 1_700_000_000;
+    g.try_admit(&cm, &key, "", now).unwrap();
+    g.record_usage(
+        &cm,
+        &key,
+        "",
+        "subject",
+        &BTreeMap::from([("part_a".into(), 3)]),
+        now,
+    );
+    g.try_admit(&cm, &key, "", now)
+        .expect("partial child usage remains below parent cap");
+    g.record_usage(
+        &cm,
+        &key,
+        "",
+        "subject",
+        &BTreeMap::from([("part_b".into(), 4)]),
+        now,
+    );
+    assert_blocked(
+        g.try_admit(&cm, &key, "", now).unwrap_err(),
+        "g",
+        "tokens_input",
+        Some("minute"),
+        true,
+    );
 }

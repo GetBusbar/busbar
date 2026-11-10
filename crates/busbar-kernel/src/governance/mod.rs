@@ -353,7 +353,7 @@ impl BudgetCell {
         Count::total(
             self.models
                 .iter()
-                .map(|m| m.cur.get(unit).copied().unwrap_or_default()),
+                .map(|m| class_total(&m.model, &m.cur, unit).expect("validated class total")),
         )
         .expect("total raw counts exceed Count range")
     }
@@ -446,19 +446,64 @@ pub fn is_token_class(class: &str) -> bool {
         })
 }
 
+/// Project one class's raw disjoint count plus its descendants, in its owning plane only.
+/// This is a reporting/cap view: never persist or price the result as raw usage.
+pub fn class_total(
+    lane: &str,
+    counts: &std::collections::BTreeMap<String, Count>,
+    class: &str,
+) -> Result<Count, CountError> {
+    let owner = class_owner(lane);
+    Count::total(
+        counts
+            .iter()
+            .filter(|(raw, _)| {
+                if raw.as_str() == class {
+                    return true;
+                }
+                let Some(owner) = owner else {
+                    return false;
+                };
+                let mut child = raw.as_str();
+                // Bound traversal even for an internal fixture that bypassed declaration admission.
+                for _ in 0..owner.class_parents.len() {
+                    let Some(edge) = owner.class_parents.iter().find(|edge| edge.child == child)
+                    else {
+                        break;
+                    };
+                    if edge.parent == class {
+                        return true;
+                    }
+                    child = edge.parent;
+                }
+                false
+            })
+            .map(|(_, count)| *count),
+    )
+}
+
+fn class_owner(lane: &str) -> Option<&'static crate::plane_driver::registry::PlaneDecl> {
+    let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
+    crate::plane_driver::registry::plane_decls()
+        .iter()
+        .copied()
+        .find(|d| {
+            if plane.is_empty() {
+                d.fallback
+            } else {
+                d.key == plane
+            }
+        })
+}
+
+/// Per-class reporting views, including declared ancestor totals. These views overlap;
+/// total token limits and spend must continue to use the disjoint raw counts.
 pub fn token_series(
     lane: &str,
     counts: &std::collections::BTreeMap<String, Count>,
 ) -> Vec<(String, Count)> {
-    use crate::plane_driver::registry::{plane_decls, TOKEN_FAMILY};
-    let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
-    let owner = plane_decls().iter().find(|d| {
-        if plane.is_empty() {
-            d.fallback
-        } else {
-            d.key == plane
-        }
-    });
+    use crate::plane_driver::registry::TOKEN_FAMILY;
+    let owner = class_owner(lane);
     let mut series: Vec<(String, Count)> = owner
         .into_iter()
         .flat_map(|d| {
@@ -469,7 +514,7 @@ pub fn token_series(
         .map(|class| {
             (
                 class.to_string(),
-                counts.get(class).copied().unwrap_or_default(),
+                class_total(lane, counts, class).expect("validated class total"),
             )
         })
         .collect();
@@ -689,6 +734,7 @@ struct GovCaches {
 pub type CredentialIndex = HashMap<(String, String), (Arc<VirtualKey>, CredentialSecret)>;
 
 pub struct GovState {
+    observation_view: RwLock<HashMap<(String, u64), crate::persistence::observations::BudgetTotal>>,
     core: Arc<crate::persistence::facade::CoreStore>,
     identity_claims: claims::AsyncClaimSet<IdentityClaimKey>,
 

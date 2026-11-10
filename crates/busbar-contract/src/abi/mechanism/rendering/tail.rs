@@ -307,6 +307,8 @@ unsafe fn export_tail(o: &mut Out, t: &export::Tail) -> Result<(), RenderError> 
 ///
 /// As [`render`]'s, for `t`'s lists and strings.
 unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderError> {
+    let has_class_parents = t.head.size as usize
+        >= core::mem::offset_of!(plane::PlaneTail, class_parents_len) + size_of::<usize>();
     let has_streaming_content_types = t.head.size as usize
         >= core::mem::offset_of!(plane::PlaneTail, streaming_content_types_len)
             + size_of::<usize>();
@@ -359,6 +361,8 @@ unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderErro
         record_retentions_len,
         streaming_content_types,
         streaming_content_types_len,
+        class_parents,
+        class_parents_len,
     } = *t;
     o.u32(flags);
     o.u32(ingress);
@@ -525,6 +529,15 @@ unsafe fn plane_tail(o: &mut Out, t: &plane::PlaneTail) -> Result<(), RenderErro
                 streaming_content_types_len,
                 "plane.streaming_content_types",
             )?;
+        }
+        if has_class_parents {
+            let edges = list(class_parents, class_parents_len, "plane.class_parents")?;
+            o.len(edges.len(), "plane.class_parents")?;
+            for edge in edges {
+                let plane::ClassParent { child, parent } = *edge;
+                o.u32(child);
+                o.u32(parent);
+            }
         }
         Ok(())
     }

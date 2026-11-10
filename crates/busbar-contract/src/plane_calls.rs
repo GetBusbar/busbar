@@ -257,6 +257,8 @@ pub struct PlaneRegistration {
     pub scope_kinds: Vec<&'static str>,
     /// The tail's billable classes, each with its unit family.
     pub billable_classes: Vec<(&'static str, &'static str)>,
+    /// Validated generic class parent edges.
+    pub class_parents: Vec<crate::plane::ClassParent>,
     /// The tail's fee units.
     pub fee_units: Vec<&'static str>,
     /// The tail's record kinds.

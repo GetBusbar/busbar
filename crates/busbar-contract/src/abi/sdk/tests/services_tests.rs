@@ -91,6 +91,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         ticket_take: None,
         work_status: None,
         outbound_authorize: None,
+        hook_child: None,
     }
 }
 

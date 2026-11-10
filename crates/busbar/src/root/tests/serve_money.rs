@@ -1213,6 +1213,8 @@ fn session_custody_caller() -> super::PipeCaller {
 
 fn session_custody_nest(parent: u64, target: &str) -> busbar_kernel::host_services::Nest {
     busbar_kernel::host_services::Nest {
+        ancestry: Vec::new(),
+        constraints: None,
         parent,
         depth: 1,
         principal: None,
@@ -2357,3 +2359,6 @@ async fn only_the_host_line_carrier_adds_a_session_after_external_fields_are_fil
     assert_eq!(trusted.body, external.body);
     kernel.close_carrier_session(session.get());
 }
+
+#[path = "serve_hook_child.rs"]
+mod hook_child_tests;

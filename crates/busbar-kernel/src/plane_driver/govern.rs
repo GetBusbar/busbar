@@ -48,11 +48,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                 let anonymous = PrincipalId::anonymous();
                 let groups = GroupLeaseSlip::new();
                 self.approved(ctx, &anonymous, &[])
-                    .map_err(stamped::<Approve>(seal, call))
-                    .and_then(|_| {
-                        self.admitted(&admit, ctx, &anonymous, &[], &groups)
-                            .map_err(stamped::<Admit>(seal, call))
-                    })
+                    .map_err(stamped::<Approve>(seal, call))?;
+                self.steps
+                    .prepare_admission(ctx, &anonymous, &[])
+                    .await
+                    .map_err(stamped::<Admit>(seal, call))?;
+                self.admitted(&admit, ctx, &anonymous, &[], &groups)
+                    .map_err(stamped::<Admit>(seal, call))
                     .map(|_admitted| Governed {
                         admission: Admission::ZeroHold,
                         destinations: Vec::new(),
@@ -80,16 +82,19 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
                     },
                     Err(refusal) => Err(refusal),
                 };
-                screened.and_then(|destinations| {
-                    let groups = GroupLeaseSlip::new();
-                    self.admitted(&admit, ctx, &principal, &destinations, &groups)
-                        .map_err(stamped::<Admit>(seal, call))
-                        .map(|admission| Governed {
-                            admission,
-                            destinations,
-                            lease: Some(groups),
-                        })
-                })
+                let destinations = screened?;
+                self.steps
+                    .prepare_admission(ctx, &principal, &destinations)
+                    .await
+                    .map_err(stamped::<Admit>(seal, call))?;
+                let groups = GroupLeaseSlip::new();
+                self.admitted(&admit, ctx, &principal, &destinations, &groups)
+                    .map_err(stamped::<Admit>(seal, call))
+                    .map(|admission| Governed {
+                        admission,
+                        destinations,
+                        lease: Some(groups),
+                    })
             }
         }
     }

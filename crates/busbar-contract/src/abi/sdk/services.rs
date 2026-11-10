@@ -1422,6 +1422,33 @@ impl<K: KindMarker> Services<K> {
         }))
     }
 
+    /// Run the configured child of this admitted hook invocation. Poll with the same handle
+    /// and payload. The host memoizes one child even if another handle is attempted.
+    pub fn hook_child<'b>(
+        &self,
+        handle: CompletionHandle,
+        body: &[u8],
+        buf: &'b mut [u8],
+    ) -> Pend<(u64, &'b [u8])>
+    where
+        K: crate::abi::host::access::Permitted<{ op::HOOK_CHILD }>,
+    {
+        use crate::abi::host::service::{check_hook_child, HookChildIn};
+        let input = HookChildIn {
+            head: head::<HookChildIn>(op::HOOK_CHILD, handle),
+            body: blob(body, BLOB_OCTETS),
+            into: bufs(buf, &mut []),
+        };
+        let crossed = self.cross(op::HOOK_CHILD, |t| t.hook_child, &input, check_hook_child);
+        if let Ok((Outcome::Pending, ..)) = crossed {
+            return Poll::Pending;
+        }
+        Poll::Ready(crossed.and_then(|c| {
+            let out = ready(c)?;
+            Ok((out.value, &buf[..out.len as usize]))
+        }))
+    }
+
     /// `unit.nest`: run a nested unit on whatever serves the claim `verb` `target` names, as a
     pub fn unit_nest<'b>(
         &self,

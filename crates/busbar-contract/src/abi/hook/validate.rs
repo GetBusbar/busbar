@@ -7,8 +7,8 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
     ConfigureOut, DecideOut, DescribeOut, NotifyIn, PromptView, ServeOut, StatusOut, TransformOut,
-    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
-    VIEW_HAS_PROMPT,
+    VERB_ABSTAIN, VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT,
+    VERB_REWRITE, VIEW_HAS_PROMPT,
 };
 use crate::abi::mechanism::call::{OutHead, Outcome};
 use crate::abi::mechanism::check::{
@@ -21,7 +21,8 @@ pub const HARD_MAX_ORDER_SLOTS: u64 = 65536;
 pub const HARD_MAX_HEADERS_OUT_LEN: u64 = 128;
 
 /// `decide`'s exactly-one-verb bits (not [`VERB_HAS_REJECT_STATUS`], an independent presence bit).
-const DECIDE_VERB_MASK: u32 = VERB_PREFER | VERB_ABSTAIN | VERB_REJECT | VERB_RESTRICT;
+const DECIDE_VERB_MASK: u32 =
+    VERB_PREFER | VERB_PRIORITIZE | VERB_ABSTAIN | VERB_REJECT | VERB_RESTRICT;
 /// `transform`'s exactly-one-verb bits.
 const TRANSFORM_VERB_MASK: u32 = VERB_REWRITE | VERB_ABSTAIN | VERB_REJECT;
 

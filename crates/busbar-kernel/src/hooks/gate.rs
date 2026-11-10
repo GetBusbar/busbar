@@ -309,7 +309,9 @@ fn verdict_of(
             hook: hook.to_string(),
         }),
 
-        RoutingDecision::Prefer(_) | RoutingDecision::Restrict { .. } => {
+        RoutingDecision::Prefer(_)
+        | RoutingDecision::Prioritize(_)
+        | RoutingDecision::Restrict { .. } => {
             tracing::debug!(
                 hook,
                 container = subject.container,

@@ -77,6 +77,22 @@
 //! }
 //! ```
 
+//! A hook cannot use unrestricted plane nesting.
+//! ```compile_fail,E0277
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::HookKind};
+//! fn hook(host: &Host<HookKind>) {
+//!     let _ = host.services().unwrap().unit_nest(CompletionHandle::ZERO, "POST", "/arbitrary", b"", &mut [], &mut []);
+//! }
+//! ```
+//!
+//! A plane cannot use a hook invocation's constrained child operation.
+//! ```compile_fail,E0277
+//! use busbar_contract::{abi::{sdk::conn::Host, mechanism::ticket::CompletionHandle}, plugin::markers::PlaneKind};
+//! fn plane(host: &Host<PlaneKind>) {
+//!     let _ = host.services().unwrap().hook_child(CompletionHandle::ZERO, b"", &mut []);
+//! }
+//! ```
+//!
 //! Outbound custody is available only to planes.
 //! ```compile_fail,E0277
 //! use busbar_contract::{abi::{sdk::conn::Host, sdk::services::OutboundScope, mechanism::ticket::CompletionHandle}, plugin::markers::TransportKind};
@@ -186,6 +202,7 @@ services! {
     TICKET_TAKE: Unit, Active => [PlaneKind];
     WORK_STATUS: Work, Drain => [PlaneKind];
     OUTBOUND_AUTHORIZE: Unit, Active => [PlaneKind];
+    HOOK_CHILD: Unit, Active => [HookKind];
 }
 
 /// Lookup is exhaustive over the advertised service table; unknown codes fail closed.
@@ -215,6 +232,7 @@ pub enum Extension {
     ObserveRecordChain,
     CommitRecords,
     AcknowledgeSettlement,
+    UsageObservation,
 }
 
 /// Read-only inspection is scoped to the plane owning work and carrier sessions.
@@ -224,6 +242,7 @@ impl Inspect for PlaneKind {}
 /// Extensions use the same kind, phase and authority rules as table callbacks.
 pub const fn extension(op: Extension) -> Policy {
     let (name, authority, phase) = match op {
+        Extension::UsageObservation => ("usage.observation", Authority::Unit, Phase::Active),
         Extension::InspectWork => ("inspection.work", Authority::Work, Phase::Active),
         Extension::InspectCarrierSessions => (
             "inspection.carrier_sessions",

@@ -322,9 +322,12 @@ pub struct PlaneDeclaration {
     /// owned by exactly one plane; the host refuses a boot where two claim one.
     pub owned_config_sections: &'static [&'static str],
     /// The billable unit classes this plane ledgers, each with the unit family it counts in.
-    /// Pairwise disjoint: no class is a subset of another. When the plane's section carries a rate
-    /// card, the card must configure every class listed here. `&[]` for a plane that bills nothing.
+    /// Raw components are pairwise disjoint. `class_parents` derives reporting totals without
+    /// adding priced raw components. When the plane's section carries a rate card, the card must
+    /// configure every class listed here. `&[]` for a plane that bills nothing.
     pub billable_classes: &'static [BillableClass],
+    /// Generic derived reporting/cap parent edges; raw counts and prices remain disjoint.
+    pub class_parents: &'static [ClassParent],
     /// The fee units this plane counts — [`PER_REQUEST`] and/or [`PER_SESSION`]. A nonzero fee
     /// naming a unit not listed here is refused: a fee nothing counts charges nothing.
     pub fee_units: &'static [&'static str],
@@ -529,6 +532,15 @@ pub struct BillableClass {
     pub class: &'static str,
     /// The unit family the class counts in.
     pub family: &'static str,
+}
+
+/// A validated parent relation expressed in the owning plane's class vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassParent {
+    /// Raw child class.
+    pub child: &'static str,
+    /// Reporting/cap parent class.
+    pub parent: &'static str,
 }
 
 /// The token family: every class a plane declares in it counts toward a `tokens:` cap.

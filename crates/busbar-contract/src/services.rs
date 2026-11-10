@@ -110,6 +110,9 @@ pub struct Reading {
 /// Where a pended service's result goes: called once, from any thread. The mechanism stores the
 pub type Later = Box<dyn FnOnce(Stored) + Send>;
 
+/// Completion of one invocation-bound durable observation exchange.
+pub type ObservationDone = Box<dyn FnOnce(Result<Vec<u8>, &'static str>) + Send>;
+
 /// One trust key a plane names (`trust.decide`): a counterparty of the calling instance, and
 /// optionally one item there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +199,59 @@ pub trait HostServices: Send + Sync {
         _query: &crate::abi::mechanism::inspection::InspectionQuery,
     ) -> crate::abi::mechanism::inspection::InspectionResult {
         Err(crate::abi::mechanism::inspection::InspectionError::Unsupported)
+    }
+
+    /// Host-only input for a plane's observation extension. No grant is the default.
+    fn usage_observation_input(
+        &self,
+        _caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
+        _unit: Option<u64>,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Submit a plane observation under its invocation authority.
+    fn usage_observation_submit(
+        &self,
+        _caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
+        _unit: Option<u64>,
+        _observation: crate::abi::sdk::plane::observation::Observation,
+        _done: ObservationDone,
+    ) -> Result<(), &'static str> {
+        Err("usage observations unsupported")
+    }
+
+    /// Bind or create a durable observation scope under this invocation.
+    fn usage_observation_scope(
+        &self,
+        _caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
+        _unit: Option<u64>,
+        _request: crate::abi::sdk::plane::observation::ScopeRequest,
+        _done: ObservationDone,
+    ) -> Result<(), &'static str> {
+        Err("usage observation scopes unsupported")
+    }
+
+    /// Retire observation authority when the owning invocation ends.
+    fn usage_observation_retire(
+        &self,
+        _caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
+        _unit: Option<u64>,
+    ) {
+    }
+
+    /// Publication waits until an accepted observation has its durable acknowledgement.
+    fn usage_observation_output_allowed(
+        &self,
+        _caller: &Caller,
+        _ticket: crate::abi::mechanism::ticket::Ticket,
+        _unit: Option<u64>,
+    ) -> bool {
+        true
     }
 
     /// `clock.now`: the kernel's one clock. Never pends.
@@ -429,6 +485,14 @@ pub struct NestAsk {
     pub target: String,
     /// The body.
     pub body: Vec<u8>,
+}
+
+/// Host-issued authority for one admitted hook invocation. This never crosses the ABI.
+/// The loader binds it to the exact hook incarnation and ticket; the plugin receives only
+/// the bounded request operation, without a target selector or credential.
+pub trait HookChildInvocation: Send + Sync + std::fmt::Debug {
+    /// Start or replay the invocation's one child. Implementations must memoize the result.
+    fn request(&self, caller: &Caller, payload: Vec<u8>, later: Later) -> Ran;
 }
 
 pub mod disk_admission;

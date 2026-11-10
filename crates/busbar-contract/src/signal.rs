@@ -75,6 +75,9 @@ pub enum Signal {
     /// The plane's routing-cost recipe and this candidate's prices. Repeated scalar entries
     /// form the typed stream described by [`route_cost`], over the existing signal array.
     CandidateRouteCost,
+    /// True only when the owning plane attests that all prompt content is represented
+    /// as text and the host lends that complete projection. Unknown is false or absent.
+    RequestTextComplete,
 }
 
 impl Signal {
@@ -91,6 +94,7 @@ impl Signal {
         Signal::RoutingPolicy,
         Signal::ResponseTokensOut,
         Signal::CandidateRouteCost,
+        Signal::RequestTextComplete,
     ];
 
     /// The stable wire/config key for this signal — snake_case, matching the `#[serde(rename_all =
@@ -107,6 +111,7 @@ impl Signal {
             Signal::RoutingPolicy => "routing_policy",
             Signal::ResponseTokensOut => "response_tokens_out",
             Signal::CandidateRouteCost => "candidate_route_cost",
+            Signal::RequestTextComplete => "request_text_complete",
         }
     }
 

@@ -6,6 +6,7 @@ use super::hook_health_projection;
 #[tokio::test]
 async fn test_admin_v1_hook_health_best_effort() {
     let mk = |plugin: &str| busbar_kernel::config::HookCfg {
+        child_dispatch: None,
         kind: busbar_kernel::config::HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms: 5,

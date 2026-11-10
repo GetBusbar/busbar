@@ -111,6 +111,7 @@ async fn the_live_record_sink_writes_through_the_canonical_core_store() {
         card_kid_prefix: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        class_parents: &[],
         fee_units: &[],
         metric_families: &[],
         record_kinds: &["note"],
