@@ -268,13 +268,13 @@
     {
       "repo": "busbar-hook-webrequest",
       "url": "https://github.com/GetBusbar/busbar-hook-webrequest",
-      "commit": "3915c7fbc63ded43e839a86bb0ee6cbd400f0bd1",
+      "commit": "f7990e853c4a565d2db077953060a18e9640deab",
       "package": "busbar-hook-webrequest-plugin",
       "kind": "hook",
       "alias": "webrequest",
       "image": "libbusbar_hook_webrequest_plugin.so",
       "declares": "hook-webrequest/declares.json",
-      "lock_sha256": "1e7c94937c4f23b37daf1744227faf211c3646349ae99e8f08c8d20ae12b1818"
+      "lock_sha256": "61514d4a7bb97d7a2be5e3b66c97beebe362d3eb7527c1ff8744786acffafafa"
     },
     {
       "repo": "busbar-plane-a2a",

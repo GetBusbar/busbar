@@ -904,7 +904,7 @@ resolver = "2"
 members = ["."]
 
 [workspace.dependencies]
-busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "3915c7fbc63ded43e839a86bb0ee6cbd400f0bd1" }
+busbar-hook-webrequest = { git = "https://github.com/GetBusbar/busbar-hook-webrequest", rev = "f7990e853c4a565d2db077953060a18e9640deab" }
 busbar-store-sqlite = { git = "https://github.com/GetBusbar/busbar-store-sqlite", rev = "bfb9a3b13b94c58a0fb4ce379f56b2fdc8bd08cb" }
 busbar-store-postgres = { git = "https://github.com/GetBusbar/busbar-store-postgres", rev = "bd5ae91a15b3d9d62445f23c23bbfc56f39ea822" }
 # THE LLM PLANE, pinned from its own repo like every other plane. da2ab5f (stuck3-1427-journal) is

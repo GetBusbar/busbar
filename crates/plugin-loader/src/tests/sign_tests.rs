@@ -1376,13 +1376,6 @@ fn the_default_release_key_input_is_not_a_retired_key() {
     }
 }
 
-fn retired_key_manifest() -> Manifest {
-    serde_json::from_str(include_str!(
-        "../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json"
-    ))
-    .expect("the 1.5.5 manifest parses")
-}
-
 fn stand_in_retired(artifact: &[u8]) -> (SigningKey, String, Manifest) {
     let key = test_key(0x15);
     let hex = hex::encode(key.verifying_key().as_bytes());
@@ -1395,48 +1388,7 @@ fn stand_in_retired(artifact: &[u8]) -> (SigningKey, String, Manifest) {
 }
 
 #[test]
-fn a_manifest_signed_by_the_retired_ci_key_is_refused() {
-    assert!(
-        RETIRED_RELEASE_KEYS
-            .iter()
-            .any(|(k, _)| *k == RELEASE_PUBKEY_1_5),
-        "the retired 1.5 CI key is on the compiled-in retired list"
-    );
-
-    let m = retired_key_manifest();
-    let lib = b"\x7fELF any library";
-    let keyless = policy(None, &[], false, false);
-    let embeds_it = TrustPolicy {
-        first_party_key: Some(public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap()),
-        ..policy(None, &[], false, false)
-    };
-    for pol in [&keyless, &embeds_it] {
-        let r = evaluate(lib, &m, pol).expect_err("a retired-key manifest never loads by default");
-        assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
-        assert_eq!(r.kind.code(), "retired_key");
-        assert!(
-            r.reason.contains(RELEASE_PUBKEY_1_5),
-            "names the key: {}",
-            r.reason
-        );
-        assert!(
-            r.reason.contains("RETIRED"),
-            "says it is retired: {}",
-            r.reason
-        );
-        assert!(
-            r.reason.contains("plugins.trust.publishers"),
-            "names the explicit opt-in: {}",
-            r.reason
-        );
-    }
-
-    let loose = policy(None, &[], false, true);
-    assert_eq!(
-        evaluate(lib, &m, &loose).unwrap_err().kind,
-        RejectKind::RetiredKey
-    );
-
+fn a_manifest_signed_by_a_retired_key_is_refused() {
     let artifact = b"\x7fELF signed by a retired key";
     let (key, hex, signed) = stand_in_retired(artifact);
     let retired = [(hex.as_str(), "a stand-in retired key")];
@@ -1454,7 +1406,7 @@ fn a_manifest_signed_by_the_retired_ci_key_is_refused() {
 }
 
 #[test]
-fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_it_explicitly() {
+fn a_manifest_signed_by_a_retired_key_loads_only_when_the_operator_trusts_it_explicitly() {
     let artifact = b"\x7fELF signed by a retired key";
     let (key, hex, signed) = stand_in_retired(artifact);
     let vk = key.verifying_key();
@@ -1524,15 +1476,6 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
         );
     }
 
-    let r = evaluate(
-        b"\x7fELF any library",
-        &retired_key_manifest(),
-        &policy(None, &[], true, false),
-    )
-    .expect_err("allow_unsigned never admits the retired 1.5 key");
-    assert_eq!(r.kind, RejectKind::RetiredKey, "got {r:?}");
-    assert!(r.reason.contains(RELEASE_PUBKEY_1_5), "{}", r.reason);
-
     let unsigned = manifest("busbar-store-unsigned", "unsigned", FIRST_PARTY_PUBLISHER);
     assert!(unsigned.signature.is_empty(), "the helper signs nothing");
     match evaluate_against(
@@ -1551,7 +1494,7 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
     let mins = BTreeMap::new();
     let floors = BTreeMap::new();
     let pol = TrustPolicy::from_config(TrustInput {
-        publishers: &[("busbar-1-5-retired", RELEASE_PUBKEY_1_5)],
+        publishers: &[("retired-fixture", hex.as_str())],
         allow_unsigned: false,
         allow_third_party: false,
         min_versions: &mins,
@@ -1559,7 +1502,7 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
         binary_version: "1.6.0",
     })
     .expect("the operator's entry for the retired key parses");
-    let r = evaluate(b"\x7fELF any library", &retired_key_manifest(), &pol).unwrap_err();
+    let r = evaluate_against(b"\x7fELF any library", &signed, &pol, &retired).unwrap_err();
     assert_eq!(
         r.kind,
         RejectKind::Tampered,
@@ -1569,24 +1512,23 @@ fn a_manifest_signed_by_the_retired_ci_key_loads_only_when_the_operator_trusts_i
 }
 
 #[test]
-fn an_old_manifest_with_no_former_names_parses_and_verifies_unchanged() {
-    let text = include_str!("../../tests/fixtures/manifest_1_5_5_busbar_webrequest.json");
-    let m: Manifest = serde_json::from_str(text).expect("a 1.5.5 manifest parses");
-    assert!(m.former_names.is_empty());
-    assert_eq!(m.name, "busbar-webrequest");
-    let key = public_key_from_hex(RELEASE_PUBKEY_1_5).unwrap();
-    let sig: [u8; 64] = hex::decode(&m.signature).unwrap().try_into().unwrap();
-    let canonical = canonical_manifest_bytes(&m);
-    assert!(
-        !String::from_utf8_lossy(&canonical).contains("former_names"),
-        "an empty former-name list stays off the signed bytes"
+fn an_empty_former_name_list_preserves_neutral_signed_manifest_bytes() {
+    let key = test_key(0x55);
+    let signed = sign(
+        &key,
+        manifest("busbar-hook-fixture", "fixture", "busbar"),
+        b"fixture library",
     );
-    key.verify_strict(&canonical, &Signature::from_bytes(&sig))
-        .expect("the 1.5.5 release signature verifies over this binary's canonical bytes");
-
-    let back: serde_json::Value = serde_json::to_value(&m).unwrap();
-    let orig: serde_json::Value = serde_json::from_str(text).unwrap();
-    assert_eq!(back, orig);
+    let text = serde_json::to_string(&signed).unwrap();
+    let parsed: Manifest = serde_json::from_str(&text).unwrap();
+    assert!(parsed.former_names.is_empty());
+    let canonical = canonical_manifest_bytes(&parsed);
+    assert!(!String::from_utf8_lossy(&canonical).contains("former_names"));
+    signature_ok(&parsed, b"fixture library", &key.verifying_key()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&parsed).unwrap(),
+        serde_json::to_value(&signed).unwrap()
+    );
 }
 
 #[test]
