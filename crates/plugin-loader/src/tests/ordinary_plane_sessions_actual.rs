@@ -53,9 +53,9 @@ extern "C" fn open(
         };
         OPEN_URLS.lock().unwrap().push(url);
         active().lock().unwrap().insert(i.open.head.host.handle);
-        // SAFETY: exact real MCP table and frames, no lifecycle mutation or substitute instance.
+        // SAFETY: exact neutral SDK plane table and frames, no lifecycle mutation or substitute instance.
         unsafe {
-            let ops = &*crate::actual_mcp::door().ops().cast::<Ops>();
+            let ops = &*crate::neutral_plane::door().ops().cast::<Ops>();
             ops.head.open.unwrap()(instance, input, out)
         }
     })
@@ -66,14 +66,14 @@ extern "C" fn close(
     out: *mut std::ffi::c_void,
 ) -> RawOutcome {
     guarded(|| {
-        // SAFETY: exact borrowed actual MCP CLOSE frames and initialized leading ABI head.
+        // SAFETY: exact borrowed neutral SDK plane CLOSE frames and initialized leading ABI head.
         let host = unsafe {
             (*input.cast::<busbar_contract::abi::mechanism::call::InHead>())
                 .host
                 .handle
         };
         let result = unsafe {
-            let ops = &*crate::actual_mcp::door().ops().cast::<Ops>();
+            let ops = &*crate::neutral_plane::door().ops().cast::<Ops>();
             ops.head.close.unwrap()(instance, input, out)
         };
         if result.outcome() == Outcome::Ready {
@@ -148,8 +148,8 @@ extern "C" fn cancel(
 extern "C" fn door() -> &'static Door {
     static AT: OnceLock<usize> = OnceLock::new();
     let at = *AT.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
-        // SAFETY: actual retained MCP descriptor; only hostile raw session boundary slots replaced.
+        let real = *crate::neutral_plane::door();
+        // SAFETY: actual SDK witness descriptor; only hostile raw session boundary slots replaced.
         let ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops = Box::leak(Box::new(Ops {
             on_piece: Some(piece),
@@ -184,7 +184,7 @@ fn plugin(d: &Dispatcher) -> Plugin<Plane> {
         },
     )
     .unwrap();
-    open_door(&p, b"{}", b"{}", None).expect("actual MCP empty component opens");
+    open_door(&p, b"{}", b"{}", None).expect("neutral SDK plane empty component opens");
     p
 }
 fn frame(unit: u64) -> Frame<OnPieceIn, OnPieceOut> {
@@ -313,7 +313,7 @@ fn cancelling_no_session_ticket_cannot_end_an_admitted_unit() {
 fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
     let _serial = SERIAL.lock().unwrap();
     OPEN_URLS.lock().unwrap().clear();
-    for url in [None, Some("https://public.example/mcp")] {
+    for url in [None, Some("https://public.example/witness")] {
         let d = Dispatcher::new(
             DispatchConfig::default(),
             busbar_contract::services::test_caller_binding(),
@@ -329,12 +329,13 @@ fn open_passes_an_absent_public_url_as_none_and_a_present_url_verbatim() {
             },
         )
         .unwrap();
-        open_door(&p, b"{}", b"{}", url).expect("actual MCP opens with its public URL posture");
+        open_door(&p, b"{}", b"{}", url)
+            .expect("neutral SDK plane opens with its public URL posture");
         finish(d, p);
     }
     assert_eq!(
         *OPEN_URLS.lock().unwrap(),
-        vec![None, Some("https://public.example/mcp".to_string())]
+        vec![None, Some("https://public.example/witness".to_string())]
     );
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Adversarial completion-ACK metadata at an actual MCP descriptor's raw DRIVE
+//! Adversarial completion-ACK metadata at an neutral SDK plane descriptor's raw DRIVE
 
 use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::{
@@ -62,9 +62,9 @@ fn states() -> &'static Mutex<HashMap<u64, State>> {
     STATES.get_or_init(Default::default)
 }
 fn actual_ops() -> Ops {
-    // SAFETY: actual_mcp retains its validated descriptor and live image.
+    // SAFETY: neutral_plane retains its validated descriptor and live image.
     unsafe {
-        crate::actual_mcp::door()
+        crate::neutral_plane::door()
             .ops()
             .cast::<Ops>()
             .read_unaligned()
@@ -80,8 +80,8 @@ extern "C" fn open(
     output: *mut std::ffi::c_void,
 ) -> RawOutcome {
     guarded(|| {
-        let real = actual_ops().head.open.expect("actual MCP OPEN");
-        // SAFETY: forwarding the loader's exact valid PlaneOpen frames to actual MCP.
+        let real = actual_ops().head.open.expect("neutral SDK plane OPEN");
+        // SAFETY: forwarding the loader's exact valid PlaneOpen frames to neutral SDK plane.
         let result = unsafe { real(instance, input, output) };
         if result.outcome() != Outcome::Ready {
             return result;
@@ -291,7 +291,12 @@ extern "C" fn release(
         }
         drop(all);
         // SAFETY: unchanged RELEASE forwards the actual image's lease and exact frames.
-        unsafe { actual_ops().head.release.expect("actual MCP RELEASE")(instance, input, output) }
+        unsafe {
+            actual_ops()
+                .head
+                .release
+                .expect("neutral SDK plane RELEASE")(instance, input, output)
+        }
     })
 }
 extern "C" fn project(
@@ -310,7 +315,7 @@ extern "C" fn project(
         let all = states().lock().unwrap();
         let state = all
             .get(&input.head.host.handle)
-            .expect("actual MCP OPEN captured its services");
+            .expect("neutral SDK plane OPEN captured its services");
         let handle = CompletionHandle {
             ticket: busbar_contract::abi::mechanism::ticket::Ticket::NONE,
             seq: 0,
@@ -355,7 +360,7 @@ extern "C" fn cancel(
         let mut all = states().lock().unwrap();
         let state = all
             .get_mut(&input.cancel.head.host.handle)
-            .expect("bound actual MCP instance");
+            .expect("bound neutral SDK plane instance");
         if state.defect == Defect::Session {
             output.cancel.head.outcome = RawOutcome::of(Outcome::Ready);
             output.cancel.disposition = busbar_contract::abi::plane::CANCEL_ABORTED;
@@ -399,8 +404,9 @@ extern "C" fn close(
             return RawOutcome::of(Outcome::Fault);
         }
         // SAFETY: no boundary-owned answer remains lent; exact actual instance and CLOSE frames.
-        let result =
-            unsafe { actual_ops().head.close.expect("actual MCP CLOSE")(instance, input, output) };
+        let result = unsafe {
+            actual_ops().head.close.expect("neutral SDK plane CLOSE")(instance, input, output)
+        };
         if result.outcome() == Outcome::Ready {
             states().lock().unwrap().remove(&host);
         }
@@ -410,7 +416,7 @@ extern "C" fn close(
 extern "C" fn door() -> &'static Door {
     static DOOR: OnceLock<usize> = OnceLock::new();
     let addr = DOOR.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
+        let real = *crate::neutral_plane::door();
         let ops = actual_ops();
         let head = OpsHead {
             open: Some(open),
@@ -705,7 +711,7 @@ fn close_actual(plugin: &crate::dispatch::Plugin<Plane>, host: u64) {
     assert_eq!(
         plugin.call(slot::CLOSE, &mut frame).outcome,
         Outcome::Ready,
-        "the actual MCP instance closes after its tickets and answer leases retire"
+        "the neutral SDK plane instance closes after its tickets and answer leases retire"
     );
     assert!(
         !states().lock().unwrap().contains_key(&host),
@@ -745,7 +751,8 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
             provider.clone(),
             busbar_contract::services::test_caller_binding(),
         );
-        let row = LinkedRow::of(door).expect("actual MCP descriptor plus hostile ABI metadata");
+        let row =
+            LinkedRow::of(door).expect("neutral SDK plane descriptor plus hostile ABI metadata");
         let plugin = load_linked::<Plane>(
             &row,
             Bind {
@@ -757,7 +764,7 @@ fn automatic_driver_checks_ack_before_releasing_its_answer_lease() {
             },
         )
         .unwrap();
-        open_door(&plugin, b"{}", b"{}", None).expect("actual MCP lifecycle opens");
+        open_door(&plugin, b"{}", b"{}", None).expect("neutral SDK plane lifecycle opens");
         let host = plugin.inner.ctx().handle;
         let driver = dispatcher.driver(&plugin, 0).unwrap();
         crate::dispatch::ticket::host_wake(plugin.inner.ctx(), driver);
@@ -1086,7 +1093,7 @@ fn project_attributes_the_actual_host_service_call_to_its_unit() {
         },
     )
     .unwrap();
-    open_door(&plugin, b"{}", b"{}", None).expect("actual MCP lifecycle opens");
+    open_door(&plugin, b"{}", b"{}", None).expect("neutral SDK plane lifecycle opens");
     let host = plugin.inner.ctx().handle;
     for unit in [73, 0] {
         // SAFETY: plain ABI integers and pointer/length fields admit zero initialization.

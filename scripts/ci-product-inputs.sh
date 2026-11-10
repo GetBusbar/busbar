@@ -64,7 +64,6 @@ busbar-transport-tcp|BUSBAR_TEST_TCP_CDYLIB
 busbar-transport-http|BUSBAR_TEST_HTTP_CDYLIB
 busbar-transport-ws|BUSBAR_TEST_WS_CDYLIB
 busbar-plane-a2a|BUSBAR_TEST_A2A_CDYLIB
-busbar-plane-mcp|BUSBAR_TEST_MCP_CDYLIB
 busbar-plane-decisions|BUSBAR_TEST_DECISIONS_CDYLIB
 busbar-plane-llm|BUSBAR_GOVERNANCE_TEST_PLANE_PLUGIN
 busbar-auth-oidc|BUSBAR_TEST_OIDC_CDYLIB BUSBAR_AUTH_TEST_OIDC_PLUGIN

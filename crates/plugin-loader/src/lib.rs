@@ -238,7 +238,7 @@ mod dispatch_test_plugin;
 mod dispatch_tests;
 
 #[cfg(test)]
-use actual_mcp as plane_door_plugin;
+use neutral_plane as plane_door_plugin;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
@@ -311,13 +311,13 @@ mod conformance_ready_result_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/actual_mcp.rs"]
-mod actual_mcp;
+#[path = "tests/neutral_plane.rs"]
+mod neutral_plane;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
-#[path = "tests/actual_mcp_identity_tests.rs"]
-mod actual_mcp_identity_tests;
+#[path = "tests/neutral_plane_identity_tests.rs"]
+mod neutral_plane_identity_tests;
 
 #[cfg(test)]
 #[allow(unsafe_code)]

@@ -394,6 +394,7 @@ class Qualification:
                 ('root-fmt', ['cargo', 'fmt', '--all', '--check']),
                 ('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check']),
                 ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast']),
+                ('loader-witnesses', ['cargo', 'build', '--locked', '-p', 'busbar-plugin-loader', '--examples']),
                 ('root-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', *nextest]),
                 ('default-runtime', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', *nextest]),
                 ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
