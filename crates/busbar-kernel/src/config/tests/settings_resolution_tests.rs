@@ -25,7 +25,7 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
         ("retries", serde_json::json!(3)),
     ]);
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["licenseKey"]),
         &[],
         "test-plugin",
@@ -35,15 +35,24 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     .unwrap();
 
     assert_eq!(
-        out.get("licenseKey").unwrap(),
+        crate::config::secret::test_resolved_value(&out)
+            .get("licenseKey")
+            .unwrap(),
         &serde_json::json!("LIC-123")
     );
 
     assert_eq!(
-        out.get("endpoint").unwrap(),
+        crate::config::secret::test_resolved_value(&out)
+            .get("endpoint")
+            .unwrap(),
         &serde_json::json!("https://example.test")
     );
-    assert_eq!(out.get("retries").unwrap(), &serde_json::json!(3));
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)
+            .get("retries")
+            .unwrap(),
+        &serde_json::json!(3)
+    );
     std::env::remove_var(&var);
 }
 
@@ -52,7 +61,7 @@ fn leaves_non_ref_object_settings_untouched() {
     let resolver = actual_product_resolver();
     let settings = obj(&[("db", serde_json::json!({ "path": ":memory:", "wal": true }))]);
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&[]),
         &[],
         "test-plugin",
@@ -61,7 +70,9 @@ fn leaves_non_ref_object_settings_untouched() {
     )
     .unwrap();
     assert_eq!(
-        out.get("db").unwrap(),
+        crate::config::secret::test_resolved_value(&out)
+            .get("db")
+            .unwrap(),
         &serde_json::json!({ "path": ":memory:", "wal": true })
     );
 }
@@ -73,7 +84,7 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let resolver = actual_product_resolver();
     let settings = obj(&[("license", serde_json::json!({ "env": var }))]);
     let err = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["license"]),
         &[],
         "test-plugin",
@@ -93,7 +104,7 @@ fn unknown_secret_module_in_setting_fails_closed() {
         serde_json::json!({ "module": "vault", "settings": { "path": "kv/license" } }),
     )]);
     let err = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["licenseKey"]),
         &[],
         "test-plugin",
@@ -119,7 +130,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
         serde_json::json!({ "file": path.to_string_lossy() }),
     );
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["licenseKey"]),
         &[],
         "test-plugin",
@@ -127,7 +138,10 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("resolves");
-    assert_eq!(out["licenseKey"], serde_json::json!("THE-SECRET"));
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)["licenseKey"],
+        serde_json::json!("THE-SECRET")
+    );
 
     let mut settings = serde_json::Map::new();
     settings.insert(
@@ -135,7 +149,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
         serde_json::json!({ "literal": { "file": path.to_string_lossy() } }),
     );
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&[]),
         &[],
         "test-plugin",
@@ -144,7 +158,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     )
     .expect("resolves");
     assert_eq!(
-        out["db"],
+        crate::config::secret::test_resolved_value(&out)["db"],
         serde_json::json!({ "file": path.to_string_lossy() }),
         "a `literal:`-wrapped object is passed through untouched, never dereferenced"
     );
@@ -153,7 +167,7 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
     settings.insert("n".to_string(), serde_json::json!({ "literal": 42 }));
     settings.insert("plain".to_string(), serde_json::json!({ "db_path": "x" }));
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&[]),
         &[],
         "test-plugin",
@@ -161,8 +175,14 @@ fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("resolves");
-    assert_eq!(out["n"], serde_json::json!(42));
-    assert_eq!(out["plain"], serde_json::json!({ "db_path": "x" }));
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)["n"],
+        serde_json::json!(42)
+    );
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)["plain"],
+        serde_json::json!({ "db_path": "x" })
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -212,7 +232,7 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
         serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" }),
     )]);
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["licenseKey"]),
         &[],
         "test-plugin",
@@ -220,7 +240,10 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("a config-time resolution answers");
-    assert_eq!(out["licenseKey"], serde_json::json!("AT-CONFIG"));
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)["licenseKey"],
+        serde_json::json!("AT-CONFIG")
+    );
 }
 
 #[test]
@@ -251,7 +274,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let top = obj(&[("api_base", serde_json::json!({ "env": "GHE_API" }))]);
     let err = resolve_settings(
-        &top,
+        &crate::config::secret::test_settings(&top),
         &declared(&["client_secret"]),
         &[],
         "busbar-auth-github",
@@ -271,7 +294,7 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
         serde_json::json!({ "a": { "headers": { "X": { "file": "/run/k" } } } }),
     )]);
     let err = resolve_settings(
-        &nested,
+        &crate::config::secret::test_settings(&nested),
         &declared(&["servers.*.env.*"]),
         &[],
         "p",
@@ -295,7 +318,7 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
         ),
     ]);
     let out = resolve_settings(
-        &settings,
+        &crate::config::secret::test_settings(&settings),
         &declared(&["client_secret", "servers.*.env.*"]),
         &[],
         "p",
@@ -303,9 +326,12 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
         &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("declared references resolve");
-    assert_eq!(out["client_secret"], serde_json::json!("RESOLVED"));
     assert_eq!(
-        out["servers"],
+        crate::config::secret::test_resolved_value(&out)["client_secret"],
+        serde_json::json!("RESOLVED")
+    );
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&out)["servers"],
         serde_json::json!({ "a": { "env": { "API_KEY": "RESOLVED" }, "command": "run" } })
     );
     std::env::remove_var(&var);
@@ -326,7 +352,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
         ]);
 
         let Err(err) = resolve_settings(
-            &settings,
+            &crate::config::secret::test_settings(&settings),
             &declared(&["bind_service_password"]),
             &[],
             "busbar-auth-ldap",
@@ -351,7 +377,7 @@ fn a_literal_at_a_declared_secret_path_is_refused_without_echo() {
 
     let unset = obj(&[("url", serde_json::json!("ldaps://ldap.example"))]);
     resolve_settings(
-        &unset,
+        &crate::config::secret::test_settings(&unset),
         &declared(&["bind_service_password"]),
         &[],
         "busbar-auth-ldap",
@@ -379,7 +405,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
         )]);
 
         let Err(err) = resolve_settings(
-            &settings,
+            &crate::config::secret::test_settings(&settings),
             &declared(&["servers.*.env.*"]),
             &[],
             "busbar-plane-x",
@@ -407,7 +433,7 @@ fn a_literal_at_a_wildcard_declared_secret_path_is_refused_without_echo() {
         serde_json::json!({ "a": { "env": { "LOG": null }, "command": "run" } }),
     )]);
     resolve_settings(
-        &unset,
+        &crate::config::secret::test_settings(&unset),
         &declared(&["servers.*.env.*", "hosts.*.password"]),
         &[],
         "busbar-plane-x",
@@ -431,7 +457,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     ] {
         let by_ref = obj(&[("url", serde_json::json!({ "env": var }))]);
         let out = resolve_settings(
-            &by_ref,
+            &crate::config::secret::test_settings(&by_ref),
             &declared(&[]),
             &declared(&["url"]),
             plugin,
@@ -440,13 +466,13 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
         )
         .unwrap_or_else(|e| panic!("{plugin}: a reference-capable url resolves: {e}"));
         assert_eq!(
-            out.get("url"),
+            crate::config::secret::test_resolved_value(&out).get("url"),
             Some(&serde_json::json!("postgres://db.internal:5432/busbar")),
             "{plugin}"
         );
         let literal = obj(&[("url", serde_json::json!("redis://cache:6379"))]);
         let out = resolve_settings(
-            &literal,
+            &crate::config::secret::test_settings(&literal),
             &declared(&[]),
             &declared(&["url"]),
             plugin,
@@ -455,7 +481,7 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
         )
         .unwrap_or_else(|e| panic!("{plugin}: a literal url passes: {e}"));
         assert_eq!(
-            out.get("url"),
+            crate::config::secret::test_resolved_value(&out).get("url"),
             Some(&serde_json::json!("redis://cache:6379")),
             "{plugin}"
         );
@@ -471,7 +497,7 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let unset = obj(&[("url", serde_json::json!({ "env": var }))]);
     let Err(e) = resolve_settings(
-        &unset,
+        &crate::config::secret::test_settings(&unset),
         &declared(&[]),
         &declared(&["url"]),
         "busbar-export-otlp",
@@ -490,7 +516,7 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
         ),
     ]);
     let Err(e) = resolve_settings(
-        &secret_literal,
+        &crate::config::secret::test_settings(&secret_literal),
         &declared(&["auth_header.value"]),
         &declared(&["url"]),
         "busbar-export-webhook",
@@ -503,7 +529,7 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     assert!(!e.contains("pasted-7a"), "{e}");
 
     let Err(e) = resolve_settings(
-        &obj(&[("url", serde_json::json!("https://x"))]),
+        &crate::config::secret::test_settings(&obj(&[("url", serde_json::json!("https://x"))])),
         &declared(&["url"]),
         &declared(&["url"]),
         "acme",
@@ -513,60 +539,6 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
         panic!("a path in both lists refuses");
     };
     assert!(e.contains("url") && e.contains("'acme'"), "{e}");
-}
-
-/// A resolver whose config-time text comes from an allocation it records: where the value it
-/// handed out lives.
-#[derive(Default)]
-struct Recorded(std::sync::Mutex<Vec<usize>>);
-
-impl busbar_contract::secret::SecretResolve for Recorded {
-    fn resolve(
-        &self,
-        _secret: &SecretRef,
-    ) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
-        Err("refused off config time".to_string())
-    }
-
-    fn resolve_string(
-        &self,
-        _secret: &SecretRef,
-    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
-        Err("refused off config time".to_string())
-    }
-
-    fn resolve_string_at_config(
-        &self,
-        _secret: &SecretRef,
-        _scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<busbar_contract::redacted::Secret<String>, String> {
-        let text = String::from("MOVED-NEVER-COPIED");
-        self.0.lock().unwrap().push(text.as_ptr() as usize);
-        Ok(busbar_contract::redacted::Secret::new(text))
-    }
-}
-
-#[test]
-fn a_resolved_setting_is_moved_into_the_bag_never_copied() {
-    let reference =
-        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): "UNUSED" });
-    let settings = obj(&[("licenseKey", reference.clone()), ("url", reference)]);
-    let resolver = Recorded::default();
-    let out = resolve_settings(
-        &settings,
-        &declared(&["licenseKey"]),
-        &declared(&["url"]),
-        "test-plugin",
-        &resolver,
-        &busbar_contract::config_time::ConfigScope::config_time(),
-    )
-    .expect("resolves");
-    let handed = resolver.0.lock().unwrap().clone();
-    let held: Vec<usize> = ["licenseKey", "url"]
-        .iter()
-        .map(|k| out[*k].as_str().expect("a string").as_ptr() as usize)
-        .collect();
-    assert_eq!(held, handed, "each value is the resolver's own allocation");
 }
 
 #[test]

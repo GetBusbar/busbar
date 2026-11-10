@@ -64,9 +64,11 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         actual_exports::otlp::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher()).with_conns(
-            crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
-        );
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
+            .with_conns(crate::dispatch::test_admissions(Arc::new(
+                crate::needs_restated::Inert,
+            )));
         let module = row;
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean, _) = rows
@@ -103,9 +105,11 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
         actual_exports::webhook::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher()).with_conns(
-            crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
-        );
+        let rows = ExportRows::new(&registry, dispatcher())
+            .with_disk(crate::dispatch::test_disk_authority())
+            .with_conns(crate::dispatch::test_admissions(Arc::new(
+                crate::needs_restated::Inert,
+            )));
         let module = row;
         let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
         let (streams, clean, _) = rows
@@ -149,6 +153,7 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
         )])
         .expect("the linked sink admits");
     let rows = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
         .with_logs(&logs)
         .with_conns(crate::dispatch::test_admissions(Arc::new(
             crate::needs_restated::Refusing,
@@ -198,9 +203,11 @@ fn check_runs_when_the_first_instance_does_not_open() {
             actual_exports::prometheus::door,
         )])
         .expect("the linked door admits the sink");
-    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
-        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
-    );
+    let rows = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
+        .with_conns(crate::dispatch::test_admissions(Arc::new(
+            crate::needs_restated::Inert,
+        )));
     let findings = rows
         .check(
             row,
@@ -227,7 +234,8 @@ fn check_runs_when_the_first_instance_does_not_open() {
 #[test]
 fn a_module_no_row_answers_is_not_on_the_axis() {
     let registry = PluginRegistry::empty();
-    let rows = ExportRows::new(&registry, dispatcher());
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_disk(crate::dispatch::test_disk_authority());
     assert!(rows
         .probe(
             "nothing",
@@ -253,9 +261,11 @@ fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
         .expect("the linked witness admits");
-    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
-        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
-    );
+    let rows = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
+        .with_conns(crate::dispatch::test_admissions(Arc::new(
+            crate::needs_restated::Inert,
+        )));
     let refused = serde_json::json!({ "ready": "err:the target is refused" });
     let before = READIES.load(Ordering::SeqCst);
     let _ = rows.check(
@@ -297,9 +307,11 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
         .expect("the linked witness admits");
-    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
-        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
-    );
+    let rows = ExportRows::new(&registry, dispatcher())
+        .with_disk(crate::dispatch::test_disk_authority())
+        .with_conns(crate::dispatch::test_admissions(Arc::new(
+            crate::needs_restated::Inert,
+        )));
     let row = rows.row(NAME).expect("an export row");
     let bound = |stated: Option<u64>| {
         let mut settings = serde_json::json!({ "ready": "fine" });
@@ -337,7 +349,8 @@ fn an_export_opening_requires_the_host_settings_seal() {
     let rows = ExportRows::new(
         &registry,
         Arc::new(Dispatcher::new_unlent(DispatchConfig::default())),
-    );
+    )
+    .with_disk(crate::dispatch::test_disk_authority());
     let settings = crate::export_axis::test_opening(
         &serde_json::json!({"ready":"fine","password":"unlent-canary"}),
     );
@@ -353,7 +366,8 @@ fn an_export_opening_requires_the_host_settings_seal() {
 fn a_check_on_a_row_that_will_not_load_answers_why() {
     let row = "export-unloadable";
     let registry = both_ways::dropped(row, manifest(row), b"not a library");
-    let rows = ExportRows::new(&registry, dispatcher());
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_disk(crate::dispatch::test_disk_authority());
     let findings = rows
         .check(
             row,
@@ -385,9 +399,30 @@ fn a_linked_row_of_another_kind_is_not_a_linked_export() {
             pl_src_1_unopened_door,
         )])
         .expect("the auth row registers");
-    let rows = ExportRows::new(&registry, dispatcher());
+    let rows =
+        ExportRows::new(&registry, dispatcher()).with_disk(crate::dispatch::test_disk_authority());
     assert!(
         !rows.linked("pl-src-1-not-export"),
         "a linked auth row must not answer as a linked export"
     );
+}
+
+#[test]
+fn declared_disk_destinations_require_kernel_authority_before_open() {
+    use crate::dispatch::ready::ready_plugins::export::{door, NAME};
+    let mut stated = manifest(NAME);
+    stated.declares.destinations = vec!["output".into()];
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(stated, door)])
+        .expect("the kind witness admits");
+    let rows = ExportRows::new(&registry, dispatcher());
+    let settings = crate::export_axis::test_opening(&serde_json::json!({
+        "ready":"fine", "output":"unadmitted-filesystem-canary"
+    }));
+    let error = rows
+        .open(NAME, "export.unadmitted-disk", &settings)
+        .err()
+        .expect("missing authority refuses before plugin open");
+    assert!(error.contains("kernel admission authority"), "{error}");
+    assert!(!error.contains("unadmitted-filesystem-canary"), "{error}");
 }

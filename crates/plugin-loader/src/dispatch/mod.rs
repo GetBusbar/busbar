@@ -394,6 +394,13 @@ pub fn now_ns() -> u64 {
 }
 
 #[cfg(test)]
+pub(crate) fn test_disk_authority() -> busbar_contract::services::disk_admission::DiskAuthority {
+    busbar_contract::services::disk_admission::DiskAuthority::issue(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn test_admissions(
     table: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
 ) -> busbar_contract::conn::admissions::AdmissionAuthority {

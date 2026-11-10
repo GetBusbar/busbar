@@ -19,10 +19,10 @@ const EXTRA_STRATEGY: &str = "operator-order";
 
 #[test]
 fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separate() {
-    let settings = serde_json::Map::new();
+    let settings = busbar_contract::plugin_settings::Settings::default();
     type Identity<'a> = (
         &'a str,
-        &'a serde_json::Map<String, serde_json::Value>,
+        &'a busbar_contract::plugin_settings::Settings,
         std::time::Duration,
     );
     let identity: Identity<'_> = (
@@ -79,7 +79,7 @@ fn inbound_feedback_reaches_the_policy_instance_and_reload_keeps_old_state_separ
         (identity.0, identity.1, std::time::Duration::from_secs(2)),
     ))
     .is_none());
-    let changed = serde_json::from_value::<serde_json::Map<String, serde_json::Value>>(
+    let changed = serde_json::from_value::<busbar_contract::plugin_settings::Settings>(
         serde_json::json!({"url":"changed"}),
     )
     .unwrap();
@@ -111,7 +111,10 @@ fn plugin_strategy_word_survives_parse_and_uses_the_admitted_axis() {
         |module, label, settings, budget| {
             assert_eq!(module, EXTRA_STRATEGY);
             assert_eq!(label, EXTRA_STRATEGY);
-            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            assert_eq!(
+                &crate::config::secret::test_resolved_value(settings),
+                &serde_json::json!({"policy":EXTRA_STRATEGY})
+            );
             assert_eq!(budget, std::time::Duration::from_secs(1));
             Ok(label.to_owned())
         },
@@ -170,7 +173,10 @@ fn plugin_strategy_open_failure_refuses_pool_construction() {
         |module, label, settings, _| {
             assert_eq!(module, EXTRA_STRATEGY);
             assert_eq!(label, EXTRA_STRATEGY);
-            assert_eq!(settings, &serde_json::json!({"policy":EXTRA_STRATEGY}));
+            assert_eq!(
+                &crate::config::secret::test_resolved_value(settings),
+                &serde_json::json!({"policy":EXTRA_STRATEGY})
+            );
             Err("strategy constructor refused".into())
         },
     )
@@ -196,7 +202,7 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
         serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" }),
     );
     let mut hook = base_gate();
-    hook.settings = settings;
+    hook.settings = settings.into();
     let mut hooks = HashMap::new();
     hooks.insert("compliance-gate".to_string(), hook);
     let err = env
@@ -208,9 +214,13 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     );
 
     let mut plain = base_gate();
-    plain
+    plain.settings = plain
         .settings
-        .insert("mode".to_string(), serde_json::json!("strict"));
+        .edit(
+            &crate::config::secret::test_settings_value(&serde_json::json!({"mode":"strict"})),
+            &[],
+        )
+        .unwrap();
     let mut ok_hooks = HashMap::new();
     ok_hooks.insert("plain-gate".to_string(), plain);
     assert!(env.preresolve_hook_secrets(&ok_hooks).is_ok());
@@ -239,7 +249,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
 
     let mut broken_tap = base_gate();
     broken_tap.kind = HookKind::Tap;
-    broken_tap.settings = settings.clone();
+    broken_tap.settings = settings.clone().into();
     let tap_hooks = registry("broken-tap", broken_tap);
     assert!(
         preopen_definitions(&tap_hooks, |_| true, open, |_, _, ()| Ok(())).is_ok(),
@@ -247,7 +257,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     );
 
     let mut broken_gate = base_gate();
-    broken_gate.settings = settings;
+    broken_gate.settings = settings.into();
     let gate_hooks = registry("broken-gate", broken_gate);
     let err = preopen_definitions(&gate_hooks, |_| true, open, |_, _, ()| Ok(()))
         .expect_err("a gate whose settings/open() fails must abort boot/reload CLOSED");
@@ -302,7 +312,7 @@ fn base_gate() -> HookCfg {
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        settings: serde_json::Map::new(),
+        settings: serde_json::Map::new().into(),
         on_empty: None,
         global: false,
         default: false,
@@ -1208,7 +1218,8 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     })
     .as_object()
     .unwrap()
-    .clone();
+    .clone()
+    .into();
 
     let in_sync = serde_json::json!({
         "api_token": "hunter2-resolved",
@@ -1297,7 +1308,8 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     })
     .as_object()
     .unwrap()
-    .clone();
+    .clone()
+    .into();
 
     for echoed in [
         serde_json::json!({ "api_token": "the-real-secret", "licenseKey": "lic-1", "ratio": 0.4 }),
@@ -1352,10 +1364,15 @@ fn parking_secret_env(park: std::time::Duration) -> HookEnv {
 
 fn hook_with_plugin_secret() -> HookCfg {
     let mut hook = base_gate();
-    hook.settings.insert(
-        "licenseKey".to_string(),
-        serde_json::json!({ "module": "vault", "settings": { "path": "kv/busbar" } }),
-    );
+    hook.settings = hook
+        .settings
+        .edit(
+            &crate::config::secret::test_settings_value(&serde_json::json!({
+                "licenseKey": { "module": "vault", "settings": { "path": "kv/busbar" } }
+            })),
+            &[],
+        )
+        .unwrap();
     hook
 }
 

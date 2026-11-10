@@ -1201,8 +1201,13 @@ fn principal_domain_metadata_is_strict_non_secret_and_only_tracks_identity_field
         {"pointer":"/client_id", "required":false}
     ]});
     let settings = json!({"issuer":"exact issuer", "audience":"exact audience", "ttl":5});
-    let fingerprint =
-        |s: &serde_json::Value| super::domain_fingerprint(&schema, s, &["client_secret".into()]);
+    let fingerprint = |s: &serde_json::Value| {
+        super::domain_fingerprint(
+            &schema,
+            &crate::config::secret::test_settings_value(s),
+            &["client_secret".into()],
+        )
+    };
     let before = fingerprint(&settings).unwrap();
     let mut next = settings.clone();
     next["ttl"] = json!(60);
@@ -1230,12 +1235,17 @@ fn principal_domain_metadata_is_strict_non_secret_and_only_tracks_identity_field
     ] {
         assert!(super::domain_fingerprint(
             &json!({super::DOMAIN_ANNOTATION: declaration}),
-            &settings,
+            &crate::config::secret::test_settings_value(&settings),
             &[]
         )
         .is_err());
     }
-    assert!(super::domain_fingerprint(&json!({}), &settings, &[]).is_err());
+    assert!(super::domain_fingerprint(
+        &json!({}),
+        &crate::config::secret::test_settings_value(&settings),
+        &[]
+    )
+    .is_err());
     let mut reordered = schema.clone();
     reordered[super::DOMAIN_ANNOTATION]
         .as_array_mut()
@@ -1243,7 +1253,12 @@ fn principal_domain_metadata_is_strict_non_secret_and_only_tracks_identity_field
         .reverse();
     assert_ne!(
         before,
-        super::domain_fingerprint(&reordered, &settings, &[]).unwrap()
+        super::domain_fingerprint(
+            &reordered,
+            &crate::config::secret::test_settings_value(&settings),
+            &[]
+        )
+        .unwrap()
     );
     for (pointer, secret) in [
         ("/issuer", "issuer"),
@@ -1253,7 +1268,12 @@ fn principal_domain_metadata_is_strict_non_secret_and_only_tracks_identity_field
         ("/a~1b/~0name", "a/b.~name"),
     ] {
         let declaration = json!({super::DOMAIN_ANNOTATION:[{"pointer":pointer,"required":false}]});
-        assert!(super::domain_fingerprint(&declaration, &settings, &[secret.into()]).is_err());
+        assert!(super::domain_fingerprint(
+            &declaration,
+            &crate::config::secret::test_settings_value(&settings),
+            &[secret.into()]
+        )
+        .is_err());
     }
     let mut unresolved = settings.clone();
     unresolved["issuer"] = json!({"env":"ISSUER"});
@@ -1294,8 +1314,18 @@ fn principal_digests_canonicalize_nested_objects_even_with_preserve_order() {
     let schema =
         serde_json::json!({super::DOMAIN_ANNOTATION:[{"pointer":"/domain","required":true}]});
     assert_eq!(
-        super::domain_fingerprint(&schema, &serde_json::json!({"domain":a}), &[]).unwrap(),
-        super::domain_fingerprint(&schema, &serde_json::json!({"domain":b}), &[]).unwrap()
+        super::domain_fingerprint(
+            &schema,
+            &crate::config::secret::test_settings_value(&serde_json::json!({"domain":a})),
+            &[]
+        )
+        .unwrap(),
+        super::domain_fingerprint(
+            &schema,
+            &crate::config::secret::test_settings_value(&serde_json::json!({"domain":b})),
+            &[]
+        )
+        .unwrap()
     );
 }
 

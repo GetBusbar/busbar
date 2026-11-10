@@ -67,7 +67,7 @@ fn idp_with_secret(env: &str) -> crate::config::AuthCfg {
                 client_secret: Some(crate::config::SecretRef::env(env)),
                 client_id: Some("client-abc".into()),
             }),
-            settings: serde_json::Map::new(),
+            settings: serde_json::Map::new().into(),
         },
     );
     cfg
@@ -95,10 +95,9 @@ fn the_client_secret_is_lent_at_open() {
     std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_LENT");
     let method = &cfg.methods["idp"];
-    let mut resolved = serde_json::Map::from_iter([(
-        "client_id".into(),
-        serde_json::Value::String("client-abc".into()),
-    )]);
+    let mut resolved = busbar_contract::plugin_settings::ResolvedSettings::from(
+        serde_json::json!({"client_id":"client-abc"}),
+    );
     lend_browser_login_secret(
         "idp",
         &method.module,
@@ -108,8 +107,14 @@ fn the_client_secret_is_lent_at_open() {
         &mut resolved,
     )
     .expect("the declared secret is resolved into the settings lent at open");
-    assert_eq!(resolved["client_secret"], SECRET);
-    assert_eq!(resolved["client_id"], "client-abc");
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&resolved)["client_secret"],
+        SECRET
+    );
+    assert_eq!(
+        crate::config::secret::test_resolved_value(&resolved)["client_id"],
+        "client-abc"
+    );
     assert_eq!(login_label("idp"), "idp#login");
 }
 
@@ -118,7 +123,7 @@ fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
     std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_UNSLOTTED", "UNSLOTTED-SECRET");
     let cfg = idp_with_secret("BUSBAR_TEST_LOGIN_SECRET_UNSLOTTED");
     let method = &cfg.methods["idp"];
-    let mut resolved = serde_json::Map::new();
+    let mut resolved = busbar_contract::plugin_settings::ResolvedSettings::default();
     let refusal = lend_browser_login_secret(
         "idp",
         &method.module,
@@ -135,7 +140,10 @@ fn a_login_plugin_stating_no_client_secret_slot_is_refused_the_secret() {
     );
     assert!(!refusal.contains("UNSLOTTED-SECRET"), "{refusal}");
     assert!(
-        resolved.is_empty(),
+        crate::config::secret::test_resolved_value(&resolved)
+            .as_object()
+            .unwrap()
+            .is_empty(),
         "refusal never inserts the undeclared secret"
     );
 }

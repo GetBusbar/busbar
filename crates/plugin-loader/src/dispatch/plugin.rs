@@ -1233,41 +1233,18 @@ impl Instance {
     }
 
     fn destinations(&self, settings: Blob) -> Vec<busbar_contract::services::DiskDest> {
-        let Some(keys) = self.wake.destinations.get() else {
+        let Some(admission) = self.wake.disk_admission.get() else {
             return Vec::new();
         };
         let bytes: &[u8] = if settings.ptr.is_null() {
             &[]
         } else {
-            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
+            // SAFETY: the host's settings blob remains live for this crossing.
             unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
         };
-        let doc = serde_json::from_slice::<serde_json::Value>(bytes).unwrap_or_default();
-        let rotate_at = doc
-            .get(busbar_contract::services::DISK_ROTATE_KEY)
-            .and_then(serde_json::Value::as_u64)
-            .map(|mb| mb.saturating_mul(1024 * 1024));
-        let operator_keep = doc
-            .get(busbar_contract::services::DISK_KEEP_KEY)
-            .and_then(serde_json::Value::as_u64)
-            .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
-        keys.iter()
-            .filter_map(|key| {
-                let path = doc.get(key)?.as_str()?;
-                (!path.is_empty() && !path.contains('\0')).then(|| {
-                    busbar_contract::services::DiskDest {
-                        key: key.clone(),
-                        path: path.to_owned(),
-                        rotate_at,
-
-                        rotate: busbar_contract::services::DiskRotate::declared(
-                            operator_keep
-                                .or_else(|| self.wake.keep.get().and_then(|k| k.get(key)).copied()),
-                        ),
-                    }
-                })
-            })
-            .collect()
+        let settings = serde_json::from_slice::<busbar_contract::plugin_settings::Settings>(bytes)
+            .unwrap_or_default();
+        admission.admit(&settings)
     }
 
     fn binding_generation(
@@ -2744,8 +2721,16 @@ impl<K: Kind> Plugin<K> {
         self.inner.sink.clone()
     }
 
-    pub fn grant_destinations(&self, declares: &crate::sign::Declares) {
-        let _ = self.inner.wake.keep.set(declares.keep.clone());
+    pub fn grant_destinations(
+        &self,
+        authority: &busbar_contract::services::disk_admission::DiskAuthority,
+        declares: &crate::sign::Declares,
+    ) {
+        let _ = self
+            .inner
+            .wake
+            .disk_admission
+            .set(authority.bind(&declares.destinations, &declares.keep));
         let _ = self
             .inner
             .wake

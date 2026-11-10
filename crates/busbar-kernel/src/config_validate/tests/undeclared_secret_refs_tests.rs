@@ -5,41 +5,42 @@ use serde_json::json;
 
 use super::check_declared_paths;
 
-fn check(cfg: &crate::config::RootCfg) -> Result<(), String> {
+fn check(
+    cfg: &crate::config::RootCfg,
+    secrets: &[&str],
+    references: &[&str],
+) -> Result<(), String> {
     check_declared_paths(
         cfg,
-        |module| match module {
-            "acme-store" => vec!["dsn".into(), "replicas.*.password".into()],
-            "github" => vec!["client_secret".into()],
-            _ => Vec::new(),
-        },
-        |_| Vec::new(),
+        |_| secrets.iter().map(|s| (*s).to_owned()).collect(),
+        |_| references.iter().map(|s| (*s).to_owned()).collect(),
     )
+}
+
+fn reference(slot: &str) -> serde_json::Value {
+    json!({"module": "declared-source", "settings": {"slot": slot}})
 }
 
 fn store_with(settings: serde_json::Value) -> crate::config::RootCfg {
     let deploy: crate::config::DeployCfg = serde_yaml::from_str(
-        "providers: {}\nstore: {module: acme-store}\nauth: {chain: [], admin_auth: []}\n",
+        "providers: {}\nstore: {module: fixture-owner}\nauth: {chain: [], admin_auth: []}\n",
     )
     .expect("the kernel-owned config parses");
     let mut cfg = crate::config::resolve(&deploy, &Default::default())
         .expect("the kernel-owned config resolves");
-    let serde_json::Value::Object(settings) = settings else {
-        panic!("an object");
-    };
     cfg.store = Some(crate::config::StoreCfg {
-        module: "acme-store".into(),
-        settings,
+        module: "fixture-owner".into(),
+        settings: serde_json::from_value(settings).expect("object settings"),
     });
     cfg
 }
 
 #[test]
 fn a_reference_at_an_undeclared_field_is_refused_naming_field_plugin_and_the_way_out() {
-    let cfg = store_with(json!({"dsn": {"env": "PG_DSN"}, "base": {"env": "BASE"}}));
-    let e = check(&cfg).expect_err("refused");
+    let cfg = store_with(json!({"credential": reference("first"), "base": reference("second")}));
+    let e = check(&cfg, &["credential"], &[]).expect_err("refused");
     assert!(e.contains("store.settings.base"), "names the field: {e}");
-    assert!(e.contains("'acme-store'"), "names the plugin: {e}");
+    assert!(e.contains("'fixture-owner'"), "names the plugin: {e}");
     assert!(
         e.contains("did not declare it as a secret"),
         "says why: {e}"
@@ -52,109 +53,84 @@ fn a_reference_at_an_undeclared_field_is_refused_naming_field_plugin_and_the_way
 
 #[test]
 fn a_reference_nested_at_any_depth_is_refused() {
-    let cfg = store_with(json!({"pool": {"hosts": [{"auth": {"file": "/run/k"}}]}}));
-    let e = check(&cfg).expect_err("refused");
+    let cfg = store_with(json!({"pool": {"hosts": [{"auth": reference("nested")}]}}));
+    let e = check(&cfg, &[], &[]).expect_err("refused");
     assert!(e.contains("store.settings.pool.hosts.0.auth"), "{e}");
 }
 
 #[test]
 fn references_at_a_declared_exact_path_and_a_declared_wildcard_path_are_accepted() {
     let cfg = store_with(json!({
-        "dsn": {"env": "PG_DSN"},
-        "replicas": [{"host": "r1", "password": {"env": "R1"}}, {"host": "r2", "password": "lit"}],
-        "data": {"literal": {"env": "HOME"}},
+        "credential": reference("first"),
+        "replicas": [{"host": "r1", "password": reference("second")}, {"host": "r2", "password": "lit"}],
+        "data": {"literal": reference("ordinary-data")},
         "name": "plain"
     }));
-    assert_eq!(check(&cfg), Ok(()));
+    assert_eq!(
+        check(&cfg, &["credential", "replicas.*.password"], &[]),
+        Ok(())
+    );
 }
 
 #[test]
-fn q123_a_github_base_written_as_a_reference_is_refused() {
+fn identity_provider_reference_fields_require_the_owners_declaration() {
     let mut cfg = store_with(json!({}));
-    let serde_json::Value::Object(settings) = json!({
-        "client_id": "Iv1.client",
-        "client_secret": {"env": "GH_SECRET"},
-        "api_base": {"env": "GHE_API"}
-    }) else {
-        panic!("an object");
-    };
     cfg.identity_providers.insert(
-        "github".into(),
+        "login".into(),
         crate::config::IdentityProviderCfg {
-            module: "github".into(),
+            module: "fixture-owner".into(),
             max_admin_scope: None,
             token: None,
             browser_login: None,
-            settings,
+            settings: serde_json::from_value(json!({
+                "credential": reference("credential"),
+                "endpoint": reference("endpoint"),
+            }))
+            .unwrap(),
         },
     );
-    let e = check(&cfg).expect_err("refused");
+    let e = check(&cfg, &["credential"], &[]).expect_err("refused");
     assert!(
-        e.contains("identity-providers.github.settings.api_base"),
+        e.contains("identity-providers.login.settings.endpoint"),
         "{e}"
     );
-    assert!(e.contains("'github'"), "{e}");
+    assert!(e.contains("'fixture-owner'"), "{e}");
+    assert_eq!(check(&cfg, &["credential"], &["endpoint"]), Ok(()));
 }
 
 #[test]
 fn core_fields_are_not_plugin_settings() {
-    assert_eq!(check(&store_with(json!({}))), Ok(()));
+    assert_eq!(check(&store_with(json!({})), &[], &[]), Ok(()));
 }
 
 #[test]
-fn a_reference_at_a_reference_capable_url_is_accepted_and_elsewhere_refused() {
-    let check = |cfg: &crate::config::RootCfg| {
-        check_declared_paths(
-            cfg,
-            |_| Vec::new(),
-            |module| {
-                if [
-                    "postgres",
-                    "valkey",
-                    "mysql",
-                    "webrequest",
-                    "otlp",
-                    "request-log-webhook",
-                ]
-                .contains(&module)
-                {
-                    vec!["url".into()]
-                } else {
-                    Vec::new()
-                }
-            },
-        )
-    };
-    for store in ["postgres", "valkey", "mysql"] {
-        let mut cfg = store_with(json!({"url": {"env": "STORE_URL"}}));
-        if let Some(s) = cfg.store.as_mut() {
-            s.module = store.into();
-        }
-        assert_eq!(check(&cfg), Ok(()), "{store}");
-        let mut cfg = store_with(json!({"url": "postgres://x", "pool": {"env": "POOL"}}));
-        if let Some(s) = cfg.store.as_mut() {
-            s.module = store.into();
-        }
-        let e = check(&cfg).expect_err("refused");
-        assert!(e.contains("store.settings.pool"), "{store}: {e}");
-    }
-
-    let mut cfg = store_with(json!({}));
-    cfg.store = None;
-    let hook: crate::config::HookCfg = serde_json::from_value(json!({
-        "kind": "gate",
-        "module": "webrequest",
-        "settings": {"url": {"env": "HOOK_URL"}},
-    }))
-    .expect("a hook");
-    cfg.hooks.insert("gate".into(), hook);
-    for (name, module) in [("traces", "otlp"), ("wh", "request-log-webhook")] {
-        let def: crate::config::ExportDefCfg = serde_json::from_value(json!({
-            "module": module,
-            "settings": {"url": {"env": "EXPORT_URL"}},
+fn reference_admission_depends_on_declarations_across_kinds() {
+    // The same owner name exercises every declaration, so a name-to-capability table
+    // cannot determine these results.
+    let mut cfg = store_with(json!({"endpoint": reference("store")}));
+    assert_eq!(check(&cfg, &[], &["endpoint"]), Ok(()));
+    let e = check(&cfg, &[], &[]).expect_err("missing declaration");
+    assert!(e.contains("store.settings.endpoint"), "{e}");
+    cfg.hooks.insert(
+        "gate".into(),
+        serde_json::from_value(json!({
+            "kind": "gate", "module": "fixture-owner",
+            "settings": {"endpoint": reference("hook")},
         }))
-        .expect("an export");
-        cfg.export_defs.insert(name.into(), def);
-    }
-    assert_eq!(check(&cfg), Ok(()));
+        .unwrap(),
+    );
+    cfg.export_defs.insert(
+        "sink".into(),
+        serde_json::from_value(json!({
+            "module": "fixture-owner", "settings": {"endpoint": reference("export")},
+        }))
+        .unwrap(),
+    );
+    assert_eq!(check(&cfg, &[], &["endpoint"]), Ok(()));
+    cfg.store = None;
+    let e = check(&cfg, &[], &[]).expect_err("hook declaration missing");
+    assert!(e.contains("hooks.gate.settings.endpoint"), "{e}");
+    cfg.hooks.clear();
+    let e = check(&cfg, &[], &[]).expect_err("export declaration missing");
+    assert!(e.contains("sink.settings.endpoint"), "{e}");
 }

@@ -234,7 +234,10 @@ fn opened(
     dispatcher: Arc<Dispatcher>,
     settings: &serde_json::Value,
 ) -> ExportInstance {
-    plugin.grant_destinations(&renaming(file_declares()));
+    plugin.grant_destinations(
+        &busbar_contract::services::disk_admission::DiskAuthority::issue(&crate::seal::acquire()),
+        &renaming(file_declares()),
+    );
     ExportInstance::open(plugin, dispatcher, settings.to_string().as_bytes())
         .expect("the actual file sink opens")
 }
@@ -370,7 +373,10 @@ fn a_destination_declared_keep_zero_is_truncated_in_place_with_no_archive() {
     let plugin = load_linked::<Export>(&row, bind("keep0", tape.clone(), &d)).expect("loads");
     let mut declares = file_declares();
     declares.keep.insert("path".to_string(), 0);
-    plugin.grant_destinations(&declares);
+    plugin.grant_destinations(
+        &busbar_contract::services::disk_admission::DiskAuthority::issue(&crate::seal::acquire()),
+        &declares,
+    );
     let sink = ExportInstance::open(plugin, d, file_settings(&path).to_string().as_bytes())
         .expect("the sink opens");
     for n in 1..=3 {
@@ -398,7 +404,12 @@ fn the_operators_keep_beside_a_destination_outranks_the_manifest() {
         let path = dir.join("requests.jsonl");
         let d = dispatcher();
         let plugin = load_file(dropped, &d, Arc::new(Tape::default()));
-        plugin.grant_destinations(&file_declares());
+        plugin.grant_destinations(
+            &busbar_contract::services::disk_admission::DiskAuthority::issue(
+                &crate::seal::acquire(),
+            ),
+            &file_declares(),
+        );
         let mut settings = file_settings(&path);
         settings["keep"] = serde_json::json!(2);
         let sink = ExportInstance::open(plugin, d, settings.to_string().as_bytes()).expect("opens");
@@ -431,7 +442,12 @@ fn declared_destination_writes_and_undeclared_destination_refuses_each_delivery_
         if !declared {
             grants.destinations.clear();
         }
-        plugin.grant_destinations(&grants);
+        plugin.grant_destinations(
+            &busbar_contract::services::disk_admission::DiskAuthority::issue(
+                &crate::seal::acquire(),
+            ),
+            &grants,
+        );
         let sink = ExportInstance::open(plugin, d, file_settings(&path).to_string().as_bytes())
             .expect("opens");
         for n in 1..=4 {
@@ -843,9 +859,9 @@ fn a_linked_and_a_dropped_in_export_sink_register_one_row_and_fold_the_same() {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, dispatcher())
+        let sink = ExportRows::new(&registry, dispatcher()).with_disk(busbar_contract::services::disk_admission::DiskAuthority::issue(&crate::seal::acquire()))
             .with_envelope(tape.clone())
-            .open(name, &instance_label("export.tail"), &file_settings(&path))
+            .open(name, &instance_label("export.tail"), &busbar_contract::export_calls::ExportOpening::new(crate::config::secret::test_settings_value(&file_settings(&path))).prepare())
             .expect("the export sink opens through its alias");
         let streams = sink.streams().to_vec();
         let routes = sink.routes().len();
@@ -916,9 +932,9 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, Arc::clone(&d))
+        let sink = ExportRows::new(&registry, Arc::clone(&d)).with_disk(busbar_contract::services::disk_admission::DiskAuthority::issue(&crate::seal::acquire()))
             .with_envelope(tape.clone())
-            .open(name, &instance_label("export.tail"), &file_settings(&path))
+            .open(name, &instance_label("export.tail"), &busbar_contract::export_calls::ExportOpening::new(crate::config::secret::test_settings_value(&file_settings(&path))).prepare())
             .expect("a first-party declaration opens");
         for n in [1, 2] {
             deliver(sink.as_ref(), &big_line(n));
@@ -958,13 +974,22 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     third.publisher = "acme".into();
     let [_, registry] = file_registries(third);
     assert!(!registry.resolve("s1-third-party").unwrap().first_party());
-    let sink = ExportRows::new(&registry, Arc::clone(&d))
-        .open(
-            "s1-third-party",
-            &instance_label("export.tail"),
-            &file_settings(&path),
-        )
-        .expect("a third party opens; its declaration is simply not granted");
+    let sink =
+        ExportRows::new(&registry, Arc::clone(&d))
+            .with_disk(
+                busbar_contract::services::disk_admission::DiskAuthority::issue(
+                    &crate::seal::acquire(),
+                ),
+            )
+            .open(
+                "s1-third-party",
+                &instance_label("export.tail"),
+                &busbar_contract::export_calls::ExportOpening::new(
+                    crate::config::secret::test_settings_value(&file_settings(&path)),
+                )
+                .prepare(),
+            )
+            .expect("a third party opens; its declaration is simply not granted");
     for (s, k) in &series {
         assert!(!busbar_plugin_loader::observe::first_party_series(
             "s1-third-party",
@@ -989,11 +1014,22 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             FILE_DOOR,
         )])
         .expect("the linked door admits the sink");
-    let Err(refused) = ExportRows::new(&registry, Arc::clone(&d)).open(
-        "s1-collides",
-        &instance_label("export.tail"),
-        &file_settings(&path),
-    ) else {
+    let Err(refused) =
+        ExportRows::new(&registry, Arc::clone(&d))
+            .with_disk(
+                busbar_contract::services::disk_admission::DiskAuthority::issue(
+                    &crate::seal::acquire(),
+                ),
+            )
+            .open(
+                "s1-collides",
+                &instance_label("export.tail"),
+                &busbar_contract::export_calls::ExportOpening::new(
+                    crate::config::secret::test_settings_value(&file_settings(&path)),
+                )
+                .prepare(),
+            )
+    else {
         panic!("a claim on a host series is refused");
     };
     assert!(

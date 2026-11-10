@@ -1592,10 +1592,12 @@ mod call_input_tests {
 
     #[test]
     fn timeout_only_changes_refuse_the_old_instance_in_every_reuse_path() {
-        let settings = serde_json::json!({"url": "http://127.0.0.1:1/"})
-            .as_object()
-            .unwrap()
-            .clone();
+        let settings: busbar_contract::plugin_settings::Settings =
+            serde_json::json!({"url": "http://127.0.0.1:1/"})
+                .as_object()
+                .unwrap()
+                .clone()
+                .into();
         assert!(same_call_inputs(
             "webrequest",
             &settings,
@@ -1620,10 +1622,12 @@ mod call_input_tests {
             &settings,
             || policy_timeout(11)
         ));
-        let changed = serde_json::json!({"url": "http://127.0.0.1:2/"})
-            .as_object()
-            .unwrap()
-            .clone();
+        let changed: busbar_contract::plugin_settings::Settings =
+            serde_json::json!({"url": "http://127.0.0.1:2/"})
+                .as_object()
+                .unwrap()
+                .clone()
+                .into();
         assert!(!same_call_inputs(
             "webrequest",
             &settings,

@@ -481,7 +481,11 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect();
-        let view = plugin_view_with("example", settings.as_object().unwrap(), &public);
+        let view = plugin_view_with(
+            "example",
+            &crate::config::secret::test_settings(settings.as_object().unwrap()),
+            &public,
+        );
         assert_eq!(view["settings_public"], json!({"timeout": 42}));
         let encoded = serde_json::to_string(&view).unwrap();
         for sentinel in [
@@ -498,7 +502,11 @@ mod tests {
     #[test]
     fn absent_public_schema_discloses_only_keys() {
         let settings = json!({"url": "URL_SENTINEL", "enabled": true});
-        let view = plugin_view_with("unknown", settings.as_object().unwrap(), &BTreeSet::new());
+        let view = plugin_view_with(
+            "unknown",
+            &crate::config::secret::test_settings(settings.as_object().unwrap()),
+            &BTreeSet::new(),
+        );
         assert_eq!(view["settings_public"], json!({}));
         assert!(!format!("{view:?}").contains("URL_SENTINEL"));
     }
