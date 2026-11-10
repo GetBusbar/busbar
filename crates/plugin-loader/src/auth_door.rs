@@ -540,7 +540,7 @@ impl Shared {
             slot::VERIFY,
             frame,
             DeadlineClass::Call,
-            now_ns() + VERIFY_DEADLINE.as_nanos() as u64,
+            now_ns().saturating_add(VERIFY_DEADLINE.as_nanos() as u64),
             lent,
         );
     }

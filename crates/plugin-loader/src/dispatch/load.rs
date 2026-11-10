@@ -451,6 +451,8 @@ pub enum LoadError {
     Rendering(String),
     /// The door's Statement is not the one the manifest (or the compiled-in row) states.
     StatementMismatch,
+    /// The door exports no Statement at all (the plugin was built without one).
+    NoStatement,
     /// A need, outbound or inbound, names a scheme no loaded transport serves (spec Part 2 #50:
     /// fail closed at boot, naming the plugin and the scheme).
     UnservedScheme {
@@ -581,6 +583,9 @@ impl fmt::Display for LoadError {
             Self::Rendering(e) => write!(f, "the stated Statement rendering is malformed: {e}"),
             Self::StatementMismatch => f.write_str(
                 "the plugin's Statement is not the one its manifest states — repack the plugin",
+            ),
+            Self::NoStatement => f.write_str(
+                "the plugin's door exports no Statement — rebuild against the 1.6.0 SDK",
             ),
             Self::UnservedScheme {
                 plugin,
@@ -824,7 +829,7 @@ pub(crate) fn load_staged<K: Kind>(
         drop(Lib(Some(lib), Some(staged)));
         return Ok(Staging::NotADoor);
     };
-    let stated = stated.ok_or(LoadError::StatementMismatch)?;
+    let stated = stated.ok_or(LoadError::NoStatement)?;
     let lib = Lib(Some(lib), Some(staged));
     Ok(Staging::Door(Plugin::bind(
         admitted::<K>(door, stated)?,
@@ -924,6 +929,9 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
             .is_ok_and(|st| K::optional_by_statement(i, st))
     };
     let (slots, operations) = table::<K>(door.ops, by_statement)?;
+    // Surface the Statement error after the table check so that a missing or
+    // malformed Statement is not masked. The original order is preserved
+    // because table() depends on by_statement's closure, which captures stated.
     let statement = stated?;
     let context = K::context(&statement).map_err(LoadError::KindTail)?;
     Ok(Validated {

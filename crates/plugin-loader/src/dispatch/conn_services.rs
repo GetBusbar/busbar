@@ -262,7 +262,15 @@ fn slot<R: Into<Kept>>(
         .then_some(input);
         held(wake, head.handle, || st.kept(head.handle, replay, run))
     }))
-    .unwrap_or_else(|_| Answered::fault());
+    .unwrap_or_else(|payload| {
+        let msg = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("(non-string panic)");
+        tracing::error!(service, "connector slot panicked: {msg}");
+        Answered::fault()
+    });
     // SAFETY: the caller's `out`, as the call shape lends it, writable for the `lent` bytes it
     // stated.
     unsafe { write_out(out, &a, lent) }
@@ -2452,7 +2460,10 @@ fn reply(
                         .and_then(|policies| policies.get(s.need.0 as usize));
                     let (field_len, reason) = match filter_reply_head(buf, p.len, reason, policy) {
                         Ok(filtered) => filtered,
-                        Err(error) => return (None, error),
+                        Err(error) => {
+                            s.ended = true;
+                            return (None, error);
+                        }
                     };
                     s.headed = true;
                     (
@@ -2471,13 +2482,19 @@ fn reply(
                         Answered::ready(0, reason.end.max(field_len) as u64),
                     )
                 }
-                PieceKind::Body | PieceKind::HookReply => (
-                    Some(ReplyPiece {
-                        kind: REPLY_BODY,
-                        ..ReplyPiece::default()
-                    }),
-                    Answered::ready(0, p.len as u64),
-                ),
+                PieceKind::Body | PieceKind::HookReply => {
+                    // Clamp to the plugin's buffer length, matching the read
+                    // service at line 588. A misbehaving transport that reports
+                    // more bytes than the buffer would mislead the plugin.
+                    let n = p.len.min(buf.len());
+                    (
+                        Some(ReplyPiece {
+                            kind: REPLY_BODY,
+                            ..ReplyPiece::default()
+                        }),
+                        Answered::ready(0, n as u64),
+                    )
+                }
                 PieceKind::Completion => terminal(s),
             },
             Err(ConnError::Closed) => terminal(s),

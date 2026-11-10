@@ -157,7 +157,7 @@ pub(super) fn begin(shared: &Arc<Shared>, request: BeginLogin) -> Box<dyn LoginC
         slot::BEGIN_LOGIN,
         Frame::new(held.input(), begin_out()),
         DeadlineClass::Call,
-        now_ns() + BEGIN_LOGIN_DEADLINE.as_nanos() as u64,
+        now_ns().saturating_add(BEGIN_LOGIN_DEADLINE.as_nanos() as u64),
         lent,
     );
     Box::new(Pending::new(
@@ -386,7 +386,7 @@ fn submit_complete(
         slot::COMPLETE_LOGIN,
         Frame::new(held.input(), identify_out()),
         DeadlineClass::Call,
-        now_ns() + COMPLETE_LOGIN_DEADLINE.as_nanos() as u64,
+        now_ns().saturating_add(COMPLETE_LOGIN_DEADLINE.as_nanos() as u64),
         lent,
     );
 }
