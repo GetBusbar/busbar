@@ -441,7 +441,8 @@ fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: 
 }
 
 // The same source-owner boundary can mount tests beneath private host modules.
-// Context names are assembly data; an absent context adds no tests or dependency.
+// Context names are assembly data. Assemblies must account for every mounted context;
+// neutral core builds do not acquire source owners merely by mounting a context.
 fn context_test_sources_source(manifest: &str) -> String {
     let mut out = String::from("// @generated from package.metadata.busbar.test-source-contexts.\n#[allow(unused_macros)]\nmacro_rules! owner_test_sources {\n");
     for (context, owner) in metadata_map(manifest, "package.metadata.busbar.test-source-contexts") {
@@ -457,7 +458,14 @@ fn context_test_sources_source(manifest: &str) -> String {
             ident(&owner)
         ));
     }
-    out.push_str("    ($context:ident) => {};\n}\n");
+    if metadata_value(manifest, "package.metadata.busbar.core", "dir").is_some() {
+        out.push_str(
+            "    ($context:ident) => { compile_error!(concat!(\"missing assembly test source context: \", stringify!($context))); };\n",
+        );
+    } else {
+        out.push_str("    ($context:ident) => {};\n");
+    }
+    out.push_str("}\n");
     out
 }
 
@@ -860,4 +868,75 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          use busbar_core_connector::doors as __busbar_doors;\n",
     );
     (source, off)
+}
+
+#[cfg(test)]
+mod test_source_context_tests {
+    use super::context_test_sources_source;
+
+    #[test]
+    fn missing_assembly_context_refuses_compilation_but_neutral_core_stays_independent() {
+        let base = std::env::var_os("BUSBAR_TEST_TMP")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let directory = base.join(format!("source-context-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let compile = |manifest: &str, invocation: &str, fixture: &str| {
+            let input = directory.join("context.rs");
+            std::fs::write(
+                &input,
+                format!(
+                    "{fixture}\n{}\n{invocation}\nfn main() {{}}\n",
+                    context_test_sources_source(manifest)
+                ),
+            )
+            .unwrap();
+            std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .arg("--edition=2021")
+                .arg("--crate-name=source_context")
+                .arg(&input)
+                .arg("-o")
+                .arg(directory.join("context"))
+                .output()
+                .expect("compile the generated test source context")
+        };
+        let assembly = "[package.metadata.busbar.core]\ndir = \"../../crates/busbar\"\n";
+        let missing = compile(assembly, "owner_test_sources!(omitted_context);", "");
+        let error = String::from_utf8_lossy(&missing.stderr);
+        assert!(
+            !missing.status.success(),
+            "an omitted assembly context compiled"
+        );
+        assert!(
+            error.contains("missing assembly test source context: omitted_context"),
+            "{error}"
+        );
+        let neutral = compile("", "owner_test_sources!(omitted_context);", "");
+        assert!(
+            neutral.status.success(),
+            "{}",
+            String::from_utf8_lossy(&neutral.stderr)
+        );
+        let declared = compile(
+            &format!("{assembly}[package.metadata.busbar.test-source-contexts]\nknown_context = \"fixture-owner\"\n"),
+            "owner_test_sources!(known_context); const _: u8 = OWNER_WITNESS;",
+            r#"extern crate self as fixture_owner;
+                #[macro_export]
+                macro_rules! __busbar_context_tests {
+                    (known_context, "fixture-owner") => { const OWNER_WITNESS: u8 = 1; };
+                }"#,
+        );
+        assert!(
+            declared.status.success(),
+            "{}",
+            String::from_utf8_lossy(&declared.stderr)
+        );
+    }
 }
