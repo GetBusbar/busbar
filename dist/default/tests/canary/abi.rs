@@ -149,13 +149,30 @@ pub struct AbiCanaries {
 
 impl AbiCanaries {
     pub fn all(&self) -> Vec<Canary> {
+        let (secret_site, webhook) = signing_secret_crossing();
+        let oidc = format!("{} (dropped-in cdylib)", doors().oidc.0);
+        let header = format!("{} (linked)", doors().header.0);
+        let audience_delivery = |canary: &Canary| {
+            canary
+                .clone()
+                .delivered_to("abi:host->plugin:op:validate.settings", &oidc)
+                .delivered_to("abi:host->plugin:op:open.settings", &oidc)
+        };
         vec![
-            self.secret_ref_file.clone(),
-            self.settings_env_ref.clone(),
+            self.secret_ref_file
+                .clone()
+                .delivered_to(secret_site, webhook),
+            audience_delivery(&self.settings_env_ref),
             self.settings_template.clone(),
-            self.settings_interp.clone(),
-            self.outbound_credential.clone(),
-            self.passthrough.clone(),
+            audience_delivery(&self.settings_interp),
+            self.outbound_credential
+                .clone()
+                .delivered_to("abi:host->plugin:op:open_outbound.credential", &header)
+                .delivered_to("abi:plugin->host:op:fields.answer[0]", &header),
+            self.passthrough
+                .clone()
+                .delivered_to("abi:host->plugin:op:fields.caller_credential", &header)
+                .delivered_to("abi:plugin->host:op:fields.answer[0]", &header),
         ]
     }
 }
@@ -370,10 +387,12 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         )
         .unwrap(),
     );
-    outcome(
-        "oidc settings (env-template ref)",
-        open(&rows, &d.oidc.0, s),
+    let unresolved_template = open(&rows, &d.oidc.0, s);
+    assert!(
+        unresolved_template.is_err(),
+        "the owner refuses an unresolved audience template"
     );
+    outcome("oidc settings (env-template ref)", unresolved_template);
 
     let interp_var = format!("BUSBAR_CANARY_INTERP_{pid}_{run}");
     std::env::set_var(&interp_var, &c.settings_interp.value);
@@ -491,5 +510,21 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     ));
     notes.extend(seen.into_iter().map(|s| format!("  shim saw: {s}")));
     let _ = std::fs::remove_dir_all(&dir);
+    assert!(sinks
+        .iter()
+        .any(|sink| sink.name == "log:in-process tracing"));
+    assert!(sinks.iter().any(|sink| sink.name.starts_with("refusal:")));
+    for owner in [
+        format!("{} (linked)", d.webhook_signature.0),
+        format!("{} (linked)", d.header.0),
+        format!("{} (dropped-in cdylib)", d.oidc.0),
+    ] {
+        assert!(
+            sinks
+                .iter()
+                .any(|sink| sink.name.starts_with("abi:") && sink.at == owner),
+            "the scan includes every exercised owner: {owner}"
+        );
+    }
     (sinks, notes)
 }

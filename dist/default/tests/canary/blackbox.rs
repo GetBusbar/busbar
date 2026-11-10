@@ -471,12 +471,8 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
                 .any(|request| credential.forms.iter().any(|form| request.contains(form))),
             "far-end:{name} did not receive its planted credential; its delivery was not exercised"
         );
-        for (k, req) in seen.iter().enumerate() {
-            sinks.push(Sink::text(
-                format!("far-end:{name}"),
-                format!("request {k}"),
-                req.clone(),
-            ));
+        for req in seen.iter() {
+            sinks.push(Sink::text(format!("far-end:{name}"), *name, req.clone()));
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
