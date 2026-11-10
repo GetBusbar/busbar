@@ -256,6 +256,7 @@ fn sdk_registration_foreign_plane_routes_require_serve() {
             start: Some(refused),
             project: Some(refused),
             catalog: Some(refused),
+            authenticated_route: None,
         }));
         // SAFETY: static foreign descriptors with real table layout; no operation is called.
         let foreign = unsafe { door::door(statement, ops, None) };
@@ -402,6 +403,61 @@ fn sdk_registration_transport_direction_is_enforced_before_the_actual_callback()
                 .call(life::CLOSE, &mut Frame::new(in_head(), out_head()))
                 .outcome,
             Outcome::Ready
+        );
+    }
+}
+
+#[test]
+fn sdk_registration_foreign_plane_authenticated_route_requires_declared_operation() {
+    use crate::dispatch::kinds::plane::Plane;
+    use busbar_contract::abi::{
+        mechanism::door::{KindTailHead, Section, SECTION_DECLARING},
+        plane,
+    };
+    const SECTIONS: &[Section] = &[Section {
+        name: door::abi_str("entries"),
+        flags: SECTION_DECLARING,
+        _reserved: 0,
+    }];
+    for (declared, implemented) in [(false, false), (true, false), (true, true)] {
+        // SAFETY: the tail contains only plain C pointers and integers.
+        let mut tail: plane::PlaneTail = unsafe { std::mem::zeroed() };
+        tail.head = KindTailHead {
+            size: std::mem::size_of::<plane::PlaneTail>() as u32,
+            _reserved: 0,
+        };
+        tail.ingress = plane::INGRESS_REQUEST_RESPONSE;
+        tail.answer_layout = plane::ANSWER_LAYOUT;
+        if declared {
+            tail.flags |= plane::TAIL_AUTHENTICATED_ROUTE;
+        }
+        let tail = Box::leak(Box::new(tail));
+        let statement = Box::leak(Box::new(door::stamp::<plane::Ops>(Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            sections: SECTIONS.as_ptr(),
+            sections_len: SECTIONS.len(),
+            ..door::statement("authenticated-routes", "1", 1)
+        })));
+        let ops = Box::leak(Box::new(plane::Ops {
+            head: head::<plane::Ops>(),
+            arrive: Some(refused),
+            on_piece: Some(refused),
+            refusal: Some(refused),
+            serve: None,
+            hydrate: Some(refused),
+            start: Some(refused),
+            project: Some(refused),
+            catalog: None,
+            authenticated_route: implemented.then_some(refused),
+        }));
+        // SAFETY: exact foreign descriptor shapes; validation never invokes these callbacks.
+        let foreign = unsafe { door::door(statement, ops, None) };
+        let result = validate_door::<Plane>(&foreign);
+        assert_eq!(
+            result.is_ok(),
+            !declared || implemented,
+            "{:?}",
+            result.err()
         );
     }
 }

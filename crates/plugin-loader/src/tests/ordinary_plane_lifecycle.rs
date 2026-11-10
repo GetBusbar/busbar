@@ -787,3 +787,101 @@ fn served_refresh_keeps_active_result_custody_past_its_queue_deadline() {
         "the legitimate crossing stays within its own budget"
     );
 }
+
+#[test]
+fn authenticated_route_pends_and_resumes_on_same_unit_and_caller_on_both_loading_paths() {
+    use crate::dispatch::{in_head, out_head, DispatchConfig, Dispatcher, Frame};
+    use busbar_contract::abi::{
+        mechanism::call::{AbiStr, DeadlineClass, Outcome},
+        plane::{self, AuthenticatedRouteIn, AuthenticatedRouteOut},
+    };
+    for dropped_image in [false, true] {
+        let dispatcher = Arc::new(Dispatcher::new(
+            DispatchConfig::default(),
+            busbar_contract::services::test_caller_binding(),
+        ));
+        let plugin = Arc::new(served_lifecycle_plane(dropped_image, &dispatcher));
+        open_door(&plugin, b"{}", b"{}", None).unwrap();
+        let ticket = dispatcher.mint(0).unwrap();
+        let entry = Arc::new(std::sync::Mutex::new(Box::new(
+            [0u8; plane::MAX_ROUTE_ENTRY_BYTES],
+        )));
+        let entry_ptr = entry.lock().unwrap().as_mut_ptr();
+        let input = AuthenticatedRouteIn {
+            head: in_head(),
+            unit: 42,
+            caller_ref: AbiStr::over(b"verified-caller"),
+            entry_buf: entry_ptr,
+            entry_cap: plane::MAX_ROUTE_ENTRY_BYTES,
+        };
+        let out = AuthenticatedRouteOut {
+            head: out_head(),
+            ..busbar_contract::abi::sdk::door::blank_out()
+        };
+        let reply = dispatcher.submit_unit(
+            &plugin,
+            ticket,
+            plane::slot::AUTHENTICATED_ROUTE,
+            Frame::new(input, out),
+            DeadlineClass::Call,
+            0,
+            entry.clone(),
+        );
+        let done = reply
+            .wait(std::time::Duration::from_secs(5))
+            .expect("bounded pending continuation");
+        assert_eq!(done.outcome, Outcome::Ready, "dropped={dropped_image}");
+        let out = done.frame.unwrap().out;
+        assert_eq!(out.route, plane::ROUTE_DIRECT);
+        assert_eq!(
+            &entry.lock().unwrap()[..out.entry_written as usize],
+            b"stored-entry"
+        );
+        assert!(
+            plugin
+                .inner
+                .resumes
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+        );
+        dispatcher.recycle(ticket);
+
+        let ticket = dispatcher.mint(0).unwrap();
+        let input = AuthenticatedRouteIn {
+            head: in_head(),
+            unit: 43,
+            caller_ref: AbiStr::over(b"verified-caller"),
+            entry_buf: entry_ptr,
+            entry_cap: plane::MAX_ROUTE_ENTRY_BYTES,
+        };
+        let out = AuthenticatedRouteOut {
+            head: out_head(),
+            ..busbar_contract::abi::sdk::door::blank_out()
+        };
+        let reply = dispatcher.submit_unit(
+            &plugin,
+            ticket,
+            plane::slot::AUTHENTICATED_ROUTE,
+            Frame::new(input, out),
+            DeadlineClass::Call,
+            crate::dispatch::now_ns() + 20_000_000,
+            entry.clone(),
+        );
+        let done = reply
+            .wait(std::time::Duration::from_secs(5))
+            .expect("bounded cancellation");
+        assert_eq!(
+            done.outcome,
+            Outcome::Failed,
+            "dropped={dropped_image}, disposition={:?}, error={:?}",
+            done.disposition,
+            done.error
+        );
+        assert_eq!(
+            done.disposition,
+            Some(plane::CANCEL_ABORTED),
+            "the actual cancel must retain read-only authority on the FFI thread"
+        );
+        dispatcher.recycle(ticket);
+    }
+}

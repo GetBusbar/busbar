@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 mod answer;
+mod authenticated_route;
 mod cancel;
 mod close;
 pub mod dispatch;
@@ -202,6 +203,7 @@ pub struct PlaneDriver {
     audit: Arc<dyn AuditSink>,
 
     refused_piece: bool,
+    authenticated_route: bool,
 }
 
 pub trait AuditSink: Send + Sync {
@@ -309,7 +311,13 @@ fn prepare_admission<'a>(
     services: &'a KernelServices,
     section: (&str, &serde_yaml::Value),
 ) -> Result<PreparedSection<'a>, String> {
-    if d.conditional_records && !services.supports_record_transactions() {
+    if d.conditional_records_optional && !d.conditional_records {
+        return Err("optional record transactions require declared protocol support".into());
+    }
+    if d.conditional_records
+        && !d.conditional_records_optional
+        && !services.supports_record_transactions()
+    {
         return Err("the configured store does not support conditional record transactions".into());
     }
     let trust = parse_section(section.0, section.1, &d.trust_keys)?;
@@ -374,6 +382,7 @@ impl PlaneDriver {
             label: Arc::from(&*d.label),
             audit: Arc::new(CoreAudit),
             refused_piece: false,
+            authenticated_route: d.authenticated_route,
         })
     }
 
@@ -1410,6 +1419,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         self.driver.sweep();
         self.lock().unit = ctx.key.get();
         let decoded = self.arrive(ctx.key.get());
+        if !self.driver.authenticated_route
+            && decoded
+                .as_ref()
+                .is_some_and(|d| d.route == busbar_contract::abi::plane::ROUTE_AUTHENTICATED)
+        {
+            return Err(Refusal::new(ReasonCode::DecodeFailed));
+        }
         let classes = &self.driver.config.op_classes;
         let op = decoded
             .as_ref()
@@ -1429,12 +1445,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         op.ok_or_else(|| Refusal::new(ReasonCode::DecodeFailed))
     }
 
-    fn verified(
-        &self,
-        trust: &Grant<Dial>,
-        ctx: &UnitCtx,
-        principal: &PrincipalId,
-    ) -> Result<Vec<VerifiedDestination>, Refusal> {
+    fn bind_authenticated_caller(&self, principal: &PrincipalId) -> Result<(), Refusal> {
         if let Some(slot) = &self.driver.config.caller_refs {
             let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
             if *principal != PrincipalId::anonymous() {
@@ -1448,6 +1459,15 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         }
 
         self.lock().principal = Some(principal.clone());
+        Ok(())
+    }
+
+    fn verified(
+        &self,
+        trust: &Grant<Dial>,
+        ctx: &UnitCtx,
+        principal: &PrincipalId,
+    ) -> Result<Vec<VerifiedDestination>, Refusal> {
         self.steps.verify(trust, ctx, principal)
     }
 
@@ -1686,6 +1706,28 @@ mod section_admission_tests {
     use busbar_contract::services::{HostServices, Ran};
 
     const INSTANCE: &str = "section-admission";
+
+    #[tokio::test]
+    async fn conditional_optional_admission_keeps_guards_without_requiring_unused_storage() {
+        let services = KernelServices::new();
+        assert!(!services.supports_record_transactions());
+        let mut declaration = InstanceDecl {
+            label: Arc::from(INSTANCE),
+            record_kinds: vec!["sample"],
+            conditional_records: true,
+            conditional_record_kinds: vec![0],
+            ..Default::default()
+        };
+        let section = serde_yaml::Value::Null;
+        assert!(prepare_admission(&declaration, &services, ("sample", &section)).is_err());
+        declaration.conditional_records_optional = true;
+        let prepared = prepare_admission(&declaration, &services, ("sample", &section)).unwrap();
+        assert_eq!(prepared.facts.conditional_record_kinds, vec![0]);
+        prepared.commit().await.unwrap();
+        assert!(!services.supports_record_transactions());
+        declaration.conditional_records = false;
+        assert!(prepare_admission(&declaration, &services, ("sample", &section)).is_err());
+    }
     const MECHANISMS: &[PinMechanismDecl] = &[PinMechanismDecl {
         token: "rooted",
         root: true,

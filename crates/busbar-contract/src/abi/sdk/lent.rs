@@ -589,8 +589,8 @@ impl<'a> HostLoan<'a> {
 }
 
 use crate::abi::plane::{
-    ArriveIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn, PlaneOpenIn, ProjectIn,
-    ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
+    ArriveIn, AuthenticatedRouteIn, CatalogIn, OnPieceIn, OutField, PlaneCancelIn, PlaneDriveIn,
+    PlaneOpenIn, ProjectIn, ProviderFacts, RecordWrite, RefusalIn, ServeIn, UnitCount,
 };
 use crate::abi::transport::route::{FieldPredicate, LineEntry, RouteMatch, RouteView};
 use crate::abi::transport::{
@@ -641,6 +641,7 @@ macro_rules! lend_kinds_list {
                 list(fields, fields_len) -> Field;
                 buf(units_buf, units_cap) -> UnitCount;
             }
+            AuthenticatedRouteIn { buf(entry_buf, entry_cap) -> u8; }
             OnPieceIn {
                 list(head_fields, head_fields_len) -> Field;
                 buf(reply_buf, reply_cap) -> u8;
@@ -1168,6 +1169,12 @@ macro_rules! lent_field_list {
                 blob body;
                 val units_cap: usize;
                 str method;
+            }
+            crate::abi::plane::AuthenticatedRouteIn {
+                sub head: crate::abi::mechanism::call::InHead;
+                val unit: u64;
+                str caller_ref;
+                val entry_cap: usize;
             }
             crate::abi::plane::CatalogIn {
                 sub head: crate::abi::mechanism::call::InHead;

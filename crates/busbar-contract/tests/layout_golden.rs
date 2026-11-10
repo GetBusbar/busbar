@@ -573,7 +573,7 @@ fn compute_layout() -> String {
         [head, style, credential, settings, buf, buf_cap]
     );
     record!(s, AuthTargetOut, [head, target]);
-    record!(s, PlaneOps, [head]);
+    record!(s, PlaneOps, [head, authenticated_route]);
     record!(s, TransportOps, [head]);
 
     record!(
@@ -891,7 +891,18 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::Ops,
-        [head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog]
+        [
+            head,
+            arrive,
+            on_piece,
+            refusal,
+            serve,
+            hydrate,
+            start,
+            project,
+            catalog,
+            authenticated_route
+        ]
     );
     record!(s, pkind::DialectAuth, [dialect, flags, style, params]);
     record!(s, pkind::OpClass, [op, name]);
@@ -1040,6 +1051,23 @@ fn compute_layout() -> String {
             trust_counterparty,
             trust_item,
             trust_digest
+        ]
+    );
+    record!(
+        s,
+        pkind::AuthenticatedRouteIn,
+        [head, unit, caller_ref, entry_buf, entry_cap]
+    );
+    record!(
+        s,
+        pkind::AuthenticatedRouteOut,
+        [
+            head,
+            entry_written,
+            refusal,
+            refusal_status,
+            route,
+            _reserved
         ]
     );
     record!(

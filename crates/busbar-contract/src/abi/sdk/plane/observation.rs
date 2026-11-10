@@ -29,6 +29,10 @@ pub struct ScopeRequest {
     /// Explicit declaration that every economic component is complete.
     #[serde(default)]
     pub close: bool,
+    /// Declared usage classes that must be priced in the original host binding
+    /// before paid work. Empty preserves existing lifecycle-only callers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_classes: Vec<u32>,
 }
 impl ScopeRequest {
     /// Request a newly reserved scope under host policy.
@@ -36,6 +40,7 @@ impl ScopeRequest {
         Self {
             scope: None,
             close: false,
+            required_classes: Vec::new(),
         }
     }
     /// Reattach original authenticated accounting custody.
@@ -43,6 +48,7 @@ impl ScopeRequest {
         Self {
             scope: Some(scope),
             close: false,
+            required_classes: Vec::new(),
         }
     }
     /// Declare complete lifecycle; host checks every known component is final.
@@ -50,28 +56,54 @@ impl ScopeRequest {
         Self {
             scope: Some(scope),
             close: true,
+            required_classes: Vec::new(),
         }
+    }
+    /// Reserve only when host policy prices every required declared usage class.
+    pub fn create_requiring(classes: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            required_classes: classes.into_iter().collect(),
+            ..Self::create()
+        }
+    }
+    /// Reattach only when original custody prices every required usage class.
+    pub fn attach_requiring(scope: ScopeId, classes: impl IntoIterator<Item = u32>) -> Self {
+        Self {
+            required_classes: classes.into_iter().collect(),
+            ..Self::attach(scope)
+        }
+    }
+    fn validate(&self) -> Result<(), InvalidObservation> {
+        if self.scope == Some([0; 32])
+            || (self.close && (self.scope.is_none() || !self.required_classes.is_empty()))
+            || self.required_classes.len() > 64
+            || self
+                .required_classes
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.required_classes.len()
+        {
+            return Err(InvalidObservation);
+        }
+        Ok(())
     }
     /// Bounded owned wire encoding.
     pub fn encode(&self) -> Result<Vec<u8>, InvalidObservation> {
-        if self.scope == Some([0; 32]) || (self.close && self.scope.is_none()) {
-            return Err(InvalidObservation);
-        }
+        self.validate()?;
         let bytes = serde_json::to_vec(self).map_err(|_| InvalidObservation)?;
-        if bytes.len() > 256 {
+        if bytes.len() > 1024 {
             return Err(InvalidObservation);
         }
         Ok(bytes)
     }
     /// Parse a bounded request, without inferring authorization from its bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, InvalidObservation> {
-        if bytes.len() > 256 {
+        if bytes.len() > 1024 {
             return Err(InvalidObservation);
         }
         let request: Self = serde_json::from_slice(bytes).map_err(|_| InvalidObservation)?;
-        if request.scope == Some([0; 32]) || (request.close && request.scope.is_none()) {
-            return Err(InvalidObservation);
-        }
+        request.validate()?;
         Ok(request)
     }
     /// Encode the normal owned plane output extension.
@@ -377,6 +409,8 @@ mod tests {
             ScopeRequest::create(),
             ScopeRequest::attach([1; 32]),
             ScopeRequest::close([1; 32]),
+            ScopeRequest::create_requiring([0, 1, 2]),
+            ScopeRequest::attach_requiring([1; 32], [0, 1, 2]),
         ] {
             assert_eq!(
                 ScopeRequest::from_extensions(&request.extension().unwrap()).unwrap(),
@@ -385,10 +419,21 @@ mod tests {
         }
         assert!(ScopeRequest {
             scope: None,
-            close: true
+            close: true,
+            required_classes: Vec::new(),
         }
         .encode()
         .is_err());
+        assert!(ScopeRequest::create_requiring([1, 1]).encode().is_err());
+        assert!(ScopeRequest::create_requiring(0..65).encode().is_err());
+        assert!(
+            ScopeRequest::decode(br#"{"scope":null,"close":false,"required_classes":[1,1]}"#)
+                .is_err()
+        );
+        assert_eq!(
+            ScopeRequest::decode(br#"{"scope":null,"close":false}"#).unwrap(),
+            ScopeRequest::create()
+        );
         assert_eq!(result(&[]).unwrap(), None);
         assert_eq!(
             result(&extensions::encode(&[(RESULT, br#"{"error":"pending"}"#)])).unwrap(),

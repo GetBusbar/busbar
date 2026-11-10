@@ -1540,6 +1540,7 @@ impl Instance {
         &self,
         ticket: Ticket,
         class: DeadlineClass,
+        original_operation: u32,
         unit: Option<u64>,
         framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     ) -> Crossed {
@@ -1553,6 +1554,7 @@ impl Instance {
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
                 let _span = span.enter();
                 let _framing = super::framing_context::enter(framing.clone());
+                let _original_phase = super::access::enter_kind(self.kind, original_operation);
                 // SAFETY: the kind's own `cancel` frame, live and unaliased for the call.
                 let mut crossed = unsafe { self.cross(slot::CANCEL, input, out, out_size) };
                 if crossed.outcome == Outcome::Ready {
@@ -1796,7 +1798,7 @@ impl Instance {
         let unit = (self.unit_of)(s, input.cast_const(), in_size);
         let _unit = super::services::serving(unit);
         let _ticket = super::services::crossing(ticket);
-        let _authority_phase = super::access::enter(s);
+        let _authority_phase = super::access::enter_kind(self.kind, s);
         // The copied receipt uses the existing epoch; its composed input loan lasts this call.
         // SAFETY: this crossing owns the host input frame and its original extension blob.
         let _inspection_input =
@@ -1860,15 +1862,17 @@ impl Instance {
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
             let framing = super::framing_context::current();
+            let read_only_route = super::access::read_only_route();
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
                 let _framing = super::framing_context::enter(framing);
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
+                let _read_only_route = super::access::inherit_read_only(read_only_route);
                 let _unit = super::services::serving(unit);
                 let _ticket = super::services::crossing(ticket);
-                let _authority_phase = super::access::enter(s);
+                let _authority_phase = super::access::enter_kind(self.kind, s);
                 super::export_bindings::crossing(binding.clone(), || {
                     with_crossing(Some(self), || {
                         let raw = enter_lifecycle((self.op_name)(s), op, instance, input, output);
@@ -2890,7 +2894,10 @@ impl<K: Kind> Plugin<K> {
     /// declared need checks remain unchanged. Unavailable in shipping builds.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_in_host_operation<R>(&self, run: impl FnOnce() -> R) -> R {
-        let _phase = super::access::enter(busbar_contract::abi::mechanism::lifecycle::slot::TICK);
+        let _phase = super::access::enter_kind(
+            self.inner.kind,
+            busbar_contract::abi::mechanism::lifecycle::slot::TICK,
+        );
         run()
     }
 

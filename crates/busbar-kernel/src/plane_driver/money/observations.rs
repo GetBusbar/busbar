@@ -367,6 +367,33 @@ impl PlaneMoney {
         Ok(())
     }
 
+    /// Check original durable pricing without disclosing prices or accepting guest authority.
+    pub(crate) async fn require_observation_classes(
+        &self,
+        unit: UnitKey,
+        required: &[u32],
+    ) -> Result<(), ObservationRuntimeError> {
+        if required.is_empty() {
+            return Ok(());
+        }
+        let bound = self
+            .shard(unit)
+            .get(&unit)
+            .and_then(|open| open.observation.clone())
+            .ok_or(ObservationRuntimeError::Unauthorized)?;
+        let binding = self.observation_store()?.binding(&bound).await?;
+        if required.iter().any(|class| {
+            !binding.classes.contains_key(class)
+                || binding
+                    .subjects
+                    .iter()
+                    .any(|subject| !subject.rates_nanos.contains_key(class))
+        }) {
+            return Err(ObservationRuntimeError::Unpriced);
+        }
+        Ok(())
+    }
+
     pub fn observation_scope(&self, unit: UnitKey) -> Option<ScopeId> {
         self.shard(unit)
             .get(&unit)?

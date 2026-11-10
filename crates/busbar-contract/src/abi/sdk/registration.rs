@@ -664,6 +664,86 @@
 //! ```
 //!
 
+//!
+//! ```
+//! // Authenticated route: complete opt-in.
+//! use busbar_contract::abi::{mechanism::call::Outcome, sdk::door::{KindOps, KindSlot, RawSlot, statement}};
+//! use busbar_contract::abi::plane::{Ops, slot};
+//! struct Operation<T, const N: u32>(std::marker::PhantomData<T>);
+//! impl<T: KindSlot<N>, const N: u32> RawSlot for Operation<T, N> {
+//!     type Kind = <Ops as KindOps>::Marker;
+//!     type In = <T as KindSlot<N>>::In;
+//!     type Out = <T as KindSlot<N>>::Out;
+//!     unsafe fn call(_: *mut std::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome { Outcome::Refused }
+//! }
+//! const TAIL: busbar_contract::abi::plane::PlaneTail = busbar_contract::abi::plane::PlaneTail { flags: busbar_contract::abi::plane::TAIL_AUTHENTICATED_ROUTE, ..busbar_contract::abi::plane::PlaneTail::EMPTY };
+//! type Life = <Ops as KindOps>::Lifecycle;
+//! busbar_contract::plugin_door! {
+//!     ops: Ops,
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&TAIL).cast(), ..statement("registration-plane", "1", 1) },
+//!     lifecycle: {
+//!         validate: Operation<Life, 0>,
+//!         open: Operation<Life, 1>,
+//!         refresh: Operation<Life, 2>,
+//!         retire: Operation<Life, 3>,
+//!         tick: Operation<Life, 4>,
+//!         drive: Operation<Life, 5>,
+//!         cancel: Operation<Life, 6>,
+//!         release: Operation<Life, 7>,
+//!         close: Operation<Life, 8>,
+//!     },
+//!     kind_ops: {
+//!         arrive: Operation<Ops, {slot::ARRIVE}>,
+//!         on_piece: Operation<Ops, {slot::ON_PIECE}>,
+//!         refusal: Operation<Ops, {slot::REFUSAL}>,
+//!         hydrate: Operation<Ops, {slot::HYDRATE}>,
+//!         start: Operation<Ops, {slot::START}>,
+//!         project: Operation<Ops, {slot::PROJECT}>,
+//!         authenticated_route: Operation<Ops, {slot::AUTHENTICATED_ROUTE}>,
+//!     },
+//! }
+//! fn main() { let _ = door(); }
+//! ```
+//!
+//! ```compile_fail,E0080
+//! // Authenticated route: a declaration without its operation fails at compile time.
+//! use busbar_contract::abi::{mechanism::call::Outcome, sdk::door::{KindOps, KindSlot, RawSlot, statement}};
+//! use busbar_contract::abi::plane::{Ops, slot};
+//! struct Operation<T, const N: u32>(std::marker::PhantomData<T>);
+//! impl<T: KindSlot<N>, const N: u32> RawSlot for Operation<T, N> {
+//!     type Kind = <Ops as KindOps>::Marker;
+//!     type In = <T as KindSlot<N>>::In;
+//!     type Out = <T as KindSlot<N>>::Out;
+//!     unsafe fn call(_: *mut std::ffi::c_void, _: &Self::In, _: &mut Self::Out) -> Outcome { Outcome::Refused }
+//! }
+//! const TAIL: busbar_contract::abi::plane::PlaneTail = busbar_contract::abi::plane::PlaneTail { flags: busbar_contract::abi::plane::TAIL_AUTHENTICATED_ROUTE, ..busbar_contract::abi::plane::PlaneTail::EMPTY };
+//! type Life = <Ops as KindOps>::Lifecycle;
+//! busbar_contract::plugin_door! {
+//!     ops: Ops,
+//!     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&TAIL).cast(), ..statement("registration-plane", "1", 1) },
+//!     lifecycle: {
+//!         validate: Operation<Life, 0>,
+//!         open: Operation<Life, 1>,
+//!         refresh: Operation<Life, 2>,
+//!         retire: Operation<Life, 3>,
+//!         tick: Operation<Life, 4>,
+//!         drive: Operation<Life, 5>,
+//!         cancel: Operation<Life, 6>,
+//!         release: Operation<Life, 7>,
+//!         close: Operation<Life, 8>,
+//!     },
+//!     kind_ops: {
+//!         arrive: Operation<Ops, {slot::ARRIVE}>,
+//!         on_piece: Operation<Ops, {slot::ON_PIECE}>,
+//!         refusal: Operation<Ops, {slot::REFUSAL}>,
+//!         hydrate: Operation<Ops, {slot::HYDRATE}>,
+//!         start: Operation<Ops, {slot::START}>,
+//!         project: Operation<Ops, {slot::PROJECT}>,
+//!     },
+//! }
+//! fn main() { let _ = door(); }
+//! ```
+
 use super::door::KindOps;
 use crate::abi::mechanism::{door::Statement, KindCode};
 
@@ -796,6 +876,11 @@ pub const unsafe fn check<T: KindOps>(st: &Statement, ops: &T) {
                     "plane registration tail is incomplete"
                 );
                 let t = &*st.kind_tail.cast::<crate::abi::plane::PlaneTail>();
+                assert!(
+                    t.flags & crate::abi::plane::TAIL_AUTHENTICATED_ROUTE == 0
+                        || o.authenticated_route.is_some(),
+                    "authenticated routing requires an authenticated_route implementation"
+                );
                 assert!(
                     t.admin_routes_len == 0 || o.serve.is_some(),
                     "plane admin routes require a serve implementation"

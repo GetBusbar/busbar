@@ -362,12 +362,26 @@ impl KernelServices {
                         scope
                     }
                     None => {
+                        // Refuse missing policy classes before reserving any money. An
+                        // already bound scope is checked against its original tariff below.
+                        if context.money.observation_scope(context.unit).is_none()
+                            && request
+                                .required_classes
+                                .iter()
+                                .any(|class| !context.policy.classes.contains(class))
+                        {
+                            return Err(crate::plane_driver::ObservationRuntimeError::Unpriced);
+                        }
                         context
                             .money
                             .issue_observation_scope(context.unit, &context.policy)
                             .await?
                     }
                 };
+                context
+                    .money
+                    .require_observation_classes(context.unit, &request.required_classes)
+                    .await?;
                 if request.close {
                     context.money.close_observation_scope(context.unit).await?;
                 }
@@ -417,10 +431,16 @@ mod tests {
         let rates = BTreeMap::from([(
             "serving".to_owned(),
             crate::config::RateEntryCfg {
-                units: BTreeMap::from([(
-                    "work_units".to_owned(),
-                    busbar_kernel_ledger::cost::UnitRate::from_whole_micros(rate).unwrap(),
-                )]),
+                units: BTreeMap::from([
+                    (
+                        "work_units".to_owned(),
+                        busbar_kernel_ledger::cost::UnitRate::from_whole_micros(rate).unwrap(),
+                    ),
+                    (
+                        "other_units".to_owned(),
+                        busbar_kernel_ledger::cost::UnitRate::from_whole_micros(rate).unwrap(),
+                    ),
+                ]),
                 ..Default::default()
             },
         )]);
@@ -458,7 +478,7 @@ mod tests {
                 cost,
                 pool: String::new(),
                 lane: "serving".into(),
-                classes: Arc::from(vec!["work_units".into()]),
+                classes: Arc::from(vec!["work_units".into(), "other_units".into()]),
                 arrived: 100,
                 mode: crate::config::groups::ExhaustionMode::FinishUnit,
                 fee: FeeRefund::CallerStatus,
@@ -473,7 +493,7 @@ mod tests {
         ticket: Ticket,
         unit: u64,
         request: ScopeRequest,
-    ) {
+    ) -> Result<Vec<u8>, &'static str> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         kernel
             .usage_observation_scope(
@@ -486,7 +506,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        rx.await.unwrap().unwrap();
+        rx.await.unwrap()
     }
     async fn submit(
         kernel: &KernelServices,
@@ -567,7 +587,31 @@ mod tests {
         assert!(kernel
             .usage_observation_input(&forged, ticket, Some(1))
             .is_none());
-        scope_request(&kernel, &caller, ticket, 1, ScopeRequest::create()).await;
+        assert_eq!(
+            scope_request(
+                &kernel,
+                &caller,
+                ticket,
+                1,
+                ScopeRequest::create_requiring([0, 1])
+            )
+            .await,
+            Err(REFUSED)
+        );
+        assert!(money.observation_scope(UnitKey::new(1)).is_none());
+        assert!(gov
+            .check_observation_admission(&original_cost, &key, "", 100, None)
+            .await
+            .is_ok());
+        scope_request(
+            &kernel,
+            &caller,
+            ticket,
+            1,
+            ScopeRequest::create_requiring([0]),
+        )
+        .await
+        .unwrap();
         let id = wire::scope(
             &kernel
                 .usage_observation_input(&caller, ticket, Some(1))
@@ -623,7 +667,9 @@ mod tests {
             ),
             Checkpoint::Unpriced
         );
-        scope_request(&kernel, &caller, ticket, 1, ScopeRequest::close(id)).await;
+        scope_request(&kernel, &caller, ticket, 1, ScopeRequest::close(id))
+            .await
+            .unwrap();
         assert_eq!(
             wire::result(
                 &kernel
@@ -666,9 +712,37 @@ mod tests {
             },
         );
         kernel
-            .register_observation_unit(&caller, UnitKey::new(2), money.clone(), policy)
+            .register_observation_unit(
+                &caller,
+                UnitKey::new(2),
+                money.clone(),
+                ObservationPolicy {
+                    classes: vec![0, 1],
+                    ..policy
+                },
+            )
             .unwrap();
-        scope_request(&kernel, &caller, ticket, 2, ScopeRequest::attach(id)).await;
+        // Current policy and current rates cover class 1, but original custody did not.
+        assert_eq!(
+            scope_request(
+                &kernel,
+                &caller,
+                ticket,
+                2,
+                ScopeRequest::attach_requiring(id, [0, 1])
+            )
+            .await,
+            Err(REFUSED)
+        );
+        scope_request(
+            &kernel,
+            &caller,
+            ticket,
+            2,
+            ScopeRequest::attach_requiring(id, [0]),
+        )
+        .await
+        .unwrap();
         let corrected = Observation::new(id, b"event".to_vec(), b"part".to_vec())
             .count(0, Count::from(12))
             .unwrap()

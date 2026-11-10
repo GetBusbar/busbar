@@ -209,6 +209,7 @@
 //!     (slot::START, offset_of!(Ops, start)),
 //!     (slot::PROJECT, offset_of!(Ops, project)),
 //!     (slot::CATALOG, offset_of!(Ops, catalog)),
+//!     (slot::AUTHENTICATED_ROUTE, offset_of!(Ops, authenticated_route)),
 //! ];
 //! assert_eq!(order.len() as u32, KIND_SLOTS);
 //! for (k, (index, offset)) in order.into_iter().enumerate() {
@@ -244,7 +245,7 @@ pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
-        head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog
+        head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog, authenticated_route
     ),
     crate::layout_shape!(DialectAuth => dialect, flags, style, params),
     crate::layout_shape!(OpClass => op, name),
@@ -291,6 +292,8 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
         refusal_status, refusal_flags, correlation, cancels, pool, route, route_flags,
         _route_reserved, affinity, trust_counterparty, trust_item, trust_digest
     ),
+    crate::layout_shape!(AuthenticatedRouteIn => head, unit, caller_ref, entry_buf, entry_cap),
+    crate::layout_shape!(AuthenticatedRouteOut => head, entry_written, refusal, refusal_status, route, _reserved),
     crate::layout_shape!(OnPieceIn =>
         head, unit, from, flags, stream, bytes, status_code, status_class, reply_buf, reply_cap,
         units_buf, units_cap, records_buf, records_cap, fields_buf, fields_cap, arena_buf,
@@ -364,14 +367,16 @@ pub mod slot {
     pub const PROJECT: u32 = LIFECYCLE_SLOTS + 6;
     /// Render a catalog route's listing of the names the kernel hands it.
     pub const CATALOG: u32 = LIFECYCLE_SLOTS + 7;
+    /// Resolve a deferred route after authentication, using read-only records.
+    pub const AUTHENTICATED_ROUTE: u32 = LIFECYCLE_SLOTS + 8;
 }
 
 /// How many kind ops the table holds after the lifecycle.
-pub const KIND_SLOTS: u32 = 8;
+pub const KIND_SLOTS: u32 = 9;
 /// How many slots the whole table holds ([`OpsHead::slots`]).
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
-/// The plane kind's ops table: the lifecycle, then the plane's eight ops.
+/// The plane kind's ops table: the lifecycle, then the plane's nine ops.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ops {
@@ -396,6 +401,8 @@ pub struct Ops {
     /// [`slot::CATALOG`]: in [`CatalogIn`], out [`CatalogOut`]. A tail addition: a plane that
     /// claims no [`CLAIM_CATALOG`] route leaves it `None`.
     pub catalog: Option<Op>,
+    /// Optional authenticated route continuation, required by [`TAIL_AUTHENTICATED_ROUTE`].
+    pub authenticated_route: Option<Op>,
 }
 
 /// Every kind op's contract, in slot order. `arrive`, `refusal`, `project` and `catalog` are pure:
@@ -412,6 +419,7 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(START, false, true, GenIn, OutHead, Call),
     contract!(PROJECT, true, false, ProjectIn, ProjectOut, Call),
     contract!(CATALOG, true, false, CatalogIn, CatalogOut, Call),
+    contract!(AUTHENTICATED_ROUTE, true, true, AuthenticatedRouteIn, AuthenticatedRouteOut, Call),
 ];
 
 /// [`crate::abi::mechanism::lifecycle::CancelOut::disposition`]: the unit was cut after the far end
@@ -435,6 +443,8 @@ pub const TAIL_PROBES: u32 = 1 << 1;
 pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
+/// The plane can resolve [`ROUTE_AUTHENTICATED`] through its optional continuation.
+pub const TAIL_AUTHENTICATED_ROUTE: u32 = 1 << 4;
 
 /// [`DialectAuth::flags`]: a provider's `protocol` may name this dialect.
 pub const DIALECT_PROVIDER: u32 = 1;
@@ -545,6 +555,11 @@ pub const ROUTE_SCOPE: u8 = 3;
 pub const ROUTE_SCOPE_SEPARATOR: &str = ", ";
 /// [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant
 pub const ROUTE_SCOPE_LOCAL: u8 = 4;
+/// Defer only destination selection until authentication; requires [`TAIL_AUTHENTICATED_ROUTE`].
+/// The continuation must name a concrete pool or direct entry for ordinary verification.
+pub const ROUTE_AUTHENTICATED: u8 = 5;
+/// Maximum UTF-8 entry-name bytes returned by the authenticated route continuation.
+pub const MAX_ROUTE_ENTRY_BYTES: usize = 4096;
 
 /// [`ArriveOut::route_flags`]: the unit's operation is performed at most once.
 pub const ROUTE_ONCE: u8 = 1;
@@ -1370,8 +1385,8 @@ pub mod cli_help {
 pub struct PlaneTail {
     /// The tail head.
     pub head: KindTailHead,
-    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`]; any
-    /// other bit refuses the load.
+    /// [`TAIL_FALLBACK`] | [`TAIL_PROBES`] | [`TAIL_HOOKS_GATED`] | [`TAIL_REFUSED_PIECE`] |
+    /// [`TAIL_AUTHENTICATED_ROUTE`]; any other bit refuses the load.
     pub flags: u32,
     /// `INGRESS_*` bits.
     pub ingress: u32,
@@ -2069,7 +2084,8 @@ pub struct ArriveOut {
     pub pool: AbiStr,
     /// On READY: [`ROUTE_POOL`] or [`ROUTE_DIRECT`], what [`ArriveOut::pool`] names, or
     /// [`ROUTE_LOCAL`], [`ROUTE_SCOPE`] or [`ROUTE_SCOPE_LOCAL`] with no pool named
-    /// (the scope's two naming their candidates there). A tail addition;
+    /// (the scope's two naming their candidates there), or [`ROUTE_AUTHENTICATED`] with
+    /// no pool to request the declared authenticated continuation. A tail addition;
     /// [`ROUTE_POOL`] on every
     /// other outcome.
     pub route: u8,
@@ -2100,6 +2116,42 @@ pub struct ArriveOut {
     /// With `trust_item`: the DIGEST the item is offered at now, as the plane observed it,
     /// opaque to the kernel. Absent = the item's last sighting (`trust.sight_item`) stands.
     pub trust_digest: AbiStr,
+}
+
+/// Authenticated route input. The original request remains keyed by `unit`; it is never replayed.
+/// The host supplies the verified caller's opaque reference, never credentials or a principal.
+/// Only clock and declared record reads are available in this operation, including its resumes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AuthenticatedRouteIn {
+    /// The live request ticket and bounded deadline.
+    pub head: InHead,
+    /// The immutable unit from `arrive`.
+    pub unit: u64,
+    /// Nonempty host-derived reference for the authenticated caller.
+    pub caller_ref: AbiStr,
+    /// Host-owned storage for the selected entry's UTF-8 bytes.
+    pub entry_buf: *mut u8,
+    /// At most [`MAX_ROUTE_ENTRY_BYTES`]; no short-buffer continuation is supported.
+    pub entry_cap: usize,
+}
+
+/// Route facts only. They pass through the ordinary destination, authorization and budget steps.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct AuthenticatedRouteOut {
+    /// The answer head.
+    pub head: OutHead,
+    /// Nonzero on READY, zero on all other outcomes.
+    pub entry_written: u32,
+    /// Opaque plugin refusal code on REFUSED, zero otherwise.
+    pub refusal: u32,
+    /// 400–499 on REFUSED, zero otherwise.
+    pub refusal_status: u32,
+    /// [`ROUTE_DIRECT`] or [`ROUTE_POOL`] on READY; zero otherwise.
+    pub route: u8,
+    /// Must be zero.
+    pub _reserved: [u8; 3],
 }
 
 /// `on_piece`'s `in`.
@@ -2739,6 +2791,7 @@ unsafe impl super::sdk::door::AbiIn for RefusalIn {}
 unsafe impl super::sdk::door::AbiIn for ServeIn {}
 unsafe impl super::sdk::door::AbiIn for ProjectIn {}
 unsafe impl super::sdk::door::AbiIn for CatalogIn {}
+unsafe impl super::sdk::door::AbiIn for AuthenticatedRouteIn {}
 unsafe impl super::sdk::door::AbiOut for PlaneOpenOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneRefreshOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneDriveOut {}
@@ -2749,6 +2802,7 @@ unsafe impl super::sdk::door::AbiOut for RefusalOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 unsafe impl super::sdk::door::AbiOut for ProjectOut {}
 unsafe impl super::sdk::door::AbiOut for CatalogOut {}
+unsafe impl super::sdk::door::AbiOut for AuthenticatedRouteOut {}
 
 super::sdk::door::slot_structs!(Ops {
     slot::ARRIVE => ArriveIn, ArriveOut;
@@ -2759,6 +2813,7 @@ super::sdk::door::slot_structs!(Ops {
     slot::START => GenIn, OutHead;
     slot::PROJECT => ProjectIn, ProjectOut;
     slot::CATALOG => CatalogIn, CatalogOut;
+    slot::AUTHENTICATED_ROUTE => AuthenticatedRouteIn, AuthenticatedRouteOut;
 });
 
 /// The plane's LIFECYCLE `in`/`out` ([`KindOps::Lifecycle`](super::sdk::door::KindOps::Lifecycle)):

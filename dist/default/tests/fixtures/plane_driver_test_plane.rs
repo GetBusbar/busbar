@@ -308,6 +308,7 @@ static OPS: Shared<Ops> = Shared(Ops {
     project: Some(project),
 
     catalog: Some(catalog),
+    authenticated_route: None,
 });
 
 // SAFETY: the Statement and plane table are this file's own `'static` data, laid out above: every

@@ -95,6 +95,7 @@ impl Drop for InlineServe<'_> {
             let cancelled = self.plugin.inner.cancel_abandoned(
                 self.ticket.ticket(),
                 <Export as crate::dispatch::Kind>::ticketed_class(slot::SERVE),
+                slot::SERVE,
                 None,
                 None,
             );

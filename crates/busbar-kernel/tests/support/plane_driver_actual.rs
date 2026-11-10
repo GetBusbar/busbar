@@ -6,6 +6,9 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+#[path = "plane_driver_authenticated_route.rs"]
+mod authenticated_route_cases;
+
 #[path = "plane_driver_cases.rs"]
 mod cases;
 
@@ -209,6 +212,8 @@ impl PieceInFlight for Flight {
 
 #[derive(Default)]
 struct Double {
+    authenticated_calls: Mutex<Vec<(u64, Vec<u8>)>>,
+    authenticated_pending: Mutex<Vec<Ticket>>,
     /// Each unit's state, keyed by the unit's kernel-minted key.
     units: Mutex<HashMap<u64, Unit>>,
     /// The caller's target each unit's `arrive` carried, keyed by `unit`: it crosses once.
@@ -930,6 +935,10 @@ impl PlaneCalls for Double {
                     out.route = ROUTE_SCOPE_LOCAL;
                     vec![estimate(0)]
                 }
+                b"/authenticated" | b"/authenticated-refused" | b"/authenticated-pending" => {
+                    out.route = busbar_contract::abi::plane::ROUTE_AUTHENTICATED;
+                    vec![estimate(input.body.len as u64)]
+                }
                 b"/session" => {
                     out.route = ROUTE_LOCAL;
                     out.route_flags = ROUTE_SESSION;
@@ -958,6 +967,47 @@ impl PlaneCalls for Double {
             return Outcome::Ready;
         }
         Outcome::Fault
+    }
+
+    fn authenticated_route(
+        &self,
+        ticket: Ticket,
+        input: busbar_contract::abi::plane::AuthenticatedRouteIn,
+        _: busbar_contract::abi::plane::AuthenticatedRouteOut,
+        lent: Lent,
+    ) -> Option<Box<dyn busbar_contract::plane_calls::AuthenticatedRouteInFlight>> {
+        self.authenticated_calls
+            .lock()
+            .unwrap()
+            .push((input.unit, unsafe { text(input.caller_ref) }.to_vec()));
+        let target = self
+            .heads
+            .lock()
+            .unwrap()
+            .get(&input.unit)
+            .cloned()
+            .unwrap();
+        let pending = target == b"/authenticated-pending";
+        let refused = target == b"/authenticated-refused";
+        if pending {
+            self.authenticated_pending.lock().unwrap().push(ticket);
+            self.held_lent.lock().unwrap().insert(ticket, lent);
+        } else if !refused {
+            assert!(input.entry_cap >= b"stored-entry".len());
+            // SAFETY: the kernel's retained host buffer has the checked capacity.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    b"stored-entry".as_ptr(),
+                    input.entry_buf,
+                    b"stored-entry".len(),
+                );
+            }
+        }
+        Some(Box::new(authenticated_route_cases::Flight {
+            pending,
+            refused,
+            settled: false,
+        }))
     }
 
     fn arrived_pool(&self, out: &ArriveOut) -> Option<Vec<u8>> {
@@ -1371,7 +1421,8 @@ impl PlaneCalls for Double {
     }
 
     fn drop_client(&self, ticket: Ticket) {
-        if !self.held.lock().unwrap().contains_key(&ticket) {
+        let pending_route = self.authenticated_pending.lock().unwrap().contains(&ticket);
+        if !pending_route && !self.held.lock().unwrap().contains_key(&ticket) {
             return;
         }
         let Some(unit) = self.tickets.lock().unwrap().get(&ticket).copied() else {
@@ -1903,7 +1954,9 @@ async fn the_driver_ticks_at_each_next_tick_and_stops_at_none() {
 fn declaring() -> Double {
     Double {
         declared: InstanceDecl {
+            authenticated_route: false,
             conditional_records: false,
+            conditional_records_optional: false,
             conditional_record_kinds: Vec::new(),
             label: Arc::from("inst"),
             record_kinds: vec!["approval"],
