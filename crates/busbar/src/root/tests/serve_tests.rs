@@ -309,3 +309,39 @@ async fn a_dropped_session_future_closes_its_admitted_carrier() {
         busbar_contract::UnitKey::new(1).get()
     );
 }
+
+#[cfg(linked_axis_plane_door)]
+#[test]
+fn linked_plane_minimal_configuration_fixtures_parse() {
+    crate::dist_root_install::install();
+    let mut supplied = std::collections::BTreeMap::new();
+    for (section, value) in super::door_cells_minimal_configs() {
+        assert!(
+            supplied.insert(section, value).is_none(),
+            "duplicate owner configuration fixture for {section}"
+        );
+    }
+    let declarations = busbar_kernel::plane_driver::registry::plane_decls();
+    for declaration in declarations {
+        let value = supplied
+            .remove(declaration.config_section)
+            .unwrap_or_else(|| panic!("missing owner fixture for {}", declaration.config_section));
+        if declaration.fallback {
+            continue;
+        }
+        let parse = declaration
+            .parse_section
+            .expect("nonfallback plane exposes its configuration parser");
+        let yaml = serde_yaml::to_value(value).expect("owner configuration converts to YAML");
+        parse(declaration, &yaml).unwrap_or_else(|error| {
+            panic!(
+                "{} owner fixture does not parse: {error}",
+                declaration.config_section
+            )
+        });
+    }
+    assert!(
+        supplied.is_empty(),
+        "owner fixtures have no registered plane: {supplied:?}"
+    );
+}
