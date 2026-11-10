@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+#[path = "../../../../plugin-loader/tests/fixtures/neutral_secret_plugin.rs"]
+mod secret_witness;
+
 fn constructor_output(command: &mut std::process::Command) -> std::process::Output {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
@@ -182,12 +185,12 @@ __attribute__((constructor)) static void mark_loaded(void) {
         String::from_utf8_lossy(&compiled.stderr)
     );
     let library = std::fs::read(image).unwrap();
-    let stated = crate::root::loader::dispatch::rendering_of(busbar_secret_env::door).unwrap();
+    let stated = crate::root::loader::dispatch::rendering_of(secret_witness::door).unwrap();
     let key = crate::root::loader::sign::SigningKey::from_bytes(&[0x39; 32]);
     let manifest = crate::root::loader::sign::sign(
         &key,
         crate::root::loader::sign::Manifest {
-            name: "busbar-secret-env".into(),
+            name: secret_witness::NAME.into(),
             alias: "constructor-secret".into(),
             kind: "secret".into(),
             version: "1.6.0".into(),
