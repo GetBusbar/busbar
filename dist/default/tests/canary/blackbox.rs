@@ -260,6 +260,15 @@ fn env_of(cmd: &mut Command, dir: &Path, c: &NodeCanaries) {
         .env("RUST_LOG", "trace");
 }
 
+struct Reap(Child);
+
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn stop(child: &mut Child) {
     let _ = Command::new("kill")
         .arg("-TERM")
@@ -367,17 +376,17 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     env_of(&mut cmd, &dir, c);
     cmd.stdout(log.try_clone().expect("the log twice"))
         .stderr(log);
-    let mut child = cmd.spawn().expect("spawn busbar");
+    let mut child = Reap(cmd.spawn().expect("spawn busbar"));
     let _dump = common::boot::DumpOnPanic(&log_path);
     let read_log = || std::fs::read_to_string(&log_path).unwrap_or_default();
     let up = wait_for(Duration::from_secs(30), || {
-        if child.try_wait().ok().flatten().is_some() {
+        if child.0.try_wait().ok().flatten().is_some() {
             return true;
         }
         common::boot::healthz_answers(data)
     });
     assert!(
-        up && child.try_wait().ok().flatten().is_none(),
+        up && child.0.try_wait().ok().flatten().is_none(),
         "the planted node serves; log:\n{}",
         read_log()
     );
@@ -401,7 +410,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
         .and_then(|r| r.split('"').next())
         .map(str::to_string);
     let Some(token) = token.filter(|token| !token.is_empty()) else {
-        stop(&mut child);
+        stop(&mut child.0);
         panic!("the canary admin key was not minted; no authenticated data-plane witness ran");
     };
     let key = format!("Bearer {token}");
@@ -452,7 +461,7 @@ pub fn node(c: &NodeCanaries) -> (Vec<Sink>, Vec<String>) {
     }
 
     std::thread::sleep(Duration::from_millis(500));
-    stop(&mut child);
+    stop(&mut child.0);
     assert!(
         missing_views.is_empty(),
         "authenticated admin views did not serve their JSON bodies: {missing_views:?}; their redaction was not exercised"
@@ -504,6 +513,41 @@ fn validate(dir: &Path, config: &str, env: &[(&str, &str)]) -> (i32, String) {
     )
 }
 
+// URL scheme admission belongs to the connector at readiness, after shape validation.
+// Require its actual refusal so a successful --validate cannot make this probe vacuous.
+fn webhook_readiness_refusal(dir: &Path, config: &str) -> String {
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!("{config}admin_listen: \"127.0.0.1:0\"\nauth: {{chain: []}}\n"),
+    )
+    .expect("the readiness refusal config");
+    let path = dir.join("readiness.log");
+    let log = std::fs::File::create(&path).expect("the readiness log");
+    let mut cmd = Command::new(common::boot::exe());
+    cmd.env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env_remove("BUSBAR_PROVIDERS")
+        .env("MOCK_KEY", "not-a-canary")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .stdout(log.try_clone().expect("the readiness log twice"))
+        .stderr(log);
+    let mut child = Reap(cmd.spawn().expect("spawn readiness probe"));
+    let refused = wait_for(Duration::from_secs(30), || {
+        std::fs::read_to_string(&path).is_ok_and(|text| {
+            text.contains("BUSBAR-7070") && text.contains("disabling this webhook exporter")
+        })
+    });
+    stop(&mut child.0);
+    let text = std::fs::read_to_string(&path).expect("read readiness log");
+    assert!(
+        refused,
+        "the webhook scheme is refused at readiness: {text}"
+    );
+    text
+}
+
 pub struct RefusalCanaries {
     pub inline_api_key: Canary,
     pub webhook_header_shape: Canary,
@@ -529,7 +573,7 @@ type RefusalCase = (&'static str, String, Vec<(&'static str, String)>);
 pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
     let dir = scratch("refusals");
     let mut sinks = Vec::new();
-    let mut notes = Vec::new();
+    let notes = Vec::new();
     let head = format!(
         "listen: \"127.0.0.1:0\"\nproviders_file: \"{}\"\nstore: {{module: memory}}\n",
         dir.join("providers.yaml").display()
@@ -559,7 +603,7 @@ pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
             vec![("CANARY_H2", c.webhook_header_shape.value.clone())],
         ),
         (
-            // A refused (non-https) webhook URL carrying a token in its query.
+            // A non-https webhook URL carrying a query token: refused at readiness.
             "webhook-url-scheme",
             format!(
                 "{head}providers:\n  mock:\n    api_key: {{ env: MOCK_KEY }}\n{model}export:\n  hook:\n    \
@@ -592,16 +636,26 @@ pub fn refusals(c: &RefusalCanaries) -> (Vec<Sink>, Vec<String>) {
     for (name, config, env) in cases {
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let (code, text) = validate(&dir, &config, &env);
-        if code == 0 {
-            notes.push(format!(
-                "refusal case `{name}` was ACCEPTED by --validate (exit 0)"
+        if name == "webhook-url-scheme" {
+            assert_eq!(code, 0, "the webhook shape reaches readiness: {text}");
+            sinks.push(Sink::text(
+                format!("validate:{name}"),
+                "busbar --validate",
+                text,
+            ));
+            sinks.push(Sink::text(
+                format!("refusal:{name}"),
+                "busbar readiness",
+                webhook_readiness_refusal(&dir, &config),
+            ));
+        } else {
+            assert_ne!(code, 0, "refusal case `{name}` was accepted: {text}");
+            sinks.push(Sink::text(
+                format!("refusal:{name}"),
+                format!("busbar --validate (exit {code})"),
+                text,
             ));
         }
-        sinks.push(Sink::text(
-            format!("refusal:{name}"),
-            format!("busbar --validate (exit {code})"),
-            text,
-        ));
     }
     let _ = std::fs::remove_dir_all(&dir);
     (sinks, notes)
