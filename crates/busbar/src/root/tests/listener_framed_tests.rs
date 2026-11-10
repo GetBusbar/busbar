@@ -1585,10 +1585,11 @@ async fn actual_session_framer() -> (
     };
     let (http_door, ws_door): (Arc<dyn FramerDoor>, Arc<dyn FramerDoor>) =
         (http.clone(), ws.clone());
-    let framer = data_framer(Arc::new(move |scheme| match scheme {
-        DATA_SCHEME => Some(http_door.clone()),
-        "ws" => Some(ws_door.clone()),
-        _ => None,
+    let framer = data_framer(Arc::new(move |scheme| {
+        [&http_door, &ws_door]
+            .into_iter()
+            .find(|door| door.facts().claims.contains(&scheme))
+            .cloned()
     }))
     .expect("actual HTTP opens the connection and WS owns its admitted upgrade");
     (publishing, framer, http, ws)

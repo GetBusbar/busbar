@@ -519,7 +519,7 @@ impl DeclaredConns for Far {
         DeclaredConns::declared(self, owner, need).is_some()
     }
     fn serves_scheme(&self, transport: &str) -> bool {
-        transport == "http"
+        transport == busbar_contract::http::uri::Scheme::HTTP.as_str()
     }
 }
 

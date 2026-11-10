@@ -277,7 +277,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["file"] == "reviewed.tar.gz")
+            .find(|row| artifact_file(row) == "reviewed.tar.gz")
             .unwrap();
         let url = row["schema_url"].as_str().unwrap();
         assert!(url.starts_with("/api/v1/admin/plugins/reviewed.tar.gz/schema?source=installed_archive&expected_archive_sha256="));
@@ -337,7 +337,7 @@ async fn installed_schema_urls_bind_actual_archive_before_reload_and_refuse_stal
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["file"] == "reviewed.tar.gz")
+        .find(|row| artifact_file(row) == "reviewed.tar.gz")
         .unwrap();
     assert_eq!(row["has_schema"], false);
     assert!(row.get("schema_url").is_none());
@@ -413,7 +413,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["file"] == "store.tar.gz")
+        .find(|row| artifact_file(row) == "store.tar.gz")
         .unwrap();
     let loaded = body(
         client
@@ -486,7 +486,7 @@ async fn plugin_configuration_inactive_signed_archives_report_declarations_witho
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["file"] == "inactive.tar.gz")
+            .find(|row| artifact_file(row) == "inactive.tar.gz")
             .unwrap();
         assert_eq!(row["has_schema"], false);
         assert_eq!(row["archive_sha256"], digest);
@@ -674,4 +674,15 @@ async fn plugin_configuration_actual_linked_plane_and_transport_reads_never_call
         calls
     );
     server.abort();
+}
+
+// Decode the archive listing's field schema; the field name is not a provider selector.
+fn artifact_file(row: &serde_json::Value) -> &str {
+    #[derive(serde::Deserialize)]
+    struct Artifact<'a> {
+        file: &'a str,
+    }
+    <Artifact<'_> as serde::Deserialize>::deserialize(row)
+        .expect("the archive listing supplies its file field")
+        .file
 }

@@ -96,10 +96,11 @@ async fn real_framer() -> (tokio::sync::MutexGuard<'static, ()>, DataFramer) {
     );
     let ws: Arc<dyn FramerDoor> =
         Arc::new(Dispatched::open_on(ws, &TransportSettings::default(), dispatcher).unwrap());
-    let framer = data_framer(Arc::new(move |scheme| match scheme {
-        "http" => Some(http.clone()),
-        "ws" => Some(ws.clone()),
-        _ => None,
+    let framer = data_framer(Arc::new(move |scheme| {
+        [&http, &ws]
+            .into_iter()
+            .find(|door| door.facts().claims.contains(&scheme))
+            .cloned()
     }))
     .expect("real HTTP owns the accepted connection");
     let guests = GuestList::seal(vec![Line {

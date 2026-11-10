@@ -212,7 +212,7 @@ async fn exercise(case: Case) {
     let actual_http = Arc::clone(&http);
     let actual_ws = Arc::clone(&ws);
     let framers: crate::root::listener::framed::FramerFor = Arc::new(move |claim| {
-        if claim == "http" {
+        if actual_http.facts().claims.contains(&claim) {
             return Some(Arc::clone(&actual_http));
         }
         selections.lock().unwrap().push(claim.to_owned());

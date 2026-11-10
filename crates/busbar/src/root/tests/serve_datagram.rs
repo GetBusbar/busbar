@@ -767,24 +767,22 @@ async fn boot_binds_a_claim_door_for_the_actual_datagram_product_and_no_stream_l
         }
     }
     fn framers(scheme: &str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
-        match scheme {
-            "webrtc" => Some(real::loaded()),
-            "http" => {
-                let plugin = crate::root::test_plugins::linked_transport(
-                    busbar_transport_http::door,
-                    crate::root::doors::bind(),
-                );
-                Some(Arc::new(
-                    crate::root::doors::Dispatched::open(
-                        plugin,
-                        &busbar_contract::transport::TransportSettings::default(),
-                    )
-                    .unwrap(),
-                ))
-            }
-            _ => None,
-        }
+        let plugin = crate::root::test_plugins::linked_transport(
+            busbar_transport_http::door,
+            crate::root::doors::bind(),
+        );
+        let stream: Arc<dyn busbar_core_connector::framer::FramerDoor> = Arc::new(
+            crate::root::doors::Dispatched::open(
+                plugin,
+                &busbar_contract::transport::TransportSettings::default(),
+            )
+            .unwrap(),
+        );
+        [real::loaded(), stream]
+            .into_iter()
+            .find(|door| door.facts().claims.contains(&scheme))
     }
+
     let root = crate::root::loader::boot::InboundBind {
         owner: crate::root::loader::boot::BindOwner::Root,
         transport: String::new(),

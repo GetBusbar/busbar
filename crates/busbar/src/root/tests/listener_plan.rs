@@ -1559,7 +1559,7 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
                 root_only: false,
             }])
             .unwrap();
-        if transport == "ws" {
+        if ws.facts().claims.contains(&transport) {
             assert!(
                 plan.check(&app).is_err(),
                 "a partially mounted snapshot must not defer claim proof"

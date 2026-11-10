@@ -108,18 +108,38 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
     document["identity-providers"][operator] = serde_json::json!({
         "module": operator, "token": { "file": operator_token },
     });
-    for declaration in busbar_kernel::plane_driver::registry::plane_decls() {
-        if declaration.fallback {
-            continue;
-        }
-        let section = declaration.config_section;
-        let value = match section {
-            "tools" | "agents" => serde_json::json!({"hooks": []}),
-            "decisions" => serde_json::json!({"models": {}, "hooks": []}),
-            "streams" => serde_json::json!({"context_window_tokens": 32768}),
-            _ => panic!("provide an actual valid config for linked plane section {section}"),
-        };
-        document[section] = value;
+    // Each actual plane supplies its own valid configuration through its kind test fixture.
+    // The census owns coverage, but has no knowledge of any plane's configuration grammar.
+    let mut fixtures = std::collections::BTreeMap::new();
+    for (section, value) in crate::root::serve::door_cells_minimal_configs() {
+        assert!(
+            fixtures.insert(section, value).is_none(),
+            "duplicate plane fixture: {section}"
+        );
+    }
+    let declarations = busbar_kernel::plane_driver::registry::plane_decls();
+    let expected: std::collections::BTreeSet<_> = declarations
+        .iter()
+        .filter(|declaration| !declaration.fallback)
+        .map(|declaration| declaration.config_section)
+        .collect();
+    let supplied: std::collections::BTreeSet<_> = fixtures
+        .keys()
+        .copied()
+        .filter(|section| {
+            !declarations
+                .iter()
+                .any(|declaration| declaration.fallback && declaration.config_section == *section)
+        })
+        .collect();
+    assert_eq!(
+        supplied, expected,
+        "actual nonfallback planes require exactly one owned configuration fixture"
+    );
+    for section in expected {
+        document[section] = fixtures
+            .remove(section)
+            .expect("the exact fixture census was checked");
     }
     let deploy = busbar_kernel::config::deploy_from_deserializer(document)
         .expect("the actual admin deployment parses");

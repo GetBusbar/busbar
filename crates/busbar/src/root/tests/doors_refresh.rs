@@ -208,7 +208,7 @@ async fn an_apply_refreshes_a_live_transport_and_its_next_dial_spawns() {
         "a refused apply preserves the hold"
     );
     assert!(native.is_none());
-    let refused = refresh_named(&settings, |name| name == "stdio");
+    let refused = refresh_named(&settings, |name| name == door.facts().name);
     assert!(
         refused.is_empty(),
         "the root's named apply is accepted: {refused:?}"
@@ -415,7 +415,7 @@ async fn real_stdio_refresh_keeps_settings(test_name: &'static str) {
         ..settings
     };
     assert!(
-        refresh_named(&applied, |row| row == "stdio").is_empty(),
+        refresh_named(&applied, |row| row == door.facts().name).is_empty(),
         "the root refresh registry reaches this actual live carrier"
     );
     assert_eq!(

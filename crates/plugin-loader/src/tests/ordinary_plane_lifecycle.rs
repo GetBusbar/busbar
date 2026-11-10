@@ -403,8 +403,24 @@ mod lifecycle_connections {
 
     /// Empty MCP configuration performs no connector I/O, but serving still binds every
     /// actual declared need. Probe mode intentionally omits those generation bindings.
-    #[derive(Default)]
-    pub(super) struct Table(Mutex<HashSet<(InstanceId, NeedId)>>);
+    pub(super) struct Table(Mutex<HashSet<(InstanceId, NeedId)>>, HashSet<String>);
+
+    impl Default for Table {
+        fn default() -> Self {
+            let row = crate::dispatch::LinkedRow::of(crate::actual_mcp::door)
+                .expect("the actual plane states its needs");
+            let stated = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+                .expect("the actual plane statement reads");
+            Self(
+                Mutex::default(),
+                stated
+                    .needs
+                    .into_iter()
+                    .map(|need| need.transport)
+                    .collect(),
+            )
+        }
+    }
 
     impl Conns for Table {
         fn open(&self, _: InstanceId, _: NeedId, _: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
@@ -465,7 +481,7 @@ mod lifecycle_connections {
                 .then_some(Ok(()))
         }
         fn serves_scheme(&self, transport: &str) -> bool {
-            matches!(transport, "http" | "stdio")
+            self.1.contains(transport)
         }
         fn declare_member_programs(
             &self,
