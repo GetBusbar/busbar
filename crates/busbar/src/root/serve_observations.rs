@@ -2,20 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_contract::section::USAGE_OBSERVATIONS_KEY;
+use busbar_contract::section::{usage_observation_policies, USAGE_OBSERVATIONS_KEY};
 use busbar_kernel::plane_driver::ObservationPolicy;
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Policy {
-    accounting_namespace: String,
-    classes: Vec<String>,
-    #[serde(default)]
-    rated_subjects: Vec<String>,
-    reserve_nanos: u64,
-    #[serde(default)]
-    ordered_revisions: bool,
-}
 
 pub(super) fn parse(
     instance: &str,
@@ -26,7 +14,7 @@ pub(super) fn parse(
     let Some(value) = section.get(USAGE_OBSERVATIONS_KEY) else {
         return Ok(BTreeMap::new());
     };
-    let configured: BTreeMap<String, Policy> = serde_yaml::from_value(value.clone())
+    let configured = usage_observation_policies(value.clone())
         .map_err(|e| format!("{instance}.{USAGE_OBSERVATIONS_KEY}: {e}"))?;
     if configured.len() > 256 {
         return Err("too many observation upstream bindings".into());

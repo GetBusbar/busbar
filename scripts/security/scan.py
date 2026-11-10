@@ -21,6 +21,8 @@ import uuid
 
 from secret_fixtures import classify
 
+DIAGNOSTIC_LIMIT = 100
+
 
 def require(ok, message):
     if not ok:
@@ -66,7 +68,7 @@ def export_source(checkout, revision, destination):
 
 
 def inspect_report(kind, report):
-    """Return only safe counts; no source lines or matches enter the public receipt."""
+    """Validate scanner completion and count findings, including public fixtures."""
     require(isinstance(report, dict), 'scanner report is not an object')
     if kind == 'sast':
         require(isinstance(report.get('results'), list) and isinstance(report.get('errors'), list),
@@ -86,6 +88,89 @@ def inspect_report(kind, report):
         require(isinstance(findings, list), 'invalid scanner findings')
         count += len(findings)
     return count
+
+
+def finding_diagnostics(kind, report, *, source_paths, rule_ids):
+    """Project known metadata fields, never messages, snippets, matches or metavars.
+
+    Invalid/oversized optional metadata is omitted, not truncated or stringified.
+    Paths must name exported source files; artifact-only targets are omitted.
+    Package names and versions are necessarily candidate metadata: this is a
+    bounded diagnostic projection, not a detector of secrets encoded in names.
+    """
+    def matches(value, pattern, limit):
+        return isinstance(value, str) and len(value) <= limit and re.fullmatch(pattern, value)
+
+    def location(value):
+        if not isinstance(value, str):
+            return None
+        value = value.removeprefix('/input/')
+        if (matches(value, r'[A-Za-z0-9_.+/-]+', 512) and value in source_paths
+                and not any(part in ('', '.', '..') for part in value.split('/'))):
+            return value
+        return None
+
+    def severity(value):
+        return value if isinstance(value, str) and value in {
+            'UNKNOWN', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'INFO', 'WARNING', 'ERROR'} else None
+
+    def version(value):
+        return value if matches(value, r'[0-9][A-Za-z0-9.+:~_-]*', 64) else None
+
+    diagnostics = []
+    if kind == 'sast':
+        findings = ((None, finding) for finding in report['results'])
+    elif kind == 'dependencies':
+        findings = ((result.get('Target'), finding) for result in report.get('Results', [])
+                    for finding in result.get('Vulnerabilities') or [])
+    else:
+        raise ValueError('unsupported diagnostic kind')
+    for target, finding in findings:
+        require(isinstance(finding, dict), 'invalid scanner finding')
+        if len(diagnostics) == DIAGNOSTIC_LIMIT:
+            continue
+        item = {}
+        if kind == 'sast':
+            check_id = finding.get('check_id')
+            if matches(check_id, r'[A-Za-z0-9_.-]+', 256):
+                # Semgrep may prefix IDs with the config path. Emit only the
+                # canonical ID from trusted policy, never a report-supplied prefix.
+                rules = [rule for rule in rule_ids
+                         if check_id == rule or check_id.endswith('.' + rule)]
+                if len(rules) == 1:
+                    item['rule_id'] = rules[0]
+            path = location(finding.get('path'))
+            start = finding.get('start')
+            if path and isinstance(start, dict) and type(start.get('line')) is int:
+                if 0 < start['line'] <= 10_000_000:
+                    item['line'] = start['line']
+            extra = finding.get('extra')
+            level = severity(extra.get('severity')) if isinstance(extra, dict) else None
+        else:
+            advisory = finding.get('VulnerabilityID')
+            if matches(advisory, r'(?:CVE-[0-9]{4}-[0-9]{4,19}|RUSTSEC-[0-9]{4}-[0-9]{4}|'
+                       r'GHSA-[23456789cfghjmpqrvwx]{4}-[23456789cfghjmpqrvwx]{4}-'
+                       r'[23456789cfghjmpqrvwx]{4})', 64):
+                item['vulnerability_id'] = advisory
+            package = finding.get('PkgName')
+            if matches(package, r'(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9][A-Za-z0-9_.+:-]*', 128):
+                item['package'] = package
+            installed = version(finding.get('InstalledVersion'))
+            if installed:
+                item['installed_version'] = installed
+            fixed = finding.get('FixedVersion')
+            if isinstance(fixed, str) and len(fixed) <= 256:
+                versions = [value.strip() for value in fixed.split(',')]
+                if 0 < len(versions) <= 8 and all(version(value) for value in versions):
+                    item['fixed_versions'] = versions
+            path = location(target)
+            level = severity(finding.get('Severity'))
+        if path:
+            item['path'] = path
+        if level:
+            item['severity'] = level
+        diagnostics.append(item)
+    return diagnostics
 
 
 def database_identity(cache, max_age, now=None):
@@ -164,6 +249,15 @@ class Scanner:
             report = json.loads(data)
             count = inspect_report(kind, report)
             row['findings'] = count  # Raw count, including classified public fixtures.
+            if kind in ('dependencies', 'sast'):
+                # This first-party policy uses one plain ID per line. Unknown or
+                # differently formatted IDs are safely omitted from diagnostics.
+                rule_ids = (re.findall(r'^  - id: ([A-Za-z0-9_.-]{1,128})$',
+                            (self.policy / 'semgrep.yaml').read_text(), re.MULTILINE)
+                            if kind == 'sast' else [])
+                row['diagnostics'] = finding_diagnostics(kind, report,
+                    source_paths={entry['path'] for entry in self.source_rows}, rule_ids=rule_ids)
+                row['diagnostics_omitted'] = count - len(row['diagnostics'])
             if kind == 'secrets':
                 private = self.work / 'private-scanner-reports'
                 private.mkdir(mode=0o700, exist_ok=True)
