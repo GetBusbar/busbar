@@ -239,6 +239,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     refusal_statuses: &STATUSES.0 as *const RefusalStatus,
     refusal_statuses_len: 3,
     caller_credential_refusal: NO_STR,
+    admin_routes: ADMIN_ROUTES.0.as_ptr(),
+    admin_routes_len: ADMIN_ROUTES.0.len(),
     admin_openapi: NO_BLOB,
     ..PlaneTail::ZERO
 });
