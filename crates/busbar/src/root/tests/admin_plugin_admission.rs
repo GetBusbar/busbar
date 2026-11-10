@@ -176,7 +176,9 @@ async fn serve_admission_with_inputs(
         .as_mut()
         .expect("configured authentication")
         .admin_auth[0]
-        .token = Some(busbar_kernel::config::secret::SecretRef::file(
+        .token = Some(crate::root::test_plugins::source_reference(
+        crate::root::linked::secret_rows(),
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         admin_token_file.to_string_lossy(),
     ));
     let documents = Arc::new(crate::root::startup_upgrade::documents::Documents::default());

@@ -21,6 +21,17 @@ use std::path::{Path, PathBuf};
 mod native_fixture;
 pub(crate) use native_fixture::core_over;
 
+/// Build a canonical fixture reference from the admitted source owner's grammar.
+pub fn source_reference(
+    axis: &dyn busbar_contract::secret::SecretAxis,
+    role: &str,
+    value: impl Into<String>,
+) -> busbar_contract::secret_ref::SecretRef {
+    axis.sugars()
+        .reference_for_role(role, value)
+        .expect("the admitted source declares the fixture's role")
+}
+
 /// The separately built durable Store used by normal application boot fixtures.
 pub fn application_store_library() -> PathBuf {
     let path = PathBuf::from(
@@ -90,7 +101,9 @@ impl FreshApplicationStore {
         plugins: &busbar_kernel::config::PluginsCfg,
     ) -> Result<std::sync::Arc<busbar_kernel::persistence::facade::CoreStore>, String> {
         use busbar_kernel::governance::principal_transition as transition;
-        let store_sha256 = transition::store_fingerprint(&cfg.store)?;
+        let seal = busbar_kernel::seal::acquire();
+        let store_sha256 =
+            transition::store_fingerprint(&cfg.store.as_ref().map(|store| store.authoring(&seal)))?;
         if store_sha256 != self.store_sha256 {
             return Err(
                 "new fixture Store configuration changed before baseline initialization".into(),
@@ -158,7 +171,8 @@ pub async fn provision_fresh_application_store_with_backend(
         .as_ref()
         .expect("the fixture explicitly selects its Store");
     assert_eq!(
-        serde_json::Value::Object(store.settings.clone()),
+        serde_json::to_value(store.settings.authoring(&busbar_kernel::seal::acquire()))
+            .expect("the authorized fixture Store settings serialize"),
         application_store_settings(directory),
         "the fixture owns the exact configured application database path"
     );
@@ -190,11 +204,12 @@ pub async fn provision_fresh_application_store_with_backend(
     let evidence_sha256 = sha256_hex(&evidence);
     let backend = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins).await?;
     let opened = core_over(decorate(backend)).await;
+    let seal = busbar_kernel::seal::acquire();
     Ok(FreshApplicationStore {
         opened,
         evidence_sha256,
         store_sha256: busbar_kernel::governance::principal_transition::store_fingerprint(
-            &cfg.store,
+            &cfg.store.as_ref().map(|store| store.authoring(&seal)),
         )?,
     })
 }

@@ -267,7 +267,8 @@ async fn neutral_auth_refusal(target: &str, expected_status: u32) {
     let _server = Server(tokio::spawn(async move {
         axum::serve(listener, router).await.unwrap()
     }));
-    let mut hook = serde_json::to_value(&g.screen_hook).unwrap();
+    let mut hook =
+        serde_json::to_value(g.screen_hook.authoring(&busbar_kernel::seal::acquire())).unwrap();
     hook["kind"] = serde_json::json!("tap");
     hook["phase"] = serde_json::json!(["response"]);
     hook["settings"]["url"] = serde_json::json!(endpoint);

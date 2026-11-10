@@ -94,7 +94,9 @@ fn resolved(sections: &str) -> RootCfg {
         .expect("write the actual file-backed signing input");
     std::fs::write(&operator_token, "admintok")
         .expect("write the actual file-backed operator input");
-    auth.signing_key = Some(busbar_kernel::config::SecretRef::file(
+    auth.signing_key = Some(crate::root::test_plugins::source_reference(
+        crate::root::linked::secret_rows(),
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         signing_key.to_string_lossy().into_owned(),
     ));
     let operator = auth
@@ -102,7 +104,9 @@ fn resolved(sections: &str) -> RootCfg {
         .iter_mut()
         .find(|entry| busbar_kernel::config::names_operator(&entry.module))
         .expect("the actual operator module");
-    operator.token = Some(busbar_kernel::config::SecretRef::file(
+    operator.token = Some(crate::root::test_plugins::source_reference(
+        crate::root::linked::secret_rows(),
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         operator_token.to_string_lossy().into_owned(),
     ));
     cfg.auth = Some(auth);
@@ -241,7 +245,8 @@ async fn oversized_post_to_a_mounted_door_plane_is_refused_in_the_planes_own_dia
         settings: settings
             .as_object()
             .expect("product settings object")
-            .clone(),
+            .clone()
+            .into(),
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -344,7 +349,8 @@ async fn a_mount_claims_its_own_segment_and_not_its_sibling() {
         settings: settings
             .as_object()
             .expect("product settings object")
-            .clone(),
+            .clone()
+            .into(),
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -469,7 +475,8 @@ async fn plane_slot_holds_the_one_built_object_of_each_configured_plane() {
         settings: settings
             .as_object()
             .expect("product settings object")
-            .clone(),
+            .clone()
+            .into(),
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -618,7 +625,8 @@ async fn plane_slot_is_none_when_the_plane_is_not_configured() {
         settings: settings
             .as_object()
             .expect("product settings object")
-            .clone(),
+            .clone()
+            .into(),
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -773,7 +781,8 @@ mod metrics_scrape {
             settings: settings
                 .as_object()
                 .expect("product settings object")
-                .clone(),
+                .clone()
+                .into(),
         });
         let plugin_config = plugins::trusted_config(&directory);
         let rules = Arc::new(crate::root::door_steps::Rules::default())
@@ -1035,7 +1044,8 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
         settings: settings
             .as_object()
             .expect("product settings object")
-            .clone(),
+            .clone()
+            .into(),
     });
     let plugin_config = plugins::trusted_config(&directory);
     let rules = Arc::new(crate::root::door_steps::Rules::default())

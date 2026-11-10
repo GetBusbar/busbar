@@ -237,9 +237,14 @@ fn registration(
         busbar_contract::section::member_target(served.need_trust[at]).expect("a trust path");
 
     let file = |p: &Path| -> Value {
-        serde_yaml::to_value(busbar_contract::secret_ref::SecretRef::file(
-            p.display().to_string(),
-        ))
+        serde_yaml::to_value(
+            crate::root::test_plugins::source_reference(
+                crate::root::linked::secret_rows(),
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+                p.display().to_string(),
+            )
+            .authoring(&busbar_kernel::seal::acquire()),
+        )
         .expect("a secret reference")
     };
     let mut pin = Mapping::new();
