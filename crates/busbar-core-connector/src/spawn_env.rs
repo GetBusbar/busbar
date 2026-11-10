@@ -275,6 +275,11 @@ pub(crate) fn refresh_all() {
     refresher::refresh_all();
 }
 
+#[cfg(test)]
+pub(crate) use source_fixture::{
+    counting_source, resolutions_of, set_source_value, source_reference, source_template,
+};
+
 /// Neutral source fixture: exercise config-time custody without interpreting any plugin's schema.
 #[cfg(test)]
 mod source_fixture {
@@ -363,7 +368,3 @@ mod source_fixture {
             .map_or(0, |e| e.resolutions)
     }
 }
-#[cfg(test)]
-pub(crate) use source_fixture::{
-    counting_source, resolutions_of, set_source_value, source_reference, source_template,
-};
