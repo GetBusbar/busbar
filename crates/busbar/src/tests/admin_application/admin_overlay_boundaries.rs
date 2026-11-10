@@ -1260,7 +1260,12 @@ async fn test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejec
         doc.root
             .as_ref()
             .and_then(|r| r.store.as_ref())
-            .is_some_and(|s| s.settings.get("db_path") == Some(&serde_json::json!({"env": var}))),
+            .is_some_and(|s| serde_json::to_value(
+                s.settings.authoring(&busbar_kernel::seal::acquire())
+            )
+            .unwrap()
+            .get("db_path")
+                == Some(&serde_json::json!({"env": var}))),
         "the staged reference reaches the overlay"
     );
 

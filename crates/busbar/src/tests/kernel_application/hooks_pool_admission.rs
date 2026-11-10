@@ -283,7 +283,13 @@ async fn pool_rw_gate_resolves_as_rewrite_not_decision() {
         Vec::<serde_json::Value>::new()
     );
     assert_eq!(
-        status.settings.expect("settings")["target_host"],
+        serde_json::to_value(
+            status
+                .settings
+                .expect("settings")
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap()["target_host"],
         "127.0.0.1"
     );
     let schema = policy.describe(budget).await.expect("schema");

@@ -51,11 +51,17 @@ fn an_overlay_entry_replaces_the_same_named_base_entry_whole() {
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("full"));
     assert_eq!(
-        corp.settings.get("issuer").and_then(|v| v.as_str()),
+        serde_json::to_value(corp.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("issuer")
+            .and_then(|v| v.as_str()),
         Some("https://other.example.com")
     );
     assert!(
-        corp.settings.get("client_id").is_none(),
+        serde_json::to_value(corp.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("client_id")
+            .is_none(),
         "a base field the overlay entry does not name must not leak in: {:?}",
         corp.settings
     );
@@ -81,7 +87,9 @@ fn an_explicit_null_in_an_overlay_definition_is_delivered() {
         .get("runtime-added")
         .expect("the runtime entry landed");
     assert_eq!(
-        added.settings.get("audience"),
+        serde_json::to_value(added.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("audience"),
         Some(&serde_json::Value::Null),
         "the explicit null is part of the definition: {:?}",
         added.settings
@@ -102,7 +110,10 @@ fn an_unparseable_overlay_definition_leaves_the_base_entry() {
     let corp = deploy.identity_providers.get("corp").expect("present");
     assert_eq!(corp.max_admin_scope.as_deref(), Some("read-only"));
     assert_eq!(
-        corp.settings.get("client_id").and_then(|v| v.as_str()),
+        serde_json::to_value(corp.settings.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .get("client_id")
+            .and_then(|v| v.as_str()),
         Some("abc")
     );
 }

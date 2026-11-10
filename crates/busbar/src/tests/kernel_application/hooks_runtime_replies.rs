@@ -441,11 +441,16 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "a second resolution of the same hook+settings+registry must reuse the published load, not open a second image"
     );
     let mut changed = app.hook_registry.clone();
-    changed
+    changed.get_mut("read").unwrap().settings = changed
         .get_mut("read")
         .unwrap()
         .settings
-        .insert("timeout_ms".into(), serde_json::json!(2000));
+        .edit(
+            &serde_json::from_value(serde_json::json!({("timeout_ms"): serde_json::json!(2000)}))
+                .unwrap(),
+            &[],
+        )
+        .unwrap();
     let third = busbar_kernel::hooks::resolve_pool_gates(&pool, &changed, &app.hook_env, 0);
     let ResolvedPolicy::Policy { policy: third, .. } = &third[0].1;
     assert!(
@@ -490,7 +495,10 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
         "push_configure hit its shipped 5s deadline 4 times in a row ({last}); that is a wedged plugin or a hang, not scheduling delay"
     );
     let before = policy.status(budget).await.expect("status").settings;
-    let invalid = serde_json::json!({"url":""}).as_object().unwrap().clone();
+    let invalid = busbar_contract::plugin_settings::Settings::from(
+        serde_json::json!({"url":""}).as_object().unwrap().clone(),
+    )
+    .prepare();
     assert!(
         policy.configure("read", &invalid, 8, budget).await.is_err(),
         "a hook that refuses to ack must fail the configure push (no commit)"
@@ -506,10 +514,7 @@ async fn runtime_replies_and_control_plane_use_the_actual_webrequest_product() {
     );
 
     let mut with_secret = app.hook_registry["read"].clone();
-    with_secret.settings.insert(
-        "licenseKey".into(),
-        serde_json::json!({"env":"BUSBAR_TEST_HOOK_LICENSE_KEY"}),
-    );
+    with_secret.settings = with_secret.settings.edit(&serde_json::from_value(serde_json::json!({("licenseKey"): serde_json::json!({"env":"BUSBAR_TEST_HOOK_LICENSE_KEY"})})).unwrap(), &[]).unwrap();
     assert_eq!(
         busbar_kernel::hooks::transport_publication_for_test("read", &with_secret, &app.hook_env),
         None,

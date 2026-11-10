@@ -56,14 +56,12 @@ fn debug_redacts_the_presented_credential_and_the_header_it_arrived_in() {
     );
     assert!(rendered.contains("\"POST\""), "got: {rendered}");
 
-    let nothing_presented = AdminRequest {
-        credential: None,
-        headers: vec![(
-            "authorization".to_string(),
-            "Bearer not-what-was-presented".to_string(),
-        )],
-        ..request
-    };
+    let mut nothing_presented = request;
+    nothing_presented.credential = None;
+    nothing_presented.headers = vec![(
+        "authorization".to_string(),
+        "Bearer not-what-was-presented".to_string(),
+    )];
     let rendered = format!("{nothing_presented:?}");
     assert!(rendered.contains("credential: None"), "got: {rendered}");
     assert!(
@@ -197,12 +195,10 @@ async fn an_unreadable_amendment_is_told_what_the_body_must_carry() {
         busbar_contract::caps::StepName::Route,
         ReasonCode::DecodeFailed,
     );
-    let amend = AdminRequest {
-        method: "POST".to_string(),
-        path: "/api/v1/admin/ledger/amend-rate-history".to_string(),
-        body: br#"{"rate_card":{},"window":{}}"#.to_vec(),
-        ..a_request()
-    };
+    let mut amend = a_request();
+    amend.method = "POST".to_string();
+    amend.path = "/api/v1/admin/ledger/amend-rate-history".to_string();
+    amend.body = br#"{"rate_card":{},"window":{}}"#.to_vec();
     let answer = explained_answer(&amend, refused).expect("the amendment's refusal is explained");
     assert_eq!(answer.status, 400);
     assert_eq!(

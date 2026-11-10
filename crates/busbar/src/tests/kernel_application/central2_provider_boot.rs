@@ -107,13 +107,13 @@ async fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
     let mut cfg = busbar_kernel::config::resolve(&deploy, &provider_defs)
         .expect("the product deployment resolves");
     cfg.providers.get_mut("acme").unwrap().api_key =
-        busbar_kernel::config::SecretRef::env(&unset_var);
+        crate::distribution::config_validation_application::source_fill(&unset_var);
     let mut resolving = cfg
         .providers
         .get("acme")
         .cloned()
         .expect("fixture provider");
-    resolving.api_key = busbar_kernel::config::SecretRef::env(&set_var);
+    resolving.api_key = crate::distribution::config_validation_application::source_fill(&set_var);
     cfg.providers.insert("resolves".to_string(), resolving);
     for (model, provider) in [("m-unset", "acme"), ("m-set", "resolves")] {
         cfg.models

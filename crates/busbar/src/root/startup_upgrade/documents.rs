@@ -1113,26 +1113,28 @@ mod tests {
             .unwrap(),
         });
         let mut target = original.clone();
-        target.as_mut().unwrap().settings.insert(
-            "password".into(),
-            serde_json::json!({"file":"/private/exact.secret"}),
-        );
+        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"file":"/private/exact.secret"})})).unwrap(), &[]).unwrap();
         assert!(docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target
+        target.as_mut().unwrap().settings = target
             .as_mut()
             .unwrap()
             .settings
-            .insert("database".into(), "different".into());
+            .edit(
+                &serde_json::from_value(serde_json::json!({("database"): "different"})).unwrap(),
+                &[],
+            )
+            .unwrap();
         assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target
+        target.as_mut().unwrap().settings = target
             .as_mut()
             .unwrap()
             .settings
-            .insert("database".into(), "original".into());
-        target.as_mut().unwrap().settings.insert(
-            "password".into(),
-            serde_json::json!({"file":"/private/other.secret"}),
-        );
+            .edit(
+                &serde_json::from_value(serde_json::json!({("database"): "original"})).unwrap(),
+                &[],
+            )
+            .unwrap();
+        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"file":"/private/other.secret"})})).unwrap(), &[]).unwrap();
         assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
         assert!(docs
             .bootstrap_equivalent(&original, &target, Path::new("other.yaml"))
@@ -1155,16 +1157,20 @@ mod tests {
             settings: serde_json::from_value(serde_json::json!({"password":"captured"})).unwrap(),
         });
         let mut target = original.clone();
-        target.as_mut().unwrap().settings.insert(
-            "password".into(),
-            serde_json::json!({"env":"CAPTURED_STORE_SECRET"}),
-        );
+        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"env":"CAPTURED_STORE_SECRET"})})).unwrap(), &[]).unwrap();
         assert!(docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target
+        target.as_mut().unwrap().settings = target
             .as_mut()
             .unwrap()
             .settings
-            .insert("password".into(), serde_json::json!({"env":"OTHER_SECRET"}));
+            .edit(
+                &serde_json::from_value(
+                    serde_json::json!({("password"): serde_json::json!({"env":"OTHER_SECRET"})}),
+                )
+                .unwrap(),
+                &[],
+            )
+            .unwrap();
         assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
         docs.finish_upgrade().unwrap();
         assert!(docs.environment.lock().unwrap().is_empty());

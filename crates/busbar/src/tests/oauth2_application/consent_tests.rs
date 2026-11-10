@@ -29,7 +29,7 @@ pub(super) async fn serve(
     };
     let mut document = serde_json::json!({
         "providers": {}, "models": {},
-        "oauth_as": oauth,
+        "oauth_as": oauth.authoring(&busbar_kernel::seal::acquire()),
         "auth": {"chain":[],"admin_auth":[]},
         "advanced": {"allow_destinations":["127.0.0.1"]},
     });

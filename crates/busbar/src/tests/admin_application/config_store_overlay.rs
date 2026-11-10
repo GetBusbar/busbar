@@ -199,7 +199,8 @@ async fn apply_refuses_unrecoverable_store_overlay_before_replacing_security_sta
                     serde_json::from_slice(raw.expose(&busbar_kernel::seal::lend())).unwrap();
                 let generation: [u8; 16] =
                     serde_json::from_value(head["generation"].clone()).unwrap();
-                let bytes = serde_json::to_vec(&doc).unwrap();
+                let bytes =
+                    serde_json::to_vec(&doc.authoring(&busbar_kernel::seal::acquire())).unwrap();
                 assert!(bytes.len() <= busbar_contract::MAX_RECORD_BYTES);
                 let mut chunk = b"chunk:".to_vec();
                 chunk.extend_from_slice(&generation);

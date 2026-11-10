@@ -276,8 +276,9 @@ struct DelayedActualResolver {
 impl DelayedActualResolver {
     fn delay_target(&self, secret: &busbar_contract::secret_ref::SecretRef) {
         if secret
-            .file_path()
-            .is_some_and(|p| std::path::Path::new(p) == self.path)
+            == &crate::distribution::config_validation_application::source_path(
+                self.path.to_string_lossy(),
+            )
             && self.delay_once.swap(false, Ordering::SeqCst)
         {
             self.calls.fetch_add(1, Ordering::SeqCst);

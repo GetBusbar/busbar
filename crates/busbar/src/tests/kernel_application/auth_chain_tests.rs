@@ -14,7 +14,7 @@ fn chain_cfg(modules: &[&str]) -> busbar_kernel::config::AuthCfg {
         .map(|module| {
             let mut entry = busbar_kernel::config::AuthChainEntry::bare(*module);
             if *module == "test-groups-module" {
-                entry.settings = common::credentials::settings(AUDIENCE);
+                entry.settings = common::credentials::settings(AUDIENCE).into();
             }
             entry
         })
@@ -359,7 +359,7 @@ fn a_verified_oidc_role_is_bound_under_the_provider_name() {
     .expect("the actual root admits the signed OIDC product");
     let mut provider = busbar_kernel::config::AuthChainEntry::bare(module);
     provider.name = "idp".to_string();
-    provider.settings = common::credentials::settings(AUDIENCE);
+    provider.settings = common::credentials::settings(AUDIENCE).into();
     let cfg = busbar_kernel::config::AuthCfg {
         chain: vec![provider],
         ..busbar_kernel::config::AuthCfg::default_none()
@@ -423,7 +423,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         &Default::default(),
     )
     .expect("the actual root admits the signed OIDC product");
-    let mut settings = common::credentials::settings(AUDIENCE);
+    let mut settings = common::credentials::settings(AUDIENCE).into();
     let target = settings["jwks_url"]
         .as_str()
         .unwrap()
@@ -539,7 +539,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         });
         let mut provider = busbar_kernel::config::AuthChainEntry::bare(module);
         provider.name = "slow-idp".into();
-        provider.settings = settings;
+        provider.settings = settings.into();
         let cfg = busbar_kernel::config::AuthCfg {
             chain: vec![provider],
             ..busbar_kernel::config::AuthCfg::default_none()

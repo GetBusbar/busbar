@@ -141,9 +141,16 @@ async fn actual_retained_usage_resolution(compatibility_history: bool) {
     let token_directory = crate::root::test_plugins::scratch("ledger-recovery-operator");
     let token_file = token_directory.join("operator-token");
     std::fs::write(&token_file, ADMIN_TOKEN).unwrap();
-    config.auth.as_mut().unwrap().admin_auth[0].token = Some(
-        busbar_kernel::config::secret::SecretRef::file(token_file.to_string_lossy()),
-    );
+    config.auth.as_mut().unwrap().admin_auth[0].token = Some({
+        use busbar_contract::secret::SecretAxis as _;
+        crate::root::linked::secret_rows()
+            .sugars()
+            .reference_for_role(
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+                token_file.to_string_lossy(),
+            )
+            .expect("the admitted source declares the path role")
+    });
     let rules: Arc<dyn busbar_kernel::appbuild::RootRules> =
         Arc::new(crate::root::door_steps::Rules::default());
     let (mut app, rotate, limits) = busbar_kernel::appbuild::build_app_from_config_with_store(

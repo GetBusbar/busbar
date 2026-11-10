@@ -76,7 +76,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         protocol: protocol.into(),
         base_url: base_url.into(),
 
-        api_key: config::SecretRef::env(api_key_env),
+        api_key: crate::distribution::config_validation_application::source_fill(api_key_env),
         health: None,
         error_map,
         path: None,

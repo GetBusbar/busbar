@@ -178,8 +178,11 @@ async fn hook_snapshot_builders_recompute_the_content_gate() {
     assert_eq!(body["restored_version"], registered.config_version);
     let rolled_back = handle.load();
     assert_eq!(
-        serde_json::to_value(&rolled_back.hook_registry["screener"]).unwrap(),
-        serde_json::to_value(granted).unwrap()
+        serde_json::to_value(
+            rolled_back.hook_registry["screener"].authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap(),
+        serde_json::to_value(granted.authoring(&busbar_kernel::seal::acquire())).unwrap()
     );
     assert_eq!(rolled_back.global_hooks, vec!["screener".to_string()]);
     assert!(
@@ -355,8 +358,11 @@ async fn hook_derived_fields_follow_the_registry() {
     assert_eq!(body["restored_version"], registered.config_version);
     let rolled_back = handle.load();
     assert_eq!(
-        serde_json::to_value(&rolled_back.hook_registry["declarer"]).unwrap(),
-        serde_json::to_value(declaring).unwrap()
+        serde_json::to_value(
+            rolled_back.hook_registry["declarer"].authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap(),
+        serde_json::to_value(declaring.authoring(&busbar_kernel::seal::acquire())).unwrap()
     );
     assert_eq!(rolled_back.global_hooks, vec!["declarer".to_string()]);
     assert_hook_derived(&rolled_back, "after build_with_registry (config rollback)");

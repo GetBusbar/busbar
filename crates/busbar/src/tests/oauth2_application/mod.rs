@@ -190,7 +190,9 @@ async fn build_application(
     });
     document["store"] = serde_json::json!({"module":module,"settings":settings});
     if let Some(block) = oauth_as {
-        document["oauth_as"] = serde_json::to_value(block).expect("the OAuth config serializes");
+        document["oauth_as"] =
+            serde_json::to_value(block.authoring(&busbar_kernel::seal::acquire()))
+                .expect("the OAuth config serializes");
     }
     let auth_library = auth_library.map(std::path::Path::to_owned).or_else(|| {
         resource_auth.then(|| {
