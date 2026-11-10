@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! Ordinary lifecycle ownership on the actual MCP image, both loading paths.
+//! Ordinary lifecycle ownership on the neutral SDK plane image, both loading paths.
 use crate::dispatch::kinds::plane::{open_door, refresh_door, retire_door, Plane};
 use crate::dispatch::{
     load_dropped, load_linked, rendering_of_library, Adopter, Bind, ConnTable, LinkedRow, NoSink,
@@ -9,7 +9,7 @@ use crate::dispatch::{
 use std::sync::Arc;
 fn binding() -> Bind {
     Bind {
-        instance: "mcp-lifecycle".into(),
+        instance: "witness-lifecycle".into(),
         max_inflight_cap: 8,
         sink: Arc::new(NoSink),
         dispatcher: Adopter::unwatched(),
@@ -17,12 +17,16 @@ fn binding() -> Bind {
     }
 }
 fn linked() -> Plugin<Plane> {
-    load_linked::<Plane>(&LinkedRow::of(crate::actual_mcp::door).unwrap(), binding()).unwrap()
+    load_linked::<Plane>(
+        &LinkedRow::of(crate::neutral_plane::door).unwrap(),
+        binding(),
+    )
+    .unwrap()
 }
 fn dropped() -> Plugin<Plane> {
     load_dropped::<Plane>(
-        &crate::actual_mcp::cdylib(),
-        &rendering_of_library(&crate::actual_mcp::cdylib())
+        &crate::neutral_plane::cdylib(),
+        &rendering_of_library(&crate::neutral_plane::cdylib())
             .unwrap()
             .expect("actual product exports its statement"),
         binding(),
@@ -130,9 +134,9 @@ fn repeated_plane_loads_reuse_owned_static_words_after_the_image_is_released() {
                 "the second actual dropped image was released"
             );
         }
-        assert_eq!(a.section, "tools");
+        assert_eq!(a.section, crate::neutral_plane::SECTION);
         assert!(!a.op_classes.is_empty());
-        assert_eq!(declared.record_kinds.len(), 4);
+        assert_eq!(declared.record_kinds, ["witness_record", "witness_history"]);
     }
     println!("{WITNESS}");
 }
@@ -160,9 +164,8 @@ fn the_hosts_snapshot_copy_survives_the_actual_plugins_next_refresh() {
         assert_eq!(
             routes,
             [
-                ("POST", "/tools/{name}/connect", "connect"),
-                ("GET", "/tools/{name}/changes", ""),
-                ("GET", "/tools/{name}/health", ""),
+                ("POST", "/witness/{name}/update", "update"),
+                ("GET", "/witness/{name}/status", ""),
             ],
             "generation 1 still reads the literal routes the plugin published"
         );
@@ -280,7 +283,7 @@ mod wrong_lifecycle_shape {
     extern "C" fn lifecycle_open_door() -> *const Door {
         // SAFETY: the macro's `'static` door and its plane table.
         let (d, ops) = unsafe {
-            let d = crate::actual_mcp::door();
+            let d = crate::neutral_plane::door();
             (d, *d.ops().cast::<busbar_contract::abi::plane::Ops>())
         };
         let mut ops = ops;
@@ -346,20 +349,20 @@ fn a_door_states_its_actual_registry_facts_and_judges_its_section() {
         let declared = facts.declared();
         let reg = crate::dispatch::kinds::plane::registration(Arc::new(move || Ok(make())))
             .expect("actual image registration");
-        assert_eq!(reg.key, "mcp");
-        assert_eq!(reg.section, "tools");
+        assert_eq!(reg.key, crate::neutral_plane::NAME);
+        assert_eq!(reg.section, crate::neutral_plane::SECTION);
         assert_eq!(
             (reg.label, reg.subject_noun, reg.admin_noun, reg.audit_kind),
-            ("MCP", "MCP server", "mcp-server", "mcp_server")
+            ("Witness", "witness entry", "witness-entry", "witness_entry")
         );
-        assert_eq!(reg.dialects, vec!["jsonrpc"]);
+        assert_eq!(reg.dialects, vec!["witness-wire"]);
         assert_eq!(reg.record_kinds, declared.record_kinds);
         assert_eq!(reg.scope_kinds, declared.scope_kinds);
         assert_eq!(reg.trust_keys, declared.trust_keys);
         assert_eq!(reg.signing, declared.signing);
         assert!(
             reg.signing.is_some(),
-            "actual MCP declares its signing domain"
+            "neutral SDK plane declares its signing domain"
         );
         assert_eq!(
             reg.billable_classes,
@@ -401,13 +404,13 @@ mod lifecycle_connections {
     use std::collections::HashSet;
     use std::sync::Mutex;
 
-    /// Empty MCP configuration performs no connector I/O, but serving still binds every
+    /// The witness configuration performs no connector I/O, but serving still binds every
     /// actual declared need. Probe mode intentionally omits those generation bindings.
     pub(super) struct Table(Mutex<HashSet<(InstanceId, NeedId)>>, HashSet<String>);
 
     impl Default for Table {
         fn default() -> Self {
-            let row = crate::dispatch::LinkedRow::of(crate::actual_mcp::door)
+            let row = crate::dispatch::LinkedRow::of(crate::neutral_plane::door)
                 .expect("the actual plane states its needs");
             let stated = busbar_contract::abi::mechanism::rendering::read(&row.statement)
                 .expect("the actual plane statement reads");
@@ -468,7 +471,7 @@ mod lifecycle_connections {
             assert!(self.serves_scheme(&spec.transport));
             assert!(
                 !spec.target_from.is_empty(),
-                "the actual MCP need is settings-bound"
+                "the neutral SDK plane need is settings-bound"
             );
             self.0.lock().unwrap().insert((owner, need));
             Ok(())
@@ -522,15 +525,15 @@ fn served_lifecycle_plane(
     let binding = served_lifecycle_binding(dispatcher);
     if dropped_image {
         load_dropped::<Plane>(
-            &crate::actual_mcp::cdylib(),
-            &rendering_of_library(&crate::actual_mcp::cdylib())
+            &crate::neutral_plane::cdylib(),
+            &rendering_of_library(&crate::neutral_plane::cdylib())
                 .unwrap()
                 .unwrap(),
             binding,
         )
         .unwrap()
     } else {
-        load_linked::<Plane>(&LinkedRow::of(crate::actual_mcp::door).unwrap(), binding).unwrap()
+        load_linked::<Plane>(&LinkedRow::of(crate::neutral_plane::door).unwrap(), binding).unwrap()
     }
 }
 
@@ -710,8 +713,8 @@ fn served_refresh_keeps_active_result_custody_past_its_queue_deadline() {
         config,
         busbar_contract::services::test_caller_binding(),
     ));
-    let mut validated = crate::dispatch::load::validate_door::<Plane>(crate::actual_mcp::door())
-        .expect("the actual MCP descriptor validates before wrapping REFRESH");
+    let mut validated = crate::dispatch::load::validate_door::<Plane>(crate::neutral_plane::door())
+        .expect("the neutral SDK plane descriptor validates before wrapping REFRESH");
     let actual = validated.slots[slot::REFRESH as usize];
     validated.slots[slot::REFRESH as usize] = held_refresh;
     let plugin = Arc::new(

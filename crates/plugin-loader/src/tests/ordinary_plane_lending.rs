@@ -22,7 +22,7 @@ fn blank<T>() -> T {
     unsafe { std::mem::zeroed() }
 }
 fn bound(door: DoorFn, d: &Dispatcher, label: &str) -> Plugin<Plane> {
-    let row = LinkedRow::of(door).expect("actual MCP descriptor");
+    let row = LinkedRow::of(door).expect("neutral SDK plane descriptor");
     let p = load_linked::<Plane>(
         &row,
         Bind {
@@ -34,8 +34,8 @@ fn bound(door: DoorFn, d: &Dispatcher, label: &str) -> Plugin<Plane> {
             conns: ConnTable::Probe,
         },
     )
-    .expect("actual MCP instance binds");
-    open_door(&p, b"{}", b"{}", None).expect("actual MCP opens");
+    .expect("neutral SDK plane instance binds");
+    open_door(&p, b"{}", b"{}", None).expect("neutral SDK plane opens");
     p
 }
 struct ServeLoan {
@@ -128,7 +128,7 @@ extern "C" fn late_serve(
 }
 extern "C" fn late_door() -> &'static Door {
     let at = *DOOR.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
+        let real = *crate::neutral_plane::door();
         // SAFETY: the fixture's table and statement are static.
         let ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops = Box::leak(Box::new(Ops {

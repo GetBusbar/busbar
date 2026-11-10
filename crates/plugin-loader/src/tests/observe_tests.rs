@@ -297,7 +297,7 @@ fn observed_through_its_bind<K: crate::dispatch::Kind>(
 #[test]
 fn a_plane_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::plane::Plane>(
-        crate::actual_mcp::door,
+        crate::neutral_plane::door,
         busbar_contract::abi::mechanism::kind::PLANE,
     );
 }

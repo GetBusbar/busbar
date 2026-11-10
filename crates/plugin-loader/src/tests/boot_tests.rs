@@ -10,8 +10,8 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 
 use super::*;
-use crate::actual_mcp as plug;
 use crate::dispatch::NoSink;
+use crate::neutral_plane as plug;
 
 fn doc(json: &str) -> serde_json::Value {
     serde_json::from_str(json).unwrap()
@@ -39,7 +39,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
 }
 
 fn uses_door() -> Uses {
-    Uses::of(&doc(r#"{"tools": {}}"#))
+    Uses::of(&serde_json::json!({plug::SECTION: {}}))
 }
 
 fn picked(sel: &[Selected], cands: &[Candidate]) -> Vec<(String, String)> {
@@ -273,10 +273,10 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
     )
     .unwrap();
     let linked = Candidate::linked(plug::door).expect("the linked plane states itself");
-    assert_eq!(linked.verbs, vec!["tools".to_string()]);
+    assert_eq!(linked.verbs, vec![plug::SECTION.to_string()]);
     let mut cands = vec![linked.clone()];
     let mut uses = Uses::default();
-    uses.roots.insert("tools".into());
+    uses.roots.insert(plug::SECTION.into());
     let path = plug::cdylib();
     let mut dropped = linked.clone();
     dropped.origin = Origin::Dropped {
@@ -299,7 +299,7 @@ fn the_one_load_binds_each_selected_instance_to_its_own_log_sink() {
         selected,
         vec![Selected {
             candidate: 0,
-            instance: "tools".into()
+            instance: plug::SECTION.into()
         }]
     );
     selected.push(Selected {
@@ -423,7 +423,7 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let dropped = crate::scan_and_validate(&dir.join("."), &policy).expect("the plane scans");
     assert!(
         dropped.skipped().is_empty(),
-        "the actual MCP artifact must receive its authenticated egress grant"
+        "the neutral SDK plane artifact must receive its authenticated egress grant"
     );
     assert_eq!(dropped.loadable().len(), 1, "the actual plane is admitted");
     let logs = PluginLogConfig::from_words(

@@ -52,8 +52,8 @@ fn restated(
     tick: busbar_contract::abi::mechanism::call::Op,
 ) -> &'static Door {
     let ptr = *slot.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
-        // SAFETY: actual_mcp retains the validated descriptor and its full plane table.
+        let real = *crate::neutral_plane::door();
+        // SAFETY: neutral_plane retains the validated descriptor and its full plane table.
         let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         ops.head.tick = Some(tick);
         let ops = Box::leak(Box::new(ops));
@@ -83,13 +83,13 @@ extern "C" fn unwoken_door() -> &'static Door {
 
 fn opened(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) -> Plugin<Plane> {
     let p = bound(d, door);
-    open_door(&p, b"{}", b"{}", None).expect("actual MCP opens");
+    open_door(&p, b"{}", b"{}", None).expect("neutral SDK plane opens");
     p
 }
 
 fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) -> Plugin<Plane> {
     load_linked::<Plane>(
-        &LinkedRow::of(door).expect("actual MCP metadata"),
+        &LinkedRow::of(door).expect("neutral SDK plane metadata"),
         Bind {
             instance: "suite-wake-control".into(),
             max_inflight_cap: 8,
@@ -99,7 +99,7 @@ fn bound(d: &Dispatcher, door: busbar_contract::abi::mechanism::door::DoorFn) ->
             conns: ConnTable::Probe,
         },
     )
-    .expect("actual MCP binds")
+    .expect("neutral SDK plane binds")
 }
 
 fn tick() -> Frame<TickIn, TickOut> {
@@ -191,22 +191,22 @@ extern "C" fn open_after_wake(
                 return RawOutcome::of(Outcome::Pending);
             }
 
-            let ops = crate::actual_mcp::door()
+            let ops = crate::neutral_plane::door()
                 .ops()
                 .cast::<Ops>()
                 .read_unaligned();
-            let raw = ops.head.open.expect("actual MCP has OPEN")(instance, input, out);
+            let raw = ops.head.open.expect("neutral SDK plane has OPEN")(instance, input, out);
             if raw != RawOutcome::of(Outcome::Ready) {
                 return raw;
             }
             let answered = &mut *out.cast::<PlaneOpenOut>();
             assert!(
                 !answered.open.instance.is_null(),
-                "actual MCP minted its instance"
+                "neutral SDK plane minted its instance"
             );
             assert!(
                 !answered.snapshot.is_null(),
-                "actual MCP published its generation"
+                "neutral SDK plane published its generation"
             );
             assert!(SNAPSHOTS
                 .lock()
@@ -238,8 +238,8 @@ extern "C" fn open_after_wake(
 extern "C" fn pending_open_door() -> &'static Door {
     static SLOT: OnceLock<usize> = OnceLock::new();
     let ptr = *SLOT.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
-        // SAFETY: actual_mcp validates and retains this complete immutable table.
+        let real = *crate::neutral_plane::door();
+        // SAFETY: neutral_plane validates and retains this complete immutable table.
         let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         ops.head.open = Some(open_after_wake);
         let ops = Box::leak(Box::new(ops));
@@ -318,7 +318,7 @@ fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
     );
     assert!(
         p.is_open(),
-        "the genuine MCP OPEN committed its actual instance"
+        "the SDK witness OPEN committed its actual instance"
     );
 
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
@@ -328,9 +328,11 @@ fn red_a_pending_open_is_resumed_by_the_kernels_open_never_one_raw_crossing() {
 #[test]
 fn the_real_probe_tells_an_image_with_the_door_from_one_without() {
     use crate::dispatch::{rendering_of, rendering_of_library};
-    let actual = rendering_of(crate::actual_mcp::door).expect("actual MCP descriptor renders");
+    let actual =
+        rendering_of(crate::neutral_plane::door).expect("neutral SDK plane descriptor renders");
     assert_eq!(
-        rendering_of_library(&crate::actual_mcp::cdylib()).expect("actual MCP library probes"),
+        rendering_of_library(&crate::neutral_plane::cdylib())
+            .expect("neutral SDK plane library probes"),
         Some(actual),
         "the production probe finds the actual exported mechanism door"
     );

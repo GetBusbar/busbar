@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
-//! Malicious output boundaries on the retained actual MCP descriptor, without text judges.
+//! Malicious output boundaries on the retained neutral SDK plane descriptor, without text judges.
 use crate::dispatch::kinds::plane::{open_door, Plane};
 use crate::dispatch::{
     in_head, load_linked, out_head, Bind, ConnTable, DispatchConfig, Dispatcher, Frame, LinkedRow,
@@ -46,8 +46,8 @@ extern "C" fn fault_project(
 }
 extern "C" fn fault_door() -> &'static Door {
     let at = *DESCRIPTOR.get_or_init(|| {
-        let real = *crate::actual_mcp::door();
-        // SAFETY: actual SDK-built retained MCP table, replacing only adversarial raw output slots.
+        let real = *crate::neutral_plane::door();
+        // SAFETY: actual SDK-built SDK witness table, replacing only adversarial raw output slots.
         let ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         let ops = Box::leak(Box::new(Ops {
             arrive: Some(fault_arrive),
@@ -62,7 +62,7 @@ extern "C" fn fault_door() -> &'static Door {
         };
         Box::into_raw(Box::new(d)) as usize
     });
-    // SAFETY: boxed descriptor and actual MCP image remain alive for this process.
+    // SAFETY: boxed descriptor and neutral SDK plane image remain alive for this process.
     unsafe { &*(at as *const Door) }
 }
 #[test]
@@ -83,7 +83,7 @@ fn fault_arrival_and_projection_never_copy_unjudged_output_text() {
             },
         )
         .unwrap();
-        open_door(&p, b"{}", b"{}", None).expect("actual MCP opens");
+        open_door(&p, b"{}", b"{}", None).expect("neutral SDK plane opens");
         let answer = if project {
             let mut i: ProjectIn = blank();
             i.head = in_head();
