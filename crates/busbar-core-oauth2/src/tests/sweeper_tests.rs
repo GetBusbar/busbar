@@ -7,7 +7,7 @@ use crate::config::OauthAsCfg;
 use crate::plane::{seam_build, AsPlane};
 
 fn block() -> serde_yaml::Value {
-    serde_yaml::to_value(OauthAsCfg {
+    let config = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
         key_id: None,
@@ -16,8 +16,9 @@ fn block() -> serde_yaml::Value {
         refresh_token_ttl_secs: None,
         fapi2: false,
         clients: Vec::new(),
-    })
-    .expect("the block serializes")
+    };
+    serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
+        .expect("the block serializes")
 }
 
 async fn generation() -> Arc<dyn std::any::Any + Send + Sync> {

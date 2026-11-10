@@ -12,11 +12,12 @@ use crate::plane::AsPlane;
 async fn generation(
     prior: Option<&Arc<dyn Any + Send + Sync>>,
 ) -> (Arc<dyn Any + Send + Sync>, Arc<AsPlane>) {
-    let block = serde_yaml::to_value(crate::config::OauthAsCfg {
+    let config = crate::config::OauthAsCfg {
         issuer: "https://as.example.com".into(),
         ..Default::default()
-    })
-    .expect("the owner config serializes");
+    };
+    let block = serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
+        .expect("the owner config serializes");
     let carried = crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),

@@ -42,7 +42,8 @@ async fn the_owner_seam_keeps_the_complete_configured_identity() {
         ..Default::default()
     };
     let expected = crate::config::AsIdentity::from_cfg(&config).expect("valid identity");
-    let block = serde_yaml::to_value(config).expect("the owner config serializes");
+    let block = serde_yaml::to_value(config.authoring(&busbar_kernel::test_hooks::tokens::seal()))
+        .expect("the owner config serializes");
     let carried = crate::plane::seam_build::<crate::NoConnections>(
         block,
         Vec::new(),

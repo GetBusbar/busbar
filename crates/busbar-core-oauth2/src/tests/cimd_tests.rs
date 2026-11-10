@@ -108,6 +108,36 @@ fn a_document_without_usable_redirect_uris_is_refused() {
 }
 
 #[test]
+fn redirects_require_network_security_or_a_private_reverse_domain_scheme() {
+    for uri in [
+        "https://client.example/cb",
+        "http://127.0.0.1:9999/cb",
+        "http://[::1]:9999/cb",
+        "com.example.app:/oauth/cb",
+    ] {
+        let mut doc = document();
+        doc["redirect_uris"] = serde_json::json!([uri]);
+        materialized(&doc).unwrap_or_else(|e| panic!("{uri}: {e}"));
+    }
+    for uri in [
+        "javascript:alert(1)",
+        "data:text/html,hello",
+        "vbscript:msgbox(1)",
+        "file:///private/cb",
+        "about:blank",
+        "blob:https://client.example/id",
+        "http://client.example/cb",
+        "http://127.0.0.1.evil.example/cb",
+        "custom:/cb",
+        "com..example:/cb",
+    ] {
+        let mut doc = document();
+        doc["redirect_uris"] = serde_json::json!([uri]);
+        materialized(&doc).expect_err(uri);
+    }
+}
+
+#[test]
 fn a_redirect_uri_with_a_backslash_or_a_userinfo_is_refused() {
     for uri in [
         "https://evil.example\\@trusted.example/cb",

@@ -413,17 +413,34 @@ fn is_absolute_uri(value: &str) -> bool {
             .all(|b| b != b'#' && (0x21..=0x7e).contains(&b))
 }
 
-/// OAuth 2.1 section 2.3.1: redirect URIs must use https, http on loopback, or a
-/// private-use scheme. Reject schemes that would be dangerous in a browser context.
+/// Network callbacks use TLS, except for loopback receivers. Native callbacks
+/// use a reverse-domain private scheme (RFC 8252 section 7.1).
 fn is_safe_redirect_scheme(value: &str) -> bool {
     let Some((scheme, _)) = value.split_once(':') else {
         return false;
     };
-    let scheme_lower = scheme.to_ascii_lowercase();
-    !matches!(
-        scheme_lower.as_str(),
-        "javascript" | "data" | "vbscript" | "file" | "about" | "blob"
-    )
+    let Ok(protocol) = scheme.to_ascii_lowercase().parse::<http::uri::Scheme>() else {
+        return false;
+    };
+    if protocol == http::uri::Scheme::HTTPS || protocol == http::uri::Scheme::HTTP {
+        return busbar_contract::net::parse_url(value).is_ok_and(|url| {
+            !url.userinfo
+                && (protocol == http::uri::Scheme::HTTPS
+                    || url
+                        .host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|ip| ip.is_loopback()))
+        });
+    }
+    scheme.contains('.')
+        && scheme.split('.').all(|label| {
+            !label.is_empty()
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
 }
 
 fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, String> {
@@ -474,10 +491,10 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
                     Err("redirect_uris entries carry no backslash and no userinfo".to_string())
                 }
                 Some(s) if is_absolute_uri(s) && is_safe_redirect_scheme(s) => Ok(s.to_string()),
-                Some(s) if is_absolute_uri(s) => {
-                    Err("redirect_uris entries must use https, http, or a private-use scheme"
-                        .to_string())
-                }
+                Some(s) if is_absolute_uri(s) => Err(
+                    "redirect_uris entries must use HTTPS, loopback HTTP, or a reverse-domain private-use scheme"
+                        .to_string(),
+                ),
                 _ => Err("redirect_uris entries must be absolute, fragment-free URIs".to_string()),
             })
             .collect::<Result<_, _>>()?,
