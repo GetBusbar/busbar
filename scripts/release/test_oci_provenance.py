@@ -4,7 +4,6 @@ import base64
 import copy
 import hashlib
 import io
-import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -17,7 +16,9 @@ import release_verifier as v
 import test_release_verifier as fixtures
 
 
-def oci_fixture(path, extra=None, corrupt=False, foreign=False):
+def oci_fixture(
+    path, extra=None, corrupt=False, foreign=False, binary=None, overlays=()
+):
     blobs = {}
 
     def blob(value, media_type):
@@ -26,11 +27,29 @@ def oci_fixture(path, extra=None, corrupt=False, foreign=False):
         blobs["blobs/sha256/" + digest] = raw
         return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(raw)}
 
-    config = blob(
-        {"os": "linux", "architecture": "amd64"},
-        "application/vnd.oci.image.config.v1+json",
-    )
-    layer = blob(b"fixture-layer", "application/vnd.oci.image.layer.v1.tar")
+    if binary is not None:
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w") as layer:
+            entry = tarfile.TarInfo("busbar")
+            entry.mode, entry.size = 0o755, len(binary)
+            layer.addfile(entry, io.BytesIO(binary))
+        layer_bytes = [stream.getvalue(), *overlays]
+    else:
+        layer_bytes = [b"fixture-layer"]
+    config_data = {"os": "linux", "architecture": "amd64"}
+    if binary is not None:
+        config_data["config"] = {"Entrypoint": ["/busbar"]}
+        config_data["rootfs"] = {
+            "type": "layers",
+            "diff_ids": [
+                "sha256:" + hashlib.sha256(raw).hexdigest() for raw in layer_bytes
+            ],
+        }
+    config = blob(config_data, "application/vnd.oci.image.config.v1+json")
+    layers = [
+        blob(raw, "application/vnd.oci.image.layer.v1.tar") for raw in layer_bytes
+    ]
+    layer = layers[0]
     if foreign:
         layer["urls"] = ["https://untrusted.invalid/layer"]
     manifest = blob(
@@ -38,7 +57,7 @@ def oci_fixture(path, extra=None, corrupt=False, foreign=False):
             "schemaVersion": 2,
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "config": config,
-            "layers": [layer],
+            "layers": layers,
         },
         "application/vnd.oci.image.manifest.v1+json",
     )
@@ -122,6 +141,55 @@ class OciTests(unittest.TestCase):
                 oci.inspect_archive(
                     self.archive, ref, platforms, {"busbar.tar.gz": plan}
                 )
+
+    def test_final_binary_equivalence_honors_whiteouts_overlays_and_links(self):
+        from test_build_closure import closure_fixture
+
+        native = self.root / "native.tar.gz"
+        closure = closure_fixture(self.root, native)
+        plan = {**self.plan, "artifact_sha256": p.digest(native)}
+        platforms = {
+            "linux/amd64": {
+                "artifact": "busbar.tar.gz",
+                "member": "busbar",
+                "path": "/busbar",
+            }
+        }
+
+        def inspect(overlays=()):
+            ref = oci_fixture(
+                self.archive, binary=b"native executable", overlays=overlays
+            )
+            return oci.inspect_archive(
+                self.archive,
+                ref,
+                platforms,
+                {"busbar.tar.gz": plan},
+                closures={"busbar.tar.gz": closure},
+            )
+
+        result, _ = inspect()
+        self.assertEqual(
+            result["platforms"][0]["binary"]["sha256"],
+            closure["members"]["busbar"]["sha256"],
+        )
+        for name, kind, data in (
+            (".wh.busbar", tarfile.REGTYPE, b""),
+            (".wh..wh..opq", tarfile.REGTYPE, b""),
+            ("busbar", tarfile.REGTYPE, b"substituted"),
+            ("busbar", tarfile.SYMTYPE, b""),
+            ("busbar", tarfile.LNKTYPE, b""),
+            ("busbar", tarfile.DIRTYPE, b""),
+            ("../busbar", tarfile.REGTYPE, b""),
+        ):
+            stream = io.BytesIO()
+            with tarfile.open(fileobj=stream, mode="w") as layer:
+                entry = tarfile.TarInfo(name)
+                entry.type, entry.size, entry.mode = kind, len(data), 0o755
+                entry.linkname = "elsewhere"
+                layer.addfile(entry, io.BytesIO(data))
+            with self.subTest(name=name, kind=kind), self.assertRaises(ValueError):
+                inspect([stream.getvalue()])
 
     def test_registry_result_must_be_exact_approved_statement(self):
         closure, _ = self.inspect()

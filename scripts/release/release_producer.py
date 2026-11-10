@@ -7,19 +7,19 @@ their real logged bundles before emitting the aggregate inventory signing reques
 """
 
 import argparse
-import json
 import os
 from pathlib import Path
 import shutil
 import stat
 import sys
 
+import build_closure as build
 import native_provenance as p
 import oci_provenance as oci
 import provenance_stage as stage
 import release_verifier as v
 
-SCHEMA = "busbar.release-publication/1"
+SCHEMA = "busbar.release-publication/2"
 ISOLATION_CONTROLS = {
     "controller_separated",
     "private_pid_mount_network",
@@ -153,7 +153,7 @@ def prepare(plan_path, plan_sha256, output):
     output = Path(output)
     output.mkdir(mode=0o700, parents=False, exist_ok=False)
     try:
-        rows, requests, artifacts = [], [], {}
+        rows, requests, artifacts, closures = [], [], {}, {}
         for entry in qa["artifacts"]:
             native = p.load(entry["plan"])
             name = native["artifact_name"]
@@ -163,20 +163,64 @@ def prepare(plan_path, plan_sha256, output):
             artifacts[name] = native
             subject = plan["subjects"][name]
             p.require(
-                set(subject) == {"sbom", "component_name"},
+                set(subject) == {"build_closure", "build_capture", "component_name"},
                 "invalid SBOM publication mapping",
             )
-            sbom_path = pinned_file(subject["sbom"])
-            bom = p.load(sbom_path)
-            component = bom.get("metadata", {}).get("component", {})
-            p.require(
-                bom.get("bomFormat") == "CycloneDX"
-                and isinstance(bom.get("components"), list)
-                and bom["components"]
-                and component.get("name") == subject["component_name"]
-                and component.get("version") == plan["release"],
-                "SBOM closure or release identity absent",
+            closure_path = pinned_file(subject["build_closure"])
+            closure = build.validate(
+                p.load(closure_path),
+                native,
+                entry["artifact"],
+                subject["component_name"],
+                plan["release"],
             )
+            capture = subject["build_capture"]
+            p.require(
+                set(capture)
+                == {
+                    "cargo_metadata",
+                    "cargo_lock",
+                    "cargo_messages",
+                    "binary",
+                    "compiler_output",
+                },
+                "complete protected final-build capture required",
+            )
+            capture_paths = {
+                key: pinned_file(binding)
+                for key, binding in capture.items()
+                if key != "compiler_output"
+            }
+            p.require(
+                len(closure["binaries"]) == 1,
+                "one selected binary per native build capture required",
+            )
+            member, component_ref = next(iter(closure["binaries"].items()))
+            package = next(
+                row["name"]
+                for row in closure["components"]
+                if row["bom-ref"] == component_ref
+            )
+            measured = build.collect(
+                entry["artifact"],
+                capture_paths["cargo_metadata"],
+                capture_paths["cargo_lock"],
+                capture_paths["cargo_messages"],
+                capture_paths["binary"],
+                member,
+                package,
+                native["source_commit"],
+                native["target"],
+                subject["component_name"],
+                plan["release"],
+                compiler_output=capture["compiler_output"],
+            )
+            p.require(
+                measured == closure,
+                "public build closure differs from actual protected build capture",
+            )
+            closures[name] = closure
+            bom = build.sbom(closure)
             row = {"plan": native, "component_name": p.token(subject["component_name"])}
             transfer(
                 entry["artifact"], output / p.token(name), native["artifact_sha256"]
@@ -194,7 +238,12 @@ def prepare(plan_path, plan_sha256, output):
                     ".sigstore.json",
                     p.digest(entry["bundle"]),
                 ),
-                ("sbom", sbom_path, ".cdx.json", subject["sbom"]["sha256"]),
+                (
+                    "build_closure",
+                    closure_path,
+                    ".build-closure.json",
+                    subject["build_closure"]["sha256"],
+                ),
             ):
                 filename = p.token(name + suffix)
                 transfer(source, output / filename, digest)
@@ -205,6 +254,9 @@ def prepare(plan_path, plan_sha256, output):
                 p.load(entry["receipt"]),
                 output / name,
             )
+            sbom_path = output / p.token(name + ".cdx.json")
+            p.write(sbom_path, p.canonical(bom))
+            row["sbom"] = {"name": sbom_path.name, "sha256": p.digest(sbom_path)}
             filename = p.token(name + ".sbom.intoto.json")
             p.write(output / filename, p.canonical(v.sbom_statement(native, bom)))
             row["sbom_statement"] = {
@@ -236,7 +288,7 @@ def prepare(plan_path, plan_sha256, output):
             archive = output / (prefix + ".tar")
             transfer(source, archive, entry["archive"]["sha256"])
             closure, index_bytes = oci.inspect_archive(
-                archive, ref, entry["platforms"], artifacts
+                archive, ref, entry["platforms"], artifacts, closures=closures
             )
             index = output / (prefix + ".index.json")
             statement = output / (prefix + ".intoto.json")
@@ -280,7 +332,7 @@ def prepare(plan_path, plan_sha256, output):
             "protected publication inputs changed",
         )
         draft = {
-            "schema": v.SCHEMA_V2,
+            "schema": v.SCHEMA_V3,
             "release": plan["release"],
             "artifacts": rows,
             "oci": indexes,
@@ -354,7 +406,14 @@ def finalize(draft_path, draft_sha256, output, trust_path, trust_sha256):
                 "sha256": row["plan"]["artifact_sha256"],
             }
         )
-        for key in ("statement", "bundle", "sbom", "sbom_statement", "sbom_bundle"):
+        for key in (
+            "statement",
+            "bundle",
+            "sbom",
+            "sbom_statement",
+            "sbom_bundle",
+            "build_closure",
+        ):
             check_binding(row[key])
         # Reverify native bundles under the final release trust, not merely QA's choice.
         p.verify_bundle(

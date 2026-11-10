@@ -644,7 +644,7 @@ def g10_image(inp: Inputs, cj: dict, vd: Verdict) -> None:
     arch_to_internal = {}
     for t in release_targets(inp.root):
         if t.get("kind") == "binary" and t.get("packaged_into", "").startswith("image-linux-"):
-            arch_to_internal[t["packaged_into"].rsplit("-", 1)[1]] = inp.cand / "internal" / f"busbar-{t['target']}.{t['archive']}"
+            arch_to_internal[t["packaged_into"].rsplit("-", 1)[1]] = inp.cand / ("artifacts" if t.get("published") else "internal") / f"busbar-{t['target']}.{t['archive']}"
     try:
         images = read_images(inp.cand / "IMAGES")
         want = images["busbar"]
@@ -679,7 +679,7 @@ def g10_image(inp: Inputs, cj: dict, vd: Verdict) -> None:
                     continue
                 src = arch_to_internal.get(arch)
                 if src is None or not src.is_file():
-                    vd.refuse("G-10", f"image linux/{arch}", "its musl binary in internal/", "missing", "Rebuild.")
+                    vd.refuse("G-10", f"image linux/{arch}", "its declared native binary archive", "missing", "Rebuild.")
                     continue
                 if sha256_bytes(found) != sha256_bytes(unpack_binary(src)):
                     vd.refuse("G-10", f"image linux/{arch}", f"/busbar == {src.name}'s binary",

@@ -12,7 +12,10 @@ from scan import Scanner, digest, require
 
 def candidate_inventory(candidate):
     rows = {}
-    for directory in ('artifacts', 'sboms', 'internal', 'plugins', 'oci'):
+    directories = ['artifacts', 'sboms', 'internal', 'plugins', 'oci']
+    if (candidate / 'closures').exists():
+        directories.append('closures')
+    for directory in directories:
         root = candidate / directory
         require(root.is_dir() and not root.is_symlink(), 'candidate directory missing or symlinked')
         for path in sorted(root.rglob('*')):
