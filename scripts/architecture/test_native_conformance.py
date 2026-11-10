@@ -51,6 +51,48 @@ raise SystemExit(1)
         with self.assertRaisesRegex(native.Violation, 'indirect conformance'):
             self.q.copy_conformance()
 
+    def test_actual_judge_reports_survive_without_fixture_secrets_or_build_trees(self):
+        output = self.root / 'target/conformance'
+        (output / 'verdicts').mkdir(parents=True)
+        (output / 'invocation.json').write_text('{}')
+        (output / 'verdicts/h2.json').write_text('{"status":"fail"}')
+        reports = {
+            'h2/evidence/subject.xml': '<testsuite><testcase><failure>actual failure</failure></testcase></testsuite>',
+            'otel-semconv-weaver/evidence/subject/live_check.json': '{"statistics":{"total_entities":1}}',
+            'otlp/work/subject/traces.json': '{"resourceSpans":[]}',
+            'oidf-run/subject/config.json': '{"client_secret":"do-not-retain"}',
+            'oidf-run/record.json': json.dumps({'subject': {
+                'exit': 1, 'modules': [['fapi2-module', 'FINISHED', 'REVIEW', 'token=do-not-retain']],
+                'review_pages': {'fapi2-module': ['a' * 64]}}}),
+            'h2/evidence/source.rs': 'do-not-retain',
+        }
+        for name, content in reports.items():
+            path = output / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        self.q.copy_conformance()
+        destination = self.q.evidence / 'conformance'
+        self.assertEqual((destination / 'h2/evidence/subject.xml').read_text(), reports['h2/evidence/subject.xml'])
+        self.assertTrue((destination / 'otel-semconv-weaver/evidence/subject/live_check.json').is_file())
+        self.assertFalse((destination / 'oidf-run').exists())
+        self.assertFalse((destination / 'h2/evidence/source.rs').exists())
+        summary = (destination / 'oidf-module-results.json').read_text()
+        self.assertNotIn('do-not-retain', summary)
+        self.assertEqual(json.loads(summary)['subject']['modules'], [['fapi2-module', 'FINISHED', 'REVIEW']])
+        self.assertEqual(self.q.receipt['conformance_diagnostics']['h2/evidence/subject.xml'], native.digest(destination / 'h2/evidence/subject.xml'))
+
+    def test_report_symlink_directory_cannot_escape_output_tree(self):
+        output = self.root / 'target/conformance'
+        (output / 'verdicts').mkdir(parents=True)
+        (output / 'invocation.json').write_text('{}')
+        outside = self.root / 'private'
+        outside.mkdir()
+        (outside / 'secret.xml').write_text('not evidence')
+        (output / 'h2').mkdir()
+        (output / 'h2/evidence').symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(native.Violation, 'indirect conformance diagnostic'):
+            self.q.copy_conformance()
+
     def test_external_failed_judge_keeps_hashed_output_without_admission(self):
         self.q.repository = 'GetBusbar/busbar-plane-llm'
         self.q.receipt['host_revision'] = 'a' * 40

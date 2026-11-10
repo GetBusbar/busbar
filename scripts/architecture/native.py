@@ -468,6 +468,80 @@ class Qualification:
             out = destination / relative
             out.parent.mkdir(exist_ok=True)
             shutil.copyfile(path, out)
+        # Preserve the external judge's diagnostic evidence, not its tool/source
+        # trees, fixture credentials or arbitrary candidate-selected paths.
+        # These reports contain only dedicated synthetic protocol fixtures.
+        patterns = (
+            'h2/evidence/*.xml',
+            'tls/evidence/*.json',
+            'otlp/work/subject/traces.json',
+            'otel-semconv-weaver/evidence/assessment.json',
+            'otel-semconv-weaver/evidence/*-samples.json',
+            'otel-semconv-weaver/evidence/*/live_check.json',
+        )
+        reports = sorted({path for pattern in patterns for path in source.glob(pattern)})
+        total = 0
+        retained = {}
+
+        def bounded_report(path):
+            nonlocal total
+            relative = path.relative_to(source)
+            # glob can traverse a symlink directory. Check every component before
+            # reading anything, including the output root itself.
+            if any(p.is_symlink() for p in (source, path, *path.parents) if p == source or source in p.parents):
+                raise Violation('indirect conformance diagnostic evidence')
+            if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+                raise Violation('invalid or oversized conformance diagnostic evidence')
+            with path.open('rb') as stream:
+                payload = stream.read(64 * 1024 * 1024 + 1)
+            total += len(payload)
+            if len(payload) > 64 * 1024 * 1024 or total > 256 * 1024 * 1024:
+                raise Violation('conformance diagnostic evidence exceeds its byte budget')
+            return relative, payload
+
+        for path in reports:
+            relative, payload = bounded_report(path)
+            out = destination / relative
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(payload)
+            retained[str(relative)] = hashlib.sha256(payload).hexdigest()
+
+        # OIDF's raw exports/review HTML can carry generated credentials and
+        # browser session tokens. Retain terminal module results and page hashes
+        # only; never publish those raw pages, screenshots, configs or ZIPs.
+        record = source / 'oidf-run/record.json'
+        if record.exists() or record.is_symlink():
+            _, payload = bounded_report(record)
+            raw = json.loads(payload)
+            summary = {'source_record_sha256': hashlib.sha256(payload).hexdigest(),
+                       'scope': 'Terminal module outcomes and review page hashes; credential-bearing raw exports omitted'}
+            for leg in ('control', 'negative', 'subject'):
+                entry = raw.get(leg)
+                if not isinstance(entry, dict):
+                    continue
+                safe = {'modules': []}
+                for row in entry.get('modules', []):
+                    if (not isinstance(row, list) or len(row) < 3 or
+                            not isinstance(row[0], str) or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,240}', row[0]) or
+                            any(not isinstance(v, str) or not re.fullmatch(r'[A-Z_-]{0,40}', v) for v in row[1:3])):
+                        raise Violation('invalid OIDF terminal module identity/result')
+                    safe['modules'].append(row[:3])
+                pages = entry.get('review_pages', {})
+                if (not isinstance(pages, dict) or any(
+                        not re.fullmatch(r'[A-Za-z0-9_.:-]{1,240}', name) or not isinstance(hashes, list) or
+                        any(not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for value in hashes)
+                        for name, hashes in pages.items())):
+                    raise Violation('invalid OIDF review page identity')
+                safe['review_pages'] = pages
+                if isinstance(entry.get('ok'), bool):
+                    safe['ok'] = entry['ok']
+                if type(entry.get('exit')) is int:
+                    safe['exit'] = entry['exit']
+                summary[leg] = safe
+            out = destination / 'oidf-module-results.json'
+            out.write_text(json.dumps(summary, indent=2, sort_keys=True) + '\n')
+            retained[out.name] = digest(out)
+        self.receipt['conformance_diagnostics'] = retained
 
     def core_conformance(self):
         """Evaluate required core suites, retaining failures and release-input gaps."""
