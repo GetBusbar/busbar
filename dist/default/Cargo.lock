@@ -654,7 +654,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=3915c7fbc63ded43e839a86bb0ee6cbd400f0bd1#3915c7fbc63ded43e839a86bb0ee6cbd400f0bd1"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=f7990e853c4a565d2db077953060a18e9640deab#f7990e853c4a565d2db077953060a18e9640deab"
 dependencies = [
  "busbar-contract",
  "http",
