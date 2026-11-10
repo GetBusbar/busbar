@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 
-from native import digest, git
+from native import collect_output, digest, git
 
 
 def qualify_plugin(q, host, sdk):
@@ -38,8 +38,8 @@ def qualify_plugin(q, host, sdk):
             '-I', str(include), str(q.root / 'secret-c/tests/settings_schema.c'),
             str(q.root / 'secret-c/busbar_secret_c.c'), '-o', str(schema)])
         q.run('c-schema', ['python3', str(q.root / 'secret-c/tests/settings_schema.py'), str(schema)])
-        q.receipt.update(library_sha256=digest(library), private=False)
-        shutil.copyfile(library, q.evidence / library.name)
+        collected = collect_output(q, library, q.evidence / library.name)
+        q.receipt.update(library_sha256=digest(collected), private=False)
         return
     q.run('fmt', ['cargo', 'fmt', '--all', '--check'])
     q.run('clippy', ['cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings'])
@@ -72,10 +72,10 @@ def qualify_plugin(q, host, sdk):
     if registered.get('extra_test'):
         q.run('plugin-required-extra', ['bash', '-euo', 'pipefail', '-c', registered['extra_test']])
     q.conformance('plugin-native-conformance')
-    q.receipt['library_sha256'] = digest(library)
+    collected = collect_output(q, library, q.evidence / library.name)
+    q.receipt['library_sha256'] = digest(collected)
     q.receipt['lock_sha256'] = digest(q.root / 'Cargo.lock')
     q.receipt['private'] = entry['private']
-    shutil.copyfile(library, q.evidence / library.name)
 
 
 def qualify_generator(q):

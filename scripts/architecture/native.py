@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack, nullcontext
 import datetime
 import hashlib
 import json
@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -160,6 +161,32 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def collect_output(q, source, destination, limit=2 * 1024**3):
+    """Copy only regular candidate outputs after execution has ended; never follow links."""
+    source, destination = Path(source), Path(destination)
+    roots = (q.work.resolve(), q.root.resolve() / 'target', q.root.resolve() / 'dist/default/target')
+    if not source.is_absolute() or not any(source.is_relative_to(root) for root in roots):
+        raise Violation('collected output escapes candidate build roots')
+    if any(path.is_symlink() for path in (source, *source.parents)):
+        raise Violation('indirect candidate output')
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise Violation('candidate output is nonregular or exceeds limit')
+        with destination.open('xb') as output:
+            remaining = limit
+            while chunk := stream.read(min(1024**2, remaining + 1)):
+                remaining -= len(chunk)
+                if remaining < 0:
+                    raise Violation('candidate output grew beyond limit')
+                output.write(chunk)
+        after = os.fstat(stream.fileno())
+        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise Violation('candidate output changed during collection')
+    return destination
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -203,7 +230,21 @@ class Qualification:
         self.external_conformance = getattr(args, 'external_conformance', False)
         self.evaluation_only = self.conformance_only or self.external_conformance
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
-        self.evidence = self.work / 'evidence'
+        self.control = self.work
+        self.execution = None
+        if getattr(args, 'confinement', None):
+            from native_confinement import Execution
+            if not args.confinement_sha256 or digest(args.confinement) != args.confinement_sha256:
+                raise Violation('protected confinement configuration digest differs')
+            self.work = self.control / 'candidate'
+            self.work.mkdir(mode=0o700)
+            self.harness = self.control / 'harness'
+            self.harness.mkdir(mode=0o700)
+            self.execution = Execution(json.loads(args.confinement.read_text()),
+                {'checkout': self.root, 'candidate': self.work, 'trusted': self.trusted, 'harness': self.harness}, self.control)
+        elif getattr(args, 'confinement_sha256', None):
+            raise Violation('confinement digest requires its configuration')
+        self.evidence = self.control / 'evidence'
         self.evidence.mkdir()
         self.repository = os.environ['CI_PROJECT_PATH']
         self.policy = Policy(read(self.trusted / 'ci/architecture.toml'))
@@ -220,6 +261,14 @@ class Qualification:
         self.receipt['execution_boundary'] = {
             'mode': 'host-subprocess', 'isolated': False, 'release_eligible': False,
         }
+        if self.execution is not None:
+            self.receipt['execution_boundary'] = {
+                'mode': 'docker-confined', 'isolated': False, 'release_eligible': False,
+                'confinement_configured': True,
+                'configuration_sha256': args.confinement_sha256,
+                'observations': self.execution.observations,
+                'limitation': 'controller observations are not an independent deployed host witness',
+            }
         if self.evaluation_only:
             expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance)
             if (os.environ.get('CI_JOB_NAME') != expected_job
@@ -276,10 +325,23 @@ class Qualification:
         self.save()
 
     def save(self):
+        execution = getattr(self, 'execution', None)
+        if execution and 'execution_boundary' in self.receipt:
+            rows = execution.observations
+            self.receipt['execution_boundary']['isolated'] = bool(rows) and all(
+                row.get('inspected') and row.get('disposed') for row in rows)
         (self.evidence / 'receipt.json').write_text(json.dumps(self.receipt, indent=2) + '\n')
 
     def run(self, name, argv, cwd=None, timeout=3600):
-        row = dict(name=name, argv=list(map(str, argv)), status='running', started_at=now())
+        return self._run(name, argv, cwd, timeout, controller=False)
+
+    def run_controller(self, name, argv, cwd=None, timeout=3600):
+        return self._run(name, argv, cwd, timeout, controller=True)
+
+    def _run(self, name, argv, cwd=None, timeout=3600, controller=False):
+        execution = None if controller else getattr(self, 'execution', None)
+        row = dict(name=name, argv=list(map(str, argv)), status='running', started_at=now(),
+                   authority='controller' if controller else 'candidate')
         self.receipt['steps'].append(row)
         self.save()
         is_nextest = list(argv[:3]) == ['cargo', 'nextest', 'run']
@@ -287,16 +349,28 @@ class Qualification:
             locate = ['cargo', 'locate-project', '--workspace', '--message-format', 'plain']
             if '--manifest-path' in argv:
                 locate += ['--manifest-path', argv[argv.index('--manifest-path') + 1]]
-            workspace = Path(subprocess.check_output(locate, cwd=cwd or self.root, env=self.env, text=True).strip()).parent
+            workspace = Path((execution.check_output if execution else subprocess.check_output)(
+                locate, cwd=cwd or self.root, env=self.env, text=True).strip()).parent
+            if execution and not any(workspace.is_relative_to(p) for p in (self.root, self.work)):
+                raise Violation('candidate workspace report escapes writable output roots')
             # Nextest's default store is workspace-relative, independent of Cargo's
             # target-dir. The distribution workspace therefore has its own report.
             junit = workspace / 'target/nextest/default/native.xml'
+            if execution and (junit.is_symlink() or not junit.resolve().is_relative_to(workspace.resolve())):
+                raise Violation('indirect candidate report path')
             junit.unlink(missing_ok=True)
         with (self.evidence / (name + '.stdout')).open('wb') as out, (self.evidence / (name + '.stderr')).open('wb') as err:
             process = None
+            boundary = ExitStack()
             try:
                 with deferred_interruptions():
-                    process = subprocess.Popen(argv, cwd=cwd or self.root, env=self.env, stdout=out, stderr=err, start_new_session=True)
+                    command, environment = argv, self.env
+                    if execution:
+                        command, environment, observation = boundary.enter_context(execution.invocation(argv, cwd or self.root, self.env))
+                        row['container'] = observation
+                    elif controller and getattr(self, 'execution', None):
+                        environment = dict(self.env, DOCKER_HOST=self.execution.config['docker_host'])
+                    process = subprocess.Popen(command, cwd=cwd or self.root, env=environment, stdout=out, stderr=err, start_new_session=True)
                 code = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 row.update(status='timeout', finished_at=now())
@@ -309,23 +383,26 @@ class Qualification:
             finally:
                 # TERM gives nested conformance supervisors time to reap their own
                 # independent sessions; KILL remains bounded for unresponsive commands.
-                if process is not None:
-                    try:
+                try:
+                    if process is not None:
                         stop_process_group(process)
-                    except Interrupted as error:
-                        row.update(status='interrupted', signal=error.signum, finished_at=now())
-                        self.save()
-                        raise
+                except Interrupted as error:
+                    row.update(status='interrupted', signal=error.signum, finished_at=now())
+                    self.save()
+                    raise
+                finally:
+                    with deferred_interruptions():
+                        boundary.close()
         row.update(status='pass' if code == 0 else 'fail', exit_code=code, finished_at=now())
         for stream in ('stdout', 'stderr'):
             row[stream + '_sha256'] = digest(self.evidence / (name + '.' + stream))
         if is_nextest and code == 0:
             if not junit.is_file():
                 raise Violation('nextest did not produce its current machine-readable report')
-            shutil.copyfile(junit, self.evidence / (name + '.xml'))
-            row['junit_sha256'] = digest(junit)
+            collected = collect_output(self, junit, self.evidence / (name + '.xml'), limit=64 * 1024**2)
+            row['junit_sha256'] = digest(collected)
             try:
-                validate_test_report(junit)
+                validate_test_report(collected)
             except Violation:
                 row.update(status='fail', exit_code=1)
                 self.save()
@@ -367,16 +444,24 @@ class Qualification:
         return self._sdk
 
     def architecture(self, sdk=None):
+        scratch = self.harness / 'architecture' if self.execution else self.work / 'architecture'
         command = ['python3', str(self.trusted / 'scripts/architecture/check.py'), '--policy', str(self.trusted / 'ci/architecture.toml'),
             '--repository', self.repository, '--checkout', str(self.root), '--trusted', str(self.trusted),
-            '--scratch', str(self.work / 'architecture'), '--output', str(self.evidence / 'architecture.json')]
+            '--scratch', str(scratch), '--output', str(self.evidence / 'architecture.json')]
         if sdk:
             command += ['--sdk', str(sdk)]
-        self.run('architecture', command)
+        if self.execution:
+            context, expected = self.execution.write_context()
+            command += ['--execution-context', str(context), '--execution-context-sha256', expected]
+        self.run_controller('architecture', command)
+        if self.execution:
+            observed = json.loads((self.evidence / 'architecture.json').read_text())
+            self.execution.observations.extend(observed['candidate_execution'])
+            self.save()
 
     def core(self):
         self.architecture()
-        self.run('architecture-regressions', [sys.executable, '-m', 'unittest', 'discover',
+        self.run_controller('architecture-regressions', [sys.executable, '-m', 'unittest', 'discover',
             '-s', str(self.trusted / 'scripts/architecture'), '-p', 'test_*.py'], cwd=self.trusted)
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
@@ -433,8 +518,8 @@ class Qualification:
                 self.run(name, command)
             self.run('default-dependency-vet', ['cargo', 'vet'], cwd=host / 'dist/default')
             binary = Path(self.env['CARGO_TARGET_DIR']) / 'release/busbar'
-            shutil.copyfile(binary, self.evidence / 'busbar')
-            self.receipt['binary_sha256'] = digest(binary)
+            collected = collect_output(self, binary, self.evidence / 'busbar')
+            self.receipt['binary_sha256'] = digest(collected)
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
@@ -455,6 +540,8 @@ class Qualification:
             qualify_plugin(self, host, sdk)
 
     def conformance(self, name):
+        if getattr(self, 'execution', None):
+            raise Violation('confined conformance requires controller-owned Docker fixture API migration')
         suites = self.root / 'testing/conformance/suites.tsv'
         if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
             try:
@@ -577,6 +664,8 @@ class Qualification:
 
     def external_endpoint_conformance(self):
         """Retain external judges' results without granting native admission."""
+        if getattr(self, 'execution', None):
+            raise Violation('external judges require a fixed-destination confined network broker')
         sdk = self.sdk()
         self.receipt['sdk_revision'] = git(sdk, 'rev-parse', 'HEAD')
         self.architecture(sdk)
@@ -616,6 +705,8 @@ def qualify():
     parser.add_argument('--trusted', required=True, type=Path)
     parser.add_argument('--checkout', required=True, type=Path)
     parser.add_argument('--work', required=True, type=Path)
+    parser.add_argument('--confinement', type=Path, help='Protected pinned runtime configuration; never falls back to host')
+    parser.add_argument('--confinement-sha256')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--conformance-only', action='store_true')
     modes.add_argument('--external-conformance', action='store_true')
@@ -646,6 +737,8 @@ def qualify():
             qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
             from native_plugins import qualify_generator
+            if qualification.execution:
+                raise Violation('generated-project qualification requires controller harness registration')
             qualify_generator(qualification)
         elif qualification.repository in qualification.policy.data['repositories']:
             qualification.plugin()
@@ -670,7 +763,7 @@ def qualify():
         raise
     finally:
         # Only the unique job workspace created by the trusted bootstrap is disposable.
-        work = qualification.work if qualification is not None else args.work.resolve()
+        work = getattr(qualification, 'control', qualification.work) if qualification is not None else args.work.resolve()
         if work.name == 'boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID']:
             shutil.rmtree(work)
 
