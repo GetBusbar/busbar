@@ -377,6 +377,7 @@ dependencies = [
  "http",
  "idna",
  "indexmap",
+ "libc",
  "memchr",
  "num-bigint",
  "ring",
@@ -385,11 +386,10 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "smallvec",
- "stringprep",
  "tracing",
  "tracing-core",
  "tracing-log",
- "unicode-normalization",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -599,7 +599,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=d5c46ba81113d156c54a498a8b007c45adf3f599#d5c46ba81113d156c54a498a8b007c45adf3f599"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=d0c096b28c65605ed58dc75165804bd104280cdb#d0c096b28c65605ed58dc75165804bd104280cdb"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -610,7 +610,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=d5c46ba81113d156c54a498a8b007c45adf3f599#d5c46ba81113d156c54a498a8b007c45adf3f599"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=d0c096b28c65605ed58dc75165804bd104280cdb#d0c096b28c65605ed58dc75165804bd104280cdb"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
@@ -3335,16 +3335,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stringprep"
-version = "0.1.5"
-source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"
-dependencies = [
- "unicode-bidi",
- "unicode-normalization",
- "unicode-properties",
-]
-
-[[package]]
 name = "strum"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3773,12 +3763,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unicode-properties"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993ad287eb20e8ba755312801cfe1413e0f25d604075863acaddca10b04c1833"
-
-[[package]]
 name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4145,6 +4129,9 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zmij"
@@ -4161,3 +4148,8 @@ source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=bed6617588e364
 name = "postgres-protocol"
 version = "0.6.12"
 source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=ba55637630fb38de6382e8dd7370b3c2d45da57b#ba55637630fb38de6382e8dd7370b3c2d45da57b"
+
+[[patch.unused]]
+name = "stringprep"
+version = "0.1.5"
+source = "git+https://github.com/MattJackson/rust-stringprep?rev=da1e3cea3ca61b8b3882a71ee96496cd231601f2#da1e3cea3ca61b8b3882a71ee96496cd231601f2"
