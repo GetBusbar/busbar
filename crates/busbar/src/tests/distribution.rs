@@ -283,9 +283,6 @@ mod service_plane_usage;
 #[path = "admin_application/service_group_usage.rs"]
 mod service_group_usage;
 
-#[path = "kernel_application/misc_boot.rs"]
-mod misc_boot;
-
 #[path = "kernel_application/misc_ingress_terminal.rs"]
 mod misc_ingress_terminal;
 
@@ -409,9 +406,6 @@ mod admin_application_admin_custody_outcomes;
 #[path = "kernel_application/external_plane_driver_actual.rs"]
 mod kernel_application_external_plane_driver_actual;
 
-#[path = "kernel_application/external_accepted_events.rs"]
-mod kernel_application_external_accepted_events;
-
 #[path = "kernel_application/recovery_flusher_actual.rs"]
 mod kernel_application_recovery_flusher_actual;
 
@@ -442,9 +436,6 @@ mod kernel_application_central2_inbound_signed;
 #[path = "kernel_application/central2_inbound_refusals.rs"]
 mod kernel_application_central2_inbound_refusals;
 
-#[path = "admin_application/credential_flush_response_actual.rs"]
-mod admin_application_credential_flush_response_actual;
-
 #[path = "admin_application/telemetry.rs"]
 mod admin_telemetry;
 
@@ -460,3 +451,4 @@ mod admin_effect_authority;
 // Source owners supply product fixtures and scenarios in this original test scope.
 include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 owner_test_sources!(admin_application);
+owner_test_sources!(sqlite_application);
