@@ -363,7 +363,7 @@ fn settled_stream(
 
 #[test]
 fn loaded_http_streams_keep_their_scope_when_a_sibling_ticket_is_disposed() {
-    use super::inbound_reload_tests::request;
+    use crate::test_common::plugins::framed_admission_request as request;
     let (door, host) = opened();
     let owner = door.instance().unwrap();
     let (mut framing, _) = begin(door.clone(), "").expect("accepted");
@@ -550,7 +550,9 @@ fn a_worker_resume_and_lifecycle_hop_retain_the_submitted_framing_scope() {
     drop(side);
 
     let cleanup = ReleaseAll(host.clone());
-    let bytes = Arc::new(super::inbound_reload_tests::request(1, "/worker", true));
+    let bytes = Arc::new(crate::test_common::plugins::framed_admission_request(
+        1, "/worker", true,
+    ));
     let mut input: t::IngestIn = blank_in();
     input.framing = opening.out.framing;
     input.bytes = bytes.as_ptr();
