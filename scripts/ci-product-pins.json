@@ -70,13 +70,13 @@
     {
       "repo": "busbar-export-prometheus",
       "url": "https://github.com/GetBusbar/busbar-export-prometheus",
-      "commit": "d5c46ba81113d156c54a498a8b007c45adf3f599",
+      "commit": "d0c096b28c65605ed58dc75165804bd104280cdb",
       "package": "busbar-export-prometheus-plugin",
       "kind": "export",
       "alias": "prometheus",
       "image": "libbusbar_export_prometheus_plugin.so",
       "declares": "export-prometheus/declares.json",
-      "lock_sha256": "7e7390c8d38509488d3756a417bc6bb03e6e68d639f1cf20227de9d9f983b9d6"
+      "lock_sha256": "640c590fa039a4f55de0c4d38beb9b3aa24db6bb3870314b2023c929bbc93c29"
     },
     {
       "repo": "busbar-hook-ranking",
