@@ -12,23 +12,18 @@ use super::SecretRows;
 use crate::boot::{Candidate, Origin};
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
 
-use crate::actual_env_secret as secret_fixture;
 use crate::hook_door_conformance_tests::hook_door_plugin;
+use crate::neutral_secret as secret_fixture;
 use secret_fixture::door;
 use secret_fixture::NAME;
 
 #[path = "secret_shared_close_tests.rs"]
 mod shared_close;
 
-const MATERIAL: &str = "s3cr3t-secret-calls";
+use secret_fixture::MATERIAL;
 
-const HIT: &str = "BUSBAR_LOADER_SECRET_CALLS_HIT";
-const MISS: &str = "BUSBAR_LOADER_SECRET_CALLS_MISS";
-
-fn environment() {
-    std::env::set_var(HIT, MATERIAL);
-    std::env::remove_var(MISS);
-}
+const HIT: &str = "hit";
+const MISS: &str = "miss";
 
 fn dispatcher() -> Arc<Dispatcher> {
     static ONE: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
@@ -46,7 +41,7 @@ fn settings() -> serde_json::Value {
 }
 
 fn reference_settings() -> busbar_contract::plugin_settings::Settings {
-    serde_json::json!({"key": HIT})
+    serde_json::json!({"case": HIT})
         .as_object()
         .unwrap()
         .clone()
@@ -66,8 +61,8 @@ fn resolves(opened: &dyn busbar_contract::secret::SecretCalls) -> Vec<String> {
         Err(e) => format!("refused {} {}", e.error_kind, e.text),
     };
     vec![
-        spell(opened.resolve(format!(r#"{{"key":"{HIT}"}}"#).as_bytes())),
-        spell(opened.resolve(format!(r#"{{"key":"{MISS}"}}"#).as_bytes())),
+        spell(opened.resolve(format!(r#"{{"case":"{HIT}"}}"#).as_bytes())),
+        spell(opened.resolve(format!(r#"{{"case":"{MISS}"}}"#).as_bytes())),
     ]
 }
 
@@ -78,15 +73,14 @@ fn transcript(axis: &dyn SecretAxis) -> Vec<String> {
             Some(&crate::dispatch::test_authored_settings(&settings())),
             &unreached,
         )
-        .expect("the env source opens over its settings");
+        .expect("the witness source opens over its settings");
     resolves(opened.as_ref())
 }
 
 #[test]
 fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
-    environment();
     let mut rows = SecretRows::new(dispatcher, || None);
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     assert!(rows.answers(NAME) && rows.linked(NAME));
     assert!(!rows.answers("absent") && !rows.linked("absent"));
     let t = transcript(&rows);
@@ -99,7 +93,7 @@ fn a_linked_secret_plugin_answers_and_resolves_through_the_axis() {
 
     let shared = rows
         .shared(NAME)
-        .expect("the linked env source has a shared instance");
+        .expect("the linked witness source has a shared instance");
     assert_eq!(resolves(shared.as_ref()), t);
 
     let refused = rows
@@ -117,7 +111,7 @@ fn dropped_secret_candidate() -> Candidate {
         stated,
         None,
         Origin::Dropped {
-            file: format!("{}.tar.gz", "busbar-secret-env"),
+            file: format!("{NAME}.tar.gz"),
             bytes: Arc::new(bytes),
         },
     )
@@ -126,7 +120,6 @@ fn dropped_secret_candidate() -> Candidate {
 
 #[test]
 fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
-    environment();
     let candidate = dropped_secret_candidate();
     assert_eq!(candidate.kind, KindCode::Secret);
     let rows = SecretRows::new(dispatcher, || None);
@@ -138,7 +131,7 @@ fn a_dropped_in_secret_plugin_is_the_same_plugin_through_the_axis() {
     );
 
     let mut linked = SecretRows::new(dispatcher, || None);
-    linked.link(door).expect("the env source's door links");
+    linked.link(door).expect("the witness source's door links");
     assert_eq!(
         transcript(&rows),
         transcript(&linked),
@@ -334,9 +327,8 @@ fn gated_dispatcher() -> Arc<Dispatcher> {
 
 #[test]
 fn a_wedged_shared_open_holds_no_other_caller() {
-    environment();
     let mut rows = SecretRows::new(gated_dispatcher, || None);
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     let rows = Arc::new(rows);
     let wedged = {
         let rows = Arc::clone(&rows);
@@ -387,16 +379,15 @@ fn log_config() -> crate::dispatch::PluginLogConfig {
 
 #[test]
 fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
-    environment();
     let dir = std::env::temp_dir().join(format!("busbar-secret-logs-{}", std::process::id()));
     LOG_DIR
         .set(dir.clone())
         .expect("the one test sets the directory");
     let mut rows = SecretRows::new(dispatcher, || None).with_logs(log_config);
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     rows.with_former_names(|w| {
         if w == NAME {
-            vec!["env-second".to_string()]
+            vec!["witness-second".to_string()]
         } else {
             Vec::new()
         }
@@ -412,7 +403,7 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
         .expect("opens");
     let second = rows
         .open(
-            "env-second",
+            "witness-second",
             Some(&crate::dispatch::test_authored_settings(&settings())),
             &unreached,
         )
@@ -427,7 +418,7 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
         "the instance `secrets.{NAME}` has its own log file"
     );
     assert!(
-        file("env-second").exists(),
+        file("witness-second").exists(),
         "a second instance of the one plugin has a file of its own"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -438,7 +429,7 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
     use crate::dispatch::{load_linked, Bind, LinkedRow, NoSink};
     let material = [super::SecretValue::new(MATERIAL.as_bytes().to_vec())];
     let open = |d: Arc<Dispatcher>| {
-        let row = LinkedRow::of(door).expect("the env source states its Statement");
+        let row = LinkedRow::of(door).expect("the witness source states its Statement");
         let plugin = load_linked::<crate::dispatch::kinds::secret::Secret>(
             &row,
             Bind {
@@ -449,7 +440,7 @@ fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
                 conns: crate::dispatch::ConnTable::NoNeeds,
             },
         )
-        .expect("the linked env source loads");
+        .expect("the linked witness source loads");
         super::LoadedSecret::open(plugin, d, b"{}", &material).map(|_| ())
     };
     let refused = open(Arc::new(Dispatcher::new_unlent(DispatchConfig::default())))

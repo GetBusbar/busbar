@@ -16,16 +16,12 @@ use super::SecretRows;
 use crate::boot::Candidate;
 use crate::dispatch::{DispatchConfig, Dispatcher};
 
-use crate::actual_env_secret as secret_fixture;
+use crate::neutral_secret as secret_fixture;
 use secret_fixture::door;
 use secret_fixture::NAME;
 
-const MATERIAL: &str = "s3cr3t-on-the-disk-lane";
-const HIT: &str = "BUSBAR_LOADER_SECRET_DISK_HIT";
-
-fn environment() {
-    std::env::set_var(HIT, MATERIAL);
-}
+use secret_fixture::MATERIAL;
+const HIT: &str = "hit";
 
 fn dispatcher() -> Arc<Dispatcher> {
     static ONE: std::sync::OnceLock<Arc<Dispatcher>> = std::sync::OnceLock::new();
@@ -43,7 +39,7 @@ fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>
 }
 
 fn hit() -> Vec<u8> {
-    format!(r#"{{"key":"{HIT}"}}"#).into_bytes()
+    format!(r#"{{"case":"{HIT}"}}"#).into_bytes()
 }
 
 fn spell(r: Result<Secret<Vec<u8>>, SecretRefused>) -> String {
@@ -91,7 +87,7 @@ fn disk_rows(run: Option<super::DiskRun>) -> SecretRows {
     if let Some(run) = run {
         rows = rows.with_disk_lane(run);
     }
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     rows.declare_linked(door, r#"{"disk": true}"#)
         .expect("its declares section reads");
     rows
@@ -99,7 +95,6 @@ fn disk_rows(run: Option<super::DiskRun>) -> SecretRows {
 
 #[test]
 fn a_disk_source_answers_only_at_config_time_and_only_on_the_lane() {
-    environment();
     let rows = disk_rows(Some(counted_lane));
     let shared = rows
         .shared(NAME)
@@ -124,7 +119,6 @@ fn a_disk_source_answers_only_at_config_time_and_only_on_the_lane() {
 
 #[test]
 fn a_dropped_in_disk_source_is_refused_on_a_request_path() {
-    environment();
     let rows = SecretRows::new(dispatcher, || None).with_disk_lane(lane);
     let candidate = Candidate::linked(door)
         .expect("the door states itself")
@@ -152,9 +146,8 @@ fn a_dropped_in_disk_source_is_refused_on_a_request_path() {
 
 #[test]
 fn a_source_with_no_disk_need_is_unchanged_and_never_reaches_the_lane() {
-    environment();
     let mut rows = SecretRows::new(dispatcher, || None).with_disk_lane(untouched_lane);
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     let shared = rows
         .shared(NAME)
         .expect("the linked source has a shared instance");
@@ -167,7 +160,6 @@ fn a_source_with_no_disk_need_is_unchanged_and_never_reaches_the_lane() {
 
 #[test]
 fn a_lane_that_will_not_run_the_job_answers_at_once() {
-    environment();
     let scope = ConfigScope::config_time();
 
     let full = disk_rows(Some(full_lane));
@@ -205,7 +197,6 @@ fn a_lane_that_will_not_run_the_job_answers_at_once() {
 
 #[test]
 fn a_disk_source_with_no_lane_refuses_every_resolve() {
-    environment();
     let rows = disk_rows(None);
     let shared = rows.shared(NAME).expect("shared");
     let at_config = spell(shared.resolve_at_config(&hit(), &ConfigScope::config_time()));
@@ -219,7 +210,7 @@ fn a_disk_source_with_no_lane_refuses_every_resolve() {
 #[test]
 fn a_linked_declares_section_that_does_not_read_is_refused() {
     let mut rows = SecretRows::new(dispatcher, || None);
-    rows.link(door).expect("the env source's door links");
+    rows.link(door).expect("the witness source's door links");
     let Err(refused) = rows.declare_linked(door, r#"{"disk": "yes"}"#) else {
         panic!("`disk` is a bool");
     };
@@ -239,7 +230,6 @@ fn an_expired_queued_disk_resolve_releases_its_instance_before_the_queue_runs() 
         Ok(())
     }
 
-    environment();
     let d = dispatcher();
     let plugin = load_linked::<SecretKind>(
         &LinkedRow::of(door).unwrap(),
