@@ -1,14 +1,14 @@
 use busbar_contract::{
-    Secret,
     persistence::{
         archive::{self, Header, Limits, Table, Writer},
         legacy_row::{self, Cell, Row},
     },
+    Secret,
 };
 use busbar_migrations::{
-    Bounds, Edge, Error, Family, Record, SourceReader, TargetRow, Transform,
     archive_source::{ArchiveSource, Grouping},
     legacy::group::LogicalGroup,
+    Bounds, Edge, Error, Family, Record, SourceReader, TargetRow, Transform,
 };
 use std::{
     io::{Cursor, Read, Seek, SeekFrom},
@@ -322,13 +322,11 @@ async fn physical_pages_cover_each_original_row_once_independent_of_group_size()
     assert_eq!(last.records.len(), 1);
     assert_eq!(last.next, 3);
     assert!(last.complete);
-    assert!(
-        first
-            .records
-            .iter()
-            .chain(&last.records)
-            .all(|row| row.preserve_exact)
-    );
+    assert!(first
+        .records
+        .iter()
+        .chain(&last.records)
+        .all(|row| row.preserve_exact));
     assert_ne!(first.records[0].key, first.records[1].key);
     assert_ne!(first.records[0].key, last.records[0].key);
 }

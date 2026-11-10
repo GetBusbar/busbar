@@ -6,8 +6,8 @@
 use super::archive::Provenance;
 use crate::{Bounds, Error, Record, TargetRow};
 use busbar_contract::{
+    persistence::{legacy_row::Row, Address},
     Secret,
-    persistence::{Address, legacy_row::Row},
 };
 use sha2::{Digest, Sha256};
 

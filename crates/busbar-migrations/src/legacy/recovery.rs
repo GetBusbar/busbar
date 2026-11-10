@@ -6,8 +6,8 @@
 //! and head values are reread individually. This proves ancestry, never a new
 //! executable receipt, business outcome, or append-custody grant.
 use super::{journal::JournalPlan, transform::ARCHIVAL};
-use crate::{Bounds, Error, Record, archive_source::ArchiveSource};
-use busbar_contract::{Secret, persistence::Address};
+use crate::{archive_source::ArchiveSource, Bounds, Error, Record};
+use busbar_contract::{persistence::Address, Secret};
 use busbar_kernel::persistence::import_target::{journal::VerifiedNode, records, recovery::*};
 use busbar_kernel_wal::JournalRecord;
 use sha2::{Digest, Sha256};

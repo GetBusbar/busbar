@@ -3,9 +3,9 @@
 
 //! Logical migration rules and native output proof obligations. Source owners
 //! supply interpreted facts; physical formats never select core behavior.
-use super::super::{Bounds, CORE_FORMAT, Edge, Family, Format, Registry, TargetRow};
+use super::super::{Bounds, Edge, Family, Format, Registry, TargetRow, CORE_FORMAT};
 use super::*;
-use busbar_contract::{Secret, persistence::Address};
+use busbar_contract::{persistence::Address, Secret};
 use busbar_kernel::persistence::import_target::records::history::{HistoryCollection, HistoryMode};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
