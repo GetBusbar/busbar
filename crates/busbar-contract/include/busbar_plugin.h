@@ -695,7 +695,8 @@ extern "C" {
 #define BB_HSVC_OP_TICKET_MINT UINT32_C(32) /* `ticket.mint`. */
 #define BB_HSVC_OP_TICKET_TAKE UINT32_C(33) /* `ticket.take`. */
 #define BB_HSVC_OP_WORK_STATUS UINT32_C(34) /* `work.status`: instance-scoped, read-only durable receipt status. */
-#define BB_HSVC_SERVICES UINT32_C(35) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_OUTBOUND_AUTHORIZE UINT32_C(35) /* `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody. */
+#define BB_HSVC_SERVICES UINT32_C(36) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -800,6 +801,13 @@ extern "C" {
 #define BB_HSVC_MAX_TICKET_RECORD UINT64_C(0x10000) /* The most record bytes one `ticket.mint` stores with its ticket. */
 #define BB_HSVC_TICKET_NONE UINT64_C(0) /* `ticket.take`: the unit was admitted by a key, not a ticket; nothing is written. */
 #define BB_HSVC_TICKET_TAKEN UINT64_C(1) /* `ticket.take`: the record of the ticket that admitted the unit, written once. */
+#define BB_HSVC_OUTBOUND_PUBLISH UINT32_C(1) /* Publish or replace host-held outbound credential custody. */
+#define BB_HSVC_OUTBOUND_BIND UINT32_C(2) /* Bind an existing custody revision to the serving unit. */
+#define BB_HSVC_OUTBOUND_REVOKE UINT32_C(3) /* Revoke custody, including a revision-zero tombstone for an absent connection. */
+#define BB_HSVC_OUTBOUND_PREPARE UINT32_C(4) /* Prepare a sealed request body for one governed dispatch by the serving unit. */
+#define BB_HSVC_OUTBOUND_PUBLISH_BODY UINT32_C(5) /* Publish a reusable sealed request body in host-held connection custody. */
+#define BB_HSVC_MAX_OUTBOUND_TEXT ((size_t)4096) /* Maximum bytes in each public outbound scope string or field name. */
+#define BB_HSVC_MAX_OUTBOUND_CREDENTIAL ((size_t)16384) /* Maximum sealed credential bytes accepted for outbound custody. */
 
 /* hio */
 #define BB_HIO_OP_OPEN UINT32_C(0) /* `io.open`. */
@@ -1184,6 +1192,7 @@ typedef struct bb_hsvc_RefusalAnswer bb_hsvc_RefusalAnswer;
 typedef struct bb_hsvc_UnitRefuseIn bb_hsvc_UnitRefuseIn;
 typedef struct bb_hsvc_TicketMintIn bb_hsvc_TicketMintIn;
 typedef struct bb_hsvc_TicketTakeIn bb_hsvc_TicketTakeIn;
+typedef struct bb_hsvc_OutboundAuthorizeIn bb_hsvc_OutboundAuthorizeIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 typedef struct bb_hio_IoSlots bb_hio_IoSlots;
 typedef struct bb_hio_OpenIn bb_hio_OpenIn;
@@ -3914,6 +3923,20 @@ struct bb_hsvc_TicketTakeIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* Generic outbound custody request. The host derives caller and unit authority; `connection` */
+struct bb_hsvc_OutboundAuthorizeIn {
+    bb_hsvc_ServiceHead head;
+    uint32_t action;
+    uint32_t need;
+    bb_mech_AbiStr member;
+    bb_mech_AbiStr resource;
+    bb_mech_AbiStr connection;
+    uint64_t expected_revision;
+    uint64_t expires_at_unix;
+    bb_mech_AbiStr field_name;
+    bb_mech_Blob credential;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3953,6 +3976,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn ticket_mint;
     bb_hsvc_ServiceFn ticket_take;
     bb_hsvc_ServiceFn work_status;
+    bb_hsvc_ServiceFn outbound_authorize;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -4041,7 +4065,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 279 of 279 structures are pinned by the golden ---- */
+/* ---- layout proof: 280 of 280 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -6212,7 +6236,19 @@ BB_ASSERT(sizeof(bb_hsvc_TicketTakeIn) == 56, "bb_hsvc_TicketTakeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_TicketTakeIn) == 8, "bb_hsvc_TicketTakeIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, head) == 0, "bb_hsvc_TicketTakeIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, into) == 24, "bb_hsvc_TicketTakeIn.into: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 288, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_OutboundAuthorizeIn) == 136, "bb_hsvc_OutboundAuthorizeIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_OutboundAuthorizeIn) == 8, "bb_hsvc_OutboundAuthorizeIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, head) == 0, "bb_hsvc_OutboundAuthorizeIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, action) == 24, "bb_hsvc_OutboundAuthorizeIn.action: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, need) == 28, "bb_hsvc_OutboundAuthorizeIn.need: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, member) == 32, "bb_hsvc_OutboundAuthorizeIn.member: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, resource) == 48, "bb_hsvc_OutboundAuthorizeIn.resource: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, connection) == 64, "bb_hsvc_OutboundAuthorizeIn.connection: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expected_revision) == 80, "bb_hsvc_OutboundAuthorizeIn.expected_revision: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expires_at_unix) == 88, "bb_hsvc_OutboundAuthorizeIn.expires_at_unix: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, field_name) == 96, "bb_hsvc_OutboundAuthorizeIn.field_name: offset");
+BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, credential) == 112, "bb_hsvc_OutboundAuthorizeIn.credential: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 296, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6251,6 +6287,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, unit_refuse) == 256, "bb_hsvc_HostSlots.un
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 264, "bb_hsvc_HostSlots.ticket_mint: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 272, "bb_hsvc_HostSlots.ticket_take: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 280, "bb_hsvc_HostSlots.work_status: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, outbound_authorize) == 288, "bb_hsvc_HostSlots.outbound_authorize: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");
