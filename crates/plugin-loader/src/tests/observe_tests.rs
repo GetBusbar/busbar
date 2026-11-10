@@ -305,7 +305,7 @@ fn a_plane_envelope_reaches_the_host_observer() {
 #[test]
 fn an_auth_envelope_reaches_the_host_observer() {
     observed_through_its_bind::<crate::dispatch::kinds::auth::Auth>(
-        actual_auth_observer_door,
+        crate::neutral_auth::door,
         busbar_contract::abi::mechanism::kind::AUTH,
     );
 }
@@ -492,17 +492,6 @@ fn actual_observer_door<K: crate::dispatch::Kind>(
         .expect("actual product descriptor kind validates");
     // SAFETY: validation established a live immutable descriptor held by retained.
     unsafe { &*door }
-}
-
-extern "C" fn actual_auth_observer_door() -> &'static busbar_contract::abi::mechanism::door::Door {
-    static IMAGE: std::sync::OnceLock<(
-        libloading::Library,
-        busbar_contract::abi::sdk::door::RawDoorFn,
-    )> = std::sync::OnceLock::new();
-    actual_observer_door::<crate::dispatch::kinds::auth::Auth>(
-        "BUSBAR_AUTH_TEST_OIDC_PLUGIN",
-        &IMAGE,
-    )
 }
 
 extern "C" fn actual_transport_observer_door(
