@@ -1,6 +1,6 @@
 # Wire protocols and cross-protocol translation
 
-Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back. Same-protocol routes are byte-for-byte identical to calling the provider directly; cross-protocol, read [what "lossless" means here](#what-lossless-means-here) before you rely on the word, because that section also lists what does not cross in 1.6.0.
+Busbar just **listens**. Your client decides which protocol it speaks: OpenAI, Anthropic, Gemini, Bedrock, Cohere, or Responses, by which URL it calls, and Busbar accepts it. It implements all six protocols as both **ingress** (what your client speaks *to* Busbar) and **egress** (what Busbar speaks to your backend). When the two differ, Busbar translates through one internal format rich enough to hold every protocol's features, in both directions. Your client code never changes: it speaks its own native protocol and gets its own native responses back. Same-protocol passthrough preserves native fields, subject to configured rewrites such as model selection. Cross-protocol calls carry the fields the target can represent; see [translation behavior and limits](#what-lossless-means-here) before depending on a provider-specific feature.
 
 This document covers:
 
@@ -510,20 +510,14 @@ Same-protocol error responses (`4xx`) are relayed verbatim.
 
 ### What "lossless" means here
 
-The claim busbar makes, in full, so you can check it rather than take it:
+Same-protocol passthrough and cross-protocol translation have different guarantees:
 
-> **Same-protocol routes are byte-for-byte identical to calling the provider directly: busbar forwards your original bytes, it does not re-serialize them. Cross-protocol, every modelled field survives in the target's native shape, and what cannot cross is dropped deliberately: your client always gets a response its own SDK parses, and the backend always gets a request it accepts.**
+- **Same protocol:** native fields do not need conversion through a different wire format. The byte-for-byte path and the model-rewrite exception are described in [Same-protocol note](#same-protocol-note).
+- **Cross protocol:** modeled fields are encoded in the target protocol's native shape where that shape exists. This is not a guarantee that every provider-specific feature survives, or that every backend accepts every translated request.
 
-The first sentence is unconditional and is the stronger of the two: see [Same-protocol note](#same-protocol-note). The second holds for everything the IR models, and [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express) names the constructs that have nowhere to go on the other side. As of 1.6.0 there is no third list: what was published here as [Known gaps](#closed-in-160) is closed, and every remaining drop emits a `warn!` naming the field.
+A parseable response and complete field preservation are separate properties. A response can match your SDK's schema while omitting metadata that the target protocol cannot express. Fields can also be normalized, such as a provider-specific stop reason mapped to the target's enum.
 
-Busbar's translation is **lossless** in a specific, testable sense: **neither end can tell the hop happened.**
-
-- **The client is never confused.** It gets a response its own SDK parses cleanly, in its own protocol's shape, that never contradicts what it sent: no `finish_reason`/`stop_reason` outside its enum, no field in a shape its validator rejects, no identifier minted by a foreign vendor.
-- **The backend never rejects the request.** What Busbar sends upstream is a valid request in the *backend's* protocol, never a foreign-shaped structured-output object, an off-enum image format, a non-alternating message sequence, or any field the backend 400s as malformed.
-
-The reference is native-to-native: a translated exchange should behave exactly as if the client had spoken the backend's protocol directly. A difference counts as *loss* only if it trips one of those two tests, a client that can't parse what it got back, or a backend that rejects what it was sent. Field-level differences that trip neither test (e.g. an upstream `id` replaced with an ingress-native one) are not loss.
-
-Where a construct genuinely has **no representation** in the target protocol: a rare, inherent limit, see [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express), Busbar degrades it to the closest valid native form **and emits a `warn!`**, never something either end would reject. The degradation is observable in logs; it is never silent and never yields an unparseable or malformed wire body.
+In the **1.6.0 development LLM plane**, translation records dropped fields and emits diagnostics. Some request combinations cannot be represented safely and are rejected before dispatch, rather than sent as a different request. Consult [Fields the target protocol cannot express](#fields-the-target-protocol-cannot-express) for individual limits, and use a compatible same-protocol backend when the request depends on one of those features. The historical measurements below retain their own version labels; they are not new measurements of the development build.
 
 ### Closed in 1.6.0
 
@@ -581,7 +575,7 @@ These fields survive a cross-protocol hop because they are first-class in the IR
 
 ### Fields the target protocol cannot express
 
-This is not loss in the sense defined above: lossless means neither end can tell the hop happened, and these are fields that have *no place to go* on the other side of the hop. Forwarding them anyway would make the backend reject the request, which is the one thing translation must never do. So they are dropped at the seam, deliberately. On a **same-protocol** route none of this applies: every one of these fields survives byte-for-byte (see [Same-protocol note](#same-protocol-note)).
+These fields have no equivalent representation in the target protocol. A cross-protocol hop may omit them or use a supported approximation, as the rows below describe. That can change behavior even when the backend accepts the request and the client parses the response. On a **same-protocol** route there is no cross-protocol conversion; see [Same-protocol note](#same-protocol-note) for the passthrough behavior and rewrite exceptions.
 
 The tables below were **measured, not asserted**: each field was sent through Busbar to a same-protocol and a cross-protocol backend against a capture mock, and the egress wire bodies were diffed. **That measurement was made against 1.2.0 and has not been re-run since**, so on 1.6.0 read these rows as the engine's documented intent rather than a fresh reading. A 1.6.0 re-measurement is outstanding; the rows will carry its version and date when it lands. The most recent audit of the translation path (1.6.0, by code read plus an executed read/write round trip per protocol) is what produced [Closed in 1.6.0](#closed-in-160) above.
 
