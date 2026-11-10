@@ -2874,7 +2874,9 @@ fn projected_signals_are_the_hosts_buffer() {
 fn projected_view_flags_are_known() {
     let h = host();
     let mut o = view(&h, 0);
-    o.view.flags = 1 << 3;
+    o.view.flags = crate::abi::hook::REQUEST_TEXT_COMPLETE;
+    assert_eq!(project(Ready, &h, &o), Ok(()));
+    o.view.flags |= 1 << 4;
     assert_eq!(
         project(Ready, &h, &o),
         f(Rule::UnknownCode, "project.view.flags")

@@ -21,7 +21,7 @@ use crate::abi::hook::{
 use crate::abi::mechanism::call::{AbiStr, Blob, InHead, Outcome, BLOB_ABSENT, BLOB_OCTETS};
 use crate::hook_wire::HookStageProjection;
 use crate::hooks::{Candidate, RoutingContext, RoutingRequest};
-use crate::signal::{SignalBag, SignalValue as Value};
+use crate::signal::{Signal, SignalBag, SignalValue as Value};
 
 /// The NULL string: absent.
 const NULL: AbiStr = AbiStr {
@@ -91,11 +91,20 @@ impl Store {
     }
 
     fn bag(&mut self, bag: &SignalBag) -> (*const SignalEntry, usize) {
+        self.bag_filtered(bag, None)
+    }
+
+    fn bag_filtered(
+        &mut self,
+        bag: &SignalBag,
+        allowed: Option<&[Signal]>,
+    ) -> (*const SignalEntry, usize) {
         if bag.is_empty() {
             return (std::ptr::null(), 0);
         }
         let items: Box<[SignalEntry]> = bag
             .iter()
+            .filter(|(sig, _)| allowed.is_none_or(|set| set.contains(sig)))
             .map(|(sig, v)| {
                 let (tag, value) = match v {
                     Value::U64(n) => (SIGNAL_TAG_U64, SignalValue { u64_: *n }),
@@ -116,7 +125,14 @@ impl Store {
                 }
             })
             .collect();
-        let out = (items.as_ptr(), items.len());
+        let out = (
+            if items.is_empty() {
+                std::ptr::null()
+            } else {
+                items.as_ptr()
+            },
+            items.len(),
+        );
         self.signals.push(items);
         out
     }
@@ -158,8 +174,12 @@ fn empty_prompt() -> PromptView {
     }
 }
 
-fn request_view(store: &mut Store, req: &RoutingRequest<'_>) -> RequestView {
-    let (signals, signals_len) = store.bag(&req.signals);
+fn request_view(
+    store: &mut Store,
+    req: &RoutingRequest<'_>,
+    allowed: Option<&[Signal]>,
+) -> RequestView {
+    let (signals, signals_len) = store.bag_filtered(&req.signals, allowed);
     let mut flags = 0;
     if req.max_tokens.is_some() {
         flags |= REQUEST_HAS_MAX_TOKENS;
@@ -325,12 +345,34 @@ impl DecideView {
         candidates: &[Candidate<'_>],
         ctx: &RoutingContext<'_>,
     ) -> Arc<Self> {
+        Self::build_filtered(req, statics, candidates, ctx, None)
+    }
+
+    /// Build a call view containing only this hook's declared request and candidate signals.
+    #[must_use]
+    pub fn build_with_signals(
+        req: &RoutingRequest<'_>,
+        statics: Arc<CandidateStatics>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        allowed: &[Signal],
+    ) -> Arc<Self> {
+        Self::build_filtered(req, statics, candidates, ctx, Some(allowed))
+    }
+
+    fn build_filtered(
+        req: &RoutingRequest<'_>,
+        statics: Arc<CandidateStatics>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        allowed: Option<&[Signal]>,
+    ) -> Arc<Self> {
         assert!(
             statics.matches(candidates),
             "a static half built for other candidates"
         );
         let mut store = Store::default();
-        let request = request_view(&mut store, req);
+        let request = request_view(&mut store, req, allowed);
         let mut present = crate::abi::hook::VIEW_SUPPORTS_PRIORITIZE;
         let prompt = match store.prompt(req) {
             Some(p) => {
@@ -360,7 +402,7 @@ impl DecideView {
         let dynamics: Box<[CandidateDynamic]> = candidates
             .iter()
             .map(|c| {
-                let (signals, signals_len) = store.bag(&c.signals);
+                let (signals, signals_len) = store.bag_filtered(&c.signals, allowed);
                 let mut p = 0;
                 if c.latency_ms.is_some() {
                     p |= CANDIDATE_HAS_LATENCY_MS;
@@ -808,6 +850,8 @@ impl Drop for BufferClaim<'_> {
 pub struct NotifyFrame {
     input: NotifyIn,
     _store: Store,
+    // A filtered frame retains the owner of every unchanged pointer and string value.
+    _parent: Option<Arc<NotifyFrame>>,
 }
 
 impl std::fmt::Debug for NotifyFrame {
@@ -912,6 +956,42 @@ impl NotifyFrame {
                 _reserved: 0,
             },
             _store: store,
+            _parent: None,
+        })
+    }
+
+    /// Restrict a shared tap to one hook's declared signals while retaining pointer ownership.
+    #[must_use]
+    pub fn with_signals(self: &Arc<Self>, allowed: &[Signal]) -> Arc<Self> {
+        if self.input.signals_len == 0 {
+            return Arc::clone(self);
+        }
+        // SAFETY: input was built here; its signal array and string values are owned by self
+        // or its retained parent. The new frame retains self for the full callback lifetime.
+        let entries =
+            unsafe { std::slice::from_raw_parts(self.input.signals, self.input.signals_len) };
+        let selected: Box<[SignalEntry]> = entries
+            .iter()
+            .filter(|entry| allowed.iter().any(|signal| signal.bit() == entry.id))
+            .copied()
+            .collect();
+        if selected.len() == entries.len() {
+            return Arc::clone(self);
+        }
+        let mut input = self.input;
+        input.signals = if selected.is_empty() {
+            std::ptr::null()
+        } else {
+            selected.as_ptr()
+        };
+        input.signals_len = selected.len();
+        Arc::new(Self {
+            input,
+            _store: Store {
+                signals: vec![selected],
+                ..Store::default()
+            },
+            _parent: Some(Arc::clone(self)),
         })
     }
 

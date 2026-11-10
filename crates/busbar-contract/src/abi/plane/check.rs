@@ -721,6 +721,7 @@ pub unsafe fn check_project(
             REQUEST_HAS_MAX_TOKENS
                 | REQUEST_HAS_TOOLS
                 | REQUEST_STREAM
+                | crate::abi::hook::REQUEST_TEXT_COMPLETE
                 | super::PROJECT_REWRITE_NOT_APPLICABLE,
         ),
         "project.view.flags",

@@ -156,6 +156,7 @@ impl HookEnv {
         settings: &ResolvedSettings,
         name: &str,
         timeout_ms: u64,
+        signals: &[Signal],
         child: Option<&crate::hook_child::Grant>,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
@@ -171,6 +172,7 @@ impl HookEnv {
             return Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
                 name,
+                signals,
                 child,
             ));
         }
@@ -180,7 +182,7 @@ impl HookEnv {
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
         let calls = axis.open(module, name, settings, policy_timeout(timeout_ms))?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
-            calls, name, child,
+            calls, name, signals, child,
         ))
     }
 
@@ -294,6 +296,7 @@ impl HookEnv {
                     &resolved,
                     name,
                     hook.timeout_ms,
+                    &hook.signals,
                     hook.child_dispatch.as_ref(),
                 )
                 .map(|_| ())
@@ -835,6 +838,7 @@ fn gate_transport_named(
             crate::plane_driver::hooks::policy::HookPolicy::policy(
                 opened.calls.clone(),
                 name,
+                &hook.signals,
                 hook.child_dispatch.as_ref(),
             ),
             opened.resolved.clone(),
@@ -870,6 +874,7 @@ fn gate_transport_uncached(
                 resolved,
                 name,
                 hook.timeout_ms,
+                &hook.signals,
                 hook.child_dispatch.as_ref(),
             )
         },
@@ -1020,6 +1025,7 @@ mod resolution {
         hook.plugin.hash(&mut h);
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
         settings.hash(&mut h);
+        hook.signals.hash(&mut h);
         serde_json::to_vec(&hook.child_dispatch).ok()?.hash(&mut h);
         Some(h.finish())
     }
