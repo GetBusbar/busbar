@@ -3325,7 +3325,7 @@ fn failing_secrets() -> Vec<Failing> {
     [
         (
             serde_json::from_value(serde_json::json!({
-                "module": "env", "settings": { "name": var }
+                "module": "env", "settings": { "key": var }
             }))
             .expect("an opaque environment source reference"),
             vec![var.clone()],
