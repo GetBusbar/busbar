@@ -283,10 +283,18 @@ def vector_revisions(policy, vector):
     if set(revisions) != expected | {'GetBusbar/busbar'}:
         raise Violation('assembly product vector is incomplete')
     witness = vector['c_witness']
+    if (not isinstance(witness, dict) or not {'repo', 'url', 'commit', 'sdk'} <= set(witness)
+            or set(witness) - {'repo', 'url', 'commit', 'sdk', 'kind', 'language', 'header'}
+            or any(not isinstance(value, str) for value in witness.values())):
+        raise Violation('C witness vector has missing or unknown keys')
     repo = 'GetBusbar/' + witness['repo']
-    if (policy.data['repositories'].get(repo, {}).get('language') != 'c'
+    c_owner = policy.data['repositories'].get(repo, {})
+    if (c_owner.get('language') != 'c' or c_owner.get('private', False)
             or witness['sdk'] != sdk or not re.fullmatch('[0-9a-f]{40}', witness['commit'])
-            or witness['url'].removesuffix('.git') != 'https://github.com/' + repo):
+            or witness['url'].removesuffix('.git') != 'https://github.com/' + repo
+            or witness.get('language', 'c') != 'c'
+            or witness.get('kind', c_owner.get('kind')) != c_owner.get('kind')
+            or witness.get('header', PUBLIC_C_HEADER) != PUBLIC_C_HEADER):
         raise Violation('C witness source/SDK mismatch')
     return revisions
 
@@ -523,13 +531,76 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
             'trusted_source_check': True}
 
 
+PUBLIC_C_HEADER = 'crates/busbar-contract/include/busbar_plugin.h'
+
+
+def validate_c_recipe(recipe, entry):
+    from product_artifacts import relative_path
+    if not isinstance(recipe, dict) or set(recipe) != {'sources', 'test-root', 'unit', 'schema'}:
+        raise Violation('C witness recipe has missing or unknown keys')
+    unit, schema = recipe['unit'], recipe['schema']
+    if (not isinstance(unit, dict) or set(unit) != {'sources', 'defines'}
+            or not isinstance(schema, dict) or set(schema) != {'source', 'driver'}):
+        raise Violation('C witness requires bounded unit and schema recipes')
+    def sources(values):
+        if (not isinstance(values, list) or not 1 <= len(values) <= 16
+                or any(not isinstance(value, str) for value in values) or len(set(values)) != len(values)):
+            raise Violation('C witness source count or duplicates')
+        for value in values:
+            if not relative_path(value).endswith('.c'):
+                raise Violation('C witness source must be a relative C file')
+        return values
+    sources(recipe['sources'])
+    sources(unit['sources'])
+    sources([schema['source']])
+    if sorted(recipe['sources']) != sorted(entry.get('sources', [])):
+        raise Violation('C witness sources differ from trusted classification')
+    if not relative_path(schema['driver']).endswith('.py'):
+        raise Violation('C schema driver must be a relative Python file')
+    test_root = Path(relative_path(recipe['test-root']))
+    if (any(Path(source).parent != test_root for source in recipe['sources'])
+            or any(not Path(source).is_relative_to(test_root)
+                   for source in [*unit['sources'], schema['source'], schema['driver']])):
+        raise Violation('C witness test paths leave their declared source root')
+    defines = unit['defines']
+    if (not isinstance(defines, list) or len(defines) > 8
+            or any(not isinstance(d, str) or not re.fullmatch(r'BUSBAR_[A-Z0-9_]{1,96}', d) for d in defines)
+            or len(set(defines)) != len(defines)):
+        raise Violation('C witness permits bounded macro names, never compiler arguments')
+    return recipe
+
+
+def load_c_recipe(policy, repository, checkout, revision=None):
+    from product_artifacts import blob, git, pairs, regular_under
+    checkout = Path(checkout)
+    entry = policy.data['repositories'].get(repository, {})
+    if entry.get('language') != 'c':
+        raise Violation('C witness owner is not classified as C')
+    head = git(checkout, 'rev-parse', 'HEAD').decode().strip()
+    if revision is not None and head != revision:
+        raise Violation('C witness checkout differs from admitted commit')
+    revision = revision or head
+    relative = 'testing/c-witness.json'
+    data = blob(checkout, revision, relative, 16 * 1024)
+    if regular_under(checkout / relative, checkout).read_bytes() != data:
+        raise Violation('C witness recipe differs from its committed bytes')
+    recipe = validate_c_recipe(json.loads(data, object_pairs_hook=pairs), entry)
+    paths = [*recipe['sources'], *recipe['unit']['sources'],
+             recipe['schema']['source'], recipe['schema']['driver']]
+    for relative in paths:
+        expected = blob(checkout, revision, relative, 2 * 1024 * 1024)
+        if regular_under(checkout / relative, checkout).read_bytes() != expected:
+            raise Violation('C witness source differs from its committed bytes')
+    return recipe
+
+
 def check_c(policy, repository, checkout, sdk, scratch):
-    entry = policy.data['repositories'][repository]
     fields = (checkout / '.busbar-ref').read_text().split()
     revision = subprocess.check_output(['git', '-C', str(sdk), 'rev-parse', 'HEAD'], text=True).strip()
     if fields != [revision, '1.6.0']:
         raise Violation('C plugin/header SDK pin mismatch')
-    sources = [checkout / path for path in entry['sources']]
+    recipe = load_c_recipe(policy, repository, checkout)
+    sources = [checkout / path for path in recipe['sources']]
     for source in sources:
         includes = re.findall(r'^\s*#\s*include\s+(.+)$', source.read_text(), re.MULTILINE)
         if includes != ['"busbar_plugin.h"']:
@@ -539,7 +610,7 @@ def check_c(policy, repository, checkout, sdk, scratch):
     output_directory.mkdir(exist_ok=True)
     library = output_directory / ('plugin.dylib' if platform == 'darwin' else 'plugin.so')
     candidate_run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fvisibility=hidden', '-fPIC',
-        '-dynamiclib' if platform == 'darwin' else '-shared', '-I', str(sdk / 'crates/busbar-contract/include'),
+        '-dynamiclib' if platform == 'darwin' else '-shared', '-I', str(sdk / Path(PUBLIC_C_HEADER).parent),
         *map(str, sources), '-o', str(library)], check=True)
     output = candidate_output(['nm', '-gU' if platform == 'darwin' else '--defined-only', str(library)], text=True)
     exported = {line.split()[-1].removeprefix('_') for line in output.splitlines() if len(line.split()) >= 3 and line.split()[-2].isupper()}

@@ -24,11 +24,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from check import Policy, Violation, read
-
-EXTERNAL_EVALUATIONS = {
-    'GetBusbar/busbar-plane-llm': 'testing/conformance/external-openai.sh',
-    'GetBusbar/busbar-plane-decisions': 'testing/conformance/external-jev.sh',
-}
+from native_policy import native_settings
 
 
 def validate_test_report(path):
@@ -50,22 +46,22 @@ def validate_test_report(path):
         raise Violation('native test report is not passing: ' + str(error)) from error
 
 
-def evaluation_job(repository, conformance_only, external_conformance):
+def evaluation_job(repository, conformance_only, external_conformance, policy=None):
     if conformance_only and external_conformance:
         raise Violation('evaluation modes are mutually exclusive')
     if conformance_only and repository == 'GetBusbar/busbar':
         return 'core-conformance'
-    if external_conformance and repository in EXTERNAL_EVALUATIONS:
+    if external_conformance and native_settings(repository, policy).get('external_conformance'):
         return 'external-conformance'
     if conformance_only or external_conformance:
         raise Violation('no trusted evaluation command for this repository')
     return None
 
 
-def requires_native_oracle(repository, external_conformance):
+def requires_native_oracle(repository, external_conformance, policy=None):
     # The independent endpoint job builds and judges its own actual subject.
     # Native admission still requires the signed shipping oracle, unchanged.
-    return repository == 'GetBusbar/busbar-plane-llm' and not external_conformance
+    return native_settings(repository, policy).get('native_oracle', False) and not external_conformance
 
 
 class Interrupted(BaseException):
@@ -270,7 +266,7 @@ class Qualification:
                 'limitation': 'controller observations are not an independent deployed host witness',
             }
         if self.evaluation_only:
-            expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance)
+            expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance, self.policy)
             if (os.environ.get('CI_JOB_NAME') != expected_job
                     or os.environ.get('CI_PIPELINE_SOURCE') not in ('api', 'merge_request_event', 'push')):
                 raise Violation('conformance requires its trusted job and pipeline source')
@@ -463,6 +459,8 @@ class Qualification:
         self.architecture()
         self.run_controller('architecture-regressions', [sys.executable, '-m', 'unittest', 'discover',
             '-s', str(self.trusted / 'scripts/architecture'), '-p', 'test_*.py'], cwd=self.trusted)
+        self.run_controller('toolchain-regressions', [sys.executable, '-m', 'unittest', 'discover',
+            '-s', str(self.trusted / 'scripts/architecture/toolchain'), '-p', 'test_*.py'], cwd=self.trusted)
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
         self.sdk()
@@ -471,10 +469,14 @@ class Qualification:
             'crates/busbar-contract/src', 'crates/busbar-contract/include', 'crates/busbar-contract/Cargo.toml'])
         self.receipt['sdk_revision'] = sdk
         from native_fixtures import Services
-        with Services(self, host, all_services=True):
+        with Services(self, host):
             envfile = self.run('product-inputs', ['bash', str(self.trusted / 'scripts/ci-product-inputs.sh')])
             from native_product_inputs import load_product_inputs
-            self.env.update(load_product_inputs(envfile, self.work))
+            vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
+            product_inputs = load_product_inputs(envfile, self.work, self.policy, vector, self.receipt['host_revision'])
+            if self.execution is not None:
+                self.execution.allow_product_inputs(product_inputs)
+            self.env.update(product_inputs)
             self.receipt['product_input_bytes'] = {
                 key: Path(value).stat().st_size for key, value in self.env.items()
                 if key.startswith('BUSBAR_') and key.endswith(('_CDYLIB', '_PLUGIN'))
@@ -486,11 +488,13 @@ class Qualification:
             if witness['sdk'] != vector['sdk']:
                 raise Violation('C witness and assembled SDK pins differ')
             c_source = checkout('GetBusbar/' + witness['repo'], witness['commit'], self.work / 'c-witness')
+            from check import load_c_recipe, PUBLIC_C_HEADER
+            recipe = load_c_recipe(self.policy, 'GetBusbar/' + witness['repo'], c_source, witness['commit'])
             library = self.work / ('c-witness.dylib' if sys.platform == 'darwin' else 'c-witness.so')
             self.run('c-witness-build', ['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
-                '-shared', '-fPIC', '-fvisibility=hidden', '-I', str(host / Path(witness['header']).parent),
-                str(c_source / 'secret-c/busbar_secret_c.c'), '-o', str(library)])
-            self.env.update(BUSBAR_C_ABI_SOURCES=str(c_source / 'secret-c'), BUSBAR_C_ABI_LIBRARY=str(library))
+                '-shared', '-fPIC', '-fvisibility=hidden', '-I', str(host / Path(PUBLIC_C_HEADER).parent),
+                *[str(c_source / source) for source in recipe['sources']], '-o', str(library)])
+            self.env.update(BUSBAR_C_ABI_SOURCES=str(c_source / recipe['test-root']), BUSBAR_C_ABI_LIBRARY=str(library))
             nextest = ['--no-fail-fast', '--test-threads', self.env['CARGO_BUILD_JOBS'], '--tool-config-file',
                        'admission:' + str(self.trusted / 'ci/native-nextest.toml')]
             selected = 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | (package(busbar-default) & test(/^distribution::admin_cross_plane::/)) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
@@ -671,9 +675,11 @@ class Qualification:
         self.architecture(sdk)
         self.env['BUSBAR_PIN'] = self.receipt['host_revision']
         self.env['CONFORMANCE_OUT'] = str(self.evidence / 'external')
-        command = self.root / EXTERNAL_EVALUATIONS[self.repository]
-        if not command.is_file() or command.is_symlink():
-            raise Violation('missing external evaluation entry point')
+        from product_artifacts import regular_under
+        script = native_settings(self.repository, getattr(self, 'policy', None)).get('external_conformance')
+        if script is None:
+            raise Violation('no required external evaluation entry point')
+        command = regular_under(self.root / script, self.root)
         try:
             self.run('external-endpoint-conformance', ['bash', str(command)], timeout=10800)
         finally:
@@ -717,7 +723,7 @@ def qualify():
     try:
         with deferred_interruptions():
             qualification = Qualification(args)
-        if requires_native_oracle(qualification.repository, args.external_conformance):
+        if requires_native_oracle(qualification.repository, args.external_conformance, qualification.policy):
             from native_oracle import prepare as prepare_oracle
             prepare_oracle(qualification)
         from native_sources import prepare

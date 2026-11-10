@@ -200,6 +200,7 @@ class Execution:
             self.fixture_map.write_bytes(b"[]\n")
         self.extra_readonly = []
         self.observations = []
+        self.product_inputs = {}
 
     @classmethod
     def from_context(cls, path, expected):
@@ -256,6 +257,12 @@ class Execution:
             )
         return destination
 
+    def allow_product_inputs(self, values):
+        from native_product_inputs import ProductInputs
+
+        require(isinstance(values, ProductInputs), "product inputs require controller validation")
+        self.product_inputs = dict(values)
+
     def environment(self, env):
         # An allowlist prevents ambient cloud/registry/SSH credentials crossing the boundary.
         allowed = {
@@ -295,12 +302,8 @@ class Execution:
             "BUSBAR_ARCHITECTURE_POLICY_SOURCES",
             "BUSBAR_ARCHITECTURE_GENERATED_DIRS",
         }
-        from native_product_inputs import PATH_KEYS, SETTINGS
-
         allowed.update(
-            PATH_KEYS
-            | {
-                SETTINGS,
+            {
                 "BUSBAR_C_ABI_SOURCES",
                 "BUSBAR_C_ABI_LIBRARY",
                 "BUSBAR_PLUGIN_CDYLIB",
@@ -314,6 +317,10 @@ class Execution:
             if re.fullmatch(r"BUSBAR_TEST_[A-Z0-9_]+_(URL|ADDR|FIXTURE)", k)
         )
         result = {k: str(v) for k, v in env.items() if k in allowed}
+        for key, value in self.product_inputs.items():
+            if key in env:
+                require(env[key] == value, "registered product input was overridden")
+                result[key] = value
         # Canonical source mappings contain no authentication headers or arbitrary Git options.
         count = int(env.get("GIT_CONFIG_COUNT", "0"))
         require(0 <= count <= 1000, "invalid Git mapping count")

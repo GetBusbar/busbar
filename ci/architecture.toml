@@ -89,6 +89,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-auth-github"]
+native = { services = ["wiremock"] }
 kind = "auth"
 private = false
 
@@ -121,6 +122,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-auth-ldap"]
+native = { services = ["openldap"] }
 kind = "auth"
 private = false
 
@@ -280,6 +282,22 @@ manifest = "hook-ranking-plugin/Cargo.toml"
 role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-hook-ranking-plugin", "busbar-plugin-loader"]
 
+[repositories."GetBusbar/busbar-hook-complexity"]
+kind = "hook"
+private = false
+
+[[repositories."GetBusbar/busbar-hook-complexity".packages]]
+name = "busbar-hook-complexity"
+manifest = "hook-complexity/Cargo.toml"
+role = "implementation"
+dev_allows = ["busbar-contract", "busbar-plugin-loader"]
+
+[[repositories."GetBusbar/busbar-hook-complexity".packages]]
+name = "busbar-hook-complexity-plugin"
+manifest = "hook-complexity-plugin/Cargo.toml"
+role = "wrapper"
+dev_allows = ["busbar-contract", "busbar-hook-complexity-plugin", "busbar-plugin-loader"]
+
 [repositories."GetBusbar/busbar-hook-webrequest"]
 kind = "hook"
 private = false
@@ -313,6 +331,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-kernel", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-plane-decisions"]
+native = { external_conformance = "testing/conformance/external-jev.sh" }
 kind = "plane"
 private = false
 
@@ -329,6 +348,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-plane-llm"]
+native = { external_conformance = "testing/conformance/external-openai.sh", native_oracle = true }
 kind = "plane"
 private = false
 
@@ -415,6 +435,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader", "busbar-secret-file-plugin"]
 
 [repositories."GetBusbar/busbar-secret-vault"]
+native = { services = ["vault"] }
 kind = "secret"
 private = false
 
@@ -447,6 +468,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-store-mysql"]
+native = { services = ["mysql"] }
 kind = "store"
 private = false
 
@@ -463,6 +485,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-core-connector", "busbar-plugin-loader", "busbar-transport-tcp"]
 
 [repositories."GetBusbar/busbar-store-postgres"]
+native = { services = ["postgres"] }
 kind = "store"
 private = false
 
@@ -479,6 +502,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-core-connector", "busbar-plugin-loader", "busbar-transport-tcp"]
 
 [repositories."GetBusbar/busbar-store-sqlite"]
+native = { migration_fixture = "sqlite-1.5.5" }
 kind = "store"
 private = false
 
@@ -495,6 +519,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-store-valkey"]
+native = { services = ["valkey"], server_binary = "valkey" }
 kind = "store"
 private = false
 
@@ -810,6 +835,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [assembly]
+native = { services = ["postgres", "mysql", "valkey", "vault", "wiremock", "openldap"], migration_fixture = "sqlite-1.5.5" }
 repository = "GetBusbar/busbar"
 manifest = "dist/default/Cargo.toml"
 package = "busbar-default"

@@ -141,6 +141,7 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-transport-webrtc",
     "https://github.com/GetBusbar/busbar-transport-http",
     "https://github.com/GetBusbar/busbar-hook-ranking",
+    "https://github.com/GetBusbar/busbar-hook-complexity",
     "https://github.com/GetBusbar/busbar-store-memory",
     "https://github.com/GetBusbar/busbar-plane-mcp",
     "https://github.com/GetBusbar/busbar-plane-decisions",

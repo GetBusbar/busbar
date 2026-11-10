@@ -13,15 +13,17 @@ from native import collect_output, digest, git
 def qualify_plugin(q, host, sdk):
     entry = q.policy.data['repositories'][q.repository]
     if entry.get('language') == 'c':
+        from check import load_c_recipe, PUBLIC_C_HEADER
+        recipe = load_c_recipe(q.policy, q.repository, q.root)
         library = q.work / 'architecture' / ('plugin.dylib' if sys.platform == 'darwin' else 'plugin.so')
-        q.env.update(BUSBAR_C_ABI_SOURCES=str(q.root / 'secret-c'), BUSBAR_C_ABI_LIBRARY=str(library))
+        q.env.update(BUSBAR_C_ABI_SOURCES=str(q.root / recipe['test-root']), BUSBAR_C_ABI_LIBRARY=str(library))
         q.run('c-native-loader', ['cargo', 'test', '--locked', '--manifest-path', str(sdk / 'Cargo.toml'),
             '-p', 'busbar-plugin-loader', '--test', 'c_abi'])
-        # The existing C witness includes ownership, secret wiping and threaded cases.
-        include = sdk / 'crates/busbar-contract/include'
-        sources = [str(q.root / 'secret-c/tests/unit.c'), str(q.root / 'secret-c/busbar_secret_c.c')]
+        # Owner test locations are data; required instrumentation and stages are fixed.
+        include = sdk / Path(PUBLIC_C_HEADER).parent
+        sources = [str(q.root / path) for path in [*recipe['unit']['sources'], *recipe['sources']]]
         common = ['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic', '-pthread',
-                  '-DBUSBAR_SECRET_C_UNIT', '-I', str(include), *sources]
+                  *['-D' + name for name in recipe['unit']['defines']], '-I', str(include), *sources]
         for name, flags in [('unit', []), ('unit-tsan', ['-fsanitize=thread', '-g'])]:
             binary = q.work / name
             q.run('c-build-' + name, [*common, *flags, '-o', str(binary)])
@@ -35,9 +37,9 @@ def qualify_plugin(q, host, sdk):
             q.run('c-' + name, command)
         schema = q.work / 'settings-schema'
         q.run('c-build-schema', ['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
-            '-I', str(include), str(q.root / 'secret-c/tests/settings_schema.c'),
-            str(q.root / 'secret-c/busbar_secret_c.c'), '-o', str(schema)])
-        q.run('c-schema', ['python3', str(q.root / 'secret-c/tests/settings_schema.py'), str(schema)])
+            '-I', str(include), str(q.root / recipe['schema']['source']),
+            *[str(q.root / path) for path in recipe['sources']], '-o', str(schema)])
+        q.run('c-schema', ['python3', str(q.root / recipe['schema']['driver']), str(schema)])
         collected = collect_output(q, library, q.evidence / library.name)
         q.receipt.update(library_sha256=digest(collected), private=False)
         return

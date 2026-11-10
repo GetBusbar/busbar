@@ -19,6 +19,8 @@ import sys
 import tempfile
 import uuid
 
+from secret_fixtures import classify
+
 
 def require(ok, message):
     if not ok:
@@ -64,7 +66,7 @@ def export_source(checkout, revision, destination):
 
 
 def inspect_report(kind, report):
-    """Return only safe counts. Never persist source lines, matches or secret values."""
+    """Return only safe counts; no source lines or matches enter the public receipt."""
     require(isinstance(report, dict), 'scanner report is not an object')
     if kind == 'sast':
         require(isinstance(report.get('results'), list) and isinstance(report.get('errors'), list),
@@ -112,6 +114,8 @@ class Scanner:
         self.cache = work / 'database'
         self.cache.mkdir()
         self.steps = []
+        self.repository = None
+        self.source_rows = []
 
     def container(self, tool, argv, mounts=(), network='none'):
         name = 'busbar-scan-' + uuid.uuid4().hex
@@ -124,7 +128,7 @@ class Scanner:
             require(',' not in str(source), 'comma in mount source')
             command += ['--mount', f'type=bind,src={source},dst={target}' + ('' if writable else ',readonly')]
         command += [self.tools[tool], *argv]
-        # Reports may contain secrets; never stream them to job logs or retain raw output.
+        # Reports may contain secrets; never stream them to job logs.
         with tempfile.TemporaryFile(dir=self.work) as out, tempfile.TemporaryFile(dir=self.work) as err:
             try:
                 process = subprocess.run(command, env=self.env, stdout=out, stderr=err, timeout=1200)
@@ -157,9 +161,25 @@ class Scanner:
                    report_sha256=hashlib.sha256(data).hexdigest(), stderr_sha256=stderr_hash)
         self.steps.append(row)
         try:
-            count = inspect_report(kind, json.loads(data))
-            row['findings'] = count
-            require(code == 0 and count == 0, 'scanner findings or execution failure: ' + name)
+            report = json.loads(data)
+            count = inspect_report(kind, report)
+            row['findings'] = count  # Raw count, including classified public fixtures.
+            if kind == 'secrets':
+                private = self.work / 'private-scanner-reports'
+                private.mkdir(mode=0o700, exist_ok=True)
+                require(not private.is_symlink(), 'indirect private scanner output')
+                private.chmod(0o700)
+                fd = os.open(private / ('secrets-' + uuid.uuid4().hex + '.json'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'wb') as stream:
+                    stream.write(data)
+            if kind == 'secrets' and count and self.repository:
+                row.update(classify(report, repository=self.repository, source=source,
+                                    source_rows=self.source_rows,
+                                    policy=(self.policy / 'public-secret-fixtures.json').read_bytes()))
+                require(code == 1 and row['unresolved_findings'] == 0,
+                        'unresolved secrets or scanner execution failure')
+            else:
+                require(code == 0 and count == 0, 'scanner findings or execution failure: ' + name)
             row['status'] = 'pass'
         except (ValueError, KeyError, TypeError):
             raise ValueError('security scan refused: ' + name) from None
@@ -188,6 +208,8 @@ def run_source(trusted, checkout, work, output):
         receipt['source_files_sha256'] = hashlib.sha256(encoded(rows)).hexdigest()
         receipt['source_tree'] = git(checkout, 'rev-parse', source + '^{tree}').decode().strip()
         scanner = Scanner(trusted, work)
+        scanner.repository = os.environ['CI_PROJECT_PATH']
+        scanner.source_rows = rows
         receipt['policy_files'] = {p.name: digest(p) for p in sorted(scanner.policy.iterdir()) if p.is_file()}
         receipt['database'] = scanner.prepare()
         failures = []

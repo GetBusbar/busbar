@@ -87,6 +87,12 @@ class SecurityScans(unittest.TestCase):
                     scanner.scan('secrets', 'secrets', Path(temporary), [])
             self.assertEqual(scanner.steps[0]['status'], 'fail')
             self.assertNotIn('private-value', json.dumps(scanner.steps))
+            private = Path(temporary) / 'private-scanner-reports'
+            reports = list(private.iterdir())
+            self.assertEqual(len(reports), 1)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(reports[0].stat().st_mode & 0o777, 0o600)
+            self.assertEqual(reports[0].read_bytes(), payload)
 
     def test_candidate_symlink_refuses_before_mount(self):
         with tempfile.TemporaryDirectory() as temporary:

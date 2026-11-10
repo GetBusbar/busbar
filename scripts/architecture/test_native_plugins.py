@@ -12,6 +12,12 @@ from native_plugins import qualify_plugin
 
 class CQualification(unittest.TestCase):
     def qualification(self, directory):
+        recipe = {'sources': ['owner/plugin.c'], 'test-root': 'owner',
+                  'unit': {'sources': ['owner/tests/unit.c'], 'defines': ['BUSBAR_FIXTURE_UNIT']},
+                  'schema': {'source': 'owner/tests/schema.c', 'driver': 'owner/tests/schema.py'}}
+        patcher = patch('check.load_c_recipe', return_value=recipe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         root = Path(directory)
         work, evidence = root / 'work', root / 'evidence'
         (work / 'architecture').mkdir(parents=True)

@@ -13,9 +13,29 @@ target text rather than followed. Submodules refuse pending separate qualificati
 Only the source-free database-download container has network access. Source scans
 use nonroot, read-only containers with no network, capabilities, host credentials,
 Docker socket, writable policy or evidence mount. Reports cross stdout to the
-controller, which checks both exit status and report findings/errors. Raw reports
-and stderr are not retained because they may contain secrets or source excerpts;
-receipts retain counts and hashes. Temporary raw files are unlinked on close.
+controller, which checks both exit status and report findings/errors. Raw secret reports are retained mode 0600 in the controller's private work directory,
+never job logs or uploaded artifacts; CI bootstrap removes that directory at job
+completion. Other raw output and stderr are unlinked on close. Receipts retain
+raw counts and hashes.
+
+The controller-owned `ci/security/public-secret-fixtures.json` can classify only
+an exact repository/path, complete source-file SHA-256, rule and line range.
+It records the fixture provenance and reason. The `public-secret-fixtures` schema
+label identifies deliberate noncredential test fixtures; it does not establish
+that the repository is public or that an owner personally reviewed the fixture. Source paths must be canonical
+committed regular files without symlinks. Duplicate or additional findings remain
+unresolved; any source-byte change invalidates that file's classifications. No
+scanner rule or file is suppressed. A classified pass preserves scanner exit 1
+and its raw findings count, alongside `classified_public_fixtures` and
+`unresolved_findings`; all findings must be accounted for in order. Artifact scans
+cannot use these source fixture classifications.
+
+The manifest comes from the immutable external controller checkout and its hash
+is bound in the receipt. Protected admission fetches it independently at the
+approved policy revision and checks the exact classification entries. The release
+candidate's policy files cannot select this manifest. The approved core policy
+revision remains an owner-controlled trust input; this is explicit fixture
+classification, not an independent audit or production-secret safety certificate.
 
 Coverage:
 
