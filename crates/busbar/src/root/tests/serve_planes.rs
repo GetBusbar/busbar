@@ -286,6 +286,7 @@ fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
 
 #[tokio::test]
 async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_its_bytes() {
+    crate::dist_root_install::install();
     let native_money = money().await;
     let money = || native_money.clone();
     const PLAIN: &str = "sk-plane-bound-PLAINTEXT-0001";
@@ -294,6 +295,31 @@ async fn an_interpolated_credential_reaches_a_door_plane_as_its_reference_never_
     let plain_var = format!("BUSBAR_PLANE_BOUND_SECRET_{pid}");
     let ref_var = format!("BUSBAR_PLANE_BOUND_REF_{pid}");
     let host_var = format!("BUSBAR_PLANE_BOUND_HOST_{pid}");
+    let sources = busbar_kernel::preflight::root_rows()
+        .secret_axis
+        .expect("the distribution admits its source declarations")
+        .sugars();
+    let seal = busbar_kernel::seal::acquire();
+    let reference = |name: &str| {
+        serde_json::to_value(
+            sources
+                .reference_for_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL, name)
+                .expect("the admitted source supplies the interpolation role")
+                .authoring(&seal),
+        )
+        .expect("an authorized authored reference")
+    };
+    let whole = reference(&plain_var);
+    let written_reference = reference(&ref_var);
+    let part = serde_json::to_value(
+        busbar_contract::secret_ref::SecretRef::template(
+            format!("Bearer ${{{plain_var}}}"),
+            &sources,
+        )
+        .expect("the template binds to the admitted source")
+        .authoring(&seal),
+    )
+    .expect("an authorized template reference");
     std::env::set_var(&plain_var, PLAIN);
     std::env::set_var(&ref_var, RESOLVED);
     std::env::set_var(&host_var, "upstream.invalid");
@@ -304,14 +330,14 @@ test_plane:
   capture_to: "{dir}"
   reg1:
     url: "http://${{{host_var}}}/v1"
-    api_key: {{env: {ref_var}}}
+    api_key: {written_reference}
     token: "${{{plain_var}}}"
     args: ["--flag", "${{{host_var}}}"]
     env:
       WHOLE: "${{{plain_var}}}"
       PART: "Bearer ${{{plain_var}}}"
 test_plane_owned:
-  reg: {{api_key: "${{{plain_var}}}", ref: {{env: {ref_var}}}, url: "http://${{{host_var}}}/o"}}
+  reg: {{api_key: "${{{plain_var}}}", ref: {written_reference}, url: "http://${{{host_var}}}/o"}}
 "#,
         dir = dir.display()
     );
@@ -366,13 +392,6 @@ test_plane_owned:
     let read = |name: &str| {
         String::from_utf8_lossy(&std::fs::read(dir.join(name)).unwrap_or_default()).into_owned()
     };
-    let whole = serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): plain_var });
-    let part = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(format!(
-        "Bearer ${{{plain_var}}}"
-    )))
-    .expect("a reference");
-    let written_reference =
-        serde_json::json!({ (busbar_contract::secret_ref::SECRET_MODULE_ENV): ref_var });
     for name in ["open.settings", "open.owned", "refresh.settings"] {
         let text = read(name);
         assert!(!text.is_empty(), "the plane recorded its {name}");
