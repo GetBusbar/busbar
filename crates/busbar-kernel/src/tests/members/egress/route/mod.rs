@@ -178,6 +178,8 @@ impl Node {
                     (
                         DestinationId::new(n as u64),
                         MemberRoute {
+                            ride_anchors: Vec::new(),
+                            connection_required: false,
                             anchors: Default::default(),
                             rides: Vec::new(),
                             spelled: Vec::new(),

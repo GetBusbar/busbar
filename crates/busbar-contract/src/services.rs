@@ -120,6 +120,45 @@ pub struct TrustKeyRef<'a> {
     pub item: Option<&'a str>,
 }
 
+/// Borrowed outbound custody request. Caller and unit authority are host supplied.
+#[derive(Clone, Copy)]
+pub struct OutboundAuthorization<'a> {
+    /// Publish, bind, revoke or prepare (`OUTBOUND_*`).
+    pub action: u32,
+    /// Declared outbound need index.
+    pub need: u32,
+    /// Declared need member.
+    pub member: &'a str,
+    /// Exact final outbound URL, including request target.
+    pub resource: &'a str,
+    /// Public nonsecret identity; never authority.
+    pub connection: &'a str,
+    /// Revision required by this operation, or zero for initial publication and preparation.
+    pub expected_revision: u64,
+    /// Publication or preparation expiry in Unix seconds; zero for bind and revoke.
+    pub expires_at_unix: u64,
+    /// Credential header name, for field-value PUBLISH only.
+    pub field_name: &'a str,
+    /// Opaque sealed field value for PUBLISH or sealed request body for PREPARE/PUBLISH_BODY.
+    pub credential: &'a [u8],
+}
+
+impl std::fmt::Debug for OutboundAuthorization<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundAuthorization")
+            .field("action", &self.action)
+            .field("need", &self.need)
+            .field("member", &self.member)
+            .field("resource", &self.resource)
+            .field("connection", &self.connection)
+            .field("expected_revision", &self.expected_revision)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .field("field_name", &self.field_name)
+            .field("credential", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// THE HOST SERVICES, as the kernel implements them. The dispatcher holds one for every instance it
 pub trait HostServices: Send + Sync {
     /// Observe a declared chain's incarnation before the caller performs fresh planning reads.
@@ -250,6 +289,19 @@ pub trait HostServices: Send + Sync {
         record: &[u8],
         later: Later,
     ) -> Ran;
+
+    /// Publish, bind, revoke or prepare scoped outbound custody. READY is a nonzero scalar revision
+    /// or `1` for preparation; prepared bodies are consumed by one secured governed dispatch.
+    /// PUBLISH_BODY retains reusable opaque bodies; BIND selects a revision and REVOKE invalidates it.
+    fn outbound_authorize(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _ask: OutboundAuthorization<'_>,
+        _later: Later,
+    ) -> Ran {
+        Ran::Now(Stored::refused(UNSERVED))
+    }
 
     /// `ticket.take`: the record of the ticket that admitted `unit`, once: READY `TICKET_TAKEN`
     fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored;

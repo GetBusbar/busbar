@@ -366,6 +366,8 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         routes: HashMap::from([(
             destination,
             MemberRoute {
+                ride_anchors: Vec::new(),
+                connection_required: false,
                 need: NeedId(0),
                 base_url: "https://far.test/".into(),
                 auth: None,
@@ -381,6 +383,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         error_body_max: DEFAULT_ERROR_BODY_MAX,
     };
     let far = DoorFar {
+        authorization: Arc::default(),
         egress: Some(&egress),
         steps: &steps,
         unit: busbar_contract::UnitKey::new(1),

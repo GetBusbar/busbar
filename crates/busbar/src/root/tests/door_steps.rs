@@ -3401,6 +3401,26 @@ fn a_registration_member_rides_every_member_target_need() {
     );
 }
 
+#[test]
+fn connection_route_binds_nested_declared_exchange_without_shared_auth_or_peer_identity() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![(DIRECTION_OUTBOUND, ""), (DIRECTION_OUTBOUND, "")],
+        need_targets: vec!["settings.*.url", "settings.*.exchange.endpoint"],
+        ..Default::default()
+    };
+    let routes = resolve_for(&facts,
+        "one: {url: 'https://resource.example/rpc', upstream_credentials: connection, exchange: {endpoint: 'https://issuer.example/token'}}", &[]).unwrap();
+    let route = &routes["one"];
+    assert!(route.connection_required);
+    assert!(route.auth.is_none());
+    assert_eq!(route.ride(2).unwrap().base_url, "https://issuer.example");
+    let anchors = route.anchors_for(busbar_contract::conn::NeedId(1));
+    assert!(anchors.client_identity.is_none());
+    assert!(anchors.key_pin.is_none());
+    assert!(!anchors.private_reach);
+}
+
 /// A connection table that records what the composition seals on it: each need's anchors and
 /// private reach, and each auth binding, by need, member and target. It opens nothing.
 #[derive(Default)]
@@ -3596,6 +3616,8 @@ fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides(
         ..Default::default()
     };
     let route = MemberRoute {
+        ride_anchors: Vec::new(),
+        connection_required: false,
         need: busbar_contract::conn::NeedId(1),
         base_url: "https://far.example".to_string(),
         auth: Some(AuthBinding {

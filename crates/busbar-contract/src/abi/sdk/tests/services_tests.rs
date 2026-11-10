@@ -90,6 +90,7 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         ticket_mint: None,
         ticket_take: None,
         work_status: None,
+        outbound_authorize: None,
     }
 }
 
@@ -2549,5 +2550,295 @@ fn trust_unreachable_and_trust_sight_report_their_own_outcome() {
     assert_eq!(
         s.trust_sight(ticketed(1), "probe:outcome", "h"),
         Poll::Ready(Ok(u64::from(TRUST_REACHED) + 1))
+    );
+}
+
+extern "C" fn outbound_answer(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    use crate::abi::host::service::*;
+    // SAFETY: wrapper-owned initialized frame and writable output remain live for the callback.
+    unsafe {
+        let i = input.cast::<OutboundAuthorizeIn>().read_unaligned();
+        assert_eq!(i.head.op, op::OUTBOUND_AUTHORIZE);
+        assert_eq!(i.need, 2);
+        assert_eq!(
+            std::slice::from_raw_parts(i.member.ptr, i.member.len),
+            b"api"
+        );
+        match i.action {
+            OUTBOUND_PUBLISH => {
+                assert_eq!(i.expires_at_unix, 1_900_000_000);
+                assert_eq!(
+                    std::slice::from_raw_parts(i.credential.ptr, i.credential.len),
+                    b"Bearer private-credential"
+                );
+            }
+            OUTBOUND_BIND | OUTBOUND_REVOKE => {
+                assert_eq!(
+                    (i.expires_at_unix, i.field_name.len, i.credential.len),
+                    (0, 0, 0)
+                );
+            }
+            _ => panic!("unexpected outbound action"),
+        }
+        let outcome = if i.expected_revision == 4 {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        };
+        (*out).value = if outcome == Outcome::Ready {
+            i.expected_revision
+        } else {
+            0
+        };
+        (*out).len = u64::from(i.expected_revision == 3);
+        (*out).outcome = RawOutcome::of(outcome);
+        RawOutcome::of(outcome)
+    }
+}
+
+#[test]
+fn outbound_wrappers_keep_seals_opaque_and_validate_scalar_revisions() {
+    let mut t = table(None);
+    t.outbound_authorize = Some(outbound_answer);
+    let s = services(&t);
+    let h = CompletionHandle {
+        ticket: Ticket {
+            slot: 1,
+            generation: 1,
+        },
+        ..handle()
+    };
+    let scope = OutboundScope {
+        need: 2,
+        member: "api",
+        resource: "https://api.example.test/rpc",
+        connection: "public-id",
+    };
+    let credential =
+        crate::abi::sdk::cred::Cred::captured(Zeroizing::new(b"private-credential".to_vec()));
+    assert_eq!(
+        s.outbound_publish(
+            h,
+            scope,
+            2,
+            1_900_000_000,
+            "Authorization",
+            &credential.bearer()
+        ),
+        Poll::Ready(Ok(2))
+    );
+    assert_eq!(s.outbound_bind(h, scope, 1), Poll::Ready(Ok(1)));
+    assert_eq!(s.outbound_revoke(h, scope, 1), Poll::Ready(Ok(1)));
+    assert_eq!(
+        s.outbound_bind(h, scope, 0),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+    );
+    assert_eq!(
+        s.outbound_bind(h, scope, 3),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(s.outbound_bind(h, scope, 4), Poll::Pending);
+    // An otherwise valid initial publication cannot accept zero as the host's revision.
+    assert_eq!(
+        s.outbound_publish(
+            h,
+            scope,
+            0,
+            1_900_000_000,
+            "Authorization",
+            &credential.bearer()
+        ),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+}
+
+#[test]
+fn outbound_tail_is_unserved_on_older_host_prefixes() {
+    let scope = OutboundScope {
+        need: 2,
+        member: "api",
+        resource: "https://api.example.test/rpc",
+        connection: "public-id",
+    };
+    let mut t = table(None);
+    t.outbound_authorize = Some(outbound_answer);
+    t.size = std::mem::offset_of!(HostSlots, outbound_authorize) as u32;
+    assert_eq!(
+        services(&t).outbound_bind(handle(), scope, 1),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    t.size = size_of::<HostSlots>() as u32;
+    t.slots = op::OUTBOUND_AUTHORIZE;
+    assert_eq!(
+        services(&t).outbound_bind(handle(), scope, 1),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+    t.slots = SERVICES;
+    t.outbound_authorize = None;
+    assert_eq!(
+        services(&t).outbound_bind(handle(), scope, 1),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+extern "C" fn outbound_prepare_answer(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    use crate::abi::host::service::*;
+    // SAFETY: wrapper-owned initialized input and writable output are live for this callback.
+    unsafe {
+        let i = input.cast::<OutboundAuthorizeIn>().read_unaligned();
+        assert_eq!(
+            (i.action, i.expected_revision, i.field_name.len),
+            (OUTBOUND_PREPARE, 0, 0)
+        );
+        assert_eq!(
+            std::slice::from_raw_parts(i.credential.ptr, i.credential.len),
+            b"code=private-code&code_verifier=private-verifier"
+        );
+        let outcome = if i.expires_at_unix == 3 {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        };
+        (*out).value = match i.expires_at_unix {
+            1 => 1,
+            2 => 2,
+            4 => 0,
+            _ => 0,
+        };
+        (*out).len = u64::from(i.expires_at_unix == 5);
+        (*out).outcome = RawOutcome::of(outcome);
+        RawOutcome::of(outcome)
+    }
+}
+
+#[test]
+fn outbound_prepare_passes_sealed_form_body_and_checks_acknowledgement_without_a_handle() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let code = Cred::captured(Zeroizing::new(b"private-code".to_vec()));
+    let verifier = Cred::captured(Zeroizing::new(b"private-verifier".to_vec()));
+    let body = FormBody::new()
+        .sealed("code", &code)
+        .sealed("code_verifier", &verifier)
+        .encoded()
+        .unwrap();
+    let mut t = table(None);
+    t.outbound_authorize = Some(outbound_prepare_answer);
+    let s = services(&t);
+    let scope = OutboundScope {
+        need: 2,
+        member: "issuer",
+        resource: "https://issuer.example.test/token",
+        connection: "public-id",
+    };
+    let h = ticketed(0);
+    assert_eq!(s.outbound_prepare(h, scope, 1, &body), Poll::Ready(Ok(())));
+    assert_eq!(
+        s.outbound_prepare(h, scope, 2, &body),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(s.outbound_prepare(h, scope, 3, &body), Poll::Pending);
+    assert_eq!(
+        s.outbound_prepare(h, scope, 4, &body),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        s.outbound_prepare(h, scope, 5, &body),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        s.outbound_prepare(h, scope, 0, &body),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
+    );
+    t.outbound_authorize = None;
+    assert_eq!(
+        services(&t).outbound_prepare(h, scope, 1, &body),
+        Poll::Ready(Err(ServiceError::Unserved))
+    );
+}
+
+extern "C" fn outbound_publish_body_answer(
+    _ctx: HostCtx,
+    input: *const c_void,
+    out: *mut ServiceOut,
+) -> RawOutcome {
+    use crate::abi::host::service::*;
+    // SAFETY: SDK-owned initialized frame and writable output remain live during the callback.
+    unsafe {
+        let i = input.cast::<OutboundAuthorizeIn>().read_unaligned();
+        assert_eq!(
+            (i.action, i.field_name.len, i.expires_at_unix),
+            (OUTBOUND_PUBLISH_BODY, 0, 1_900_000_000)
+        );
+        assert_eq!(
+            std::slice::from_raw_parts(i.credential.ptr, i.credential.len),
+            b"grant_type=refresh_token&refresh_token=private-refresh"
+        );
+        let outcome = if i.expected_revision == 10 {
+            Outcome::Pending
+        } else {
+            Outcome::Ready
+        };
+        (*out).value = if outcome == Outcome::Ready && i.expected_revision != 8 {
+            i.expected_revision + 1
+        } else {
+            0
+        };
+        (*out).len = u64::from(i.expected_revision == 9);
+        (*out).outcome = RawOutcome::of(outcome);
+        RawOutcome::of(outcome)
+    }
+}
+
+#[test]
+fn outbound_publish_body_keeps_form_opaque_and_supports_initial_and_cas_revisions() {
+    use crate::abi::sdk::cred::{Cred, FormBody};
+    let refresh = Cred::captured(Zeroizing::new(b"private-refresh".to_vec()));
+    let body = FormBody::new()
+        .public("grant_type", "refresh_token")
+        .sealed("refresh_token", &refresh)
+        .encoded()
+        .unwrap();
+    let mut t = table(None);
+    t.outbound_authorize = Some(outbound_publish_body_answer);
+    let s = services(&t);
+    let scope = OutboundScope {
+        need: 2,
+        member: "issuer",
+        resource: "https://issuer.example.test/token",
+        connection: "public-id",
+    };
+    let h = ticketed(0);
+    let expiry = 1_900_000_000;
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 0, expiry, &body),
+        Poll::Ready(Ok(1))
+    );
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 7, expiry, &body),
+        Poll::Ready(Ok(8))
+    );
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 8, expiry, &body),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 9, expiry, &body),
+        Poll::Ready(Err(ServiceError::Broken))
+    );
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 10, expiry, &body),
+        Poll::Pending
+    );
+    assert_eq!(
+        s.outbound_publish_body(h, scope, 0, 0, &body),
+        Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)))
     );
 }

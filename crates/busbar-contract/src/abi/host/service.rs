@@ -319,10 +319,12 @@ pub mod op {
     pub const TICKET_TAKE: u32 = 33;
     /// `work.status`: instance-scoped, read-only durable receipt status.
     pub const WORK_STATUS: u32 = 34;
+    /// `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody.
+    pub const OUTBOUND_AUTHORIZE: u32 = 35;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 35;
+pub const SERVICES: u32 = 36;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
@@ -1625,6 +1627,138 @@ pub struct TicketTakeIn {
     pub into: ServiceBufs,
 }
 
+/// Publish or replace host-held outbound credential custody.
+pub const OUTBOUND_PUBLISH: u32 = 1;
+/// Bind an existing custody revision to the serving unit.
+pub const OUTBOUND_BIND: u32 = 2;
+/// Revoke custody, including a revision-zero tombstone for an absent connection.
+pub const OUTBOUND_REVOKE: u32 = 3;
+/// Prepare a sealed request body for one governed dispatch by the serving unit.
+pub const OUTBOUND_PREPARE: u32 = 4;
+/// Publish a reusable sealed request body in host-held connection custody.
+pub const OUTBOUND_PUBLISH_BODY: u32 = 5;
+/// Maximum bytes in each public outbound scope string or field name.
+pub const MAX_OUTBOUND_TEXT: usize = 4096;
+/// Maximum sealed credential bytes accepted for outbound custody.
+pub const MAX_OUTBOUND_CREDENTIAL: usize = 16384;
+
+/// Generic outbound custody request. The host derives caller and unit authority; `connection`
+/// is public identity only. READY returns a nonzero revision, or `1` for PREPARE, and no bytes.
+/// PREPARE keeps a sealed body on the live unit for one secured governed dispatch. PUBLISH_BODY
+/// retains a reusable sealed body; BIND selects its revision and REVOKE invalidates it. May pend.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OutboundAuthorizeIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// One of the `OUTBOUND_*` actions.
+    pub action: u32,
+    /// Declared outbound need index.
+    pub need: u32,
+    /// Declared need member.
+    pub member: AbiStr,
+    /// Exact final outbound URL, including the request target.
+    pub resource: AbiStr,
+    /// Public nonsecret connection identity; never authority.
+    pub connection: AbiStr,
+    /// Compare-and-replace revision, or zero for initial publication and preparation.
+    pub expected_revision: u64,
+    /// Publication or preparation expiry; zero for bind and revoke.
+    pub expires_at_unix: u64,
+    /// Header field name; present only for field-value PUBLISH.
+    pub field_name: AbiStr,
+    /// Opaque sealed field value for PUBLISH or sealed request body for PREPARE/PUBLISH_BODY.
+    pub credential: Blob,
+}
+
+impl std::fmt::Debug for OutboundAuthorizeIn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutboundAuthorizeIn")
+            .field("head", &self.head)
+            .field("action", &self.action)
+            .field("need", &self.need)
+            .field("credential", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Validate bounds and action shape without dereferencing caller memory.
+pub fn check_outbound_authorize_in(i: &OutboundAuthorizeIn) -> Result<(), Fault> {
+    for text in [i.member, i.resource, i.connection, i.field_name] {
+        check::text(text, "outbound_authorize.text")?;
+        if text.len > MAX_OUTBOUND_TEXT {
+            return Err(fault(Rule::OverMax, "outbound_authorize.text"));
+        }
+    }
+    check::listed(
+        i.credential.ptr,
+        i.credential.len,
+        "outbound_authorize.credential",
+    )?;
+    if i.credential.len > MAX_OUTBOUND_CREDENTIAL {
+        return Err(fault(Rule::OverMax, "outbound_authorize.credential"));
+    }
+    if i.member.len == 0 || i.resource.len == 0 || i.connection.len == 0 {
+        return Err(fault(Rule::Missing, "outbound_authorize.scope"));
+    }
+    match i.action {
+        OUTBOUND_PUBLISH
+            if i.field_name.len > 0 && i.credential.len > 0 && i.expires_at_unix > 0 =>
+        {
+            Ok(())
+        }
+        OUTBOUND_PUBLISH_BODY
+            if i.field_name.len == 0 && i.credential.len > 0 && i.expires_at_unix > 0 =>
+        {
+            Ok(())
+        }
+        OUTBOUND_PREPARE
+            if i.expected_revision == 0
+                && i.field_name.len == 0
+                && i.credential.len > 0
+                && i.expires_at_unix > 0 =>
+        {
+            Ok(())
+        }
+        OUTBOUND_BIND | OUTBOUND_REVOKE
+            if (i.action == OUTBOUND_REVOKE || i.expected_revision > 0)
+                && i.field_name.len == 0
+                && i.credential.len == 0
+                && i.expires_at_unix == 0 =>
+        {
+            Ok(())
+        }
+        _ => Err(fault(Rule::Contradiction, "outbound_authorize.action")),
+    }
+}
+
+/// Scalar revision or preparation acknowledgement only; credentials never appear in an answer.
+pub fn check_outbound_authorize(
+    i: &OutboundAuthorizeIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: `bare` has no buffers or raw memory to read.
+    unsafe {
+        answer(
+            ret,
+            &i.head,
+            out,
+            bare(
+                op::OUTBOUND_AUTHORIZE,
+                (
+                    1,
+                    if i.action == OUTBOUND_PREPARE {
+                        1
+                    } else {
+                        u64::MAX
+                    },
+                ),
+            ),
+        )
+    }
+}
+
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
 /// this host does not offer, and a plugin that needs it refuses to open.
 #[repr(C)]
@@ -1704,6 +1838,8 @@ pub struct HostSlots {
     pub ticket_take: Option<ServiceFn>,
     /// [`op::WORK_STATUS`], in [`WorkStatusIn`]. Optional size-checked tail addition.
     pub work_status: Option<ServiceFn>,
+    /// [`op::OUTBOUND_AUTHORIZE`]. Optional size-checked tail addition.
+    pub outbound_authorize: Option<ServiceFn>,
 }
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and

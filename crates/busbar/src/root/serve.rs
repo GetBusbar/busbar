@@ -5253,6 +5253,7 @@ impl DataRoutes {
             Arc::clone(&live.ticket_nonce),
         );
         let far = DoorFar {
+            authorization: Arc::clone(served.kernel.units()),
             egress: live.egress.as_deref(),
             shown: live.shown.as_ref(),
             steps: &steps,
@@ -5819,6 +5820,7 @@ impl DataRoutes {
             steps = steps.under(n.parent.cell());
         }
         let far = DoorFar {
+            authorization: Arc::clone(served.kernel.units()),
             egress: live.egress.as_deref(),
             shown: live.shown.as_ref(),
             steps: &steps,
@@ -5983,6 +5985,7 @@ struct DoorFar<'d, 's> {
     unit: busbar_contract::UnitKey,
 
     credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    authorization: Arc<busbar_kernel::host_units::UnitRecords>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
 
@@ -5997,6 +6000,8 @@ impl<'d> DoorFar<'d, '_> {
                 let mut far = egress.unit(UnitRoute {
                     unit: self.unit,
                     pool,
+                    connection_required: self.steps.connection_required(),
+                    authorization: Some(Arc::clone(&self.authorization)),
                     caller_credential: self.credential.clone(),
                     once: self.steps.once(),
 

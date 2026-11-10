@@ -721,6 +721,10 @@ impl<'s> DoorSteps<'s> {
     }
 
     #[must_use]
+    pub fn connection_required(&self) -> bool {
+        self.app.upstream_creds() == busbar_contract::config::UpstreamCreds::Connection
+    }
+
     pub fn once(&self) -> bool {
         self.lock().once
     }
@@ -1587,7 +1591,13 @@ pub fn compose_egress(
 
         for (need, base_url) in ridden(&route) {
             conns
-                .anchor(caller, need, &route.provider, &base_url, &route.anchors)
+                .anchor(
+                    caller,
+                    need,
+                    &route.provider,
+                    &base_url,
+                    route.anchors_for(need),
+                )
                 .map_err(|e| {
                     format!("member '{entry}': its trust anchors could not be sealed: {e}")
                 })?;
@@ -1598,7 +1608,7 @@ pub fn compose_egress(
                     need,
                     &route.provider,
                     &base_url,
-                    route.anchors.private_reach,
+                    route.anchors_for(need).private_reach,
                 )
                 .map_err(|e| {
                     format!("member '{entry}': its private reach could not be sealed: {e}")
@@ -3278,7 +3288,9 @@ fn member_entry<'s>(section: &'s serde_yaml::Value, entry: &str) -> Option<&'s s
 }
 
 fn entry_text<'s>(entry: &'s serde_yaml::Value, key: &str) -> Option<&'s str> {
-    entry.get(key).and_then(serde_yaml::Value::as_str)
+    key.split('.')
+        .try_fold(entry, |value, part| value.get(part))
+        .and_then(serde_yaml::Value::as_str)
 }
 
 fn origin_of(url: &str) -> &str {
@@ -3842,6 +3854,7 @@ pub fn member_routes(
 
                     let mut rides = Vec::new();
                     let mut spelled = Vec::new();
+                    let mut ride_anchors = Vec::new();
                     for (other, key) in member_targets.iter().skip(1) {
                         let Some(at) = entry_text(registration, key).filter(|t| !t.is_empty())
                         else {
@@ -3850,9 +3863,18 @@ pub fn member_routes(
                         rides.push(*other);
                         if origin_of(at) != base_url {
                             spelled.push((*other, origin_of(at).to_string()));
+                            // A separately declared destination does not inherit another peer's
+                            // certificate pin, client identity or private-network reach.
+                            ride_anchors.push((
+                                *other,
+                                busbar_contract::transport::trust::Anchors::default(),
+                            ));
                         }
                     }
-                    registered.insert(entry.clone(), (need, base_url, anchors, rides, spelled));
+                    registered.insert(
+                        entry.clone(),
+                        (need, base_url, anchors, rides, spelled, ride_anchors),
+                    );
                     continue;
                 }
             }
@@ -3943,12 +3965,14 @@ pub fn member_routes(
     let section_default = section
         .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
         .and_then(serde_yaml::Value::as_str);
-    for (entry, (need, base_url, anchors, rides, spelled)) in registered {
+    for (entry, (need, base_url, anchors, rides, spelled, ride_anchors)) in registered {
         let mode = section
             .get(entry.as_str())
             .and_then(|r| entry_text(r, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
             .or(section_default);
-        let auth = if mode == Some(PASSTHROUGH) {
+        let auth = if mode == Some("connection") {
+            None
+        } else if mode == Some(PASSTHROUGH) {
             let (auth, decl) = reach
                 .auths
                 .serving(PASSTHROUGH_STYLE, &serde_json::json!({}))?
@@ -3984,6 +4008,8 @@ pub fn member_routes(
         routes.insert(
             entry.clone(),
             MemberRoute {
+                ride_anchors,
+                connection_required: mode == Some("connection"),
                 rides: rides
                     .into_iter()
                     .map(|n| (n, busbar_kernel::plane_driver::ResponseKeep::default()))
@@ -4003,6 +4029,8 @@ pub fn member_routes(
         routes.insert(
             entry.clone(),
             MemberRoute {
+                ride_anchors: Vec::new(),
+                connection_required: false,
                 rides: Vec::new(),
                 need,
                 base_url: entry.clone(),
@@ -4061,9 +4089,16 @@ pub fn member_routes(
                 Some((*n, url))
             })
             .collect();
+        let connection_required = section
+            .get(r.entry.as_str())
+            .and_then(|entry| entry_text(entry, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
+            .or(section_default)
+            == Some("connection");
         routes.insert(
             r.entry,
             MemberRoute {
+                ride_anchors: Vec::new(),
+                connection_required,
                 need,
                 base_url: r.provider.base_url.clone(),
 

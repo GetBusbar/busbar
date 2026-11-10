@@ -27,6 +27,7 @@ const TICKET: Ticket = Ticket {
 struct Provider {
     clock: Option<std::time::Instant>,
     judged: AtomicUsize,
+    outbound_callers: Mutex<Vec<Caller>>,
     held: Mutex<Vec<Later>>,
     /// Every caller-scoped call, as `(instance, service, first argument)`.
     scoped: Mutex<Vec<(String, &'static str, Vec<u8>)>>,
@@ -334,6 +335,35 @@ impl HostServices for Provider {
         let arg = [format!("{unit:?} ").as_bytes(), reference].concat();
         self.saw(c, "work.find", &arg);
         Ran::Now(Stored::ready(svc::ABSENT))
+    }
+
+    fn outbound_authorize(
+        &self,
+        c: &Caller,
+        unit: Option<u64>,
+        ask: OutboundAuthorization<'_>,
+        later: Later,
+    ) -> Ran {
+        self.outbound_callers.lock().unwrap().push(c.clone());
+        // Record public authority/scope only: never retain credential bytes in the test provider.
+        self.saw(
+            c,
+            "outbound.authorize",
+            format!(
+                "{unit:?} {} {} {} {} {} {} {} {}",
+                ask.action,
+                ask.need,
+                ask.member,
+                ask.resource,
+                ask.connection,
+                ask.expected_revision,
+                ask.expires_at_unix,
+                ask.field_name
+            )
+            .as_bytes(),
+        );
+        later(Stored::ready(ask.expected_revision.max(1)));
+        Ran::Later
     }
 
     fn work_status(&self, c: &Caller, reference: &[u8], _: Later) -> Ran {
@@ -3657,6 +3687,7 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
         slots.ticket_mint,
         slots.ticket_take,
         slots.work_status,
+        slots.outbound_authorize,
     ]
 }
 
@@ -3839,4 +3870,199 @@ fn dest_judge_faults_a_non_utf8_destination() {
         Outcome::Fault,
         "a non-UTF-8 destination was judged"
     );
+}
+
+#[test]
+fn outbound_authorize_uses_host_caller_and_serving_unit_without_secret_results() {
+    let d = double();
+    let mut input = svc::OutboundAuthorizeIn {
+        head: head(
+            op::OUTBOUND_AUTHORIZE,
+            TICKET,
+            0,
+            size_of::<svc::OutboundAuthorizeIn>(),
+        ),
+        action: svc::OUTBOUND_PUBLISH,
+        need: 4,
+        member: text("api"),
+        resource: text("https://api.example.test/rpc"),
+        connection: text("public-id"),
+        expected_revision: 0,
+        expires_at_unix: 1_900_000_000,
+        field_name: text("Authorization"),
+        credential: blob(b"Bearer private-credential"),
+    };
+    let invoke = |input: &svc::OutboundAuthorizeIn| {
+        let mut out = blank();
+        // SAFETY: test-owned frame and all nested input ranges remain live.
+        let ret = unsafe {
+            HOST_SLOTS.outbound_authorize.unwrap()(
+                d.ctx,
+                std::ptr::from_ref(input).cast(),
+                &mut out,
+            )
+        };
+        (ret, out)
+    };
+    let _unit = serving(Some(72));
+    let (ret, out) = invoke(&input);
+    assert_eq!(
+        (ret.outcome(), out.value, out.len, out.items),
+        (Outcome::Ready, 1, 0, 0)
+    );
+    assert!(svc::check_outbound_authorize(&input, ret, &out).is_ok());
+    assert_eq!(
+        d.route.provider.scoped.lock().unwrap().as_slice(),
+        &[(
+            "double".into(),
+            "outbound.authorize",
+            b"Some(72) 1 4 api https://api.example.test/rpc public-id 0 1900000000 Authorization"
+                .to_vec()
+        )]
+    );
+    let other = double();
+    let mut other_out = blank();
+    {
+        let _other_unit = serving(Some(73));
+        // SAFETY: same initialized frame, with a different live host-owned callback context.
+        let other_ret = unsafe {
+            HOST_SLOTS.outbound_authorize.unwrap()(
+                other.ctx,
+                std::ptr::from_ref(&input).cast(),
+                &mut other_out,
+            )
+        };
+        assert_eq!(other_ret.outcome(), Outcome::Ready);
+    }
+    let calls = d.route.provider.outbound_callers.lock().unwrap();
+    let other_calls = other.route.provider.outbound_callers.lock().unwrap();
+    assert!(calls[0].same_incarnation(d.wake.caller.get().unwrap()));
+    assert!(other_calls[0].same_incarnation(other.wake.caller.get().unwrap()));
+    assert!(!calls[0].same_incarnation(&other_calls[0]));
+    drop(calls);
+    drop(other_calls);
+    assert!(
+        String::from_utf8_lossy(&other.route.provider.scoped.lock().unwrap()[0].2)
+            .starts_with("Some(73) ")
+    );
+    // Replays do not rerun publication, while changed sealed input faults the handle.
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Ready);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), 1);
+    input.credential = blob(b"Bearer changed-credential");
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Fault);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn outbound_authorize_rejects_shape_bounds_and_header_injection_before_provider() {
+    let d = double();
+    let mut input = svc::OutboundAuthorizeIn {
+        head: head(
+            op::OUTBOUND_AUTHORIZE,
+            TICKET,
+            0,
+            size_of::<svc::OutboundAuthorizeIn>(),
+        ),
+        action: svc::OUTBOUND_BIND,
+        need: 1,
+        member: text("api"),
+        resource: text("https://api.example.test/rpc"),
+        connection: text("public-id"),
+        expected_revision: 2,
+        expires_at_unix: 0,
+        field_name: AbiStr::ZERO,
+        credential: Blob::ZERO,
+    };
+    let invoke = |input: &svc::OutboundAuthorizeIn| {
+        let mut out = blank();
+        // SAFETY: test-owned frame and nested inputs are valid unless a length must be rejected before use.
+        unsafe {
+            HOST_SLOTS.outbound_authorize.unwrap()(
+                d.ctx,
+                std::ptr::from_ref(input).cast(),
+                &mut out,
+            )
+        }
+        .outcome()
+    };
+    input.expires_at_unix = 1;
+    assert_eq!(invoke(&input), Outcome::Refused);
+    input.expires_at_unix = 0;
+    input.member.len = svc::MAX_OUTBOUND_TEXT + 1;
+    assert_eq!(invoke(&input), Outcome::Refused);
+    input.member = text("api");
+    input.action = svc::OUTBOUND_PUBLISH;
+    input.field_name = text("Authorization");
+    input.expires_at_unix = 1_900_000_000;
+    input.credential = blob(b"secret\r\nInjected: yes");
+    assert_eq!(invoke(&input), Outcome::Refused);
+    input.credential = Blob {
+        len: svc::MAX_OUTBOUND_CREDENTIAL + 1,
+        ..blob(b"tiny")
+    };
+    assert_eq!(invoke(&input), Outcome::Refused);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+}
+
+#[test]
+fn outbound_prepare_accepts_sealed_body_once_and_rejects_invalid_action_fields() {
+    let d = double();
+    let _unit = serving(Some(72));
+    let mut input = svc::OutboundAuthorizeIn {
+        head: head(
+            op::OUTBOUND_AUTHORIZE,
+            TICKET,
+            0,
+            size_of::<svc::OutboundAuthorizeIn>(),
+        ),
+        action: svc::OUTBOUND_PREPARE,
+        need: 4,
+        member: text("issuer"),
+        resource: text("https://issuer.example.test/token"),
+        connection: text("public-id"),
+        expected_revision: 0,
+        expires_at_unix: 1_900_000_000,
+        field_name: AbiStr::ZERO,
+        credential: blob(b"sealed-body\r\nwith-arbitrary-bytes\0"),
+    };
+    let valid = input;
+    let invoke = |input: &svc::OutboundAuthorizeIn| {
+        let mut out = blank();
+        // SAFETY: all test-owned input ranges and the output remain live for the callback.
+        let ret = unsafe {
+            HOST_SLOTS.outbound_authorize.unwrap()(
+                d.ctx,
+                std::ptr::from_ref(input).cast(),
+                &mut out,
+            )
+        };
+        (ret, out)
+    };
+    input.expected_revision = 1;
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Refused);
+    input = valid;
+    input.field_name = text("Authorization");
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Refused);
+    input = valid;
+    input.expires_at_unix = 0;
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Refused);
+    input = valid;
+    input.credential = Blob::ZERO;
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Refused);
+    input = valid;
+    input.credential.len = svc::MAX_OUTBOUND_CREDENTIAL + 1;
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Refused);
+    assert!(d.route.provider.scoped.lock().unwrap().is_empty());
+    let (ret, out) = invoke(&valid);
+    assert_eq!(
+        (ret.outcome(), out.value, out.len, out.items),
+        (Outcome::Ready, 1, 0, 0)
+    );
+    assert!(svc::check_outbound_authorize(&valid, ret, &out).is_ok());
+    assert_eq!(invoke(&valid).0.outcome(), Outcome::Ready);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), 1);
+    input = valid;
+    input.credential = blob(b"different sealed body");
+    assert_eq!(invoke(&input).0.outcome(), Outcome::Fault);
+    assert_eq!(d.route.provider.scoped.lock().unwrap().len(), 1);
 }

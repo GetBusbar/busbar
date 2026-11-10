@@ -12,19 +12,19 @@ use busbar_contract::abi::host::service::{
     self as svc, check_bufs, check_disk_append_in, check_head, check_hook_call_in,
     check_random_fill_in, check_records_claim_in, check_work_record, may_pend, op, ClockNowIn,
     ClockReading, ContentScanIn, DestJudgeIn, DiskAppendIn, DiskWritten, EntitlementCheckIn,
-    HookCallIn, HostSlots, RandomFillIn, RecordsClaimIn, RecordsGetIn, RecordsListIn,
-    RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn, SnapshotReadIn,
-    TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn, TrustSightIn,
-    TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn, VerifyStoreIn,
-    WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, WorkStatusIn, SERVICES,
+    HookCallIn, HostSlots, OutboundAuthorizeIn, RandomFillIn, RecordsClaimIn, RecordsGetIn,
+    RecordsListIn, RecordsSecretIn, ServiceBufs, ServiceHead, ServiceOut, SessionEmitIn, SignIn,
+    SnapshotReadIn, TicketMintIn, TicketTakeIn, TrustDecideIn, TrustDueIn, TrustServesIn,
+    TrustSightIn, TrustSightItemIn, TrustStateIn, TrustVerifyIn, UnitNestIn, VerifyLookupIn,
+    VerifyStoreIn, WorkFindIn, WorkOpenIn, WorkResumeIn, WorkSettleIn, WorkStatusIn, SERVICES,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::check;
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, HostCtx, Ticket};
 
 pub use busbar_contract::services::{
-    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, Ran, Reading, RecordsList, Snapshot,
-    Stored,
+    Caller, DiskReport, HookAsk, HostServices, Later, NestAsk, OutboundAuthorization, Ran, Reading,
+    RecordsList, Snapshot, Stored,
 };
 
 use super::auth_handle::{
@@ -813,6 +813,9 @@ pub(crate) fn host_slots(kind: busbar_contract::abi::mechanism::KindCode) -> &'s
             work_status: busbar_contract::abi::host::access::service(op::WORK_STATUS)
                 .filter(|p| p.admits(kind))
                 .map(|_| work_status as svc::ServiceFn),
+            outbound_authorize: busbar_contract::abi::host::access::service(op::OUTBOUND_AUTHORIZE)
+                .filter(|p| p.admits(kind))
+                .map(|_| outbound_authorize as svc::ServiceFn),
         })
     });
     &tables[kind as usize - 1]
@@ -857,6 +860,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
     ticket_mint: Some(ticket_mint),
     ticket_take: Some(ticket_take),
     work_status: Some(work_status),
+    outbound_authorize: Some(outbound_authorize),
 };
 
 pub(crate) fn new_op(wake: &'static super::ticket::InstanceWake, ticket: Ticket) {
@@ -2204,6 +2208,40 @@ service! {
                 provider.ticket_mint(caller, unit, i.ttl_secs, &record, later)
             })
         }
+    }
+}
+
+service! {
+    outbound_authorize, scoped, op::OUTBOUND_AUTHORIZE, OutboundAuthorizeIn, |served, route, head, caller, i| {
+        if svc::check_outbound_authorize_in(&i).is_err() {
+            return Answered::bare(Outcome::Refused, "invalid outbound custody request");
+        }
+        let (Some(member), Some(resource), Some(connection), Some(field_name), Some(credential)) = (
+            text_of(i.member, "outbound_authorize.member"),
+            text_of(i.resource, "outbound_authorize.resource"),
+            text_of(i.connection, "outbound_authorize.connection"),
+            text_of(i.field_name, "outbound_authorize.field_name"),
+            blob_of(i.credential, "outbound_authorize.credential").map(zeroize::Zeroizing::new),
+        ) else { return Answered::fault(); };
+        if i.action == svc::OUTBOUND_PUBLISH && (
+            !field_name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+            || !credential.iter().all(|&b| b == b'\t' || (b >= 0x20 && b != 0x7f))
+        ) {
+            return Answered::bare(Outcome::Refused, "invalid outbound credential field");
+        }
+        let unit = serving_unit();
+        let req = Fp::of(&[&i.action.to_le_bytes(), &i.need.to_le_bytes(), member.as_bytes(),
+            resource.as_bytes(), connection.as_bytes(), &i.expected_revision.to_le_bytes(),
+            &i.expires_at_unix.to_le_bytes(), field_name.as_bytes(), &i.credential.fmt.to_le_bytes(), &i.credential.flags.to_le_bytes(), &credential]);
+        let ask = OutboundAuthorization {
+            action: i.action, need: i.need, member: &member, resource: &resource, connection: &connection,
+            expected_revision: i.expected_revision, expires_at_unix: i.expires_at_unix,
+            field_name: &field_name, credential: &credential,
+        };
+        // SAFETY: this scalar-only service lends no output buffers.
+        unsafe { pended(&served, &route, &head, req, None, |later| {
+            served.provider.outbound_authorize(caller, unit, ask, later)
+        }) }
     }
 }
 
