@@ -1,5 +1,5 @@
 {
-  "sdk": "b0ae4cafc8bb7db78541e0d9c3b14cf0a6a7dcec",
+  "sdk": "af902e21be1a39930c7ee07b88ed2e947b7d0ca9",
   "products": [
     {
       "repo": "busbar-auth-admin-tokens",
@@ -368,8 +368,8 @@
   "c_witness": {
     "repo": "busbar-secret-c",
     "url": "https://github.com/GetBusbar/busbar-secret-c",
-    "commit": "a2ef8152922fba6f57ac547de251d4a751852e96",
-    "sdk": "b0ae4cafc8bb7db78541e0d9c3b14cf0a6a7dcec",
+    "commit": "817c93f7f9dc51e3354911793e85c736d1922e46",
+    "sdk": "af902e21be1a39930c7ee07b88ed2e947b7d0ca9",
     "kind": "secret",
     "language": "c",
     "header": "crates/busbar-contract/include/busbar_plugin.h"
