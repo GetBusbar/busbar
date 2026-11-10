@@ -93,4 +93,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if "--catalog" in sys.argv:
+        import release_monitor
+        try:
+            release_monitor.main()
+        except Exception as error:
+            print("rekor-watch: release monitoring refused (" + type(error).__name__ + ")", file=sys.stderr)
+            sys.exit(3)
+    else:
+        sys.exit(main())

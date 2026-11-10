@@ -96,9 +96,15 @@ PY
 ARCHIVE="busbar-${TARGET}.${SPEC_ARCHIVE}"
 VERIFIER_ARCHIVE="busbar-audit-verify-${TARGET}.${SPEC_ARCHIVE}"
 mkdir -p "$EVIDENCE_DIR" "$OUT_DIR"
+EVIDENCE_DIR="$(cd "$EVIDENCE_DIR" && pwd)"
+# Every retry uses fresh capture streams; old evidence cannot survive a failed build.
+rm -rf "$EVIDENCE_DIR/cargo-core" "$EVIDENCE_DIR/cargo-audit"
+rm -f "$EVIDENCE_DIR/"*.build-closure.json
 BUILD_FINISHED=false
 clean_failed_build() {
   if [ "$BUILD_FINISHED" != true ]; then
+    rm -f "$EVIDENCE_DIR/"*.build-closure.json
+    rm -rf "$EVIDENCE_DIR/cargo-core" "$EVIDENCE_DIR/cargo-audit"
     rm -f "$OUT_DIR/$ARCHIVE" "$OUT_DIR/$VERIFIER_ARCHIVE"       "$EVIDENCE_DIR/artifact.sha256" "$EVIDENCE_DIR/audit-verifier.sha256"       "$EVIDENCE_DIR/busbar.pgo-verified"
   fi
 }
@@ -171,7 +177,7 @@ if [ "$SPEC_PGO" = "true" ]; then
   # (scripts/release/candidate.py pgo-train <target>), review, and commit release/pgo/<target>.profdata.
   PROFILE="release/pgo/${TARGET}.profdata"
   [ -s "$PROFILE" ] || { echo "[release-build] no committed PGO profile at $PROFILE: run scripts/release/candidate.py pgo-train $TARGET on a native backend and commit it" >&2; exit 1; }
-  PGO_PROFILE="$PROFILE" PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
+  BUSBAR_CARGO_CAPTURE_DIR="$EVIDENCE_DIR/cargo-core" PGO_PROFILE="$PROFILE" PGO_TARGET="$SPEC_TRIPLE" scripts/pgo-build.sh
   BIN="target/pgo/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   MARKER="target/pgo/${SPEC_TRIPLE}/release/busbar.pgo-verified"
   # pgo-build.sh writes the marker ONLY after a non-empty merged profile fed a successful
@@ -231,7 +237,7 @@ else
     *-windows-msvc) CRT_FLAG="-Ctarget-feature=+crt-static" ;;
   esac
   BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-core" -- build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar --target-dir target --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
   scripts/build-provenance-gate.sh "$BIN" release false
 fi
@@ -245,7 +251,7 @@ case "$SPEC_EXE" in *.exe) VERIFIER_EXE="$VERIFIER_EXE.exe" ;; esac
 VERIFIER_FLAGS=""
 case "$SPEC_TRIPLE" in *-windows-msvc) VERIFIER_FLAGS="-Ctarget-feature=+crt-static" ;; esac
 # This independent offline tool does not consume the server's PGO profile.
-env -u CARGO_ENCODED_RUSTFLAGS RUSTFLAGS="$VERIFIER_FLAGS"   cargo build --release --locked --package busbar-kernel-audit --bin busbar-audit-verify   --target-dir target/audit-verifier --target "$SPEC_TRIPLE"
+env -u CARGO_ENCODED_RUSTFLAGS RUSTFLAGS="$VERIFIER_FLAGS"   "$PY" scripts/release/cargo_capture.py --directory "$EVIDENCE_DIR/cargo-audit" -- build --release --locked --package busbar-kernel-audit --bin busbar-audit-verify   --target-dir target/audit-verifier --target "$SPEC_TRIPLE"
 VERIFIER_BIN="target/audit-verifier/${SPEC_TRIPLE}/release/$VERIFIER_EXE"
 [ -f "$VERIFIER_BIN" ] || { echo "[release-build] verifier binary missing" >&2; exit 1; }
 [ -f docs/audit-verify.md ] || { echo "[release-build] verifier instructions missing" >&2; exit 1; }
@@ -291,6 +297,20 @@ package(core_out, [(core, core_member, 0o755)], core_digest)
 if verifier:
     package(verifier_out, [(verifier, verifier_member, 0o755), ("docs/audit-verify.md", "audit-verify.md", 0o644)], verifier_digest)
 PYARCHIVE
+# Derive the inventory from the actual final build, never a separately resolved SBOM command.
+RELEASE_VERSION="$("$PY" -c 'import tomllib; print(tomllib.load(open("dist/default/Cargo.toml", "rb"))["package"]["version"])')"
+"$PY" scripts/release/build_closure.py --artifact "$OUT_DIR/$ARCHIVE" \
+  --metadata "$EVIDENCE_DIR/cargo-core/cargo-metadata.json" --lock "$EVIDENCE_DIR/cargo-core/Cargo.lock" \
+  --messages "$EVIDENCE_DIR/cargo-core/cargo-messages.jsonl" --binary "$BIN" --member "$SPEC_EXE" \
+  --package busbar-default --source-commit "$RECEIPT_SOURCE" --target "$SPEC_TRIPLE" \
+  --component-name busbar --version "$RELEASE_VERSION" --output "$EVIDENCE_DIR/$ARCHIVE.build-closure.json"
+if [ -n "$VERIFIER_BIN" ]; then
+  "$PY" scripts/release/build_closure.py --artifact "$OUT_DIR/$VERIFIER_ARCHIVE" \
+    --metadata "$EVIDENCE_DIR/cargo-audit/cargo-metadata.json" --lock "$EVIDENCE_DIR/cargo-audit/Cargo.lock" \
+    --messages "$EVIDENCE_DIR/cargo-audit/cargo-messages.jsonl" --binary "$VERIFIER_BIN" --member "$VERIFIER_EXE" \
+    --package busbar-kernel-audit --source-commit "$RECEIPT_SOURCE" --target "$SPEC_TRIPLE" \
+    --component-name busbar-audit-verify --version "$RELEASE_VERSION" --output "$EVIDENCE_DIR/$VERIFIER_ARCHIVE.build-closure.json"
+fi
 BUILD_FINISHED=true
 
 echo "[release-build] evidence in $EVIDENCE_DIR:"

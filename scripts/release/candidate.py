@@ -10,7 +10,7 @@ by the gate, which refuses by rule name; a mistake is never shipped.
 
   candidate.py core <target> --out DIR
       scripts/release-build.sh for one row of release/release-targets.json. A published row goes
-      to DIR/artifacts; an image-feeding musl row goes to DIR/internal. Then its CycloneDX SBOM goes
+      to DIR/artifacts; any unpublished row goes to DIR/internal. Its captured CycloneDX SBOM goes
       to DIR/sboms (named by the target, or by the image platform the row feeds).
   candidate.py pgo-train <target> --out DIR
       trains the PGO profile for one row (scripts/pgo-build.sh with PGO_TRAIN_ONLY) on a backend
@@ -27,8 +27,8 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       (cargo at the pin, or the C sources from busbar_plugin.h) and packed UNSIGNED with this tree's
       busbar-plugin-pack. Writes DIR/plugins/ and DIR/plugins.json.
   candidate.py image <amd64|arm64> --out DIR
-      that platform's image: its musl binary (DIR/internal/), then a single-platform OCI layout
-      archive (DIR/oci/busbar-<arch>.oci.tar) on the musl runtime pinned in release/rust-alpine.txt.
+      that platform's image: its published native binary (DIR/artifacts/), then a single-platform OCI layout
+      archive (DIR/oci/busbar-<arch>.oci.tar) on the digest-pinned Dockerfile base.
       Refuses a BuildKit older than 0.13 (rewrite-timestamp).
   candidate.py conformance-manifest --out DIR
       the release's conformance manifest (docs/design/conformance-release.md): every registered
@@ -42,8 +42,8 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       `busbar --migrate-config` fetches from this release's GitHub Release; read-only GitHub lookups
       for renamed repos), and writes SHA256SUMS (which lists it), IMAGES and candidate.json.
 
-Tools: git, cargo (rust-toolchain.toml), python3; cargo-cyclonedx (CYCLONEDX=<path>, pinned by the
-caller); docker buildx for `image`; a C compiler for C plugins.
+Tools: git, cargo (rust-toolchain.toml), python3; docker buildx for `image`; a C compiler for C plugins.
+Core SBOMs come from the final build capture and exact shipped archive members.
 """
 
 from __future__ import annotations
@@ -61,6 +61,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import conformance_gate as cg  # noqa: E402
 import publish_gate as pg  # noqa: E402
+import build_closure as bc  # noqa: E402
+import native_provenance as provenance  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -86,16 +88,21 @@ def target_row(target: str) -> dict:
     sys.exit(f"candidate: {target} is not a row of release/release-targets.json")
 
 
-def sbom(triple: str, name: str, out: Path, package: str = "busbar") -> None:
-    tool = os.environ.get("CYCLONEDX")
-    if not tool:
-        sys.exit("candidate: CYCLONEDX=<pinned cargo-cyclonedx> is required")
-    manifest = ROOT / "crates" / package / "Cargo.toml"
-    sh([tool, "cyclonedx", "--manifest-path", str(manifest), "--format", "json",
-        "--target", triple, "--override-filename", "bom"], cwd=ROOT)
-    produced = manifest.parent / "bom.json"
+def sbom(triple: str, name: str, out: Path, package: str = "busbar", target: str | None = None) -> None:
+    target = target or triple
+    row = target_row(target)
+    prefix = "busbar-audit-verify" if package == "busbar-kernel-audit" else "busbar"
+    archive = f"{prefix}-{target}.{row['archive']}"
+    closure_path = out / "evidence" / target / (archive + ".build-closure.json")
+    closure = provenance.load(closure_path)
+    artifact = out / ("artifacts" if row.get("published") else "internal") / archive
+    plan = {"source_commit": sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip(),
+            "target": triple, "artifact_name": archive, "artifact_sha256": pg.sha256_file(artifact)}
+    bc.validate(closure, plan, artifact, prefix, version())
     (out / "sboms").mkdir(parents=True, exist_ok=True)
-    shutil.move(produced, out / "sboms" / name)
+    (out / "closures").mkdir(parents=True, exist_ok=True)
+    (out / "sboms" / name).write_bytes(provenance.canonical(bc.sbom(closure)))
+    (out / "closures" / (archive + ".build-closure.json")).write_bytes(provenance.canonical(closure))
 
 
 def cmd_pgo_train(target: str, out: Path) -> None:
@@ -128,9 +135,13 @@ def cmd_core(target: str, out: Path) -> None:
     v = version()
     triple = row.get("triple", target)
     feeds = row.get("packaged_into", "")
-    sbom(triple, f"busbar-v{v}-{feeds or target}.cdx.json", out)
+    selection = {"target": target} if triple != target else {}
+    if row.get("published") or not feeds:
+        sbom(triple, f"busbar-v{v}-{target}.cdx.json", out, **selection)
+    if feeds:
+        sbom(triple, f"busbar-v{v}-{feeds}.cdx.json", out, **selection)
     if row.get("published"):
-        sbom(triple, f"busbar-audit-verify-v{v}-{target}.cdx.json", out, package="busbar-kernel-audit")
+        sbom(triple, f"busbar-audit-verify-v{v}-{target}.cdx.json", out, package="busbar-kernel-audit", **selection)
 
 
 def plugin_tag(repo: str, kit: str) -> tuple:
@@ -251,14 +262,6 @@ def cmd_plugins(target: str, out: Path) -> None:
     (out / "plugins.json").write_text(json.dumps(rows, indent=2) + "\n")
 
 
-def rust_alpine() -> str:
-    pin = [l.strip() for l in (ROOT / "release" / "rust-alpine.txt").read_text().splitlines()
-           if l.strip() and not l.startswith("#")]
-    if len(pin) != 1 or not re.fullmatch(r"rust:alpine@sha256:[0-9a-f]{64}", pin[0]):
-        sys.exit("candidate: release/rust-alpine.txt must hold exactly one rust:alpine@sha256:<64 hex>")
-    return pin[0]
-
-
 def require_buildkit() -> None:
     info = sh(["docker", "buildx", "inspect", "--bootstrap"], out=True)
     m = re.search(r"BuildKit version:\s*v?(\d+)\.(\d+)", info) or re.search(r"Buildkit:\s*v?(\d+)\.(\d+)", info)
@@ -269,21 +272,16 @@ def require_buildkit() -> None:
 def cmd_image(arch: str, out: Path) -> None:
     rows = [t for t in pg.release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
     if len(rows) != 1:
-        sys.exit(f"candidate: no single musl row feeds image-linux-{arch} in release/release-targets.json")
+        sys.exit(f"candidate: no single native row feeds image-linux-{arch} in release/release-targets.json")
     t = rows[0]
-    base = rust_alpine()
     require_buildkit()
     cmd_core(t["target"], out)
     ctx = Path(tempfile.mkdtemp())
     (ctx / "binaries" / arch).mkdir(parents=True)
-    with tarfile.open(out / "internal" / f"busbar-{t['target']}.{t['archive']}") as tf:
+    with tarfile.open(out / ("artifacts" if t.get("published") else "internal") / f"busbar-{t['target']}.{t['archive']}") as tf:
         m = next(x for x in tf.getmembers() if x.isfile() and x.name.rsplit("/", 1)[-1] == "busbar")
         (ctx / "binaries" / arch / "busbar").write_bytes(tf.extractfile(m).read())
     os.chmod(ctx / "binaries" / arch / "busbar", 0o755)
-    lib = ctx / "plugins" / arch / "lib"
-    lib.mkdir(parents=True)
-    sh(["docker", "run", "--rm", "--platform", f"linux/{arch}", "-v", f"{lib}:/out", base, "sh", "-ec",
-        "cp /lib/ld-musl-*.so.1 /usr/lib/libgcc_s.so.1 /usr/lib/libstdc++.so.6 /out/"])
     for f in ("Dockerfile", "providers.yaml"):
         shutil.copy(ROOT / f, ctx / f)
     shutil.copytree(ROOT / "docker", ctx / "docker")
@@ -341,12 +339,12 @@ def cmd_conformance_manifest(out: Path) -> None:
 
 
 def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None:
-    for sub in ("artifacts", "sboms", "internal", "plugins", "oci"):
+    for sub in ("artifacts", "sboms", "internal", "plugins", "oci", "closures"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     plugins: dict = {}
     parts: list = []
     for s in map(Path, slices):
-        for sub in ("artifacts", "sboms", "internal", "plugins", "oci"):
+        for sub in ("artifacts", "sboms", "internal", "plugins", "oci", "closures"):
             for f in (s / sub).glob("*") if (s / sub).is_dir() else []:
                 if sub == "oci":
                     parts.append(f)

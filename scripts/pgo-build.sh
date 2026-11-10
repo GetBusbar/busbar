@@ -563,7 +563,8 @@ fi
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 BUSBAR_PROVENANCE_SOURCE="$RECEIPT_SOURCE" BUSBAR_PROVENANCE_WRAPPER=1 RUSTC_WRAPPER="$RECEIPT_WRAPPER" \
 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}${CRT_FLAG:+ $CRT_FLAG}" \
-  cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
+  python3 scripts/release/cargo_capture.py --directory "${BUSBAR_CARGO_CAPTURE_DIR:-$WORK/cargo-final}" -- \
+  build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
 

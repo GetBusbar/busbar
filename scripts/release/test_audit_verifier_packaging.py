@@ -42,6 +42,33 @@ class AuditVerifierPackaging(unittest.TestCase):
             candidate.cmd_core("fixture", Path(tmp))
             produce.assert_any_call("fixture", "busbar-audit-verify-v1.6.0-fixture.cdx.json", Path(tmp), package="busbar-kernel-audit")
 
+    def test_image_candidate_uses_published_native_archive_and_pinned_dockerfile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "artifacts").mkdir()
+            row = dict(target="x86_64-unknown-linux-gnu", kind="binary", published=True,
+                       archive="tar.gz", packaged_into="image-linux-amd64")
+            archive = root / "artifacts/busbar-x86_64-unknown-linux-gnu.tar.gz"
+            import io
+            with tarfile.open(archive, "w:gz") as opened:
+                member = tarfile.TarInfo("busbar")
+                member.size = len(b"published native bytes")
+                opened.addfile(member, io.BytesIO(b"published native bytes"))
+            calls = []
+            def command(args, **kwargs):
+                calls.append(args)
+                if args[:3] == ["docker", "buildx", "build"]:
+                    context = Path(args[-1])
+                    self.assertEqual((context / "binaries/amd64/busbar").read_bytes(), b"published native bytes")
+                    self.assertIn("FROM gcr.io/distroless/cc-debian12:nonroot@sha256:", (context / "Dockerfile").read_text())
+                return "1700000000"
+            with patch.object(candidate.pg, "release_targets", return_value=[row]), \
+                 patch.object(candidate, "cmd_core") as core, \
+                 patch.object(candidate, "require_buildkit"), patch.object(candidate, "sh", side_effect=command):
+                candidate.cmd_image("amd64", root)
+            core.assert_called_once_with(row["target"], root)
+            self.assertFalse(any(args[:2] == ["docker", "run"] for args in calls))
+
     def test_actual_build_script_emits_separate_native_tool_and_documentation(self):
         script = Path(__file__).resolve().parents[1] / "release-build.sh"
         for triple, ext, exe in [("x86_64-unknown-linux-gnu", "tar.gz", "busbar"),
@@ -50,6 +77,12 @@ class AuditVerifierPackaging(unittest.TestCase):
                 root = Path(tmp)
                 (root / "scripts").mkdir()
                 shutil.copy(script, root / "scripts/release-build.sh")
+                (root / "scripts/release").mkdir()
+                for name in ("cargo_capture.py", "build_closure.py", "native_provenance.py"):
+                    shutil.copy(script.parent / "release" / name, root / "scripts/release" / name)
+                (root / "dist/default").mkdir(parents=True)
+                (root / "dist/default/Cargo.toml").write_text('[package]\nname="busbar-default"\nversion="1.6.0"\n')
+                (root / "Cargo.lock").write_text('[[package]]\nname="busbar-default"\nversion="1.6.0"\n[[package]]\nname="busbar-kernel-audit"\nversion="1.6.0"\n')
                 (root / "release").mkdir()
                 (root / "release/release-targets.json").write_text(json.dumps({"targets": [dict(target=triple, kind="binary", published=True, pgo=False, archive=ext, exe=exe)]}))
                 (root / "docs").mkdir()
@@ -69,6 +102,11 @@ class AuditVerifierPackaging(unittest.TestCase):
                 cargo.write_text("#!" + sys.executable + "\n" + '''import json,os,pathlib,sys
 args=sys.argv[1:]
 def arg(key,default): return args[args.index(key)+1] if key in args else default
+if args[0] == 'metadata':
+    packages = [{'id': name, 'name': name, 'version': '1.6.0', 'source': None} for name in ('busbar-default', 'busbar-kernel-audit')]
+    print(json.dumps({'packages': packages, 'workspace_root': str(pathlib.Path.cwd()),
+                      'resolve': {'nodes': [{'id': row['id'], 'features': [], 'deps': []} for row in packages]}}))
+    sys.exit(0)
 binary=arg('--bin','busbar-audit-verify')
 triple=arg('--target','')
 name=binary+('.exe' if 'windows' in triple else '')
@@ -76,6 +114,8 @@ output=pathlib.Path(arg('--target-dir','target'))/triple/'release'/name
 output.parent.mkdir(parents=True,exist_ok=True)
 output.write_bytes(binary.encode())
 output.chmod(0o755)
+print(json.dumps({'reason':'compiler-artifact','package_id':'busbar-default' if binary == 'busbar' else 'busbar-kernel-audit', 'filenames':[str(output.absolute())], 'features':[]}))
+print(json.dumps({'reason':'build-finished','success':True}))
 with open('cargo-calls.jsonl','a') as f: f.write(json.dumps({'args':args,'flags':os.environ.get('CARGO_ENCODED_RUSTFLAGS',os.environ.get('RUSTFLAGS',''))})+'\\n')
 ''')
                 cargo.chmod(0o755)

@@ -1,0 +1,25 @@
+# Include only from the existing protected operator/schedule configuration after
+# approving a catalog. No signing, promotion, storage changes or new infrastructure.
+# Values are controller-owned; never load candidate dotenv or repository variables.
+release-evidence-monitor:
+  stage: verify
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BUSBAR_RELEASE_MONITOR_CATALOG'
+    - when: never
+  script:
+    - |
+      set -eu
+      : "${BUSBAR_PROVENANCE_TOOLS:?trusted immutable tools directory}"
+      : "${BUSBAR_RELEASE_MONITOR_CATALOG:?protected supported-release URL/digest catalog}"
+      : "${BUSBAR_RELEASE_MONITOR_CATALOG_SHA256:?independently approved catalog digest}"
+      : "${BUSBAR_RELEASE_MONITOR_SCRATCH:?existing private worker scratch directory}"
+      python3 "$BUSBAR_PROVENANCE_TOOLS/rekor_watch.py" \
+        --catalog "$BUSBAR_RELEASE_MONITOR_CATALOG" \
+        --catalog-sha256 "$BUSBAR_RELEASE_MONITOR_CATALOG_SHA256" \
+        --scratch "$BUSBAR_RELEASE_MONITOR_SCRATCH" \
+        --result release-monitor-result.json
+  artifacts:
+    when: always
+    paths:
+      - release-monitor-result.json
+    expire_in: 1 year

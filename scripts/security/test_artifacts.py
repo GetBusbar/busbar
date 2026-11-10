@@ -52,6 +52,18 @@ class ArtifactScans(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'findings'):
             self.run_scan()
 
+    def test_collected_build_closures_are_bound_and_cannot_change_during_scan(self):
+        directory = self.root / 'closures'
+        directory.mkdir()
+        closure = directory / 'fixture.build-closure.json'
+        closure.write_text('{}')
+        self.assertIn('closures/fixture.build-closure.json', self.run_scan()['subjects'])
+        def mutate(*_args):
+            closure.write_text('{"changed":true}')
+        self.execute = mutate
+        with self.assertRaisesRegex(ValueError, 'changed'):
+            self.run_scan()
+
     def test_empty_sbom_refuses(self):
         (self.root / 'sboms/fixture.cdx.json').write_text('{"bomFormat":"CycloneDX","components":[]}')
         with self.assertRaisesRegex(ValueError, 'empty'):

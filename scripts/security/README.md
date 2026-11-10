@@ -184,3 +184,22 @@ Download verification compares the complete artifact/SBOM/evidence/signature set
 with the locally verified release. This binds both pre-seal scan subjects and
 post-seal distribution bytes; it is not SLSA provenance or SBOM completeness
 certification. No standalone plugin signing or publication ran in this task.
+
+
+Scanner retrieval now uses the existing mirror.gcr.io cache for the exact approved
+Trivy and Semgrep digests in tools.json. An immutable local image is inspected
+first; a missing image gets one bounded mirror pull and another digest check.
+There is no retry against rate-limited anonymous Docker Hub and no inherited
+registry credential. Candidate-bearing scan containers still use --pull=never,
+network:none and the existing read-only mounts. Actual manifest reads for both
+unchanged digest pins succeeded on 2026-11-10; retrieval is not a scanner verdict.
+
+Final Cargo release builds capture their own locked compilation inventory and
+produce archive-bound CycloneDX documents. Candidate scan receipts include the
+collected closures directory when present, so closure mutation cannot escape the
+before/after byte inventory. The protected release producer requires captured
+inputs and recomputes that inventory before signing requests; see the final-build
+contract in ../release/PROVENANCE.md. The existing rekor_watch.py catalog mode and
+ci/security/release-monitor.yml integrate recurring complete-byte download and
+signed-inclusion verification. No WORM retention, log consistency, production
+signing, or QA/main activation is claimed by those interfaces.

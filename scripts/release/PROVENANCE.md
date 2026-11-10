@@ -491,18 +491,26 @@ urn:busbar:oci-release:v1 statement, verifies its logged bundle against the exac
 index bytes, then uses pinned Cosign verify-attestation on the immutable registry
 reference and requires exactly matching statement payloads. Registry access is
 read-only; missing or conflicting verified attestations refuse. This is not a
-claim that registry production signing or image-content equivalence is qualified.
+claim that registry production signing is qualified. The current v3 extension below
+adds byte-level image/native equivalence; v1/v2 consumers report that property false.
 The 5 targeted OCI fixtures cover closure and refusal cases; live registry
 signature/log verification remains a deployment witness, not a mocked-test claim.
 
 Protected producer interface (implemented, no signing or registry writes)
 
 release_producer.py consumes an independently pinned private plan with schema:
-busbar.release-publication/1, release, qa_manifest: {path, sha256}, subjects,
+busbar.release-publication/2, release, qa_manifest: {path, sha256}, subjects,
 oci, isolation_policy_sha256 and isolation_observations. subjects maps every
-independently required artifact basename to {component_name, sbom: {path, sha256}};
-it must exactly equal the qualified QA artifact set. oci entries have reference,
-platforms and archive: {path, sha256}. All input paths are absolute regular files;
+independently required artifact basename to {component_name, build_closure,
+build_capture}; it must exactly equal the qualified QA artifact set. build_closure
+is a {path, sha256} binding. build_capture has cargo_metadata, cargo_lock,
+cargo_messages and binary, each an independently collected {path, sha256} binding,
+plus compiler_output naming the original absolute compiler output path. The latter
+is controller-selected so copied binaries can be verified outside the candidate
+mount without rewriting the captured Cargo stream.
+oci entries have reference, platforms and archive: {path, sha256}; each platform
+now maps to {artifact: <native archive basename>, member: <compiled archive member>,
+path: <absolute image entrypoint>}. All input paths are absolute regular files;
 collection rejects links/devices and existing outputs and hashes copied bytes.
 
 isolation_observations maps every native artifact to a separately collected,
@@ -568,8 +576,9 @@ Activation work, with exact missing inputs
    emission, aggregate finalization and registry verification interfaces. Supply
    independently collected native-isolation observations and actual build/image
    closure evidence; the producer refuses absent isolation evidence. The standalone
-   plugin-release G-S validator now accepts artifact-bound per-target SBOMs, but
-   the protected producer must still emit them from actual build closure. Prove real staging
+   plugin-release G-S validator accepts artifact-bound per-target SBOMs. The protected
+   producer now derives Cargo SBOMs from captured final builds; qualify the full
+   target/vector and non-Cargo native dependency inventories in CI. Prove real staging
    negative cases: wrong issuer/ref/config/project/key, tampered artifact/SBOM,
    forged receipt, missing subject and QA/main substitution.
 6. Only after explicit QA/main authorization wire protected signer/publisher jobs
@@ -659,3 +668,109 @@ slsa_build_level: not-assessed meanwhile. SLSA schema v1 is not "SLSA level 1".
 FIPS validates specified cryptographic modules/configurations, not a Rust project
 or the presence of a KMS key; no FIPS/SOC2/ISO certification follows from this work.
 [SLSA build requirements](https://slsa.dev/spec/v1.2/build-requirements)
+
+
+Final-build inventory and OCI equivalence (implemented)
+
+The producer emits busbar.release-inventory/3. Each native row additionally binds
+its public build_closure file; the SBOM and its logged statement are derived from
+that exact closure. Version 1/2 downloaded inventories remain readable for
+compatibility and explicitly return build_closure_verified:false and
+image_binary_equivalence_verified:false. New producer plans require version 2;
+there is no producer fallback to an unmeasured SBOM.
+
+scripts/release/cargo_capture.py wraps the final Cargo build in release-build.sh
+and the final profile-use build in pgo-build.sh. The existing flags, manifest,
+package, target and output directories are preserved. The capture adds Cargo's
+JSON message format, snapshots locked metadata using the same target and feature
+selection, and verifies that metadata and lock did not change during the build.
+It keeps cargo-metadata.json, Cargo.lock and cargo-messages.jsonl under the private
+build evidence directory. A compiler failure discards that capture; failed release
+builds remove archives and closure files so a retry cannot reuse old evidence.
+
+build_closure.py requires exactly one successful final build-finished message,
+every reported compiler package in the locked metadata and Cargo.lock, and the
+selected packaged binary among that build's compiler outputs. It hashes the actual
+binary and every regular tar/ZIP archive member, rejecting links, traversal,
+duplicate names and mismatched bytes. Its public busbar.build-closure/1 contains
+source commit, target, release/component identity, artifact digest, member hashes,
+compiled package inventory, actual emitted feature sets, dependency edges between
+compiled packages, and digests of the private capture inputs. Local paths and
+source URLs are not published; source identities are hashed. Registry package
+checksums come from the exact lockfile. The producer recomputes this entire object
+from independently pinned raw capture inputs before emitting a signing request.
+A candidate-provided closure or candidate-selected digest alone is insufficient.
+
+The CycloneDX scope is explicitly cargo-compilation-including-build-tools. This
+includes the actual Cargo compilation packages (including procedural macros and
+build tools), and does not pretend every one is linked into the runtime binary.
+It does not enumerate an OS image or independently discover C libraries hidden
+inside build scripts; runtime dependency contracts and per-platform image scans
+remain necessary. A successful compilation stream is an observed compiler claim,
+not a substitute for the independent native-controller boundary. The capture runs
+inside that existing boundary and carries no signing authority.
+
+candidate.py now consumes the final captures instead of resolving an unrelated
+cargo-cyclonedx graph. It preserves the closure files when assembling slices and
+uses the manifest-declared published native archive for images, matching the
+current digest-pinned glibc Dockerfile. It emits both published-target and image
+SBOM names where one native archive feeds both. No new image build path or native
+platform exception is introduced.
+
+For every v3 OCI platform the producer and independent download verifier rehash
+the export and descriptor closure, verify configuration rootfs.diff_ids against
+the decompressed layer bytes, and replay layers in memory without extracting paths.
+Whiteouts and opaque-directory removal apply before each layer's additions;
+replacement files, directories, symlinks and hardlinks cannot retain an earlier
+matching binary. The final configured entrypoint must be the declared absolute
+path, an executable regular file with exactly the native archive member's size
+and SHA-256. Compressed layers currently support OCI/Docker gzip and uncompressed
+tar; an unsupported codec refuses rather than skipping content verification.
+The OCI statement includes native_member plus binary {path, size, sha256}.
+
+Supported-release delivery monitoring (implemented; activation separate)
+
+The existing rekor_watch.py entrypoint accepts the new protected catalog mode:
+
+  python3 /trusted/release/rekor_watch.py \
+    --catalog /trusted/supported-releases.json --catalog-sha256 <approved hash> \
+    --scratch /existing/private/task-directory \
+    --archive-root /existing/protected/release-archive \
+    --result /protected/monitor-result.json
+
+release_monitor.py requires schema busbar.release-monitor/1 with valid_until and
+a nonempty releases list. Each release contains release, support_until,
+inventory_sha256, trust: {path, sha256}, and files mapping every basename to
+{url, sha256, size}. Use exact credential-free HTTPS URLs to approved existing
+storage. The catalog is independently pinned and expires; missing/expired support
+entries require explicit review, not an implicit silent deletion. The monitor
+rejects redirects, unexpected encoding, credentials in URLs, missing files,
+extra/mutated release bytes, invalid or absent log proofs, trust substitution and
+OCI registry-attestation drift. Downloads have size and timeout bounds and no
+retry/fallback loop. It verifies every v3 artifact/SBOM/OCI/inventory bundle using
+the pinned trust, then records verified checkpoint-envelope hashes in the result.
+
+An optional existing local archive root receives a new directory named by the
+inventory digest, with exclusively created files, fsync and read-only permissions.
+Existing directories must contain the complete identical byte set; no release is
+overwritten or pruned. This is archive custody plus recurring delivery monitoring,
+NOT provider-enforced WORM retention. Results deliberately expose
+storage_retention_enforced:false and log_consistency_observed:false. Revalidating
+signed inclusion checkpoints is not a consistency/gossip witness against a
+current independently observed log head. No lifetime-locked storage backend or
+independent checkpoint monitor was established by this session. Owner selection
+and existing-provider policy readback are needed before making those claims.
+
+ci/security/release-monitor.yml supplies the existing protected schedule include
+interface. It is not included or activated by these source changes. Its catalog,
+trust files, immutable tool directory and scratch location must be supplied by
+the controller; a candidate dotenv or editable project variable is not authority.
+Monitor results retain one year as job evidence; that job expiration is not the
+supported lifetime of released bytes. No production log writes, signing, registry
+attestation publication, QA/main activation or storage-account changes occur.
+
+The issuer remains exactly https://github.com. GitLab signing identity
+requirements above are unchanged: the approved local protected-main signing
+configuration and its exact config SHA, numeric project identity, audience and
+actual validated claims must be established before activation. A GitHub mirror,
+GitHub Actions identity, or decoded-but-unverified JWT cannot fill those inputs.

@@ -10,6 +10,7 @@ import release_producer as producer
 import release_verifier as verifier
 import test_native_provenance as fixtures
 from test_oci_provenance import oci_fixture
+from test_build_closure import closure_fixture
 
 
 class ProducerTests(unittest.TestCase):
@@ -18,23 +19,20 @@ class ProducerTests(unittest.TestCase):
         f.setUp()
         self.addCleanup(f.doCleanups)
         self.root = f.root
+        self.closure = closure_fixture(
+            self.root, f.artifact, f.plan["target"], f.plan["source_commit"]
+        )
+        f.plan["artifact_sha256"] = p.digest(f.artifact)
+        f.receipt["artifact_sha256"] = f.plan["artifact_sha256"]
+        f.statement.write_bytes(p.canonical(p.statement(f.plan, f.receipt, f.artifact)))
         qa = f.inventory()
         qa_data = p.load(qa)
         bundle = self.root / "native.bundle.json"
         bundle.write_bytes(p.canonical(self.bundle(f.statement)))
         qa_data["artifacts"][0]["bundle"] = str(bundle)
         qa.write_bytes(p.canonical(qa_data))
-        sbom = self.root / "bom.json"
-        sbom.write_bytes(
-            p.canonical(
-                {
-                    "bomFormat": "CycloneDX",
-                    "specVersion": "1.6",
-                    "metadata": {"component": {"name": "busbar", "version": "1.6.0"}},
-                    "components": [{"name": "fixture", "version": "1.0"}],
-                }
-            )
-        )
+        closure = self.root / "build-closure.json"
+        closure.write_bytes(p.canonical(self.closure))
         self.plan = self.root / "publication.json"
         observation = self.root / "independent-observation.json"
         observation.write_bytes(
@@ -68,7 +66,25 @@ class ProducerTests(unittest.TestCase):
                     "qa_manifest": {"path": str(qa), "sha256": p.digest(qa)},
                     "subjects": {
                         f.artifact.name: {
-                            "sbom": {"path": str(sbom), "sha256": p.digest(sbom)},
+                            "build_closure": {
+                                "path": str(closure),
+                                "sha256": p.digest(closure),
+                            },
+                            "build_capture": {
+                                "compiler_output": str(self.root / "busbar"),
+                                **{
+                                    key: {
+                                        "path": str(self.root / filename),
+                                        "sha256": p.digest(self.root / filename),
+                                    }
+                                    for key, filename in (
+                                        ("cargo_metadata", "cargo-metadata.json"),
+                                        ("cargo_lock", "Cargo.lock"),
+                                        ("cargo_messages", "cargo-messages.jsonl"),
+                                        ("binary", "busbar"),
+                                    )
+                                },
+                            },
                             "component_name": "busbar",
                         }
                     },
@@ -186,6 +202,38 @@ class ProducerTests(unittest.TestCase):
                 producer.prepare(self.plan, p.digest(self.plan), self.output)
             verify.assert_not_called()
 
+    def test_protected_collection_can_relocate_binary_without_rewriting_cargo_stream(
+        self,
+    ):
+        plan = p.load(self.plan)
+        capture = plan["subjects"][self.fixture.artifact.name]["build_capture"]
+        original = Path(capture["binary"]["path"])
+        collected = self.root / "controller-collected-binary"
+        original.rename(collected)
+        capture["binary"]["path"] = str(collected)
+        self.plan.write_bytes(p.canonical(plan))
+        draft = self.prepare()
+        self.assertEqual(p.load(draft)["inventory"]["schema"], verifier.SCHEMA_V3)
+
+    def test_fabricated_component_inventory_and_missing_build_capture_refuse(self):
+        plan = p.load(self.plan)
+        subject = plan["subjects"][self.fixture.artifact.name]
+        closure = Path(subject["build_closure"]["path"])
+        data = p.load(closure)
+        data["components"][0]["version"] = "invented"
+        closure.write_bytes(p.canonical(data))
+        subject["build_closure"]["sha256"] = p.digest(closure)
+        self.plan.write_bytes(p.canonical(plan))
+        with mock.patch.object(producer.stage, "stage"), self.assertRaisesRegex(
+            ValueError, "protected build capture"
+        ):
+            producer.prepare(self.plan, p.digest(self.plan), self.output)
+        subject.pop("build_capture")
+        self.plan.write_bytes(p.canonical(plan))
+        with mock.patch.object(producer.stage, "stage"), self.assertRaises(ValueError):
+            producer.prepare(self.plan, p.digest(self.plan), self.output)
+        self.assertFalse(self.output.exists())
+
     def test_symlink_or_device_input_and_overwrite_refuse(self):
         link = self.root / "link"
         link.symlink_to(self.fixture.artifact)
@@ -233,12 +281,27 @@ class ProducerTests(unittest.TestCase):
         qa_path.write_bytes(p.canonical(qa))
         publication["qa_manifest"]["sha256"] = p.digest(qa_path)
         archive = self.root / "input-oci.tar"
-        ref = oci_fixture(archive)
+        closure_path = Path(
+            publication["subjects"][f.artifact.name]["build_closure"]["path"]
+        )
+        closure = p.load(closure_path)
+        closure["target"] = f.plan["target"]
+        closure_path.write_bytes(p.canonical(closure))
+        publication["subjects"][f.artifact.name]["build_closure"]["sha256"] = p.digest(
+            closure_path
+        )
+        ref = oci_fixture(archive, binary=b"native executable")
         publication["oci"] = [
             {
                 "reference": ref,
                 "archive": {"path": str(archive), "sha256": p.digest(archive)},
-                "platforms": {"linux/amd64": f.artifact.name},
+                "platforms": {
+                    "linux/amd64": {
+                        "artifact": f.artifact.name,
+                        "member": "busbar",
+                        "path": "/busbar",
+                    }
+                },
             }
         ]
         self.plan.write_bytes(p.canonical(publication))

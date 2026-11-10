@@ -10,11 +10,13 @@ import json
 from pathlib import Path
 import sys
 
+import build_closure as build
 import native_provenance as p
 import oci_provenance as oci
 
 SCHEMA = "busbar.release-inventory/1"
 SCHEMA_V2 = "busbar.release-inventory/2"
+SCHEMA_V3 = "busbar.release-inventory/3"
 SBOM_PREDICATE = "https://cyclonedx.org/bom"
 PREDICATE = "urn:busbar:release-inventory:v1"
 INVENTORY = "release-inventory.json"
@@ -92,18 +94,19 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
         "release inventory digest differs",
     )
     inventory = p.load(inventory_path)
-    v2 = inventory.get("schema") == SCHEMA_V2
+    v3 = inventory.get("schema") == SCHEMA_V3
+    v2 = inventory.get("schema") in (SCHEMA_V2, SCHEMA_V3)
     p.require(
         set(inventory)
         == {"schema", "release", "artifacts"} | ({"oci"} if v2 else set())
-        and inventory["schema"] in (SCHEMA, SCHEMA_V2),
+        and inventory["schema"] in (SCHEMA, SCHEMA_V2, SCHEMA_V3),
         "unsupported release inventory",
     )
     p.token(inventory["release"])
     rows = inventory["artifacts"]
     p.require(isinstance(rows, list) and rows, "empty release inventory")
     expected_files = {INVENTORY, STATEMENT, BUNDLE}
-    verified = []
+    verified, closures = [], {}
     bound_files = {}
 
     def bind(item):
@@ -123,7 +126,8 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
         p.require(
             set(row)
             == {"plan", "statement", "bundle", "sbom", "component_name"}
-            | ({"sbom_statement", "sbom_bundle"} if v2 else set()),
+            | ({"sbom_statement", "sbom_bundle"} if v2 else set())
+            | ({"build_closure"} if v3 else set()),
             "unsupported release subject",
         )
         plan = row["plan"]
@@ -144,6 +148,8 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
                 else {}
             ),
         }
+        if v3:
+            files["build_closure"] = row["build_closure"]
         paths = {kind: bind(item) for kind, item in files.items()}
         # Reconstruct public expectations only. These asserted receipt fields do
         # not claim that this consumer observed a build or read private inputs.
@@ -165,6 +171,18 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
             and component.get("version") == inventory["release"],
             "SBOM inventory or release identity differs",
         )
+        if v3:
+            closure = build.validate(
+                p.load(paths["build_closure"]),
+                plan,
+                paths["artifact"],
+                row["component_name"],
+                inventory["release"],
+            )
+            p.require(
+                bom == build.sbom(closure), "SBOM differs from compiled build closure"
+            )
+            closures[plan["artifact_name"]] = closure
         if v2:
             p.require(
                 paths["sbom_statement"].read_bytes()
@@ -194,6 +212,7 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
             ref,
             row["platforms"],
             {plan["artifact_name"]: plan for plan, _ in verified},
+            closures=closures if v3 else None,
         )
         expected_oci = oci.statement(
             ref, closure, inventory["release"], trust["builder_id"]
@@ -257,6 +276,8 @@ def verify(root, inventory_sha256, trust_path, trust_sha256):
         "artifacts": len(verified),
         "oci_indexes": len(verified_oci),
         "registry_verified": bool(verified_oci),
+        "build_closure_verified": v3,
+        "image_binary_equivalence_verified": v3 and bool(verified_oci),
         "subjects": [
             {
                 "name": plan["artifact_name"],
