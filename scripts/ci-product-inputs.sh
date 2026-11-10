@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build ordinary tests' real product inputs from the normal, immutable fleet pins.
-# stdout is the generated environment file; build output goes to stderr.
+# stdout is the generated data-only JSON file; build output goes to stderr.
 set -eo pipefail
 root=$(git rev-parse --show-toplevel)
 pins="$root/scripts/ci-product-pins.json"
@@ -8,11 +8,14 @@ pins="$root/scripts/ci-product-pins.json"
 target="${CARGO_TARGET_DIR:-$root/target}"
 work="${MODERNCI_CACHE_DIR:-$target}/ci-product-inputs/$(git rev-parse HEAD)"
 mkdir -p "$work"
-envfile="$work/environment.sh"
-: > "$envfile"
+envfile="$work/environment.json"
+printf '{}\n' > "$envfile"
 case "$(uname -s)" in Darwin) suffix=dylib ;; Linux) suffix=so ;; *) echo 'unsupported native product-test platform' >&2; exit 1 ;; esac
 digest() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
-emit() { printf 'export %s=%q\n' "$1" "$2" >> "$envfile"; }
+emit() {
+  jq --arg key "$1" --arg value "$2" '. + {($key): $value}' "$envfile" > "$envfile.next"
+  mv "$envfile.next" "$envfile"
+}
 build_product() {
   local repo="$1" variables="$2" row sha source manifest package image libname meta variable
   local -a features

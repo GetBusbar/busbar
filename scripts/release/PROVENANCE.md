@@ -9,6 +9,10 @@ Files intended for dev:
   scripts/release/provenance_stage.py
   scripts/release/test_native_provenance.py
   scripts/release/release_verifier.py
+  scripts/release/release_producer.py
+  scripts/release/test_release_producer.py
+  scripts/release/oci_provenance.py
+  scripts/release/test_oci_provenance.py
   scripts/release/test_release_verifier.py
   scripts/release/test_artifact_provenance.py
   scripts/verify-artifact.py (native provenance row; release/artifact-contract.json)
@@ -385,8 +389,10 @@ image contents before signing. Trivy G-S scans the SBOM and OCI bytes, refuses
 known HIGH/CRITICAL findings and records hashes, but cannot detect a dependency
 omitted from a supplied SBOM. Existing G-3/G-4/G-8/G-10 and conformance retain
 closure responsibility. The current provenance v1 adapter has six fixed input
-digests and does not yet emit this aggregate inventory or CycloneDX statement;
-these are explicit activation implementation steps, not hidden claims of support.
+digests. release_producer.py now collects verified QA files, emits artifact-bound
+CycloneDX statements and OCI index statements, then finalizes the public aggregate
+inventory only after their real logged bundles verify. It cannot manufacture
+build closure, host isolation observations or production signing authority.
 
 Consumer commands replacing `gh attestation`
 
@@ -489,6 +495,59 @@ claim that registry production signing or image-content equivalence is qualified
 The 5 targeted OCI fixtures cover closure and refusal cases; live registry
 signature/log verification remains a deployment witness, not a mocked-test claim.
 
+Protected producer interface (implemented, no signing or registry writes)
+
+release_producer.py consumes an independently pinned private plan with schema:
+busbar.release-publication/1, release, qa_manifest: {path, sha256}, subjects,
+oci, isolation_policy_sha256 and isolation_observations. subjects maps every
+independently required artifact basename to {component_name, sbom: {path, sha256}};
+it must exactly equal the qualified QA artifact set. oci entries have reference,
+platforms and archive: {path, sha256}. All input paths are absolute regular files;
+collection rejects links/devices and existing outputs and hashes copied bytes.
+
+isolation_observations maps every native artifact to a separately collected,
+digest-pinned host observation. Its schema is busbar.native-execution-observation/1
+with the approved policy_sha256, matching builder_id/source_commit/invocation_id/
+artifact_sha256, nonzero candidate_uid, exit_code: 0, runtime_sha256,
+toolchain_image_sha256 and finished_on no earlier than the build's finish.
+Its controls must be exactly true for controller_separated,
+private_pid_mount_network, policy_readonly, receipts_unmounted,
+no_host_docker_socket, no_metadata_credentials, descendants_reaped and
+collected_regular_files. The trusted planner must fetch this from an independent
+host observer, never copy candidate receipt fields or accept a candidate-selected
+digest. Digest comparison preserves that external trust decision; it does not
+turn self-reported booleans into independent evidence. A compatible core host
+observer is still required engineering and has not been deployed by this work.
+Current native.py records host-subprocess/isolated:false/release_eligible:false;
+current receipts cannot satisfy the release-producer boundary requirement.
+
+Prepare rechecks the real private QA receipt/input files and native bundles:
+  python3 scripts/release/release_producer.py prepare \
+    --input /trusted/publication.json --input-sha256 <approved digest> \
+    --output /collected/public-release --result /trusted/publication-draft.json
+It emits collected native files, SBOM/index statements and private signing_requests.
+No key is loaded and no signature, log entry or registry write occurs. A protected
+signer must check each exact request digest and approved metadata, then use
+Cosign attest-blob --statement for SBOM statements. OCI requests additionally
+provide registry_reference and use Cosign attest --statement with that immutable
+reference, the exact custom predicate type, pinned signing/trust configuration
+and --bundle. These commands require separately authorized signing and registry
+publication; this task invokes neither. Cosign 3.1.4 installed help confirms its
+attest command accepts a complete --statement, preserving exact payload bytes.
+
+After independently approved signing supplies the requested bundles:
+  python3 scripts/release/release_producer.py finalize \
+    --input /trusted/publication-draft.json --input-sha256 <approved draft digest> \
+    --output /collected/public-release --trust /trusted/release-sigstore.json \
+    --trust-sha256 <approved trust digest> --result /trusted/inventory-request.json
+Finalization rechecks copied bytes, all native/additional bundles, complete file
+inventory and registry attestations before emitting the aggregate inventory and
+its statement. It explicitly returns publication_ready:false. The protected
+signer must then sign that final aggregate statement; independent download
+verification must pass release_verifier.py before any promotion. Private plans,
+observations and signing requests remain outside the public output directory.
+G-9 remains unchanged; these interfaces cannot publish a release by themselves.
+
 Activation work, with exact missing inputs
 
 1. Qualify the native controller/candidate isolation below and produce completed
@@ -504,9 +563,10 @@ Activation work, with exact missing inputs
    signing configuration bytes, retention and checkpoint monitoring responsibility.
 5. Deploy the prepared release-specific KMS trust adapter with actual approved
    trust (or activate independently managed Fulcio roots/identity). Complete
-   protected aggregate inventory and SBOM statement emission, OCI registry
-   subject verification, and protected artifact transfer. The file-download
-   consumer verifier is implemented; it does not provide those producer interfaces. The standalone
+   live producer deployment using the implemented collection, SBOM/OCI statement
+   emission, aggregate finalization and registry verification interfaces. Supply
+   independently collected native-isolation observations and actual build/image
+   closure evidence; the producer refuses absent isolation evidence. The standalone
    plugin-release G-S validator now accepts artifact-bound per-target SBOMs, but
    the protected producer must still emit them from actual build closure. Prove real staging
    negative cases: wrong issuer/ref/config/project/key, tampered artifact/SBOM,
@@ -533,8 +593,11 @@ capacity_per_instance=1, max_use_count=1, idle_count=0 and no external cache. Th
 prevents cross-job host/daemon reuse and supports the separate security-scans job.
 It does not protect a controller from code in its own job. Native.run launches
 candidate Cargo build scripts/tests under the controller UID; architecture/check.py
-also compiles and loads candidate code; ci-product-inputs.sh builds candidates and
-returns an environment shell file currently sourced by the controller. Candidate
+also compiles and loads candidate code. ci-product-inputs.sh now returns a
+data-only JSON map: native_product_inputs.py requires exactly the permitted
+fixture variables and regular files under candidate target/cache directories.
+It rejects arbitrary environment keys, shell content, links and escaping paths.
+No candidate-produced shell file is sourced by the controller. Candidate
 conformance launchers use Docker. HOME/Cargo/toolchain directories and receipts
 are not separated from that process authority. The worker's Docker group grants
 host-root control through its socket. Clearing env vars is not confinement.
@@ -551,8 +614,8 @@ hash the collected bytes independently. Keep metadata-service access and source
 fetch credentials outside the sandbox; use an explicit dependency egress policy.
 
 Split check.py's candidate compile/execute calls from its trusted policy judgment;
-move candidate results across a data-only interface. Replace shell `source` of
-product-input output with strict JSON/path validation. Run fixture Docker
+move candidate results across a data-only interface. The product-input shell
+import has been replaced with strict JSON/path validation. Run fixture Docker
 operations only in the trusted controller and expose the required service ports
 to the candidate namespace. For conformance suites that themselves create
 containers, provide a separate nested/rootless daemon confined to the candidate
