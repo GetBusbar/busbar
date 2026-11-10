@@ -45,7 +45,7 @@ mod auth_carrier_tests;
 mod config_validation_models;
 
 #[path = "kernel_application/config_validation_application.rs"]
-mod config_validation_application;
+pub(crate) mod config_validation_application;
 
 #[path = "kernel_application/config_validation_store.rs"]
 mod config_validation_store;
@@ -471,10 +471,6 @@ mod kernel_application_central2_inbound_signed;
 
 #[path = "kernel_application/central2_inbound_refusals.rs"]
 mod kernel_application_central2_inbound_refusals;
-
-#[cfg(linked_operator_auth)]
-#[path = "kernel_application/auth_verify_both_origins.rs"]
-mod kernel_application_auth_verify_both_origins;
 
 #[path = "admin_application/credential_flush_response_actual.rs"]
 mod admin_application_credential_flush_response_actual;
