@@ -58,6 +58,9 @@ pub struct HookDefCfg {
     /// PROMPT access grant (`no` | `ro` | `rw`).
     #[serde(default)]
     pub prompt: Option<PromptAccess>,
+    /// Explicitly requested typed signals; omission grants no additional signal.
+    #[serde(default)]
+    pub signals: Vec<busbar_contract::signal::Signal>,
     /// Caller-identity access grant (`no` | `ro`).
     #[serde(default)]
     pub user: Option<UserAccess>,

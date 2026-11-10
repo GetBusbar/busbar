@@ -537,7 +537,7 @@ pub struct UnparseableNamedDef {
 pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
     // Plane/config references must see overlay-owned hooks during resolution, just as they
     // already see overlay-owned named definitions. The full HookCfg (including runtime-only
-    // signal/global/default fields) is installed by merge_into after resolution.
+    // global/default fields) is installed by merge_into after resolution.
     for name in &doc.deleted {
         deploy.hooks.shift_remove(name);
     }
@@ -564,6 +564,7 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
                 ),
                 on_empty: hook.on_empty.clone(),
                 prompt: Some(hook.prompt),
+                signals: hook.signals.clone(),
                 user: Some(hook.user),
                 priority: Some(hook.priority),
             },

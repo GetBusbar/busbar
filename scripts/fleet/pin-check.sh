@@ -77,17 +77,38 @@ check() (
         revs="$revs $r"
       fi
     done < <(grep -E "git *= *\"${CORE_SOURCE_PATTERN}\"" "$root/$m" || true)
-    # A path dependency must stay inside the repo.
-    while IFS= read -r line; do
-      local p dir abs
-      p="$(printf '%s' "$line" | sed -E 's/.*path *= *"([^"]+)".*/\1/')"
-      dir="$(dirname "$root/$m")"
-      abs="$(cd "$dir" 2>/dev/null && cd -- "$p" 2>/dev/null && pwd -P)" || abs=""
-      case "$abs" in
-        "$root"|"$root"/*) ;;
-        *) err "$m names a path dependency outside the repo (a sibling checkout builds whatever sits beside it, not the pin): $line" ;;
-      esac
-    done < <(grep -E '^[^#]*path *= *"' "$root/$m" | grep -vE '^\s*(path|name) *= *"[^"]*"\s*$' || true)
+    # Read Cargo dependency tables, not unrelated package metadata path fields.
+    if ! python3 - "$root" "$root/$m" <<'PYTHON'
+import pathlib, sys, tomllib
+root, manifest = map(pathlib.Path, sys.argv[1:])
+try:
+    with manifest.open('rb') as stream:
+        data = tomllib.load(stream)
+    sections = [data, data.get('workspace', {}), *data.get('target', {}).values()]
+    tables = [section.get(kind, {}) for section in sections
+              for kind in ('dependencies', 'dev-dependencies', 'build-dependencies')]
+    tables.extend(data.get('patch', {}).values())
+    tables.append(data.get('replace', {}))
+    for table in tables:
+        for name, dependency in table.items():
+            if not isinstance(dependency, dict) or 'path' not in dependency:
+                continue
+            value = dependency['path']
+            if not isinstance(value, str):
+                raise ValueError(f'{name}: dependency path is not a string')
+            try:
+                target = (manifest.parent / value).resolve(strict=True)
+            except OSError as error:
+                raise ValueError(f'{name}: path dependency outside the repo or missing: {value}') from error
+            if not target.is_dir() or not target.is_relative_to(root):
+                raise ValueError(f'{name}: path dependency outside the repo: {value}')
+except (OSError, ValueError, TypeError, AttributeError) as error:
+    print(f'::error::pin-check: {manifest}: {error}', file=sys.stderr)
+    sys.exit(1)
+PYTHON
+    then
+      fail=1
+    fi
     if grep -nE '^[[:space:]]*busbar-(api|plugin-sdk|plugin-testkit|plugin-sign)[[:space:]]*=' "$root/$m" >&2; then
       err "$m names a retired busbar crate (a plugin's busbar closure is busbar-contract, plus busbar-plugin-loader for tests)"
     fi
@@ -197,7 +218,12 @@ selftest() {
   PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer alias matches canonical lock" ok
   sed -i.bak "s/rev=$other#/rev=$pin#/" "$tmp/r/Cargo.lock"
   PIN_CHECK_BUSBAR_LOCK="$tmp/busbar.lock" expect "historical framer mismatch is refused against canonical lock" red "not the rev busbar's lock at the pin records"
-  [ "$ran" = 24 ] || { echo "pin-check selftest: only $ran of 24 cases ran"; return 1; }
+  mk; printf '\n[package.metadata.busbar.test-contexts]\nfixture = [{ path = "tests/host/fixture.rs", module = "owner" }]\n' >> "$tmp/r/adapter/Cargo.toml"; expect "owner metadata paths are not Cargo dependencies" ok
+  mk; printf '\n[target."cfg(unix)".dependencies.escape]\npath = "../../outside"\n' >> "$tmp/r/adapter/Cargo.toml"; expect "table-form target dependency escape is refused" red "outside the repo"
+  mk; printf '\n[workspace.dependencies.escape]\npath = "../outside"\n' >> "$tmp/r/Cargo.toml"; expect "workspace dependency escape is refused" red "outside the repo"
+  mk; printf '\n[patch.crates-io.escape]\npath = "../outside"\n' >> "$tmp/r/Cargo.toml"; expect "patch dependency escape is refused" red "outside the repo"
+  mk; mkdir -p "$tmp/outside"; ln -s "$tmp/outside" "$tmp/r/indirect"; printf 'escape = { path = "../indirect" }\n' >> "$tmp/r/adapter/Cargo.toml"; expect "symlink dependency escape is refused" red "outside the repo"
+  [ "$ran" = 29 ] || { echo "pin-check selftest: only $ran of 29 cases ran"; return 1; }
   [ "$rc" = 0 ] && echo "pin-check selftest: every refusal fires on its planted defect" || echo "pin-check selftest: FAILED"
   return "$rc"
 }

@@ -1541,7 +1541,7 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
         on_empty: def.on_empty.clone(),
         settings: def.settings.clone(),
 
-        signals: Vec::new(),
+        signals: def.signals.clone(),
         global: false,
         default: false,
         groups: def.groups.clone(),
