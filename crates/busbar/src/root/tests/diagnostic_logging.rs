@@ -117,33 +117,32 @@ fn a_declared_line_raised_at_warn_is_written_at_warn_under_a_live_actionable_ent
     use crate::root::loader::dispatch::{Diagnostic, EnvelopeSink, NoSink};
     use busbar_contract::diagnostic::Severity;
     let sink = crate::root::door_steps::MainLogSink(Arc::new(NoSink), catalogue());
-    for code in [4998u16] {
-        let entry = catalogue()
-            .by_code(code)
-            .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));
-        assert!(
-            !entry.retired,
-            "BUSBAR-{code:04} is raised by the fixture, so its entry is not retired"
-        );
-        assert_eq!(
-            entry.severity,
-            Severity::Actionable,
-            "BUSBAR-{code:04} is raised at warn, so its entry is actionable"
-        );
-        let name = format!("BUSBAR-{code:04}");
+    let code = 4998u16;
+    let entry = catalogue()
+        .by_code(code)
+        .unwrap_or_else(|| panic!("BUSBAR-{code:04} is in the catalogue"));
+    assert!(
+        !entry.retired,
+        "BUSBAR-{code:04} is raised by the fixture, so its entry is not retired"
+    );
+    assert_eq!(
+        entry.severity,
+        Severity::Actionable,
+        "BUSBAR-{code:04} is raised at warn, so its entry is actionable"
+    );
+    let name = format!("BUSBAR-{code:04}");
 
-        let messages = capture_log(tracing::Level::WARN, || {
-            sink.diag(Diagnostic {
-                id: 0,
-                name: name.as_bytes(),
-                severity: 1,
-                text: b"a raised fixture line",
-            });
+    let messages = capture_log(tracing::Level::WARN, || {
+        sink.diag(Diagnostic {
+            id: 0,
+            name: name.as_bytes(),
+            severity: 1,
+            text: b"a raised fixture line",
         });
-        assert_eq!(
-            messages,
-            vec![format!("a raised fixture line diag={name}")],
-            "the main log writes {name} at the warn it was raised at"
-        );
-    }
+    });
+    assert_eq!(
+        messages,
+        vec![format!("a raised fixture line diag={name}")],
+        "the main log writes {name} at the warn it was raised at"
+    );
 }

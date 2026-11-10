@@ -85,7 +85,7 @@ fn chain_open_wipes_the_resolved_settings() {
     )
     .expect("the declared reference resolves");
     assert_eq!(
-        (&crate::config::secret::test_resolved_value(&resolved))["client_secret"],
+        crate::config::secret::test_resolved_value(&resolved)["client_secret"],
         serde_json::json!("chain-open-secret"),
         "the plugin is handed the resolved value"
     );
@@ -94,7 +94,7 @@ fn chain_open_wipes_the_resolved_settings() {
 
     zeroize::Zeroize::zeroize(&mut resolved);
     assert!(
-        !(&crate::config::secret::test_resolved_value(&resolved))
+        !crate::config::secret::test_resolved_value(&resolved)
             .to_string()
             .contains("chain-open-secret"),
         "the wipe left the secret: {resolved:?}"
