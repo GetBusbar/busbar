@@ -1021,7 +1021,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=ef7c8061e797921d8efe9acbf194dc76d3279e5d#ef7c8061e797921d8efe9acbf194dc76d3279e5d"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=cf9a7501b4f5c41592eef22b60c434df3ff36fbd#cf9a7501b4f5c41592eef22b60c434df3ff36fbd"
 dependencies = [
  "busbar-contract",
  "httpdate",
