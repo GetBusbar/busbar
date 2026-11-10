@@ -1196,9 +1196,15 @@ impl Worker {
                         let mut meta = meta;
                         meta.give_back();
                         meta.reply.settle(Outcome::Refused, false);
+                        // Defer the job's drop so its Arc<Instance> and framing
+                        // scope do not run destructors under the worker's mutex.
+                        drop_after_lock(Box::new(job));
                     }
 
-                    _ => drop(meta),
+                    _ => {
+                        drop(meta);
+                        drop_after_lock(Box::new(job));
+                    }
                 }
             }
             Msg::Wake(t, supplier) => match self.entry(st, t) {

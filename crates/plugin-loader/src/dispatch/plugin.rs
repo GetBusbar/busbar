@@ -1488,6 +1488,12 @@ impl Instance {
             && !self.faulted.load(Ordering::Acquire)
         {
             self.close_half_open();
+            // If close_half_open failed (e.g. gate contention from a concurrent
+            // crossing), the instance is stuck half-open with no path to recovery.
+            // Fault it so lifecycle management can retry from scratch.
+            if self.half_open() {
+                self.faulted.store(true, Ordering::Release);
+            }
         }
         if crossed.unread != 0 && s != slot::RELEASE {
             self.release_unread(crossed.unread);

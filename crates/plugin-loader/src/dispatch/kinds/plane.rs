@@ -489,7 +489,14 @@ fn kept(s: AbiStr) -> &'static str {
         over_cap();
         return "";
     };
-    crate::intern_name(&String::from_utf8_lossy(bytes))
+    // Reject non-UTF-8 consistently with export and hook kinds, which refuse
+    // lossy strings at load. A lossy U+FFFD repair would silently collapse
+    // distinct invalid byte sequences into the same interned name.
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        over_cap();
+        return "";
+    };
+    crate::intern_name(text)
 }
 
 fn kept_blob(b: Blob) -> &'static [u8] {
@@ -1615,6 +1622,14 @@ impl DriveFrame for PlaneDrive {
         );
         input.sessions_buf = self.sessions.as_mut_ptr();
         input.sessions_cap = self.sessions.len();
+        // Reset the output so a READY or PENDING drive that does not rewrite
+        // these fields does not republish the previous iteration's values.
+        // PlaneCancel::prepare already does this; PlaneDrive must match.
+        self.frame.out = PlaneDriveOut {
+            head: out_head(),
+            sessions_written: 0,
+            sessions_needed: 0,
+        };
         self.frame.heads()
     }
 

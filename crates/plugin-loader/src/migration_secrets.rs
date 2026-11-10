@@ -206,7 +206,11 @@ pub(crate) mod unix {
             Err(error) => return Err(failure("existing artifact (symlinks are refused)", error)),
         };
         private(&file, false)?;
-        let mut stored = Zeroizing::new(Vec::new());
+        // Pre-allocate so read_to_end does not realloc, which would leave
+        // prior buffers containing secret bytes freed without being zeroed.
+        // (The Windows path already pre-allocates for the same reason.)
+        let mut stored = Zeroizing::new(vec![0u8; bytes.len() + 1]);
+        stored.clear();
         // Limit reads even if another process changes a file while it is being checked.
         Read::by_ref(&mut file)
             .take(bytes.len() as u64 + 1)
