@@ -773,7 +773,7 @@ const BUDGET: Duration = Duration::from_secs(5);
 #[path = "../../tests/fixtures/hook_metadata_boundary.rs"]
 mod metadata_boundary;
 
-mod actual_boundary {
+mod witness_boundary {
     use super::*;
     use busbar_contract::abi::mechanism::call::{AbiStr, Op, Outcome, RawOutcome};
     use busbar_contract::abi::sdk::life::Leases;
@@ -801,6 +801,18 @@ mod actual_boundary {
     static RELEASE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
     static DECIDE: [OnceLock<Op>; 2] = [OnceLock::new(), OnceLock::new()];
     static LOANS: Mutex<BTreeMap<usize, Arc<Leases>>> = Mutex::new(BTreeMap::new());
+    static HEADER_LOANS: Mutex<BTreeMap<Vec<u8>, std::sync::Weak<Leases>>> =
+        Mutex::new(BTreeMap::new());
+
+    pub fn header_loan_retained(mode: &str) -> bool {
+        HEADER_LOANS
+            .lock()
+            .unwrap()
+            .get(mode.as_bytes())
+            .expect("the malformed answer really acquired a lease")
+            .upgrade()
+            .is_some()
+    }
     type ObservedSessions = BTreeMap<(usize, u64), Option<Vec<u8>>>;
     static SESSIONS: Mutex<ObservedSessions> = Mutex::new(BTreeMap::new());
     std::thread_local! { static CURRENT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -841,7 +853,7 @@ mod actual_boundary {
         let axis = if serve {
             rows(metadata_boundary::door, "hook_metadata_boundary", way)
         } else {
-            ranking_rows(way)
+            witness_rows(way)
         };
         let candidate = axis.candidates[0].clone();
         let dispatcher = Arc::clone(&axis.dispatcher);
@@ -868,7 +880,7 @@ mod actual_boundary {
         super::super::HookInstance::open(
             bind().unwrap(),
             dispatcher,
-            br#"{"policy":"fastest"}"#,
+            br#"{"reject_over_messages":3}"#,
             bind,
         )
         .unwrap()
@@ -906,7 +918,7 @@ mod actual_boundary {
             .lock()
             .unwrap()
             .insert((way, input_view.request.request_id), bytes);
-        // SAFETY: the original operation belongs to this same retained actual image and state.
+        // SAFETY: the original operation belongs to this same retained witness image and state.
         unsafe { DECIDE[way].get().unwrap()(instance, input, out) }
     }
     #[allow(unsafe_code)]
@@ -951,10 +963,10 @@ mod actual_boundary {
             >()
             .expect("the SDK release trampoline");
             // SAFETY: this is a checked RELEASE frame. The auxiliary SDK body reads no
-            // instance, so NULL keeps the actual product state entirely opaque.
+            // instance, so NULL keeps the witness state entirely opaque.
             return unsafe { operation(std::ptr::null_mut(), input, out) };
         }
-        // SAFETY: a non-boundary loan belongs to the original image's RELEASE and actual state.
+        // SAFETY: a non-boundary loan belongs to the original image's RELEASE and witness state.
         unsafe { RELEASE[way].get().unwrap()(instance, input, out) }
     }
     #[allow(unsafe_code)]
@@ -963,7 +975,7 @@ mod actual_boundary {
         n: *const c_void,
         o: *mut c_void,
     ) -> RawOutcome {
-        // SAFETY: forwards RELEASE with its original frame and retained product state.
+        // SAFETY: forwards RELEASE with its original frame and retained witness state.
         unsafe { release(0, i, n, o) }
     }
     #[allow(unsafe_code)]
@@ -972,7 +984,7 @@ mod actual_boundary {
         n: *const c_void,
         o: *mut c_void,
     ) -> RawOutcome {
-        // SAFETY: forwards RELEASE with its original frame and retained product state.
+        // SAFETY: forwards RELEASE with its original frame and retained witness state.
         unsafe { release(1, i, n, o) }
     }
     #[allow(unsafe_code)]
@@ -983,7 +995,7 @@ mod actual_boundary {
     ) -> RawOutcome {
         CURRENT.with(|key| key.set(instance as usize));
         // SAFETY: the dispatcher checked the SERVE frame. The auxiliary SDK writer takes no
-        // state, so NULL prevents any cast or access to the opaque actual product instance.
+        // state, so NULL prevents any cast or access to the opaque witness instance.
         let operation = busbar_contract::abi::sdk::door::kind_op::<
             busbar_contract::abi::hook::Ops,
             busbar_contract::abi::hook::Ops,
@@ -993,7 +1005,7 @@ mod actual_boundary {
         >()
         .expect("the SDK serve trampoline");
         // SAFETY: the original checked SERVE frame is passed through the SDK trampoline;
-        // its auxiliary writer uses no state and never interprets the product instance.
+        // its auxiliary writer uses no state and never interprets the witness instance.
         unsafe { operation(std::ptr::null_mut(), input, out) }
     }
     struct ReleaseLoan;
@@ -1045,6 +1057,12 @@ mod actual_boundary {
                 .map_or(0, |leases| leases.held());
             let leases = Arc::new(Leases::default());
             LOANS.lock().unwrap().insert(key, Arc::clone(&leases));
+            if matches!(query, b"odd" | b"null" | b"overlong" | b"utf8") {
+                HEADER_LOANS
+                    .lock()
+                    .unwrap()
+                    .insert(query.to_vec(), Arc::downgrade(&leases));
+            }
             let body = if query == b"lease-count" {
                 count.to_string().into_bytes()
             } else {
@@ -1114,7 +1132,7 @@ mod actual_boundary {
 fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest {
     busbar_contract::abi::mechanism::endpoint::EndpointRequest {
         method: "POST".into(),
-        path: "/hooks/ranking/metadata-boundary".into(),
+        path: "/hooks/receiver/feedback".into(),
         query: "kind=feedback".into(),
         headers: vec![("content-type".into(), "text/plain".into())],
         body: b"received".to_vec(),
@@ -1125,9 +1143,9 @@ fn serve_request() -> busbar_contract::abi::mechanism::endpoint::EndpointRequest
 async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs_fail() {
     use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
-        let calls = actual_boundary::open(way, true);
+        let calls = witness_boundary::open(way, true);
         assert_eq!(calls.routes().len(), 1);
-        assert_eq!(calls.routes()[0].path, "/hooks/ranking/metadata-boundary");
+        assert_eq!(calls.routes()[0].path, "/hooks/receiver/feedback");
         let response = calls.serve(serve_request(), BUDGET).await.unwrap();
         assert_eq!(response.status, 202);
         assert_eq!(
@@ -1136,7 +1154,7 @@ async fn hook_routes_serve_leased_responses_through_both_doors_and_refused_stubs
         );
         assert_eq!(
             response.body,
-            b"POST /hooks/ranking/metadata-boundary?kind=feedback\nreceived"
+            b"POST /hooks/receiver/feedback?kind=feedback\nreceived"
         );
         assert_eq!(
             calls.serve(serve_request(), BUDGET).await.unwrap().body,
@@ -1162,21 +1180,32 @@ async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_releas
     use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
         for mode in ["odd", "null", "overlong", "utf8"] {
-            let calls = actual_boundary::open(way, true);
+            let calls = witness_boundary::open(way, true);
             let mut request = serve_request();
             request.query = mode.into();
             let error = calls
                 .serve(request, BUDGET)
                 .await
                 .expect_err("the SDK loan must fail header validation");
-            assert!(error.contains("response header"), "{way:?}/{mode}: {error}");
-            let mut count = serve_request();
-            count.query = "lease-count".into();
-            assert_eq!(
-                calls.serve(count, BUDGET).await.unwrap().body,
-                b"0",
+            let expected = if mode == "odd" {
+                "FAULT"
+            } else {
+                "response header"
+            };
+            assert!(error.contains(expected), "{way:?}/{mode}: {error}");
+            assert!(
+                !witness_boundary::header_loan_retained(mode),
                 "{way:?}/{mode}: rejected SDK loan is released"
             );
+            if mode != "odd" {
+                let mut count = serve_request();
+                count.query = "lease-count".into();
+                assert_eq!(
+                    calls.serve(count, BUDGET).await.unwrap().body,
+                    b"0",
+                    "{way:?}/{mode}: malformed text does not retain its answer lease"
+                );
+            }
         }
     }
 }
@@ -1185,7 +1214,7 @@ async fn malformed_hook_serve_headers_are_refused_and_the_answer_lease_is_releas
 async fn a_slow_hook_serve_is_bounded_by_its_budget_through_both_doors() {
     use busbar_contract::hook_calls::HookCalls;
     for way in [Way::Linked, Way::Dropped] {
-        let calls = actual_boundary::open(way, true);
+        let calls = witness_boundary::open(way, true);
         let mut slow = serve_request();
         slow.query = "sleep".into();
         let error = calls
@@ -1260,63 +1289,18 @@ fn rows(door: DoorFn, example: &str, way: Way) -> HookRows {
     }
 }
 
-fn ranking_path() -> std::path::PathBuf {
-    std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
-        .map(std::path::PathBuf::from)
-        .expect("the qualified actual Ranking image")
+fn witness_path() -> std::path::PathBuf {
+    crate::both_ways::example_cdylib("hook_door")
 }
 
-extern "C" fn ranking_door() -> &'static busbar_contract::abi::mechanism::door::Door {
-    use busbar_contract::abi::sdk::door::RawDoorFn;
-    static IMAGE: std::sync::OnceLock<(libloading::Library, RawDoorFn)> =
-        std::sync::OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let library =
-            crate::dlopen_on_worker(ranking_path().as_os_str()).expect("actual Ranking loads");
-        // SAFETY: the typed export belongs to the retained qualified product image.
-        let entry = unsafe {
-            *library
-                .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
-                .expect("actual Ranking door")
-        };
-        (library, entry)
-    });
-    let door = crate::dispatch::load::enter_door(image.1);
-    crate::dispatch::load::validate_door::<crate::dispatch::kinds::hook::Hook>(door)
-        .expect("actual Ranking Hook validates");
-    // SAFETY: validation checked the immutable descriptor and IMAGE retains its mapping.
-    unsafe { &*door }
+use hook_door_plugin::conforming::door as witness_door;
+
+fn witness_name() -> String {
+    NAME.to_owned()
 }
 
-fn ranking_name() -> String {
-    let stated = rendering_of(ranking_door).expect("actual Ranking renders");
-    busbar_contract::abi::mechanism::rendering::read(&stated)
-        .expect("actual Ranking statement")
-        .name
-}
-
-fn ranking_rows(way: Way) -> HookRows {
-    let dispatcher = Arc::new(Dispatcher::new(
-        DispatchConfig::default(),
-        busbar_contract::services::test_caller_binding(),
-    ));
-    match way {
-        Way::Linked => {
-            HookRows::new(&[ranking_door], None, dispatcher).expect("actual descriptor linked row")
-        }
-        Way::Dropped => {
-            let row = Candidate::from_rendering(
-                rendering_of(ranking_door).unwrap(),
-                None,
-                Origin::Dropped {
-                    file: "actual-ranking.tar.gz".into(),
-                    bytes: Arc::new(std::fs::read(ranking_path()).expect("actual Ranking bytes")),
-                },
-            )
-            .expect("actual Ranking candidate");
-            HookRows::of(vec![row], dispatcher)
-        }
-    }
+fn witness_rows(way: Way) -> HookRows {
+    rows(witness_door, "hook_door", way)
 }
 
 fn decided(messages: usize, a: &Answered<busbar_contract::abi::hook::DecideOut>) -> String {
@@ -1345,9 +1329,9 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
             user: USER_NO,
             infallible: false,
             words: busbar_contract::abi::mechanism::rendering::read(
-                &rendering_of(ranking_door).expect("actual Ranking renders"),
+                &rendering_of(witness_door).expect("neutral SDK witness renders"),
             )
-            .expect("actual Ranking declaration")
+            .expect("neutral SDK witness declaration")
             .mark_words
             .into_iter()
             .filter_map(|(class, word)| {
@@ -1359,19 +1343,21 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
             .probe(
                 name,
                 "gate",
-                &crate::dispatch::test_settings(&json!({"policy": 17})),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": "invalid"})),
             )
             .unwrap();
         assert_eq!(bad.0, Some(facts.clone()));
         assert!(
-            bad.1.iter().any(|e| e.contains("policy must be a string")),
+            bad.1
+                .iter()
+                .any(|e| e.contains("`reject_over_messages` must be a number")),
             "{bad:?}"
         );
         let good = axis
             .probe(
                 name,
                 "gate",
-                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             )
             .unwrap();
         assert_eq!(good, (Some(facts), Vec::new()));
@@ -1387,7 +1373,7 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
             .open(
                 name,
                 "bad",
-                &crate::dispatch::test_settings(&json!({"policy": "unknown"})),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": "invalid"})),
                 BUDGET
             )
             .is_err());
@@ -1405,52 +1391,14 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
             .open(
                 name,
                 "hooks.gate",
-                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
                 BUDGET,
             )
             .unwrap();
         assert_eq!(calls.name(), name);
         let mut lines = vec![format!("bad: {bad:?}"), format!("good: {good:?}"), missing];
-        for with_costs in [false, true] {
-            let candidates = [9.0, 2.0]
-                .into_iter()
-                .enumerate()
-                .map(|(idx, cost)| busbar_contract::hooks::Candidate {
-                    idx,
-                    model: "model",
-                    provider: "provider",
-                    weight: 1,
-                    context_max: None,
-                    tier: None,
-                    // A conflicting legacy scalar never substitutes for the recipe.
-                    cost_per_mtok: Some(11.0 - cost),
-                    tags: &[],
-                    latency_ms: None,
-                    available_concurrency: 1,
-                    budget_remaining: None,
-                    rate_headroom: None,
-                    signals: {
-                        let mut signals = SignalBag::new();
-                        if with_costs {
-                            busbar_contract::signal::route_cost::append(
-                                &mut signals,
-                                [busbar_contract::signal::route_cost::Term {
-                                    class: "work",
-                                    price_per_unit: Some(cost),
-                                    expected_units: 1.0,
-                                }],
-                            );
-                        }
-                        signals
-                    },
-                })
-                .collect::<Vec<_>>();
-            let ctx = RoutingContext {
-                pool: "p",
-                budget_remaining: None,
-                budget: &[],
-            };
-            let frame = DecideFrame::first(DecideView::build(&request(2), &candidates, &ctx));
+        for messages in [2, 4] {
+            let frame = frame(messages);
             let answer = calls.decide(Arc::clone(&frame), BUDGET).await;
             let Answered::Answer {
                 outcome,
@@ -1459,16 +1407,24 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
                 frame,
             } = answer
             else {
-                panic!("the actual Ranking crossing answers: {answer:?}");
+                panic!("the neutral SDK witness crossing answers: {answer:?}");
             };
             assert_eq!(
                 outcome,
                 busbar_contract::abi::mechanism::call::Outcome::Ready
             );
             assert!(error.is_none(), "{error:?}");
-            assert_eq!(out.verbs, if with_costs { 1 } else { 2 });
+            assert_eq!(
+                out.verbs,
+                if messages > 3 {
+                    busbar_contract::abi::hook::VERB_REJECT
+                        | busbar_contract::abi::hook::VERB_HAS_REJECT_STATUS
+                } else {
+                    busbar_contract::abi::hook::VERB_ABSTAIN
+                }
+            );
             let order = frame.order(out.order_written);
-            assert_eq!(order, if with_costs { vec![1, 0] } else { vec![] });
+            assert!(order.is_empty());
             assert_eq!(out.reject_message_written, 0);
             assert_eq!(out.restrict_tags_written, 0);
             lines.push(format!(
@@ -1497,7 +1453,7 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
         assert!(calls
             .configure(
                 "gate",
-                &crate::dispatch::test_settings_json(r#"{"policy":"unknown"}"#),
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages":"invalid"}"#),
                 1,
                 BUDGET
             )
@@ -1506,7 +1462,7 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
         let configured = calls
             .configure(
                 "gate",
-                &crate::dispatch::test_settings_json(r#"{"policy":"fastest"}"#),
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages":3}"#),
                 2,
                 BUDGET,
             )
@@ -1515,12 +1471,12 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
         lines.push(format!("configure: {configured:?}"));
         lines
     }
-    let name = ranking_name();
-    let linked = script(ranking_rows(Way::Linked), &name).await;
-    let dropped = script(ranking_rows(Way::Dropped), &name).await;
+    let name = witness_name();
+    let linked = script(witness_rows(Way::Linked), &name).await;
+    let dropped = script(witness_rows(Way::Dropped), &name).await;
     assert_eq!(
         linked, dropped,
-        "actual Ranking lifecycle and complete results match across origins"
+        "neutral SDK witness lifecycle and complete results match across origins"
     );
 }
 
@@ -1589,11 +1545,11 @@ async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
 
 #[test]
 fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neither() {
-    let name = ranking_name();
-    let linked = ranking_rows(Way::Linked);
+    let name = witness_name();
+    let linked = witness_rows(Way::Linked);
     assert!(linked.linked(&name) && linked.first_party(&name));
     assert!(!linked.linked("nobody") && !linked.first_party("nobody"));
-    let dropped = ranking_rows(Way::Dropped);
+    let dropped = witness_rows(Way::Dropped);
     assert!(!dropped.linked(&name) && !dropped.first_party(&name));
 }
 
@@ -1659,7 +1615,7 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
     use busbar_contract::hook_calls::HookCalls;
     let mut transcripts = Vec::new();
     for way in [Way::Linked, Way::Dropped] {
-        let calls = actual_boundary::open(way, false);
+        let calls = witness_boundary::open(way, false);
         let ctx = RoutingContext {
             pool: "p",
             budget_remaining: None,
@@ -1679,14 +1635,14 @@ async fn a_hook_reads_the_request_session_through_both_doors() {
             lines.push(decided(2, &answer));
         }
         assert_eq!(
-            actual_boundary::sessions(way),
+            witness_boundary::sessions(way),
             [Some(b"ctx-7".to_vec()), Some(b"ctx-8".to_vec()), None]
         );
         transcripts.push(lines);
     }
     assert_eq!(
         transcripts[0], transcripts[1],
-        "actual Ranking answers match across origins"
+        "neutral SDK witness answers match across origins"
     );
 }
 
@@ -1883,9 +1839,9 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
 
 #[test]
 fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
-    const OLD: &str = "busbar-webrequest";
-    let name = ranking_name();
-    let settings = json!({"policy": "fastest"});
+    const OLD: &str = "former-hook-witness";
+    let name = witness_name();
+    let settings = json!({"reject_over_messages": 3});
     let opens = |rows: &HookRows| {
         rows.open(
             OLD,
@@ -1901,7 +1857,7 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
             busbar_contract::services::test_caller_binding(),
         ))
     };
-    let linked = HookRows::new(&[ranking_door], None, dispatcher())
+    let linked = HookRows::new(&[witness_door], None, dispatcher())
         .expect("actual linked row")
         .with_former_names(|word| {
             if word == name {
@@ -1913,11 +1869,11 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
         .unwrap();
     assert!(opens(&linked), "linked: '{OLD}' opens the hook");
     assert!(linked.linked(OLD) && linked.first_party(OLD));
-    let bare = HookRows::new(&[ranking_door], None, dispatcher()).unwrap();
+    let bare = HookRows::new(&[witness_door], None, dispatcher()).unwrap();
     assert!(!opens(&bare), "RED: a linked row without its former name");
-    let lib = std::fs::read(ranking_path()).expect("actual Ranking bytes");
+    let lib = std::fs::read(witness_path()).expect("neutral SDK witness bytes");
     let abi = crate::supported_abi("hook")[0];
-    let stated = hex::encode(rendering_of(ranking_door).unwrap());
+    let stated = hex::encode(rendering_of(witness_door).unwrap());
     let manifest = |former: &[&str]| {
         let mut manifest = crate::both_ways::statement("hook", &name, &name, abi);
         manifest.statement = Some(stated.clone());
@@ -2265,12 +2221,12 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
 #[tokio::test]
 async fn an_unrepresentable_call_budget_is_broken_without_poisoning_either_hook_door() {
     for way in [Way::Linked, Way::Dropped] {
-        let axis = ranking_rows(way);
+        let axis = witness_rows(way);
         let calls = axis
             .open(
-                &ranking_name(),
+                &witness_name(),
                 "hooks.gate",
-                &crate::dispatch::test_settings(&json!({"policy":"fastest"})),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages":3})),
                 BUDGET,
             )
             .unwrap();
