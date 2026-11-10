@@ -456,6 +456,18 @@ impl Documents {
         target: &Option<config::StoreCfg>,
         config_path: &Path,
     ) -> Result<bool, String> {
+        let sources =
+            busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows());
+        self.bootstrap_equivalent_with_sources(original, target, config_path, &sources)
+    }
+
+    fn bootstrap_equivalent_with_sources(
+        &self,
+        original: &Option<config::StoreCfg>,
+        target: &Option<config::StoreCfg>,
+        config_path: &Path,
+        sources: &busbar_contract::secret_ref::Sugars,
+    ) -> Result<bool, String> {
         let (Some(original), Some(target)) = (original, target) else {
             return Ok(original.is_none() && target.is_none());
         };
@@ -466,8 +478,6 @@ impl Documents {
         let authored: serde_yaml::Value =
             serde_yaml::from_str(&authored).map_err(|_| "retained Store source is invalid")?;
         let mut target = target.clone();
-        let sources =
-            busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows());
         let state = self
             .state
             .lock()
@@ -558,7 +568,7 @@ impl Documents {
             .get("store")
             .and_then(|store| store.get("settings"))
         {
-            env_refs(&mut settings, source, &templates, &sources)?;
+            env_refs(&mut settings, source, &templates, sources)?;
         }
         target.settings = settings
             .as_object_mut()
@@ -1004,6 +1014,46 @@ impl RootRules for BootstrapRules {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+    };
+
+    fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
+        let mut sources = busbar_contract::secret_ref::Sugars::default();
+        for (word, owner, role) in [
+            ("lookup", "fixture-lookup", SUGAR_ROLE_FILL),
+            ("artifact", "fixture-artifact", SUGAR_ROLE_PATH),
+        ] {
+            sources
+                .declare(
+                    owner,
+                    &[
+                        (REWRITE_SUGAR, word.into(), "slot".into()),
+                        (REWRITE_SUGAR_ROLE, word.into(), role.into()),
+                    ],
+                )
+                .unwrap();
+        }
+        sources
+    }
+
+    fn source_document(
+        sources: &busbar_contract::secret_ref::Sugars,
+        role: &str,
+        value: &str,
+    ) -> serde_json::Value {
+        let reference = sources.reference_for_role(role, value).unwrap();
+        serde_json::to_value(reference.authoring(&busbar_kernel::seal::acquire())).unwrap()
+    }
+
+    fn edit_store(store: &mut Option<config::StoreCfg>, edits: serde_json::Value) {
+        let store = store.as_mut().unwrap();
+        store.settings = store
+            .settings
+            .edit(&serde_json::from_value(edits).unwrap(), &[])
+            .unwrap();
+    }
+
     const CONFIG: &str = "store: {module: custom}\nconfig: {locked: true}\n";
 
     #[test]
@@ -1088,6 +1138,7 @@ mod tests {
     #[test]
     fn store_comparison_reverses_only_exact_document_bound_secret_intents() {
         let docs = Arc::new(Documents::default());
+        let sources = fixture_sources();
         let path = Path::new("config.yaml");
         let raw = "store: {module: custom, settings: {password: historical, database: original}}\n";
         docs.normalize(ConfigDocument::Deployment, path, raw)
@@ -1113,37 +1164,39 @@ mod tests {
             .unwrap(),
         });
         let mut target = original.clone();
-        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"file":"/private/exact.secret"})})).unwrap(), &[]).unwrap();
-        assert!(docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target.as_mut().unwrap().settings = target
-            .as_mut()
-            .unwrap()
-            .settings
-            .edit(
-                &serde_json::from_value(serde_json::json!({("database"): "different"})).unwrap(),
-                &[],
-            )
-            .unwrap();
-        assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target.as_mut().unwrap().settings = target
-            .as_mut()
-            .unwrap()
-            .settings
-            .edit(
-                &serde_json::from_value(serde_json::json!({("database"): "original"})).unwrap(),
-                &[],
-            )
-            .unwrap();
-        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"file":"/private/other.secret"})})).unwrap(), &[]).unwrap();
-        assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
+        edit_store(
+            &mut target,
+            serde_json::json!({"password": source_document(&sources, SUGAR_ROLE_PATH, "/private/exact.secret")}),
+        );
         assert!(docs
-            .bootstrap_equivalent(&original, &target, Path::new("other.yaml"))
+            .bootstrap_equivalent_with_sources(&original, &target, path, &sources)
+            .unwrap());
+        edit_store(&mut target, serde_json::json!({"database": "different"}));
+        assert!(!docs
+            .bootstrap_equivalent_with_sources(&original, &target, path, &sources)
+            .unwrap());
+        edit_store(&mut target, serde_json::json!({"database": "original"}));
+        edit_store(
+            &mut target,
+            serde_json::json!({"password": source_document(&sources, SUGAR_ROLE_PATH, "/private/other.secret")}),
+        );
+        assert!(!docs
+            .bootstrap_equivalent_with_sources(&original, &target, path, &sources)
+            .unwrap());
+        assert!(docs
+            .bootstrap_equivalent_with_sources(
+                &original,
+                &target,
+                Path::new("other.yaml"),
+                &sources
+            )
             .is_err());
     }
 
     #[test]
     fn store_comparison_uses_captured_authored_env_binding_without_reading_files() {
         let docs = Arc::new(Documents::default());
+        let sources = fixture_sources();
         docs.environment.lock().unwrap().insert(
             "CAPTURED_STORE_SECRET".into(),
             Some(Zeroizing::new("captured".into())),
@@ -1157,21 +1210,20 @@ mod tests {
             settings: serde_json::from_value(serde_json::json!({"password":"captured"})).unwrap(),
         });
         let mut target = original.clone();
-        target.as_mut().unwrap().settings = target.as_mut().unwrap().settings.edit(&serde_json::from_value(serde_json::json!({("password"): serde_json::json!({"env":"CAPTURED_STORE_SECRET"})})).unwrap(), &[]).unwrap();
-        assert!(docs.bootstrap_equivalent(&original, &target, path).unwrap());
-        target.as_mut().unwrap().settings = target
-            .as_mut()
-            .unwrap()
-            .settings
-            .edit(
-                &serde_json::from_value(
-                    serde_json::json!({("password"): serde_json::json!({"env":"OTHER_SECRET"})}),
-                )
-                .unwrap(),
-                &[],
-            )
-            .unwrap();
-        assert!(!docs.bootstrap_equivalent(&original, &target, path).unwrap());
+        edit_store(
+            &mut target,
+            serde_json::json!({"password": source_document(&sources, SUGAR_ROLE_FILL, "CAPTURED_STORE_SECRET")}),
+        );
+        assert!(docs
+            .bootstrap_equivalent_with_sources(&original, &target, path, &sources)
+            .unwrap());
+        edit_store(
+            &mut target,
+            serde_json::json!({"password": source_document(&sources, SUGAR_ROLE_FILL, "OTHER_SECRET")}),
+        );
+        assert!(!docs
+            .bootstrap_equivalent_with_sources(&original, &target, path, &sources)
+            .unwrap());
         docs.finish_upgrade().unwrap();
         assert!(docs.environment.lock().unwrap().is_empty());
         assert!(docs.original_deployment(path).is_err());
