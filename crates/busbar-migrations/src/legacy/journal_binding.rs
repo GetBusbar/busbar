@@ -4,7 +4,7 @@
 //! Trusted original-journal migration capability. Implemented only by the
 //! compiled frozen-source bridge after complete run verification; manifests
 //! cannot construct it. It emits original R/H records, never custody O records.
-use super::{CanonicalRows, archive::Provenance};
+use super::{archive::Provenance, CanonicalRows};
 
 #[derive(Clone, Copy)]
 pub struct Part<'a> {

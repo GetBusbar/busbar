@@ -12,11 +12,11 @@ use super::{
 };
 use async_trait::async_trait;
 use busbar_contract::{
-    Secret,
     persistence::{
         archive::{self, Header, Table, VerifiedArchive},
         legacy_row::Row,
     },
+    Secret,
 };
 use sha2::{Digest, Sha256};
 use std::{

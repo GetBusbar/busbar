@@ -114,10 +114,9 @@ fn admitted_credential_envelope_and_wide_metadata_keep_native_custody_rules() {
         envelope: Some(b"v1:plain:secret"),
     });
     let live = canonical_identity(&row, false).unwrap();
-    assert!(
-        live.iter()
-            .any(|(_, v)| v.expose(&crate::seal::lend()) == b"v1:plain:secret")
-    );
+    assert!(live
+        .iter()
+        .any(|(_, v)| v.expose(&crate::seal::lend()) == b"v1:plain:secret"));
     // A deleted owner cannot legitimize a still-live historical credential.
     assert!(canonical_identity(&row, true).is_err());
     meta.revoked_at = Some((1u64 << 63) + 2);
@@ -129,8 +128,7 @@ fn admitted_credential_envelope_and_wide_metadata_keep_native_custody_rules() {
         false,
     )
     .unwrap();
-    assert!(
-        rows.iter()
-            .all(|(_, v)| v.expose(&crate::seal::lend()) != b"v1:plain:secret")
-    );
+    assert!(rows
+        .iter()
+        .all(|(_, v)| v.expose(&crate::seal::lend()) != b"v1:plain:secret"));
 }

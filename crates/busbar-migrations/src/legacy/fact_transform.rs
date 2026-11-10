@@ -2,16 +2,17 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 //! Logical import transforms consume admitted owner facts, never physical grammar.
 use super::{
-    Credential, HistoricalRow, archive, canonical_identity, projection,
+    archive, canonical_identity, projection,
     transform::{self, Output, *},
+    Credential, HistoricalRow,
 };
 use crate::{
-    Bounds, Edge, Error, Family, Format, Record, Registry, TargetRow, Transform,
     source_facts::{FactRow, View},
+    Bounds, Edge, Error, Family, Format, Record, Registry, TargetRow, Transform,
 };
 use busbar_contract::{
+    persistence::{archive::Table, lifecycle::source::HistoricalFact, Address},
     Secret,
-    persistence::{Address, archive::Table, lifecycle::source::HistoricalFact},
 };
 use busbar_kernel::persistence::import_target::records::{self, history::HistoryMode};
 use sha2::{Digest, Sha256};
@@ -446,15 +447,13 @@ impl FactTransform {
                 } => {
                     if kind == "ticket-spent" {
                         out.canonical(
-                            vec![
-                                records::ticket::legacy_ticket_token(
-                                    kind,
-                                    std::str::from_utf8(token.expose(&seal))
-                                        .map_err(|_| Error::Corrupt)?,
-                                    *expires_at,
-                                )
-                                .map_err(|_| Error::Verification)?,
-                            ],
+                            vec![records::ticket::legacy_ticket_token(
+                                kind,
+                                std::str::from_utf8(token.expose(&seal))
+                                    .map_err(|_| Error::Corrupt)?,
+                                *expires_at,
+                            )
+                            .map_err(|_| Error::Verification)?],
                             false,
                         )?;
                         continue;
@@ -839,11 +838,9 @@ mod tests {
         ];
         assert_eq!(output.len(), expected.len());
         for (address, value) in expected {
-            assert!(
-                output
-                    .iter()
-                    .any(|row| row.address == address && row.value == value)
-            );
+            assert!(output
+                .iter()
+                .any(|row| row.address == address && row.value == value));
         }
         let mut native = output
             .into_iter()
@@ -987,10 +984,9 @@ mod tests {
             };
             assert_eq!(ledger.total_input(), 35_000_000);
             for (address, value) in super::super::canonical_usage("bucket", 0, &ledger).unwrap() {
-                assert!(
-                    rows.iter()
-                        .any(|r| r.address == address && r.value == value)
-                );
+                assert!(rows
+                    .iter()
+                    .any(|r| r.address == address && r.value == value));
             }
         }
     }

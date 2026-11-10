@@ -6,12 +6,12 @@
 //! for an inactive target, never O custody or a business recovery verdict.
 
 use super::{
-    CanonicalRows,
     archive::Provenance,
     journal_binding::{JournalMigration, Part},
     transform::ARCHIVAL,
+    CanonicalRows,
 };
-use crate::{Bounds, Error, archive_source::ArchiveSource};
+use crate::{archive_source::ArchiveSource, Bounds, Error};
 use busbar_contract::Secret;
 use busbar_kernel::persistence::import_target::{
     journal::{self as codec, Error as JournalError},
@@ -568,11 +568,10 @@ mod tests {
         let rows = plan.copy_source_group(7, 9, 4096).unwrap();
         assert_eq!(rows.len(), 3);
         let proof = plan.verified_node(7).unwrap();
-        assert!(
-            rows.iter()
-                .all(|(address, value)| codec::authorizes(address)
-                    || codec::inventory_matches(proof, address, value))
-        );
+        assert!(rows
+            .iter()
+            .all(|(address, value)| codec::authorizes(address)
+                || codec::inventory_matches(proof, address, value)));
         assert_eq!(rows[0].1.expose(&crate::seal::lend()), &original);
     }
 

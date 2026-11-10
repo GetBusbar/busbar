@@ -4,7 +4,7 @@
 //! Logical conversion of admitted historical facts into current native records.
 //! Physical field names, units and layouts are interpreted by source owners.
 use busbar_contract::records::{
-    CredentialMeta, MeteringRow, ModelTokens, RESERVED_UNITS, UsageLedger, VirtualKey,
+    CredentialMeta, MeteringRow, ModelTokens, UsageLedger, VirtualKey, RESERVED_UNITS,
 };
 pub mod archive;
 pub mod fact_transform;

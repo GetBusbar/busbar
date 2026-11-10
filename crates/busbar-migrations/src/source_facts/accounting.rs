@@ -3,15 +3,15 @@
 //! Arithmetic over explicit logical facts and declared projection requirements.
 use super::HistoricalFact;
 use crate::{
-    Error,
     legacy::{
-        HistoricalRow, UsageCell, assemble_usage, attach_metering_units, attach_usage_units,
-        canonical_metering, canonical_usage, transform::Output,
+        assemble_usage, attach_metering_units, attach_usage_units, canonical_metering,
+        canonical_usage, transform::Output, HistoricalRow, UsageCell,
     },
+    Error,
 };
 use busbar_contract::{
     persistence::lifecycle::source::{AccountingRole, RequestAggregation},
-    records::{MeteringRow, ModelTokens, RESERVED_UNITS, UsageLedger},
+    records::{MeteringRow, ModelTokens, UsageLedger, RESERVED_UNITS},
 };
 use std::collections::{BTreeMap, BTreeSet};
 fn invalid(_: crate::legacy::Error) -> Error {
@@ -462,11 +462,11 @@ mod tests {
     use super::*;
     use crate::source_facts::FactRow;
     use busbar_contract::{
-        Secret,
         persistence::lifecycle::{
-            DocumentSemantics, SourceCodec, SourceReader,
             source::{HistoricalFamily, SourceChunk},
+            DocumentSemantics, SourceCodec, SourceReader,
         },
+        Secret,
     };
     fn fact(value: HistoricalFact) -> FactRow {
         FactRow {
@@ -570,10 +570,9 @@ mod tests {
         let expected = canonical_usage("bucket", 0, &ledger()).unwrap();
         let rows = output(&projected_group()).unwrap();
         for (address, value) in expected {
-            assert!(
-                rows.iter()
-                    .any(|r| r.address == address && r.value == value)
-            );
+            assert!(rows
+                .iter()
+                .any(|r| r.address == address && r.value == value));
         }
         for missing in 0..4 {
             let mut facts = projected_group();
@@ -601,10 +600,9 @@ mod tests {
         });
         let rows = output(&[input]).unwrap();
         for (address, value) in canonical_usage("bucket", 0, &ledger()).unwrap() {
-            assert!(
-                rows.iter()
-                    .any(|r| r.address == address && r.value == value)
-            );
+            assert!(rows
+                .iter()
+                .any(|r| r.address == address && r.value == value));
         }
     }
     #[test]

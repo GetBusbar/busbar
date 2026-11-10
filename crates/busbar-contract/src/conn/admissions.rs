@@ -135,8 +135,8 @@ impl EnforcedAdmissions {
         }) {
             return Err(ConnError::NotOwner);
         }
-        let document = settings.map(|settings| &settings.0.0);
-        let owned = owned.map(|settings| &settings.0.0);
+        let document = settings.map(|settings| &settings.0 .0);
+        let owned = owned.map(|settings| &settings.0 .0);
         let mut results = Vec::new();
         for (index, need) in self.needs.iter().enumerate() {
             if need.target_from.is_empty() && need.trust_from.is_empty() {
