@@ -16,8 +16,8 @@ use super::{compose_planes, compose_served, data_routes, door_routes};
 use crate::root::loader::dispatch::{DispatchConfig, Dispatcher};
 use crate::root::plane_node::{Node, NodeEndPost};
 
-#[path = "serve_datagram_open.rs"]
-mod datagram_opening_tests;
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(money_datagram);
 
 pub(super) struct Governed {
     pub(super) router: axum::Router,

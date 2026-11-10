@@ -1028,13 +1028,6 @@ mod tests;
 pub(crate) use tests::peer;
 
 #[cfg(test)]
-#[path = "tests/datagram_opening_retirement.rs"]
-mod opening_retirement_tests;
-
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
 #[cfg(test)]
-#[path = "tests/datagram_line_budget.rs"]
-mod line_budget_tests;
-
-#[cfg(test)]
-#[path = "tests/raw_udp_ingress.rs"]
-mod raw_udp_ingress_tests;
+owner_test_sources!(datagram_lifecycle);

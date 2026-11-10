@@ -8,88 +8,6 @@ use crate::root::registry::{compose, Dropped};
 use busbar_core_connector::doors::{row_facts, stated_row, RowFacts};
 
 #[test]
-fn a_door_root_row_links_with_the_key_layers_and_session_its_statement_states() {
-    let row = linked_transport!(busbar_transport_tcp::door);
-    assert_eq!((row.key)(), "tcp", "the key is the door's own claim");
-    assert!(
-        (row.composes_over)().is_empty(),
-        "the layers are the tail's: none"
-    );
-    assert_eq!(
-        row_facts(busbar_transport_tcp::door),
-        RowFacts {
-            key: "tcp",
-            composes_over: Vec::new(),
-            session: true,
-        },
-        "the session is the claim row's"
-    );
-    let built = compose(&[row], Dropped::NONE, &TransportSettings::default())
-        .expect("the door-root row composes");
-    let keys: Vec<&str> = built.iter().map(|(r, _)| r.key).collect();
-    assert_eq!(keys, ["tcp"], "the fold registers it under its key");
-    assert_eq!(
-        built[0].1.key(),
-        "tcp",
-        "the boot's admission of its door answers the same key"
-    );
-
-    let framer = linked_transport!(busbar_transport_http::door);
-    let stated = row_facts(busbar_transport_http::door);
-    assert_eq!((framer.key)(), "http");
-    assert_eq!((framer.composes_over)(), stated.composes_over);
-    assert!(!stated.session, "the actual HTTP claim carries no session");
-    let built = compose(&[row, framer], Dropped::NONE, &TransportSettings::default())
-        .expect("the actual carrier and framer compose");
-    assert!(built
-        .iter()
-        .any(|(registered, wire)| registered.key == "tcp" && wire.key() == "tcp"));
-    assert!(built
-        .iter()
-        .any(|(registered, wire)| registered.key == "http" && wire.key() == "http"));
-}
-
-#[test]
-fn a_door_whose_own_claim_is_not_its_statement_name_is_refused_at_boot() {
-    const REFUSED: &str = "identity-reader-refused-the-linked-key";
-    fn refused_key() -> &'static str {
-        panic!("a linked transport door is refused: {REFUSED}");
-    }
-    let actual = linked_transport!(busbar_transport_tcp::door);
-    let positive = compose(&[actual], Dropped::NONE, &TransportSettings::default())
-        .expect("the actual TCP product composes before the callback fault");
-    assert_eq!(positive[0].0.key, "tcp");
-    assert_eq!(positive[0].1.key(), "tcp");
-    let row = crate::root::linked::LinkedTransport {
-        key: refused_key,
-        ..actual
-    };
-    assert_eq!(row.composes_over as usize, actual.composes_over as usize);
-    assert_eq!(row.build as usize, actual.build as usize);
-    assert_eq!(row.claims as usize, actual.claims as usize);
-    assert_eq!(row.upgrades as usize, actual.upgrades as usize);
-    assert_eq!(row.lines as usize, actual.lines as usize);
-    assert_eq!(row.offered as usize, actual.offered as usize);
-    let boot = std::panic::catch_unwind(|| {
-        compose(&[row], Dropped::NONE, &TransportSettings::default()).map(|built| built.len())
-    })
-    .expect_err("the boot is refused");
-    let said = boot
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| boot.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-        .unwrap_or_default();
-    assert!(
-        said.contains("a linked transport door is refused") && said.contains(REFUSED),
-        "the boot preserves the refused key callback's panic: {said}"
-    );
-    assert_eq!(
-        said,
-        format!("a linked transport door is refused: {REFUSED}")
-    );
-}
-
-#[test]
 fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
     let stated: Vec<RowFacts> = crate::LINKED_TRANSPORT_DOORS
         .iter()
@@ -116,3 +34,5 @@ fn every_linked_transport_row_is_keyed_by_its_doors_statement() {
         "each linked row is keyed and layered by its door's Statement"
     );
 }
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(linked_transport_rows);
