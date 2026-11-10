@@ -361,9 +361,6 @@ mod admin_application_admin_scope_ladder;
 #[path = "admin_application/admin_usage_model_key.rs"]
 mod admin_application_admin_usage_model_key;
 
-#[path = "../root/tests/serve_a2a_parity.rs"]
-mod a2a_actual_parity;
-
 #[path = "kernel_application/auth_data_gate_tests.rs"]
 mod kernel_application_auth_data_gate_tests;
 
