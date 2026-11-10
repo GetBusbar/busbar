@@ -9,7 +9,11 @@ The upstream repository is pinned to
 `5eebc4464e5197a7f7392fb9acda99cfc32441f7`. Both entry-point and application bytes
 are SHA-256 checked. Runtime dependencies are fully version/hash locked in
 `tlsfuzzer-requirements.lock`; a private virtual environment and source checkout
-live in the evidence rig's disposable workspace.
+live in the evidence rig's disposable workspace. Bootstrap creates the environment
+without `ensurepip`, which minimal Debian/Ubuntu Python installations omit, then
+installs the SHA-256-pinned pip 25.3 wheel without consulting an index. Only the
+hash-locked binary dependency wheels are installed afterward. The installer pin
+is retained in `result.json`.
 
 The unmodified version-9 `test-tls13-certificate-verify.py` application generates
 the tests and judges every handshake. For the rig's RSA-2048 client certificate,

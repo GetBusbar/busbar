@@ -28,8 +28,9 @@ and VALID/ILLEGAL/UNKNOWN judgments come from unmodified upstream code.
   ships 1.39.0, which does **not** satisfy its dependency; the adapter installs
   the exact separately pinned 1.40.0 release.
 - The runtime's exact GraalJS 0.12.0, Scripts 45.17.0, Passive Scanner 0.6.0 and
-  Network 0.25.0 archives, including their embedded libraries. These are the
-  complete required addon dependency closure. Other bundled addons are not
+  Network 0.25.0 and Call Home 0.20.0 archives, including their embedded libraries.
+  These are the complete required addon dependency closure; ZAP requires Call
+  Home even in silent mode, which disables its network calls. Other bundled addons are not
   installed. No scanner source or assertion is patched.
 - Temurin JRE 21.0.13+9, separately pinned for Darwin arm64/x86_64 and Linux
   aarch64/x86_64. No installed Java, Docker or new service is required.

@@ -322,8 +322,9 @@ class ExternalRBAC:
                 "installedAddons"
             ]
             expected = {
-                "accessControl": "13",
+                "accessControl": "13.0.0",
                 "commonlib": "1.40.0",
+                "callhome": "0.20.0",
                 "graaljs": "0.12.0",
                 "network": "0.25.0",
                 "scripts": "45.17.0",

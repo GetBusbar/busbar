@@ -109,7 +109,12 @@ class Inputs(unittest.TestCase):
                 zap.ExternalRBAC(work, work)
 
     def test_lock_covers_all_required_addons_and_jre_platforms(self):
-        self.assertEqual(len(zap.LOCK["bundled_plugins"]), 4)
+        self.assertEqual(
+            set(zap.LOCK["bundled_plugins"]),
+            {"graaljs-alpha-0.12.0.zap", "network-beta-0.25.0.zap",
+             "scripts-release-45.17.0.zap", "pscan-alpha-0.6.0.zap",
+             "callhome-release-0.20.0.zap"},
+        )
         self.assertEqual(
             {a["name"] for a in zap.LOCK["addons"]},
             {"accessControl-alpha-13.zap", "commonlib-release-1.40.0.zap"},
