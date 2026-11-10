@@ -556,6 +556,18 @@ plugins:
     # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
     # is cut with the core version that pins it.
     released: false
+  - repo: busbar-hook-complexity
+    kind: hook
+    alias: complexity
+    crate: busbar-hook-complexity-plugin
+    version_line: "1.6"
+    service: none
+    release_gate: optional
+    gate: suite
+    description: "Classifies completed request text through a bounded decisions child and prioritizes eligible candidates."
+    declares: "hook-complexity/declares.json"
+    needs_prompt: "ro"
+    released: false
   - repo: busbar-hook-ranking
     kind: hook
     alias: ranking

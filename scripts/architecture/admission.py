@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -191,16 +192,62 @@ def expected_inputs(api, project, source):
     return host, sdk
 
 
-def required_conformance_job(repository):
+def required_conformance_job(repository, policy=None):
     if repository == 'GetBusbar/busbar':
         return 'core-conformance'
-    if repository in ('GetBusbar/busbar-plane-llm', 'GetBusbar/busbar-plane-decisions'):
+    from native_policy import native_settings
+    if native_settings(repository, policy).get('external_conformance'):
         return 'external-conformance'
     return None
 
 
+def validate_security_scans(receipt, repository, fixture_policy=None):
+    """Positive secret counts require exact entries from the approved policy commit."""
+    scans = receipt.get('steps', [])
+    if (not isinstance(scans, list) or len(scans) != 3
+            or any(not isinstance(row, dict) for row in scans)
+            or {row.get('name') for row in scans} != {'secrets', 'dependencies', 'sast'}):
+        raise ValueError('security receipt contains missing scans')
+    for row in scans:
+        count, code = row.get('findings'), row.get('exit_code')
+        if row.get('status') != 'pass' or type(count) is not int or type(code) is not int:
+            raise ValueError('security receipt contains invalid scan status/count')
+        if count == 0 and code == 0:
+            if any(key in row for key in ('classification_policy_sha256', 'classified_public_fixtures',
+                                          'unresolved_findings', 'public_fixture_classifications')):
+                raise ValueError('empty scan carries unexpected fixture classifications')
+            continue
+        if row['name'] != 'secrets' or count <= 0 or code != 1 or not isinstance(fixture_policy, bytes):
+            raise ValueError('security receipt contains nonpassing scans')
+        digest = hashlib.sha256(fixture_policy).hexdigest()
+        policy = json.loads(fixture_policy)
+        if (not isinstance(policy, dict) or policy.get('schema') != 'busbar.public-secret-fixtures/1'
+                or not isinstance(policy.get('fixtures'), list)):
+            raise ValueError('invalid trusted public fixture policy')
+        entries = {entry['id']: entry for entry in policy['fixtures']}
+        classified = row.get('public_fixture_classifications')
+        if (row.get('classification_policy_sha256') != digest
+                or receipt.get('policy_files', {}).get('public-secret-fixtures.json') != digest
+                or type(row.get('classified_public_fixtures')) is not int
+                or row['classified_public_fixtures'] != count
+                or type(row.get('unresolved_findings')) is not int or row['unresolved_findings'] != 0
+                or not isinstance(classified, list) or len(classified) != count
+                or len(entries) != len(policy['fixtures'])):
+            raise ValueError('unbound or incomplete public fixture classification')
+        used = set()
+        for index, item in enumerate(classified):
+            if not isinstance(item, dict):
+                raise ValueError('invalid public fixture classification')
+            entry = entries.get(item.get('id'))
+            if (not entry or entry['repository'] != repository or entry['id'] in used
+                    or type(item.get('finding_index')) is not int
+                    or json.dumps(item, sort_keys=True) != json.dumps({'finding_index': index, **entry}, sort_keys=True)):
+                raise ValueError('unknown, duplicated or reordered public fixture classification')
+            used.add(entry['id'])
+
+
 def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk,
-                   conformance_receipt=None, security_receipt=None):
+                   conformance_receipt=None, security_receipt=None, secret_fixture_policy=None):
     """Finite admission predicate, shared by the controller and bypass regressions."""
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
         raise ValueError('trusted CI setting changed')
@@ -221,11 +268,7 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
     if not isinstance(security_receipt, dict) or any(
             security_receipt.get(key) != value for key, value in expected_security.items()):
         raise ValueError('security receipt missing, stale or for another source/policy/job')
-    scans = security_receipt.get('steps', [])
-    if (len(scans) != 3 or {row.get('name') for row in scans} != {'secrets', 'dependencies', 'sast'}
-            or any(row.get('status') != 'pass' or row.get('exit_code') != 0
-                   or row.get('findings') != 0 for row in scans)):
-        raise ValueError('security receipt contains missing or nonpassing scans')
+    validate_security_scans(security_receipt, project['path_with_namespace'], secret_fixture_policy)
     native = [j for j in jobs if j['name'] == 'native-qualification']
     if len(native) != 1 or native[0]['status'] != 'success' or native[0].get('allow_failure'):
         raise ValueError('required native job missing or not passing')
@@ -335,6 +378,13 @@ def main():
                 raise ValueError('required security job missing or ambiguous')
             security_receipt = api.request(identity + '/jobs/' + str(security_jobs[0]['id'])
                 + '/artifacts/boundary-evidence/security.json')
+            secret_fixture_policy = None
+            if any(row.get('findings') for row in security_receipt.get('steps', [])):
+                # Read only the controller-approved immutable policy, never candidate files.
+                manifest = api.request('projects/' + encoded('GetBusbar/busbar')
+                    + '/repository/files/' + encoded('ci/security/public-secret-fixtures.json')
+                    + '?ref=' + args.policy_revision)
+                secret_fixture_policy = base64.b64decode(manifest['content'], validate=True)
             required = required_conformance_job(name)
             if required:
                 evaluations = [job for job in jobs if job['name'] == required]
@@ -343,7 +393,7 @@ def main():
                 conformance_receipt = api.request(identity + '/jobs/' + str(evaluations[0]['id'])
                     + '/artifacts/boundary-evidence/receipt.json')
             validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk,
-                           conformance_receipt, security_receipt)
+                           conformance_receipt, security_receipt, secret_fixture_policy)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})
             report['projects'].append({'project': name, 'source': mr['sha'], 'target_before': target, 'merge_commit_sha': result.get('merge_commit_sha'), 'state': result['state']})
         args.output.write_text(json.dumps(report, indent=2) + '\n')

@@ -98,7 +98,7 @@ raise SystemExit(1)
         self.q.receipt['host_revision'] = 'a' * 40
         self.q.sdk = lambda: self.root
         self.q.architecture = lambda sdk: None
-        entry = self.root / native.EXTERNAL_EVALUATIONS[self.q.repository]
+        entry = self.root / native.native_settings(self.q.repository)['external_conformance']
         entry.write_text('''mkdir "$CONFORMANCE_OUT"
 printf '{"status":"not-run","reason":"real model unavailable"}' > "$CONFORMANCE_OUT/evaluation.json"
 printf 'upstream cases: 300 not run\n' > "$CONFORMANCE_OUT/results.txt"

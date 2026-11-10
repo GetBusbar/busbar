@@ -25,7 +25,7 @@ def ldap_readiness_command(name):
 
 
 class Services:
-    def __init__(self, qualification, host, all_services=False):
+    def __init__(self, qualification, host):
         self.q, self.host = qualification, host
         self.run_controller = getattr(qualification, 'run_controller', qualification.run)
         self.execution = getattr(qualification, 'execution', None)
@@ -36,12 +36,9 @@ class Services:
         self.names = []
         self.stores = []
         self.tag = 'boundary-' + qualification.receipt['job_id']
-        name = qualification.repository.rsplit('/', 1)[1]
-        self.requested = ['postgres', 'mysql', 'valkey', 'vault', 'wiremock', 'openldap'] if all_services else {
-            'busbar-store-postgres': ['postgres'], 'busbar-store-mysql': ['mysql'],
-            'busbar-store-valkey': ['valkey'], 'busbar-secret-vault': ['vault'],
-            'busbar-auth-github': ['wiremock'], 'busbar-auth-ldap': ['openldap'],
-        }.get(name, [])
+        from native_policy import native_settings
+        self.required = native_settings(qualification.repository, getattr(qualification, 'policy', None))
+        self.requested = self.required.get('services', [])
         self.images = {}
         source = qualification.trusted / 'testing/fleet-fixtures/service-images.tsv'
         rows = []
@@ -92,7 +89,7 @@ class Services:
 
     def __enter__(self):
         try:
-            if self.execution and self.q.repository in ('GetBusbar/busbar', 'GetBusbar/busbar-store-sqlite'):
+            if self.execution and self.required.get('migration_fixture'):
                 raise RuntimeError('confined migration witness requires precollected pinned 1.5.5 inputs; online host recorder is forbidden')
             for service in self.requested:
                 if service in ('postgres', 'mysql', 'valkey'):
@@ -107,7 +104,7 @@ class Services:
                         self.q.env['BUSBAR_TEST_MYSQL_ROOT_PASSWORD'] = 'busbar'
                     if service == 'valkey':
                         self.q.env.update(VALKEY_URL=url, BUSBAR_V4_TRANSPORT_URL=url)
-                        if self.q.repository == 'GetBusbar/busbar-store-valkey':
+                        if self.required.get('server_binary') == service:
                             # The required ignored witnesses launch their own servers,
                             # including Unix sockets and crash/restart lifecycles. Use
                             # the same pinned image as the live fixture, never a
@@ -147,7 +144,7 @@ class Services:
                     self.q.env['BUSBAR_TEST_LDAP_URL'] = 'ldap://127.0.0.1:' + port
             # The supported migration witness is produced by the real published 1.5.5
             # artifact, using the repository's existing digest-checked recorder.
-            if self.q.repository in ('GetBusbar/busbar', 'GetBusbar/busbar-store-sqlite'):
+            if self.required.get('migration_fixture'):
                 fixture = self.q.work / 'sqlite-1.5.5'
                 self.run_controller('migration-fixture', ['bash', str(self.q.trusted / 'scripts/store-migration-fixture.sh'),
                     'record', 'sqlite', str(fixture)], timeout=900)

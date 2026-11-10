@@ -119,6 +119,22 @@ class Boundary(Fixture, unittest.TestCase):
                 }
             )
 
+    def test_product_bindings_require_explicit_validation_and_cannot_be_overridden(self):
+        from native_product_inputs import ProductInputs
+
+        execution = self.execution()
+        key = "BUSBAR_TEST_FIXTURE_CDYLIB"
+        value = str(self.roots["candidate"] / "target/fixture.so")
+        self.assertNotIn(key, execution.environment({key: value}))
+        with self.assertRaisesRegex(ValueError, "controller validation"):
+            execution.allow_product_inputs({key: value})
+        execution.allow_product_inputs(ProductInputs({key: value}))
+        self.assertEqual(execution.environment({key: value})[key], value)
+        with self.assertRaisesRegex(ValueError, "overridden"):
+            execution.environment({key: "/host/other.so"})
+        self.assertNotIn("BUSBAR_TEST_UNKNOWN_CDYLIB", execution.environment({
+            key: value, "BUSBAR_TEST_UNKNOWN_CDYLIB": value}))
+
     def test_weakened_runtime_refuses_and_daemon_loss_is_not_disposal_proof(self):
         for daemon_available in (True, False):
             execution = self.execution()
