@@ -17,8 +17,13 @@ pub fn rate_card_of(card: &CardFields) -> busbar_kernel_ledger::cost::RateCard {
 }
 pub type Chain = (u64, Vec<busbar_kernel_wal::JournalRecord>);
 
-#[must_use]
-pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
+/// Convert historical cards without changing their timestamp/node/sequence keys.
+///
+/// Refuses the whole conversion if a card's journal sequence cannot fit the
+/// key's 32-bit counter. Truncating or saturating it can collide with another
+/// card and silently replace financial history when entries are persisted.
+/// No partial history is returned on failure.
+pub fn migrated(chains: &[Chain], writer: u64) -> Result<Vec<StoredEntry>, String> {
     use crate::root::kernel::JournalledCard;
     let mut out: Vec<StoredEntry> = Vec::new();
     for (node, records) in chains {
@@ -40,7 +45,6 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
         let mut cards: BTreeMap<EntryKey, CardFields> = BTreeMap::new();
         let mut original_keys = Vec::new();
         for (index, (seq, body, card)) in opening.into_iter().chain(rest).enumerate() {
-            let key = |at: u64| EntryKey::new(at, node.to_be_bytes(), seq as u32);
             let migrated = |reason: Option<String>| EntryAuthor::Migrated {
                 node: *node,
                 node_seq: seq,
@@ -95,6 +99,12 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                     (draft, fields, reason)
                 }
             };
+            let counter = u32::try_from(seq).map_err(|_| {
+                format!(
+                    "cannot migrate rate-card history: node {node} journal sequence {seq} exceeds \
+                     the entry key's 32-bit counter; no history was converted"
+                )
+            })?;
             history.append(draft.clone());
             let entry_key = history.head_key();
             original_keys.push(entry_key);
@@ -102,7 +112,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
                 cards.insert(key, fields.clone());
             }
             out.push(StoredEntry {
-                key: key(draft.appended_at),
+                key: EntryKey::new(draft.appended_at, node.to_be_bytes(), counter),
                 effective_from: draft.effective_from,
                 effective_until: draft.effective_until,
                 appended_at: draft.appended_at,
@@ -129,7 +139,7 @@ pub fn migrated(chains: &[Chain], writer: u64) -> Vec<StoredEntry> {
         }
         seen.insert((digest_hex(&e.card), e.effective_from, e.effective_until))
     });
-    out
+    Ok(out)
 }
 
 #[cfg(feature = "root-admin")]
