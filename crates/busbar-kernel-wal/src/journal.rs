@@ -340,9 +340,27 @@ impl JournalRecord {
     /// The chain hash this record's own fields should carry — everything in the header before the
     #[must_use]
     pub fn digest_of_chain(&self) -> [u8; 32] {
-        let bytes = self.encode();
+        let mut header = [0u8; JOURNAL_HEADER_BYTES];
+        header[at::MAGIC..at::MAGIC + 4].copy_from_slice(&JOURNAL_MAGIC);
+        header[at::VERSION..at::VERSION + 2].copy_from_slice(&JOURNAL_VERSION.to_le_bytes());
+        header[at::CLASS] = self.class.code();
+        header[at::RESERVED] = 0;
+        header[at::NODE..at::NODE + 8].copy_from_slice(&self.node.to_le_bytes());
+        header[at::NODE_SEQ..at::NODE_SEQ + 8].copy_from_slice(&self.node_seq.to_le_bytes());
+        header[at::LEASE_EPOCH..at::LEASE_EPOCH + 8]
+            .copy_from_slice(&self.lease_epoch.to_le_bytes());
+        header[at::POLICY_EPOCH..at::POLICY_EPOCH + 8]
+            .copy_from_slice(&self.policy_epoch.to_le_bytes());
+        header[at::WALL..at::WALL + 8].copy_from_slice(&self.wall.to_le_bytes());
+        header[at::MONO..at::MONO + 8].copy_from_slice(&self.mono.to_le_bytes());
+        header[at::BODY_LEN..at::BODY_LEN + 4]
+            .copy_from_slice(&(self.body.len() as u32).to_le_bytes());
+        header[at::RESERVED2..at::RESERVED2 + 4].copy_from_slice(&0u32.to_le_bytes());
+        header[at::BODY_HASH..at::BODY_HASH + 32].copy_from_slice(&self.body_hash);
+        header[at::PREV_HASH..at::PREV_HASH + 32].copy_from_slice(&self.prev_hash);
+        // at::HASH..end is not part of the preimage.
         let mut hasher = Context::new(&SHA256);
-        hasher.update(&bytes[0..at::HASH]);
+        hasher.update(&header[0..at::HASH]);
         crate::record::digest32(hasher)
     }
 
@@ -364,9 +382,10 @@ pub fn body_digest(body: &[u8]) -> [u8; 32] {
 /// Thirty-two bytes as hexadecimal.
 #[must_use]
 pub fn hex(bytes: &[u8; 32]) -> String {
+    use std::fmt::Write;
     let mut out = String::with_capacity(64);
     for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

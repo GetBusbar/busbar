@@ -5,11 +5,13 @@
 
 /// The lowercase hexadecimal digest the chain is built on.
 pub fn sha256_hex(data: &[u8]) -> String {
-    ring::digest::digest(&ring::digest::SHA256, data)
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    use std::fmt::Write;
+    let digest = ring::digest::digest(&ring::digest::SHA256, data);
+    let mut out = String::with_capacity(digest.as_ref().len() * 2);
+    for b in digest.as_ref() {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
 }
 
 /// HOW A RECORD'S FIELDS ARE FRAMED INTO THE DIGEST INPUT.
