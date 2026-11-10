@@ -75,8 +75,15 @@ pub trait MigrateHost {
     ) -> Result<Option<(String, MigrationAnswer)>, String>;
 
     /// Cold reference discovery, distinct from selecting an owner for settings migration.
-    fn migrate_references(&self, _kind: &str, _module: &str, _settings: &serde_json::Value, _from: &str)
-        -> Result<Option<(String, MigrationAnswer)>, String> { Ok(None) }
+    fn migrate_references(
+        &self,
+        _kind: &str,
+        _module: &str,
+        _settings: &serde_json::Value,
+        _from: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
+        Ok(None)
+    }
 
     fn repin(&self, github: &str) -> Result<Option<String>, String>;
 
@@ -149,6 +156,15 @@ struct Site {
 }
 
 impl Site {
+    fn owns_reference_scope(&self, path: &[String]) -> bool {
+        self.kind == busbar_contract::abi::mechanism::kind::PLANE
+            && path.len() > 1
+            && path.first().is_some_and(|section| {
+                section != busbar_contract::abi::sdk::migrate::SOURCE_DOCUMENTS
+                    && self.read_only.contains(section)
+            })
+    }
+
     fn validate(&self, host: &dyn MigrateHost, settings: &serde_json::Value) -> Result<(), String> {
         let Some(client_id) = &self.browser_client_id else {
             return host.validate_migrated(&self.kind, &self.module, settings);
@@ -248,9 +264,9 @@ pub(super) fn migrate_over(
                 Ok(Some((_, answer))) => {
                     for need in answer.needs {
                         match need {
-                            MigrateNeed::MigrateCredential {path, module} if path.first().is_some_and(|section| site.read_only.contains(section)) =>
+                            MigrateNeed::MigrateCredential {path, module} if site.owns_reference_scope(&path) =>
                                 super::migrate_credentials::migrate(root, host, &path, &module, ledger.changes, ledger.todos),
-                            MigrateNeed::Review {path, reason} if path.first().is_some_and(|section| site.read_only.contains(section)) =>
+                            MigrateNeed::Review {path, reason} if site.owns_reference_scope(&path) =>
                                 ledger.todos.push(format!("{}: {reason}", path.join("."))),
                             _ => {}
                         }
@@ -349,7 +365,7 @@ fn sites(
                     module: module.to_string(),
                     settings,
                     read_only: Vec::new(),
-                references_only: false,
+                    references_only: false,
                     browser_client_id: None,
                 });
             }
@@ -412,7 +428,12 @@ fn sites(
                 .plane_selecting_sections(plane.key)
                 .iter()
                 .any(|section| root.contains_key(Value::from(section.as_str())));
-        if !selected && !plane.consumes.iter().any(|section| root.contains_key(Value::from(*section))) {
+        if !selected
+            && !plane
+                .consumes
+                .iter()
+                .any(|section| root.contains_key(Value::from(*section)))
+        {
             continue;
         }
         let mut read_only = Vec::new();
@@ -620,6 +641,10 @@ fn apply(
                 ledger.todos.push(format!("{}: {reason}", path.join(".")));
             }
             MigrateNeed::MigrateCredential { path, module } => {
+                if !site.owns_reference_scope(&path) {
+                    ledger.todos.push(format!("{plugin}: credential migration requested a reference outside its consumed sections; the original was preserved"));
+                    continue;
+                }
                 super::migrate_credentials::migrate(
                     root,
                     host,

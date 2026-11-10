@@ -217,3 +217,35 @@ fn current_migration_validation_calls_real_slot_without_open_and_redacts_refusal
     assert!(!error.contains("PRIVATE-REFUSAL-CANARY"));
     assert_eq!(witness::OPENS.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+#[test]
+fn credential_delivery_refuses_an_unrelated_kind_without_echoing_material() {
+    let error = super::migrate_credential_door(
+        raw(witness::with::door),
+        &busbar_contract::Secret::new("SYNTHETIC_PRIVATE_CREDENTIAL".to_owned()),
+        "1.5.5",
+        &busbar_contract::plugin::TestKernelSeal,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "credential owner could not migrate the original reference"
+    );
+}
+
+#[test]
+fn default_reference_discovery_does_not_run_ordinary_settings_migration() {
+    let settings = serde_json::json!({"signing-secret":"SYNTHETIC","url":"10.0.0.7"});
+    let answer = super::migrate_references_door(raw(witness::with::door), &settings, "1.5.5")
+        .unwrap()
+        .unwrap();
+    assert!(answer.needs.is_empty() && answer.report.is_empty());
+    let returned: serde_json::Value = serde_json::from_slice(
+        answer
+            .encode()
+            .unwrap()
+            .expose(&busbar_contract::plugin::TestKernelSeal),
+    )
+    .unwrap();
+    assert_eq!(returned, settings);
+}
