@@ -423,7 +423,7 @@ fn a_slow_auth_door_does_not_park_the_reactor() {
         &Default::default(),
     )
     .expect("the actual root admits the signed OIDC product");
-    let mut settings = common::credentials::settings(AUDIENCE).into();
+    let mut settings = common::credentials::settings(AUDIENCE);
     let target = settings["jwks_url"]
         .as_str()
         .unwrap()

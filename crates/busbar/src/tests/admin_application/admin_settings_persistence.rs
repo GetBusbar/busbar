@@ -993,7 +993,10 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
     let before = serde_json::to_value(
         busbar_kernel::config::overlay::read_async(&overlay)
             .await
-            .authoring(&busbar_kernel::seal::acquire()),
+            .map(|doc| {
+                serde_json::to_value(doc.authoring(&busbar_kernel::seal::acquire()))
+                    .expect("the overlay authoring view serializes")
+            }),
     )
     .unwrap();
     for value in [
@@ -1016,7 +1019,10 @@ async fn test_admin_v1_config_settings_put_refuses_retired_persist_without_store
                 serde_json::to_value(
                     busbar_kernel::config::overlay::read_async(&overlay)
                         .await
-                        .authoring(&busbar_kernel::seal::acquire())
+                        .map(|doc| serde_json::to_value(
+                            doc.authoring(&busbar_kernel::seal::acquire())
+                        )
+                        .expect("the overlay authoring view serializes"))
                 )
                 .unwrap(),
                 before,
