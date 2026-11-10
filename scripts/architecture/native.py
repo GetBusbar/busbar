@@ -260,6 +260,10 @@ class Qualification:
             MODERNCI_CACHE_DIR=str(self.work / 'cache'), XDG_CACHE_HOME=str(self.work / 'cache'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')
         self.env['CI_SERVER_HOST'] = os.environ['CI_SERVER_HOST']
+        # Evidence links name the real native job; these fields contain no credentials.
+        for key in ('CI_JOB_URL', 'CI_JOB_ID', 'CI_PIPELINE_ID'):
+            if key in os.environ:
+                self.env[key] = os.environ[key]
         # Runner umasks can permit group/world writes. Custody requires a private
         # temporary directory, independent of the runner's checkout permissions.
         Path(self.env['TMPDIR']).mkdir(mode=0o700)
