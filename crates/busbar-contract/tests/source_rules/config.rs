@@ -192,29 +192,55 @@ fn descriptor_shape_matches(
     }
 }
 
-/// The fixture is the actual exported plane descriptor, bound to source provenance and
+/// The actual plane descriptor is bound to the registry's independently pinned source capture.
 fn descriptor_provider_entries(
     sources: &[walk::Source],
     types: &serde_json::Map<String, serde_json::Value>,
 ) -> BTreeMap<String, BTreeSet<String>> {
+    let registry: serde_yaml::Value =
+        serde_yaml::from_str(&std::fs::read_to_string(walk::repo().join("plugins.yaml")).unwrap())
+            .unwrap();
+    let captures: Vec<_> = registry["plugins"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .filter(|owner| owner.get("provider_key_census").is_some())
+        .collect();
+    assert_eq!(
+        captures.len(),
+        1,
+        "the census requires its declared source capture"
+    );
+    let owner = captures[0];
+    assert_eq!(owner["kind"].as_str(), Some("plane"));
+    let capture = &owner["provider_key_census"];
     let fixture: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(walk::repo().join("testing/config/provider-keys-llm.json"))
-            .unwrap(),
+        &std::fs::read_to_string(walk::repo().join(capture["fixture"].as_str().unwrap())).unwrap(),
     )
     .unwrap();
     let text = fixture["descriptor_text"].as_str().unwrap();
     let provenance = &fixture["provenance"];
     assert_eq!(
-        busbar_contract::sha256_hex(text.as_bytes()),
-        provenance["sha256"].as_str().unwrap()
+        provenance["repository"].as_str().unwrap(),
+        format!(
+            "https://github.com/GetBusbar/{}",
+            owner["repo"].as_str().unwrap()
+        )
     );
+    for field in ["commit", "path", "constant", "sha256"] {
+        assert_eq!(
+            provenance[field].as_str().unwrap(),
+            capture[field].as_str().unwrap(),
+            "the captured {field} must match the registry's immutable source record"
+        );
+    }
+    let revision = capture["commit"].as_str().unwrap();
+    assert_eq!(revision.len(), 40);
+    assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(
-        provenance["repository"],
-        "https://github.com/GetBusbar/busbar-plane-llm"
+        busbar_contract::sha256_hex(text.as_bytes()),
+        capture["sha256"].as_str().unwrap()
     );
-    assert_eq!(provenance["path"], "plane-llm/src/meta.rs");
-    assert_eq!(provenance["constant"], "PROVIDER_KEYS");
-    assert_eq!(provenance["commit"].as_str().unwrap().len(), 40);
     let descriptor = busbar_contract::provider_keys::decode(text.as_bytes())
         .expect("the actual plane descriptor decodes");
     let parser = sources

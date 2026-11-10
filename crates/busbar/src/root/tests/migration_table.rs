@@ -284,33 +284,7 @@ fn the_committed_migration_table_is_the_render() {
     }
 }
 
-#[test]
-fn historical_conversion_reads_former_names_by_current_alias() {
-    install();
-    assert_eq!(
-        busbar_migrations::config::migration_table::former_names("webrequest"),
-        ["busbar-webrequest"]
-    );
-    assert!(
-        busbar_migrations::config::migration_table::former_names("planted-never-renamed")
-            .is_empty()
-    );
-}
-
-#[test]
-fn former_module_names_are_converted_without_runtime_alias_admission() {
-    install();
-    let raw = "store: {module: busbar-store-postgres-plugin}\nidentity-providers: {company: {module: busbar-auth-oidc-plugin}}\nauth: {chain: [company]}\n";
-    let out = busbar_migrations::config::normalize_authored(
-        raw,
-        &busbar_migrations::config::migrate_plugins::NoPlugins,
-    )
-    .expect("structural conversion");
-    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
-    assert_eq!(doc["store"]["module"].as_str(), Some("postgres"));
-    assert_eq!(
-        doc["identity-providers"]["company"]["module"].as_str(),
-        Some("oidc")
-    );
-    assert_eq!(doc["auth"]["chain"][0].as_str(), Some("company"));
-}
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(migration_table_store);
+owner_test_sources!(migration_table_auth);
+owner_test_sources!(migration_table_hook);

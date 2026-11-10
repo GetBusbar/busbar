@@ -15,6 +15,9 @@
 #   checkout_dir:  local sibling/checkout directory name when it differs from `repo`
 #                  (no entry needs it today; kept for the next repo rename)
 #   checkout_ref: git ref used by registry consumers [dev].
+#   provider_key_census: immutable source capture for the historical config-key census;
+#                  fixture, commit, path, constant and sha256 bind the recorded descriptor
+#                  to this registered plane owner independently of the captured artifact.
 #
 # Fleet fields (read by `busbar-release plugin sync` (GetBusbar/busbar-release), the ONE generator: it
 # renders every plugin repo's CI caller, toolchain, lint config, deny.toml, workspace dependency table,
@@ -398,6 +401,13 @@ plugins:
     released: false
   - repo: busbar-plane-llm
     kind: plane
+    # Immutable capture used by the generic historical provider-key census.
+    provider_key_census:
+      fixture: testing/config/provider-keys-llm.json
+      commit: "e1a3d6fb36f9474240101710b6926587b659213e"
+      path: "plane-llm/src/meta.rs"
+      constant: "PROVIDER_KEYS"
+      sha256: "c92729b4811679bdebaae40e60d02df6adb32247803ae15f85d9652a1bf952f5"
     alias: llm
     crate: busbar-plane-llm-plugin
     version_line: "1.0"
