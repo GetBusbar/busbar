@@ -19,7 +19,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
     )
     .expect("a catalog entry");
     let dep: ProviderDeploy = serde_yaml::from_str(
-        "api_key: {env: K}\nerror_map: {b: z, c: w}\n\
+        "api_key: { module: fixture-source, settings: { slot: K } }\nerror_map: {b: z, c: w}\n\
          model_capabilities: [{models: [m2*]}]\npath: /v1/x\n",
     )
     .expect("a deployment");
@@ -36,7 +36,7 @@ fn the_resolved_provider_carries_the_plane_keys_as_one_table_merged_by_the_neutr
 
     assert_eq!(p.base_url, "https://api.example.com");
     assert_eq!(p.path.as_deref(), Some("/v1/x"));
-    assert_eq!(p.api_key.env_var(), Some("K"));
+    assert_eq!(p.api_key, crate::config::secret::descriptor_reference("K"));
     for key in CORE_PROVIDER_KEYS {
         assert!(
             !p.table.contains_key(*key),

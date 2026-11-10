@@ -373,6 +373,7 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
                 busbar_contract::conn::admissions::AdmissionAuthority::issue(
                     &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
                     table.clone(),
+                    Default::default(),
                 ),
             ),
         ),

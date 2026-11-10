@@ -407,6 +407,7 @@ pub(crate) fn test_admissions(
     busbar_contract::conn::admissions::AdmissionAuthority::issue(
         &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
         table,
+        Default::default(),
     )
 }
 

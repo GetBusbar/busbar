@@ -375,8 +375,10 @@ fn collect_refs(
 ) {
     let Some((head, rest)) = segments.split_first() else {
         if value.is_mapping() {
-            if let Ok(r) =
-                serde_yaml::from_value::<busbar_contract::secret_ref::SecretRef>(value.clone())
+            if let Ok(r) = busbar_contract::secret_ref::context::deserialize::<
+                busbar_contract::secret_ref::SecretRef,
+                _,
+            >(value.clone(), &crate::config::secret::sugars())
             {
                 out.push((at, r));
             }
@@ -530,7 +532,7 @@ fn build(
         .as_deref()
         .and_then(|slot| slot.downcast_ref::<DoorOwned>())
         .map(DoorOwned::bytes)
-        .unwrap_or_default();
+        .unwrap_or_else(|| Ok(Vec::new()));
 
     let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
         ctx.providers?.get(name).map(|p| {
@@ -542,9 +544,9 @@ fn build(
             )
         })
     });
-    let (facing, opened) = match settings_of(section.section, &section.value)
-        .and_then(|bytes| (d.reg.facing)(&bytes, &owned, ctx.public_url, &dialects))
-    {
+    let (facing, opened) = match settings_of(section.section, &section.value).and_then(|bytes| {
+        owned.and_then(|owned| (d.reg.facing)(&bytes, &owned, ctx.public_url, &dialects))
+    }) {
         Ok(f) => (f, true),
         Err(refusal) => {
             tracing::error!(plane = d.reg.key, "{refusal}");
@@ -764,16 +766,15 @@ pub struct DoorOwned {
 }
 
 impl DoorOwned {
-    #[must_use]
-    pub fn bytes(&self) -> Vec<u8> {
+    pub fn bytes(&self) -> Result<Vec<u8>, String> {
         if self.value.is_null() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        serde_json::to_value(&self.value)
-            .ok()
-            .map(|v| crate::config::filled::plane_bound(&[self.section], v))
-            .and_then(|v| serde_json::to_vec(&serde_json::json!({ self.section: v })).ok())
-            .unwrap_or_default()
+        let value = serde_json::to_value(&self.value)
+            .map_err(|_| "owned plane configuration is not JSON")?;
+        let value = crate::config::filled::plane_bound(&[self.section], value)?;
+        serde_json::to_vec(&serde_json::json!({self.section:value}))
+            .map_err(|_| "owned plane configuration cannot be encoded".to_owned())
     }
 }
 

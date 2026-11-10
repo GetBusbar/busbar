@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV};
+use busbar_contract::abi::mechanism::door::{REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL};
+use busbar_contract::secret_ref::{SecretRef, Sugars};
 use serde_json::json;
 
-use super::{plane_bound, plane_bound_bytes};
+use super::plane_bound_with_sources;
 use crate::config::{interpolate_env_with, EnvSubst};
 
 const ENV: &str = busbar_contract::conn::PROGRAM_KEYS[2];
 
+fn sources() -> Sugars {
+    let mut sources = Sugars::default();
+    sources
+        .declare(
+            "fill-witness",
+            &[
+                (REWRITE_SUGAR, "lookup".into(), "slot".into()),
+                (REWRITE_SUGAR_ROLE, "lookup".into(), SUGAR_ROLE_FILL.into()),
+            ],
+        )
+        .unwrap();
+    sources
+}
 fn env_ref(var: &str) -> serde_json::Value {
-    json!({ SECRET_MODULE_ENV: var })
+    serde_json::to_value(sources().reference_for_role(SUGAR_ROLE_FILL, var).unwrap()).unwrap()
+}
+fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Value {
+    plane_bound_with_sources(prefix, value, &sources()).expect("admitted fill source")
 }
 
 fn interpolated(template: &str, vars: &[(&str, &str)]) -> serde_yaml::Value {
@@ -68,8 +85,10 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     );
     let bound = plane_bound(&["filled_part"], section(&doc, "filled_part"));
     assert!(!bound.to_string().contains(PLAIN), "no byte: {bound}");
-    let template = serde_json::to_value(SecretRef::template("Bearer ${BUSBAR_FILLED_PART_SECRET}"))
-        .expect("a reference");
+    let template = serde_json::to_value(
+        SecretRef::template("Bearer ${BUSBAR_FILLED_PART_SECRET}", &sources()).unwrap(),
+    )
+    .expect("a reference");
     assert_eq!(bound["reg"][ENV]["AUTH"], template, "{bound}");
     assert_eq!(
         bound["reg"]["headers"]["Authorization"], template,
@@ -79,10 +98,11 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
         serde_json::from_value(bound["reg"][ENV]["AUTH"].clone()).expect("a reference");
     let resolved = reference
         .resolve_template(&|r| {
-            r.env_var()
-                .and_then(|v| std::env::var(v).ok())
-                .map(busbar_contract::Secret::new)
-                .ok_or_else(|| "unresolved".to_string())
+            if r == &sources().reference_for_role(SUGAR_ROLE_FILL, VAR).unwrap() {
+                Ok(busbar_contract::Secret::new(PLAIN.to_owned()))
+            } else {
+                Err("unbound fill reference".into())
+            }
         })
         .expect("resolves");
     assert_eq!(
@@ -126,11 +146,11 @@ fn a_number_interpolated_into_a_credential_field_is_a_position_too() {
         "filled_number:\n  password: ${BUSBAR_FILLED_NUMBER_SECRET}\n  port: ${BUSBAR_FILLED_NUMBER_SECRET}\n",
         &[(VAR, "483920175534")],
     );
-    let bytes = plane_bound_bytes(
+    let bytes = serde_json::to_vec(&plane_bound(
         &["filled_number"],
-        doc.get("filled_number").expect("written"),
-    )
-    .expect("bound");
+        section(&doc, "filled_number"),
+    ))
+    .expect("bound encoding");
     let bound: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
     assert_eq!(
         bound,
@@ -164,4 +184,20 @@ fn a_literal_equal_to_the_secret_elsewhere_and_a_changed_value_are_left_as_writt
 fn a_section_with_nothing_interpolated_is_handed_as_written() {
     let written = json!({"reg": {"url": "http://u.invalid", "api_key": env_ref("X")}});
     assert_eq!(plane_bound(&["filled_nothing"], written.clone()), written);
+}
+
+#[test]
+fn a_credential_fill_refuses_without_an_admitted_fill_owner() {
+    let doc = interpolated(
+        "filled_missing:\n  token: ${BUSBAR_FILLED_MISSING_OWNER}\n",
+        &[("BUSBAR_FILLED_MISSING_OWNER", "unavailable-source-value")],
+    );
+    let error = plane_bound_with_sources(
+        &["filled_missing"],
+        section(&doc, "filled_missing"),
+        &Sugars::default(),
+    )
+    .unwrap_err();
+    assert!(error.contains("fill"), "{error}");
+    assert!(!error.contains("unavailable-source-value"), "{error}");
 }

@@ -119,6 +119,7 @@ fn a_program_ready_requires_its_actual_live_same_ticket_supplier_spawn() {
             });
             let program = busbar_contract::conn::Program::from_settings(
                 &serde_json::json!({"command": "/bin/cat", "cwd": "/"}),
+                &Default::default(),
             )
             .unwrap();
             let result = Carried::dial(
@@ -156,6 +157,7 @@ fn a_program_carrier_without_a_checked_supplier_owner_never_crosses() {
         });
         let program = busbar_contract::conn::Program::from_settings(
             &serde_json::json!({"command": "/bin/cat"}),
+            &Default::default(),
         )
         .unwrap();
         assert!(Carried::dial(

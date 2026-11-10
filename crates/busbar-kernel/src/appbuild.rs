@@ -809,16 +809,24 @@ pub fn bootstrap_dependency_names_from_metadata(
     }
     if let Some(auth) = &cfg.auth {
         if let Some(reference) = auth.admin_token_ref() {
-            add(&reference.module);
+            if let Some(module) = reference.source_module() {
+                add(module);
+            }
         }
         if let Some(reference) = &auth.signing_key {
-            add(&reference.module);
+            if let Some(module) = reference.source_module() {
+                add(module);
+            }
         }
     }
     if let Some(keys) = &cfg.credentials.at_rest {
-        add(&keys.key.module);
+        if let Some(module) = keys.key.source_module() {
+            add(module);
+        }
         if let Some(previous) = &keys.previous {
-            add(&previous.module);
+            if let Some(module) = previous.source_module() {
+                add(module);
+            }
         }
     }
     modules

@@ -370,10 +370,14 @@ impl RootHost {
             &[],
             &allowed,
             |_, reference| {
-                if let Some(secret) = reference
-                    .file_path()
-                    .and_then(|path| staged.iter().find(|secret| secret.path == Path::new(path)))
-                {
+                let sources = self.source_declarations()?;
+                let source =
+                    sources.with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH);
+                if let Some(secret) = staged.iter().find(|secret| {
+                    source
+                        .zip(secret.path.to_str())
+                        .is_some_and(|(source, path)| reference == &source.reference(path))
+                }) {
                     let text = std::str::from_utf8(&secret.bytes)
                         .map_err(|_| "staged migration validation reference is not UTF-8")?;
                     if text.is_empty() {
@@ -627,6 +631,12 @@ impl RootHost {
 }
 
 impl MigrateHost for RootHost {
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        Ok(busbar_contract::secret::SecretAxis::sugars(
+            crate::root::linked::secret_rows(),
+        ))
+    }
+
     fn admit_config_profile(
         &self,
         proof: &busbar_migrations::config::HistoricalConfigProof,
@@ -831,7 +841,11 @@ impl MigrateHost for RootHost {
                 .map_err(|_| "the original credential source could not be resolved".to_string())?;
         let cwd = std::env::current_dir()
             .map_err(|_| "the original process working directory is unavailable".to_string())?;
-        legacy_jwt_file_reference(resolved.expose(&busbar_kernel::seal::lend()), &cwd)
+        legacy_jwt_file_reference(
+            resolved.expose(&busbar_kernel::seal::lend()),
+            &cwd,
+            &self.source_declarations()?,
+        )
     }
 
     fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
@@ -862,6 +876,7 @@ impl MigrateHost for RootHost {
 fn legacy_jwt_file_reference(
     credential: &str,
     cwd: &Path,
+    sources: &busbar_contract::secret_ref::Sugars,
 ) -> Result<Option<busbar_contract::secret_ref::SecretRef>, String> {
     if credential.trim_start().starts_with('{') {
         return Ok(None);
@@ -886,9 +901,10 @@ fn legacy_jwt_file_reference(
     {
         return Err("the original credential file is not JSON".into());
     }
-    Ok(Some(busbar_contract::secret_ref::SecretRef::file(
+    Ok(Some(sources.reference_for_role(
+        busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         path_text,
-    )))
+    )?))
 }
 
 #[cfg(test)]

@@ -172,7 +172,11 @@ pub trait SecretAxis: Send + Sync {
     fn linked(&self, module: &str) -> bool;
 
     /// JUDGE one reference to `module` at config time, before anything resolves: its plugin's
-    fn check(&self, _module: &str, _settings: &serde_json::Value) -> Result<(), Vec<String>> {
+    fn check(
+        &self,
+        _module: &str,
+        _settings: &crate::plugin_settings::Settings,
+    ) -> Result<(), Vec<String>> {
         Ok(())
     }
 

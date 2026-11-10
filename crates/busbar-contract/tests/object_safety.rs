@@ -354,6 +354,9 @@ fn the_remaining_kinds_shapes_are_constructible() {
         state: ChallengeState(vec![2]),
         rounds_left: 1,
     };
-    let _ = SecretRef::file("fixture://key");
+    let _: SecretRef = serde_json::from_value(serde_json::json!({
+        "module":"fixture-source", "settings":{"slot":"fixture-key"}
+    }))
+    .unwrap();
     let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
 }

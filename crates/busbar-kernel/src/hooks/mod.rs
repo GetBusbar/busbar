@@ -990,7 +990,9 @@ mod resolution {
         {
             return None;
         }
-        let settings = zeroize::Zeroizing::new(serde_json::to_string(&hook.settings).ok()?);
+        let encoded = hook.settings.encode().ok()?;
+        let seal = crate::seal::lend();
+        let settings = std::str::from_utf8(encoded.expose(&seal)).ok()?;
         let mut h = std::collections::hash_map::DefaultHasher::new();
 
         registry.hash(&mut h);

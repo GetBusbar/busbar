@@ -28,7 +28,7 @@ fn scope() -> busbar_contract::config_time::ConfigScope {
 #[test]
 fn a_reference_at_a_declared_field_resolves_as_the_kernel_resolves_it() {
     let written = settings(serde_json::json!({
-        "dsn": {"env":"PG_DSN"}, "replicas":[{"password":{"env":"R1"}}], "pool":4
+        "dsn": {"module":"PG_DSN", "settings":{}}, "replicas":[{"password":{"module":"R1", "settings":{}}}], "pool":4
     }));
     let out = resolve_settings(
         &crate::config::secret::test_settings(&written),
@@ -56,7 +56,7 @@ fn a_reference_at_a_declared_field_resolves_as_the_kernel_resolves_it() {
 }
 #[test]
 fn a_reference_at_an_undeclared_field_is_refused_as_the_kernel_refuses_it() {
-    let written = settings(serde_json::json!({"dsn":{"env":"PG_DSN"}}));
+    let written = settings(serde_json::json!({"dsn":{"module":"PG_DSN", "settings":{}}}));
     let err = resolve_settings(
         &crate::config::secret::test_settings(&written),
         &[],
@@ -75,7 +75,9 @@ fn a_reference_at_an_undeclared_field_is_refused_as_the_kernel_refuses_it() {
 }
 #[test]
 fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
-    let written = settings(serde_json::json!({"url":{"env":"STORE_URL"},"password":{"env":"PW"}}));
+    let written = settings(
+        serde_json::json!({"url":{"module":"STORE_URL", "settings":{}},"password":{"module":"PW", "settings":{}}}),
+    );
     let out = resolve_settings(
         &crate::config::secret::test_settings(&written),
         &["password".into()],

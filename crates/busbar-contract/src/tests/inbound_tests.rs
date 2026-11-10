@@ -55,9 +55,11 @@ fn only_declared_inbound_paths_are_interpreted_and_indices_are_preserved() {
 #[test]
 fn omitted_listener_and_explicit_null_have_different_admission() {
     let needs = [need(DIRECTION_INBOUND, "opaque", "listen")];
-    assert!(interpret(&Settings::default(), &needs).unwrap()[0]
-        .binding
-        .is_none());
+    assert!(
+        interpret(&Settings::default(), &needs).unwrap()[0]
+            .binding
+            .is_none()
+    );
     assert_eq!(
         interpret(&settings(json!({"listen":null})), &needs).unwrap_err(),
         "listen.listen: not set"
@@ -103,8 +105,8 @@ fn tls_is_typed_and_unrecognized_fields_cannot_cross_admission() {
             .as_ref()
             .unwrap()
             .key
-            .module,
-        "source"
+            .source_module(),
+        Some("source")
     );
     document["server"]["tls"]["private-canary"] = json!("secret-canary");
     let error = interpret(&settings(document), &needs).unwrap_err();

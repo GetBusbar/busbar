@@ -1353,10 +1353,12 @@ fn parking_secret_env(park: std::time::Duration) -> HookEnv {
     HookEnv::new(
         std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty()),
         std::sync::Arc::new(crate::config::secret::SecretResolver::with_plugin(
-            Box::new(move |_module: &str, _settings: &str| {
-                std::thread::sleep(park);
-                Ok(busbar_contract::redacted::Secret::new(b"resolved".to_vec()))
-            }),
+            Box::new(
+                move |_module: &str, _settings: &busbar_contract::plugin_settings::Settings| {
+                    std::thread::sleep(park);
+                    Ok(busbar_contract::redacted::Secret::new(b"resolved".to_vec()))
+                },
+            ),
         )),
     )
     .expect("the registry's hook axis")

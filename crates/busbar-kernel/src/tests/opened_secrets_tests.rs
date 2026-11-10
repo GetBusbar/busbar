@@ -11,6 +11,16 @@ use busbar_contract::secret::{SecretCalls, SecretRefused};
 
 use crate::preflight::OpenedSecrets;
 
+fn settings(value: &str) -> busbar_contract::plugin_settings::Settings {
+    [("value".to_owned(), serde_json::Value::from(value))]
+        .into_iter()
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+fn encoded(value: &str) -> Secret<Vec<u8>> {
+    Secret::new(serde_json::to_vec(&serde_json::json!({"value":value})).unwrap())
+}
+
 struct Source {
     gate: Option<std::sync::Mutex<mpsc::Receiver<()>>>,
 }
@@ -36,7 +46,9 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
 
     let slow_side = {
         let opened = Arc::clone(&opened);
-        std::thread::spawn(move || opened.resolve("slow-source", "slow", None, || Ok(slow)))
+        std::thread::spawn(move || {
+            opened.resolve("slow-source", &settings("slow"), None, || Ok(slow))
+        })
     };
     std::thread::sleep(Duration::from_millis(200));
 
@@ -45,18 +57,19 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
         let opened = Arc::clone(&opened);
         std::thread::spawn(move || {
             let fast: Arc<dyn SecretCalls> = Arc::new(Source { gate: None });
-            let _ = done_tx.send(opened.resolve("fast-source", "fast", None, || Ok(fast)));
+            let _ =
+                done_tx.send(opened.resolve("fast-source", &settings("fast"), None, || Ok(fast)));
         });
     }
     let answered = done.recv_timeout(Duration::from_secs(3));
     let _ = release.send(());
     assert_eq!(
         answered.expect("another module's resolution was stalled behind a slow source"),
-        Ok(Secret::new(b"fast".to_vec()))
+        Ok(encoded("fast"))
     );
     assert_eq!(
         slow_side.join().expect("the slow side ends"),
-        Ok(Secret::new(b"slow".to_vec()))
+        Ok(encoded("slow"))
     );
 }
 
@@ -69,12 +82,12 @@ fn a_plugin_is_opened_once_under_its_key() {
         Ok(Arc::new(Source { gate: None }) as Arc<dyn SecretCalls>)
     };
     assert_eq!(
-        opened.resolve("one-source", "a", None, open),
-        Ok(Secret::new(b"a".to_vec()))
+        opened.resolve("one-source", &settings("a"), None, open),
+        Ok(encoded("a"))
     );
     assert_eq!(
-        opened.resolve("one-source", "b", None, open),
-        Ok(Secret::new(b"b".to_vec()))
+        opened.resolve("one-source", &settings("b"), None, open),
+        Ok(encoded("b"))
     );
     assert_eq!(opens.load(Ordering::SeqCst), 1);
 }
@@ -104,11 +117,11 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
     let open = || Ok(Arc::new(DiskSource) as Arc<dyn SecretCalls>);
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     assert_eq!(
-        opened.resolve("disk-source", "at-config", Some(&scope), open),
-        Ok(Secret::new(b"at-config".to_vec()))
+        opened.resolve("disk-source", &settings("at-config"), Some(&scope), open),
+        Ok(encoded("at-config"))
     );
     let refused = opened
-        .resolve("disk-source", "on-a-request", None, open)
+        .resolve("disk-source", &settings("on-a-request"), None, open)
         .expect_err("a request path is refused");
     assert!(
         refused.text.contains("never on a request path"),

@@ -514,8 +514,16 @@ mod tests {
     #[test]
     fn tls_is_presence_only_including_secret_reference_settings() {
         let tls = super::super::TlsCfg {
-            cert: super::super::SecretRef::template("CERT_SENTINEL"),
-            key: super::super::SecretRef::template("KEY_SENTINEL"),
+            cert: super::super::SecretRef::template(
+                "CERT_SENTINEL",
+                &crate::config::secret::fixture_sources(),
+            )
+            .unwrap(),
+            key: super::super::SecretRef::template(
+                "KEY_SENTINEL",
+                &crate::config::secret::fixture_sources(),
+            )
+            .unwrap(),
             client_ca: None,
         };
         let view = tls_view(Some(&tls));

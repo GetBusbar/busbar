@@ -20,6 +20,11 @@ const LOCALHOST_SUFFIX: &str = ".localhost";
 pub const FROM_DEFAULT: &str = "1.5.5";
 
 pub trait MigrateHost {
+    /// Source grammar declared by admitted owners; no source is inferred when absent.
+    fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+        Ok(Default::default())
+    }
+
     /// Accept opaque grammar/settings evidence for in-memory migration custody only.
     fn admit_config_profile(&self, _: &super::HistoricalConfigProof) -> Result<(), String> {
         Ok(())
@@ -579,14 +584,20 @@ fn externalize_secret(
             .and_then(|v| v.strip_suffix('}'))
             .filter(|v| !v.is_empty() && !v.contains(['{', '}']))
         {
-            let reference = serde_json::json!({"env": variable});
+            let reference = host.source_declarations()?.reference_for_role(
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+                variable,
+            )?;
+            let reference =
+                serde_json::to_value(reference).map_err(|_| "source reference encoding failed")?;
             secret.zeroize();
             *slot = reference;
             return Ok(());
         }
         let reference = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(
             secret.clone(),
-        ))
+            &host.source_declarations()?,
+        )?)
         .map_err(|_| "authored secret template could not be encoded")?;
         secret.zeroize();
         *slot = reference;
@@ -595,6 +606,10 @@ fn externalize_secret(
     if secret.is_empty() || secret.ends_with(['\r', '\n']) {
         return Err("the current text secret resolver cannot preserve this literal exactly".into());
     }
+    let sources = host.source_declarations()?;
+    let source = sources
+        .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH)
+        .ok_or("no admitted source declares the path role")?;
     let file = host.externalize_secret(site, path, secret.as_bytes())?;
     for line in report {
         if !secret.is_empty() && line.contains(secret.as_str()) {
@@ -602,7 +617,8 @@ fn externalize_secret(
         }
     }
     secret.zeroize();
-    *slot = serde_json::json!({"file": file});
+    *slot = serde_json::to_value(source.reference(file))
+        .map_err(|_| "source reference encoding failed")?;
     Ok(())
 }
 

@@ -45,10 +45,13 @@ pub(super) fn migrate(
         if style != "jwt-bearer" {
             continue;
         }
-        let reference = provider
-            .get("api_key")
-            .cloned()
-            .and_then(|v| serde_yaml::from_value::<SecretRef>(v).ok());
+        let reference = provider.get("api_key").cloned().and_then(|v| {
+            busbar_contract::secret_ref::context::deserialize::<SecretRef, _>(
+                v,
+                &host.source_declarations().ok()?,
+            )
+            .ok()
+        });
         let migrated = reference
             .as_ref()
             .ok_or(())
@@ -75,8 +78,32 @@ mod tests {
     use super::*;
     use busbar_contract::abi::sdk::migrate::Migrated;
 
+    fn sources() -> busbar_contract::secret_ref::Sugars {
+        use busbar_contract::abi::mechanism::door::{
+            REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+        };
+        let mut sources = busbar_contract::secret_ref::Sugars::default();
+        for (owner, word, role) in [
+            ("lookup-owner", "lookup", SUGAR_ROLE_FILL),
+            ("artifact-owner", "artifact", SUGAR_ROLE_PATH),
+        ] {
+            sources
+                .declare(
+                    owner,
+                    &[
+                        (REWRITE_SUGAR, word.into(), "slot".into()),
+                        (REWRITE_SUGAR_ROLE, word.into(), role.into()),
+                    ],
+                )
+                .unwrap();
+        }
+        sources
+    }
     struct Host;
     impl MigrateHost for Host {
+        fn source_declarations(&self) -> Result<busbar_contract::secret_ref::Sugars, String> {
+            Ok(sources())
+        }
         fn migrate(
             &self,
             _: &str,
@@ -101,10 +128,18 @@ mod tests {
             &self,
             reference: &SecretRef,
         ) -> Result<Option<SecretRef>, String> {
-            match reference.env_var() {
-                Some("PATH_SOURCE") => Ok(Some(SecretRef::file("/original/workdir/ key.json "))),
-                Some("INLINE_JSON") => Ok(None),
-                _ => Err("PRIVATE_RESOLVER_ERROR".into()),
+            let source = sources();
+            if reference == &source.get("lookup").unwrap().reference("PATH_SOURCE") {
+                Ok(Some(
+                    source
+                        .get("artifact")
+                        .unwrap()
+                        .reference("/original/workdir/ key.json "),
+                ))
+            } else if reference == &source.get("lookup").unwrap().reference("INLINE_JSON") {
+                Ok(None)
+            } else {
+                Err("PRIVATE_RESOLVER_ERROR".into())
             }
         }
     }
@@ -114,10 +149,10 @@ mod tests {
         let mut root: Mapping = serde_yaml::from_str(
             r#"
 providers:
-  inherited: {api_key: {env: PATH_SOURCE}}
-  explicit: {auth: jwt-bearer, api_key: {env: INLINE_JSON}}
-  override: {auth: bearer, api_key: {env: PATH_SOURCE}}
-  failed: {auth: jwt-bearer, api_key: {env: UNAVAILABLE}}
+  inherited: {api_key: {lookup: PATH_SOURCE}}
+  explicit: {auth: jwt-bearer, api_key: {lookup: INLINE_JSON}}
+  override: {auth: bearer, api_key: {lookup: PATH_SOURCE}}
+  failed: {auth: jwt-bearer, api_key: {lookup: UNAVAILABLE}}
 "#,
         )
         .unwrap();
@@ -126,7 +161,13 @@ providers:
         migrate(&mut root, &Host, &mut changes, &mut todos);
         let migrated: SecretRef =
             serde_yaml::from_value(root["providers"]["inherited"]["api_key"].clone()).unwrap();
-        assert_eq!(migrated.file_path(), Some("/original/workdir/ key.json "));
+        assert_eq!(
+            migrated,
+            sources()
+                .get("artifact")
+                .unwrap()
+                .reference("/original/workdir/ key.json ")
+        );
         for name in ["explicit", "override", "failed"] {
             assert_eq!(root["providers"][name], before["providers"][name]);
         }
@@ -141,9 +182,9 @@ providers:
         let mut root: Mapping = serde_yaml::from_str(
             r#"
 providers:
-  inherited: {api_key: {env: PRIVATE_REFERENCE}}
-  explicit: {auth: jwt-bearer, api_key: {env: PRIVATE_REFERENCE}}
-  other: {auth: bearer, api_key: {env: PRIVATE_REFERENCE}}
+  inherited: {api_key: {lookup: PRIVATE_REFERENCE}}
+  explicit: {auth: jwt-bearer, api_key: {lookup: PRIVATE_REFERENCE}}
+  other: {auth: bearer, api_key: {lookup: PRIVATE_REFERENCE}}
 "#,
         )
         .unwrap();

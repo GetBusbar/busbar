@@ -21,10 +21,10 @@ fn probe() -> busbar_contract::secret_ref::Sugars {
 }
 
 fn reference(module: &str, settings: serde_json::Value) -> crate::config::SecretRef {
-    crate::config::SecretRef {
+    crate::config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
         module: module.to_string(),
-        settings: settings.as_object().cloned().unwrap_or_default(),
-    }
+        settings: settings.as_object().cloned().unwrap_or_default().into(),
+    })
 }
 
 #[test]
@@ -34,18 +34,10 @@ fn a_declared_shorthand_routes_its_settings_key_and_words() {
         super::declared_setting_refusal(
             &sugars,
             "x.key",
-            &reference("probe", serde_json::json!({}))
-        ),
-        Some("x.key: secret module 'probe' requires settings.slot (the probe slot)".to_string())
-    );
-    assert_eq!(
-        super::declared_setting_refusal(
-            &sugars,
-            "x.key",
-            &reference("probe", serde_json::json!({ "slot": "  " }))
+            &reference("busbar-secret-probe", serde_json::json!({}))
         ),
         Some(
-            "x.key: secret module 'probe' requires a NON-EMPTY settings.slot (the probe slot)"
+            "x.key: secret module 'busbar-secret-probe' requires settings.slot (the probe slot)"
                 .to_string()
         )
     );
@@ -53,7 +45,18 @@ fn a_declared_shorthand_routes_its_settings_key_and_words() {
         super::declared_setting_refusal(
             &sugars,
             "x.key",
-            &reference("probe", serde_json::json!({ "slot": "a" }))
+            &reference("busbar-secret-probe", serde_json::json!({ "slot": "  " }))
+        ),
+        Some(
+            "x.key: secret module 'busbar-secret-probe' requires a NON-EMPTY settings.slot (the probe slot)"
+                .to_string()
+        )
+    );
+    assert_eq!(
+        super::declared_setting_refusal(
+            &sugars,
+            "x.key",
+            &reference("busbar-secret-probe", serde_json::json!({ "slot": "a" }))
         ),
         None
     );
@@ -74,7 +77,7 @@ fn an_undeclared_module_is_left_to_the_registry() {
         super::declared_setting_refusal(
             &busbar_contract::secret_ref::Sugars::default(),
             "x.key",
-            &reference("probe", serde_json::json!({}))
+            &reference("busbar-secret-probe", serde_json::json!({}))
         ),
         None,
         "with no plugin declaring it, the kernel knows no shorthand"

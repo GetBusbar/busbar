@@ -13,14 +13,14 @@ fn at(p: &[&str]) -> Vec<String> {
     paths(p)
 }
 
-/// The lend every host runs with a resolver standing in: a reference lends `R:<env>`, a string
+/// The lend every host runs with a resolver standing in: a reference lends `R:<source>`, a string
 fn lent(block: &mut Value, declared: &[&str]) -> Vec<Vec<u8>> {
     let resolve = |v: Value| -> Result<Vec<u8>, String> {
         match v {
             Value::String(s) => Ok(s.into_bytes()),
             Value::Object(o) => Ok(format!(
                 "R:{}",
-                o.get("env").and_then(Value::as_str).unwrap_or("?")
+                o.get("module").and_then(Value::as_str).unwrap_or("?")
             )
             .into_bytes()),
             _ => Err("neither".into()),
@@ -51,8 +51,7 @@ fn a_star_matches_any_key_and_any_index() {
 
 #[test]
 fn exact_paths_lend_in_order_and_are_taken_out_as_today() {
-    let mut block =
-        json!({"client_secret": {"env": "S"}, "nested": {"key": {"env": "K"}}, "id": "x"});
+    let mut block = json!({"client_secret": {"module": "S", "settings": {}}, "nested": {"key": {"module": "K", "settings": {}}}, "id": "x"});
     let out = lent(&mut block, &["client_secret", "nested.key", "absent"]);
     assert_eq!(out, vec![b"R:S".to_vec(), b"R:K".to_vec(), Vec::new()]);
     assert_eq!(block, json!({"nested": {}, "id": "x"}));
@@ -62,8 +61,8 @@ fn exact_paths_lend_in_order_and_are_taken_out_as_today() {
 fn resolved_exact_array_secrets_leave_settings_and_lend_in_statement_order() {
     let declared = paths(&["servers.1.token", "servers.0.token"]);
     let mut block = json!({"servers": [
-        {"token": {"env": "FIRST"}, "name": "a"},
-        {"token": {"env": "SECOND"}, "name": "b"}
+        {"token": {"module": "FIRST", "settings": {}}, "name": "a"},
+        {"token": {"module": "SECOND", "settings": {}}, "name": "b"}
     ]});
     crate::secret_fields::resolve_declared(&mut block, &declared, "acme", |field, r| {
         assert!(matches!(field, "servers.1.token" | "servers.0.token"));
@@ -87,7 +86,7 @@ fn resolved_exact_array_secrets_leave_settings_and_lend_in_statement_order() {
 
 #[test]
 fn exact_array_references_lend_before_resolution_without_remaining_in_settings() {
-    let mut block = json!({"servers": [{"token": {"env": "T"}}]});
+    let mut block = json!({"servers": [{"token": {"module": "T", "settings": {}}}]});
     assert_eq!(
         crate::secret_fields::declared_references(&block, "servers.0.token"),
         vec![at(&["servers", "0", "token"])]
@@ -103,7 +102,7 @@ fn exact_array_references_lend_before_resolution_without_remaining_in_settings()
 fn exact_terminal_array_slots_keep_neighboring_indices_and_wildcard_order() {
     let mut block = json!({
         "tokens": ["a", "b", "c", "d"],
-        "nested": [[{"env": "N"}]],
+        "nested": [[{"module": "N", "settings": {}}]],
         "other": "visible"
     });
     let out = lent(
@@ -129,7 +128,8 @@ fn exact_terminal_array_slots_keep_neighboring_indices_and_wildcard_order() {
             "other": "visible"
         })
     );
-    let mut root = json!([{"env": "A"}, {"env": "B"}, "visible"]);
+    let mut root =
+        json!([{"module": "A", "settings": {}}, {"module": "B", "settings": {}}, "visible"]);
     assert_eq!(
         lent(&mut root, &["0", "1"]),
         vec![b"R:A".to_vec(), b"R:B".to_vec()]
@@ -242,10 +242,10 @@ fn failing_an_array_secret_lend_wipes_material_already_lent() {
 #[test]
 fn wildcard_matches_lend_after_the_exact_ones_in_document_order_behind_markers() {
     let mut block = json!({
-        "token": {"env": "T"},
+        "token": {"module": "T", "settings": {}},
         "servers": {
-            "a": {"command": "run", "env": {"API_KEY": {"env": "A"}, "LOG": "debug"}},
-            "b": {"env": {"OTHER": {"file": "/run/k"}}}
+            "a": {"command": "run", "env": {"API_KEY": {"module": "A", "settings": {}}, "LOG": "debug"}},
+            "b": {"env": {"OTHER": {"module": "?", "settings": {}}}}
         },
         "list": [{"password": "p0"}, {"password": 7}]
     });
@@ -276,13 +276,13 @@ fn wildcard_matches_lend_after_the_exact_ones_in_document_order_behind_markers()
 fn a_reference_at_an_undeclared_position_is_found_anywhere() {
     let declared = paths(&["client_secret", "servers.*.env.*"]);
     let ok = json!({
-        "client_secret": {"env": "S"},
-        "servers": {"a": {"env": {"K": {"file": "/k"}}}},
+        "client_secret": {"module": "S", "settings": {}},
+        "servers": {"a": {"env": {"K": {"module": "?", "settings": {}}}}},
         "plain": {"env_name": "x"},
-        "data": {"literal": {"env": "HOME"}}
+        "data": {"literal": {"module": "HOME", "settings": {}}}
     });
     assert_eq!(undeclared_reference(&ok, &declared), None);
-    let top = json!({"api_base": {"env": "GHE_API"}});
+    let top = json!({"api_base": {"module": "GHE_API", "settings": {}}});
     assert_eq!(
         undeclared_reference(&top, &declared).as_deref(),
         Some("api_base")
@@ -292,7 +292,7 @@ fn a_reference_at_an_undeclared_position_is_found_anywhere() {
         undeclared_reference(&deep, &declared).as_deref(),
         Some("servers.a.headers.0.v")
     );
-    let under_wild_parent = json!({"servers": {"a": {"env": {"env": "X"}}}});
+    let under_wild_parent = json!({"servers": {"a": {"env": {"module": "X", "settings": {}}}}});
     assert_eq!(
         undeclared_reference(&under_wild_parent, &declared).as_deref(),
         Some("servers.a.env")
@@ -301,16 +301,16 @@ fn a_reference_at_an_undeclared_position_is_found_anywhere() {
 
 #[test]
 fn the_refusal_names_the_field_the_plugin_and_the_way_out() {
-    let s = undeclared_refusal("store.settings.dsn", "busbar-store-postgres");
+    let s = undeclared_refusal("store.settings.dsn", "declaring-owner");
     assert!(s.contains("store.settings.dsn"), "{s}");
-    assert!(s.contains("busbar-store-postgres"), "{s}");
+    assert!(s.contains("declaring-owner"), "{s}");
     assert!(s.contains("did not declare"), "{s}");
     assert!(s.contains("write the value itself"), "{s}");
 }
 
 #[test]
 fn the_secret_kinds_host_keeps_the_exact_values_in_the_settings() {
-    let mut block = json!({"token": {"env": "T"}, "extra": {"a": "x"}});
+    let mut block = json!({"token": {"module": "T", "settings": {}}, "extra": {"a": "x"}});
     let out = lend(
         &mut block,
         &paths(&["token", "extra.*"]),
@@ -328,13 +328,13 @@ fn the_secret_kinds_host_keeps_the_exact_values_in_the_settings() {
     assert_eq!(out, vec![b"t".to_vec(), b"x".to_vec()]);
     assert_eq!(
         block,
-        json!({"token": {"env": "T"}, "extra": {"a": {SECRET_MARKER: 1}}})
+        json!({"token": {"module": "T", "settings": {}}, "extra": {"a": {SECRET_MARKER: 1}}})
     );
 }
 
 #[test]
 fn declared_references_are_the_references_a_path_names() {
-    let v = json!({"s": {"a": {"k": {"env": "A"}, "j": "lit"}, "b": [{"env": "B"}]}});
+    let v = json!({"s": {"a": {"k": {"module": "A", "settings": {}}, "j": "lit"}, "b": [{"module": "B", "settings": {}}]}});
     assert_eq!(
         crate::secret_fields::declared_references(&v, "s.*.*"),
         vec![at(&["s", "a", "k"]), at(&["s", "b", "0"])]
@@ -344,8 +344,7 @@ fn declared_references_are_the_references_a_path_names() {
 #[test]
 fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
-    let mut ok =
-        json!({"dsn": {"env": "PG"}, "servers": {"a": {"env": {"K": {"env": "K"}}, "cmd": "lit"}}});
+    let mut ok = json!({"dsn": {"module": "PG", "settings": {}}, "servers": {"a": {"env": {"K": {"module": "K", "settings": {}}}, "cmd": "lit"}}});
     crate::secret_fields::resolve_declared(
         &mut ok,
         &paths(&["dsn", "servers.*.env.*"]),
@@ -364,7 +363,7 @@ fn resolve_declared_resolves_declared_references_in_place_and_refuses_the_rest()
         "{ok}"
     );
     assert_eq!(ok["servers"]["a"]["cmd"], json!("lit"));
-    let mut bad = json!({"base": {"env": "B"}});
+    let mut bad = json!({"base": {"module": "B", "settings": {}}});
     let e = crate::secret_fields::resolve_declared(&mut bad, &paths(&["dsn"]), "acme", resolve)
         .expect_err("undeclared");
     assert!(e.contains("settings.base") && e.contains("'acme'"), "{e}");
@@ -376,7 +375,7 @@ fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() 
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
     for (mut tree, at) in [
         (
-            json!({"dsn": "postgres://u:pasted-7b@db/x"}),
+            json!({"dsn": "https://u:pasted-7b@upstream/x"}),
             "settings.dsn",
         ),
         (
@@ -420,7 +419,7 @@ fn resolve_declared_refuses_a_literal_at_an_exact_or_a_wildcard_declared_path() 
 #[test]
 fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
-    let mut by_ref = json!({"url": {"env": "OTLP_URL"}, "sinks": [{"to": {"env": "TO"}}]});
+    let mut by_ref = json!({"url": {"module": "OTLP_URL", "settings": {}}, "sinks": [{"to": {"module": "TO", "settings": {}}}]});
     crate::secret_fields::resolve_declared_fields(
         &mut by_ref,
         &paths(&["auth_header.value"]),
@@ -452,7 +451,7 @@ fn a_reference_capable_field_resolves_a_reference_and_passes_a_literal() {
     .expect("a literal at a reference-capable field is not refused");
     assert_eq!(as_written, literal, "a literal passes as written");
 
-    let mut elsewhere = json!({"url": "https://x", "batch": {"env": "B"}});
+    let mut elsewhere = json!({"url": "https://x", "batch": {"module": "B", "settings": {}}});
     let e = crate::secret_fields::resolve_declared_fields(
         &mut elsewhere,
         &[],
@@ -500,7 +499,7 @@ fn a_path_in_both_lists_is_a_contradiction() {
     let e = crate::secret_fields::contradiction_refusal("url", "acme");
     assert!(e.contains("url") && e.contains("'acme'"), "{e}");
     let resolve = |_: &str, r: &crate::secret_ref::SecretRef| Ok(format!("R:{}", r.describe()));
-    let mut tree = json!({"url": {"env": "U"}});
+    let mut tree = json!({"url": {"module": "U", "settings": {}}});
     let e = crate::secret_fields::resolve_declared_fields(
         &mut tree,
         &paths(&["url"]),
@@ -510,5 +509,5 @@ fn a_path_in_both_lists_is_a_contradiction() {
     )
     .expect_err("a contradicting Statement resolves nothing");
     assert!(e.contains("url") && e.contains("'acme'"), "{e}");
-    assert_eq!(tree, json!({"url": {"env": "U"}}));
+    assert_eq!(tree, json!({"url": {"module": "U", "settings": {}}}));
 }

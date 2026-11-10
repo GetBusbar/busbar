@@ -1,153 +1,209 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `SecretRef` is the shared secret-reference type in the contract. Secret plugins resolve this type.
-//!
-//!
-//!
-//!
-//!
-//! Every secret/external value in busbar config is `{ module: <secret-module>, settings: {…} }` — a
-//! reference to a SECRET MODULE (`kind: secret` plugin), never the secret itself. The built-in
-//! modules are `env` (`settings.key` names an environment variable) and `file` (`settings.path`
-//! names a file whose contents are the secret); third-party modules (vault, cloud secret
-//! managers, …) load through the plugin system. Two ergonomic SUGAR spellings desugar to the
-//! built-ins:
-//!
-//! ```yaml
-//! api_key: { env: MY_API_KEY }                 # ⇒ { module: env,  settings: { key: MY_API_KEY } }
-//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
-//! ```
-//!
-//! The `x-busbar-secret` schema entry's `oneOf` describes this real reference type for busbar-ui and other schema consumers. [`oneof_schema`] and the `Deserialize` implementation are written against the same shape vocabulary. A round-trip test runs the same input table through both and requires identical verdicts, including rejection of whitespace-only values, to prevent a hand-written schema from drifting from the live config parser.
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//!
-//! `{ literal: <value> }` (the escape hatch for a plugin whose own legitimately-shaped config field
-//! collides with a reference shape) is **not** part of `SecretRef` and never was — it is handled one
-//! layer above `SecretRef` parsing, inside busbar's `resolve_settings()`, as a wrapper around the
-//! field. A full, faithful derivation from this type therefore already excludes `literal` correctly,
-//! with no special-casing required or wanted — see the doc comment on [`oneof_schema`].
-//!
-//! `SecretRef` holds no secret material — only the module name and its opaque settings — so it is
-//! safe to derive `Debug`/`Clone`/`PartialEq` on it and on every struct embedding it.
+//! Source references, explicit keyless declarations, and core interpolation templates.
+//! A source is always `{module, settings}`. Shorthand belongs to admitted source declarations
+//! and requires [`context`]; the context-free parser never infers a source owner.
+//! Templates retain the fill source selected at admission, without pretending to be a plugin.
 
-use std::fmt;
-
+use crate::plugin_settings::Settings;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use zeroize::Zeroizing;
 
 pub mod context;
 
-/// The built-in `env` secret module name (settings: `{ key: <ENV_VAR> }`).
-pub const SECRET_MODULE_ENV: &str = "env";
-/// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
-pub const SECRET_MODULE_FILE: &str = "file";
-/// The DECLARED-KEYLESS module name: `api_key: none` (a plain scalar — the only spelling) says
+/// The explicit keyless scalar spelling.
 pub const SECRET_MODULE_NONE: &str = "none";
-/// The `env` module's settings key naming the environment variable.
-pub const SECRET_ENV_SETTING_KEY: &str = "key";
-/// The `file` module's settings key naming the file path.
-pub const SECRET_FILE_SETTING_PATH: &str = "path";
-/// The TEMPLATE reference's module name: a credential value `${VAR}` filled only in part
-pub const SECRET_MODULE_TEMPLATE: &str = "env-template";
-/// The template module's settings key holding the value as written.
-pub const SECRET_TEMPLATE_SETTING_TEXT: &str = "text";
-
-/// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
 const NON_BLANK: &str = r"\S";
 
-/// A reference to a secret, resolved through a secret MODULE. See the module docs for the accepted
-/// YAML/JSON spellings. `settings` is the module's own (opaque) config — busbar passes it through
-/// verbatim and never interprets it beyond the built-ins.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct SecretRef {
-    /// The secret module resolving this reference (`env` / `file` built-ins, or a `kind: secret`
-    /// plugin's name/alias).
+/// An admitted source's module identity and opaque authored settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SourceReference {
+    /// The source owner's module identity.
     pub module: String,
+    /// Settings interpreted only by that source owner.
+    pub settings: Settings,
+}
 
-    /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
-    pub settings: serde_json::Map<String, serde_json::Value>,
+/// The fixed source declaration captured by a template at admission.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FillSource {
+    module: String,
+    setting: String,
+}
+impl FillSource {
+    fn reference(&self, value: &str) -> SecretRef {
+        SecretRef::Source(SourceReference {
+            module: self.module.clone(),
+            settings: serde_json::Map::from_iter([(self.setting.clone(), value.into())]).into(),
+        })
+    }
+}
+
+/// Core interpolation with guarded text and one immutable admitted source declaration.
+/// No text accessor or caller-selected lookup is exposed.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateReference {
+    #[serde(deserialize_with = "template_text")]
+    text: Zeroizing<String>,
+    source: FillSource,
+}
+fn template_text<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Zeroizing<String>, D::Error> {
+    let mut held = crate::plugin_settings::Tree::deserialize(deserializer)?;
+    match &mut held.0 {
+        serde_json::Value::String(text) => Ok(Zeroizing::new(std::mem::take(text))),
+        _ => Err(de::Error::custom(
+            "template text must be a string (value not echoed)",
+        )),
+    }
+}
+impl fmt::Debug for TemplateReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TemplateReference")
+            .field("source", &self.source.module)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A credential position names a source, a core template, or explicitly no credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretRef {
+    /// An opaque source reference; canonical wire shape is `{module, settings}`.
+    Source(SourceReference),
+    /// Core interpolation; wire shape is `{template: {text, source: {module, setting}}}`.
+    Template(TemplateReference),
+    /// An explicit anonymous/keyless declaration.
+    None,
+}
+/// A core template refusal preserves the source's error unchanged.
+#[derive(Debug)]
+pub enum TemplateRefused<E> {
+    /// The selected source refused a fragment.
+    Source(E),
+    /// The composed output exceeds the addressable allocation bound.
+    TooLarge,
 }
 
 impl SecretRef {
-    /// A `{ module: env, settings: { key } }` reference (the canonical form of the `{ env: … }` sugar).
-    pub fn env(var: impl Into<String>) -> Self {
-        let mut settings = serde_json::Map::new();
-        settings.insert(
-            SECRET_ENV_SETTING_KEY.to_string(),
-            serde_json::Value::String(var.into()),
-        );
-        Self {
-            module: SECRET_MODULE_ENV.to_string(),
-            settings,
+    /// A template bound to the one source whose admitted declaration owns the fill role.
+    pub fn template(text: impl Into<String>, sources: &Sugars) -> Result<Self, String> {
+        let source = sources
+            .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .ok_or("no admitted source declares the template fill role")?;
+        Ok(Self::Template(TemplateReference {
+            text: Zeroizing::new(text.into()),
+            source: FillSource {
+                module: source.plugin.clone(),
+                setting: source.setting.clone(),
+            },
+        }))
+    }
+    /// Explicitly declare no credential.
+    pub fn none() -> Self {
+        Self::None
+    }
+    /// Whether this is the explicit keyless declaration.
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+    /// Source metadata and its opaque settings; templates are a separate core operation.
+    pub fn source(&self) -> Option<&SourceReference> {
+        match self {
+            Self::Source(source) => Some(source),
+            _ => None,
         }
     }
-
-    /// A `{ module: file, settings: { path } }` reference (the canonical form of the `{ file: … }` sugar).
-    pub fn file(path: impl Into<String>) -> Self {
-        let mut settings = serde_json::Map::new();
-        settings.insert(
-            SECRET_FILE_SETTING_PATH.to_string(),
-            serde_json::Value::String(path.into()),
-        );
-        Self {
-            module: SECRET_MODULE_FILE.to_string(),
-            settings,
+    /// The source dependency, including a template's captured fill source.
+    pub fn source_module(&self) -> Option<&str> {
+        match self {
+            Self::Source(source) => Some(&source.module),
+            Self::Template(template) => Some(&template.source.module),
+            Self::None => None,
         }
     }
-
-    /// A TEMPLATE reference over `text`, a value as written whose every `${VAR}` names an
-    pub fn template(text: impl Into<String>) -> Self {
-        let mut settings = serde_json::Map::new();
-        settings.insert(
-            SECRET_TEMPLATE_SETTING_TEXT.to_string(),
-            serde_json::Value::String(text.into()),
-        );
-        Self {
-            module: SECRET_MODULE_TEMPLATE.to_string(),
-            settings,
+    /// A diagnostic naming only source metadata, never authored settings or template text.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::None => SECRET_MODULE_NONE.into(),
+            Self::Source(source) => format!("secret module '{}'", source.module),
+            Self::Template(template) => {
+                format!("template using secret module '{}'", template.source.module)
+            }
         }
     }
-
-    /// The template's text, when this is a [`SECRET_MODULE_TEMPLATE`] reference.
-    pub fn template_text(&self) -> Option<&str> {
-        if self.module == SECRET_MODULE_TEMPLATE {
-            self.settings
-                .get(SECRET_TEMPLATE_SETTING_TEXT)
-                .and_then(|v| v.as_str())
-        } else {
-            None
+    /// Ask the admitted source axis to validate each canonical input without resolving it.
+    pub fn check_sources(&self, axis: &dyn crate::secret::SecretAxis) -> Result<(), Vec<String>> {
+        match self {
+            Self::None => Ok(()),
+            Self::Source(source) => axis.check(&source.module, &source.settings),
+            Self::Template(template) => {
+                let mut rest = template.text.as_str();
+                while let Some(at) = rest.find("${") {
+                    let after = &rest[at + 2..];
+                    match after.find('}') {
+                        Some(end) if end > 0 => {
+                            template
+                                .source
+                                .reference(&after[..end])
+                                .check_sources(axis)?;
+                            rest = &after[end + 1..];
+                        }
+                        _ => rest = after,
+                    }
+                }
+                Ok(())
+            }
         }
     }
-
-    /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
+    pub(super) fn admitted_template(&self, sources: &Sugars) -> Result<(), &'static str> {
+        let Self::Template(template) = self else {
+            return Ok(());
+        };
+        let source = sources
+            .with_role(crate::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .ok_or("no admitted source declares the template fill role")?;
+        if template.source.module != source.plugin || template.source.setting != source.setting {
+            return Err("template source differs from the admitted fill source declaration");
+        }
+        Ok(())
+    }
+    /// Resolve a source or interpolate a template through its captured source declaration.
+    /// Every fragment and the final result retain guarded custody, including on failure.
     pub fn resolve_template(
         &self,
         resolve: &dyn Fn(&SecretRef) -> Result<crate::Secret<String>, String>,
     ) -> Result<crate::Secret<String>, String> {
-        if self.module != SECRET_MODULE_TEMPLATE {
-            return resolve(self);
-        }
-        let text = self
-            .template_text()
-            .ok_or_else(|| "a template reference carries no text".to_string())?;
-        // Each resolved fragment is guarded before the next resolver can fail. Compute final
-        // capacity before copying any material, so concatenation cannot leave realloc residue.
+        self.resolve_template_typed(resolve)
+            .map_err(|error| match error {
+                TemplateRefused::Source(error) => error,
+                TemplateRefused::TooLarge => "resolved template is too large".to_owned(),
+            })
+    }
+    /// Resolve while preserving the source resolver's original refusal taxonomy.
+    pub fn resolve_template_typed<E>(
+        &self,
+        resolve: &dyn Fn(&SecretRef) -> Result<crate::Secret<String>, E>,
+    ) -> Result<crate::Secret<String>, TemplateRefused<E>> {
+        let Self::Template(template) = self else {
+            return resolve(self).map_err(TemplateRefused::Source);
+        };
         let mut parts = Vec::new();
-        let mut rest = text;
+        let mut rest = template.text.as_str();
         while let Some(at) = rest.find("${") {
             parts.push(crate::Secret::new(rest[..at].to_owned()));
             let after = &rest[at + 2..];
             match after.find('}') {
                 Some(end) if end > 0 => {
-                    parts.push(resolve(&SecretRef::env(&after[..end]))?);
+                    parts.push(
+                        resolve(&template.source.reference(&after[..end]))
+                            .map_err(TemplateRefused::Source)?,
+                    );
                     rest = &after[end + 1..];
                 }
                 _ => {
@@ -157,299 +213,144 @@ impl SecretRef {
             }
         }
         parts.push(crate::Secret::new(rest.to_owned()));
-        let total = parts
+        let capacity = parts
             .iter()
-            .try_fold(0usize, |n, p| n.checked_add(p.0.len()))
-            .ok_or_else(|| "resolved template is too large".to_owned())?;
-        let mut out = zeroize::Zeroizing::new(String::with_capacity(total));
-        for part in &parts {
-            out.push_str(&part.0);
+            .try_fold(0usize, |n, part| n.checked_add(part.0.len()))
+            .ok_or(TemplateRefused::TooLarge)?;
+        let mut joined = crate::Secret::new(String::with_capacity(capacity));
+        for part in parts {
+            joined.0.push_str(&part.0);
         }
-        Ok(crate::Secret::new(std::mem::take(&mut *out)))
+        Ok(joined)
     }
-
-    /// The `none` reference: an EXPLICIT declaration that there is no credential. See
-    pub fn none() -> Self {
-        Self {
-            module: SECRET_MODULE_NONE.to_string(),
-            settings: serde_json::Map::new(),
-        }
-    }
-
-    /// True when this reference is the explicit keyless declaration (`api_key: none`).
-    pub fn is_none(&self) -> bool {
-        self.module == SECRET_MODULE_NONE
-    }
-
-    /// The `env` module's variable name, when this ref uses the built-in `env` module.
-    pub fn env_var(&self) -> Option<&str> {
-        if self.module == SECRET_MODULE_ENV {
-            self.settings
-                .get(SECRET_ENV_SETTING_KEY)
-                .and_then(|v| v.as_str())
-        } else {
-            None
-        }
-    }
-
-    /// The `file` module's path, when this ref uses the built-in `file` module.
-    pub fn file_path(&self) -> Option<&str> {
-        if self.module == SECRET_MODULE_FILE {
-            self.settings
-                .get(SECRET_FILE_SETTING_PATH)
-                .and_then(|v| v.as_str())
-        } else {
-            None
-        }
-    }
-
-    /// A short display form for error messages: `none`, `env:VAR`, `file:/path`, or
-    pub fn describe(&self) -> String {
-        if self.is_none() {
-            SECRET_MODULE_NONE.to_string()
-        } else if let Some(var) = self.env_var() {
-            format!("env:{var}")
-        } else if let Some(path) = self.file_path() {
-            format!("file:{path}")
-        } else {
-            format!("secret module '{}'", self.module)
+}
+impl Serialize for SecretRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            Self::None => SourceReference {
+                module: SECRET_MODULE_NONE.into(),
+                settings: Settings::default(),
+            }
+            .serialize(serializer),
+            Self::Source(source) => source.serialize(serializer),
+            Self::Template(template) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("template", template)?;
+                map.end()
+            }
         }
     }
 }
-
-/// THE REFUSAL OF A SECRET WRITTEN INLINE, the one sentence every secret field answers a literal
-pub const INLINE_LITERAL_REFUSAL: &str = "a secret value must be a REFERENCE, never an inline \
-     literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, \
-     { module: <secret-module>, settings: {…} }, or the bare scalar `none` to declare an upstream \
-     that takes NO credential";
+/// Fixed non-echoing refusal for inline credential literals.
+pub const INLINE_LITERAL_REFUSAL: &str = "a secret value must be a REFERENCE, never an inline literal (the value is not echoed); use { module: <secret-module>, settings: {…} }, an admitted source shorthand, or the bare scalar `none` to declare an upstream needs no credential";
 
 impl<'de> Deserialize<'de> for SecretRef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct RefVisitor;
-
-        impl RefVisitor {
-            /// The one refusal message every inline-scalar spelling shares. Names the accepted
-            fn inline_literal<E: de::Error>() -> E {
-                E::custom(INLINE_LITERAL_REFUSAL)
-            }
-        }
-
-        impl<'de> Visitor<'de> for RefVisitor {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Reference;
+        impl<'de> Visitor<'de> for Reference {
             type Value = SecretRef;
-
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(
-                    "a secret reference map: { module: <secret-module>, settings: {…} }, \
-                     { env: <VAR> }, { file: <path> }, or the bare scalar `none`",
-                )
+                f.write_str("a secret reference map {module, settings}, an explicit {template: …}, or the bare scalar `none`")
             }
-
             fn visit_newtype_struct<D: Deserializer<'de>>(
                 self,
-                deserializer: D,
+                d: D,
             ) -> Result<SecretRef, D::Error> {
-                deserializer.deserialize_any(self)
+                d.deserialize_any(self)
             }
-
-            fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                if v == SECRET_MODULE_NONE {
-                    return Ok(SecretRef::none());
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<SecretRef, E> {
+                if value == SECRET_MODULE_NONE {
+                    Ok(SecretRef::None)
+                } else {
+                    Err(E::custom(INLINE_LITERAL_REFUSAL))
                 }
-                Err(Self::inline_literal())
             }
-
-            fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(Self::inline_literal())
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
             }
-
-            fn visit_i64<E>(self, _v: i64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(Self::inline_literal())
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
             }
-
-            fn visit_f64<E>(self, _v: f64) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(Self::inline_literal())
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
             }
-
-            fn visit_bool<E>(self, _v: bool) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(Self::inline_literal())
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
             }
-
-            fn visit_bytes<E>(self, _v: &[u8]) -> Result<SecretRef, E>
-            where
-                E: de::Error,
-            {
-                Err(Self::inline_literal())
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<SecretRef, A::Error>
-            where
-                A: MapAccess<'de>,
-            {
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SecretRef, A::Error> {
                 let mut module: Option<String> = None;
-                let mut settings: Option<serde_json::Map<String, serde_json::Value>> = None;
-                let mut sugar: Option<(&'static str, String)> = None;
-
-                while let Some(key) = map.next_key::<String>()? {
+                let mut settings: Option<Settings> = None;
+                let mut template: Option<TemplateReference> = None;
+                while let Some(key) = map.next_key::<Zeroizing<String>>()? {
                     match key.as_str() {
-                        "module" => {
-                            if module.is_some() {
-                                return Err(de::Error::duplicate_field("module"));
-                            }
-
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => module = Some(s),
-                                _ => {
-                                    return Err(de::Error::custom(
-                                        "a secret reference `module:` must be a string naming a \
-                                         secret module (the value is not echoed)",
-                                    ));
-                                }
-                            }
+                        "module" if module.is_none() => {
+                            let mut value: crate::plugin_settings::Tree = map.next_value()?;
+                            let serde_json::Value::String(text) = &mut value.0 else {
+                                return Err(de::Error::custom("a reference module must be a string naming a source (value not echoed)"));
+                            };
+                            module = Some(std::mem::take(text));
                         }
-                        "settings" => {
-                            if settings.is_some() {
-                                return Err(de::Error::duplicate_field("settings"));
-                            }
-
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::Object(m) => settings = Some(m),
-                                _ => return Err(RefVisitor::inline_literal()),
-                            }
+                        "settings" if settings.is_none() => {
+                            settings = Some(map.next_value().map_err(|_| de::Error::custom(INLINE_LITERAL_REFUSAL))?);
                         }
-                        "env" => {
-                            if sugar.is_some() {
-                                return Err(de::Error::custom(
-                                    "a secret reference takes exactly one of `env:` / `file:`",
-                                ));
-                            }
-
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => {
-                                    sugar = Some((SECRET_MODULE_ENV, s))
-                                }
-                                _ => return Err(RefVisitor::inline_literal()),
-                            }
+                        "template" if template.is_none() => {
+                            template = Some(map.next_value().map_err(|_| de::Error::custom("malformed core template (value not echoed)"))?);
                         }
-                        "file" => {
-                            if sugar.is_some() {
-                                return Err(de::Error::custom(
-                                    "a secret reference takes exactly one of `env:` / `file:`",
-                                ));
-                            }
-                            match map.next_value::<serde_json::Value>()? {
-                                serde_json::Value::String(s) => {
-                                    sugar = Some((SECRET_MODULE_FILE, s))
-                                }
-                                _ => return Err(RefVisitor::inline_literal()),
-                            }
-                        }
-                        other => {
-                            return Err(de::Error::unknown_field(
-                                other,
-                                &["module", "settings", "env", "file"],
-                            ));
-                        }
+                        "module" => return Err(de::Error::duplicate_field("module")),
+                        "settings" => return Err(de::Error::duplicate_field("settings")),
+                        "template" => return Err(de::Error::duplicate_field("template")),
+                        _ => return Err(de::Error::custom("unknown reference member: shorthand requires an admitted source declaration (value not echoed)")),
                     }
                 }
-
-                match (module, sugar) {
-                    (Some(_), Some(_)) => Err(de::Error::custom(
-                        "a secret reference is either `{ module: …, settings: … }` or the \
-                         `{ env: … }` / `{ file: … }` sugar, not both",
-                    )),
-                    (Some(module), None) => {
-                        if module.trim().is_empty() {
-                            return Err(de::Error::custom(
-                                "a secret reference `module:` must be non-empty",
-                            ));
-                        }
-                        Ok(SecretRef {
-                            module,
-                            settings: settings.unwrap_or_default(),
-                        })
+                if let Some(template) = template {
+                    if module.is_some() || settings.is_some() {
+                        return Err(de::Error::custom(
+                            "a template and a source reference cannot be combined",
+                        ));
                     }
-                    (None, Some((kind, value))) => {
-                        if settings.is_some() {
-                            return Err(de::Error::custom(
-                                "the `{ env: … }` / `{ file: … }` sugar takes no `settings:` \
-                                 (use the canonical `{ module: …, settings: … }` form instead)",
-                            ));
-                        }
-                        if value.trim().is_empty() {
-                            return Err(de::Error::custom(format!(
-                                "a `{{ {kind}: … }}` secret reference must name a non-empty value"
-                            )));
-                        }
-                        Ok(match kind {
-                            SECRET_MODULE_ENV => SecretRef::env(value),
-                            _ => SecretRef::file(value),
-                        })
+                    if template.source.module.trim().is_empty()
+                        || template.source.setting.trim().is_empty()
+                    {
+                        return Err(de::Error::custom("template source metadata is incomplete"));
                     }
-                    (None, None) => Err(de::Error::custom(
-                        "a secret reference needs `module:` (with optional `settings:`) or the \
-                         `{ env: <VAR> }` / `{ file: <path> }` sugar",
-                    )),
+                    return Ok(SecretRef::Template(template));
                 }
+                let module = module.filter(|s| !s.trim().is_empty()).ok_or_else(|| {
+                    de::Error::custom("a source reference needs a nonempty module")
+                })?;
+                if module == SECRET_MODULE_NONE {
+                    return Ok(SecretRef::None);
+                }
+                Ok(SecretRef::Source(SourceReference {
+                    module,
+                    settings: settings.unwrap_or_default(),
+                }))
             }
         }
-
-        deserializer.deserialize_newtype_struct(context::REFERENCE, RefVisitor)
+        deserializer.deserialize_newtype_struct(context::REFERENCE, Reference)
     }
 }
 
-/// Derive the `x-busbar-secret` field's `oneOf` JSON Schema (2020-12) fragment DIRECTLY from
+/// The canonical reference grammar; source shorthand is supplied only by owner metadata.
 pub fn oneof_schema() -> serde_json::Value {
-    serde_json::json!({
-        "oneOf": [
-            // The explicit keyless declaration — the ONE scalar spelling a secret field accepts.
-            // Every other bare scalar is rejected as an inline literal, so this is a `const`, not a
-            // loosening of the "never a bare string" rule.
-            {"const": SECRET_MODULE_NONE},
-            {
-                "type": "object",
-                "properties": {
-                    "module": {"type": "string", "pattern": NON_BLANK},
-                    "settings": {"type": "object"},
-                },
-                "required": ["module"],
-                "additionalProperties": false,
-            },
-            {
-                "type": "object",
-                "properties": {"env": {"type": "string", "pattern": NON_BLANK}},
-                "required": ["env"],
-                "additionalProperties": false,
-            },
-            {
-                "type": "object",
-                "properties": {"file": {"type": "string", "pattern": NON_BLANK}},
-                "required": ["file"],
-                "additionalProperties": false,
-            },
-        ],
-    })
+    serde_json::json!({"oneOf":[
+        {"const":SECRET_MODULE_NONE},
+        {"type":"object","properties":{"module":{"type":"string","pattern":NON_BLANK},"settings":{"type":"object"}},"required":["module"],"additionalProperties":false},
+        {"type":"object","properties":{"template":{"type":"object","properties":{
+            "text":{"type":"string"},"source":{"type":"object","properties":{"module":{"type":"string","pattern":NON_BLANK},"setting":{"type":"string","pattern":NON_BLANK}},"required":["module","setting"],"additionalProperties":false}
+        },"required":["text","source"],"additionalProperties":false}},"required":["template"],"additionalProperties":false}
+    ]})
 }
 
 /// The reference keys that are core secret-reference grammar, which no plugin may declare as its
-const CORE_WORDS: [&str; 4] = ["module", "settings", SECRET_MODULE_NONE, "literal"];
+const CORE_WORDS: [&str; 5] = [
+    "module",
+    "settings",
+    SECRET_MODULE_NONE,
+    "literal",
+    "template",
+];
 
 /// ONE DECLARED SUGAR, as a secret plugin's Statement states it (its `REWRITE_SUGAR*` rewrites):
 /// the shorthand `{ word: X }` the plugin answers to (audit contract-admin #10, Law 1: the plugin
@@ -471,15 +372,41 @@ pub struct Sugar {
 }
 
 impl Sugar {
+    /// Validate only the scalar source position this owner explicitly declared.
+    /// The result names declaration metadata, never the configured value.
+    pub fn reference_refusal(&self, source: &SourceReference) -> Option<String> {
+        if self.plugin != source.module {
+            return None;
+        }
+        match source
+            .settings
+            .0
+             .0
+            .get(&self.setting)
+            .and_then(serde_json::Value::as_str)
+        {
+            None => Some(format!(
+                "secret module '{}' requires settings.{} ({})",
+                source.module, self.setting, self.names
+            )),
+            Some(value) if value.trim().is_empty() => Some(format!(
+                "secret module '{}' requires a NON-EMPTY settings.{} ({})",
+                source.module, self.setting, self.names
+            )),
+            Some(_) => None,
+        }
+    }
+
     /// Build the canonical reference named by this admitted owner's declaration.
     pub fn reference(&self, value: impl Into<String>) -> SecretRef {
-        SecretRef {
+        SecretRef::Source(SourceReference {
             module: self.plugin.clone(),
             settings: serde_json::Map::from_iter([(
                 self.setting.clone(),
                 serde_json::Value::String(value.into()),
-            )]),
-        }
+            )])
+            .into(),
+        })
     }
 }
 
@@ -493,6 +420,17 @@ pub struct Sugars {
 }
 
 impl Sugars {
+    /// Construct a canonical reference from one admitted core grammar role.
+    pub fn reference_for_role(
+        &self,
+        role: &str,
+        value: impl Into<String>,
+    ) -> Result<SecretRef, String> {
+        self.with_role(role)
+            .map(|source| source.reference(value))
+            .ok_or_else(|| format!("no admitted source declares the '{role}' role"))
+    }
+
     /// Declare every sugar `plugin`'s Statement rewrites state (`(class, from, to)`, as a Statement
     pub fn declare(
         &mut self,

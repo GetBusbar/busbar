@@ -57,6 +57,7 @@ pub(crate) fn admit(
     busbar_contract::conn::admissions::AdmissionAuthority::issue(
         &busbar_kernel::seal::acquire(),
         table,
+        busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows()),
     )
 }
 

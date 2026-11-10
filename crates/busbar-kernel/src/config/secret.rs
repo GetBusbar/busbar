@@ -1,31 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The SECRET REFERENCE type (CLEAN-CONFIG rule): every secret/external value in the config is
-//! `{ module: <secret-module>, settings: {…} }` - a reference to a SECRET MODULE (`kind: secret`
-//! plugin), never the secret itself. The built-in modules are `env` (settings.key names an
-//! environment variable) and `file` (settings.path names a file whose contents are the secret);
-//! third-party modules (vault, cloud secret managers, …) load through the plugin system.
-//!
-//! Two ergonomic SUGAR spellings desugar to the built-ins so the common cases stay one-liners:
-//!
-//! ```yaml
-//! api_key: { env: SOME_API_KEY }               # ⇒ { module: env,  settings: { key: SOME_API_KEY } }
-//! cert:    { file: /run/secrets/tls-cert.pem } # ⇒ { module: file, settings: { path: /run/secrets/tls-cert.pem } }
-//! ```
-//!
-//! A `SecretRef` holds NO secret material - only the module name and its opaque settings - so it is
-//! safe to derive `Debug`/`Clone` on it and on every struct embedding it. Resolution (turning the
-//! ref into bytes) happens at boot/first-use through the secret-resolver seam and is FAIL-CLOSED:
-//! an unknown module or a failed resolution is a hard error, never an empty secret.
+//! Guarded source resolution through admitted secret owners.
+//! Source settings remain opaque until the owning plugin receives the kind boundary encoding.
 
-pub use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+pub use busbar_contract::secret_ref::SecretRef;
 
 pub struct SecretResolver {
     plugin: Option<ScopedPluginResolveFn>,
 }
 
-pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Held, String> + Send + Sync>;
+pub(crate) type PluginResolveFn = Box<
+    dyn Fn(&str, &busbar_contract::plugin_settings::Settings) -> Result<Held, String> + Send + Sync,
+>;
 
 pub type Held = busbar_contract::redacted::Secret<Vec<u8>>;
 
@@ -34,7 +21,7 @@ pub type HeldText = busbar_contract::redacted::Secret<String>;
 pub(crate) type ScopedPluginResolveFn = Box<
     dyn Fn(
             &str,
-            &str,
+            &busbar_contract::plugin_settings::Settings,
             Option<&busbar_contract::config_time::ConfigScope>,
         ) -> Result<Held, SecretRefused>
         + Send
@@ -56,7 +43,7 @@ impl SecretResolver {
         Self {
             plugin: Some(Box::new(
                 move |module: &str,
-                      settings: &str,
+                      settings: &busbar_contract::plugin_settings::Settings,
                       _: Option<&busbar_contract::config_time::ConfigScope>| {
                     plugin(module, settings).map_err(|text| {
                         refusal(busbar_contract::abi::secret::ERROR_KIND_INTERNAL, text)
@@ -98,12 +85,27 @@ impl SecretResolver {
         scope: Option<&busbar_contract::config_time::ConfigScope>,
     ) -> Result<Held, SecretRefused> {
         use busbar_contract::abi::secret::{ERROR_KIND_INTERNAL, ERROR_KIND_INVALID};
-        let module = secret.module.as_str();
-
-        if module == busbar_contract::secret_ref::SECRET_MODULE_NONE {
+        if secret.is_none() {
             return Err(refusal(ERROR_KIND_INVALID, NONE_HAS_NO_VALUE.to_string()));
         }
-        let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
+        if matches!(secret, SecretRef::Template(_)) {
+            use busbar_contract::secret_ref::TemplateRefused;
+            return secret
+                .resolve_template_typed(&|reference| {
+                    let bytes = self.resolve_with(reference, scope)?;
+                    Self::text_of(reference, bytes)
+                        .map_err(|text| refusal(ERROR_KIND_INVALID, text))
+                })
+                .map(|text| text.into_bytes())
+                .map_err(|error| match error {
+                    TemplateRefused::Source(error) => error,
+                    TemplateRefused::TooLarge => {
+                        refusal(ERROR_KIND_INVALID, "resolved template is too large".into())
+                    }
+                });
+        }
+        let source = secret.source().expect("non-template, non-keyless source");
+        let module = source.module.as_str();
         let empty = || {
             refusal(
                 ERROR_KIND_INVALID,
@@ -115,12 +117,20 @@ impl SecretResolver {
             )
         };
         if let Some(axis) = axis().filter(|a| a.linked(module)) {
+            let settings = source.settings.encode().map_err(|_| {
+                refusal(
+                    ERROR_KIND_INVALID,
+                    "source settings could not be encoded".into(),
+                )
+            })?;
+            let seal = crate::seal::lend();
+            let settings = settings.expose(&seal);
             let shared = axis
                 .shared(module)
                 .map_err(|text| refusal(ERROR_KIND_INTERNAL, text))?;
             let material = match scope {
-                Some(scope) => shared.resolve_at_config(settings.as_bytes(), scope),
-                None => shared.resolve(settings.as_bytes()),
+                Some(scope) => shared.resolve_at_config(settings, scope),
+                None => shared.resolve(settings),
             }?;
 
             if material.expose(&crate::seal::lend()).is_empty() {
@@ -132,14 +142,14 @@ impl SecretResolver {
             return Err(refusal(
                 ERROR_KIND_INVALID,
                 format!(
-                    "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
-                 subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
+                    "secret module '{module}' is not admitted and no plugin resolver is enabled, \
+                 so no source can resolve {}; a secret that \
                  cannot resolve is a hard error (fail-closed)",
                     secret.describe()
                 ),
             ));
         };
-        let bytes = f(module, &settings, scope).map_err(|r| {
+        let bytes = f(module, &source.settings, scope).map_err(|r| {
             refusal(
                 r.error_kind,
                 format!(
@@ -263,7 +273,7 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
 
 const NONE_HAS_NO_VALUE: &str = "the `none` secret reference declares that there is NO credential, \
      so it has no value to resolve; it is accepted only where an absent credential is meaningful (a \
-     provider `api_key` for a keyless upstream such as ollama or vLLM)";
+     provider `api_key` for a keyless upstream)";
 
 pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis> {
     crate::preflight::root_rows().secret_axis
@@ -309,15 +319,6 @@ mod linked_secret_hardening_tests;
 mod loader_declared_settings;
 
 #[cfg(test)]
-#[path = "tests/actual_product_resolver.rs"]
-mod actual_product_resolver;
-
-#[cfg(test)]
-pub(crate) fn actual_product_resolver() -> SecretResolver {
-    actual_product_resolver::resolver()
-}
-
-#[cfg(test)]
 pub(crate) fn install_normal_root_metadata() {
     super::tests::install_normal_root_metadata();
 }
@@ -338,4 +339,84 @@ pub(crate) fn test_settings_value(
 pub(crate) fn test_resolved_value(settings: &ResolvedSettings) -> serde_json::Value {
     let encoded = settings.encode().expect("fixture settings encode");
     serde_json::from_slice(encoded.expose(&crate::seal::lend())).expect("fixture settings decode")
+}
+
+#[cfg(test)]
+pub(crate) fn fixed_reference(label: &str) -> SecretRef {
+    SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+        module: label.to_owned(),
+        settings: Default::default(),
+    })
+}
+
+/// Fixed guarded answers for kernel custody tests; no backend semantics or settings inspection.
+#[cfg(test)]
+pub(crate) fn fixed_resolver(
+    bindings: Vec<(SecretRef, Result<Held, SecretRefused>)>,
+) -> SecretResolver {
+    SecretResolver::with_scoped_plugin(Box::new(move |module, settings, _scope| {
+        bindings
+            .iter()
+            .find(|(reference, _)| {
+                reference
+                    .source()
+                    .is_some_and(|source| source.module == module && &source.settings == settings)
+            })
+            .map(|(_, answer)| answer.clone())
+            .unwrap_or_else(|| {
+                Err(SecretRefused {
+                    error_kind: busbar_contract::abi::secret::ERROR_KIND_NOT_FOUND,
+                    text: "fixed source has no bound answer (fail-closed)".into(),
+                })
+            })
+    }))
+}
+
+#[cfg(test)]
+pub(crate) fn fixed_value(label: &str, value: &[u8]) -> SecretResolver {
+    fixed_resolver(vec![(
+        fixed_reference(label),
+        Ok(Held::new(value.to_vec())),
+    )])
+}
+
+#[cfg(test)]
+pub(crate) fn descriptor_reference(value: &str) -> SecretRef {
+    SecretRef::Source(busbar_contract::secret_ref::SourceReference {
+        module: "fixture-source".into(),
+        settings: [("slot".to_owned(), serde_json::Value::from(value))]
+            .into_iter()
+            .collect::<serde_json::Map<_, _>>()
+            .into(),
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_sources() -> busbar_contract::secret_ref::Sugars {
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL, SUGAR_ROLE_PATH,
+    };
+    let mut sources = busbar_contract::secret_ref::Sugars::default();
+    for (word, owner, role) in [
+        ("lookup", "first-source", SUGAR_ROLE_FILL),
+        ("artifact", "second-source", SUGAR_ROLE_PATH),
+    ] {
+        sources
+            .declare(
+                owner,
+                &[
+                    (REWRITE_SUGAR, word.into(), "slot".into()),
+                    (REWRITE_SUGAR_ROLE, word.into(), role.into()),
+                ],
+            )
+            .unwrap();
+    }
+    sources
+}
+#[cfg(test)]
+pub(crate) fn fixture_authored(yaml: &str) -> Result<SecretRef, serde_yaml::Error> {
+    busbar_contract::secret_ref::context::deserialize(
+        serde_yaml::Deserializer::from_str(yaml),
+        &fixture_sources(),
+    )
 }

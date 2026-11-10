@@ -454,7 +454,7 @@ pub fn validate_dealt<'s>(
 
         let settings = match seat {
             Seat::Verbs(_) => {
-                busbar_kernel::config::filled::plane_bound(&[], section.settings.clone())
+                busbar_kernel::config::filled::plane_bound(&[], section.settings.clone())?
             }
             Seat::Instance(..) => section.settings.clone(),
         };

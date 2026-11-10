@@ -197,35 +197,41 @@ fn is_credential(path: &[Seg]) -> bool {
             .is_some_and(|m| CREDENTIAL_MAPS.iter().any(|c| m.eq_ignore_ascii_case(c)))
 }
 
-fn reference_to(fill: &Fill) -> serde_json::Value {
+fn reference_to(
+    fill: &Fill,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<serde_json::Value, String> {
     let reference = if fill.whole {
-        busbar_contract::secret_ref::SecretRef::env(&fill.vars[0])
+        sources
+            .with_role(busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL)
+            .ok_or("no admitted source declares the template fill role")?
+            .reference(&fill.vars[0])
     } else {
-        busbar_contract::secret_ref::SecretRef::template(&fill.written)
+        busbar_contract::secret_ref::SecretRef::template(&fill.written, sources)?
     };
-    if let Some(var) = reference.env_var() {
-        let mut m = serde_json::Map::new();
-        m.insert(
-            busbar_contract::secret_ref::SECRET_MODULE_ENV.to_string(),
-            serde_json::Value::String(var.to_string()),
-        );
-        return serde_json::Value::Object(m);
-    }
-    serde_json::to_value(&reference).unwrap_or(serde_json::Value::Null)
+    serde_json::to_value(reference)
+        .map_err(|_| "cannot encode admitted source reference".to_owned())
 }
 
-#[must_use]
-pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Value {
+pub fn plane_bound(prefix: &[&str], value: serde_json::Value) -> Result<serde_json::Value, String> {
+    plane_bound_with_sources(prefix, value, &super::secret::sugars())
+}
+
+fn plane_bound_with_sources(
+    prefix: &[&str],
+    value: serde_json::Value,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<serde_json::Value, String> {
     let ledger = LEDGER
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if ledger.at.is_empty() {
-        return value;
+        return Ok(value);
     }
     let mut path: Vec<Seg> = prefix.iter().map(|k| Seg::Key((*k).to_string())).collect();
     let mut value = value;
-    project(&ledger, &mut path, &mut value, 0);
-    value
+    project(&ledger, &mut path, &mut value, 0, sources)?;
+    Ok(value)
 }
 
 pub fn plane_bound_bytes(prefix: &[&str], value: &serde_yaml::Value) -> Result<Vec<u8>, String> {
@@ -234,45 +240,52 @@ pub fn plane_bound_bytes(prefix: &[&str], value: &serde_yaml::Value) -> Result<V
     }
     let json = serde_json::to_value(value)
         .map_err(|e| format!("the section is not representable as JSON: {e}"))?;
-    serde_json::to_vec(&plane_bound(prefix, json))
+    serde_json::to_vec(&plane_bound(prefix, json)?)
         .map_err(|e| format!("the section is not representable as JSON: {e}"))
 }
 
-fn project(ledger: &Ledger, path: &mut Vec<Seg>, v: &mut serde_json::Value, depth: usize) {
+fn project(
+    ledger: &Ledger,
+    path: &mut Vec<Seg>,
+    v: &mut serde_json::Value,
+    depth: usize,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<(), String> {
     if depth > MAX_DEPTH {
-        return;
+        return Ok(());
     }
     match v {
         serde_json::Value::Object(m) => {
             for (k, inner) in m.iter_mut() {
                 path.push(Seg::Key(k.clone()));
-                project(ledger, path, inner, depth + 1);
+                project(ledger, path, inner, depth + 1, sources)?;
                 path.pop();
             }
         }
         serde_json::Value::Array(a) => {
             for (i, inner) in a.iter_mut().enumerate() {
                 path.push(Seg::Index(i));
-                project(ledger, path, inner, depth + 1);
+                project(ledger, path, inner, depth + 1, sources)?;
                 path.pop();
             }
         }
         scalar => {
             if !is_credential(path) {
-                return;
+                return Ok(());
             }
             let Some(fills) = ledger.at.get(path.as_slice()) else {
-                return;
+                return Ok(());
             };
             let Some(text) = scalar_text(scalar) else {
-                return;
+                return Ok(());
             };
             let digest = ledger.keys.hash_one(text.as_str());
             if let Some(fill) = fills.iter().find(|f| f.digest == digest) {
-                *scalar = reference_to(fill);
+                *scalar = reference_to(fill, sources)?;
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

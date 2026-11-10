@@ -434,11 +434,14 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             busbar_core_connector::spawn_env::linked_spawn_secret,
         )
         .expect("the linked doors build a connector");
-        let program = busbar_contract::conn::Program::from_settings(&serde_json::json!({
-            "command": "/bin/sh",
-            "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
-            (busbar_contract::conn::PROGRAM_ENV_KEY): {"DECLARED": "yes"},
-        }))
+        let program = busbar_contract::conn::Program::from_settings(
+            &serde_json::json!({
+                "command": "/bin/sh",
+                "args": ["-c", "echo \"got:$DECLARED\"; read line; echo \"again:$line\""],
+                (busbar_contract::conn::PROGRAM_ENV_KEY): {"DECLARED": "yes"},
+            }),
+            &Default::default(),
+        )
         .expect("a program");
 
         let frame = |conn: ConnId| {

@@ -5,25 +5,22 @@
 
 use busbar_contract::SecretRef;
 
-/// A `SecretRef` build from a distinctive "looks like a secret" string in its `settings` is
+/// Source settings may contain credentials even when they look like descriptors.
 #[test]
-fn secret_ref_settings_carry_only_the_reference_never_a_resolved_value() {
-    let distinctive_marker = "SUPER_DISTINCTIVE_ENV_VAR_NAME_NOT_A_SECRET_VALUE";
-    let r = SecretRef::env(distinctive_marker);
-    let debug = format!("{r:?}");
-
+fn secret_ref_settings_retain_authoring_data_without_debug_disclosure() {
+    let distinctive_marker = "DISTINCTIVE_OPAQUE_SOURCE_SETTING";
+    let reference: SecretRef = serde_json::from_value(serde_json::json!({
+        "module":"declared-source", "settings":{"slot":distinctive_marker}
+    }))
+    .unwrap();
+    let debug = format!("{reference:?}");
     assert!(
-        debug.contains(distinctive_marker),
-        "a SecretRef's settings must echo the reference name (env var / file path) in Debug — \
-         that name is not secret material: {debug}"
+        !debug.contains(distinctive_marker),
+        "opaque source settings leaked: {debug}"
     );
-
-    assert_eq!(r.env_var(), Some(distinctive_marker));
-    assert_eq!(
-        r.settings.len(),
-        1,
-        "settings holds only the one reference field"
-    );
+    let wire = serde_json::to_value(&reference).unwrap();
+    assert_eq!(wire["settings"]["slot"], distinctive_marker);
+    assert_eq!(wire["settings"].as_object().unwrap().len(), 1);
 }
 
 /// `SecretRef` has no `Display` impl at all — grep-proof via a `PartialEq`-shaped compile check is
@@ -43,16 +40,14 @@ fn secret_ref_debug_output_never_contains_an_inline_literal_a_caller_tried_to_sm
     );
 }
 
-/// `serde::Serialize` round-trips the same non-secret reference data `Debug` shows — confirming
+/// Generic authoring serialization retains the canonical source document; Debug is redacted.
 #[test]
-fn secret_ref_serialize_exposes_the_same_reference_data_as_debug_no_more_no_less() {
-    let r = SecretRef::file("/run/secrets/distinctive-marker-path");
-    let json = serde_json::to_value(&r).unwrap();
-    assert_eq!(json["module"], "file");
-    assert_eq!(
-        json["settings"]["path"],
-        "/run/secrets/distinctive-marker-path"
-    );
-
-    assert_eq!(json.as_object().unwrap().len(), 2);
+fn secret_ref_serialization_preserves_the_exact_authored_reference() {
+    let authored =
+        serde_json::json!({"module":"declared-source", "settings":{"slot":"distinctive-marker"}});
+    let reference: SecretRef = serde_json::from_value(authored.clone()).unwrap();
+    let wire = serde_json::to_value(&reference).unwrap();
+    assert_eq!(wire, authored);
+    assert_eq!(wire.as_object().unwrap().len(), 2);
+    assert!(!format!("{reference:?}").contains("distinctive-marker"));
 }

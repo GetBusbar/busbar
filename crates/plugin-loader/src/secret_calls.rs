@@ -738,11 +738,22 @@ impl SecretAxis for SecretRows {
         self.find(module).is_some()
     }
 
-    fn check(&self, module: &str, settings: &serde_json::Value) -> Result<(), Vec<String>> {
+    fn check(
+        &self,
+        module: &str,
+        settings: &busbar_contract::plugin_settings::Settings,
+    ) -> Result<(), Vec<String>> {
         let Some(plugin) = self.checker(module).map_err(|e| vec![e])? else {
             return Ok(());
         };
-        check(&plugin, settings.to_string().as_bytes())
+        let held = settings
+            .encode()
+            .map_err(|_| vec!["cannot encode source settings".to_owned()])?;
+        let dispatcher = (self.dispatcher)();
+        let seal = dispatcher
+            .seal()
+            .ok_or_else(|| vec!["source validation requires the host settings seal".to_owned()])?;
+        check(&plugin, held.expose(seal))
     }
 
     fn linked(&self, module: &str) -> bool {

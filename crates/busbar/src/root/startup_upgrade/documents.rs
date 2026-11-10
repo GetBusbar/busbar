@@ -466,6 +466,8 @@ impl Documents {
         let authored: serde_yaml::Value =
             serde_yaml::from_str(&authored).map_err(|_| "retained Store source is invalid")?;
         let mut target = target.clone();
+        let sources =
+            busbar_contract::secret::SecretAxis::sugars(crate::root::linked::secret_rows());
         let state = self
             .state
             .lock()
@@ -480,12 +482,13 @@ impl Documents {
             let Some(slot) = json_slot_mut(&mut settings, &secret.settings_path) else {
                 continue;
             };
-            let expected = busbar_contract::secret_ref::SecretRef::file(
+            let expected = sources.reference_for_role(
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
                 secret
                     .path
                     .to_str()
                     .ok_or("staged Store credential path is not UTF-8")?,
-            );
+            )?;
             if serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(slot.clone())
                 .ok()
                 .as_ref()
@@ -503,6 +506,7 @@ impl Documents {
             target: &mut serde_json::Value,
             authored: &serde_yaml::Value,
             templates: &busbar_migrations::config::templates::ResolvedTemplates,
+            sources: &busbar_contract::secret_ref::Sugars,
         ) -> Result<(), String> {
             if let Some(text) = authored.as_str() {
                 if text.contains("${")
@@ -510,7 +514,9 @@ impl Documents {
                         target.clone(),
                     )
                     .ok()
-                        == Some(busbar_contract::secret_ref::SecretRef::template(text))
+                        == Some(busbar_contract::secret_ref::SecretRef::template(
+                            text, sources,
+                        )?)
                 {
                     if let Some(value) = templates.scalar(text)? {
                         *target = value;
@@ -526,7 +532,10 @@ impl Documents {
                         target.clone(),
                     )
                     .ok()
-                        == Some(busbar_contract::secret_ref::SecretRef::env(variable))
+                        == Some(sources.reference_for_role(
+                            busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
+                            variable,
+                        )?)
                     {
                         if let Some(value) = templates.scalar(text)? {
                             *target = value;
@@ -538,7 +547,7 @@ impl Documents {
             if let Some(values) = target.as_object_mut() {
                 for (key, value) in values {
                     if let Some(source) = authored.get(key) {
-                        env_refs(value, source, templates)?;
+                        env_refs(value, source, templates, sources)?;
                     }
                 }
             }
@@ -548,7 +557,7 @@ impl Documents {
             .get("store")
             .and_then(|store| store.get("settings"))
         {
-            env_refs(&mut settings, source, &templates)?;
+            env_refs(&mut settings, source, &templates, &sources)?;
         }
         target.settings = settings
             .as_object_mut()

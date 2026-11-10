@@ -61,7 +61,7 @@ fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::P
         protocol: protocol.into(),
         base_url: base_url.into(),
 
-        api_key: config::SecretRef::env(api_key_env),
+        api_key: crate::config::secret::descriptor_reference(api_key_env),
         health: None,
         error_map,
         path: None,
@@ -335,7 +335,7 @@ auth:
   client_tokens: ["real-secret"]
 providers:
   acme:
-    api_key: { env: ACME_KEY }
+    api_key: { module: fixture-source, settings: { slot: ACME_KEY } }
 models:
   model-1:
     provider: acme
@@ -875,7 +875,7 @@ fn parse_auth(yaml: &str) -> config::AuthCfg {
 #[test]
 fn test_browser_login_requires_public_url() {
     let auth = parse_auth(
-        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\n",
+        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { module: fixture-source, settings: { slot: X } }\n",
     );
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.auth = Some(auth);
@@ -902,7 +902,7 @@ fn test_browser_login_requires_public_url() {
 #[test]
 fn test_role_binding_under_browser_method_active() {
     let auth = parse_auth(
-        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { env: X }\nauth:\n  role_bindings:\n    oidc:\n      member: {}\n",
+        "identity-providers:\n  oidc:\n    module: oidc-plugin\n    browser_login:\n      client_secret: { module: fixture-source, settings: { slot: X } }\nauth:\n  role_bindings:\n    oidc:\n      member: {}\n",
     );
     assert!(auth.methods["oidc"].browser_login.is_some());
     assert!(auth.role_bindings["oidc"].contains_key("member"));
