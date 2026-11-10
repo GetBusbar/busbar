@@ -200,7 +200,7 @@ mod tests {
             _: &str,
             _: &Value,
             _: &str,
-        ) -> Result<Option<(String, busbar_contract::abi::sdk::migrate::Migrated)>, String>
+        ) -> Result<Option<(String, busbar_contract::abi::sdk::migrate::MigrationAnswer)>, String>
         {
             Ok(None)
         }

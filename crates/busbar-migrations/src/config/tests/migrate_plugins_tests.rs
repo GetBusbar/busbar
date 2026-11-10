@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated};
+use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated, MigrationAnswer};
 
 use super::{MigrateHost, NoPlugins};
 use crate::config::migrate::{migrate_config, migrate_config_with};
@@ -15,7 +15,7 @@ impl MigrateHost for Stub {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         match module {
             "broken" => Err("its migrate refused: no".into()),
             "stub" => {
@@ -37,7 +37,8 @@ impl MigrateHost for Stub {
                         settings,
                         report,
                         needs,
-                    },
+                    }
+                    .into(),
                 )))
             }
             _ => Ok(None),
@@ -299,7 +300,7 @@ impl MigrateHost for Witness {
         module: &str,
         settings: &serde_json::Value,
         _: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         assert_eq!((kind, module), ("plane", "witness"));
         *self.handed.borrow_mut() = Some(settings.clone());
         let mut out = settings.clone();
@@ -346,7 +347,8 @@ impl MigrateHost for Witness {
                 settings: out,
                 report: Vec::new(),
                 needs,
-            },
+            }
+            .into(),
         )))
     }
 
@@ -800,7 +802,7 @@ impl MigrateHost for SecretLift {
         module: &str,
         settings: &serde_json::Value,
         _: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         if module != "secret-lift-test" {
             return Ok(None);
         }
@@ -815,7 +817,8 @@ impl MigrateHost for SecretLift {
                 needs: vec![MigrateNeed::ExternalizeSecret {
                     path: vec!["token".into()],
                 }],
-            },
+            }
+            .into(),
         )))
     }
     fn externalize_secret(&self, _: &str, path: &[String], bytes: &[u8]) -> Result<String, String> {
@@ -917,7 +920,7 @@ impl MigrateHost for TemplateLift {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         SecretLift {
             refuse: true,
             observed: Default::default(),
@@ -980,7 +983,7 @@ impl MigrateHost for BrowserProjection {
         _: &str,
         settings: &serde_json::Value,
         _: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         let mut settings = settings.clone();
         if settings
             .as_object_mut()
@@ -992,7 +995,8 @@ impl MigrateHost for BrowserProjection {
                     settings,
                     report: Vec::new(),
                     needs: Vec::new(),
-                },
+                }
+                .into(),
             )))
         } else {
             Ok(None)

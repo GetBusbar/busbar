@@ -421,7 +421,8 @@ impl NativeOverlay {
     ) -> Result<bool, String> {
         use super::overlay_store::import::{canonicalize, check_receipt, Receipt};
         const RECEIPT: &[u8] = b"migration:1.5.5:file";
-        let mut value = serde_json::to_value(doc).map_err(|error| error.to_string())?;
+        let mut value = serde_json::to_value(doc.authoring(&crate::seal::acquire()))
+            .map_err(|error| error.to_string())?;
         value["version"] = super::overlay::OVERLAY_VERSION.into();
         canonicalize(&mut value);
         let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
@@ -550,7 +551,8 @@ impl NativeOverlay {
             let mut doc = Self::decode(bytes)?.unwrap_or_default();
             edit(&mut doc);
             doc.version = super::overlay::OVERLAY_VERSION;
-            let bytes = serde_json::to_vec(&doc).map_err(|error| error.to_string())?;
+            let bytes = serde_json::to_vec(&doc.authoring(&crate::seal::acquire()))
+                .map_err(|error| error.to_string())?;
             let op_id = crate::door::op_id().0;
             let head = Head {
                 version: 1,
@@ -672,7 +674,8 @@ mod tests {
             deleted: vec!["x".repeat(busbar_contract::MAX_RECORD_BYTES + 17)],
             ..Default::default()
         };
-        let bytes = Secret::new(serde_json::to_vec(&doc).unwrap());
+        let bytes =
+            Secret::new(serde_json::to_vec(&doc.authoring(&crate::seal::acquire())).unwrap());
         let seal = crate::seal::lend();
         let mut rows = migration_rows(&bytes, [9; 16]).unwrap();
         let mut assembled = Vec::new();

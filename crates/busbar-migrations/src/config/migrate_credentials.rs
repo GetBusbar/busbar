@@ -60,7 +60,7 @@ pub(super) fn migrate(
             Ok(Some(file)) => {
                 // Only a reference is serialized. Neither resolved JSON nor a resolver's error
                 // is included in the document or report.
-                let Ok(file) = serde_yaml::to_value(file) else {
+                let Ok(file) = serde_yaml::to_value(file.authoring(&busbar_kernel::seal::acquire())) else {
                     todos.push(format!("providers.{name}.api_key: could not encode the migrated file reference; the original was preserved"));
                     continue;
                 };
@@ -76,7 +76,7 @@ pub(super) fn migrate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use busbar_contract::abi::sdk::migrate::Migrated;
+    use busbar_contract::abi::sdk::migrate::MigrationAnswer;
 
     fn sources() -> busbar_contract::secret_ref::Sugars {
         use busbar_contract::abi::mechanism::door::{
@@ -110,7 +110,7 @@ mod tests {
             _: &str,
             _: &serde_json::Value,
             _: &str,
-        ) -> Result<Option<(String, Migrated)>, String> {
+        ) -> Result<Option<(String, MigrationAnswer)>, String> {
             Ok(None)
         }
         fn repin(&self, _: &str) -> Result<Option<String>, String> {

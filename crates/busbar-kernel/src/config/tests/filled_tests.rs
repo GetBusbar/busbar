@@ -24,7 +24,13 @@ fn sources() -> Sugars {
     sources
 }
 fn env_ref(var: &str) -> serde_json::Value {
-    serde_json::to_value(sources().reference_for_role(SUGAR_ROLE_FILL, var).unwrap()).unwrap()
+    serde_json::to_value(
+        sources()
+            .reference_for_role(SUGAR_ROLE_FILL, var)
+            .unwrap()
+            .authoring(&crate::seal::acquire()),
+    )
+    .unwrap()
 }
 fn plane_bound(prefix: &[&str], value: serde_json::Value) -> serde_json::Value {
     plane_bound_with_sources(prefix, value, &sources()).expect("admitted fill source")
@@ -86,7 +92,9 @@ fn a_credential_field_filled_in_part_reaches_a_plane_as_a_template_reference() {
     let bound = plane_bound(&["filled_part"], section(&doc, "filled_part"));
     assert!(!bound.to_string().contains(PLAIN), "no byte: {bound}");
     let template = serde_json::to_value(
-        SecretRef::template("Bearer ${BUSBAR_FILLED_PART_SECRET}", &sources()).unwrap(),
+        SecretRef::template("Bearer ${BUSBAR_FILLED_PART_SECRET}", &sources())
+            .unwrap()
+            .authoring(&crate::seal::acquire()),
     )
     .expect("a reference");
     assert_eq!(bound["reg"][ENV]["AUTH"], template, "{bound}");

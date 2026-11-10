@@ -716,7 +716,7 @@ mod identity_tests {
             .expect("the actual TCP image exports a door");
         let dispatcher = Dispatcher::new(
             DispatchConfig::default(),
-            busbar_contract::services::test_caller_binding(),
+            busbar_kernel::host_services::caller_binding(),
         );
         let plugin = load_dropped::<TransportKind>(
             &path,

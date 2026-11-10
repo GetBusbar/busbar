@@ -228,33 +228,26 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
+    use super::secret_source_tests::{linked_axis, FAILURE, MATERIAL, NAME};
     use busbar_contract::secret::SecretAxis;
-    let axis = super::secret_source_tests::linked_axis();
-    assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
-    let env = axis.shared("env").expect("env opens");
+    let axis = linked_axis();
+    assert!(axis.linked(NAME) && !axis.answers("unregistered-source"));
+    let source = axis.shared(NAME).expect("the fixture source opens");
     assert!(
-        std::sync::Arc::ptr_eq(&env, &axis.shared("env").expect("env opens")),
+        std::sync::Arc::ptr_eq(
+            &source,
+            &axis.shared(NAME).expect("the fixture source opens")
+        ),
         "one shared instance per linked plugin"
     );
-    let var = "BUSBAR_WIRE_SECRET_ROOT_AXIS";
-    std::env::set_var(var, "hunter2");
-    let got = env
-        .resolve(format!(r#"{{"key":"{var}"}}"#).as_bytes())
-        .expect("a set variable resolves");
+    let got = source.resolve(b"{}").expect("the bound fixture resolves");
     assert_eq!(
         got.expose(&busbar_kernel::seal::lend()).as_slice(),
-        b"hunter2"
+        MATERIAL
     );
-    std::env::remove_var(var);
-    let refused = env
-        .resolve(br#"{"key":"BUSBAR_WIRE_SECRET_ROOT_UNSET"}"#)
-        .unwrap_err();
-    assert_eq!(
-        refused.text,
-        "secret env:BUSBAR_WIRE_SECRET_ROOT_UNSET cannot resolve: environment variable \
-         'BUSBAR_WIRE_SECRET_ROOT_UNSET' is unset"
-    );
-    assert!(axis.shared("vault").is_err());
+    let refused = source.resolve(br#"{"unbound":true}"#).unwrap_err();
+    assert_eq!(refused.text, FAILURE);
+    assert!(axis.shared("unregistered-source").is_err());
 }
 
 #[test]

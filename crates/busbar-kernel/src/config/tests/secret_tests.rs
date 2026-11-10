@@ -40,7 +40,13 @@ fn deserialize_accepts_canonical_and_declared_shorthand_rejects_malformed() {
         serde_yaml::from_str("{module: independent-source, settings: {slot: opaque}}").unwrap();
     assert_eq!(r.source_module(), Some("independent-source"));
     assert_eq!(
-        serde_json::to_value(&r.source().unwrap().settings).unwrap(),
+        serde_json::to_value(
+            r.source()
+                .unwrap()
+                .settings
+                .authoring(&crate::seal::acquire())
+        )
+        .unwrap(),
         serde_json::json!({"slot":"opaque"})
     );
     for bad in [

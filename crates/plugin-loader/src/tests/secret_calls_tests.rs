@@ -45,8 +45,12 @@ fn settings() -> serde_json::Value {
     serde_json::json!({})
 }
 
-fn reference_settings() -> serde_json::Value {
+fn reference_settings() -> busbar_contract::plugin_settings::Settings {
     serde_json::json!({"key": HIT})
+        .as_object()
+        .unwrap()
+        .clone()
+        .into()
 }
 
 fn unreached(r: &SecretRef) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
@@ -472,16 +476,27 @@ fn a_reference_the_plugins_check_refuses_is_refused_on_the_axis() {
     assert_eq!(
         rows.check(
             CHECKING_NAME,
-            &serde_json::json!({ "path": "relative/key" })
+            &crate::dispatch::test_authored_settings(
+                &serde_json::json!({ "path": "relative/key" })
+            )
         ),
         Err(vec![NOT_ABSOLUTE.to_string()])
     );
     assert_eq!(
-        rows.check(CHECKING_NAME, &serde_json::json!({ "path": "/run/key" })),
+        rows.check(
+            CHECKING_NAME,
+            &crate::dispatch::test_authored_settings(&serde_json::json!({ "path": "/run/key" }))
+        ),
         Ok(())
     );
 
-    assert_eq!(rows.check("absent", &serde_json::json!({})), Ok(()));
+    assert_eq!(
+        rows.check(
+            "absent",
+            &crate::dispatch::test_authored_settings(&serde_json::json!({}))
+        ),
+        Ok(())
+    );
 }
 
 pub struct Grows;

@@ -16,7 +16,7 @@ pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
         prompt: PromptAccess::No,
         user: UserAccess::No,
         priority: 0,
-        settings: serde_json::Map::new(),
+        settings: Default::default(),
         on_empty: None,
         global,
         default: false,

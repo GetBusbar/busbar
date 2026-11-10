@@ -89,7 +89,8 @@ fn test_admin_v1_hook_reads_project_settings_keys_never_values() {
     })
     .as_object()
     .unwrap()
-    .clone();
+    .clone()
+    .into();
     for (listed, url) in [
         (true, "/api/v1/admin/hooks"),
         (false, "/api/v1/admin/hooks/baa-gate"),

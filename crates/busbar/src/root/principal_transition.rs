@@ -232,7 +232,12 @@ fn effective_fingerprint(source: &str, overlay: Option<&OverlayDoc>) -> Result<S
     settings.groups.clear();
     settings.deleted_groups.clear();
     settings.version = config::overlay::OVERLAY_VERSION;
-    transition::digest(&("principal-transition-effective-v1", source, settings))
+    let digest = transition::digest(&(
+        "principal-transition-effective-v1",
+        source,
+        settings.authoring(&busbar_kernel::seal::acquire()),
+    ));
+    digest
 }
 
 fn check_references(bindings: &[transition::Binding], cfg: &config::RootCfg) -> Result<(), String> {
@@ -290,9 +295,19 @@ fn plan_effective_fingerprint(
     overlay: Option<&OverlayDoc>,
     plan: &transition::Plan,
 ) -> Result<String, String> {
-    let actual = transition::digest(&overlay)?;
-    if actual != transition::digest(&plan.overlay_before)?
-        && actual != transition::digest(&Some(transition::after_overlay(plan)?))?
+    let authoring_seal = busbar_kernel::seal::acquire();
+    let actual = transition::digest(&overlay.map(|value| value.authoring(&authoring_seal)))?;
+    if actual
+        != transition::digest(
+            &plan
+                .overlay_before
+                .as_ref()
+                .map(|value| value.authoring(&authoring_seal)),
+        )?
+        && actual
+            != transition::digest(&Some(
+                transition::after_overlay(plan)?.authoring(&authoring_seal),
+            ))?
     {
         return Err("effective overlay differs from exact transition preimage/postimage".into());
     }
@@ -352,15 +367,24 @@ pub async fn execute(
     source_sha256: &str,
     overlay: Option<&OverlayDoc>,
 ) -> Result<Execution, String> {
-    let effective_store = serde_json::to_value(&cfg.store)
-        .map_err(|_| "cannot fingerprint effective Store configuration")?;
+    let authoring_seal = busbar_kernel::seal::acquire();
+    let effective_store = serde_json::to_value(
+        cfg.store
+            .as_ref()
+            .map(|store| store.authoring(&authoring_seal)),
+    )
+    .map_err(|_| "cannot fingerprint effective Store configuration")?;
     if &effective_store != anchor_settings {
         return Err(
             "principal transition refuses an effective Store different from the bootstrap anchor"
                 .into(),
         );
     }
-    let store_sha256 = transition::store_fingerprint(&cfg.store)?;
+    let store_sha256 = transition::store_fingerprint(
+        &cfg.store
+            .as_ref()
+            .map(|store| store.authoring(&authoring_seal)),
+    )?;
     let effective_sha256 = effective_fingerprint(source_sha256, overlay)?;
     let registry = busbar_kernel::preflight::plugins_preflight(
         cfg.store.as_ref(),
@@ -437,7 +461,7 @@ pub async fn execute(
             "effective_config_sha256": effective_sha256,
             "requirements": required,
             "groups_sha256": transition::digest(&cfg.groups)?,
-            "overlay_sha256": transition::digest(&overlay)?,
+            "overlay_sha256": transition::digest(&overlay.map(|value| value.authoring(&authoring_seal)))?,
         }).into());
     }
     if matches!(
@@ -509,7 +533,7 @@ pub async fn execute(
         check_references(&spec.bindings, cfg)?;
         let plan =
             transition::prepare(spec, core.clone(), cfg.groups.clone(), overlay.cloned()).await?;
-        return serde_json::to_value(plan)
+        return serde_json::to_value(plan.authoring(&authoring_seal))
             .map(Execution::from)
             .map_err(|_| "cannot encode principal transition plan".into());
     }
@@ -554,7 +578,7 @@ pub async fn execute(
             unreachable!("handled above")
         }
     };
-    Ok(serde_json::json!({"ok": true, "action": action, "plan_sha256": transition::digest(&plan)?}).into())
+    Ok(serde_json::json!({"ok": true, "action": action, "plan_sha256": transition::digest(&plan.authoring(&authoring_seal))?}).into())
 }
 
 #[cfg(test)]

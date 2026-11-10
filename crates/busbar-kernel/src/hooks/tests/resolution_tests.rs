@@ -44,8 +44,10 @@ impl RotatingSource {
 }
 
 fn source_reference() -> Value {
-    serde_json::to_value(crate::config::secret::fixed_reference(SOURCE_NAME))
-        .expect("a source reference serializes")
+    serde_json::to_value(
+        crate::config::secret::fixed_reference(SOURCE_NAME).authoring(&crate::seal::acquire()),
+    )
+    .expect("a source reference serializes")
 }
 
 fn settings(value: Value) -> HookCfg {

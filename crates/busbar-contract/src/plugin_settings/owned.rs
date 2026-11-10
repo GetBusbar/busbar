@@ -3,7 +3,7 @@
 
 //! Internal normalization keeps every unconsumed key and value guarded even when a
 //! reference visitor refuses early. No owner settings decoder is exposed to callers.
-use super::Tree;
+use super::{Tree, RAW_JSON_TOKEN};
 use serde::de::{self, DeserializeSeed, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
 use serde_json::Value;
@@ -24,15 +24,9 @@ impl<'de> Deserializer<'de> for Tree {
         match &mut self.0 {
             Value::Null => visitor.visit_unit(),
             Value::Bool(value) => visitor.visit_bool(*value),
-            Value::Number(value) => {
-                if let Some(value) = value.as_u64() {
-                    visitor.visit_u64(value)
-                } else if let Some(value) = value.as_i64() {
-                    visitor.visit_i64(value)
-                } else {
-                    visitor.visit_f64(value.as_f64().expect("JSON number"))
-                }
-            }
+            Value::Number(value) => (&*value)
+                .deserialize_any(visitor)
+                .map_err(de::Error::custom),
             Value::String(value) => visitor.visit_str(value),
             Value::Array(values) => {
                 let held: Vec<Tree> = std::mem::take(values).into_iter().map(Tree).collect();
@@ -59,14 +53,41 @@ impl<'de> Deserializer<'de> for Tree {
     }
     fn deserialize_newtype_struct<V: Visitor<'de>>(
         self,
-        _: &'static str,
+        name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Error> {
+        if name == RAW_JSON_TOKEN {
+            // Normalization must use the same physical-token distinction as JSON input.
+            // Encode in guarded storage and lend it without extending the local lifetime.
+            let bytes = self.encode().map_err(de::Error::custom)?;
+            let text = std::str::from_utf8(&bytes.0).map_err(de::Error::custom)?;
+            return visitor.visit_map(RawDocument(Some(text)));
+        }
         visitor.visit_newtype_struct(self)
     }
     serde::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 char str string bytes byte_buf
         unit unit_struct seq tuple tuple_struct map struct enum identifier ignored_any
+    }
+}
+
+struct RawDocument<'a>(Option<&'a str>);
+impl<'de> MapAccess<'de> for RawDocument<'_> {
+    type Error = Error;
+    fn next_key_seed<K: DeserializeSeed<'de>>(
+        &mut self,
+        seed: K,
+    ) -> Result<Option<K::Value>, Error> {
+        self.0
+            .map(|_| seed.deserialize(de::value::BorrowedStrDeserializer::new(RAW_JSON_TOKEN)))
+            .transpose()
+    }
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
+        let text = self
+            .0
+            .take()
+            .ok_or_else(|| de::Error::custom("missing raw settings"))?;
+        seed.deserialize(de::value::StrDeserializer::new(text))
     }
 }
 
@@ -127,7 +148,26 @@ mod tests {
             "values":[null,true,3,-4,1.5,"private"], "nested":{"key":"value"}
         }});
         let reference = crate::secret_ref::SecretRef::deserialize(Tree(written.clone())).unwrap();
-        assert_eq!(serde_json::to_value(reference).unwrap(), written);
+        assert_eq!(serde_json::to_value(reference.writing()).unwrap(), written);
+    }
+
+    #[test]
+    fn normalization_preserves_exact_numbers_without_float_conversion() {
+        for text in ["18446744073709551616", "1.00000000000000001", "1e999"] {
+            let number: serde_json::Number = text.parse().unwrap();
+            let decoded = serde_json::Number::deserialize(Tree(Value::Number(number.clone())))
+                .expect("normalization preserves every valid JSON number");
+            assert_eq!(decoded, number);
+
+            let written = serde_json::json!({"module":"source", "settings":{
+                "exact": number,
+                "$serde_json::private::Number": "123",
+                "nested": {"$serde_json::private::Number": "456", "other": true}
+            }});
+            let reference =
+                crate::secret_ref::SecretRef::deserialize(Tree(written.clone())).unwrap();
+            assert_eq!(serde_json::to_value(reference.writing()).unwrap(), written);
+        }
     }
 
     #[test]

@@ -21,7 +21,7 @@ fn resolves_secret_ref_settings_and_passes_plain_through() {
     let settings = obj(&[
         (
             "licenseKey",
-            serde_json::to_value(fixed_reference(&var)).unwrap(),
+            serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
         ),
         ("endpoint", serde_json::json!("https://example.test")),
         ("retries", serde_json::json!(3)),
@@ -84,7 +84,7 @@ fn unresolvable_secret_ref_setting_fails_closed_naming_field() {
     let resolver = SecretResolver::builtins_only();
     let settings = obj(&[(
         "license",
-        serde_json::to_value(fixed_reference(&var)).unwrap(),
+        serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
     )]);
     let err = resolve_settings(
         &crate::config::secret::test_settings(&settings),
@@ -123,7 +123,9 @@ fn unknown_secret_module_in_setting_fails_closed() {
 
 #[test]
 fn literal_wrapper_opts_a_setting_out_of_secret_coercion() {
-    let reference = serde_json::to_value(fixed_reference("literal-witness")).unwrap();
+    let reference =
+        serde_json::to_value(fixed_reference("literal-witness").authoring(&crate::seal::acquire()))
+            .unwrap();
     let resolver = fixed_value("literal-witness", b"THE-SECRET");
 
     let mut settings = serde_json::Map::new();
@@ -226,7 +228,8 @@ impl busbar_contract::secret::SecretResolve for ConfigTimeOnly {
 fn settings_resolve_through_the_config_time_form_with_the_proof() {
     let settings = obj(&[(
         "licenseKey",
-        serde_json::to_value(fixed_reference("unused-source")).unwrap(),
+        serde_json::to_value(fixed_reference("unused-source").authoring(&crate::seal::acquire()))
+            .unwrap(),
     )]);
     let out = resolve_settings(
         &crate::config::secret::test_settings(&settings),
@@ -247,9 +250,10 @@ fn settings_resolve_through_the_config_time_form_with_the_proof() {
 fn the_kernel_resolver_answers_the_same_at_config_time_for_a_guarded_source() {
     let var = format!("BUSBAR_CONFIG_TIME_SAME_{}", std::process::id());
 
-    let reference: SecretRef =
-        serde_json::from_value(serde_json::to_value(fixed_reference(&var)).unwrap())
-            .expect("a canonical reference");
+    let reference: SecretRef = serde_json::from_value(
+        serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
+    )
+    .expect("a canonical reference");
     let resolver = fixed_value(&var, b"SAME\n");
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let dynamic: &dyn busbar_contract::secret::SecretResolve = &resolver;
@@ -269,7 +273,8 @@ fn boot_refuses_a_reference_at_an_undeclared_field() {
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     let top = obj(&[(
         "api_base",
-        serde_json::to_value(fixed_reference("unbound-source")).unwrap(),
+        serde_json::to_value(fixed_reference("unbound-source").authoring(&crate::seal::acquire()))
+            .unwrap(),
     )]);
     let err = resolve_settings(
         &crate::config::secret::test_settings(&top),
@@ -310,11 +315,11 @@ fn boot_resolves_references_at_declared_exact_and_wildcard_paths() {
     let settings = obj(&[
         (
             "client_secret",
-            serde_json::to_value(fixed_reference(&var)).unwrap(),
+            serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
         ),
         (
             "servers",
-            serde_json::json!({ "a": { "env": { "API_KEY": serde_json::to_value(fixed_reference(&var)).unwrap() }, "command": "run" } }),
+            serde_json::json!({ "a": { "env": { "API_KEY": serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap() }, "command": "run" } }),
         ),
     ]);
     let out = resolve_settings(
@@ -448,7 +453,10 @@ fn a_reference_capable_url_resolves_a_reference_and_passes_a_literal() {
     let resolver = fixed_value(&var, "https://resolved.example/value\n".as_bytes());
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     for plugin in ["owner-a", "owner-b", "owner-c", "owner-d"] {
-        let by_ref = obj(&[("url", serde_json::to_value(fixed_reference(&var)).unwrap())]);
+        let by_ref = obj(&[(
+            "url",
+            serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
+        )]);
         let out = resolve_settings(
             &crate::config::secret::test_settings(&by_ref),
             &declared(&[]),
@@ -486,7 +494,10 @@ fn a_reference_capable_field_fails_closed_and_leaves_the_secret_rules_whole() {
     let var = format!("BUSBAR_T_REFCAP_UNSET_{}", std::process::id());
     let resolver = SecretResolver::builtins_only();
     let scope = busbar_contract::config_time::ConfigScope::config_time();
-    let unset = obj(&[("url", serde_json::to_value(fixed_reference(&var)).unwrap())]);
+    let unset = obj(&[(
+        "url",
+        serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
+    )]);
     let Err(e) = resolve_settings(
         &crate::config::secret::test_settings(&unset),
         &declared(&[]),
@@ -537,9 +548,10 @@ fn a_refusal_carries_its_error_kind_through_the_resolver() {
     use busbar_contract::abi::secret::{ERROR_KIND_DENIED, ERROR_KIND_NOT_FOUND};
     use busbar_contract::secret::{SecretRefused, SecretResolve as _};
     let var = format!("BUSBAR_KIND_CARRIED_UNSET_{}", std::process::id());
-    let unset: SecretRef =
-        serde_json::from_value(serde_json::to_value(fixed_reference(&var)).unwrap())
-            .expect("a reference");
+    let unset: SecretRef = serde_json::from_value(
+        serde_json::to_value(fixed_reference(&var).authoring(&crate::seal::acquire())).unwrap(),
+    )
+    .expect("a reference");
     let builtins = fixed_resolver(vec![(
         unset.clone(),
         Err(SecretRefused {

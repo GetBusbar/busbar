@@ -47,7 +47,7 @@ fn deserialize_accepts_canonical_and_declared_shorthand_rejects_malformed() {
         serde_yaml::from_str("{module: independent-source, settings: {slot: opaque}}").unwrap();
     assert_eq!(canonical.source_module(), Some("independent-source"));
     assert_eq!(
-        serde_json::to_value(canonical.source().unwrap().settings.clone()).unwrap(),
+        serde_json::to_value(canonical.source().unwrap().settings.writing()).unwrap(),
         serde_json::json!({"slot":"opaque"})
     );
     for bad in [
@@ -121,7 +121,12 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
         serde_json::json!({"module":"independent-source","settings":{"slot":"x"}}),
         serde_json::json!({"module":"independent-source"}),
         serde_json::json!("none"),
-        serde_json::to_value(SecretRef::template("literal ${A}", &sources()).unwrap()).unwrap(),
+        serde_json::to_value(
+            SecretRef::template("literal ${A}", &sources())
+                .unwrap()
+                .writing(),
+        )
+        .unwrap(),
     ] {
         assert!(validator.is_valid(&value), "{value}");
         assert!(
@@ -265,7 +270,7 @@ fn serialize_yields_the_canonical_module_settings_wire_shape() {
         serde_json::json!({"module":"none","settings":{}}),
     ];
     for (reference, expected) in refs.iter().zip(expected) {
-        let wire = serde_json::to_value(reference).unwrap();
+        let wire = serde_json::to_value(reference.writing()).unwrap();
         let object = wire.as_object().unwrap();
         assert!(object.contains_key("module"));
         assert!(object.contains_key("settings"));
@@ -294,7 +299,7 @@ fn a_template_reference_resolves_each_variable_in_place() {
     let t = SecretRef::template("Bearer ${A}:${B} $5 ${ and ${", &sources()).unwrap();
     assert!(matches!(t, SecretRef::Template(_)));
     assert_eq!(
-        serde_json::to_value(&t).unwrap()["template"]["text"],
+        serde_json::to_value(t.writing()).unwrap()["template"]["text"],
         "Bearer ${A}:${B} $5 ${ and ${"
     );
     assert_eq!(
@@ -316,7 +321,7 @@ fn a_template_reference_resolves_each_variable_in_place() {
         Err("source refused the requested descriptor".to_owned())
     );
     assert_eq!(
-        serde_json::from_value::<SecretRef>(serde_json::to_value(&t).unwrap()).unwrap(),
+        serde_json::from_value::<SecretRef>(serde_json::to_value(t.writing()).unwrap()).unwrap(),
         t
     );
 }
@@ -330,7 +335,7 @@ fn templates_capture_one_admitted_owner_and_preserve_typed_refusals() {
         reference.resolve_template_typed(&|_| Err::<crate::Secret<String>, _>(17u32)),
         Err(TemplateRefused::Source(17))
     ));
-    let wire = serde_json::to_value(reference).unwrap();
+    let wire = serde_json::to_value(reference.writing()).unwrap();
     assert!(context::deserialize::<SecretRef, _>(wire.clone(), &Sugars::default()).is_err());
     let mut other = Sugars::default();
     other

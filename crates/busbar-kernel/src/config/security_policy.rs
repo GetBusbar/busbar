@@ -14,12 +14,13 @@ pub(super) fn digest(value: &serde_json::Value) -> [u8; 32] {
 }
 
 pub(super) fn root_digest(cfg: &super::RootCfg, plugins: &super::PluginsCfg) -> [u8; 32] {
+    let seal = crate::seal::acquire();
     digest(&json!({
-        "auth": cfg.auth,
-        "identity-providers": cfg.identity_providers,
-        "secrets": cfg.secrets,
-        "credentials": cfg.credentials.at_rest.as_ref().map(|keys| json!({"key": keys.key, "previous": keys.previous})),
-        "tls": cfg.tls, "admin_tls": cfg.admin_tls, "admin_listen": cfg.admin_listen,
+        "auth": cfg.auth.as_ref().map(|value| value.authoring(&seal)),
+        "identity-providers": cfg.identity_providers.iter().map(|(name, value)| (name, value.authoring(&seal))).collect::<indexmap::IndexMap<_,_>>(),
+        "secrets": cfg.secrets.iter().map(|(name, value)| (name, value.authoring(&seal))).collect::<std::collections::BTreeMap<_,_>>(),
+        "credentials": cfg.credentials.at_rest.as_ref().map(|keys| json!({"key": keys.key.authoring(&seal), "previous": keys.previous.as_ref().map(|value| value.authoring(&seal))})),
+        "tls": cfg.tls.as_ref().map(|value| value.authoring(&seal)), "admin_tls": cfg.admin_tls.as_ref().map(|value| value.authoring(&seal)), "admin_listen": cfg.admin_listen,
         "blocked_metadata_hosts": cfg.blocked_metadata_hosts,
         "allow_metadata_hosts": cfg.allow_metadata_hosts, "allow_all_metadata": cfg.allow_all_metadata,
         "plugins": {"enabled": plugins.enabled, "dir": plugins.dir,

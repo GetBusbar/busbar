@@ -345,7 +345,8 @@ impl busbar_migrations::FrozenBindingResolver for Resolver {
                 bytes: zeroize::Zeroizing::new(Vec::new()),
                 budget: self.value_budget,
             };
-            serde_json::to_writer(&mut output, &doc).map_err(|_| Error::Bounds)?;
+            serde_json::to_writer(&mut output, &doc.authoring(&busbar_kernel::seal::acquire()))
+                .map_err(|_| Error::Bounds)?;
             converted = Some(std::sync::Arc::new(PreparedOverlay::prepare(
                 original,
                 busbar_contract::Secret::new(std::mem::take(&mut *output.bytes)),

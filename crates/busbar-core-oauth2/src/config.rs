@@ -9,7 +9,7 @@ use busbar_contract::SecretRef;
 ///
 /// Absent means absent: no server object, no store, no signing key, no sweeper, no route. See the
 /// module docs on [`super`] for what "costs nothing when off" is measured against.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OauthAsCfg {
     /// RFC 8414 `issuer`: the canonical absolute URL that names THIS authorization server, and the
@@ -79,6 +79,35 @@ pub struct OauthAsCfg {
     /// key, and may ask for no more than [`OauthAsCfg::default_grant`].
     #[serde(default)]
     pub clients: Vec<StaticClientCfg>,
+}
+impl OauthAsCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            issuer: &'a String,
+            signing_key: F0,
+            key_id: &'a Option<String>,
+            default_grant: &'a Vec<String>,
+            access_token_ttl_secs: &'a Option<u64>,
+            refresh_token_ttl_secs: &'a Option<u64>,
+            fapi2: &'a bool,
+            clients: &'a Vec<StaticClientCfg>,
+        }
+        View {
+            issuer: &self.issuer,
+            signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
+            key_id: &self.key_id,
+            default_grant: &self.default_grant,
+            access_token_ttl_secs: &self.access_token_ttl_secs,
+            refresh_token_ttl_secs: &self.refresh_token_ttl_secs,
+            fapi2: &self.fapi2,
+            clients: &self.clients,
+        }
+    }
 }
 
 /// One `oauth_as.clients:` entry.

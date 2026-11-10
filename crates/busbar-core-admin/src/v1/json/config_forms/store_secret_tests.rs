@@ -70,7 +70,7 @@ fn store_forms_match_actual_wrapper_and_deployment_parsers() {
     );
     assert_eq!(
         schema["$defs"]["Store"]["oneOf"][0]["properties"]["settings"]["default"],
-        json!(defaults.settings)
+        json!(defaults.settings.authoring(&busbar_kernel::seal::acquire()))
     );
     assert!(schema["$defs"]["Store"]["oneOf"][0]
         .get("required")
@@ -91,7 +91,9 @@ fn store_forms_match_actual_wrapper_and_deployment_parsers() {
             }
         );
         assert!(
-            serde_json::to_value(parsed).unwrap().is_object(),
+            serde_json::to_value(parsed.authoring(&busbar_kernel::seal::acquire()))
+                .unwrap()
+                .is_object(),
             "serialization keeps the canonical object form"
         );
     }
@@ -167,7 +169,7 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
     let defaults: SecretModuleCfg = serde_json::from_value(json!({})).unwrap();
     assert_eq!(
         schema["$defs"]["SecretModule"]["oneOf"][0]["properties"]["settings"]["default"],
-        json!(defaults.settings)
+        json!(defaults.settings.authoring(&busbar_kernel::seal::acquire()))
     );
     assert_eq!(schema["properties"]["secrets"]["default"], json!({}));
     assert_eq!(
@@ -183,7 +185,9 @@ fn secret_module_forms_match_actual_module_keyed_parser() {
     let positional: SecretModuleCfg = serde_json::from_value(json!([])).unwrap();
     assert!(positional.settings.is_empty());
     assert!(
-        serde_json::to_value(positional).unwrap().is_object(),
+        serde_json::to_value(positional.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap()
+            .is_object(),
         "serialization keeps the canonical object form"
     );
 }
@@ -199,11 +203,23 @@ fn store_secret_forms_keep_runtime_rules_and_never_publish_input_values() {
     let parsed = busbar_kernel::config::deploy_from_deserializer(raw.clone()).unwrap();
     assert!(super::validator(&before["schema"]).is_valid(&raw));
     assert_eq!(
-        parsed.secrets["fixture"].settings["token"],
+        serde_json::to_value(
+            parsed.secrets["fixture"]
+                .settings
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap()["token"],
         json!({"env":"SECRET_FORM_CANARY"})
     );
     assert_eq!(
-        parsed.store.unwrap().settings["password"],
+        serde_json::to_value(
+            parsed
+                .store
+                .unwrap()
+                .settings
+                .authoring(&busbar_kernel::seal::acquire())
+        )
+        .unwrap()["password"],
         json!({"file":"/private/STORE_FORM_CANARY"})
     );
     let after = super::extension();

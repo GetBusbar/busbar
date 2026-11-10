@@ -2207,7 +2207,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
         open_with(
             &p,
             br#"{"one":{"transport":"piped","command":"/usr/bin/one","args":["--serve"],
-                 "env":{"PLAIN":"v","KEY":{"env":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}},
+                 "env":{"PLAIN":"v","KEY":{"module":"fixture-source","settings":{"slot":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
                 "bad":{"transport":"piped","command":"relative"},
@@ -2230,9 +2230,7 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                     env: vec![("PLAIN".into(), "v".into())],
                     env_refs: vec![(
                         "KEY".into(),
-                        busbar_contract::secret_ref::SecretRef::env(
-                            "BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"
-                        ),
+                        serde_json::from_value(serde_json::json!({"module":"fixture-source","settings":{"slot":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}})).unwrap(),
                     )],
                 }
             )]

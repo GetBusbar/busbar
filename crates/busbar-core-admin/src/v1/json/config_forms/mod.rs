@@ -244,7 +244,7 @@ pub(super) fn extension() -> Value {
             .iter()
             .flat_map(|declaration| declaration.scope_kinds.iter().copied())
             .collect();
-    json!({"version":1,"context":"user_configuration","schema":schema_document(),
+    json!({"version":1,"context":"user_configuration","reference_base":"schema","schema":schema_document(),
         "declared_plane_scope_kinds":scope_kinds,
         "admin_verbs":crate::verb::admin_rows().map(|row|json!({"name":row.name,"scope":row.scope.as_str(),"bound":row.bound})).collect::<Vec<_>>(),
         "ownership":{

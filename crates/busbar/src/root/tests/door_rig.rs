@@ -38,11 +38,6 @@ pub(crate) use crate::root::plane_node::{Node, NodeEndPost};
 pub(crate) use busbar_core_connector::tls::install_crypto_provider;
 pub(crate) use busbar_core_connector::Connector;
 
-#[cfg(linked_axis_plane_door)]
-pub(super) use super::secret_source_tests::{
-    assert_clean, missing, refused_naming_its_source, unset,
-};
-
 pub(crate) fn register_linked_protocols() {
     crate::dist_root_install::install();
 }

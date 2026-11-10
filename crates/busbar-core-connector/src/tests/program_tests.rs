@@ -488,22 +488,19 @@ fn a_members_program_inherits_only_its_stated_environment() {
 #[test]
 fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
-    std::env::set_var(VAR, "spawn-value");
+    crate::spawn_env::set_source_value(VAR, Some("spawn-value"));
     worker().block_on(async {
-        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
+        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_source);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
             cwd: None,
             args: Vec::new(),
             env: vec![("DECLARED".to_owned(), "yes".to_owned())],
             env_refs: vec![
-                (
-                    "WHOLE".to_owned(),
-                    busbar_contract::secret_ref::SecretRef::env(VAR),
-                ),
+                ("WHOLE".to_owned(), crate::spawn_env::source_reference(VAR)),
                 (
                     "TEMPLATED".to_owned(),
-                    busbar_contract::secret_ref::SecretRef::template(format!("Bearer ${{{VAR}}}")),
+                    crate::spawn_env::source_template(format!("Bearer ${{{VAR}}}")),
                 ),
             ],
         };
@@ -543,7 +540,7 @@ fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_sp
 #[test]
 fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
     worker().block_on(async {
-        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
+        let c = connector().resolving_spawn_secrets(crate::spawn_env::counting_source);
         let env = Program {
             command: "/usr/bin/env".to_owned(),
             cwd: None,
@@ -551,7 +548,7 @@ fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
             env: Vec::new(),
             env_refs: vec![(
                 "MISSING".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
+                crate::spawn_env::source_reference("BUSBAR_CONNECTOR_SPAWN_UNSET_VAR"),
             )],
         };
         declare(&c, &[("unresolved", env)]).unwrap();
@@ -876,19 +873,16 @@ fn a_members_spawn_carries_its_supervision_key_and_a_changed_member_a_new_one() 
 #[test]
 fn a_connector_handed_no_resolver_spawns_no_member_that_states_a_reference() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_OWN_RESOLVER";
-    std::env::set_var(VAR, "own-resolver-value");
+    crate::spawn_env::set_source_value(VAR, Some("own-resolver-value"));
     worker().block_on(async {
         let program = Program {
             command: "/usr/bin/env".to_owned(),
             cwd: None,
             args: Vec::new(),
             env: Vec::new(),
-            env_refs: vec![(
-                "HELD".to_owned(),
-                busbar_contract::secret_ref::SecretRef::env(VAR),
-            )],
+            env_refs: vec![("HELD".to_owned(), crate::spawn_env::source_reference(VAR))],
         };
-        let handed = connector().resolving_spawn_secrets(crate::spawn_env::counting_env);
+        let handed = connector().resolving_spawn_secrets(crate::spawn_env::counting_source);
         declare(&handed, &[("member", program.clone())]).unwrap();
         let id = open(&handed, "member", b"").unwrap();
         generation(&handed, id).await;

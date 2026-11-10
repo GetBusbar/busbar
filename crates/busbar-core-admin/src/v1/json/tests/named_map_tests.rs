@@ -22,7 +22,9 @@ fn named_settings_edit_preserves_omitted_secrets_and_distinguishes_removal_from_
     .as_object()
     .unwrap()
     .clone();
-    let edited = edit.apply(original).unwrap();
+    let edited = edit.apply(original.into()).unwrap();
+    let edited = serde_json::to_value(edited.authoring(&busbar_kernel::seal::acquire())).unwrap();
+    let edited = edited.as_object().unwrap();
     assert_eq!(edited["timeout"], 20);
     assert_eq!(
         edited["credential"],
@@ -74,6 +76,7 @@ fn named_configured_settings_are_allowlisted_and_never_claim_runtime_acknowledge
         .as_object()
         .unwrap()
         .clone();
+    let settings = settings.into();
     let public = |_: &str| ["timeout".to_owned()].into_iter().collect();
     for (pending, state) in [(false, "configured"), (true, "restart_pending")] {
         let view = serde_json::to_value(configured_settings(

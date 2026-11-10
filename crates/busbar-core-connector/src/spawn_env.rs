@@ -275,33 +275,95 @@ pub(crate) fn refresh_all() {
     refresher::refresh_all();
 }
 
-/// THE CELLS' RESOLVER: an `env` reference reads its variable (nothing else resolves), and every
+/// Neutral source fixture: exercise config-time custody without interpreting any plugin's schema.
 #[cfg(test)]
-pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<Secret<String>, String> {
-    let var = r
-        .env_var()
-        .ok_or_else(|| format!("{} does not resolve", r.describe()))?;
-    *RESOLUTIONS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .entry(var.to_string())
-        .or_insert(0) += 1;
-    std::env::var(var)
-        .map(Secret::new)
-        .map_err(|_| format!("{} does not resolve", r.describe()))
-}
+mod source_fixture {
+    use super::*;
+    use busbar_contract::secret::SecretResolve;
+    use busbar_contract::secret_ref::Sugars;
+    use busbar_kernel::config::secret::SecretResolver;
+    use std::collections::BTreeMap;
 
-#[cfg(test)]
-static RESOLUTIONS: Mutex<std::collections::BTreeMap<String, usize>> =
-    Mutex::new(std::collections::BTreeMap::new());
+    struct Entry {
+        reference: SecretRef,
+        value: Option<Secret<Vec<u8>>>,
+        resolutions: usize,
+    }
+    static SOURCES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
 
-/// How many times [`counting_env`] resolved `var`.
-#[cfg(test)]
-pub(crate) fn resolutions_of(var: &str) -> usize {
-    RESOLUTIONS
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(var)
-        .copied()
-        .unwrap_or(0)
+    fn sources() -> Sugars {
+        use busbar_contract::abi::mechanism::door::{
+            REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+        };
+        let mut sources = Sugars::default();
+        sources
+            .declare(
+                "test-spawn-source",
+                &[
+                    (REWRITE_SUGAR, "fixture".into(), "slot".into()),
+                    (REWRITE_SUGAR_ROLE, "fixture".into(), SUGAR_ROLE_FILL.into()),
+                ],
+            )
+            .unwrap();
+        sources
+    }
+    pub(crate) fn source_reference(key: &str) -> SecretRef {
+        let reference = sources().get("fixture").unwrap().reference(key);
+        SOURCES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key.into())
+            .or_insert_with(|| Entry {
+                reference: reference.clone(),
+                value: None,
+                resolutions: 0,
+            });
+        reference
+    }
+    pub(crate) fn source_template(text: impl Into<String>) -> SecretRef {
+        SecretRef::template(text, &sources()).expect("fixture declares the fill source")
+    }
+    pub(crate) fn set_source_value(key: &str, value: Option<&str>) {
+        source_reference(key);
+        SOURCES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(key)
+            .unwrap()
+            .value = value.map(|v| Secret::new(v.as_bytes().to_vec()));
+    }
+    pub(crate) fn counting_source(
+        reference: &SecretRef,
+        scope: &ConfigScope,
+    ) -> Result<Secret<String>, String> {
+        let resolver = SecretResolver::with_plugin(Box::new(|module, settings| {
+            let mut sources = SOURCES.lock().unwrap_or_else(PoisonError::into_inner);
+            let entry = sources
+                .values_mut()
+                .find(|entry| {
+                    entry
+                        .reference
+                        .source()
+                        .is_some_and(|s| s.module == module && &s.settings == settings)
+                })
+                .ok_or_else(|| "fixture source unavailable".to_owned())?;
+            entry.resolutions += 1;
+            entry
+                .value
+                .clone()
+                .ok_or_else(|| "fixture source unavailable".to_owned())
+        }));
+        resolver.resolve_string_at_config(reference, scope)
+    }
+    pub(crate) fn resolutions_of(key: &str) -> usize {
+        SOURCES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(key)
+            .map_or(0, |e| e.resolutions)
+    }
 }
+#[cfg(test)]
+pub(crate) use source_fixture::{
+    counting_source, resolutions_of, set_source_value, source_reference, source_template,
+};

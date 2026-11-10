@@ -3,7 +3,7 @@
 
 use std::net::IpAddr;
 
-use busbar_contract::abi::sdk::migrate::{MigrateNeed, Migrated};
+use busbar_contract::abi::sdk::migrate::{MigrateNeed, MigrationAnswer};
 use busbar_contract::plugin::Kind;
 use serde_yaml::{Mapping, Value};
 
@@ -72,7 +72,7 @@ pub trait MigrateHost {
         module: &str,
         settings: &serde_json::Value,
         from: &str,
-    ) -> Result<Option<(String, Migrated)>, String>;
+    ) -> Result<Option<(String, MigrationAnswer)>, String>;
 
     fn repin(&self, github: &str) -> Result<Option<String>, String>;
 
@@ -111,7 +111,7 @@ impl MigrateHost for NoPlugins {
         _: &str,
         _: &serde_json::Value,
         _: &str,
-    ) -> Result<Option<(String, Migrated)>, String> {
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
         Ok(None)
     }
     fn repin(&self, _: &str) -> Result<Option<String>, String> {
@@ -206,7 +206,9 @@ pub(super) fn migrate_recognized(
             continue;
         }
         match host.migrate(&site.kind, &site.module, &site.settings, &from) {
-            Ok(Some((plugin, migrated))) if migrated.settings != site.settings => {
+            Ok(Some((plugin, migrated))) if serde_json::to_value(migrated.authoring(&busbar_kernel::seal::acquire()))
+                .map(busbar_contract::abi::sdk::cred::SettingsValue::from)
+                .is_ok_and(|settings| *settings != site.settings) => {
                 let proof = match super::provenance::HistoricalConfigProof::settings(&site.path, &site.settings) {
                     Ok(proof) => proof,
                     Err(error) => { ledger.failures.push(error); continue; }
@@ -493,14 +495,20 @@ fn apply(
     host: &dyn MigrateHost,
     site: &Site,
     plugin: &str,
-    migrated: Migrated,
+    migrated: MigrationAnswer,
     ledger: &mut Ledger<'_>,
 ) {
-    let Migrated {
-        mut settings,
-        mut report,
-        needs,
-    } = migrated;
+    let seal = busbar_kernel::seal::acquire();
+    let Ok(settings) = serde_json::to_value(migrated.authoring(&seal)) else {
+        ledger.failures.push(format!(
+            "{}: migrated settings could not be authored; no converted configuration was emitted",
+            site.path
+        ));
+        return;
+    };
+    let mut settings = busbar_contract::abi::sdk::cred::SettingsValue::from(settings);
+    let mut report = migrated.report;
+    let needs = migrated.needs;
     let lifted_secret = needs
         .iter()
         .any(|need| matches!(need, MigrateNeed::ExternalizeSecret { .. }));
@@ -510,7 +518,13 @@ fn apply(
         let MigrateNeed::ExternalizeSecret { path } = need else {
             continue;
         };
-        let result = externalize_secret(&mut settings, &mut report, path, host, &site.path);
+        let result = externalize_secret(
+            settings.pointer_mut("").expect("document root"),
+            &mut report,
+            path,
+            host,
+            &site.path,
+        );
         if result.is_err() {
             ledger.failures.push(format!(
                 "{}: the plugin '{plugin}' requires secure literal-secret migration; ensure the old credential is nonempty without trailing CR/LF and the private migration directory is writable, or supply an explicit private file SecretRef; no converted configuration was emitted",
@@ -523,8 +537,8 @@ fn apply(
         ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
         return;
     }
-    if settings != site.settings {
-        if let Err(why) = write_back(root, site, settings) {
+    if *settings != site.settings {
+        if let Err(why) = write_back(root, site, &settings) {
             if lifted_secret {
                 ledger.failures.push(format!("{}: migrated secret settings could not be installed; no converted configuration was emitted", site.path));
                 return;
@@ -589,15 +603,19 @@ fn externalize_secret(
                 variable,
             )?;
             let reference =
-                serde_json::to_value(reference).map_err(|_| "source reference encoding failed")?;
+                serde_json::to_value(reference.authoring(&busbar_kernel::seal::acquire()))
+                    .map_err(|_| "source reference encoding failed")?;
             secret.zeroize();
             *slot = reference;
             return Ok(());
         }
-        let reference = serde_json::to_value(busbar_contract::secret_ref::SecretRef::template(
-            secret.clone(),
-            &host.source_declarations()?,
-        )?)
+        let reference = serde_json::to_value(
+            busbar_contract::secret_ref::SecretRef::template(
+                secret.clone(),
+                &host.source_declarations()?,
+            )?
+            .authoring(&busbar_kernel::seal::acquire()),
+        )
         .map_err(|_| "authored secret template could not be encoded")?;
         secret.zeroize();
         *slot = reference;
@@ -617,8 +635,12 @@ fn externalize_secret(
         }
     }
     secret.zeroize();
-    *slot = serde_json::to_value(source.reference(file))
-        .map_err(|_| "source reference encoding failed")?;
+    *slot = serde_json::to_value(
+        source
+            .reference(file)
+            .authoring(&busbar_kernel::seal::acquire()),
+    )
+    .map_err(|_| "source reference encoding failed")?;
     Ok(())
 }
 
@@ -696,7 +718,7 @@ fn decimal_value(text: &str) -> Option<(bool, String, i64)> {
     Some((negative, digits, exponent))
 }
 
-fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> Result<(), String> {
+fn write_back(root: &mut Mapping, site: &Site, settings: &serde_json::Value) -> Result<(), String> {
     let value = yaml_value;
     if site.kind == busbar_contract::abi::mechanism::kind::PLANE {
         let serde_json::Value::Object(sections) = settings else {
@@ -704,7 +726,7 @@ fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> R
         };
 
         let mut writes = Vec::new();
-        for (name, v) in &sections {
+        for (name, v) in sections {
             let Some(handed) = site.settings.get(name) else {
                 return Err(format!("`{name}` is not a section it was handed"));
             };
@@ -724,7 +746,7 @@ fn write_back(root: &mut Mapping, site: &Site, settings: serde_json::Value) -> R
         }
         return Ok(());
     }
-    let new = value(&settings)?;
+    let new = value(settings)?;
     let Some((last, parents)) = site.at.split_last() else {
         return Err("no place to write".into());
     };

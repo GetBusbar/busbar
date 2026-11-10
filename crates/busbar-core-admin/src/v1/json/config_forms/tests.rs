@@ -160,6 +160,27 @@ fn openapi_publishes_separate_user_input_forms_with_local_references() {
     let extension = &document["x-busbar-config-schemas"];
     assert_eq!(extension["context"], "user_configuration");
     assert_eq!(extension["version"], 1);
+    assert_eq!(extension["reference_base"], "schema");
+    fn check_references(root: &serde_json::Value, value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(reference) = map.get("$ref").and_then(serde_json::Value::as_str) {
+                    let pointer = reference.strip_prefix('#').expect("local reference");
+                    assert!(root.pointer(pointer).is_some(), "unresolved {reference}");
+                }
+                for child in map.values() {
+                    check_references(root, child);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for child in values {
+                    check_references(root, child);
+                }
+            }
+            _ => {}
+        }
+    }
+    check_references(&extension["schema"], &extension["schema"]);
     // Conventional generators need the numeric format as well as the lossless-token metadata.
     for schema in [
         &extension["schema"]["$defs"]["Limit"]["oneOf"][0]["properties"]["requests"],

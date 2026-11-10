@@ -144,9 +144,11 @@ fn hook_cfg_round_trips_for_overlay_persistence() {
     });
     let cfg: HookCfg = serde_json::from_value(src).expect("HookCfg deserializes");
 
-    let once = serde_json::to_value(&cfg).expect("HookCfg serializes");
+    let once =
+        serde_json::to_value(cfg.authoring(&crate::seal::acquire())).expect("HookCfg serializes");
     let cfg2: HookCfg = serde_json::from_value(once.clone()).expect("re-deserializes");
-    let twice = serde_json::to_value(&cfg2).expect("re-serializes");
+    let twice =
+        serde_json::to_value(cfg2.authoring(&crate::seal::acquire())).expect("re-serializes");
     assert_eq!(once, twice, "HookCfg round-trips stably");
 
     assert_eq!(once["kind"], "gate");
@@ -872,7 +874,12 @@ fn test_structural_injection_widens_client_tokens_array_end_to_end() {
     let unguarded_spliced = template.replace(&format!("${{{var}}}"), payload);
     let deploy: DeployCfg = serde_yaml::from_str(&unguarded_spliced)
         .expect("unguarded splice must parse and deserialize");
-    let written = serde_json::to_value(&deploy.identity_providers["tokens"].settings).unwrap();
+    let written = serde_json::to_value(
+        deploy.identity_providers["tokens"]
+            .settings
+            .authoring(&crate::seal::acquire()),
+    )
+    .unwrap();
     let client_tokens = written
         .get("client_tokens")
         .and_then(|v| v.as_array())
@@ -916,7 +923,7 @@ fn test_structural_injection_adds_sibling_settings_key_end_to_end() {
         .expect("unguarded splice must parse and deserialize");
     let settings = &deploy.identity_providers["ad"].settings;
     assert_eq!(
-        serde_json::to_value(settings)
+        serde_json::to_value(settings.authoring(&crate::seal::acquire()))
             .unwrap()
             .get("evil_key")
             .and_then(|v| v.as_str()),
@@ -1594,7 +1601,14 @@ fn test_secret_ref_shorthand_uses_only_its_admitted_owner() {
         );
         assert_eq!(reference.source_module(), Some(owner));
         assert_eq!(
-            serde_json::to_value(&reference.source().unwrap().settings).unwrap(),
+            serde_json::to_value(
+                reference
+                    .source()
+                    .unwrap()
+                    .settings
+                    .authoring(&crate::seal::acquire())
+            )
+            .unwrap(),
             serde_json::json!({"slot":"private-descriptor"})
         );
         assert_ne!(reference.source_module(), Some(other));
@@ -1609,7 +1623,13 @@ fn test_secret_ref_canonical_form_parses() {
             .expect("canonical form parses");
     assert_eq!(v.source_module(), Some("independent-source"));
     assert_eq!(
-        serde_json::to_value(&v.source().unwrap().settings).unwrap(),
+        serde_json::to_value(
+            v.source()
+                .unwrap()
+                .settings
+                .authoring(&crate::seal::acquire())
+        )
+        .unwrap(),
         serde_json::json!({"slot":"descriptor"})
     );
     assert!(!v.is_none(), "a canonical source is not keyless");
@@ -2000,14 +2020,14 @@ advanced:
     assert_eq!(store.module, "acme-durable");
 
     assert_eq!(
-        serde_json::to_value(&store.settings)
+        serde_json::to_value(store.settings.authoring(&crate::seal::acquire()))
             .unwrap()
             .get("db_path")
             .and_then(|v| v.as_str()),
         Some("/var/lib/busbar/gov.db")
     );
     assert_eq!(
-        serde_json::to_value(&store.settings)
+        serde_json::to_value(store.settings.authoring(&crate::seal::acquire()))
             .unwrap()
             .get("busy_timeout_ms")
             .and_then(|v| v.as_i64()),
@@ -2074,10 +2094,14 @@ fn test_resolve_builds_registry_from_named_defs() {
     );
 
     assert_eq!(
-        serde_json::to_value(&cfg.hooks["pii-eng"].settings)
-            .unwrap()
-            .get("team")
-            .and_then(|v| v.as_str()),
+        serde_json::to_value(
+            cfg.hooks["pii-eng"]
+                .settings
+                .authoring(&crate::seal::acquire())
+        )
+        .unwrap()
+        .get("team")
+        .and_then(|v| v.as_str()),
         Some("alpha")
     );
     assert_eq!(cfg.hooks["pii-all"].kind, HookKind::Gate);
@@ -2232,14 +2256,14 @@ test-idp-double:
     );
 
     assert_eq!(
-        serde_json::to_value(&method.settings)
+        serde_json::to_value(method.settings.authoring(&crate::seal::acquire()))
             .unwrap()
             .get("issuer")
             .and_then(|v| v.as_str()),
         Some("https://idp.example/")
     );
     assert_eq!(
-        serde_json::to_value(&method.settings)
+        serde_json::to_value(method.settings.authoring(&crate::seal::acquire()))
             .unwrap()
             .get("audience")
             .and_then(|v| v.as_str()),

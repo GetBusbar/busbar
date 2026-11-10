@@ -104,7 +104,8 @@ fn hook_replacement_fields_read_back_authored_values() {
                 default,
                 ..hook(HookKind::Gate, false)
             };
-            let authored = serde_json::to_value(&cfg).unwrap();
+            let authored =
+                serde_json::to_value(cfg.authoring(&busbar_kernel::seal::acquire())).unwrap();
             let read = serde_json::to_value(project_hook_view("ranking", &cfg, &[])).unwrap();
             for field in ["on_empty", "signals", "default"] {
                 assert_eq!(read[field], authored[field], "replacement loses {field}");

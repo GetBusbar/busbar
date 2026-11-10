@@ -206,10 +206,16 @@ pub async fn run(
         }
     }
     if let Some(store) = doc.root.as_ref().and_then(|root| root.store.as_ref()) {
-        let selected = serde_json::to_value(store)
+        let authoring_seal = busbar_kernel::seal::acquire();
+        let selected = serde_json::to_value(store.authoring(&authoring_seal))
             .map_err(|_| "cannot compare the migrated Store selection")?;
-        let anchored = serde_json::to_value(&deploy.store)
-            .map_err(|_| "cannot compare the base Store selection")?;
+        let anchored = serde_json::to_value(
+            deploy
+                .store
+                .as_ref()
+                .map(|store| store.authoring(&authoring_seal)),
+        )
+        .map_err(|_| "cannot compare the base Store selection")?;
         if selected != anchored {
             return Err("the old overlay selects a different Store; rerun --migrate-config with the original overlay available so the new base YAML anchors the actual historical Store".into());
         }

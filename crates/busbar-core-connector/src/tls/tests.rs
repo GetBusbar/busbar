@@ -15,64 +15,70 @@ fn gen_self_signed() -> (String, String) {
     (cert.pem(), signing_key.serialize_pem())
 }
 
-/// Write `contents` to a uniquely-named temp file and return its path.
-fn temp_pem(tag: &str, contents: &str) -> std::path::PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut p = std::env::temp_dir();
-    let uniq = format!(
-        "busbar-core-connector-test-{tag}-{}-{n}.pem",
-        std::process::id(),
-    );
-    p.push(uniq);
-    std::fs::write(&p, contents).unwrap();
-    p
+// Fixture materials are bound to opaque references. No source plugin is interpreted here.
+struct TlsFixture {
+    config: TlsCfg,
+    bindings: Vec<(
+        String,
+        busbar_contract::plugin_settings::Settings,
+        Result<busbar_kernel::config::secret::Held, String>,
+    )>,
 }
-
-fn fixture_resolver(tls: &TlsCfg) -> SecretResolver {
-    let bindings: Vec<_> = [&tls.cert, &tls.key]
-        .into_iter()
-        .chain(tls.client_ca.iter())
-        .map(|reference| {
-            assert_eq!(reference.module, "file");
-            let path = reference.settings["path"].as_str().unwrap();
-            let material = std::fs::read(path)
-                .map(busbar_kernel::config::secret::Held::new)
-                .map_err(|error| format!("cannot read fixture {path}: {error}"));
-            (
-                reference.module.clone(),
-                serde_json::Value::Object(reference.settings.clone()).to_string(),
-                material,
+impl std::ops::Deref for TlsFixture {
+    type Target = TlsCfg;
+    fn deref(&self) -> &TlsCfg {
+        &self.config
+    }
+}
+impl TlsFixture {
+    fn new(
+        cert: Result<&str, &str>,
+        key: Result<&str, &str>,
+        ca: Option<Result<&str, &str>>,
+    ) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut bindings = Vec::new();
+        let mut bind = |role: &str, value: Result<&str, &str>| {
+            let module = format!("test-tls-{id}-{role}");
+            let settings: busbar_contract::plugin_settings::Settings = serde_json::from_value(
+                serde_json::json!({"descriptor":"PRIVATE_FIXTURE_DESCRIPTOR"}),
             )
-        })
-        .collect();
+            .unwrap();
+            bindings.push((
+                module.clone(),
+                settings.clone(),
+                value
+                    .map(|s| busbar_kernel::config::secret::Held::new(s.as_bytes().to_vec()))
+                    .map_err(str::to_owned),
+            ));
+            SecretRef::Source(busbar_contract::secret_ref::SourceReference { module, settings })
+        };
+        let config = TlsCfg {
+            cert: bind("cert", cert),
+            key: bind("key", key),
+            client_ca: ca.map(|v| bind("ca", v)),
+        };
+        Self { config, bindings }
+    }
+}
+fn fixture_resolver(tls: &TlsFixture) -> SecretResolver {
+    let bindings = tls.bindings.clone();
     SecretResolver::with_plugin(Box::new(move |module, settings| {
         bindings
             .iter()
-            .find(|(bound_module, bound_settings, _)| {
-                bound_module == module && bound_settings == settings
-            })
-            .map(|(_, _, material)| material.clone())
+            .find(|(name, bound, _)| name == module && bound == settings)
+            .map(|(_, _, value)| value.clone())
             .unwrap_or_else(|| Err("unbound TLS fixture reference".into()))
     }))
 }
-
-fn valid_tls_cfg() -> (TlsCfg, String) {
-    let (cert_pem, key_pem) = gen_self_signed();
-    let cert_file = temp_pem("cert", &cert_pem);
-    let key_file = temp_pem("key", &key_pem);
-    (
-        TlsCfg {
-            cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-            key: SecretRef::file(key_file.to_string_lossy().into_owned()),
-            client_ca: None,
-        },
-        cert_pem,
-    )
+fn valid_tls_cfg() -> (TlsFixture, String) {
+    let (cert, key) = gen_self_signed();
+    (tls_cfg_from(&cert, &key, None), cert)
 }
 
 #[test]
-fn pem_fixtures_are_explicitly_bound_without_restoring_builtin_file_resolution() {
+fn pem_fixtures_are_explicitly_bound_without_an_ambient_source() {
     use busbar_contract::secret::SecretResolve;
     let (tls, _) = valid_tls_cfg();
     let resolver = fixture_resolver(&tls);
@@ -80,10 +86,13 @@ fn pem_fixtures_are_explicitly_bound_without_restoring_builtin_file_resolution()
     let (other, _) = valid_tls_cfg();
     let error = resolver
         .resolve(&other.cert)
-        .expect_err("another existing file is not admitted");
+        .expect_err("another fixture is not admitted");
     assert!(error.contains("unbound TLS fixture reference"), "{error}");
     let mut wrong_module = tls.cert.clone();
-    wrong_module.module = "another-secret-plugin".into();
+    let SecretRef::Source(source) = &mut wrong_module else {
+        unreachable!()
+    };
+    source.module = "unbound-source".into();
     assert!(resolver.resolve(&wrong_module).is_err());
     assert!(build_server_config(&tls, &SecretResolver::builtins_only()).is_err());
 }
@@ -134,32 +143,26 @@ async fn build_server_config_and_prepare_build_from_operator_config() {
 /// A syntactically invalid PEM cert errors with the cert named, not a panic — moved here verbatim
 #[test]
 fn malformed_cert_errors_clearly() {
-    let cert_file = temp_pem("bad-cert", "-----BEGIN CERTIFICATE-----\nnot base64\n");
     let (_c, key_pem) = gen_self_signed();
-    let key_file = temp_pem("ok-key", &key_pem);
-    let tls = TlsCfg {
-        cert: SecretRef::file(cert_file.to_string_lossy().into_owned()),
-        key: SecretRef::file(key_file.to_string_lossy().into_owned()),
-        client_ca: None,
-    };
+    let tls = tls_cfg_from("-----BEGIN CERTIFICATE-----\nnot base64\n", &key_pem, None);
     let err =
         build_server_config(&tls, &fixture_resolver(&tls)).expect_err("malformed cert must error");
     assert!(err.contains("cert"), "error must reference the cert: {err}");
 }
 
-/// A missing cert FILE errors with the offending path named, not a panic — moved here verbatim in
+/// An unavailable cert source returns its diagnostic context, rather than panicking.
 #[test]
-fn bad_cert_path_errors_clearly() {
-    let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
-        client_ca: None,
-    };
+fn unavailable_cert_source_errors_clearly() {
+    let tls = TlsFixture::new(
+        Err("fixture cert unavailable"),
+        Err("fixture key unavailable"),
+        None,
+    );
     let err = build_server_config(&tls, &fixture_resolver(&tls))
-        .expect_err("missing cert file must error");
+        .expect_err("unavailable cert source must error");
     assert!(
-        err.contains("cert") && err.contains("does-not-exist-cert.pem"),
-        "error must name the offending file: {err}"
+        err.contains("cert") && err.contains("fixture cert unavailable"),
+        "error must identify the unavailable source: {err}"
     );
 }
 
@@ -184,11 +187,11 @@ async fn prepare_fails_closed_when_transport_is_incapable() {
 /// FAIL CLOSED: a `TLS`-configured binding whose cert cannot be resolved must never fall back to
 #[tokio::test]
 async fn prepare_fails_closed_on_missing_cert() {
-    let tls = TlsCfg {
-        cert: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-cert.pem"),
-        key: SecretRef::file("/nonexistent/busbar-core-connector/does-not-exist-key.pem"),
-        client_ca: None,
-    };
+    let tls = TlsFixture::new(
+        Err("fixture cert unavailable"),
+        Err("fixture key unavailable"),
+        None,
+    );
     let resolver = fixture_resolver(&tls);
 
     let err = match prepare("missing-cert-binding", Some(&tls), &resolver, true) {
@@ -266,15 +269,9 @@ fn gen_ca_and_leaf(sans: Vec<String>) -> (String, String, String) {
     (ca_cert.pem(), leaf_cert.pem(), leaf_kp.serialize_pem())
 }
 
-/// A `TlsCfg` over PEM files holding `cert_pem`, `key_pem` and (for mutual TLS) `client_ca_pem`.
-fn tls_cfg_from(cert_pem: &str, key_pem: &str, client_ca_pem: Option<&str>) -> TlsCfg {
-    let file =
-        |tag: &str, pem: &str| SecretRef::file(temp_pem(tag, pem).to_string_lossy().into_owned());
-    TlsCfg {
-        cert: file("hs-cert", cert_pem),
-        key: file("hs-key", key_pem),
-        client_ca: client_ca_pem.map(|ca| file("hs-ca", ca)),
-    }
+/// TLS materials held by the neutral fixture resolver.
+fn tls_cfg_from(cert: &str, key: &str, ca: Option<&str>) -> TlsFixture {
+    TlsFixture::new(Ok(cert), Ok(key), ca.map(Ok))
 }
 
 /// A root store trusting exactly the certificates in `pem`.
@@ -807,9 +804,9 @@ fn pkcs1_and_sec1_keys_build_a_server_config() {
     }
 }
 
-/// A refused key or client CA names the FILE it came from (the operator's one handle on it) and
+/// A refused key or client CA names its public source without exposing settings or material.
 #[test]
-fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
+fn a_bad_key_or_client_ca_names_its_source_and_never_settings_or_bytes() {
     use base64::Engine;
     const MARKER: &str = "SECRETMARKERBYTES-0123456789";
     let b64 = base64::engine::general_purpose::STANDARD.encode(MARKER);
@@ -817,9 +814,8 @@ fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
         format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n")
     };
     let (cert_pem, key_pem) = gen_self_signed();
-    let path_of = |tag: &str, pem: &str| temp_pem(tag, pem).to_string_lossy().into_owned();
 
-    let mut cases: Vec<(&str, TlsCfg, String)> = Vec::new();
+    let mut cases: Vec<(&str, TlsFixture, String)> = Vec::new();
     for (label, body) in [
         ("PRIVATE KEY", b64.as_str()),
         ("PRIVATE KEY", MARKER),
@@ -827,30 +823,16 @@ fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
         ("EC PRIVATE KEY", b64.as_str()),
         ("CERTIFICATE", b64.as_str()),
     ] {
-        let key_path = path_of("bad-key", &section(label, body));
-        cases.push((
-            "key",
-            TlsCfg {
-                cert: SecretRef::file(path_of("ok-cert", &cert_pem)),
-                key: SecretRef::file(key_path.clone()),
-                client_ca: None,
-            },
-            key_path,
-        ));
+        let tls = tls_cfg_from(&cert_pem, &section(label, body), None);
+        let source = tls.key.describe();
+        cases.push(("key", tls, source));
     }
     for (label, body) in [("CERTIFICATE", b64.as_str()), ("PRIVATE KEY", b64.as_str())] {
-        let ca_path = path_of("bad-ca", &section(label, body));
-        cases.push((
-            "client_ca",
-            TlsCfg {
-                cert: SecretRef::file(path_of("ok-cert", &cert_pem)),
-                key: SecretRef::file(path_of("ok-key", &key_pem)),
-                client_ca: Some(SecretRef::file(ca_path.clone())),
-            },
-            ca_path,
-        ));
+        let tls = tls_cfg_from(&cert_pem, &key_pem, Some(&section(label, body)));
+        let source = tls.client_ca.as_ref().unwrap().describe();
+        cases.push(("client_ca", tls, source));
     }
-    for (field, tls, path) in cases {
+    for (field, tls, source) in cases {
         let err = build_server_config(&tls, &fixture_resolver(&tls))
             .expect_err("a bad key or client CA is refused");
         assert!(
@@ -858,8 +840,12 @@ fn a_bad_key_or_client_ca_names_its_file_and_never_its_bytes() {
             "{field}: the error names the field: {err}"
         );
         assert!(
-            err.contains(&path),
-            "{field}: the error names the file {path}: {err}"
+            err.contains(&source),
+            "{field}: the error names the source {source}: {err}"
+        );
+        assert!(
+            !err.contains("PRIVATE_FIXTURE_DESCRIPTOR"),
+            "{field}: settings echoed: {err}"
         );
         assert!(!err.contains(MARKER), "{field}: raw bytes echoed: {err}");
         assert!(!err.contains(&b64), "{field}: encoded bytes echoed: {err}");

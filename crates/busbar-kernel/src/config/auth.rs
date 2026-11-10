@@ -27,7 +27,7 @@ use busbar_contract::secret_ref::SecretRef;
 /// The built-in `keys` (data-plane signed-key verifier) and the operator credential
 /// are referenced BARE with no definition at all; a definition entry exists only when the provider
 /// needs config (e.g. the operator credential carrying its `token:` secret ref).
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct IdentityProviderCfg {
     /// The module backing this provider: the built-in `keys` / operator credential, or a `kind: auth`
@@ -70,6 +70,32 @@ pub struct IdentityProviderCfg {
     #[serde(default)]
     pub settings: busbar_contract::plugin_settings::Settings,
 }
+impl IdentityProviderCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize> {
+            module: &'a String,
+            max_admin_scope: &'a Option<String>,
+            token: F0,
+            browser_login: F1,
+            settings: F2,
+        }
+        View {
+            module: &self.module,
+            max_admin_scope: &self.max_admin_scope,
+            token: self.token.as_ref().map(|value| value.authoring(seal)),
+            browser_login: self
+                .browser_login
+                .as_ref()
+                .map(|value| value.authoring(seal)),
+            settings: self.settings.authoring(seal),
+        }
+    }
+}
 
 pub type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
 
@@ -78,7 +104,7 @@ pub type IdentityProviders = indexmap::IndexMap<String, IdentityProviderCfg>;
 /// definition). This is an INTERNAL type built by busbar-core's `resolve_auth` — it is never
 /// deserialized, because 1.5.3 removed the inline chain-entry form entirely (a chain is now a list of
 /// bare NAMES).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AuthChainEntry {
     /// The PROVIDER NAME (the `identity-providers:` key) — the runtime identity `role_bindings.<name>`
     /// binds and `auth_scope_caps` keys off. For a bare built-in this equals the module name.
@@ -93,6 +119,29 @@ pub struct AuthChainEntry {
 
     /// The module's own opaque settings (pushed to an auth plugin verbatim).
     pub settings: busbar_contract::plugin_settings::Settings,
+}
+impl AuthChainEntry {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize> {
+            name: &'a String,
+            module: &'a String,
+            max_admin_scope: &'a Option<String>,
+            token: F0,
+            settings: F1,
+        }
+        View {
+            name: &self.name,
+            module: &self.module,
+            max_admin_scope: &self.max_admin_scope,
+            token: self.token.as_ref().map(|value| value.authoring(seal)),
+            settings: self.settings.authoring(seal),
+        }
+    }
 }
 
 impl AuthChainEntry {
@@ -333,7 +382,7 @@ pub struct AuthPolicyCfg {
 /// plugin is lent at `open` for its own code→token exchange (the host keeps none of it; see
 /// `client_secret`). `deny_unknown_fields`: a typo here (e.g. `client_secrets:`) must fail boot, not
 /// silently disable the button.
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserLoginCfg {
     /// The OAuth/OIDC confidential-client secret, a SECRET REFERENCE. OPTIONAL: only the REDIRECT
@@ -349,12 +398,32 @@ pub struct BrowserLoginCfg {
     #[serde(default)]
     pub client_id: Option<String>,
 }
+impl BrowserLoginCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize> {
+            client_secret: F0,
+            client_id: &'a Option<String>,
+        }
+        View {
+            client_secret: self
+                .client_secret
+                .as_ref()
+                .map(|value| value.authoring(seal)),
+            client_id: &self.client_id,
+        }
+    }
+}
 
 /// One RESOLVED hosted-login method — the projection of an `identity-providers:` definition that
 /// carries a `browser_login:` block (freeze blocker). Built by busbar-core's `resolve_auth`, never
 /// deserialized: the config-facing shape is the provider definition itself, and this is just the
 /// slice of it the login machinery reads.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AuthMethodCfg {
     /// The `kind: auth` PLUGIN backing this method — the provider definition's `module:`. Distinct
     /// from the map KEY, which is the provider NAME (two named providers may share one module).
@@ -364,6 +433,28 @@ pub struct AuthMethodCfg {
 
     /// The module's own opaque settings, pushed to the module verbatim (issuer, audience, …).
     pub settings: busbar_contract::plugin_settings::Settings,
+}
+impl AuthMethodCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize> {
+            module: &'a String,
+            browser_login: F0,
+            settings: F1,
+        }
+        View {
+            module: &self.module,
+            browser_login: self
+                .browser_login
+                .as_ref()
+                .map(|value| value.authoring(seal)),
+            settings: self.settings.authoring(seal),
+        }
+    }
 }
 
 pub type AuthMethods = indexmap::IndexMap<String, AuthMethodCfg>;
@@ -413,7 +504,7 @@ impl Default for AuthDeployCfg {
 /// The RESOLVED `auth:` block — each `chain:`/`admin_auth:` NAME joined to its `identity-providers:`
 /// definition (see busbar-core's `resolve_auth`). This is what every runtime consumer reads; it is
 /// constructed by `resolve`, never parsed from YAML.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct AuthCfg {
     /// The key-signing key: a SECRET REFERENCE resolving to the ed25519 signing key busbar
     /// mints + verifies virtual-key tokens with. Fleet-shared (every node verifying the same tokens
@@ -443,6 +534,45 @@ pub struct AuthCfg {
     /// `self_mint` gates the self-serve exchange and the TTL / pool / binding-mode ceilings are
     /// applied at `MintPolicy::check_mint` (see [`AuthPolicyCfg`]).
     pub policy: AuthPolicyCfg,
+}
+impl AuthCfg {
+    /// Borrow the exact authoring representation under concrete kernel authority.
+    pub fn authoring<'a>(
+        &'a self,
+        seal: &'a busbar_contract::caps::KernelSeal,
+    ) -> impl Serialize + 'a {
+        #[derive(Serialize)]
+        struct View<'a, F0: Serialize, F1: Serialize, F2: Serialize, F3: Serialize> {
+            signing_key: F0,
+            chain: F1,
+            admin_auth: F2,
+            role_bindings: &'a RoleBindings,
+            methods: F3,
+            key_ttl: &'a Option<String>,
+            policy: &'a AuthPolicyCfg,
+        }
+        View {
+            signing_key: self.signing_key.as_ref().map(|value| value.authoring(seal)),
+            chain: self
+                .chain
+                .iter()
+                .map(|value| value.authoring(seal))
+                .collect::<Vec<_>>(),
+            admin_auth: self
+                .admin_auth
+                .iter()
+                .map(|value| value.authoring(seal))
+                .collect::<Vec<_>>(),
+            role_bindings: &self.role_bindings,
+            methods: self
+                .methods
+                .iter()
+                .map(|(name, value)| (name, value.authoring(seal)))
+                .collect::<indexmap::IndexMap<_, _>>(),
+            key_ttl: &self.key_ttl,
+            policy: &self.policy,
+        }
+    }
 }
 
 impl AuthCfg {

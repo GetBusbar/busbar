@@ -339,7 +339,7 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
     let dispatcher = Arc::new(Dispatcher::with_services(
         DispatchConfig::default(),
         Arc::new(services),
-        busbar_contract::services::test_caller_binding(),
+        busbar_kernel::host_services::caller_binding(),
     ));
     assert!(dispatcher.install_runtime(runtime.handle().clone()));
     assert!(dispatcher.install_io(crate::hostio::process()));
@@ -371,7 +371,7 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
             "refresh-transaction-vault",
             ConnTable::Host(
                 busbar_contract::conn::admissions::AdmissionAuthority::issue(
-                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    &busbar_kernel::seal::acquire(),
                     table.clone(),
                     Default::default(),
                 ),
