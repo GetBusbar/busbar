@@ -93,13 +93,21 @@ fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> 
     load_open(way, dispatcher, sink, ConnTable::Probe).0
 }
 
+fn admit(table: Arc<dyn DeclaredConns>) -> busbar_contract::conn::admissions::AdmissionAuthority {
+    busbar_contract::conn::admissions::AdmissionAuthority::issue(
+        &busbar_kernel::seal::acquire(),
+        table,
+        Default::default(),
+    )
+}
+
 fn load_over(
     way: Way,
     dispatcher: &Dispatcher,
     sink: Arc<dyn EnvelopeSink>,
     conns: Option<Arc<dyn DeclaredConns>>,
 ) -> Arc<Plugin<Plane>> {
-    let conns = conns.map_or(ConnTable::Probe, ConnTable::Host);
+    let conns = conns.map_or(ConnTable::Probe, |table| ConnTable::Host(admit(table)));
     load_open(way, dispatcher, sink, conns).0
 }
 
@@ -803,7 +811,7 @@ fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> A
         way,
         dispatcher,
         Arc::new(NoSink),
-        ConnTable::Host(crate::root::connector::admit(conns)),
+        ConnTable::Host(admit(conns)),
         cap,
     );
     assert_eq!(plugin.max_inflight(), cap, "{way:?}: the host's clamp");

@@ -4,10 +4,12 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_contract::abi::mechanism::door::{Door, DoorFn};
+use busbar_contract::abi::mechanism::door::{SUGAR_ROLE_FILL, SUGAR_ROLE_PATH};
 use busbar_contract::abi::sdk::door::RawDoorFn;
 use busbar_contract::auth_calls::{FieldsRequest, Verified, VerifyRequest};
+use busbar_contract::conn::admissions::AdmissionAuthority;
+use busbar_contract::plugin_settings::Settings;
 use busbar_contract::secret::SecretAxis as _;
-use busbar_contract::secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_TEMPLATE};
 use busbar_core_connector::{doors::Dispatched, process, registry::Entry, Connector};
 use busbar_kernel::host_services::{DestJudge as _, KernelServices};
 use busbar_plugin_loader::auth_axis::AuthRows;
@@ -247,8 +249,12 @@ fn dispatcher() -> Arc<Dispatcher> {
     host().0.clone()
 }
 
-fn connections() -> Option<Arc<dyn busbar_contract::conn::DeclaredConns>> {
-    Some(host().1.clone())
+fn connections() -> Option<AdmissionAuthority> {
+    Some(AdmissionAuthority::issue(
+        &busbar_kernel::seal::acquire(),
+        host().1.clone(),
+        Default::default(),
+    ))
 }
 
 fn sources() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
@@ -275,12 +281,18 @@ fn sources() -> &'static busbar_plugin_loader::secret_calls::SecretRows {
     })
 }
 
-fn source(module: &str, settings: serde_json::Value) -> String {
+fn source(role: &str, value: impl Into<String>) -> String {
+    let reference = sources()
+        .sugars()
+        .reference_for_role(role, value)
+        .expect("the source declares this grammar role");
+    let source = reference.source().expect("a declared source reference");
+    let settings = source.settings.encode().expect("source settings encode");
     let value = sources()
-        .shared(module)
+        .shared(&source.module)
         .expect("the actual secret source opens")
         .resolve_at_config(
-            settings.to_string().as_bytes(),
+            settings.expose(&busbar_kernel::seal::lend()),
             &busbar_contract::config_time::ConfigScope::config_time(),
         )
         .expect("the actual secret source resolves the canary");
@@ -293,7 +305,7 @@ fn open(
     module: &str,
     settings: serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), String> {
-    rows.open(module, module, &serde_json::Value::Object(settings))
+    rows.open(module, module, &Settings::from(settings).prepare())
         .map(|_| ())
 }
 
@@ -302,7 +314,8 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let traced_from = tracing.lock().unwrap_or_else(|p| p.into_inner()).len();
     let d = doors();
     let reg = registry();
-    let rows = AuthRows::new(reg.clone(), dispatcher()).with_table(host().1.clone());
+    let rows = AuthRows::new(reg.clone(), dispatcher())
+        .with_table(connections().expect("the actual host connection authority"));
     let mut sinks = Vec::new();
     let mut notes = Vec::new();
     let mut outcome = |what: &str, r: Result<(), String>| match r {
@@ -325,11 +338,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     s.insert("origin".into(), "wss://edge.canary.invalid".into());
     s.insert(
         "signing_secret".into(),
-        source(
-            SECRET_MODULE_FILE,
-            serde_json::json!({"path": secret_file.display().to_string()}),
-        )
-        .into(),
+        source(SUGAR_ROLE_PATH, secret_file.display().to_string()).into(),
     );
     outcome(
         "webhook-signature secret_refs (file ref)",
@@ -342,7 +351,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let mut s = common::credentials::settings(audience);
     s.insert(
         "audience".into(),
-        source(SECRET_MODULE_ENV, serde_json::json!({"key": env_var})).into(),
+        source(SUGAR_ROLE_FILL, env_var.clone()).into(),
     );
     outcome("oidc settings (env ref)", open(&rows, &d.oidc.0, s));
 
@@ -351,7 +360,15 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
     let mut s = common::credentials::settings(audience);
     s.insert(
         "audience".into(),
-        serde_json::json!({ SECRET_MODULE_TEMPLATE: format!("aud-${{{tpl_var}}}") }),
+        serde_json::to_value(
+            busbar_contract::secret_ref::SecretRef::template(
+                format!("aud-${{{tpl_var}}}"),
+                &sources().sugars(),
+            )
+            .expect("the source declares template filling")
+            .authoring(&busbar_kernel::seal::acquire()),
+        )
+        .unwrap(),
     );
     outcome(
         "oidc settings (env-template ref)",
@@ -376,7 +393,7 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         .open(
             &d.oidc.0,
             "canary-live-oidc",
-            &serde_json::Value::Object(common::credentials::settings(audience)),
+            &Settings::from(common::credentials::settings(audience)).prepare(),
         )
         .expect("the observed OIDC plugin opens on actual host services");
     let mut request = VerifyRequest::default();
@@ -405,7 +422,8 @@ pub fn run(c: &AbiCanaries) -> (Vec<Sink>, Vec<String>) {
         std::env::remove_var(v);
     }
 
-    let outbound = AuthRows::new(reg, dispatcher()).with_table(host().1.clone());
+    let outbound = AuthRows::new(reg, dispatcher())
+        .with_table(connections().expect("the actual host connection authority"));
     let settings = serde_json::json!({});
     match outbound.serving("api-key", &settings) {
         Ok(Some(serving)) => {
