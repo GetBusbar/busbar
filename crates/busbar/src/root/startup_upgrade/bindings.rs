@@ -303,10 +303,10 @@ impl busbar_migrations::FrozenBindingResolver for Resolver {
         rows: &mut dyn busbar_migrations::archive_source::ArchiveRows,
     ) -> Result<busbar_migrations::FrozenResolution, busbar_migrations::Error> {
         use busbar_migrations::{
-            legacy::overlay::{frozen_overlay, PreparedOverlay},
+            legacy::overlay::{frozen_overlay_from_facts, PreparedOverlay},
             Error,
         };
-        let original = frozen_overlay(rows, source, self.value_budget)?;
+        let original = frozen_overlay_from_facts(rows, source, self.value_budget)?;
         let mut converted = None;
         let overlay = if let Some(original) = original {
             let seal = busbar_kernel::seal::lend();

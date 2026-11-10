@@ -805,7 +805,7 @@ impl ValkeyTransform {
     ) -> Result<Vec<TargetRow>, super::super::Error> {
         use super::super::Error as MigrationError;
         super::projection::verify_marker(source, ACCOUNTING, marker)?;
-        let group = Secret::new(marker.key.clone());
+        let group = Secret::new(marker.key.to_vec());
         let mut primary: Option<Vec<u8>> = None;
         let mut header = false;
         let mut fields = Vec::<(Vec<u8>, Vec<u8>)>::new();

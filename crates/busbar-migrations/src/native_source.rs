@@ -184,14 +184,7 @@ impl NativeSnapshot {
         }
         let before = fence(prepared.as_ref(), upgrade).await?;
         let catalogue = copy_catalogue(&upgrade.catalogue, limits.index_bytes)?;
-        let catalogue_digest = if format.owner == native::VALKEY_SOURCE_OWNER {
-            if catalogue.len() != 1 || catalogue[0].name != "valkey" {
-                return Err(Error::Corrupt);
-            }
-            archive::digest(&catalogue[0].native_layout)
-        } else {
-            upgrade.source.catalogue_digest
-        };
+        let catalogue_digest = upgrade.source.catalogue_digest;
         let header = Header {
             owner: format.owner,
             physical: format.physical,

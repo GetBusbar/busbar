@@ -615,13 +615,13 @@ impl StartupUpgrade {
         route_digest: Digest32,
     ) -> Result<Initializing, Error> {
         use crate::{
-            archive_source::{Grouping, SqlGroups, ValkeyGroups},
             legacy::{
                 self,
-                journal::{Budget, JournalPlan, Layout},
+                journal::{Budget, JournalPlan},
                 projection::ProjectionSource,
             },
             native_source::NativeSnapshot,
+            source_facts::grouping::FactGroups,
         };
         let native::Response::Begun(upgrade) = native_response.as_ref() else {
             return Err(Error::Corrupt);
@@ -630,6 +630,20 @@ impl StartupUpgrade {
             prepared.clone(),
             upgrade,
             native_bounds,
+            resources.spool.as_ref(),
+            resources.limits,
+        )
+        .await?
+        .interpret(
+            upgrade,
+            prepared_route.reader(),
+            native_bounds,
+            native::InterpretationBounds {
+                semantic_bytes: u32::try_from(resources.semantic_bytes)
+                    .map_err(|_| Error::Bounds)?,
+                index_bytes: u32::try_from(resources.index_bytes).map_err(|_| Error::Bounds)?,
+                storage_bytes: resources.limits.total_bytes,
+            },
             resources.spool.as_ref(),
             resources.limits,
         )
@@ -646,14 +660,14 @@ impl StartupUpgrade {
             dataset: identity.dataset,
             catalogue: identity.schema_digest,
         };
-        let audit = crate::routes::proofs_from_frozen(
+        let audit = crate::routes::proofs_from_facts(
             identity.format,
             provenance,
             snapshot.rows(),
             resources.semantic_bytes,
             None,
         )?;
-        let audit = crate::routes::with_parent_graph_from_frozen(
+        let audit = crate::routes::with_parent_graph_from_facts(
             identity.format,
             provenance,
             snapshot.rows(),
@@ -661,23 +675,14 @@ impl StartupUpgrade {
             prepared_route.resolved_bindings()?,
             audit,
         )?;
-        let (grouping, layout): (Arc<dyn Grouping>, Layout) =
-            if identity.format.owner == native::VALKEY_SOURCE_OWNER {
-                let table = snapshot.catalogue().first().ok_or(Error::Corrupt)?;
-                let layout = legacy::valkey::NativeLayout::decode(&table.native_layout)
-                    .map_err(|_| Error::Corrupt)?;
-                (
-                    Arc::new(ValkeyGroups::new(snapshot.header())?),
-                    Layout::Valkey {
-                        profile: layout.profile,
-                        database: layout.source_db,
-                    },
-                )
-            } else {
-                let profile = legacy::Profile::from_importer_format(identity.format)
-                    .map_err(|_| Error::UnsupportedPath)?;
-                (Arc::new(SqlGroups::new(profile)), Layout::Sql(profile))
-            };
+        let grouping = Arc::new(FactGroups::new(
+            snapshot
+                .rows()
+                .interpretation()
+                .ok_or(Error::MissingCapability)?
+                .clone(),
+            resources.semantic_bytes,
+        )?);
         let snapshot_evidence = snapshot.snapshot();
         let catalogue = snapshot.catalogue().to_vec();
         let source = snapshot.into_source(
@@ -698,7 +703,6 @@ impl StartupUpgrade {
         };
         let journal = Arc::new(JournalPlan::verify(
             source.clone(),
-            layout,
             bounds,
             Budget {
                 metadata_bytes: resources.index_bytes,
@@ -712,7 +716,6 @@ impl StartupUpgrade {
         let mut recovery = legacy::recovery::FrozenRecovery::verify(
             source.clone(),
             journal.clone(),
-            layout,
             bounds,
             resources.index_bytes,
             resources.limits.frame_bytes,

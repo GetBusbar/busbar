@@ -87,7 +87,7 @@ pub fn verify_marker(
     family: [u8; 16],
     record: &Record,
 ) -> Result<(), Error> {
-    let key = Secret::new(record.key.clone());
+    let key = Secret::new(record.key.to_vec());
     if decode_marker(record)? != source.inventory_digest(family, &key)?.0 {
         return Err(Error::IdentityMismatch);
     }
@@ -107,7 +107,7 @@ pub fn materialize(
     bounds: Bounds,
 ) -> Result<Vec<Record>, Error> {
     verify_marker(source, family, marker)?;
-    let key = Secret::new(marker.key.clone());
+    let key = Secret::new(marker.key.to_vec());
     let mut rows = Vec::new();
     let mut bytes = 0usize;
     let count = source.visit(family, &key, bounds.bytes as usize, &mut |row| {
@@ -300,13 +300,13 @@ mod tests {
         let key = Secret::new(b"group-one".to_vec());
         let value = encode_marker(&key, [7; 32]).unwrap();
         let record = Record {
-            key: key.expose(&crate::seal::lend()).clone(),
+            key: key.expose(&crate::seal::lend()).clone().into(),
             value,
             preserve_exact: false,
         };
         assert_eq!(decode_marker(&record).unwrap(), [7; 32]);
         let aliased = Record {
-            key: b"group-two".to_vec(),
+            key: b"group-two".to_vec().into(),
             value: record.value,
             preserve_exact: false,
         };

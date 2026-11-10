@@ -54,14 +54,6 @@ pub const CORE_FORMAT: Format = Format {
     logical: 1,
     codec: 1,
 };
-/// Registered historical SQLite source descriptor owner.
-pub const SQLITE_SOURCE_OWNER: Id = *b"legacy.sqlite.v1";
-/// Registered historical PostgreSQL source descriptor owner.
-pub const POSTGRES_SOURCE_OWNER: Id = *b"legacy.postgr.v1";
-/// Registered historical MySQL source descriptor owner.
-pub const MYSQL_SOURCE_OWNER: Id = *b"legacy.mysql..v1";
-/// Registered historical Valkey source descriptor owner.
-pub const VALKEY_SOURCE_OWNER: Id = *b"legacy.valkey.v1";
 /// Actual native source identity observed without schema writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceIdentity {

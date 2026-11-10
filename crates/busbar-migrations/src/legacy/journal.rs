@@ -9,10 +9,10 @@ use super::{
     archive::Provenance,
     journal_binding::{JournalMigration, Part},
     transform::ARCHIVAL,
-    CanonicalRows, Columns, Profile,
+    CanonicalRows,
 };
 use crate::{archive_source::ArchiveSource, Bounds, Error};
-use busbar_contract::{persistence::legacy_row::Row, Secret};
+use busbar_contract::Secret;
 use busbar_kernel::persistence::import_target::{
     journal::{self as codec, Error as JournalError},
     records::keys,
@@ -24,21 +24,6 @@ use std::{
     sync::Arc,
 };
 
-/// Admitted physical framing of the frozen source journal.
-#[derive(Debug, Clone, Copy)]
-pub enum Layout {
-    /// Admitted neutral facts with verified original-byte source coverage.
-    Facts,
-    /// Generic SQL records under an exact historical schema profile.
-    Sql(Profile),
-    /// Generic Valkey hash and sorted-set index observations.
-    Valkey {
-        /// Admitted source semantics.
-        profile: super::valkey::Profile,
-        /// Exact database captured by the frozen source.
-        database: u32,
-    },
-}
 /// Explicit bounds for metadata retention and original-frame verification.
 #[derive(Debug, Clone, Copy)]
 pub struct Budget {
@@ -65,7 +50,6 @@ struct NodeFact {
 /// It grants neither live journal custody nor business replay authority.
 pub struct JournalPlan<R> {
     source: Arc<ArchiveSource<R>>,
-    layout: Layout,
     bounds: Bounds,
     facts: Vec<FrameFact>,
     nodes: Vec<NodeFact>,
@@ -177,7 +161,6 @@ fn assemble(parts: &[Part<'_>], budget: usize) -> Result<Original, Error> {
 
 fn original_group<R: Read + Seek + Send>(
     source: &ArchiveSource<R>,
-    layout: Layout,
     bounds: Bounds,
     node: u64,
     sequence: u64,
@@ -189,7 +172,6 @@ fn original_group<R: Read + Seek + Send>(
     let key = super::group::journal_group_key(&raw_key).map_err(|_| Error::Corrupt)?;
     let mut chunks = std::collections::BTreeMap::<[u8; 18], Secret<Vec<u8>>>::new();
     let mut payload_bytes = 0usize;
-    let mut index = std::collections::BTreeSet::new();
     let mut retain = |raw_key: &[u8], value: &[u8]| -> Result<(), Error> {
         let (found_node, found_sequence, _) = framed_identity(raw_key)?;
         if (found_node, found_sequence) != (node, sequence)
@@ -217,100 +199,22 @@ fn original_group<R: Read + Seek + Send>(
         Ok(())
     };
     source.visit_group_rows(ARCHIVAL, &key, bounds.bytes as usize, &mut |record| {
-        let (table, native_key) =
-            super::transform::source_parts(&record.key).map_err(|_| Error::Corrupt)?;
-        let row =
-            Row::decode(record.value.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)?;
-        match layout {
-            Layout::Facts => {
-                let view = source.interpretation().ok_or(Error::MissingCapability)?;
-                let fact = view.decode_row(row, bounds.bytes as usize)?;
-                let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
-                    schema,
-                    key,
-                    value,
-                } = fact.fact()
-                else {
-                    return Err(Error::Corrupt);
-                };
-                if schema != "busbar.journal.v1" {
-                    return Err(Error::Corrupt);
-                }
-                let seal = crate::seal::lend();
-                retain(key.expose(&seal), value.expose(&seal))?;
-            }
-            Layout::Sql(profile) => {
-                let table = source
-                    .header()
-                    .tables
-                    .iter()
-                    .find(|layout| layout.name == table)
-                    .ok_or(Error::Corrupt)?;
-                let columns: Vec<_> = table.columns.iter().map(String::as_str).collect();
-                let mysql = matches!(
-                    profile,
-                    Profile::MysqlDev4 | Profile::MysqlDev5 | Profile::MysqlDev7
-                );
-                let (schema, key_column) = match table.name.as_str() {
-                    "schema_records" => ("schema", "record_key"),
-                    "store_records" => ("schema_id", if mysql { "rkey" } else { "key" }),
-                    _ => return Err(Error::Corrupt),
-                };
-                let cells = Columns::new(mysql, &columns, row, &[schema, key_column, "value"])
-                    .map_err(|_| Error::Corrupt)?;
-                if cells.bytes(schema).map_err(|_| Error::Corrupt)? != b"busbar.journal.v1" {
-                    return Err(Error::Corrupt);
-                }
-                let key = cells.bytes(key_column).map_err(|_| Error::Corrupt)?;
-                let value = cells.bytes("value").map_err(|_| Error::Corrupt)?;
-                // Physical source identity remains verified independently by
-                // the archive's native-key index and compiled SQL grouping.
-                let _ = native_key;
-                retain(key, value)?;
-            }
-            Layout::Valkey {
-                profile: _,
-                database,
-            } => {
-                if table != "valkey" {
-                    return Err(Error::Corrupt);
-                }
-                let cell = super::valkey::physical(row).map_err(|_| Error::Corrupt)?;
-                if cell.database != database
-                    || cell.expires_at_ms.is_some()
-                    || !super::valkey::native_identity_matches(cell, native_key)
-                {
-                    return Err(Error::Corrupt);
-                }
-                let key = std::str::from_utf8(cell.key).map_err(|_| Error::Corrupt)?;
-                let rest = key.strip_prefix("busbar:records:").ok_or(Error::Corrupt)?;
-                let (schema, suffix) = rest.rsplit_once(':').ok_or(Error::Corrupt)?;
-                if hex::decode(schema).map_err(|_| Error::Corrupt)? != b"busbar.journal.v1" {
-                    return Err(Error::Corrupt);
-                }
-                match (suffix, cell.kind) {
-                    ("v", super::valkey::PhysicalKind::Hash) => retain(cell.position, cell.value)?,
-                    ("k", super::valkey::PhysicalKind::SortedSet) => {
-                        let (found_node, found_sequence, ordinal) = framed_identity(cell.position)?;
-                        if cell.value != b"0" || (found_node, found_sequence) != (node, sequence) {
-                            return Err(Error::Corrupt);
-                        }
-                        index.insert(ordinal);
-                    }
-                    _ => return Err(Error::Corrupt),
-                }
-            }
+        let seal = crate::seal::lend();
+        let view = source.interpretation().ok_or(Error::MissingCapability)?;
+        let fact = view.decode(record.value.expose(&seal), bounds.bytes as usize)?;
+        let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
+            schema,
+            key,
+            value,
+        } = fact.fact()
+        else {
+            return Err(Error::Corrupt);
+        };
+        if schema != "busbar.journal.v1" {
+            return Err(Error::Corrupt);
         }
-        Ok(())
+        retain(key.expose(&seal), value.expose(&seal))
     })?;
-    if matches!(layout, Layout::Valkey { .. })
-        && (chunks.len() != index.len()
-            || chunks
-                .keys()
-                .any(|key| !index.contains(&u16::from_be_bytes([key[16], key[17]]))))
-    {
-        return Err(Error::Corrupt);
-    }
     let seal = crate::seal::lend();
     let parts: Vec<_> = chunks
         .iter()
@@ -328,7 +232,6 @@ fn original_group<R: Read + Seek + Send>(
 
 struct NodeSource<'a, R> {
     source: &'a ArchiveSource<R>,
-    layout: Layout,
     bounds: Bounds,
     facts: &'a mut [FrameFact],
     remaining_reads: &'a mut u64,
@@ -348,7 +251,6 @@ impl<R: Read + Seek + Send> codec::IndexedFrames for NodeSource<'_, R> {
         let fact = self.facts.get(index).ok_or(JournalError::Corrupt)?;
         let original = original_group(
             self.source,
-            self.layout,
             self.bounds,
             fact.node,
             fact.sequence,
@@ -374,30 +276,12 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
     /// Verify every source node run within the explicit metadata and I/O bounds.
     pub fn verify(
         source: Arc<ArchiveSource<R>>,
-        layout: Layout,
         bounds: Bounds,
         budget: Budget,
     ) -> Result<Self, Error> {
         bounds.validate()?;
-        match layout {
-            Layout::Facts if source.interpretation().is_none() => {
-                return Err(Error::MissingCapability);
-            }
-            Layout::Sql(profile) if source.identity().format != profile.importer_format() => {
-                return Err(Error::IdentityMismatch);
-            }
-            Layout::Valkey { profile, database } => {
-                let table = source.header().tables.first().ok_or(Error::Corrupt)?;
-                let actual = super::valkey::NativeLayout::decode(&table.native_layout)
-                    .map_err(|_| Error::Corrupt)?;
-                if actual.profile != profile
-                    || actual.source_db != database
-                    || source.identity().format != actual.importer_format()
-                {
-                    return Err(Error::IdentityMismatch);
-                }
-            }
-            _ => {}
+        if source.interpretation().is_none() {
+            return Err(Error::MissingCapability);
         }
         let mut count = 0usize;
         source.visit_group_keys(ARCHIVAL, &mut |key| {
@@ -458,7 +342,6 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
             let reads = remaining_reads;
             let mut original = NodeSource {
                 source: &source,
-                layout,
                 bounds,
                 facts: &mut facts[first..end],
                 remaining_reads: &mut remaining_reads,
@@ -501,7 +384,6 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
         }
         Ok(Self {
             source,
-            layout,
             bounds,
             facts,
             nodes,
@@ -555,14 +437,7 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
             .facts
             .binary_search_by_key(&(node, sequence), |fact| (fact.node, fact.sequence))
             .map_err(|_| Error::Corrupt)?;
-        let original = original_group(
-            &self.source,
-            self.layout,
-            self.bounds,
-            node,
-            sequence,
-            max_frame_bytes,
-        )?;
+        let original = original_group(&self.source, self.bounds, node, sequence, max_frame_bytes)?;
         if JournalRecord::decode(&original.body)
             .map_err(|_| Error::Corrupt)?
             .hash
@@ -628,7 +503,6 @@ impl<R: Read + Seek + Send> JournalMigration for JournalPlan<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    busbar_contract::own_seal!(Own);
 
     fn original() -> Vec<u8> {
         let body = vec![37; 600];
@@ -651,64 +525,23 @@ mod tests {
 
     #[test]
     fn complete_journal_projection_streams_beyond_group_page_item_cap() {
-        use crate::archive_source::SqlGroups;
-        use busbar_contract::persistence::{
-            archive,
-            legacy_row::{self, Cell},
-        };
-        use std::io::Cursor;
+        use busbar_contract::persistence::lifecycle::source::HistoricalFact;
         let original = original();
         let chunks: Vec<_> = original.chunks(510).collect();
-        let limits = archive::Limits {
-            frame_bytes: 4096,
-            total_bytes: 65536,
-            rows: 16,
-            tables: 1,
-            columns: 3,
-            index_bytes: 8192,
-        };
-        let header = archive::Header {
-            owner: *b"legacy.sqlite.v1",
-            physical: 6,
-            catalogue_digest: archive::digest(b"schema-records"),
-            native_anchor_digest: [0; 32],
-            capture: None,
-            tables: vec![archive::Table {
-                name: "schema_records".into(),
-                columns: vec!["schema".into(), "record_key".into(), "value".into()],
-                native_layout: b"frozen schema records".to_vec(),
-            }],
-        };
-        let mut writer = archive::Writer::new(Vec::new(), header, limits).unwrap();
+        let mut facts = Vec::new();
         for (ordinal, chunk) in chunks.iter().enumerate() {
             let mut key = 7u64.to_be_bytes().to_vec();
             key.extend_from_slice(&9u64.to_be_bytes());
             key.extend_from_slice(&(ordinal as u16).to_be_bytes());
             let mut value = (chunks.len() as u16).to_be_bytes().to_vec();
             value.extend_from_slice(chunk);
-            let row = legacy_row::encode::<Own>(
-                &[
-                    Cell::Blob(b"busbar.journal.v1"),
-                    Cell::Blob(&key),
-                    Cell::Blob(&value),
-                ],
-                4096,
-            )
-            .unwrap();
-            writer
-                .write_row(0, &key, row.expose_own(&Own::here()))
-                .unwrap();
+            facts.push(HistoricalFact::Record {
+                schema: "busbar.journal.v1".into(),
+                key: Secret::new(key),
+                value: Secret::new(value),
+            });
         }
-        let frozen = archive::read(Cursor::new(writer.finish().unwrap().0), limits).unwrap();
-        let source = Arc::new(
-            ArchiveSource::open(
-                frozen,
-                Arc::new(SqlGroups::new(Profile::SqliteReleased6)),
-                8192,
-                [1, 5, 5],
-            )
-            .unwrap(),
-        );
+        let source = crate::source_facts::test_archive(facts, 65536);
         let bounds = Bounds {
             items: 1,
             bytes: 4096,
@@ -723,7 +556,6 @@ mod tests {
         ));
         let plan = JournalPlan::verify(
             source,
-            Layout::Sql(Profile::SqliteReleased6),
             bounds,
             Budget {
                 metadata_bytes: 4096,

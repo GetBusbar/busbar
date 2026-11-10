@@ -126,11 +126,12 @@ impl Profile {
 
 /// Physical adapters use this stable envelope for native PK identities. Values
 /// stay the original protected legacy_row frame; no secret is placed in Debug.
-pub fn source_key(table: &str, native_key: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn source_key(table: &str, native_key: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>, Error> {
     busbar_kernel::persistence::import_target::records::keys::framed(
         b'L',
         &[table.as_bytes(), native_key],
     )
+    .map(zeroize::Zeroizing::new)
     .map_err(|_| Error::Range)
 }
 pub(super) fn source_parts(key: &[u8]) -> Result<(&str, &[u8]), Error> {
@@ -202,6 +203,9 @@ pub(crate) fn code_digest() -> [u8; 32] {
         include_bytes!("../archive_source.rs"),
         include_bytes!("../source_interpretation.rs"),
         include_bytes!("../source_facts.rs"),
+        include_bytes!("../source_facts/grouping.rs"),
+        include_bytes!("../source_facts/accounting.rs"),
+        include_bytes!("fact_transform.rs"),
         include_bytes!("../native_source/interpretation.rs"),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1648,6 +1652,16 @@ impl ReleasedProofs {
         ) || u64::try_from(records.len()).ok() != Some(source_count)
         {
             return Err(super::super::Error::Verification);
+        }
+        Self::complete(provenance, records)
+    }
+    pub fn from_complete_facts(
+        provenance: archive::Provenance,
+        records: Vec<busbar_contract::records::AuditRecord>,
+        source_count: u64,
+    ) -> Result<Self, crate::Error> {
+        if u64::try_from(records.len()).ok() != Some(source_count) {
+            return Err(crate::Error::Verification);
         }
         Self::complete(provenance, records)
     }
