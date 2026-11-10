@@ -188,7 +188,11 @@ impl SealedWrite {
             match c.write(stream, &self.buf[self.done..]) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Ready(Ok(0)) => return Poll::Pending,
+                // A zero-byte write with bytes remaining is a host fault: no waker
+                // was registered, so returning Pending would stall the caller.
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(crate::abi::sdk::conn::ConnFailure::Fault))
+                }
                 Poll::Ready(Ok(n)) => self.done += n,
             }
         }
@@ -206,7 +210,11 @@ impl SealedWrite {
             match io.write(handle, &self.buf[self.done..]) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Ready(Ok(0)) => return Poll::Pending,
+                // A zero-byte write with bytes remaining is a host fault: no waker
+                // was registered, so returning Pending would stall the caller.
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(crate::abi::sdk::io::IoFailure::Fault))
+                }
                 Poll::Ready(Ok(n)) => self.done += n,
             }
         }

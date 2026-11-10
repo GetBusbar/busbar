@@ -285,6 +285,10 @@ pub fn host_is_link_local_v6(host: &str) -> bool {
 
 /// True when `host` (already normalized) is a private, loopback, link-local, unspecified or CGNAT
 pub fn host_is_private_or_loopback(host: &str) -> bool {
+    // Defensively strip a trailing FQDN-root dot, like dns_name_is_internal and
+    // host_is_cloud_metadata do, so a non-normalized "localhost." or "127.0.0.1." is
+    // still caught.
+    let host = host.strip_suffix('.').unwrap_or(host);
     let host_lc = host.to_ascii_lowercase();
     if host_lc == "localhost"
         || host_lc

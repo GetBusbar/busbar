@@ -303,9 +303,11 @@ impl std::fmt::Debug for BeginLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BeginLogin")
             .field("redirect_uri", &"<redacted>")
-            .field("state", &self.state)
+            // state is the anti-CSRF token; nonce is the replay-binding value --
+            // both are session secrets that must not appear in logs.
+            .field("state", &"<redacted>")
             .field("code_challenge", &self.code_challenge)
-            .field("nonce", &self.nonce)
+            .field("nonce", &"<redacted>")
             .field("scopes", &self.scopes)
             .finish()
     }

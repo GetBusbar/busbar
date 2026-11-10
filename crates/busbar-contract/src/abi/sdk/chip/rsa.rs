@@ -12,6 +12,13 @@ use super::Refused;
 
 const BAD_KEY: Refused = Refused("the server's RSA public key does not parse");
 
+/// Minimum accepted modulus size in bits (2048). A smaller key is too weak.
+const MIN_MODULUS_BITS: u64 = 2048;
+/// Maximum accepted modulus size in bits (8192). A larger key is implausibly expensive.
+const MAX_MODULUS_BITS: u64 = 8192;
+/// Maximum accepted public exponent (2^33 - 1). Larger values make modpow expensive.
+const MAX_EXPONENT_BITS: u64 = 33;
+
 fn der_item(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let (&tag, rest) = b.split_first()?;
     let (&first, rest) = rest.split_first()?;
@@ -93,7 +100,16 @@ pub(crate) fn key_sha256(pem: &[u8]) -> Result<[u8; 32], Refused> {
 pub(crate) fn oaep_sha1(message: &[u8], pem: &[u8], seed: &[u8; 20]) -> Result<Vec<u8>, Refused> {
     let der = pem_body(pem).ok_or(BAD_KEY)?;
     let (n, e) = rsa_public_key(&der).ok_or(BAD_KEY)?;
-    let k = usize::try_from(n.bits().div_ceil(8)).map_err(|_| BAD_KEY)?;
+    // Reject keys that are too small (weak), too large (DoS via modpow), or have an
+    // implausibly large exponent.  The exponent must also be odd (standard RSA requirement).
+    let n_bits = n.bits();
+    if !(MIN_MODULUS_BITS..=MAX_MODULUS_BITS).contains(&n_bits) {
+        return Err(BAD_KEY);
+    }
+    if e.bits() > MAX_EXPONENT_BITS || !e.bit(0) {
+        return Err(BAD_KEY);
+    }
+    let k = usize::try_from(n_bits.div_ceil(8)).map_err(|_| BAD_KEY)?;
     if k < 2 * 20 + 2 || message.len() > k - 2 * 20 - 2 {
         return Err(Refused("the password is too long for the server's RSA key"));
     }
