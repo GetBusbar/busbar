@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from native_plugins import qualify_plugin
+from native_plugins import qualify_plugin, prepare_runtime
+from check import Violation
 
 
 class CQualification(unittest.TestCase):
@@ -71,6 +72,54 @@ class CQualification(unittest.TestCase):
             self.assertEqual(caught.exception.returncode, 66)
             self.assertNotIn('c-schema', [call.args[0] for call in q.run.call_args_list])
             self.assertEqual(q.receipt, {})
+
+
+class RuntimePreparation(unittest.TestCase):
+    def qualification(self, root, declared=True):
+        repository = 'GetBusbar/busbar-fixture-owner'
+        settings = {'prepare_runtime': 'testing/native/prepare.sh'} if declared else {}
+        return SimpleNamespace(root=root, repository=repository,
+            policy={'repositories': {repository: {'native': settings}}}, run=Mock())
+
+    def test_only_trusted_selection_runs_the_owner_script(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            script = root / 'testing/native/prepare.sh'
+            script.parent.mkdir(parents=True)
+            script.write_text('exit 0\n')
+            q = self.qualification(root, declared=False)
+            prepare_runtime(q)
+            q.run.assert_not_called()
+            q = self.qualification(root)
+            prepare_runtime(q)
+            q.run.assert_called_once_with('plugin-runtime-prepare',
+                ['bash', '-euo', 'pipefail', str(script)])
+
+    def test_missing_or_indirect_preparation_fails_before_execution(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            q = self.qualification(root)
+            with self.assertRaises(Violation):
+                prepare_runtime(q)
+            script = root / 'testing/native/prepare.sh'
+            script.parent.mkdir(parents=True)
+            target = root / 'unselected.sh'
+            target.write_text('exit 0\n')
+            script.symlink_to(target)
+            with self.assertRaises(Violation):
+                prepare_runtime(q)
+            q.run.assert_not_called()
+
+    def test_preparation_failure_is_not_ignored(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            script = root / 'testing/native/prepare.sh'
+            script.parent.mkdir(parents=True)
+            script.write_text('exit 17\n')
+            q = self.qualification(root)
+            q.run.side_effect = Violation('subject build failed')
+            with self.assertRaisesRegex(Violation, 'subject build failed'):
+                prepare_runtime(q)
 
 
 if __name__ == '__main__':

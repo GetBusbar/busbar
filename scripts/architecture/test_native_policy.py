@@ -11,7 +11,8 @@ class NativePolicy(unittest.TestCase):
     def test_new_owner_obligations_need_only_trusted_data(self):
         repository = 'GetBusbar/busbar-fixture-owner'
         settings = {'services': ['valkey'], 'server_binary': 'valkey', 'native_oracle': True,
-                    'external_conformance': 'testing/conformance/external-fixture.sh'}
+                    'external_conformance': 'testing/conformance/external-fixture.sh',
+                    'prepare_runtime': 'testing/native/prepare.sh'}
         policy = {'repositories': {repository: {'native': settings}}}
         self.assertEqual(native_settings(repository, policy), settings)
         self.assertEqual(evaluation_job(repository, False, True, policy), 'external-conformance')
@@ -21,6 +22,8 @@ class NativePolicy(unittest.TestCase):
 
     def test_unknown_services_commands_paths_and_inconsistent_server_refuse(self):
         for settings in [{'services': ['unknown']}, {'services': ['mysql', 'mysql']}, {'command': 'true'},
+                         {'prepare_runtime': '../private.sh'}, {'prepare_runtime': 'testing/native/../private.sh'},
+                         {'prepare_runtime': 'testing/conformance/run.sh'}, {'prepare_runtime': 'testing/native/run.py'},
                          {'external_conformance': '../private.sh'}, {'external_conformance': '/private.sh'},
                          {'server_binary': 'valkey'}, {'migration_fixture': 'arbitrary'}, {'native_oracle': 'false'}]:
             policy = {'repositories': {'fixture': {'native': settings}}}
