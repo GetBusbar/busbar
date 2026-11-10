@@ -143,7 +143,6 @@ pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;
 
-pub mod bound_credential;
 pub mod durable;
 pub mod endpoints;
 pub mod export;

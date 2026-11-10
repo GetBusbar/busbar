@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use http::HeaderValue;
 
 #[test]
 fn a_cloned_caller_credential_shares_one_zeroising_buffer() {
@@ -12,7 +13,7 @@ fn a_cloned_caller_credential_shares_one_zeroising_buffer() {
         clone.0.as_ptr(),
         "a clone shares the one buffer, never a second plaintext copy"
     );
-    assert_eq!(clone.text(), "sk-caller-credential");
+    assert_eq!(clone.0.as_slice(), b"sk-caller-credential");
     assert_eq!(format!("{clone:?}"), "CallerCredential(<present>)");
 }
 

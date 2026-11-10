@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use super::{HeaderMap, HeaderName, HeaderValue};
-use crate::bound_credential::CredentialProvider;
-use busbar_contract::auth_egress::SigningContext;
+use super::{HeaderMap, HeaderName};
 
 /// What the auth gate holds of one request's credentials (request extension): the header names the
 /// configured gate reads a credential from, and the credential it extracted, as a ref. Inserted by the gate on every request it judged;
@@ -81,9 +79,8 @@ impl ConsumedCredentials {
     }
 }
 
-/// The caller's verified credential, as a REF a plane carries and cannot read: no byte accessor
-/// leaves the auth gate, and its `Debug` prints presence only. The host resolves it at egress
-/// ([`present_caller`]).
+/// The caller's verified credential, retained in host request context. Its `Debug` prints
+/// presence only; the host lends a wiping copy to the selected auth-kind binding at egress.
 ///
 /// ZEROISED AT EXIT (THE DESIGN §6: the kernel "holds it on the unit, zeroised at exit, for the
 /// caller-credential style"; "auth material is zeroised"): the bytes live in ONE zeroising buffer,
@@ -99,10 +96,6 @@ impl CallerCredential {
         )))
     }
 
-    fn text(&self) -> &str {
-        std::str::from_utf8(&self.0).unwrap_or_default()
-    }
-
     #[must_use]
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
         busbar_contract::redacted::Secret::new(self.0.to_vec())
@@ -113,18 +106,6 @@ impl std::fmt::Debug for CallerCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("CallerCredential(<present>)")
     }
-}
-
-pub fn present_caller(
-    credential: &dyn CredentialProvider,
-    caller: Option<&CallerCredential>,
-    ctx: &SigningContext,
-) -> Vec<(HeaderName, HeaderValue)> {
-    let key = caller.map_or("", CallerCredential::text);
-    if key.is_empty() && credential.uses_key() {
-        return Vec::new();
-    }
-    credential.headers_for(key, ctx)
 }
 
 #[cfg(test)]
