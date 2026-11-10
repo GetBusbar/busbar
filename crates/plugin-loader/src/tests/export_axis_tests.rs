@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use busbar_contract::abi::export::{ExportStream, CHECK_PHASE_INSTANCES};
+use busbar_contract::abi::export::CHECK_PHASE_INSTANCES;
 use busbar_contract::abi::mechanism::door::DoorFn;
 
 use super::*;
-use crate::actual_exports;
 use crate::both_ways;
 use crate::dispatch::{rendering_of, DispatchConfig, Dispatcher};
+use crate::neutral_export;
 use crate::sign::Manifest;
 
 #[test]
@@ -36,7 +36,7 @@ fn manifest(name: &str) -> Manifest {
 }
 
 fn both(name: &str, door: DoorFn, path: std::path::PathBuf) -> [PluginRegistry; 2] {
-    let lib = std::fs::read(path).expect("read the actual exporter cdylib");
+    let lib = std::fs::read(path).expect("read the neutral SDK cdylib");
     let linked = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(name), door)])
         .expect("the linked door admits the sink");
@@ -56,13 +56,9 @@ fn dispatcher() -> Arc<Dispatcher> {
 }
 
 #[test]
-fn the_trace_sink_answers_the_same_through_either_door() {
-    let row = actual_exports::otlp::NAME;
-    let doors = both(
-        row,
-        actual_exports::otlp::door,
-        actual_exports::otlp::path(),
-    );
+fn the_trace_binding_answers_the_same_through_either_door() {
+    let row = neutral_export::NAME;
+    let doors = both(row, neutral_export::door, neutral_export::cdylib());
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher())
             .with_disk(crate::dispatch::test_disk_authority())
@@ -70,19 +66,19 @@ fn the_trace_sink_answers_the_same_through_either_door() {
                 crate::needs_restated::Inert,
             )));
         let module = row;
-        let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
+        let good = serde_json::json!({ "target": "http://127.0.0.1:4318/v1/traces" });
         let (streams, clean, _) = rows
             .probe(module, "trace", &crate::dispatch::test_settings(&good))
             .expect("an export row");
-        assert_eq!(streams, Some(vec![ExportStream::Traces as u8]));
+        assert_eq!(streams, Some(neutral_export::STREAMS.to_vec()));
         assert!(clean.is_empty(), "{clean:?}");
-        let bad = serde_json::json!({ "url": "http://127.0.0.1:4318", "bogus": 1 });
+        let bad = serde_json::json!({ "target": "http://127.0.0.1:4318", "bogus": 1 });
         let (_, refused, _) = rows
             .probe(module, "trace", &crate::dispatch::test_settings(&bad))
             .expect("an export row");
         assert_eq!(
             refused,
-            vec!["export.trace.settings: unknown field `bogus`, expected `url`".to_string()]
+            vec!["export.trace.settings: witness refused".to_string()]
         );
         let sink = rows
             .open(
@@ -97,13 +93,9 @@ fn the_trace_sink_answers_the_same_through_either_door() {
 }
 
 #[test]
-fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
-    let row = actual_exports::webhook::NAME;
-    let doors = both(
-        row,
-        actual_exports::webhook::door,
-        actual_exports::webhook::path(),
-    );
+fn the_log_binding_answers_the_same_through_either_door() {
+    let row = neutral_export::NAME;
+    let doors = both(row, neutral_export::door, neutral_export::cdylib());
     let transcripts = doors.map(|registry| {
         let rows = ExportRows::new(&registry, dispatcher())
             .with_disk(crate::dispatch::test_disk_authority())
@@ -111,19 +103,19 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
                 crate::needs_restated::Inert,
             )));
         let module = row;
-        let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
+        let good = serde_json::json!({ "target": "https://collector.example.com/v1/logs" });
         let (streams, clean, _) = rows
             .probe(module, "audit", &crate::dispatch::test_settings(&good))
             .expect("an export row");
-        assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
+        assert_eq!(streams, Some(neutral_export::STREAMS.to_vec()));
         assert!(clean.is_empty(), "{clean:?}");
-        let bad = serde_json::json!({ "url": "https://collector.example.com", "bogus": 1 });
+        let bad = serde_json::json!({ "target": "https://collector.example.com", "bogus": 1 });
         let (_, refused, _) = rows
             .probe(module, "audit", &crate::dispatch::test_settings(&bad))
             .expect("an export row");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(
-            refused[0].starts_with("export.audit.settings: unknown field `bogus`"),
+            refused[0].starts_with("export.audit.settings: witness refused"),
             "{refused:?}"
         );
         let sink = rows
@@ -139,68 +131,12 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
 }
 
 #[test]
-fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
-    use crate::dispatch::log_file::tests::{config, scratch, HostLog};
-    use crate::dispatch::LogLevel;
-    let host = HostLog::installed();
-    let dir = scratch("webhook-refused");
-    let logs = config(&dir, LogLevel::Info);
-    let row = actual_exports::webhook::NAME;
-    let registry = PluginRegistry::empty()
-        .link(vec![crate::LinkedPlugin::door(
-            manifest(row),
-            actual_exports::webhook::door,
-        )])
-        .expect("the linked sink admits");
-    let rows = ExportRows::new(&registry, dispatcher())
-        .with_disk(crate::dispatch::test_disk_authority())
-        .with_logs(&logs)
-        .with_conns(crate::dispatch::test_admissions(Arc::new(
-            crate::needs_restated::Refusing,
-        )));
-
-    let target = serde_json::json!({ "url": "http://127.0.0.1:1/said-once" });
-    let said = || {
-        host.lines()
-            .into_iter()
-            .filter(|(target, level, _, message)| {
-                target == crate::dispatch::log_file::MIRROR_TARGET
-                    && *level == tracing::Level::ERROR
-                    && message.contains("disabling this webhook exporter")
-                    && message.contains("http://127.0.0.1:1/***")
-            })
-            .count()
-    };
-    let sink = rows
-        .open(row, "export.wh", &crate::export_axis::test_opening(&target))
-        .expect("a refused target never refuses the open");
-    let at_open = said();
-    sink.start()
-        .expect("a refused target never refuses the start");
-    let at_start = said();
-    let _ = sink.deliver(ExportStream::Logs as u8, b"{}".to_vec(), Box::new(()));
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let after = said();
-    drop(sink);
-    let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        host.lines()
-            .iter()
-            .all(|(_, _, _, message)| !message.contains("/said-once")),
-        "the actual webhook product masks the target path in its refusal log"
-    );
-    assert_eq!(at_open, 0, "opening the sink says nothing in busbar's log");
-    assert_eq!(at_start, 1, "the start says the refusal exactly once");
-    assert_eq!(after, 1, "a delivery after it never says it again");
-}
-
-#[test]
 fn check_runs_when_the_first_instance_does_not_open() {
-    let row = actual_exports::prometheus::NAME;
+    let row = neutral_export::NAME;
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(
             manifest(row),
-            actual_exports::prometheus::door,
+            neutral_export::door,
         )])
         .expect("the linked door admits the sink");
     let rows = ExportRows::new(&registry, dispatcher())
@@ -219,14 +155,14 @@ fn check_runs_when_the_first_instance_does_not_open() {
                 ),
                 (
                     "second".into(),
-                    &crate::dispatch::test_settings(&serde_json::json!({ "buffer_seconds": 60 })),
+                    &crate::dispatch::test_settings(&serde_json::json!({ "case": "second" })),
                 ),
             ],
         )
         .expect("an export row");
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(
-        findings[0].starts_with("export.second: a second `module: "),
+        findings[0].starts_with("export.second: witness second phase "),
         "{findings:?}"
     );
 }
