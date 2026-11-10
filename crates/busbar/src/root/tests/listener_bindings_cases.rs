@@ -181,7 +181,7 @@ async fn an_installed_accepting_framer_without_a_bind_declaration_is_not_a_defau
 
 #[tokio::test]
 async fn a_foreign_second_claim_owns_the_root_independently_of_tls_and_offer_order() {
-    for tls in [None, Some(serde_json::json!({}))] {
+    for tls in [None, Some(serde_json::from_value(serde_json::json!({"cert":{"module":"source","settings":{"id":"cert"}},"key":{"module":"source","settings":{"id":"key"}}})).unwrap())] {
         let mut topology = configured("listen: 127.0.0.1:8080\n");
         topology
             .binds
@@ -246,7 +246,7 @@ async fn two_accepting_root_declarations_refuse_both_offer_orders() {
 
 #[tokio::test]
 async fn legacy_root_and_tls_keep_the_actual_products_declared_application_claim() {
-    for tls in [None, Some(serde_json::json!({}))] {
+    for tls in [None, Some(serde_json::from_value(serde_json::json!({"cert":{"module":"source","settings":{"id":"cert"}},"key":{"module":"source","settings":{"id":"key"}}})).unwrap())] {
         let mut topology = configured("listen: 127.0.0.1:8080\n");
         topology
             .binds

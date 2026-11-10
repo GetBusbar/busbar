@@ -28,7 +28,11 @@ fn a_module_no_row_answers_is_refused_by_name() {
     assert!(!rows.linked("nobody"));
     assert!(rows.linked_names().is_empty());
     let err = rows
-        .open("nobody", "nobody", &serde_json::json!({}))
+        .open(
+            "nobody",
+            "nobody",
+            &crate::dispatch::test_settings(&serde_json::json!({})),
+        )
         .err()
         .expect("refused");
     assert_eq!(err, "no `kind: auth` plugin answers to 'nobody'");
@@ -284,7 +288,7 @@ fn a_default_inbound_style_with_no_carrier_is_refused_at_load() {
         .open(
             "markless-default",
             "markless-default",
-            &serde_json::json!({}),
+            &crate::dispatch::test_settings(&serde_json::json!({})),
         )
         .err()
         .expect("refused");
@@ -308,8 +312,12 @@ fn a_linked_row_the_configuration_does_not_name_is_never_bound() {
     assert_eq!(rows.operator(), None);
     assert_eq!(rows.carriers("plain").len(), 3);
     assert_eq!(bound(), Vec::<String>::new(), "a fact read binds no row");
-    rows.open("plain", "plain", &serde_json::json!({}))
-        .expect("the named row opens");
+    rows.open(
+        "plain",
+        "plain",
+        &crate::dispatch::test_settings(&serde_json::json!({})),
+    )
+    .expect("the named row opens");
     assert_eq!(
         bound(),
         vec!["plain".to_string()],

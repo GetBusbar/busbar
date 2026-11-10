@@ -24,6 +24,8 @@ pub mod native_source;
 mod provenance;
 pub mod routes;
 pub(crate) mod seal;
+pub mod source_facts;
+pub mod source_interpretation;
 mod startup;
 mod verification;
 mod witness;
@@ -33,7 +35,7 @@ pub use coordinator::*;
 pub use fence::NativeSourceFence;
 pub use intent::{ColdWriterRegistration, OutstandingIntent, StoreIntent};
 pub use manifest::*;
-pub use provenance::{CheckedNativeFence, ReleasedProfile, ReleasedSourceProof};
+pub use provenance::{CheckedNativeFence, ReleasedSourceProof};
 pub use startup::{
     DocumentCustody, FrozenBindingResolver, FrozenResolution, Preparation, RecoveryPending,
     StartupUpgrade,

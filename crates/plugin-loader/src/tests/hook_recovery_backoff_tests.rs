@@ -157,7 +157,12 @@ async fn administrative_ready_preserves_backoff_and_a_serving_governance_rejecti
     assert_eq!(binds.load(Ordering::SeqCst), 2);
 
     instance
-        .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+        .configure(
+            "checkpoint",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+            2,
+            BUDGET,
+        )
         .await
         .expect("the actual CONFIGURE acknowledges the stricter checkpoint");
     let status = instance

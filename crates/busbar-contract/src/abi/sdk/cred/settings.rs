@@ -337,7 +337,7 @@ impl<'de> de::Deserializer<'de> for Node {
             }
             Value::Object(map) if map.len() != 1 => {
                 let n = map.len();
-                drop(self.take());
+                // Retain the rejected document in Node so Drop wipes its strings.
                 Err(de::Error::invalid_length(n, &"a map with a single key"))
             }
             Value::Object(_) => {

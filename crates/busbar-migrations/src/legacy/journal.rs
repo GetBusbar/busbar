@@ -27,6 +27,8 @@ use std::{
 /// Admitted physical framing of the frozen source journal.
 #[derive(Debug, Clone, Copy)]
 pub enum Layout {
+    /// Admitted neutral facts with verified original-byte source coverage.
+    Facts,
     /// Generic SQL records under an exact historical schema profile.
     Sql(Profile),
     /// Generic Valkey hash and sorted-set index observations.
@@ -220,6 +222,23 @@ fn original_group<R: Read + Seek + Send>(
         let row =
             Row::decode(record.value.expose(&crate::seal::lend())).map_err(|_| Error::Corrupt)?;
         match layout {
+            Layout::Facts => {
+                let view = source.interpretation().ok_or(Error::MissingCapability)?;
+                let fact = view.decode_row(row, bounds.bytes as usize)?;
+                let busbar_contract::persistence::lifecycle::source::HistoricalFact::Record {
+                    schema,
+                    key,
+                    value,
+                } = fact.fact()
+                else {
+                    return Err(Error::Corrupt);
+                };
+                if schema != "busbar.journal.v1" {
+                    return Err(Error::Corrupt);
+                }
+                let seal = crate::seal::lend();
+                retain(key.expose(&seal), value.expose(&seal))?;
+            }
             Layout::Sql(profile) => {
                 let table = source
                     .header()
@@ -361,8 +380,11 @@ impl<R: Read + Seek + Send> JournalPlan<R> {
     ) -> Result<Self, Error> {
         bounds.validate()?;
         match layout {
+            Layout::Facts if source.interpretation().is_none() => {
+                return Err(Error::MissingCapability);
+            }
             Layout::Sql(profile) if source.identity().format != profile.importer_format() => {
-                return Err(Error::IdentityMismatch)
+                return Err(Error::IdentityMismatch);
             }
             Layout::Valkey { profile, database } => {
                 let table = source.header().tables.first().ok_or(Error::Corrupt)?;

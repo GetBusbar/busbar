@@ -119,7 +119,7 @@ fn presentation_is_admitted_after_open_and_atomically_replaced_only_on_valid_ref
         rows.open(
             "presentation-choice",
             variant,
-            &serde_json::json!({"variant": variant}),
+            &crate::dispatch::test_settings(&serde_json::json!({"variant": variant})),
         )
     };
     let error = open("bad-open").err().unwrap();

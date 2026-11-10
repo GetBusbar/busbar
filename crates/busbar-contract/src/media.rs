@@ -116,7 +116,7 @@ pub struct MediaBlob {
 /// A single generated image. ADDITIVE: `b64` and `url` may BOTH be present and both are
 /// kept. `b64` is the common path; `url`/`uri` are additive (some upstreams return a URL, others a
 /// bucket URI). The other fields are upstream-specific extras kept for lossless round-trip.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ImageOutput {
     pub b64: Option<String>,
     pub url: Option<String>,
@@ -129,3 +129,16 @@ pub struct ImageOutput {
 #[cfg(test)]
 #[path = "tests/media_tests.rs"]
 mod tests;
+
+impl std::fmt::Debug for ImageOutput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageOutput")
+            .field("b64", &self.b64)
+            .field("url", &"<redacted>")
+            .field("mime_type", &self.mime_type)
+            .field("revised_prompt", &self.revised_prompt)
+            .field("seed", &self.seed)
+            .field("finish_reason", &self.finish_reason)
+            .finish()
+    }
+}

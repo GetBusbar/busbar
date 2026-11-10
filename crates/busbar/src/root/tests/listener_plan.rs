@@ -1517,7 +1517,7 @@ async fn registered_http_listener_accepts_only_its_planes_registered_upgrade() {
                 .iter_mut()
                 .find(|bind| bind.at == "listen")
                 .unwrap()
-                .tls = Some(serde_json::json!({}));
+                .tls = Some(serde_json::from_value(serde_json::json!({"cert":{"module":"source","settings":{"id":"cert"}},"key":{"module":"source","settings":{"id":"key"}}})).unwrap());
         }
         let app = projection_boundary_app(topology.clone(), vec![], 1).await;
         let mut plan = ListenerPlan::new(topology, offers.clone(), &framer);

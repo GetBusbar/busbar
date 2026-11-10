@@ -32,15 +32,17 @@ impl UserinfoBasic {
         if user.expose(&seal).is_empty() && pass.is_none() {
             return None;
         }
-        let mut plain = user.expose(&seal).as_bytes().to_vec();
+        let user = user.expose(&seal);
+        let pass = pass.as_ref().map(|p| p.expose(&seal));
+        let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(
+            user.len() + 1 + pass.map_or(0, |p| p.len()),
+        ));
+        plain.extend_from_slice(user.as_bytes());
         plain.push(b':');
-        if let Some(pass) = &pass {
-            plain.extend_from_slice(pass.expose(&seal).as_bytes());
+        if let Some(pass) = pass {
+            plain.extend_from_slice(pass.as_bytes());
         }
-        let plain = Secret::new(plain);
-        Some(Self(Arc::new(Secret::new(basic_value(
-            plain.expose(&seal),
-        )))))
+        Some(Self(Arc::new(Secret::new(basic_value(&plain)))))
     }
 
     fn bytes(&self) -> &[u8] {

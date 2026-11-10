@@ -18,7 +18,7 @@ use busbar_contract::abi::secret::{
     ERROR_KIND_UNAVAILABLE, ERROR_KIND_UNSET, FIRST_SECRET_CAP, MAX_SECRET_BYTES,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
-use busbar_contract::conn::DeclaredConns;
+use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::redacted::Secret as SecretValue;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
@@ -100,8 +100,7 @@ impl std::fmt::Debug for LoadedSecret {
 }
 
 struct Lending {
-    // settings-leak-lint: allow — NON-PROJECTION engine type: one resolve's settings bytes, lent to
-    settings: Vec<u8>,
+    settings: zeroize::Zeroizing<Vec<u8>>,
     held: Mutex<SecretValue<Vec<u8>>>,
 }
 
@@ -110,7 +109,7 @@ impl Lending {
         let mut held = SecretValue::zeroed(cap);
         let (buf, cap) = held.lend_mut();
         let lending = Arc::new(Self {
-            settings: settings.to_vec(),
+            settings: zeroize::Zeroizing::new(settings.to_vec()),
             held: Mutex::new(held),
         });
         let input = resolve_in(blob(&lending.settings, BLOB_JSON, 0), buf, cap);
@@ -448,7 +447,7 @@ impl SecretCalls for LoadedSecret {
 pub struct SecretRows {
     dispatcher: fn() -> Arc<Dispatcher>,
 
-    conns: fn() -> Option<Arc<dyn DeclaredConns>>,
+    conns: fn() -> Option<AdmissionAuthority>,
 
     logs: Option<fn() -> PluginLogConfig>,
     linked: Vec<Candidate>,
@@ -489,7 +488,7 @@ impl std::fmt::Debug for SecretRows {
 impl SecretRows {
     pub fn new(
         dispatcher: fn() -> Arc<Dispatcher>,
-        conns: fn() -> Option<Arc<dyn DeclaredConns>>,
+        conns: fn() -> Option<AdmissionAuthority>,
     ) -> Self {
         Self {
             dispatcher,
@@ -768,43 +767,32 @@ impl SecretAxis for SecretRows {
     fn open(
         &self,
         module: &str,
-        settings: &serde_json::Value,
+        settings: Option<&busbar_contract::plugin_settings::Settings>,
         resolve: &dyn Fn(&SecretRef) -> Result<SecretValue<Vec<u8>>, String>,
     ) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .find(module)
             .ok_or_else(|| format!("no secret module answers to '{module}'"))?;
         let keys = Self::secret_refs(&c)?;
-        if let Some(at) = busbar_contract::secret_fields::undeclared_reference(settings, &keys) {
-            return Err(busbar_contract::secret_fields::undeclared_refusal(
-                &format!("secrets.{module}.settings.{at}"),
-                &c.name,
-            ));
-        }
-
-        let reference = |at: &str, v: serde_json::Value| -> Result<SecretValue<Vec<u8>>, String> {
-            let r = serde_json::from_value::<SecretRef>(v).map_err(
-                crate::boot::not_a_reference(format!("secrets.{module}.settings.{at}")),
-            )?;
-            resolve(&r).map_err(|e| format!("secrets.{module}.settings.{at}: {e}"))
+        let (bytes, secrets) = match settings {
+            Some(settings) => {
+                let (remaining, secrets) =
+                    settings.lend_references(&keys, &self.sugars(), module, resolve)?;
+                (
+                    remaining.encode().map_err(|error| error.to_string())?,
+                    secrets,
+                )
+            }
+            None => (SecretValue::default(), Vec::new()),
         };
-        let mut lent_settings = settings.clone();
-        let secrets = busbar_contract::secret_fields::lend(
-            &mut lent_settings,
-            &keys,
-            true,
-            |at, found| found.map_or(Ok(SecretValue::default()), |v| reference(at, v)),
-            |at, found| reference(at, found),
-        )?;
-        let bytes = if lent_settings.is_null() {
-            Vec::new()
-        } else {
-            lent_settings.to_string().into_bytes()
-        };
+        let dispatcher = (self.dispatcher)();
+        let seal = dispatcher
+            .seal()
+            .ok_or("secret module opening requires the host settings seal")?;
         let opened = LoadedSecret::open(
             self.load(&c, &Self::label(module))?,
             (self.dispatcher)(),
-            &bytes,
+            bytes.expose(seal),
             &secrets,
         )?;
         Ok(Arc::new(self.placed(&c, opened)))

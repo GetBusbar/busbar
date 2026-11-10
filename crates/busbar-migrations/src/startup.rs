@@ -352,9 +352,17 @@ impl StartupUpgrade {
                 return Err(Error::IntentPending);
             }
             native::InspectionState::Unsupported => return Err(Error::UnsupportedPath),
-            native::InspectionState::Legacy | native::InspectionState::InProgress => {}
+            native::InspectionState::Legacy(_) | native::InspectionState::InProgress(_) => {}
         }
-        crate::ReleasedSourceProof::inspected(inspection.source.as_ref().ok_or(Error::Corrupt)?)
+        let (native::InspectionState::Legacy(reader) | native::InspectionState::InProgress(reader)) =
+            inspection.state
+        else {
+            return Err(Error::Corrupt);
+        };
+        crate::ReleasedSourceProof::inspected(
+            inspection.source.as_ref().ok_or(Error::Corrupt)?,
+            reader,
+        )
     }
 
     /// Advance native preparation. Repeated calls retain the original session.
@@ -411,10 +419,11 @@ impl StartupUpgrade {
             native::InspectionState::Unsupported => return Err(Error::UnsupportedPath),
             // Historical preparation is installed by the compiled source adapter;
             // an unbound adapter cannot invoke ordinary OPEN as a fallback.
-            native::InspectionState::Legacy | native::InspectionState::InProgress => {
+            native::InspectionState::Legacy(reader)
+            | native::InspectionState::InProgress(reader) => {
                 let source = inspection.source.clone().ok_or(Error::Corrupt)?;
                 let catalogue = inspection.catalogue.clone();
-                return self.prepare_legacy(source, catalogue).await;
+                return self.prepare_legacy(source, catalogue, reader).await;
             }
         };
         let backend = match self.prepared.open(binding).await {
@@ -453,6 +462,7 @@ impl StartupUpgrade {
         &mut self,
         source: native::SourceIdentity,
         catalogue: Vec<busbar_contract::persistence::archive::Table>,
+        reader: native::SourceReader,
     ) -> Result<Preparation, Error> {
         if self.coordinator.is_some() {
             return self.advance_migration().await;
@@ -475,6 +485,7 @@ impl StartupUpgrade {
                     bytes: self.bounds.bytes,
                 },
                 CORE_FORMAT,
+                reader,
             )?;
             self.route = Some(match self.declaration_inventory.take() {
                 Some(inventory) => route.with_binding_inventory(inventory)?,

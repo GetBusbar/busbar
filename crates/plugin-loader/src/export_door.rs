@@ -570,10 +570,18 @@ impl ExportCalls for ExportInstance {
         self.shared.recorder
     }
 
-    fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
-        let settings = Arc::new(zeroize::Zeroizing::new(
-            serde_json::to_vec(settings).map_err(|error| error.to_string())?,
-        ));
+    fn refresh(
+        &self,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
+        generation: u64,
+    ) -> Result<(), String> {
+        let encoded = settings.encode().map_err(|error| error.to_string())?;
+        let seal = self
+            .shared
+            .dispatcher
+            .seal()
+            .ok_or("export refresh requires the host settings seal")?;
+        let settings = Arc::new(zeroize::Zeroizing::new(encoded.expose(seal).clone()));
         let mut call = (0..self.shared.dispatcher.workers().max(1))
             .find_map(|worker| Ticketed::mint(&self.shared.dispatcher, worker))
             .ok_or_else(|| "no ticket could be minted for an export refresh".to_string())?;

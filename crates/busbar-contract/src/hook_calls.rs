@@ -74,7 +74,7 @@ pub trait HookCalls: Send + Sync {
     fn configure(
         &self,
         name: &str,
-        settings: &str,
+        settings: &crate::plugin_settings::ResolvedSettings,
         version: u64,
         budget: Duration,
     ) -> Pending<Result<(), String>>;
@@ -113,20 +113,25 @@ pub trait HookAxis: Send + Sync {
         &self,
         _module: &str,
         _instance: &str,
-        _settings: &serde_json::Value,
+        _settings: &crate::plugin_settings::ResolvedSettings,
     ) -> Result<Vec<crate::abi::mechanism::route::Route>, String> {
         Ok(Vec::new())
     }
 
     /// `None` when no `kind: hook` row names `module`; else what [`Probed`] states, asked while the
-    fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
+    fn probe(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &crate::plugin_settings::ResolvedSettings,
+    ) -> Option<Probed>;
 
     /// OPEN one instance of `module` with `settings` (the operator's section, secrets resolved),
     fn open(
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &crate::plugin_settings::ResolvedSettings,
         budget: Duration,
     ) -> Result<Arc<dyn HookCalls>, String>;
 

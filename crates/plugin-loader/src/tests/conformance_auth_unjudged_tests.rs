@@ -123,7 +123,11 @@ fn answer<const FAIL: bool>() -> LoginOutcome {
         )),
     );
     let auth = rows
-        .open("login-output", "login-output", &serde_json::json!({}))
+        .open(
+            "login-output",
+            "login-output",
+            &crate::dispatch::test_settings(&serde_json::json!({})),
+        )
         .expect("SDK instance opens");
     let request = BeginLogin {
         redirect_uri: "https://host.test/callback".into(),

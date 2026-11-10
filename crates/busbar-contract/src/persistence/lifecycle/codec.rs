@@ -13,6 +13,11 @@ use crate::redacted::OwnerSeal;
 use std::mem::size_of;
 use zeroize::Zeroize;
 
+mod source;
+pub use source::{
+    decode_source_chunk, decode_source_chunk_owned, encode_source_chunk, encode_source_chunk_owned,
+};
+
 const MAGIC: &[u8; 8] = b"BBBOOT01";
 const COMPLETION_MAGIC: &[u8; 8] = b"BBCOMP01";
 
@@ -173,6 +178,14 @@ impl Writer {
     }
     fn selector<O>(&mut self, s: &SourceSelector<O>) -> Result<(), Error> {
         match s {
+            SourceSelector::Interpret { reader, bounds } => {
+                bounds.validate()?;
+                self.byte(3)?;
+                self.source_reader(*reader)?;
+                self.u32(bounds.semantic_bytes)?;
+                self.u32(bounds.index_bytes)?;
+                self.u64(bounds.storage_bytes)
+            }
             SourceSelector::Scan { table } => {
                 self.byte(0)?;
                 self.u32(*table)
@@ -243,6 +256,9 @@ impl Writer {
     fn inspection<O>(&mut self, i: &Inspection<O>) -> Result<(), Error> {
         inspection_valid(i)?;
         self.byte(state_tag(i.state))?;
+        if let InspectionState::Legacy(reader) | InspectionState::InProgress(reader) = i.state {
+            self.source_reader(reader)?;
+        }
         self.byte(u8::from(i.source.is_some()))?;
         if let Some(s) = &i.source {
             self.source(s)?;
@@ -258,13 +274,23 @@ impl Writer {
         }
         Ok(())
     }
+    fn source_reader(&mut self, reader: SourceReader) -> Result<(), Error> {
+        self.byte(match reader.codec() {
+            SourceCodec::HistoricalV1 => 1,
+        })?;
+        self.byte(match reader.documents() {
+            DocumentSemantics::Historical => 0,
+            DocumentSemantics::Current => 1,
+        })?;
+        self.id(&reader.decoder_digest())
+    }
 }
 fn state_tag(s: InspectionState) -> u8 {
     match s {
         InspectionState::Empty => 0,
         InspectionState::Current => 1,
-        InspectionState::Legacy => 2,
-        InspectionState::InProgress => 3,
+        InspectionState::Legacy(_) => 2,
+        InspectionState::InProgress(_) => 3,
         InspectionState::Unsupported => 4,
         InspectionState::Busy => 5,
     }
@@ -283,7 +309,10 @@ fn inspection_valid<O>(i: &Inspection<O>) -> Result<(), Error> {
     if i.state == InspectionState::Empty {
         valid(i.catalogue.is_empty() && i.admission_marker.is_none())?;
     }
-    if i.state == InspectionState::Legacy {
+    if matches!(
+        i.state,
+        InspectionState::Legacy(_) | InspectionState::InProgress(_)
+    ) {
         valid(i.source.as_ref().is_some_and(|s| s.format.is_some()))?;
     }
     if i.state == InspectionState::Current {
@@ -475,6 +504,16 @@ impl<'a> Reader<'a> {
                 index: self.u32()?,
                 prefix: self.secret(make)?,
             },
+            3 => {
+                let reader = self.source_reader()?;
+                let bounds = InterpretationBounds {
+                    semantic_bytes: self.u32()?,
+                    index_bytes: self.u32()?,
+                    storage_bytes: self.u64()?,
+                };
+                bounds.validate()?;
+                SourceSelector::Interpret { reader, bounds }
+            }
             _ => return Err(Error::Corrupt),
         })
     }
@@ -547,8 +586,8 @@ impl<'a> Reader<'a> {
         let state = match self.byte()? {
             0 => InspectionState::Empty,
             1 => InspectionState::Current,
-            2 => InspectionState::Legacy,
-            3 => InspectionState::InProgress,
+            2 => InspectionState::Legacy(self.source_reader()?),
+            3 => InspectionState::InProgress(self.source_reader()?),
             4 => InspectionState::Unsupported,
             5 => InspectionState::Busy,
             _ => return Err(Error::Corrupt),
@@ -582,6 +621,18 @@ impl<'a> Reader<'a> {
         };
         inspection_valid(&i)?;
         Ok(i)
+    }
+    fn source_reader(&mut self) -> Result<SourceReader, Error> {
+        let codec = match self.byte()? {
+            1 => SourceCodec::HistoricalV1,
+            _ => return Err(Error::UnsupportedFormat),
+        };
+        let documents = match self.byte()? {
+            0 => DocumentSemantics::Historical,
+            1 => DocumentSemantics::Current,
+            _ => return Err(Error::Corrupt),
+        };
+        SourceReader::new(codec, documents, self.id()?)
     }
 }
 
@@ -630,6 +681,10 @@ pub fn encode_request<O>(request: &Request<O>, bounds: Bounds) -> Result<Secret<
             cursor,
             bounds,
         } => {
+            valid(
+                matches!(selector, SourceSelector::Interpret { .. })
+                    == (*family == INTERPRETED_SOURCE),
+            )?;
             w.upgrade(upgrade)?;
             w.id(snapshot)?;
             w.id(family)?;
@@ -670,11 +725,16 @@ fn request_with<O>(
             let snapshot = r.id()?;
             let family = r.id()?;
             r.budget.charge(1, 0)?;
+            let selector = r.selector(make)?;
+            valid(
+                matches!(selector, SourceSelector::Interpret { .. })
+                    == (family == INTERPRETED_SOURCE),
+            )?;
             Request::SourcePage {
                 upgrade,
                 snapshot,
                 family,
-                selector: r.selector(make)?,
+                selector,
                 cursor: r.optional(make)?,
                 bounds: r.bounds()?,
             }

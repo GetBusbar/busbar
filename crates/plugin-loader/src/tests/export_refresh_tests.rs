@@ -12,7 +12,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 
 fn loaded(dropped: bool, d: &Dispatcher, far: Arc<Far>) -> Plugin<Export> {
     let mut binding = bind("export-refresh", Arc::new(Tape::default()), d);
-    binding.conns = ConnTable::Host(far);
+    binding.conns = ConnTable::Host(crate::dispatch::test_admissions(far));
     pending_boundary::load(dropped, binding)
 }
 

@@ -36,73 +36,38 @@ impl CheckedNativeFence {
 }
 use busbar_contract::persistence::lifecycle;
 
-/// Released storage semantics admitted by a native inspection. These names
-/// describe registered reader profiles, not an inferred product binary version.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleasedProfile {
-    Sqlite6,
-    Postgres6,
-    Mysql3,
-    Valkey6,
-    Sqlite7,
-    Sqlite8,
-    Sqlite9,
-    Postgres7,
-    Postgres8,
-    Postgres9,
-    Mysql4,
-    Mysql5,
-    Mysql7,
-    Valkey7,
-    Valkey8,
-    Valkey9,
-}
-
 /// Actual native source identity bound to a compiled released reader profile.
 /// Callers cannot construct provenance by asserting a release boolean.
 #[derive(Debug, Clone)]
 pub struct ReleasedSourceProof {
     source: lifecycle::SourceIdentity,
-    profile: ReleasedProfile,
+    reader: lifecycle::SourceReader,
 }
 impl ReleasedSourceProof {
     pub fn source(&self) -> &lifecycle::SourceIdentity {
         &self.source
     }
-    pub fn profile(&self) -> ReleasedProfile {
-        self.profile
+    pub fn documents(&self) -> lifecycle::DocumentSemantics {
+        self.reader.documents()
+    }
+    pub fn reader(&self) -> lifecycle::SourceReader {
+        self.reader
     }
     /// Physical schemas do not uniquely identify a product release. No exact
     /// release is claimed without separately admitted native release metadata.
     pub fn product_release(&self) -> Option<[u32; 3]> {
         None
     }
-    pub(crate) fn inspected(source: &lifecycle::SourceIdentity) -> Result<Option<Self>, Error> {
+    pub(crate) fn inspected(
+        source: &lifecycle::SourceIdentity,
+        reader: lifecycle::SourceReader,
+    ) -> Result<Option<Self>, Error> {
         let Some(format) = source.format else {
             return Err(Error::UnsupportedPath);
         };
         if !matches!(format.logical, 0 | 1) || format.codec != 1 {
             return Err(Error::UnsupportedPath);
         }
-        let profile = match (format.owner, format.physical) {
-            (lifecycle::SQLITE_SOURCE_OWNER, 6) => ReleasedProfile::Sqlite6,
-            (lifecycle::POSTGRES_SOURCE_OWNER, 6) => ReleasedProfile::Postgres6,
-            (lifecycle::MYSQL_SOURCE_OWNER, 3) => ReleasedProfile::Mysql3,
-            (lifecycle::VALKEY_SOURCE_OWNER, 6) => ReleasedProfile::Valkey6,
-            (lifecycle::SQLITE_SOURCE_OWNER, 7) => ReleasedProfile::Sqlite7,
-            (lifecycle::SQLITE_SOURCE_OWNER, 8) => ReleasedProfile::Sqlite8,
-            (lifecycle::SQLITE_SOURCE_OWNER, 9) => ReleasedProfile::Sqlite9,
-            (lifecycle::POSTGRES_SOURCE_OWNER, 7) => ReleasedProfile::Postgres7,
-            (lifecycle::POSTGRES_SOURCE_OWNER, 8) => ReleasedProfile::Postgres8,
-            (lifecycle::POSTGRES_SOURCE_OWNER, 9) => ReleasedProfile::Postgres9,
-            (lifecycle::MYSQL_SOURCE_OWNER, 4) => ReleasedProfile::Mysql4,
-            (lifecycle::MYSQL_SOURCE_OWNER, 5) => ReleasedProfile::Mysql5,
-            (lifecycle::MYSQL_SOURCE_OWNER, 7) => ReleasedProfile::Mysql7,
-            (lifecycle::VALKEY_SOURCE_OWNER, 7) => ReleasedProfile::Valkey7,
-            (lifecycle::VALKEY_SOURCE_OWNER, 8) => ReleasedProfile::Valkey8,
-            (lifecycle::VALKEY_SOURCE_OWNER, 9) => ReleasedProfile::Valkey9,
-            _ => return Err(Error::UnsupportedPath),
-        };
         if source.native_anchor == [0; 32]
             || source.dataset.0 == [0; 16]
             || source.catalogue_digest == [0; 32]
@@ -112,7 +77,7 @@ impl ReleasedSourceProof {
         }
         Ok(Some(Self {
             source: source.clone(),
-            profile,
+            reader,
         }))
     }
 }

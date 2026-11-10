@@ -683,7 +683,7 @@ fn the_hook_axis_refuses_a_non_hook_kind() {
         .open(
             "gamma",
             "gamma",
-            &serde_json::json!({}),
+            &crate::dispatch::test_settings(&serde_json::json!({})),
             std::time::Duration::from_secs(1),
         )
         .map(|_| ())

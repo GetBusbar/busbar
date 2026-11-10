@@ -349,9 +349,11 @@ impl<'a> Tx<'a> {
         if meta.revoked_at.is_some() && !secret.expose(&seal).is_empty() {
             return Err(corrupt());
         }
-        let secret = std::str::from_utf8(secret.expose(&seal))
-            .map_err(|_| corrupt())?
-            .to_owned();
+        let secret = zeroize::Zeroizing::new(
+            std::str::from_utf8(secret.expose(&seal))
+                .map_err(|_| corrupt())?
+                .to_owned(),
+        );
         Ok(Some(CredentialSecret { meta, secret }))
     }
     async fn index(&self, at: Address) -> Result<Option<String>> {
@@ -424,7 +426,7 @@ impl<'a> Tx<'a> {
                 meta.id.clone(),
                 CredentialSecret {
                     meta,
-                    secret: String::new(),
+                    secret: String::new().into(),
                 },
             );
         }
@@ -499,7 +501,7 @@ impl<'a> Tx<'a> {
                 old.id.clone(),
                 CredentialSecret {
                     meta: old,
-                    secret: String::new(),
+                    secret: String::new().into(),
                 },
             );
         }
@@ -553,9 +555,11 @@ impl<'a> Tx<'a> {
                         .get(&confidential(&meta.id)?)
                         .and_then(Option::as_ref)
                         .ok_or_else(corrupt)?;
-                    let secret = std::str::from_utf8(secret.expose(&crate::seal::lend()))
-                        .map_err(|_| corrupt())?
-                        .to_owned();
+                    let secret = zeroize::Zeroizing::new(
+                        std::str::from_utf8(secret.expose(&crate::seal::lend()))
+                            .map_err(|_| corrupt())?
+                            .to_owned(),
+                    );
                     result.credentials.push(CredentialSecret { meta, secret });
                 }
                 Some(b'D') => result
@@ -752,7 +756,7 @@ impl Identity<'_> {
                 if owner.as_ref().is_none_or(|k| k.deleted_at.is_some())
                     || expected.meta.revoked_at.is_some()
                     || expected.meta.secret_form != SecretForm::Recoverable
-                    || expected.secret == *replacement
+                    || expected.secret.as_str() == *replacement
                 {
                     return Ok(false);
                 }

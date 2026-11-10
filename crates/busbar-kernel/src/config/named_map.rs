@@ -116,7 +116,11 @@ impl NamedMapSection {
 
     pub fn parse_def(self, name: &str, def: &serde_json::Value) -> Result<NamedDef, String> {
         match self {
-            NamedMapSection::IdentityProviders => serde_json::from_value(def.clone())
+            NamedMapSection::IdentityProviders => {
+                busbar_contract::secret_ref::context::deserialize(
+                    def.clone(),
+                    &super::secret::sugars(),
+                )
                 .map_err(|e| format!("invalid `identity-providers.{name}` definition: {e}"))
                 .and_then(|cfg: IdentityProviderCfg| {
                     if let Some(token) = cfg.max_admin_scope.as_deref() {
@@ -128,10 +132,14 @@ impl NamedMapSection {
 
                     super::validate_token_placement(name, cfg.module.trim(), cfg.token.is_some())?;
                     Ok(NamedDef::IdentityProvider(cfg))
-                }),
-            NamedMapSection::Export => serde_json::from_value(def.clone())
-                .map(NamedDef::Export)
-                .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
+                })
+            }
+            NamedMapSection::Export => busbar_contract::secret_ref::context::deserialize(
+                def.clone(),
+                &super::secret::sugars(),
+            )
+            .map(NamedDef::Export)
+            .map_err(|e| format!("invalid `export.{name}` definition: {e}")),
 
             NamedMapSection::Plane(_) => {
                 if crate::plane_driver::registry::plane_decl_for_config_section(self.key())

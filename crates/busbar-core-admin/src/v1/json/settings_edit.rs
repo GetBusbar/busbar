@@ -12,7 +12,11 @@ use crate::v1::contract::AdminError;
 pub(crate) struct SettingsEdit {
     /// Replace the named top-level settings with these complete values. Other settings survive.
     #[serde(default)]
-    pub(crate) set: serde_json::Map<String, serde_json::Value>,
+    #[cfg_attr(
+        feature = "openapi-schema",
+        schemars(with = "serde_json::Map<String, serde_json::Value>")
+    )]
+    pub(crate) set: busbar_contract::plugin_settings::Settings,
     /// Remove these top-level settings. Missing names are harmless; set/remove overlap is invalid.
     #[serde(default)]
     pub(crate) remove: Vec<String>,
@@ -20,7 +24,11 @@ pub(crate) struct SettingsEdit {
 
 impl SettingsEdit {
     pub(crate) fn validate(&self) -> Result<(), AdminError> {
-        if self.remove.iter().any(|key| self.set.contains_key(key)) {
+        if self
+            .remove
+            .iter()
+            .any(|key| self.set.key_names().contains(key))
+        {
             return Err(AdminError::Validation(
                 "a settings edit cannot both set and remove the same key".into(),
             ));
@@ -30,13 +38,12 @@ impl SettingsEdit {
 
     pub(crate) fn apply(
         &self,
-        mut existing: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, AdminError> {
+        existing: busbar_contract::plugin_settings::Settings,
+    ) -> Result<busbar_contract::plugin_settings::Settings, AdminError> {
         self.validate()?;
-        for key in &self.remove {
-            existing.remove(key);
-        }
-        existing.extend(self.set.clone());
+        let existing = existing
+            .edit(&self.set, &self.remove)
+            .map_err(AdminError::Validation)?;
         crate::v1::service::validate_hook_settings_size(&existing)?;
         Ok(existing)
     }

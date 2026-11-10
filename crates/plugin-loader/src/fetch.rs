@@ -44,7 +44,7 @@ fn printable_url(url: &str) -> std::borrow::Cow<'_, str> {
 /// A fully-resolved fetch: the URL to GET, an optional lowercase-hex sha256 pin (cache key +
 /// verify-before-write gate), and the target filename inside `plugins.dir`. Produced by the engine's
 /// `PluginsCfg::fetch_specs()` (github/url/env → this).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct FetchSpec {
     /// Absolute URL of the signed tarball.
     pub url: String,
@@ -55,7 +55,7 @@ pub struct FetchSpec {
 }
 
 /// The per-spec result of [`fetch_plugins`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum FetchOutcome {
     /// The pinned file was already present and hashed to the pin — no network.
     Cached { filename: String },
@@ -215,3 +215,33 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/fetch_url_scrub_tests.rs"]
 mod url_scrub_tests;
+
+impl std::fmt::Debug for FetchSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchSpec")
+            .field("url", &"<redacted>")
+            .field("sha256", &self.sha256)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for FetchOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cached { filename } => f
+                .debug_struct("Cached")
+                .field("filename", filename)
+                .finish(),
+            Self::Fetched { filename } => f
+                .debug_struct("Fetched")
+                .field("filename", filename)
+                .finish(),
+            Self::Warned { url: _, error } => f
+                .debug_struct("Warned")
+                .field("url", &"<redacted>")
+                .field("error", error)
+                .finish(),
+        }
+    }
+}

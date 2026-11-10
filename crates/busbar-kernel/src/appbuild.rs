@@ -798,16 +798,12 @@ pub fn bootstrap_dependency_names_from_metadata(
     };
     if let Some(store) = &cfg.store {
         add(&store.module);
-        let mut tree = serde_json::Value::Object(store.settings.clone());
-        for path in fields {
-            for at in busbar_contract::secret_fields::declared_references(&tree, path) {
-                if let Some(value) = busbar_contract::secret_fields::value_at_mut(&mut tree, &at) {
-                    if let config::secret::SettingShape::Reference(reference) =
-                        config::secret::classify_setting(value)
-                    {
-                        add(&reference.module);
-                    }
-                }
+        if let Ok(references) = store
+            .settings
+            .reference_modules(fields, &config::secret::sugars())
+        {
+            for module in references {
+                add(&module);
             }
         }
     }
@@ -920,7 +916,11 @@ fn config_store_inputs(
         )
         .map_err(|error| format!("store '{}' settings: {error}", store.module))?
     };
-    let settings = zeroize::Zeroizing::new(resolved.as_value().to_string());
+    let bytes = resolved.encode().map_err(|error| error.to_string())?;
+    let settings = zeroize::Zeroizing::new(
+        String::from_utf8(bytes.into_exposed(&crate::seal::lend()))
+            .map_err(|_| "settings encoding was not UTF-8")?,
+    );
     drop(resolved);
     let failed = |error: String| format!("store '{}' plugin load failed: {error}", store.module);
     let door = registry.store_door(&store.module).map_err(failed)?;

@@ -590,7 +590,7 @@ pub fn load_planes(
         .collect()
 }
 
-pub const DEFAULT_MAX_CONNS: u64 = 1024;
+pub use busbar_contract::conn::inbound::DEFAULT_MAX_CONNS;
 
 /// Whose listener a bind is.
 #[derive(Debug, Clone, PartialEq)]
@@ -612,8 +612,7 @@ pub enum BindOwner {
 /// root's own (its `listen` and `admin_listen`, which the root synthesises) and each selected
 /// instance's `DIRECTION_INBOUND` need, read from the settings block its `target_from` names,
 /// `{listen, tls: {cert, key, client_ca?}, max_conns?}` — the 1.5.5 root `listen` / `tls` shape.
-/// The TLS block stays raw: its `cert` and `key` are secret references the root resolves through
-/// the secret kind at stage 3f.
+/// TLS contains typed secret references the root resolves through the secret kind at stage 3f.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InboundBind {
     /// Whose listener it is.
@@ -625,8 +624,8 @@ pub struct InboundBind {
     pub at: String,
     /// The address to bind.
     pub listen: std::net::SocketAddr,
-    /// The raw `tls` block; `None` = the listener is in the clear.
-    pub tls: Option<serde_json::Value>,
+    /// Typed TLS secret references; `None` = the listener is in the clear.
+    pub tls: Option<busbar_contract::conn::inbound::TlsCfg>,
     /// The most connections held at once.
     pub max_conns: u64,
 }
@@ -674,7 +673,24 @@ fn collide(a: std::net::SocketAddr, b: std::net::SocketAddr) -> bool {
         && (a.ip() == b.ip() || a.ip().is_unspecified() || b.ip().is_unspecified())
 }
 
+/// Collect an instance's opaque settings using only the common kind envelope.
+pub fn listener_settings(
+    doc: &serde_json::Value,
+    kind: KindCode,
+    instance: &str,
+) -> Result<Option<(busbar_contract::plugin_settings::Settings, String)>, String> {
+    instance_settings(doc, kind, instance)
+        .map(|(value, base)| {
+            use serde::Deserialize;
+            busbar_contract::plugin_settings::Settings::deserialize(value)
+                .map(|settings| (settings, base.clone()))
+                .map_err(|_| format!("{base}: settings must be an object"))
+        })
+        .transpose()
+}
+
 pub fn inbound(
+    seal: &busbar_contract::caps::KernelSeal,
     doc: &serde_json::Value,
     candidates: &[Candidate],
     selected: &[Selected],
@@ -682,59 +698,43 @@ pub fn inbound(
 ) -> Result<Vec<InboundBind>, String> {
     let mut out = root;
     for s in selected {
-        let Some(c) = candidates.get(s.candidate) else {
+        let c = candidates
+            .get(s.candidate)
+            .ok_or_else(|| format!("{}: no such candidate", s.instance))?;
+        if !c
+            .needs
+            .iter()
+            .any(|need| need.direction == DIRECTION_INBOUND)
+        {
             continue;
-        };
-        for (i, n) in c.needs.iter().enumerate() {
-            if n.direction != DIRECTION_INBOUND {
-                continue;
-            }
-            let who = format!("{} ({})", s.instance, c.name);
-            if n.target_from.is_empty() {
-                return Err(format!(
-                    "{who}: inbound need {i} over `{}` names no settings block to listen from",
-                    n.transport
-                ));
-            }
-            let (settings, base) = instance_settings(doc, c.kind, &s.instance)
-                .ok_or_else(|| format!("{who}: `{}` is not set", n.target_from))?;
-            let at = format!("{base}.{}", n.target_from);
-            let block = n
-                .target_from
-                .split('.')
-                .try_fold(settings, |v, k| v.get(k))
+        }
+        let (settings, base) = listener_settings(doc, c.kind, &s.instance)?
+            .ok_or_else(|| format!("{} ({}): settings are not set", s.instance, c.name))?;
+        let claims = busbar_contract::conn::inbound::admit(seal, &settings, &c.needs)
+            .map_err(|why| format!("{base}.{why}"))?;
+        for claim in claims {
+            let at = format!("{base}.{}", claim.path);
+            let binding = claim
+                .binding
                 .ok_or_else(|| format!("{at}: not set; an inbound listener needs `listen`"))?;
-            let listen = block
-                .get("listen")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| format!("{at}.listen: not set"))?;
-            let listen: std::net::SocketAddr = listen
-                .parse()
-                .map_err(|_| format!("{at}.listen: `{listen}` is not an ip:port address"))?;
-            let max_conns = match block.get("max_conns") {
-                None => DEFAULT_MAX_CONNS,
-                Some(v) => v
-                    .as_u64()
-                    .filter(|n| *n > 0)
-                    .ok_or_else(|| format!("{at}.max_conns: not a positive whole number"))?,
-            };
-            if let Some(o) = out.iter().find(|o| collide(o.listen, listen)) {
+            if let Some(old) = out.iter().find(|old| collide(old.listen, binding.listen)) {
                 return Err(format!(
-                    "{at}.listen: {listen} is already taken by `{}`",
-                    o.listen_setting()
+                    "{at}.listen: {} is already taken by `{}`",
+                    binding.listen,
+                    old.listen_setting()
                 ));
             }
             out.push(InboundBind {
                 owner: BindOwner::Need {
                     instance: s.instance.clone(),
                     kind: c.kind,
-                    need: u32::try_from(i).unwrap_or(u32::MAX),
+                    need: claim.need,
                 },
-                transport: n.transport.clone(),
+                transport: c.needs[claim.need as usize].transport.clone(),
                 at,
-                listen,
-                tls: block.get("tls").filter(|v| !v.is_null()).cloned(),
-                max_conns,
+                listen: binding.listen,
+                tls: binding.tls,
+                max_conns: binding.max_conns,
             });
         }
     }

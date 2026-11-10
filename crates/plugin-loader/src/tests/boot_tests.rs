@@ -684,7 +684,7 @@ use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
     let d = doc(r#"{
         "agents": {"ingress": {"edge": {"listen": "127.0.0.1:9443",
-            "tls": {"cert": {"ref": "c"}, "key": {"ref": "k"}}}}},
+            "tls": {"cert": {"module":"source","settings":{"id":"c"}}, "key": {"module":"source","settings":{"id":"k"}}}}}},
         "export": {"scrape": {"module": "sink",
             "settings": {"serve": {"listen": "0.0.0.0:9100", "max_conns": 8}}}}
     }"#);
@@ -712,6 +712,7 @@ fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
         ),
     ];
     let got = inbound(
+        &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
         &d,
         &cands,
         &[sel(0, "agents"), sel(1, "scrape")],
@@ -734,8 +735,8 @@ fn inbound_needs_are_collected_with_their_binds_from_instance_settings() {
     assert_eq!(got[0].max_conns, DEFAULT_MAX_CONNS);
     assert_eq!(
         got[0].tls,
-        Some(doc(r#"{"cert": {"ref": "c"}, "key": {"ref": "k"}}"#)),
-        "the TLS block stays raw: its references resolve at stage 3f"
+        Some(serde_json::from_value(doc(r#"{"cert": {"module":"source","settings":{"id":"c"}}, "key": {"module":"source","settings":{"id":"k"}}}"#)).unwrap()),
+        "TLS carries typed references which resolve at stage 3f"
     );
     assert_eq!(got[1].at, "export.scrape.settings.serve");
     assert_eq!(got[1].max_conns, 8);
@@ -752,7 +753,14 @@ fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
             &["agents"],
             vec![need(DIRECTION_INBOUND, "scheme-a", target_from)],
         )];
-        inbound(&d, &c, &[sel(0, "agents")], Vec::new()).unwrap_err()
+        inbound(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            &d,
+            &c,
+            &[sel(0, "agents")],
+            Vec::new(),
+        )
+        .unwrap_err()
     };
     assert!(one("{}", "").contains("names no settings block"));
     assert_eq!(
@@ -765,7 +773,7 @@ fn red_an_inbound_need_without_a_usable_bind_is_refused_by_its_setting() {
     );
     assert_eq!(
         one(r#"{"ingress": {"listen": "localhost"}}"#, "ingress"),
-        "agents.ingress.listen: `localhost` is not an ip:port address"
+        "agents.ingress.listen: not an ip:port address"
     );
     assert_eq!(
         one(
@@ -791,7 +799,14 @@ fn red_two_listeners_on_one_address_are_refused() {
         ],
     )];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], Vec::new()).unwrap_err(),
+        inbound(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            &d,
+            &c,
+            &[sel(0, "agents")],
+            Vec::new()
+        )
+        .unwrap_err(),
         "agents.b.listen: 127.0.0.1:9000 is already taken by `agents.a.listen`"
     );
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:8080"}}}"#);
@@ -810,7 +825,14 @@ fn red_two_listeners_on_one_address_are_refused() {
         max_conns: u64::MAX,
     }];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], root).unwrap_err(),
+        inbound(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            &d,
+            &c,
+            &[sel(0, "agents")],
+            root
+        )
+        .unwrap_err(),
         "agents.a.listen: 127.0.0.1:8080 is already taken by `listen`"
     );
     let d = doc(r#"{"agents": {"a": {"listen": "127.0.0.1:0"}, "b": {"listen": "127.0.0.1:0"}}}"#);
@@ -824,9 +846,15 @@ fn red_two_listeners_on_one_address_are_refused() {
         ],
     )];
     assert_eq!(
-        inbound(&d, &c, &[sel(0, "agents")], Vec::new())
-            .unwrap()
-            .len(),
+        inbound(
+            &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+            &d,
+            &c,
+            &[sel(0, "agents")],
+            Vec::new()
+        )
+        .unwrap()
+        .len(),
         2,
         "port 0 asks for a free one and never collides"
     );

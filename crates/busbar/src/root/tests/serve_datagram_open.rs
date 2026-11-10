@@ -185,9 +185,9 @@ async fn deployment(instance: &'static str) -> Deployment {
             max_inflight_cap: 64,
             sink: Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::Host(
-                connector.clone() as Arc<dyn DeclaredConns>
-            ),
+            conns: crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+                connector.clone() as Arc<dyn DeclaredConns>,
+            )),
         },
     )
     .unwrap();
@@ -310,7 +310,9 @@ async fn deployment(instance: &'static str) -> Deployment {
         dispatcher.clone(),
         crate::LINKED.auths,
         None,
-        crate::root::loader::dispatch::ConnTable::Host(connector.clone() as Arc<dyn DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+            connector.clone() as Arc<dyn DeclaredConns>,
+        )),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = DoorReach {

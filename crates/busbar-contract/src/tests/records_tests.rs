@@ -59,7 +59,7 @@ fn sample_credential() -> CredentialSecret {
             revoke_reason: None,
             revision: 1,
         },
-        secret: "v1:plain:s3cr3t-signing-key".to_string(),
+        secret: "v1:plain:s3cr3t-signing-key".to_string().into(),
     }
 }
 
@@ -432,13 +432,13 @@ fn virtual_key_is_live_reflects_deleted_at() {
 fn credential_secret_plaintext_extracts_v1_plain_only() {
     let mut c = sample_credential();
     assert_eq!(c.plaintext(), Some("s3cr3t-signing-key"));
-    c.secret = "v1:aead:opaque-ciphertext".to_string();
+    c.secret = "v1:aead:opaque-ciphertext".to_string().into();
     assert_eq!(
         c.plaintext(),
         None,
         "a non-plain scheme must never be treated as plaintext"
     );
-    c.secret = String::new();
+    c.secret = String::new().into();
     assert_eq!(c.plaintext(), None);
 }
 

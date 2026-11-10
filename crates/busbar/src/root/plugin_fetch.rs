@@ -36,7 +36,7 @@ pub fn downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String
 }
 
 /// The release asset a GitHub release of a busbar plugin publishes for this binary's target.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ReleaseAsset {
     /// Its download URL.
     pub url: String,
@@ -88,3 +88,12 @@ fn per_target(url: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "tests/plugin_fetch_assets.rs"]
 mod asset_tests;
+
+impl std::fmt::Debug for ReleaseAsset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseAsset")
+            .field("url", &"<redacted>")
+            .field("filename", &self.filename)
+            .finish()
+    }
+}

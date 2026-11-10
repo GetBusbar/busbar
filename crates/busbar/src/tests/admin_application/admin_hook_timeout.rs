@@ -365,8 +365,10 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             max_inflight_cap: 64,
             sink: std::sync::Arc::new(NoSink),
             dispatcher: dispatcher.adopter(),
-            conns: ConnTable::Host(std::sync::Arc::clone(connector)
-                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+            conns: ConnTable::Host(crate::root::connector::admit(
+                std::sync::Arc::clone(connector)
+                    as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
+            )),
         },
     )
     .expect("the actual HTTP exporter loads through its memory ABI");

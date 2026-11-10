@@ -47,6 +47,16 @@ pub struct AdminRequest {
     pub unit: u64,
 }
 
+impl Drop for AdminRequest {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.credential.zeroize();
+        self.headers.zeroize();
+        self.body.zeroize();
+        self.path.zeroize();
+    }
+}
+
 impl std::fmt::Debug for AdminRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const REDACTED: &str = "<redacted>";

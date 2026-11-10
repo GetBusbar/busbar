@@ -17,7 +17,6 @@ pub fn repo() -> PathBuf {
 /// One parsed production source file, by its repo-relative path.
 pub struct Source {
     pub rel: String,
-    pub text: String,
     pub file: syn::File,
 }
 
@@ -151,7 +150,7 @@ pub fn production(roots: &[&str]) -> Vec<Source> {
             }
             let text = std::fs::read_to_string(&f).unwrap_or_else(|e| panic!("{rel}: {e}"));
             let file = parse_source(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
-            parsed.push(Source { rel, text, file });
+            parsed.push(Source { rel, file });
         }
         assert!(parsed.len() > before, "{root} holds no production source");
     }
@@ -207,7 +206,6 @@ pub fn one(rel: &str) -> Source {
     let file = parse_source(&text).unwrap_or_else(|e| panic!("{rel}: {e}"));
     Source {
         rel: rel.to_string(),
-        text,
         file,
     }
 }

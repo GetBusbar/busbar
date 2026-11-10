@@ -325,7 +325,16 @@ pub fn deploy_from_yaml_str(text: &str) -> Result<DeployCfg, serde_yaml::Error> 
 }
 
 pub fn deploy_from_deserializer<'de, D: Deserializer<'de>>(de: D) -> Result<DeployCfg, D::Error> {
-    SplitDocument::deserialize(de).map(|d| d.0)
+    deploy_with_sources(de, &super::secret::sugars())
+}
+
+/// Read native configuration with the source shorthand declared by admitted owners.
+/// An empty declaration set accepts canonical references only.
+pub fn deploy_with_sources<'de, D: Deserializer<'de>>(
+    de: D,
+    sources: &busbar_contract::secret_ref::Sugars,
+) -> Result<DeployCfg, D::Error> {
+    busbar_contract::secret_ref::context::deserialize::<SplitDocument, _>(de, sources).map(|d| d.0)
 }
 
 pub fn deploy_from_yaml_value(value: serde_yaml::Value) -> Result<DeployCfg, serde_yaml::Error> {
@@ -339,3 +348,43 @@ mod plane_remainder_tests;
 #[cfg(test)]
 #[path = "tests/document_metadata_tests.rs"]
 mod document_metadata_tests;
+
+#[cfg(test)]
+mod source_declarations_tests {
+    use super::*;
+    use busbar_contract::{abi::mechanism::door::REWRITE_SUGAR, secret_ref::Sugars};
+
+    #[test]
+    fn native_document_uses_admitted_source_declarations() {
+        for (word, owner, member) in [
+            ("cabinet", "first-source", "entry"),
+            ("drawer", "second-source", "location"),
+        ] {
+            let mut sources = Sugars::default();
+            sources
+                .declare(owner, &[(REWRITE_SUGAR, word.into(), member.into())])
+                .unwrap();
+            let raw = format!(
+                "credentials:\n  at_rest:\n    key: {{ {word}: descriptor }}\nidentity-providers:\n  external:\n    module: arbitrary-auth\n    token: {{ {word}: another }}\n"
+            );
+            let read = |sources: &Sugars| {
+                deploy_with_sources(serde_yaml::Deserializer::from_str(&raw), sources)
+            };
+            let parsed = read(&sources).unwrap();
+            let key = parsed.credentials.at_rest.unwrap().key;
+            assert_eq!(key.module, owner);
+            assert_eq!(key.settings[member], "descriptor");
+            assert_eq!(
+                parsed.identity_providers["external"]
+                    .token
+                    .as_ref()
+                    .unwrap()
+                    .module,
+                owner
+            );
+            let error = read(&Sugars::default()).unwrap_err().to_string();
+            assert!(error.contains("not declared"), "{error}");
+            assert!(!error.contains("descriptor"), "{error}");
+        }
+    }
+}

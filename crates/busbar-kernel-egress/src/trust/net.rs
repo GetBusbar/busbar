@@ -12,7 +12,7 @@ pub use busbar_contract::net::*;
 /// into their own refusal type so an operator reading a log still sees the caller's own name for
 /// the destination; callers without one render it with the [`std::fmt::Display`] below. What no
 /// caller does is re-derive the DECISION, which is the whole reason this enum is here and not there.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AddressRefusal {
     /// The URL had no `http`/`https` scheme, or no scheme at all. Everything else — `file:`,
     /// `gopher:`, `smb:`, `ftp:`, `data:` — is refused by ABSENCE rather than by a blocklist,
@@ -248,4 +248,17 @@ fn judge_against_lists(
         .or_else(|| expand_alternate_ipv4(host).map(IpAddr::V4))
         .filter(ip_is_cloud_metadata)
         .map(|_| host.to_string())
+}
+
+impl std::fmt::Debug for AddressRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Scheme { url: _, scheme } => f
+                .debug_struct("Scheme")
+                .field("url", &"<redacted>")
+                .field("scheme", scheme)
+                .finish(),
+            Self::NoHost(..) => f.debug_tuple("NoHost").field(&"<redacted>").finish(),
+        }
+    }
 }

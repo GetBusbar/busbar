@@ -803,7 +803,7 @@ fn load_capped(way: Way, dispatcher: &Dispatcher, far: &Arc<Far>, cap: u32) -> A
         way,
         dispatcher,
         Arc::new(NoSink),
-        ConnTable::Host(conns),
+        ConnTable::Host(crate::root::connector::admit(conns)),
         cap,
     );
     assert_eq!(plugin.max_inflight(), cap, "{way:?}: the host's clamp");

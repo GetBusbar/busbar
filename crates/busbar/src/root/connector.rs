@@ -50,6 +50,16 @@ pub fn install(connector: Arc<Connector>) -> Result<&'static Arc<Connector>, Arc
     }
 }
 
+/// The composition root chooses the enforcement table before any settings are admitted.
+pub(crate) fn admit(
+    table: Arc<dyn busbar_contract::conn::DeclaredConns>,
+) -> busbar_contract::conn::admissions::AdmissionAuthority {
+    busbar_contract::conn::admissions::AdmissionAuthority::issue(
+        &busbar_kernel::seal::acquire(),
+        table,
+    )
+}
+
 pub fn entries(
     doors: &[(&str, DoorFn)],
     settings: &TransportSettings,

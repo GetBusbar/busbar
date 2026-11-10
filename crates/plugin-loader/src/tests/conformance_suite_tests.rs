@@ -258,7 +258,9 @@ mod suite_conns {
         let p = load_linked::<TestKind>(
             &LinkedRow::of_raw(tcp_door).expect("the restated door states its Statement"),
             Bind {
-                conns: crate::dispatch::ConnTable::Host(Arc::clone(&table)),
+                conns: crate::dispatch::ConnTable::Host(crate::dispatch::test_admissions(
+                    Arc::clone(&table),
+                )),
                 ..bind(&d, "networked")
             },
         )
@@ -863,15 +865,18 @@ mod lent_ops {
 
     #[test]
     fn red_an_abandoned_op_keeps_the_memory_it_was_lent_until_its_crossing_returns() {
-        let d = Dispatcher::new(DispatchConfig {
-            workers: 2,
-            budgets: Budgets {
-                call: Duration::from_millis(300),
-                ..Budgets::default()
+        let d = Dispatcher::new(
+            DispatchConfig {
+                workers: 2,
+                budgets: Budgets {
+                    call: Duration::from_millis(300),
+                    ..Budgets::default()
+                },
+                watchdog_period: Duration::from_millis(20),
+                ..DispatchConfig::default()
             },
-            watchdog_period: Duration::from_millis(20),
-            ..DispatchConfig::default()
-        }, busbar_contract::services::test_caller_binding());
+            busbar_contract::services::test_caller_binding(),
+        );
         let row = LinkedRow::of_raw(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");
         assert_eq!(open(&p, b"{}").outcome, Outcome::Ready);
@@ -1322,13 +1327,14 @@ mod hook_far_ends {
         .to_string();
         let s = Subject::new(conforming::door, "hook_door", &inputs);
         let d = dispatcher();
-        let ConnTable::Host(table) = hook::bind_for(&d, &s).conns else {
+        let ConnTable::Host(authority) = hook::bind_for(&d, &s).conns else {
             panic!(
                 "the hook script bound its door with no connection table serving the far ends its \
                  inputs name: a hook's declared far end is unreachable"
             );
         };
 
+        let table = authority.table();
         let need = ReadNeed {
             direction: 0,
             egress_class: 0,

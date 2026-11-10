@@ -1445,7 +1445,9 @@ async fn plane_router(
                     max_inflight_cap: 64,
                     sink: Arc::new(NoSink),
                     dispatcher: dispatcher.adopter(),
-                    conns: ConnTable::Host(crate::root::connector::the().clone()),
+                    conns: ConnTable::Host(crate::root::connector::admit(
+                        crate::root::connector::the().clone(),
+                    )),
                 },
             )
             .expect("the actual linked plane crosses its memory ABI");

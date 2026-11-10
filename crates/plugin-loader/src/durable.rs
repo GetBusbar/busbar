@@ -30,9 +30,7 @@ use std::path::Path;
 // This is the existing native filesystem owner boundary; its safe API never exposes handles.
 #[allow(unsafe_code)]
 pub(crate) mod documents;
-#[path = "durable_spool.rs"]
-#[allow(unsafe_code)]
-pub mod spool;
+pub use busbar_contract::persistence::archive::spool;
 pub use spool::{SpoolReader, SpoolWriter};
 
 pub use documents::{

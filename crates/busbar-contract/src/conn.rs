@@ -15,6 +15,10 @@ use crate::transport::ConnFacts;
 /// The frozen bytes an [`OpenDesc`] carries its body in.
 pub use bytes::Bytes;
 
+pub mod admissions;
+/// Typed, declaration-directed inbound listener admission.
+pub mod inbound;
+
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
 /// instance's own context.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -728,12 +732,24 @@ impl std::fmt::Debug for Program {
         f.debug_struct("Program")
             .field("command", &self.command)
             .field("cwd", &self.cwd)
-            .field("args", &self.args)
+            .field("args", &"<redacted>")
+            .field("argument_count", &self.args.len())
             .field("env", &env)
             .field("env_refs", &env_refs)
             .finish()
     }
 }
+
+impl Drop for Program {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.command.zeroize();
+        self.cwd.zeroize();
+        self.args.zeroize();
+        self.env.zeroize();
+    }
+}
+impl zeroize::ZeroizeOnDrop for Program {}
 
 /// Why a settings value is not a [`Program`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -760,12 +776,13 @@ impl Program {
     pub fn of_member(registration: &serde_json::Value) -> Option<Result<Self, ProgramRefused>> {
         let map = registration.as_object()?;
         map.get("command")?;
-        let picked: serde_json::Map<String, serde_json::Value> = map
-            .iter()
-            .filter(|(k, _)| PROGRAM_KEYS.contains(&k.as_str()))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        Some(Self::from_settings(&serde_json::Value::Object(picked)))
+        let picked = crate::plugin_settings::Tree(serde_json::Value::Object(
+            map.iter()
+                .filter(|(k, _)| PROGRAM_KEYS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        ));
+        Some(Self::from_settings(&picked.0))
     }
 
     /// The settings' spelling of a program: `{command, args?, env?, cwd?}` — paths are absolute,
@@ -784,7 +801,7 @@ impl Program {
         if !std::path::Path::new(command).is_absolute() {
             return Err(ProgramRefused::NotAbsolute);
         }
-        let cwd = match map.get("cwd") {
+        let mut cwd = zeroize::Zeroizing::new(match map.get("cwd") {
             None | Some(serde_json::Value::Null) => None,
             Some(value) => {
                 let directory = value.as_str().ok_or(ProgramRefused::Cwd)?;
@@ -793,18 +810,15 @@ impl Program {
                 }
                 Some(directory.to_owned())
             }
-        };
-        let args = match map.get("args") {
-            None => Vec::new(),
-            Some(v) => v
-                .as_array()
-                .ok_or(ProgramRefused::Args)?
-                .iter()
-                .map(|a| a.as_str().map(str::to_owned).ok_or(ProgramRefused::Args))
-                .collect::<Result<Vec<_>, _>>()?,
-        };
+        });
+        let mut args = zeroize::Zeroizing::new(Vec::new());
+        if let Some(value) = map.get("args") {
+            for argument in value.as_array().ok_or(ProgramRefused::Args)? {
+                args.push(argument.as_str().ok_or(ProgramRefused::Args)?.to_owned());
+            }
+        }
 
-        let mut env = Vec::new();
+        let mut env = zeroize::Zeroizing::new(Vec::new());
         let mut env_refs = Vec::new();
         if let Some(v) = map.get(PROGRAM_ENV_KEY) {
             for (k, v) in v.as_object().ok_or(ProgramRefused::Env)? {
@@ -834,9 +848,9 @@ impl Program {
         }
         Ok(Self {
             command: command.to_owned(),
-            cwd,
-            args,
-            env,
+            cwd: std::mem::take(&mut *cwd),
+            args: std::mem::take(&mut *args),
+            env: std::mem::take(&mut *env),
             env_refs,
         })
     }

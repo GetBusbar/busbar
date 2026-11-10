@@ -20,6 +20,11 @@ pub type Id = [u8; 16];
 /// A complete SHA256 identity.
 pub type Digest = [u8; 32];
 
+pub mod source;
+pub use source::{
+    DocumentSemantics, InterpretationBounds, SourceCodec, SourceReader, INTERPRETED_SOURCE,
+};
+
 /// Explicit aggregate allocation and page limits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -79,13 +84,22 @@ pub enum InspectionState {
     /// Native current selector and admission marker are present.
     Current,
     /// A recognized historical physical source.
-    Legacy,
+    Legacy(SourceReader),
     /// A durable native upgrade must be resumed.
-    InProgress,
+    InProgress(SourceReader),
     /// Nonempty storage whose format has no supported native reader.
     Unsupported,
     /// Native ownership is currently held by another starter.
     Busy,
+}
+impl InspectionState {
+    /// The mandatory source reader of a historical or unfinished native upgrade.
+    pub fn reader(self) -> Option<SourceReader> {
+        match self {
+            Self::Legacy(reader) | Self::InProgress(reader) => Some(reader),
+            _ => None,
+        }
+    }
 }
 /// Concrete native operations the inspected implementation can supply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +164,14 @@ pub struct Upgrade<O = Kernel> {
 /// Versioned native selectors. No SQL text or logical credential/accounting policy.
 #[derive(Debug)]
 pub enum SourceSelector<O = Kernel> {
+    /// Interpret the complete retained source through its declared neutral codec.
+    /// SourcePage's ordinary bounds still limit each encoded response page.
+    Interpret {
+        /// Exact reader declaration admitted before beginning the upgrade.
+        reader: SourceReader,
+        /// Explicit aggregate group/index budgets, independent of page size.
+        bounds: InterpretationBounds,
+    },
     /// Native table/cursor scan in original native key order.
     Scan {
         /// Catalogue table ordinal.
@@ -411,6 +433,10 @@ pub use axis::*;
 impl<O> Clone for SourceSelector<O> {
     fn clone(&self) -> Self {
         match self {
+            Self::Interpret { reader, bounds } => Self::Interpret {
+                reader: *reader,
+                bounds: *bounds,
+            },
             Self::Scan { table } => Self::Scan { table: *table },
             Self::Exact { table, key } => Self::Exact {
                 table: *table,

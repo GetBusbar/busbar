@@ -91,7 +91,7 @@ fn zero(bytes: &mut [u8]) {
 }
 
 struct Held {
-    credential: Vec<u8>,
+    credential: Zeroizing<Vec<u8>>,
     lines: Vec<(String, Vec<u8>)>,
     named: Vec<NamedValue>,
     point: u32,
@@ -169,7 +169,7 @@ impl Held {
             credential: req
                 .credential
                 .as_ref()
-                .and_then(|c| Some(c.expose(seal?).clone()))
+                .and_then(|c| Some(Zeroizing::new(c.expose(seal?).clone())))
                 .unwrap_or_default(),
             lines: req
                 .lines
@@ -562,8 +562,7 @@ pub struct AuthInstance {
     metadata: Mutex<InstanceMetadata>,
     metadata_valid: AtomicBool,
 
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the settings bytes this instance was
-    settings: Vec<u8>,
+    settings: zeroize::Zeroizing<Vec<u8>>,
 
     secrets: KeptSecrets,
     label: String,
@@ -583,45 +582,43 @@ impl std::fmt::Debug for AuthInstance {
 
 pub fn split_secrets(
     plugin: &Plugin<Auth>,
-    settings: &serde_json::Value,
-) -> (serde_json::Value, Vec<Vec<u8>>) {
+    settings: &busbar_contract::plugin_settings::ResolvedSettings,
+) -> (
+    busbar_contract::plugin_settings::ResolvedSettings,
+    Vec<busbar_contract::Secret<Vec<u8>>>,
+) {
     let refs = plugin
         .context::<AuthFacts>()
-        .map(|f| f.secret_refs.clone())
+        .map(|f| f.secret_refs.as_slice())
         .unwrap_or_default();
-    let mut settings = settings.clone();
-    let as_bytes = |v: Option<serde_json::Value>| match v {
-        Some(serde_json::Value::String(s)) => s.into_bytes(),
-        _ => Vec::new(),
-    };
-    let secrets = busbar_contract::secret_fields::lend(
-        &mut settings,
-        &refs,
-        false,
-        |_, v| Ok::<_, std::convert::Infallible>(as_bytes(v)),
-        |_, v| Ok(as_bytes(Some(v))),
-    )
-    .unwrap_or_else(|e| match e {});
-    (settings, secrets)
+    settings.lend_secrets(refs)
 }
 
-pub(crate) struct KeptSecrets(Vec<zeroize::Zeroizing<Vec<u8>>>);
+pub(crate) struct KeptSecrets(Vec<busbar_contract::Secret<Vec<u8>>>);
 
 impl KeptSecrets {
-    fn new(secrets: Vec<Vec<u8>>) -> Self {
-        Self(secrets.into_iter().map(zeroize::Zeroizing::new).collect())
+    fn new(secrets: Vec<busbar_contract::Secret<Vec<u8>>>) -> Self {
+        Self(secrets)
     }
 
-    fn blobs(&self) -> Vec<Blob> {
-        self.0
+    fn blobs(
+        &self,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+    ) -> Result<Vec<Blob>, String> {
+        if self.0.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seal = seal.ok_or("credential lending requires the host settings seal")?;
+        Ok(self
+            .0
             .iter()
             .map(|s| Blob {
-                ptr: s.as_ptr(),
-                len: s.len(),
+                ptr: s.expose(seal).as_ptr(),
+                len: s.expose(seal).len(),
                 fmt: BLOB_OCTETS,
                 flags: BLOB_SECRET,
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -732,7 +729,7 @@ impl AuthInstance {
         dispatcher: Arc<Dispatcher>,
         label: &str,
         settings: &[u8],
-        secrets: Vec<Vec<u8>>,
+        secrets: Vec<busbar_contract::Secret<Vec<u8>>>,
     ) -> Result<Self, String> {
         let secrets = KeptSecrets::new(secrets);
         let facts = plugin.context::<AuthFacts>().cloned().unwrap_or_default();
@@ -743,7 +740,7 @@ impl AuthInstance {
             return Err(why(called.outcome, called.error));
         }
         drop(validated);
-        let blobs = secrets.blobs();
+        let blobs = secrets.blobs(dispatcher.seal())?;
         let mut f = open_frame(blob(settings, BLOB_JSON, 0));
         if !blobs.is_empty() {
             f.input.secrets = blobs.as_ptr();
@@ -782,7 +779,7 @@ impl AuthInstance {
             facts,
             metadata: Mutex::new(metadata),
             metadata_valid: AtomicBool::new(true),
-            settings: settings.to_vec(),
+            settings: zeroize::Zeroizing::new(settings.to_vec()),
             secrets,
             label: label.to_string(),
             lifecycle: Mutex::new(()),
@@ -957,7 +954,7 @@ impl AuthCalls for AuthInstance {
             generation
         };
         self.sink.0.flushed.store(0, Ordering::Release);
-        let blobs = self.secrets.blobs();
+        let blobs = self.secrets.blobs(self.shared.dispatcher.seal())?;
         let mut f = Frame::new(
             RefreshIn {
                 head: in_head(),

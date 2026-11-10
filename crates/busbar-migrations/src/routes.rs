@@ -22,7 +22,7 @@ use busbar_contract::{
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 mod parents;
-pub use parents::with_parent_graph_from_frozen;
+pub use parents::{with_parent_graph_from_facts, with_parent_graph_from_frozen};
 
 enum Profile {
     Sql(legacy::Profile),
@@ -164,6 +164,7 @@ pub struct FrozenCapabilities {
 }
 pub struct PreparedRoute {
     profile: Profile,
+    reader: lifecycle::SourceReader,
     source: lifecycle::SourceIdentity,
     target_format: Format,
     bounds: Bounds,
@@ -179,6 +180,7 @@ impl PreparedRoute {
         catalogue: &[Table],
         bounds: Bounds,
         target_format: Format,
+        reader: lifecycle::SourceReader,
     ) -> Result<Self, Error> {
         bounds.validate()?;
         if source.dataset.0 == [0; 16]
@@ -215,6 +217,14 @@ impl PreparedRoute {
         let mut hash = Sha256::new();
         field(&mut hash, b"busbar.native.prepared-route/1");
         field(&mut hash, &legacy::transform::code_digest());
+        field(&mut hash, &reader.decoder_digest());
+        field(
+            &mut hash,
+            &[match reader.documents() {
+                lifecycle::DocumentSemantics::Historical => 0,
+                lifecycle::DocumentSemantics::Current => 1,
+            }],
+        );
         field(&mut hash, &source.native_anchor);
         field(&mut hash, &source.dataset.0);
         field(&mut hash, &source.catalogue_digest);
@@ -237,6 +247,7 @@ impl PreparedRoute {
         let digest = hash.finalize().into();
         Ok(Self {
             profile,
+            reader,
             source: source.clone(),
             target_format,
             bounds,
@@ -246,6 +257,9 @@ impl PreparedRoute {
             inventory: Bindings::default(),
             bindings_resolved: true,
         })
+    }
+    pub fn reader(&self) -> lifecycle::SourceReader {
+        self.reader
     }
     pub fn with_bindings(mut self, mut bindings: Bindings) -> Result<Self, Error> {
         canonical_bindings(&mut bindings, self.bounds.bytes as usize)?;
@@ -928,6 +942,55 @@ pub fn proofs_from_frozen(
         ancestry,
     }))
 }
+/// Complete logical audit verification from an evidence-admitted source view.
+pub fn proofs_from_facts(
+    format: Format,
+    provenance: Provenance,
+    source: &mut dyn crate::archive_source::ArchiveRows,
+    semantic_bytes: usize,
+    ancestry: Option<Arc<dyn NativeProofs>>,
+) -> Result<Arc<dyn NativeProofs>, Error> {
+    if source.header().owner != format.owner
+        || source.header().physical != format.physical
+        || semantic_bytes == 0
+    {
+        return Err(Error::IdentityMismatch);
+    }
+    let mut audit = Vec::new();
+    let mut charge = 0usize;
+    crate::source_facts::visit(source, semantic_bytes, &mut |_, fact| {
+        if let busbar_contract::persistence::lifecycle::source::HistoricalFact::Audit(record) =
+            fact.fact()
+        {
+            let size = [
+                &record.action,
+                &record.resource,
+                &record.outcome,
+                &record.principal,
+                &record.prev_hash,
+                &record.hash,
+            ]
+            .iter()
+            .try_fold(std::mem::size_of_val(record), |n, s| n.checked_add(s.len()))
+            .ok_or(Error::Bounds)?;
+            charge = charge.checked_add(size).ok_or(Error::Bounds)?;
+            if charge > semantic_bytes {
+                return Err(Error::Bounds);
+            }
+            audit.try_reserve_exact(1).map_err(|_| Error::Bounds)?;
+            audit.push(record.clone());
+        }
+        Ok(())
+    })?;
+    let count = u64::try_from(audit.len()).map_err(|_| Error::Bounds)?;
+    let audit = legacy::transform::CompleteAuditProofs::from_complete_source(
+        format, provenance, audit, count,
+    )?;
+    Ok(Arc::new(FrozenProofs {
+        audit: Arc::new(audit),
+        ancestry,
+    }))
+}
 pub fn with_ancestry(
     audit: Arc<dyn NativeProofs>,
     ancestry: Arc<dyn NativeProofs>,
@@ -1039,6 +1102,12 @@ mod binding_tests {
                 bytes: 65536,
             },
             CORE_FORMAT,
+            lifecycle::SourceReader::new(
+                lifecycle::SourceCodec::HistoricalV1,
+                lifecycle::DocumentSemantics::Historical,
+                [8; 32],
+            )
+            .unwrap(),
         )
         .unwrap()
     }

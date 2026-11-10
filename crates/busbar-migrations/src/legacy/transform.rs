@@ -200,6 +200,17 @@ pub(crate) fn code_digest() -> [u8; 32] {
         include_bytes!("valkey.rs"),
         include_bytes!("valkey_transform.rs"),
         include_bytes!("../archive_source.rs"),
+        include_bytes!("../source_interpretation.rs"),
+        include_bytes!("../source_facts.rs"),
+        include_bytes!("../native_source/interpretation.rs"),
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../busbar-contract/src/persistence/lifecycle/source.rs"
+        )),
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../busbar-contract/src/persistence/lifecycle/codec/source.rs"
+        )),
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../busbar-contract/src/persistence/archive.rs"
@@ -778,20 +789,20 @@ pub(super) fn registered_edge(
     Registry::new(vec![edge.clone()])?;
     Ok(edge)
 }
-pub(super) struct Output {
+pub(crate) struct Output {
     rows: BTreeMap<Address, OutputValue>,
     bytes: usize,
     bounds: Bounds,
 }
 impl Output {
-    pub(super) fn new(bounds: Bounds) -> Self {
+    pub(crate) fn new(bounds: Bounds) -> Self {
         Self {
             rows: BTreeMap::new(),
             bytes: 0,
             bounds,
         }
     }
-    pub(super) fn put(
+    pub(crate) fn put(
         &mut self,
         address: Address,
         value: Secret<Vec<u8>>,
@@ -817,7 +828,7 @@ impl Output {
         self.rows.insert(address, (value, source, shared));
         Ok(())
     }
-    pub(super) fn canonical(
+    pub(crate) fn canonical(
         &mut self,
         rows: CanonicalRows,
         shared_indices: bool,
@@ -827,7 +838,7 @@ impl Output {
         }
         Ok(())
     }
-    pub(super) fn finish(self) -> Vec<TargetRow> {
+    pub(crate) fn finish(self) -> Vec<TargetRow> {
         self.rows
             .into_iter()
             .map(|(address, (value, preserved_source, _))| TargetRow {

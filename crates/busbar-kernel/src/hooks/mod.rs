@@ -14,13 +14,31 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 
 fn same_call_inputs(
     opened_module: &str,
-    opened_settings: &serde_json::Map<String, serde_json::Value>,
+    opened_settings: &busbar_contract::plugin_settings::Settings,
     opened_budget: std::time::Duration,
     module: &str,
-    settings: &serde_json::Map<String, serde_json::Value>,
+    settings: &busbar_contract::plugin_settings::Settings,
     effective_budget: impl FnOnce() -> std::time::Duration,
 ) -> bool {
     opened_module == module && opened_settings == settings && opened_budget == effective_budget()
+}
+
+fn same_resolved_inputs(
+    opened_module: &str,
+    opened_settings: &ResolvedSettings,
+    opened_budget: std::time::Duration,
+    module: &str,
+    settings: &ResolvedSettings,
+    effective_budget: impl FnOnce() -> std::time::Duration,
+) -> bool {
+    if opened_module != module || opened_budget != effective_budget() {
+        return false;
+    }
+    let (Ok(opened), Ok(current)) = (opened_settings.encode(), settings.encode()) else {
+        return false;
+    };
+    let seal = crate::seal::lend();
+    opened.expose(&seal) == current.expose(&seal)
 }
 
 pub mod gate;
@@ -140,7 +158,7 @@ impl HookEnv {
         timeout_ms: u64,
     ) -> Result<Arc<dyn RoutingPolicy>, String> {
         if let Some(opened) = self.route_calls.get(name).filter(|opened| {
-            same_call_inputs(
+            same_resolved_inputs(
                 &opened.module,
                 &opened.resolved,
                 opened.budget,
@@ -158,12 +176,7 @@ impl HookEnv {
             .axis
             .as_ref()
             .ok_or_else(|| format!("no `kind: hook` plugin answers to '{module}'"))?;
-        let calls = axis.open(
-            module,
-            name,
-            settings.as_value(),
-            policy_timeout(timeout_ms),
-        )?;
+        let calls = axis.open(module, name, settings, policy_timeout(timeout_ms))?;
         Ok(crate::plane_driver::hooks::policy::HookPolicy::policy(
             calls, name,
         ))
@@ -183,13 +196,13 @@ impl HookEnv {
         for name in names {
             let hook = &hooks[name];
             let resolved = self.resolve_hook_settings(&hook.plugin, &hook.settings)?;
-            let routes = axis.routes(&hook.plugin, name, resolved.as_value())?;
+            let routes = axis.routes(&hook.plugin, name, &resolved)?;
             if routes.is_empty() {
                 continue;
             }
             let budget = policy_timeout(hook.timeout_ms);
             let opened = match retained_route(&self.route_calls, name, |opened| {
-                same_call_inputs(
+                same_resolved_inputs(
                     &opened.module,
                     &opened.resolved,
                     opened.budget,
@@ -201,7 +214,7 @@ impl HookEnv {
             .filter(|opened| opened.calls.routes() == routes.as_slice())
             {
                 Some(opened) => opened.calls.clone(),
-                None => axis.open(&hook.plugin, name, resolved.as_value(), budget)?,
+                None => axis.open(&hook.plugin, name, &resolved, budget)?,
             };
             if opened.routes() != routes.as_slice() {
                 return Err(format!(
@@ -228,7 +241,7 @@ impl HookEnv {
                 name.clone(),
                 RouteCalls {
                     module: hook.plugin.clone(),
-                    definition: ResolvedSettings::from_map(hook.settings.clone()),
+                    definition: hook.settings.clone(),
                     resolved,
                     budget,
                     calls: opened,
@@ -242,7 +255,7 @@ impl HookEnv {
     fn resolve_hook_settings(
         &self,
         module: &str,
-        settings: &serde_json::Map<String, serde_json::Value>,
+        settings: &busbar_contract::plugin_settings::Settings,
     ) -> Result<ResolvedSettings, String> {
         crate::config::secret::resolve_settings(
             settings,
@@ -313,7 +326,7 @@ fn retained_route<'a, T>(
 
 struct RouteCalls {
     module: String,
-    definition: ResolvedSettings,
+    definition: busbar_contract::plugin_settings::Settings,
     resolved: ResolvedSettings,
     budget: std::time::Duration,
     calls: Arc<dyn busbar_contract::hook_calls::HookCalls>,
@@ -557,7 +570,7 @@ impl RoutingPolicy for RewriteOnError {
     async fn configure(
         &self,
         hook_name: &str,
-        settings: &serde_json::Map<String, serde_json::Value>,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
         settings_version: u64,
         budget: std::time::Duration,
     ) -> Result<(), PolicyError> {
@@ -961,24 +974,30 @@ mod resolution {
         hook: &crate::config::HookCfg,
         paths: &[String],
     ) -> Option<u64> {
-        use busbar_contract::secret_fields;
         use std::hash::{Hash as _, Hasher as _};
-        let settings = serde_json::Value::Object(hook.settings.clone());
-
-        if secret_fields::undeclared_reference(&settings, &[]).is_some()
-            || paths
-                .iter()
-                .any(|path| !secret_fields::declared_references(&settings, path).is_empty())
+        let sources = crate::config::secret::sugars();
+        if hook
+            .settings
+            .undeclared_reference(&[], &sources)
+            .ok()
+            .flatten()
+            .is_some()
+            || !hook
+                .settings
+                .reference_modules(paths, &sources)
+                .ok()?
+                .is_empty()
         {
             return None;
         }
+        let settings = zeroize::Zeroizing::new(serde_json::to_string(&hook.settings).ok()?);
         let mut h = std::collections::hash_map::DefaultHasher::new();
 
         registry.hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
         super::policy_timeout(hook.timeout_ms).hash(&mut h);
-        settings.to_string().hash(&mut h);
+        settings.hash(&mut h);
         Some(h.finish())
     }
 
@@ -1230,22 +1249,13 @@ pub async fn fetch_status(
 
 pub fn settings_drift_keys(
     hook: &crate::config::HookCfg,
-    reported: Option<&serde_json::Map<String, serde_json::Value>>,
+    reported: Option<&busbar_contract::plugin_settings::Settings>,
 ) -> Vec<String> {
     let Some(observed) = reported else {
         return Vec::new();
     };
-    let mut keys: Vec<String> = hook
-        .settings
-        .iter()
-        .filter(|(k, v)| match crate::config::secret::classify_setting(v) {
-            crate::config::secret::SettingShape::Reference(_) => false,
-            crate::config::secret::SettingShape::Verbatim(want) => observed.get(*k) != Some(want),
-        })
-        .map(|(k, _)| k.clone())
-        .collect();
-    keys.sort();
-    keys
+    hook.settings
+        .drift_keys(observed, &crate::config::secret::sugars())
 }
 
 pub async fn fetch_schema(

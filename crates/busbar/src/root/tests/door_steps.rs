@@ -2395,8 +2395,10 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         dispatcher,
         &linked,
         None,
-        crate::root::loader::dispatch::ConnTable::Host(std::sync::Arc::clone(table)
-            as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>),
+        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+            std::sync::Arc::clone(table)
+                as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>,
+        )),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     )
 }
@@ -3780,9 +3782,9 @@ pub(crate) mod tool_door {
             let plane = bound(
                 instance,
                 &dispatcher,
-                crate::root::loader::dispatch::ConnTable::Host(
-                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
-                ),
+                crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>,
+                )),
             );
             let caller = plane.instance();
             let section_key = plane.served().section;
@@ -3863,9 +3865,9 @@ pub(crate) mod tool_door {
                 Arc::clone(&dispatcher),
                 &linked,
                 None,
-                crate::root::loader::dispatch::ConnTable::Host(
-                    Arc::clone(&tokens) as Arc<dyn DeclaredConns>
-                ),
+                crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(
+                    Arc::clone(&tokens) as Arc<dyn DeclaredConns>,
+                )),
                 busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             );
             let reach = crate::root::door_steps::DoorReach {

@@ -340,7 +340,7 @@ async fn legacy_store() -> (Arc<crate::persistence::facade::CoreStore>, String, 
     let source = crate::real_store::core().await;
     let (public_id, secret) = mint(&node(source.clone(), 1, None).await).await;
     let mut legacy = row(&source).await;
-    legacy.secret = format!("v1:plain:{secret}");
+    legacy.secret = format!("v1:plain:{secret}").into();
     let key = source
         .identity()
         .get_key(&legacy.meta.key_id)
@@ -381,7 +381,7 @@ mod immutable_store {
         let before = row(&backing).await;
         let store = backing.clone();
         let mut forbidden = before.clone();
-        forbidden.secret = "v1:plain:replacement".into();
+        forbidden.secret = "v1:plain:replacement".to_owned().into();
         assert!(store.identity().put_credential(&forbidden).await.is_err());
         assert_eq!(row(&backing).await.secret, before.secret);
 
@@ -456,7 +456,7 @@ mod immutable_store {
         }
         assert_eq!(applied, 1);
         let after = row(&store).await;
-        assert_eq!(after.secret, replacement);
+        assert_eq!(after.secret.as_str(), replacement);
         let mut meta = after.meta.clone();
         meta.revision = expected.meta.revision;
         assert_eq!(

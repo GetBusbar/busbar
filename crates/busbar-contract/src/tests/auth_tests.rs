@@ -45,7 +45,7 @@ fn login_debug_never_prints_a_credential() {
     };
     let login = CompleteLogin {
         code: Some("the-code".into()),
-        redirect_uri: Some("https://busbar.example/cb".into()),
+        redirect_uri: Some("https://busbar.example/cb?code=redirect-code".into()),
         code_verifier: Some("the-verifier".into()),
         submitted: vec![("password".into(), Secret::new("the-password".to_string()))],
         token_response: Some(LoginHttpResponse {
@@ -60,6 +60,7 @@ fn login_debug_never_prints_a_credential() {
         "the-password",
         "the-token",
         "url-code",
+        "redirect-code",
         "form-value",
         "header-token",
     ] {

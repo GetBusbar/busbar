@@ -653,7 +653,13 @@ pub fn open_operator(
     let carriers = axis.as_ref().map(|a| a.carriers(op)).unwrap_or_default();
     Operator::open(op, defs, &is_op, answered, digest, |d| {
         let axis = axis.ok_or_else(|| format!("no `kind: auth` plugin answers to '{op}'"))?;
-        axis.open(op, op, &serde_json::Value::String(d.to_string()))
+        axis.open(
+            op,
+            op,
+            &busbar_contract::plugin_settings::ResolvedSettings::from(serde_json::Value::String(
+                d.to_string(),
+            )),
+        )
     })
     .map(|operator| operator.with_carriers(carriers))
 }
@@ -726,9 +732,7 @@ impl AdminAuthChain {
 
                     let label = format!("admin_auth.{name}");
 
-                    let calls = axis
-                        .open(other, &label, resolved.as_value())
-                        .map_err(refused)?;
+                    let calls = axis.open(other, &label, &resolved).map_err(refused)?;
 
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
@@ -794,7 +798,7 @@ impl AuthMiddleware {
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    let opened = axis.open(other, &entry.name, resolved.as_value());
+                    let opened = axis.open(other, &entry.name, &resolved);
 
                     drop(resolved);
                     let calls = opened.map_err(refused)?;
@@ -823,7 +827,13 @@ impl AuthMiddleware {
             for module in axis.iter().flat_map(|a| a.credential_readers()) {
                 let calls = axis
                     .as_ref()
-                    .map(|a| a.open(&module, &module, &serde_json::json!({})))
+                    .map(|a| {
+                        a.open(
+                            &module,
+                            &module,
+                            &busbar_contract::plugin_settings::ResolvedSettings::default(),
+                        )
+                    })
                     .transpose()
                     .map_err(|e| {
                         format!(

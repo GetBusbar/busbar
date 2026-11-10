@@ -306,7 +306,7 @@ fn credential_record_originals_and_clones_wipe_when_their_owners_drop() {
     };
     let original = crate::records::CredentialSecret {
         meta,
-        secret: "v1:plain:owned-record-canary".into(),
+        secret: "v1:plain:owned-record-canary".to_owned().into(),
     };
     let encoded = serde_json::to_vec(&original).unwrap();
     let decoded: crate::records::CredentialSecret = serde_json::from_slice(&encoded).unwrap();

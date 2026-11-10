@@ -423,7 +423,7 @@ pub struct CredentialSecret {
     pub meta: CredentialMeta,
     /// SECRET-EQUIVALENT for a `Recoverable`-form credential — never log it. Format
     /// `"v1:<scheme>:<payload>"`.
-    pub secret: String,
+    pub secret: zeroize::Zeroizing<String>,
 }
 
 impl Drop for CredentialSecret {

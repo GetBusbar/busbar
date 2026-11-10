@@ -292,15 +292,15 @@ fn a_selected_plane_inbound_need_keeps_its_consumer_and_physical_bind() {
 
 #[test]
 fn a_root_listen_selector_preserves_effective_tls_and_does_not_shadow_relative_settings() {
-    let doc =
-        serde_json::json!({"tls": {"cert": {"env": "CERT"}, "key": {"env": "KEY"}}, "agents": {}});
+    let doc = serde_json::json!({"tls": {"cert": {"module":"source","settings":{"id":"cert"}}, "key": {"module":"source","settings":{"id":"key"}}}, "agents": {}});
     let roots = root_binds(
         &doc,
         &RootListens {
             listen: "127.0.0.1:8080",
             admin_listen: "127.0.0.1:8081",
         },
-    );
+    )
+    .unwrap();
     let candidates = vec![listening_plane("listen")];
     let selected = select(&Uses::of(&doc), &candidates);
     let plan = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
@@ -343,7 +343,8 @@ fn two_instances_of_one_module_can_share_root_and_own_a_distinct_bind() {
             listen: "127.0.0.1:8080",
             admin_listen: "127.0.0.1:8081",
         },
-    );
+    )
+    .unwrap();
     let plan = listener_needs(&doc, &candidates, &selected, roots).unwrap();
     assert_eq!(
         plan.needs
@@ -375,7 +376,8 @@ fn plane_ingress_inherits_data_listener_or_selects_an_explicit_socket() {
             listen: "127.0.0.1:8080",
             admin_listen: "127.0.0.1:8081",
         },
-    );
+    )
+    .unwrap();
     let inherited = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
     assert_eq!(inherited.binds, roots);
     assert_eq!(inherited.needs[0].at, "listen");
@@ -408,7 +410,8 @@ fn explicit_same_address_needs_share_compatible_physical_policy() {
             listen: "127.0.0.1:8080",
             admin_listen: "127.0.0.1:8081",
         },
-    );
+    )
+    .unwrap();
     let selected = select(&Uses::of(&doc), &candidates);
     let plan = listener_needs(&doc, &candidates, &selected, roots.clone()).unwrap();
     assert_eq!(plan.binds, roots);
@@ -446,7 +449,7 @@ fn explicit_same_address_needs_share_compatible_physical_policy() {
 #[test]
 fn red_the_roots_listeners_head_the_one_list_of_listeners() {
     let doc: serde_json::Value = serde_json::from_str(
-        r#"{"listen": "0.0.0.0:8080", "tls": {"cert": {"ref": "c"}, "key": {"ref": "k"}}}"#,
+        r#"{"listen": "0.0.0.0:8080", "tls": {"cert": {"module":"source","settings":{"id":"c"}}, "key": {"module":"source","settings":{"id":"k"}}}}"#,
     )
     .unwrap();
     let root = root_binds(
@@ -455,7 +458,8 @@ fn red_the_roots_listeners_head_the_one_list_of_listeners() {
             listen: "0.0.0.0:8080",
             admin_listen: "127.0.0.1:8081",
         },
-    );
+    )
+    .unwrap();
     let got = stages(&doc, Vec::new(), root)
         .map(|s| s.inbound)
         .ok()

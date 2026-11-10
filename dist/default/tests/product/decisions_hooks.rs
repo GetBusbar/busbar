@@ -373,7 +373,9 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
                 max_inflight_cap: 64,
                 sink: Arc::new(NoSink),
                 dispatcher: dispatcher.adopter(),
-                conns: ConnTable::Host(connector.clone() as Arc<dyn DeclaredConns>),
+                conns: ConnTable::Host(crate::root::connector::admit(
+                    connector.clone() as Arc<dyn DeclaredConns>
+                )),
             },
         )
         .expect("the actual decisions door binds"),
@@ -401,7 +403,7 @@ async fn served(instance: &str, reply: Reply, bound: Bound, prompt: &str, attach
         dispatcher.clone(),
         crate::LINKED.auths,
         None,
-        ConnTable::Host(connector.clone()),
+        ConnTable::Host(crate::root::connector::admit(connector.clone())),
         busbar_kernel::diagnostics::Catalogue::NEUTRAL,
     );
     let reach = crate::root::door_steps::DoorReach {

@@ -147,7 +147,7 @@ pub struct Bind {
 #[derive(Clone)]
 pub enum ConnTable {
     /// The host's one connection table: a need the Statement declares is declared on it.
-    Host(Arc<dyn busbar_contract::conn::DeclaredConns>),
+    Host(busbar_contract::conn::admissions::AdmissionAuthority),
     /// A PROBE or CHECK bind: the instance is only validated or read for its facts, never opened to
     /// serve, so a need it declares is not declared and it is handed no table (nothing is opened to
     /// the network while a configuration is judged). Not refused.
@@ -159,14 +159,14 @@ pub enum ConnTable {
 
 impl ConnTable {
     #[must_use]
-    pub fn serving(table: Option<Arc<dyn busbar_contract::conn::DeclaredConns>>) -> Self {
+    pub fn serving(table: Option<busbar_contract::conn::admissions::AdmissionAuthority>) -> Self {
         table.map_or(Self::NoNeeds, Self::Host)
     }
 
     #[must_use]
     pub fn table(&self) -> Option<&Arc<dyn busbar_contract::conn::DeclaredConns>> {
         match self {
-            Self::Host(t) => Some(t),
+            Self::Host(t) => Some(t.table()),
             Self::Probe | Self::NoNeeds => None,
         }
     }
@@ -1127,97 +1127,52 @@ impl Instance {
     }
 
     fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) -> Option<String> {
-        self.declare_targeted_on(settings, owned, self.wake.conn.get(), None)
+        self.declare_targeted_on(settings, owned, self.wake.admissions.get(), None)
     }
 
     fn declare_targeted_on(
         &self,
         settings: Blob,
         owned: Option<&[u8]>,
-        connection: Option<&(InstanceId, Arc<dyn busbar_contract::conn::DeclaredConns>)>,
-        predecessor: Option<InstanceId>,
+        admissions: Option<&busbar_contract::conn::admissions::EnforcedAdmissions>,
+        predecessor: Option<&busbar_contract::conn::admissions::EnforcedAdmissions>,
     ) -> Option<String> {
-        let (instance, table) = connection?;
-        let mut trust_refused = None;
-        let bytes: &[u8] = if settings.ptr.is_null() {
-            &[]
-        } else {
-            // SAFETY: the host's own settings blob, live for the crossing it is handed to.
-            unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
+        use busbar_contract::conn::admissions::AdmissionRefused;
+        let Some(admissions) = admissions else {
+            return self
+                .wake
+                .conn
+                .get()
+                .map(|_| "connection admission authority missing".to_owned());
         };
-        let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
-        let owned = owned
-            .filter(|b| !b.is_empty())
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
-        for (i, need) in self.needs.iter().enumerate() {
-            if !from_settings(need) {
-                continue;
-            }
-            let id = NeedId(u32::try_from(i).unwrap_or(u32::MAX));
-
-            if busbar_contract::section::member_program(&need.target_from) {
-                let programs = doc.as_ref().map(member_programs).unwrap_or_default();
-                let answer = match predecessor {
-                    Some(previous) => {
-                        table.declare_member_programs_from(previous, *instance, id, need, &programs)
-                    }
-                    None => table.declare_member_programs(*instance, id, need, &programs),
-                };
-                self.need_refused(id, answer.map_err(crate::observe::conn_reason));
-                continue;
-            }
-
-            let at = doc.as_ref().and_then(|d| setting_at(d, &need.target_from));
-            if let Some(value) = at.filter(|v| v.is_object()) {
-                let answer = match busbar_contract::conn::Program::from_settings(value) {
-                    Ok(program) => table
-                        .declare_program(*instance, id, need, &program)
-                        .map_err(crate::observe::conn_reason),
-                    Err(_) => table
-                        .declare(*instance, id, need, None, None)
-                        .map_err(|_| "program_malformed"),
-                };
-                self.need_refused(id, answer);
-                continue;
-            }
-            let target = doc
-                .as_ref()
-                .and_then(|d| resolve_target(d, &need.target_from));
-            let trust = match busbar_contract::section::owned_path(&need.trust_from) {
-                Some(at) => owned.as_ref().and_then(|o| resolve_owned(o, at)),
-                None => doc
-                    .as_ref()
-                    .and_then(|d| resolve_setting(d, &need.trust_from)),
-            };
-
-            let unresolved = target.is_none()
-                && !need.target_from.is_empty()
-                && busbar_contract::section::member_target(&need.target_from).is_none();
-
-            let trust_unwritten = trust.is_none()
-                && !need.trust_from.is_empty()
-                && busbar_contract::section::owned_path(&need.trust_from).is_none()
-                && busbar_contract::section::member_target(&need.trust_from).is_none();
-            let answer = table
-                .declare(*instance, id, need, target.as_deref(), trust.as_deref())
-                .map_err(|e| {
-                    if unresolved {
-                        "target_unresolved"
-                    } else {
-                        crate::observe::conn_reason(e)
-                    }
-                });
-            if let (Err(reason), Some(_), None, false) =
-                (answer, &trust, &trust_refused, unresolved)
+        // SAFETY: the host owns this settings blob for the entire crossing.
+        let bytes = unsafe { blob_bytes(settings) };
+        let doc = serde_json::from_slice::<busbar_contract::plugin_settings::Settings>(bytes).ok();
+        let owned = owned.filter(|bytes| !bytes.is_empty()).and_then(|bytes| {
+            serde_json::from_slice::<busbar_contract::plugin_settings::Settings>(bytes).ok()
+        });
+        let answers = match admissions.apply(doc.as_ref(), owned.as_ref(), predecessor) {
+            Ok(answers) => answers,
+            Err(_) => return Some("connection admission authority refused".to_owned()),
+        };
+        let mut trust_refused = None;
+        for answer in answers {
+            let result = answer.result.map_err(|error| match error {
+                AdmissionRefused::TargetUnresolved => "target_unresolved",
+                AdmissionRefused::ProgramMalformed => "program_malformed",
+                AdmissionRefused::Connection(error) => crate::observe::conn_reason(error),
+            });
+            if let (Err(reason), Some(path), None) =
+                (result, answer.trust_refused_at, &trust_refused)
             {
                 trust_refused = Some(format!(
-                    "{}: the host refused the CA certificate it names for need {i} ({reason}); \
+                    "{path}: the host refused the CA certificate it names for need {} ({reason}); \
                      it must be PEM that parses into a trust anchor",
-                    need.trust_from
+                    answer.need.0
                 ));
             }
-            if unresolved || !trust_unwritten {
-                self.need_refused(id, answer);
+            if answer.report {
+                self.need_refused(answer.need, result);
             }
         }
         trust_refused
@@ -1340,8 +1295,15 @@ impl Instance {
             }
             None => None,
         };
+        let admissions = conn.as_ref().and_then(|(owner, _)| {
+            self.wake
+                .admissions
+                .get()
+                .map(|admissions| admissions.successor(*owner))
+        });
         let generation = Arc::new(super::export_bindings::Generation {
             conn,
+            admissions,
             destinations: self.destinations(settings),
         });
         if let Some((owner, table)) = &generation.conn {
@@ -1362,10 +1324,12 @@ impl Instance {
         let predecessor = prior.as_ref().and_then(|prior| {
             let (previous, previous_table) = prior.conn.as_ref()?;
             let (owner, table) = generation.conn.as_ref()?;
-            (*previous != *owner && Arc::ptr_eq(previous_table, table)).then_some(*previous)
+            (*previous != *owner && Arc::ptr_eq(previous_table, table))
+                .then_some(prior.admissions.as_ref())
+                .flatten()
         });
         if let Some(error) =
-            self.declare_targeted_on(settings, owned, generation.conn.as_ref(), predecessor)
+            self.declare_targeted_on(settings, owned, generation.admissions.as_ref(), predecessor)
         {
             return Err(error);
         }
@@ -2245,6 +2209,7 @@ impl Instance {
                     .exports
                     .publish(Arc::new(super::export_bindings::Generation {
                         conn: self.wake.conn.get().cloned(),
+                        admissions: self.wake.admissions.get().cloned(),
                         destinations: self
                             .wake
                             .bound
@@ -2618,7 +2583,8 @@ impl<K: Kind> Plugin<K> {
                         needs: n,
                     });
                 }
-                (ConnTable::Host(table), n) if n > 0 => {
+                (ConnTable::Host(authority), n) if n > 0 => {
+                    let table = authority.table();
                     unbound.1 = Some((Arc::clone(table), instance));
                     if v.kind == KindCode::Auth {
                         table.hold_authority(instance);
@@ -2659,6 +2625,9 @@ impl<K: Kind> Plugin<K> {
                         }
                     }
                     declared_needs = needs.into_boxed_slice();
+                    let _ = wake
+                        .admissions
+                        .set(authority.bind(instance, &declared_needs));
                     let _ = wake.conn.set((instance, Arc::clone(table)));
                     &super::conn_services::CONN_SLOTS
                 }
@@ -2793,6 +2762,11 @@ impl<K: Kind> Plugin<K> {
 
     pub fn kind(&self) -> KindCode {
         self.inner.kind
+    }
+
+    /// Immutable connection declarations admitted from this instance's validated Statement.
+    pub fn declared_needs(&self) -> &[ReadNeed] {
+        &self.inner.needs
     }
 
     pub fn name(&self) -> &str {
@@ -3138,14 +3112,6 @@ fn from_settings(need: &ReadNeed) -> bool {
     !need.target_from.is_empty() || !need.trust_from.is_empty()
 }
 
-pub(crate) fn resolve_owned(owned: &serde_json::Value, at: &str) -> Option<String> {
-    at.split('.')
-        .try_fold(owned, |v, key| v.get(key))
-        .and_then(serde_json::Value::as_str)
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-}
-
 /// The bytes of a host blob: empty when it is absent.
 ///
 /// # Safety
@@ -3158,44 +3124,6 @@ pub(crate) unsafe fn blob_bytes<'b>(blob: Blob) -> &'b [u8] {
         // SAFETY: the caller's contract.
         unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }
     }
-}
-
-pub(crate) fn resolve_setting(settings: &serde_json::Value, path: &str) -> Option<String> {
-    let rest = path.strip_prefix("settings.")?;
-    rest.split('.')
-        .try_fold(settings, |v, key| v.get(key))
-        .and_then(serde_json::Value::as_str)
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
-}
-
-pub(crate) fn member_programs(
-    settings: &serde_json::Value,
-) -> Vec<(String, busbar_contract::conn::Program)> {
-    let Some(map) = settings.as_object() else {
-        return Vec::new();
-    };
-    map.iter()
-        .filter_map(|(name, registration)| {
-            let program = busbar_contract::conn::Program::of_member(registration)?.ok()?;
-            Some((name.clone(), program))
-        })
-        .collect()
-}
-
-pub(crate) fn setting_at<'v>(
-    settings: &'v serde_json::Value,
-    path: &str,
-) -> Option<&'v serde_json::Value> {
-    let rest = path.strip_prefix("settings.")?;
-    rest.split('.').try_fold(settings, |v, key| v.get(key))
-}
-
-pub(crate) fn resolve_target(settings: &serde_json::Value, path: &str) -> Option<String> {
-    setting_at(settings, path)
-        .and_then(serde_json::Value::as_str)
-        .filter(|t| !t.is_empty())
-        .map(str::to_owned)
 }
 
 #[cfg(test)]

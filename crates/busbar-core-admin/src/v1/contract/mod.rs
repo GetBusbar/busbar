@@ -589,7 +589,7 @@ pub struct HookHealthView {
 /// where activation is tracked (auth modules: in the chain?; hook plugins: configured = true;
 /// dynamic store: the configured `store.module`) and `None` where it is a per-pool concern not
 /// summarized here (compiled-in ranking policies). Additive-only.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct PluginView {
     pub name: String,
@@ -1039,3 +1039,27 @@ pub struct ConfigValidateView {
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;
+
+impl std::fmt::Debug for PluginView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginView")
+            .field("name", &self.name)
+            .field("r#type", &self.r#type)
+            .field("loader", &self.loader)
+            .field("active", &self.active)
+            .field("target", &self.target)
+            .field("file", &self.file)
+            .field("archive_sha256", &self.archive_sha256)
+            .field("has_schema", &self.has_schema)
+            .field("version", &self.version)
+            .field("publisher", &self.publisher)
+            .field("interface_version", &self.interface_version)
+            .field("trust", &self.trust)
+            .field("valid", &self.valid)
+            .field("error", &self.error)
+            .field("schema_url", &"<redacted>")
+            .field("configuration", &self.configuration)
+            .field("schema_error", &self.schema_error)
+            .finish()
+    }
+}

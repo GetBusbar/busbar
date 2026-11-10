@@ -17,7 +17,7 @@ use busbar_contract::abi::mechanism::lifecycle::slot as life;
 use busbar_contract::abi::mechanism::route::Route;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::sdk::hook::{configure_checkpoint, ConfigureCheckpoint};
-use busbar_contract::conn::DeclaredConns;
+use busbar_contract::conn::admissions::AdmissionAuthority;
 use busbar_contract::hook_calls::{Answered, HookAxis, HookCalls, Pending, Probed};
 
 use crate::boot::{Candidate, Origin};
@@ -206,7 +206,6 @@ struct Inner {
     dispatcher: Arc<Dispatcher>,
     rebind: Rebind,
 
-    // settings-leak-lint: allow — NON-PROJECTION engine type: the instance's own settings bytes,
     settings: zeroize::Zeroizing<Vec<u8>>,
 
     configured: Mutex<Configuration>,
@@ -1008,17 +1007,25 @@ impl HookCalls for HookInstance {
     fn configure(
         &self,
         name: &str,
-        settings: &str,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
         version: u64,
         budget: Duration,
     ) -> Pending<Result<(), String>> {
         let inner = Arc::clone(&self.inner);
-        let owned: Pushed = Arc::new((
-            name.to_string(),
-            zeroize::Zeroizing::new(settings.as_bytes().to_vec()),
-            version,
-        ));
+        let encoded = settings.encode().map_err(|error| error.to_string());
+        let owned = encoded.and_then(|encoded| {
+            let seal = inner
+                .dispatcher
+                .seal()
+                .ok_or("hook configure requires the host settings seal")?;
+            Ok(Arc::new((
+                name.to_string(),
+                zeroize::Zeroizing::new(encoded.expose(seal).clone()),
+                version,
+            )))
+        });
         Box::pin(async move {
+            let owned: Pushed = owned?;
             let lent = Arc::clone(&owned);
             let acked = Arc::clone(&owned);
             let make = move || {
@@ -1183,7 +1190,7 @@ pub struct HookRows {
 
     logs: Option<PluginLogConfig>,
 
-    conns: Option<fn() -> Arc<dyn DeclaredConns>>,
+    conns: Option<fn() -> AdmissionAuthority>,
 }
 
 impl std::fmt::Debug for HookRows {
@@ -1264,7 +1271,7 @@ impl HookRows {
     }
 
     #[must_use]
-    pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
+    pub fn with_conns(mut self, conns: fn() -> AdmissionAuthority) -> Self {
         self.conns = Some(conns);
         self
     }
@@ -1302,7 +1309,7 @@ impl HookAxis for HookRows {
         &self,
         module: &str,
         instance: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Vec<Route>, String> {
         let Some(candidate) = self.find(module) else {
             return Ok(Vec::new());
@@ -1326,13 +1333,22 @@ impl HookAxis for HookRows {
                     conns: ConnTable::Probe,
                 })
                 .map_err(refused)?;
-            let text = zeroize::Zeroizing::new(settings.to_string());
-            validate(&plugin, text.as_bytes())?;
+            let text = settings.encode().map_err(|error| error.to_string())?;
+            let seal = self
+                .dispatcher
+                .seal()
+                .ok_or("hook validation requires the host settings seal")?;
+            validate(&plugin, text.expose(seal))?;
         }
         Ok(routes)
     }
 
-    fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed> {
+    fn probe(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
+    ) -> Option<Probed> {
         let c = self.find(module)?;
 
         let p = match Self::bind(
@@ -1348,7 +1364,15 @@ impl HookAxis for HookRows {
         let facts = p
             .context::<HookContext>()
             .map(|context| context.facts.clone());
-        let problems = match validate(&p, settings.to_string().as_bytes()) {
+        let encoded = settings.encode().map_err(|error| error.to_string());
+        let validated = encoded.and_then(|text| {
+            let seal = self
+                .dispatcher
+                .seal()
+                .ok_or("hook probe requires the host settings seal")?;
+            validate(&p, text.expose(seal))
+        });
+        let problems = match validated {
             Ok(()) => Vec::new(),
             Err(words) => words.lines().map(str::to_string).collect(),
         };
@@ -1359,7 +1383,7 @@ impl HookAxis for HookRows {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
         _budget: Duration,
     ) -> Result<Arc<dyn HookCalls>, String> {
         let c = self
@@ -1380,11 +1404,15 @@ impl HookAxis for HookRows {
             let sink = sink(label.as_str())?;
             move || Self::bind(&c, &dispatcher, &label, Arc::clone(&sink), conns.clone())
         };
-        let text = settings.to_string();
+        let text = settings.encode().map_err(|error| error.to_string())?;
+        let seal = self
+            .dispatcher
+            .seal()
+            .ok_or("hook opening requires the host settings seal")?;
         let opened = HookInstance::open_declaring(
             plugin,
             Arc::clone(&self.dispatcher),
-            text.as_bytes(),
+            text.expose(seal),
             c_orders,
             rebind,
         )?;

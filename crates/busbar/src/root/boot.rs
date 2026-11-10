@@ -585,7 +585,7 @@ pub fn configured_root_binds(
             listen: &cfg.listen,
             admin_listen: &cfg.admin_listen,
         },
-    );
+    )?;
     for (setting, addr) in [("listen", &cfg.listen), ("admin_listen", &cfg.admin_listen)] {
         if !binds.iter().any(|bind| bind.at == setting) {
             return Err(format!(
@@ -622,43 +622,6 @@ fn listener_projection(
     sections: &std::collections::BTreeMap<&'static str, serde_yaml::Value>,
     root: Vec<InboundBind>,
 ) -> Result<ListenerNeeds, String> {
-    use serde_json::{Map, Value};
-    fn insert_path(map: &mut Map<String, Value>, path: &[&str], value: Value) {
-        if let Some((first, rest)) = path.split_first() {
-            if rest.is_empty() {
-                map.insert((*first).into(), value);
-            } else {
-                let next = map
-                    .entry((*first).to_string())
-                    .or_insert_with(|| Value::Object(Map::new()));
-                if let Some(next) = next.as_object_mut() {
-                    insert_path(next, rest, value);
-                }
-            }
-        }
-    }
-    fn settings(
-        candidate: &Candidate,
-        mut block: impl FnMut(&[&str]) -> Result<Option<Value>, String>,
-    ) -> Result<Value, String> {
-        let mut out = Map::new();
-        for need in &candidate.needs {
-            if need.direction != busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND {
-                continue;
-            }
-            let path: Vec<_> = need.target_from.split('.').collect();
-            if let Some(block) = block(&path)? {
-                insert_path(&mut out, &path, block);
-            }
-        }
-        Ok(Value::Object(out))
-    }
-    fn json_block(source: Option<&Map<String, Value>>, path: &[&str]) -> Option<Value> {
-        let (first, rest) = path.split_first()?;
-        rest.iter()
-            .try_fold(source?.get(*first)?, |value, part| value.get(*part))
-            .cloned()
-    }
     let mut uses = Uses::default();
     uses.roots.extend(sections.keys().map(|s| (*s).to_string()));
     uses.modules.extend(
@@ -672,61 +635,43 @@ fn listener_projection(
             .map(|(name, export)| (KindCode::Export, name.clone(), export.module.clone())),
     );
     let selected = select(&uses, &candidates);
-    let mut doc = Map::new();
-    for selection in &selected {
-        let candidate = &candidates[selection.candidate];
-        if !candidate
-            .needs
-            .iter()
-            .any(|n| n.direction == busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND)
-        {
-            continue;
-        }
-        let (root, settings) = match candidate.kind {
-            KindCode::Plane => (
-                None,
-                settings(candidate, |path| {
-                    let block = sections
-                        .get(selection.instance.as_str())
-                        .and_then(|source| {
-                            path.iter().try_fold(source, |value, part| value.get(*part))
-                        });
-                    block
-                        .map(serde_json::to_value)
-                        .transpose()
-                        .map_err(|e| e.to_string())
-                })?,
-            ),
-            KindCode::Hook => (
-                Some("hooks"),
-                settings(candidate, |path| {
-                    Ok(json_block(
-                        hooks.get(&selection.instance).map(|hook| &hook.settings),
-                        path,
-                    ))
-                })?,
-            ),
-            KindCode::Export => (
-                Some("export"),
-                settings(candidate, |path| {
-                    Ok(json_block(
-                        exports
-                            .get(&selection.instance)
-                            .map(|export| &export.settings),
-                        path,
-                    ))
-                })?,
-            ),
-            _ => continue,
-        };
-        if let Some(root) = root {
-            insert_path(&mut doc, &[root, &selection.instance, "settings"], settings);
-        } else {
-            doc.insert(selection.instance.clone(), settings);
-        }
-    }
-    let doc = Value::Object(doc);
-    listener_needs(&doc, &candidates, &selected, root)
+    listener_needs_from(
+        &candidates,
+        &selected,
+        root,
+        false,
+        |candidate, instance| {
+            let (settings, base) = match candidate.kind {
+                KindCode::Plane => {
+                    let settings = sections
+                        .get(instance)
+                        .map(|source| {
+                            serde::Deserialize::deserialize(source.clone())
+                                .map_err(|_| format!("{instance}: settings must be an object"))
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    (settings, instance.to_owned())
+                }
+                KindCode::Hook => (
+                    hooks
+                        .get(instance)
+                        .map(|hook| hook.settings.clone())
+                        .unwrap_or_default(),
+                    format!("hooks.{instance}.settings"),
+                ),
+                KindCode::Export => (
+                    exports
+                        .get(instance)
+                        .map(|export| export.settings.clone())
+                        .unwrap_or_default(),
+                    format!("export.{instance}.settings"),
+                ),
+                _ => return Err(format!("{instance}: unsupported inbound kind")),
+            };
+            Ok((settings, base))
+        },
+    )
 }
 
 pub fn listener_needs(
@@ -735,148 +680,125 @@ pub fn listener_needs(
     selected: &[Selected],
     root: Vec<InboundBind>,
 ) -> Result<ListenerNeeds, String> {
-    use busbar_contract::abi::host::conn::connector::{DIRECTION_INBOUND, DIRECTION_OUTBOUND};
+    listener_needs_from(
+        candidates,
+        selected,
+        root,
+        doc.get("listen").is_some() || doc.get("tls").is_some_and(|v| !v.is_null()),
+        |candidate, instance| {
+            Ok(listener_settings(doc, candidate.kind, instance)?
+                .unwrap_or_else(|| (Default::default(), instance.to_owned())))
+        },
+    )
+}
+
+fn listener_needs_from(
+    candidates: &[Candidate],
+    selected: &[Selected],
+    root: Vec<InboundBind>,
+    root_required: bool,
+    mut settings: impl FnMut(
+        &Candidate,
+        &str,
+    )
+        -> Result<(busbar_contract::plugin_settings::Settings, String), String>,
+) -> Result<ListenerNeeds, String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    let seal = busbar_kernel::seal::acquire();
     let mut binds = root;
     let mut shared = Vec::new();
     for selection in selected {
-        let candidate = &candidates[selection.candidate];
-        let mut physical = candidate.clone();
-        for (index, need) in candidate.needs.iter().enumerate() {
-            if need.direction != DIRECTION_INBOUND {
-                continue;
-            }
-            if !matches!(
-                candidate.kind,
-                KindCode::Plane | KindCode::Hook | KindCode::Export
-            ) {
-                return Err(format!(
-                    "{}: {:?} inbound need {index} has no SERVE consumer",
-                    selection.instance, candidate.kind
-                ));
-            }
-            let settings = match candidate.kind {
-                KindCode::Plane => doc.get(&selection.instance),
-                KindCode::Hook => doc
-                    .get("hooks")
-                    .and_then(|v| v.get(&selection.instance))
-                    .and_then(|v| v.get("settings")),
-                KindCode::Export => doc
-                    .get("export")
-                    .and_then(|v| v.get(&selection.instance))
-                    .and_then(|v| v.get("settings")),
-                _ => None,
-            };
-            let inherit_data_listener = need.target_from == "listen"
-                || candidate.kind == KindCode::Plane && need.target_from == "ingress";
-            if inherit_data_listener && settings.and_then(|v| v.get(&need.target_from)).is_none() {
-                let bind = binds
-                    .iter()
-                    .find(|b| b.owner == BindOwner::Root && b.at == "listen")
-                    .ok_or_else(|| {
-                        format!(
-                            "{}: inbound need {index} names an unavailable root listen bind",
-                            selection.instance
-                        )
-                    })?;
-                shared.push(ListenerNeed {
-                    module: candidate.name.clone(),
-                    instance: if candidate.kind == KindCode::Plane {
-                        candidate.name.clone()
-                    } else {
-                        selection.instance.clone()
-                    },
-                    kind: candidate.kind,
-                    need: u32::try_from(index)
-                        .map_err(|_| "inbound need index does not fit u32")?,
-                    transport: need.transport.clone(),
-                    auth: need.auth.clone(),
-                    at: bind.at.clone(),
-                });
-                physical.needs[index].direction = DIRECTION_OUTBOUND;
-            }
+        let candidate = candidates
+            .get(selection.candidate)
+            .ok_or_else(|| format!("{}: no such candidate", selection.instance))?;
+        if !candidate
+            .needs
+            .iter()
+            .any(|need| need.direction == DIRECTION_INBOUND)
+        {
+            continue;
         }
-
-        for index in 0..physical.needs.len() {
-            if physical.needs[index].direction != DIRECTION_INBOUND {
-                continue;
-            }
-            let mut one = physical.clone();
-            for (other, need) in one.needs.iter_mut().enumerate() {
-                if other != index {
-                    need.direction = DIRECTION_OUTBOUND;
-                }
-            }
-            let mut parsed = inbound(
-                doc,
-                &[one],
-                &[Selected {
-                    candidate: 0,
-                    instance: selection.instance.clone(),
-                }],
-                Vec::new(),
-            )?;
-            let mut bind = parsed.pop().ok_or("inbound declaration produced no bind")?;
-            let declared = &candidate.needs[index];
-            let settings = match candidate.kind {
-                KindCode::Plane => doc.get(&selection.instance),
-                KindCode::Hook => doc
-                    .get("hooks")
-                    .and_then(|v| v.get(&selection.instance))
-                    .and_then(|v| v.get("settings")),
-                KindCode::Export => doc
-                    .get("export")
-                    .and_then(|v| v.get(&selection.instance))
-                    .and_then(|v| v.get("settings")),
-                _ => None,
+        if !matches!(
+            candidate.kind,
+            KindCode::Plane | KindCode::Hook | KindCode::Export
+        ) {
+            return Err(format!(
+                "{}: {:?} inbound needs have no SERVE consumer",
+                selection.instance, candidate.kind
+            ));
+        }
+        let (settings, base) = settings(candidate, &selection.instance)?;
+        let claims = busbar_contract::conn::inbound::admit(&seal, &settings, &candidate.needs)
+            .map_err(|why| format!("{base}.{why}"))?;
+        for claim in claims {
+            let declared = &candidate.needs[claim.need as usize];
+            let instance = if candidate.kind == KindCode::Plane {
+                &candidate.name
+            } else {
+                &selection.instance
             };
-            let block = settings.and_then(|settings| {
-                declared
-                    .target_from
-                    .split('.')
-                    .try_fold(settings, |v, key| v.get(key))
-            });
-            let collision = binds.iter().find(|old| {
-                bind.listen.port() != 0
-                    && old.listen.port() == bind.listen.port()
-                    && (old.listen.ip() == bind.listen.ip()
-                        || old.listen.ip().is_unspecified()
-                        || bind.listen.ip().is_unspecified())
-            });
-            let at = if let Some(old) = collision {
-                if old.at == "admin_listen"
-                    || old.listen != bind.listen
-                    || (old.owner != BindOwner::Root
-                        || block.is_some_and(|b| b.get("tls").is_some()))
-                        && old.tls != bind.tls
-                    || (old.owner != BindOwner::Root
-                        || block.is_some_and(|b| b.get("max_conns").is_some()))
-                        && old.max_conns != bind.max_conns
-                {
+            let at = if let Some(binding) = claim.binding {
+                let bind = InboundBind {
+                    owner: BindOwner::Need {
+                        instance: instance.clone(),
+                        kind: candidate.kind,
+                        need: claim.need,
+                    },
+                    transport: declared.transport.clone(),
+                    at: format!("{base}.{}", claim.path),
+                    listen: binding.listen,
+                    tls: binding.tls,
+                    max_conns: binding.max_conns,
+                };
+                let collision = binds.iter().find(|old| {
+                    bind.listen.port() != 0
+                        && old.listen.port() == bind.listen.port()
+                        && (old.listen.ip() == bind.listen.ip()
+                            || old.listen.ip().is_unspecified()
+                            || bind.listen.ip().is_unspecified())
+                });
+                if let Some(old) = collision {
+                    if old.at == "admin_listen"
+                        || old.listen != bind.listen
+                        || (old.owner != BindOwner::Root || binding.tls_explicit)
+                            && old.tls != bind.tls
+                        || (old.owner != BindOwner::Root || binding.max_conns_explicit)
+                            && old.max_conns != bind.max_conns
+                    {
+                        return Err(format!("{}: inbound declaration is incompatible with physical listener {}; configure a different listen address or matching TLS and connection limits", bind.at, old.at));
+                    }
+                    old.at.clone()
+                } else {
+                    let at = bind.at.clone();
+                    binds.push(bind);
+                    at
+                }
+            } else {
+                let inherits = declared.target_from == "listen"
+                    || candidate.kind == KindCode::Plane && declared.target_from == "ingress";
+                if !inherits {
                     return Err(format!(
-                        "{}: inbound declaration is incompatible with physical listener {}",
-                        bind.at, old.at
+                        "{base}.{}: not set; an inbound listener needs `listen`",
+                        claim.path
                     ));
                 }
-                old.at.clone()
-            } else {
-                if candidate.kind == KindCode::Plane {
-                    if let BindOwner::Need { instance, .. } = &mut bind.owner {
-                        *instance = candidate.name.clone();
-                    }
-                }
-                let at = bind.at.clone();
-                binds.push(bind);
-                at
+                binds
+                    .iter()
+                    .find(|bind| bind.owner == BindOwner::Root && bind.at == "listen")
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: inbound need {} names an unavailable root listen bind",
+                            selection.instance, claim.need
+                        )
+                    })?
+                    .at
+                    .clone()
             };
             shared.push(ListenerNeed {
                 module: candidate.name.clone(),
-                instance: if candidate.kind == KindCode::Plane {
-                    candidate.name.clone()
-                } else {
-                    selection.instance.clone()
-                },
+                instance: instance.clone(),
                 kind: candidate.kind,
-                need: u32::try_from(index).map_err(|_| "inbound need index does not fit u32")?,
+                need: claim.need,
                 transport: declared.transport.clone(),
                 auth: declared.auth.clone(),
                 at,
@@ -884,7 +806,7 @@ pub fn listener_needs(
         }
     }
     Ok(ListenerNeeds {
-        root_required: doc.get("listen").is_some() || doc.get("tls").is_some_and(|v| !v.is_null()),
+        root_required,
         binds,
         needs: shared,
     })
@@ -970,7 +892,7 @@ pub fn validate(
         || doc.get("listen").is_some()
         || doc.get("tls").is_some_and(|v| !v.is_null())
         || root.listen != busbar_kernel::config::DEFAULT_LISTEN_ADDR;
-    let binds = root_binds(&doc, root);
+    let binds = root_binds(&doc, root)?;
     for (slot, address) in [("listen", root.listen), ("admin_listen", root.admin_listen)] {
         if !binds.iter().any(|bind| bind.at == slot) {
             return Err(format!(
@@ -1083,22 +1005,33 @@ pub struct RootListens<'a> {
 }
 
 #[must_use]
-pub fn root_binds(doc: &serde_json::Value, root: &RootListens<'_>) -> Vec<InboundBind> {
+pub fn root_binds(
+    doc: &serde_json::Value,
+    root: &RootListens<'_>,
+) -> Result<Vec<InboundBind>, String> {
     [
         ("listen", root.listen, "tls"),
         ("admin_listen", root.admin_listen, "admin_tls"),
     ]
     .into_iter()
-    .filter_map(|(setting, addr, tls)| {
-        Some(InboundBind {
+    .map(|(setting, addr, tls)| {
+        Ok(InboundBind {
             owner: BindOwner::Root,
             transport: String::new(),
             at: setting.to_string(),
             listen: addr
                 .parse()
                 .ok()
-                .or_else(|| std::net::ToSocketAddrs::to_socket_addrs(addr).ok()?.next())?,
-            tls: doc.get(tls).filter(|v| !v.is_null()).cloned(),
+                .or_else(|| std::net::ToSocketAddrs::to_socket_addrs(addr).ok()?.next())
+                .ok_or_else(|| {
+                    format!("cannot bind listen address '{addr}': it resolves to no socket address")
+                })?,
+            tls: doc
+                .get(tls)
+                .filter(|v| !v.is_null())
+                .map(serde::Deserialize::deserialize)
+                .transpose()
+                .map_err(|_| format!("{tls}: invalid TLS configuration"))?,
             max_conns: u64::MAX,
         })
     })
@@ -1321,7 +1254,7 @@ pub fn load_door_planes<'s>(sections: impl IntoIterator<Item = &'s str>) {
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
         u32::MAX,
-        crate::root::loader::dispatch::ConnTable::Host(conns),
+        crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
     )
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");

@@ -23,7 +23,12 @@ async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_c
     for queued_ready in [false, true] {
         let (instance, binds) = checkpoint_instance(Way::Linked, "block_drop");
         instance
-            .configure("checkpoint", r#"{"reject_over_messages":2}"#, 2, BUDGET)
+            .configure(
+                "checkpoint",
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages":2}"#),
+                2,
+                BUDGET,
+            )
             .await
             .unwrap();
         let (entered, entered_rx) = std::sync::mpsc::channel();
@@ -32,8 +37,12 @@ async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_c
         *checkpoint_plugin::DROP_CONFIGURE.lock().unwrap() = Some((entered, released, committed));
         let (ready, ready_rx) = std::sync::mpsc::channel();
         let waker = Waker::from(Arc::new(ReplyReady(ready)));
-        let mut configure =
-            instance.configure("checkpoint", r#"{"reject_over_messages":1}"#, 3, BUDGET);
+        let mut configure = instance.configure(
+            "checkpoint",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+            3,
+            BUDGET,
+        );
         assert!(configure
             .as_mut()
             .poll(&mut Context::from_waker(&waker))
@@ -76,10 +85,20 @@ async fn a_configure_result_lost_before_or_after_ready_cannot_restore_an_older_c
 async fn dropping_an_unpolled_configure_keeps_the_known_checkpoint_recoverable() {
     let (instance, _) = checkpoint_instance(Way::Linked, "valid");
     instance
-        .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+        .configure(
+            "checkpoint",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+            2,
+            BUDGET,
+        )
         .await
         .unwrap();
-    drop(instance.configure("checkpoint", r#"{"reject_over_messages":8}"#, 3, BUDGET));
+    drop(instance.configure(
+        "checkpoint",
+        &crate::dispatch::test_settings_json(r#"{"reject_over_messages":8}"#),
+        3,
+        BUDGET,
+    ));
     regenerate(&instance);
     let answer = instance.decide(frame(2), BUDGET).await;
     assert!(matches!(answer, Answered::Answer {out, ..} if out.reject_status == REJECT_STATUS));
@@ -154,7 +173,12 @@ async fn a_detached_trial_panic_releases_the_trial_claim() {
 async fn a_configure_refused_at_the_full_cap_until_timeout_keeps_recovery_available() {
     let (instance, _) = checkpoint_instance(Way::Linked, "cap_timeout");
     instance
-        .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+        .configure(
+            "checkpoint",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+            2,
+            BUDGET,
+        )
         .await
         .unwrap();
     let plugin = match &*instance.inner.lock() {
@@ -183,7 +207,7 @@ async fn a_configure_refused_at_the_full_cap_until_timeout_keeps_recovery_availa
     assert!(instance
         .configure(
             "checkpoint",
-            r#"{"reject_over_messages":8}"#,
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":8}"#),
             3,
             Duration::from_millis(20)
         )

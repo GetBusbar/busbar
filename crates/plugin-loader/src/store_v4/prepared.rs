@@ -132,6 +132,19 @@ impl LoadedPrepared {
                         return Err(native::Error::SourceChanged);
                     }
                 }
+                if let Request::SourcePage {
+                    selector: native::SourceSelector::Interpret { reader, .. },
+                    ..
+                } = request
+                {
+                    let Some(native::Response::Inspected(inspection)) = state.inspected.as_deref()
+                    else {
+                        return Err(native::Error::Refused);
+                    };
+                    if inspection.state.reader() != Some(*reader) {
+                        return Err(native::Error::SourceChanged);
+                    }
+                }
                 if let Request::Finish {
                     activation_receipt, ..
                 } = request

@@ -89,7 +89,12 @@ async fn complete_configure_checkpoints_survive_partial_pushes_through_both_door
         let initial = instance.decide(frame(2), BUDGET).await;
         assert!(matches!(initial, Answered::Answer { out, .. } if out.reject_status == 0));
         instance
-            .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+            .configure(
+                "checkpoint",
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+                2,
+                BUDGET,
+            )
             .await
             .unwrap();
         for (settings, version) in [
@@ -98,7 +103,12 @@ async fn complete_configure_checkpoints_survive_partial_pushes_through_both_door
             (r#"{"reject_over_messages":8}"#, 1),
         ] {
             instance
-                .configure("checkpoint", settings, version, BUDGET)
+                .configure(
+                    "checkpoint",
+                    &crate::dispatch::test_settings_json(settings),
+                    version,
+                    BUDGET,
+                )
                 .await
                 .unwrap();
             let live = instance.decide(frame(2), BUDGET).await;
@@ -110,7 +120,7 @@ async fn complete_configure_checkpoints_survive_partial_pushes_through_both_door
         assert!(instance
             .configure(
                 "checkpoint",
-                r#"{"reject_over_messages":"invalid"}"#,
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages":"invalid"}"#),
                 4,
                 BUDGET
             )
@@ -136,7 +146,12 @@ async fn missing_or_malformed_checkpoints_never_reopen_silently_stale_through_bo
         for mode in ["none", "malformed"] {
             let (instance, _) = checkpoint_instance(way, mode);
             let ack = instance
-                .configure("checkpoint", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+                .configure(
+                    "checkpoint",
+                    &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+                    2,
+                    BUDGET,
+                )
                 .await;
             assert_eq!(ack.is_ok(), mode == "none");
             let live = instance.decide(frame(2), BUDGET).await;
@@ -239,7 +254,12 @@ async fn an_ack_racing_the_replay_is_restored_before_the_trial_is_published() {
     use busbar_contract::hook_calls::HookCalls;
     let (instance, _) = checkpoint_instance(Way::Linked, "block_replay");
     instance
-        .configure("checkpoint", r#"{"reject_over_messages":2}"#, 2, BUDGET)
+        .configure(
+            "checkpoint",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages":2}"#),
+            2,
+            BUDGET,
+        )
         .await
         .unwrap();
     let original = match &*instance.inner.lock() {
@@ -579,7 +599,7 @@ mod sdk_refresh {
             );
             let peer = Arc::new(Peer::default());
             let mut binding = bind(&dispatcher);
-            binding.conns = ConnTable::Host(peer.clone());
+            binding.conns = ConnTable::Host(crate::dispatch::test_admissions(peer.clone()));
             let plugin = load_linked::<HookKind>(&LinkedRow::of(door).unwrap(), binding).unwrap();
             let loaded = Self {
                 scope,
@@ -1335,27 +1355,59 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
             })
             .collect(),
         };
-        let bad = axis.probe(name, "gate", &json!({"policy": 17})).unwrap();
+        let bad = axis
+            .probe(
+                name,
+                "gate",
+                &crate::dispatch::test_settings(&json!({"policy": 17})),
+            )
+            .unwrap();
         assert_eq!(bad.0, Some(facts.clone()));
         assert!(
             bad.1.iter().any(|e| e.contains("policy must be a string")),
             "{bad:?}"
         );
         let good = axis
-            .probe(name, "gate", &json!({"policy": "cheapest"}))
+            .probe(
+                name,
+                "gate",
+                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+            )
             .unwrap();
         assert_eq!(good, (Some(facts), Vec::new()));
-        assert_eq!(axis.probe("nobody", "gate", &json!({})), None);
+        assert_eq!(
+            axis.probe(
+                "nobody",
+                "gate",
+                &crate::dispatch::test_settings(&json!({}))
+            ),
+            None
+        );
         assert!(axis
-            .open(name, "bad", &json!({"policy": "unknown"}), BUDGET)
+            .open(
+                name,
+                "bad",
+                &crate::dispatch::test_settings(&json!({"policy": "unknown"})),
+                BUDGET
+            )
             .is_err());
         let missing = axis
-            .open("nobody", "missing", &json!({}), BUDGET)
+            .open(
+                "nobody",
+                "missing",
+                &crate::dispatch::test_settings(&json!({})),
+                BUDGET,
+            )
             .err()
             .unwrap();
         assert!(missing.contains("nobody"), "{missing}");
         let calls = axis
-            .open(name, "hooks.gate", &json!({"policy": "cheapest"}), BUDGET)
+            .open(
+                name,
+                "hooks.gate",
+                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                BUDGET,
+            )
             .unwrap();
         assert_eq!(calls.name(), name);
         let mut lines = vec![format!("bad: {bad:?}"), format!("good: {good:?}"), missing];
@@ -1443,11 +1495,21 @@ async fn a_linked_and_a_dropped_in_hook_open_through_the_axis_and_decide_identic
         assert_eq!(status, b"{}");
         lines.push(format!("status: {status:?}"));
         assert!(calls
-            .configure("gate", r#"{"policy":"unknown"}"#, 1, BUDGET)
+            .configure(
+                "gate",
+                &crate::dispatch::test_settings_json(r#"{"policy":"unknown"}"#),
+                1,
+                BUDGET
+            )
             .await
             .is_err());
         let configured = calls
-            .configure("gate", r#"{"policy":"fastest"}"#, 2, BUDGET)
+            .configure(
+                "gate",
+                &crate::dispatch::test_settings_json(r#"{"policy":"fastest"}"#),
+                2,
+                BUDGET,
+            )
             .await;
         assert!(configured.is_ok(), "{configured:?}");
         lines.push(format!("configure: {configured:?}"));
@@ -1469,7 +1531,7 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
             .open(
                 BROKEN_NAME,
                 "hooks.gate",
-                &json!({"reject_over_messages": 3}),
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
                 BUDGET,
             )
             .expect("the broken hook still opens");
@@ -1483,7 +1545,12 @@ async fn a_hook_that_breaks_the_kind_contract_is_broken_through_both_doors() {
     );
 
     let refused = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked)
-        .open(BROKEN_NAME, "hooks.gate", &json!({}), BUDGET)
+        .open(
+            BROKEN_NAME,
+            "hooks.gate",
+            &crate::dispatch::test_settings(&json!({})),
+            BUDGET,
+        )
         .err();
     assert!(
         refused.is_some_and(|e| e.contains(BROKEN_NAME)),
@@ -1504,7 +1571,7 @@ async fn a_panicking_hook_is_broken_through_the_axis_never_a_verdict() {
         .open(
             PANICKING_NAME,
             "hooks.gate",
-            &json!({"reject_over_messages": 3}),
+            &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             BUDGET,
         )
         .expect("the panicking hook opens: only its decide panics");
@@ -1534,7 +1601,11 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
 fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
     let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked);
     assert_eq!(
-        untailed.probe(UNTAILED_NAME, "gate", &json!({"reject_over_messages": 3})),
+        untailed.probe(
+            UNTAILED_NAME,
+            "gate",
+            &crate::dispatch::test_settings(&json!({"reject_over_messages": 3}))
+        ),
         Some((None, Vec::new())),
         "an untailed hook states no facts"
     );
@@ -1542,7 +1613,7 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
         .open(
             UNTAILED_NAME,
             "hooks.gate",
-            &json!({"reject_over_messages": 3}),
+            &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             BUDGET,
         )
         .err()
@@ -1554,7 +1625,7 @@ fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
     let tailed = rows(hook_door_plugin::conforming::door, "hook_door", Way::Linked).open(
         NAME,
         "hooks.gate",
-        &json!({"reject_over_messages": 3}),
+        &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
         BUDGET,
     );
     assert!(tailed.is_ok(), "the tailed door opens");
@@ -1626,7 +1697,7 @@ async fn a_slow_hook_is_cut_off_at_its_budget_through_the_axis() {
         .open(
             NAME,
             "hooks.slow",
-            &json!({"reject_over_messages": 3, "sleep_ms": 2_000}),
+            &crate::dispatch::test_settings(&json!({"reject_over_messages": 3, "sleep_ms": 2_000})),
             BUDGET,
         )
         .expect("the slow gate opens");
@@ -1656,7 +1727,9 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
             .open(
                 hook_door_plugin::CONFIGURABLE_NAME,
                 "hooks.wedged-race",
-                &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
+                &crate::dispatch::test_settings(
+                    &json!({"reject_over_messages": 3, "sleep_ms": 1_501}),
+                ),
                 BUDGET,
             )
             .expect("the wedged gate opens");
@@ -1677,7 +1750,12 @@ async fn a_call_refused_at_the_cap_as_the_watchdog_faults_the_instance_waits_for
 
         let (ready, detail) = if configuring {
             let answer = wedged
-                .configure("wedged-race", r#"{"reject_over_messages":1}"#, 2, BUDGET)
+                .configure(
+                    "wedged-race",
+                    &crate::dispatch::test_settings_json(r#"{"reject_over_messages":1}"#),
+                    2,
+                    BUDGET,
+                )
                 .await;
             (answer.is_ok(), format!("{answer:?}"))
         } else {
@@ -1722,7 +1800,9 @@ async fn the_inflight_cap_saturates_and_fails_on_the_caller_deadline_through_the
         .open(
             NAME,
             "hooks.wedged",
-            &json!({"reject_over_messages": 3, "hold_for_cap_test": true}),
+            &crate::dispatch::test_settings(
+                &json!({"reject_over_messages": 3, "hold_for_cap_test": true}),
+            ),
             BUDGET,
         )
         .expect("the controlled gate opens");
@@ -1806,7 +1886,15 @@ fn a_1_5_5_hook_name_opens_the_1_6_0_hook_both_ways() {
     const OLD: &str = "busbar-webrequest";
     let name = ranking_name();
     let settings = json!({"policy": "fastest"});
-    let opens = |rows: &HookRows| rows.open(OLD, "hooks.wr", &settings, BUDGET).is_ok();
+    let opens = |rows: &HookRows| {
+        rows.open(
+            OLD,
+            "hooks.wr",
+            &crate::dispatch::test_settings(&settings),
+            BUDGET,
+        )
+        .is_ok()
+    };
     let dispatcher = || {
         Arc::new(Dispatcher::new(
             DispatchConfig::default(),
@@ -2026,7 +2114,12 @@ async fn a_trial_keeps_the_settings_the_hook_acknowledged() {
     let rejects = |a: &Answered<busbar_contract::abi::hook::DecideOut>| matches!(a, Answered::Answer { out, .. } if out.reject_status == REJECT_STATUS);
     assert!(!rejects(&instance.decide(frame(2), BUDGET).await));
     instance
-        .configure("tuned", r#"{"reject_over_messages": 1}"#, 2, BUDGET)
+        .configure(
+            "tuned",
+            &crate::dispatch::test_settings_json(r#"{"reject_over_messages": 1}"#),
+            2,
+            BUDGET,
+        )
         .await
         .expect("the hook acknowledges version 2");
     let a = instance.decide(frame(2), BUDGET).await;
@@ -2085,7 +2178,12 @@ async fn a_configure_refusal_is_named_by_the_host() {
     .expect("the hook opens");
     assert_eq!(
         instance
-            .configure("tuned", r#"{"reject_over_messages": "x"}"#, 2, BUDGET)
+            .configure(
+                "tuned",
+                &crate::dispatch::test_settings_json(r#"{"reject_over_messages": "x"}"#),
+                2,
+                BUDGET
+            )
             .await,
         Err(format!(
             "hook '{}': settings: `reject_over_messages` must be a number",
@@ -2136,7 +2234,7 @@ async fn red_a_hook_that_declared_no_orders_is_refused_when_it_orders() {
         axis.open(
             &name,
             "hooks.gate",
-            &json!({"reject_over_messages": 3}),
+            &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             BUDGET,
         )
         .expect("the hook opens")
@@ -2172,7 +2270,7 @@ async fn an_unrepresentable_call_budget_is_broken_without_poisoning_either_hook_
             .open(
                 &ranking_name(),
                 "hooks.gate",
-                &json!({"policy":"fastest"}),
+                &crate::dispatch::test_settings(&json!({"policy":"fastest"})),
                 BUDGET,
             )
             .unwrap();

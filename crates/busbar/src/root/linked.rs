@@ -323,7 +323,7 @@ fn store_axis() -> std::sync::Arc<dyn busbar_contract::persistence::axis::Persis
     std::sync::Arc::new(crate::root::loader::store_v4::DoorPersistenceAxis {
         dispatcher: crate::root::dispatch::dispatcher(),
         logs: crate::root::boot::plugin_logs().clone(),
-        conns: crate::root::loader::dispatch::ConnTable::Host(conns),
+        conns: crate::root::loader::dispatch::ConnTable::Host(crate::root::connector::admit(conns)),
         // Resource admission for one crossing, not a persisted-record or transaction limit.
         // Includes descriptor overhead above the existing raw conditional carrier.
         limits: crate::root::loader::store_v4::Limits {
@@ -373,9 +373,11 @@ fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
     disk_lane().run(job).map_err(str::to_string)
 }
 
-fn conns() -> Option<std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>> {
+fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
     crate::root::connector::installed().map(|one| {
-        std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
+        crate::root::connector::admit(
+            std::sync::Arc::clone(one) as std::sync::Arc<dyn busbar_contract::conn::DeclaredConns>
+        )
     })
 }
 

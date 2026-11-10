@@ -148,7 +148,11 @@ pub trait ExportCalls: Send + Sync {
     }
 
     /// Apply settings to this instance. A refusal retains its current settings and bindings.
-    fn refresh(&self, settings: &serde_json::Value, generation: u64) -> Result<(), String> {
+    fn refresh(
+        &self,
+        settings: &crate::plugin_settings::ResolvedSettings,
+        generation: u64,
+    ) -> Result<(), String> {
         let _ = (settings, generation);
         Err("this export instance does not support refresh".into())
     }
@@ -256,14 +260,19 @@ pub fn recorder_protocol(extensions: &[u8]) -> Result<bool, String> {
 /// THE EXPORT AXIS, as the kernel asks it: every `kind: export` row the composition root admitted
 pub trait ExportAxis: Send + Sync {
     /// `None` when no `kind: export` row names `module`; else what [`Probed`] states, asked while
-    fn probe(&self, module: &str, instance: &str, settings: &serde_json::Value) -> Option<Probed>;
+    fn probe(
+        &self,
+        module: &str,
+        instance: &str,
+        settings: &crate::plugin_settings::ResolvedSettings,
+    ) -> Option<Probed>;
 
     /// The sink's own checks across every configured `instances` of `module`, at `phase`
     fn check(
         &self,
         module: &str,
         phase: u32,
-        instances: &[(String, &serde_json::Value)],
+        instances: &[(String, &crate::plugin_settings::ResolvedSettings)],
     ) -> Option<Vec<String>>;
 
     /// OPEN one instance of `module` with `settings`, under the host's instance `label` (unique per
@@ -271,7 +280,7 @@ pub trait ExportAxis: Send + Sync {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &PreparedExport,
     ) -> Result<std::sync::Arc<dyn ExportCalls>, String>;
 
     /// Whether `module` names a row this build LINKS (as opposed to one dropped in).
@@ -325,3 +334,6 @@ pub trait ExportAxis: Send + Sync {
 #[cfg(test)]
 #[path = "tests/export_calls_tests.rs"]
 mod tests;
+
+mod opening;
+pub use opening::{ExportOpening, PreparedExport};

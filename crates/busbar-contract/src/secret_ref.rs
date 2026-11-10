@@ -43,6 +43,8 @@ use std::fmt;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
+pub mod context;
+
 /// The built-in `env` secret module name (settings: `{ key: <ENV_VAR> }`).
 pub const SECRET_MODULE_ENV: &str = "env";
 /// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
@@ -71,7 +73,6 @@ pub struct SecretRef {
     pub module: String,
 
     /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
-    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -129,32 +130,42 @@ impl SecretRef {
     /// THE VALUE THIS REFERENCE NAMES, resolved through `resolve`: a template's text with each
     pub fn resolve_template(
         &self,
-        resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
-    ) -> Result<String, String> {
+        resolve: &dyn Fn(&SecretRef) -> Result<crate::Secret<String>, String>,
+    ) -> Result<crate::Secret<String>, String> {
         if self.module != SECRET_MODULE_TEMPLATE {
             return resolve(self);
         }
         let text = self
             .template_text()
             .ok_or_else(|| "a template reference carries no text".to_string())?;
-        let mut out = String::with_capacity(text.len());
+        // Each resolved fragment is guarded before the next resolver can fail. Compute final
+        // capacity before copying any material, so concatenation cannot leave realloc residue.
+        let mut parts = Vec::new();
         let mut rest = text;
         while let Some(at) = rest.find("${") {
-            out.push_str(&rest[..at]);
+            parts.push(crate::Secret::new(rest[..at].to_owned()));
             let after = &rest[at + 2..];
             match after.find('}') {
                 Some(end) if end > 0 => {
-                    out.push_str(&resolve(&SecretRef::env(&after[..end]))?);
+                    parts.push(resolve(&SecretRef::env(&after[..end]))?);
                     rest = &after[end + 1..];
                 }
                 _ => {
-                    out.push_str("${");
+                    parts.push(crate::Secret::new("${".to_owned()));
                     rest = after;
                 }
             }
         }
-        out.push_str(rest);
-        Ok(out)
+        parts.push(crate::Secret::new(rest.to_owned()));
+        let total = parts
+            .iter()
+            .try_fold(0usize, |n, p| n.checked_add(p.0.len()))
+            .ok_or_else(|| "resolved template is too large".to_owned())?;
+        let mut out = zeroize::Zeroizing::new(String::with_capacity(total));
+        for part in &parts {
+            out.push_str(&part.0);
+        }
+        Ok(crate::Secret::new(std::mem::take(&mut *out)))
     }
 
     /// The `none` reference: an EXPLICIT declaration that there is no credential. See
@@ -234,6 +245,13 @@ impl<'de> Deserialize<'de> for SecretRef {
                     "a secret reference map: { module: <secret-module>, settings: {…} }, \
                      { env: <VAR> }, { file: <path> }, or the bare scalar `none`",
                 )
+            }
+
+            fn visit_newtype_struct<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<SecretRef, D::Error> {
+                deserializer.deserialize_any(self)
             }
 
             fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
@@ -393,7 +411,7 @@ impl<'de> Deserialize<'de> for SecretRef {
             }
         }
 
-        deserializer.deserialize_any(RefVisitor)
+        deserializer.deserialize_newtype_struct(context::REFERENCE, RefVisitor)
     }
 }
 
@@ -450,6 +468,19 @@ pub struct Sugar {
     /// What the value names, in the refusal of a reference that does not set it
     /// (`REWRITE_SUGAR_NAMES`; `the <key>` when unstated).
     pub names: String,
+}
+
+impl Sugar {
+    /// Build the canonical reference named by this admitted owner's declaration.
+    pub fn reference(&self, value: impl Into<String>) -> SecretRef {
+        SecretRef {
+            module: self.plugin.clone(),
+            settings: serde_json::Map::from_iter([(
+                self.setting.clone(),
+                serde_json::Value::String(value.into()),
+            )]),
+        }
+    }
 }
 
 /// THE SUGARS THE LOADED STATEMENTS DECLARE, in word order: what the host reads secret references

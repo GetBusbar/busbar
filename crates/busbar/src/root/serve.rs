@@ -1660,53 +1660,51 @@ pub fn datagram_binds(
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
     let mut binds = Vec::new();
     for (instance, plugin) in doors {
-        binds.extend(need_binds(instance, &plugin.served(), sections)?);
+        binds.extend(need_binds(
+            instance,
+            plugin.served().section,
+            plugin.declared_needs(),
+            sections,
+        )?);
     }
     Ok(binds)
 }
 
 pub(crate) fn need_binds(
     instance: &str,
-    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    section_name: &str,
+    needs: &[busbar_contract::abi::mechanism::rendering::ReadNeed],
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
 ) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
-    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
-    let mut binds = Vec::new();
-    let Some(section) = sections.get(facts.section) else {
-        return Ok(binds);
+    let Some(section) = sections.get(section_name) else {
+        return Ok(Vec::new());
     };
-    for (i, ((direction, _), target)) in
-        facts.need_auths.iter().zip(&facts.need_targets).enumerate()
-    {
-        if *direction != DIRECTION_INBOUND || target.is_empty() {
-            continue;
-        }
-        let at = format!("{}.{target}", facts.section);
-        let Some(listen) = target
-            .split('.')
-            .try_fold(section, |v, k| v.get(k))
-            .and_then(|block| block.get("listen"))
-            .and_then(serde_yaml::Value::as_str)
-        else {
-            continue;
+    let settings: busbar_contract::plugin_settings::Settings =
+        serde::Deserialize::deserialize(section.clone())
+            .map_err(|_| format!("{section_name}: settings must be an object"))?;
+    let claims =
+        busbar_contract::conn::inbound::admit(&busbar_kernel::seal::acquire(), &settings, needs)
+            .map_err(|why| format!("{section_name}.{why}"))?;
+    let mut binds = Vec::new();
+    for claim in claims {
+        let at = format!("{section_name}.{}", claim.path);
+        let Some(binding) = claim.binding else {
+            if matches!(claim.path.as_str(), "listen" | "ingress") {
+                continue;
+            }
+            return Err(format!("{at}: not set; an inbound listener needs `listen`"));
         };
-        let listen: std::net::SocketAddr = listen
-            .parse()
-            .map_err(|_| format!("{at}.listen: `{listen}` is not an ip:port address"))?;
         binds.push(crate::root::loader::boot::InboundBind {
             owner: crate::root::loader::boot::BindOwner::Need {
                 instance: instance.to_string(),
                 kind: KindCode::Plane,
-                need: u32::try_from(i).unwrap_or(u32::MAX),
+                need: claim.need,
             },
-            transport: facts
-                .need_transports
-                .get(i)
-                .map_or_else(String::new, |t| (*t).to_string()),
+            transport: needs[claim.need as usize].transport.clone(),
             at,
-            listen,
-            tls: None,
-            max_conns: crate::root::loader::boot::DEFAULT_MAX_CONNS,
+            listen: binding.listen,
+            tls: binding.tls,
+            max_conns: binding.max_conns,
         });
     }
     Ok(binds)

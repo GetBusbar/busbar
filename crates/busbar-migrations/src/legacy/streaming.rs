@@ -142,8 +142,8 @@ mod tests {
             &self,
             _: [u8; 16],
             _: &Secret<Vec<u8>>,
-        ) -> Result<[u8; 32], crate::Error> {
-            Ok([7; 32])
+        ) -> Result<projection::InventoryDigest, crate::Error> {
+            Ok(projection::InventoryDigest([7; 32]))
         }
         fn visit(
             &self,

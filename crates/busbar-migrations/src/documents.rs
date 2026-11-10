@@ -143,7 +143,11 @@ impl StoreCheckpoints {
         let Some(locator) = first[2].as_ref() else {
             return Ok(None);
         };
-        let (migration, revision, digest) = decode_locator(locator, info.dataset, scope)?;
+        let DecodedLocator {
+            migration,
+            revision,
+            digest,
+        } = decode_locator(locator, info.dataset, scope)?;
         let current = values(
             backend.as_ref(),
             info,
@@ -510,7 +514,11 @@ impl StoreCheckpoints {
             self.budget,
         )?;
         let locator_id = if let Some(locator) = &observed[6] {
-            let (id, revision, digest) = decode_locator(locator, self.info.dataset, self.scope)?;
+            let DecodedLocator {
+                migration: id,
+                revision,
+                digest,
+            } = decode_locator(locator, self.info.dataset, self.scope)?;
             if id == migration {
                 let held = stored.as_ref().ok_or(Error::Corrupt)?;
                 if held.complete
@@ -716,11 +724,17 @@ fn decode_stored(
         complete,
     }))
 }
+/// Public locator metadata authenticated by the protected original envelope.
+struct DecodedLocator {
+    migration: Id,
+    revision: u64,
+    digest: [u8; 32],
+}
 fn decode_locator(
     locator: &Secret<Vec<u8>>,
     dataset: DatasetId,
     scope: [u8; 32],
-) -> Result<(Id, u64, [u8; 32]), Error> {
+) -> Result<DecodedLocator, Error> {
     let bytes = locator.expose(&crate::seal::lend());
     if bytes.len() != LOCATOR_BYTES
         || &bytes[..8] != LOCATOR_MAGIC
@@ -735,11 +749,11 @@ fn decode_locator(
     if revision == 0 {
         return Err(Error::Corrupt);
     }
-    Ok((
+    Ok(DecodedLocator {
         migration,
         revision,
-        bytes[80..112].try_into().map_err(|_| Error::Corrupt)?,
-    ))
+        digest: bytes[80..112].try_into().map_err(|_| Error::Corrupt)?,
+    })
 }
 fn same_stored(left: &Option<Stored>, right: &Option<Stored>) -> bool {
     match (left, right) {

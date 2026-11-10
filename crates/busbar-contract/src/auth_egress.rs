@@ -4,7 +4,7 @@
 //! Shared request-signing and credential-presentation descriptors.
 
 /// Per-request signing context. Most protocols' `auth_headers` ignore this; protocols that
-#[derive(Debug)]
+#[derive()]
 pub struct SigningContext<'a> {
     /// Upstream host (no scheme), e.g. `runtime.region-1.example.com`. Borrowed from the lane's
     pub host: &'a str,
@@ -107,5 +107,17 @@ impl EgressScheme {
             own: raw,
             passthrough: raw,
         }
+    }
+}
+
+impl<'a> std::fmt::Debug for SigningContext<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigningContext")
+            .field("host", &self.host)
+            .field("canonical_uri", &"<redacted>")
+            .field("body", &self.body)
+            .field("timestamp_epoch", &self.timestamp_epoch)
+            .field("upstream_creds", &self.upstream_creds)
+            .finish()
     }
 }

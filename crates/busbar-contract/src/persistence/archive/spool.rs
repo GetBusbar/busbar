@@ -5,7 +5,7 @@
 //! the random key exists only in memory, and the backing file is unnamed on Unix
 //! or delete-on-close on Windows. Restart reconstructs the source from its owner.
 
-use busbar_contract::abi::sdk::aead::{AesGcm, AES_256_KEY_LEN, GCM_NONCE_LEN, GCM_TAG_LEN};
+use crate::abi::sdk::aead::{AesGcm, AES_256_KEY_LEN, GCM_NONCE_LEN, GCM_TAG_LEN};
 use std::{
     fmt,
     fs::File,
@@ -67,6 +67,7 @@ pub struct SpoolWriter {
     index: u64,
     used: usize,
     next_nonce: u64,
+    storage_limit: u64,
     dirty: bool,
     poisoned: bool,
 }
@@ -79,6 +80,14 @@ impl SpoolWriter {
     /// Create private, process-local encrypted custody under the native temporary
     /// directory. No caller supplies a file path or persistent encryption key.
     pub fn new() -> io::Result<Self> {
+        Self::bounded(u64::MAX)
+    }
+    /// Create custody with an explicit maximum backing-file size, including
+    /// authentication framing and padding. Refuse before a write exceeds it.
+    pub fn bounded(storage_limit: u64) -> io::Result<Self> {
+        if storage_limit < FRAME as u64 {
+            return Err(exhausted());
+        }
         let mut seed = Zeroizing::new([0u8; AES_256_KEY_LEN]);
         getrandom::fill(seed.as_mut()).map_err(|_| failed())?;
         let cipher = AesGcm::new(seed.as_ref()).map_err(|_| failed())?;
@@ -98,6 +107,7 @@ impl SpoolWriter {
             index: 0,
             used: 0,
             next_nonce: 0,
+            storage_limit,
             dirty: false,
             poisoned: false,
         })
@@ -119,6 +129,12 @@ impl SpoolWriter {
         self.poisoned = true;
         let answer = (|| {
             let at = offset(self.index)?;
+            if at
+                .checked_add(FRAME as u64)
+                .is_none_or(|end| end > self.storage_limit)
+            {
+                return Err(exhausted());
+            }
             self.index
                 .checked_add(1)
                 .and_then(|count| offset(count).ok())
@@ -194,6 +210,11 @@ impl Write for SpoolWriter {
             .length
             .checked_add(count as u64)
             .ok_or_else(exhausted)?;
+        if offset(length.div_ceil(BLOCK as u64))? > self.storage_limit {
+            self.poisoned = true;
+            self.plain.as_mut_slice().zeroize();
+            return Err(exhausted());
+        }
         self.plain[USED + self.used..USED + self.used + count].copy_from_slice(&input[..count]);
         self.used += count;
         self.length = length;
@@ -231,6 +252,10 @@ impl fmt::Debug for SpoolReader {
     }
 }
 impl SpoolReader {
+    /// Exact encrypted backing-file bytes, including padding and authentication.
+    pub fn storage_bytes(&self) -> io::Result<u64> {
+        offset(self.blocks)
+    }
     fn validate_size(&self) -> io::Result<()> {
         if self.poisoned {
             return Err(failed());
@@ -529,6 +554,18 @@ mod tests {
         writer.finish().unwrap()
     }
 
+    #[test]
+    fn storage_limit_refuses_before_extra_bytes_and_retires_custody() {
+        assert!(SpoolWriter::bounded((FRAME - 1) as u64).is_err());
+        let mut writer = SpoolWriter::bounded(FRAME as u64).unwrap();
+        writer.write_all(&vec![7; BLOCK]).unwrap();
+        writer.flush().unwrap();
+        assert_eq!(writer.file.metadata().unwrap().len(), FRAME as u64);
+        assert!(writer.write_all(&[8]).is_err());
+        assert_eq!(writer.file.metadata().unwrap().len(), FRAME as u64);
+        assert!(writer.plain.iter().all(|byte| *byte == 0));
+        assert!(writer.finish().is_err());
+    }
     #[test]
     fn bounded_roundtrip_and_checked_logical_seeking() {
         fn send<T: Send>() {}

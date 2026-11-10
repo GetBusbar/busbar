@@ -41,7 +41,10 @@ pub struct NativeSnapshot {
     prepared: Arc<dyn native::PreparedStore>,
     source: native::SourceIdentity,
     snapshot: SnapshotEvidence,
+    source_digest: native::Digest,
+    interpretation: Option<crate::source_facts::View>,
 }
+mod interpretation;
 impl std::fmt::Debug for NativeSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeSnapshot")
@@ -314,6 +317,8 @@ impl NativeSnapshot {
                 content_digest: summary.digest,
                 coverage_digest: coverage.finish(),
             },
+            source_digest: source_digest.ok_or(Error::Corrupt)?,
+            interpretation: None,
         })
     }
     /// Actual native dataset with immutable complete artifact/catalogue identities.
@@ -367,6 +372,15 @@ impl NativeSnapshot {
     }
 }
 impl ArchiveRows for NativeSnapshot {
+    fn row_frame_bytes(&self, ordinal: u64) -> Result<usize, Error> {
+        self.archive.row_frame_bytes(ordinal).map_err(err)
+    }
+    fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        self.interpretation.as_ref()
+    }
+    fn row_table(&mut self, ordinal: u64) -> Result<u32, Error> {
+        self.archive.row_table(ordinal).map_err(err)
+    }
     fn header(&self) -> &Header {
         &self.header
     }
@@ -389,6 +403,15 @@ struct EffectiveRows<'a> {
     header: Header,
 }
 impl ArchiveRows for EffectiveRows<'_> {
+    fn row_frame_bytes(&self, ordinal: u64) -> Result<usize, Error> {
+        self.source.row_frame_bytes(ordinal)
+    }
+    fn row_table(&mut self, ordinal: u64) -> Result<u32, Error> {
+        self.source.row_table(ordinal)
+    }
+    fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        self.source.interpretation()
+    }
     fn header(&self) -> &Header {
         &self.header
     }
@@ -403,6 +426,12 @@ impl ArchiveRows for EffectiveRows<'_> {
     }
 }
 impl Grouping for NativeGrouping {
+    fn interpretation(&self) -> Option<&crate::source_facts::View> {
+        self.inner.interpretation()
+    }
+    fn includes(&self, table: u32) -> bool {
+        self.inner.includes(table)
+    }
     fn verify_inventory(
         &self,
         source: &mut dyn ArchiveRows,

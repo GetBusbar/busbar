@@ -332,7 +332,6 @@ fn a_renamed_field_does_not_keep_its_old_name_accepted() {
     let file = syn::parse_file(src).unwrap();
     let sources = [walk::Source {
         rel: "planted.rs".to_string(),
-        text: src.to_string(),
         file,
     }];
     let declared = accepted_keys(&sources);

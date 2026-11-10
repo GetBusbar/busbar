@@ -238,7 +238,7 @@ fn credential(id: &str, public_id: &str) -> CredentialSecret {
             revoke_reason: None,
             revision: 0,
         },
-        secret: "v1:aead:opaque:unchanged:envelope".into(),
+        secret: "v1:aead:opaque:unchanged:envelope".to_owned().into(),
     }
 }
 #[tokio::test]
@@ -661,7 +661,7 @@ async fn native_credential_read_refuses_parent_expiry_at_exact_boundary_without_
     parent.expires_at = Some(2000);
     let keys = crate::governance::at_rest::AtRestKeys::new(&[7; 32], None);
     let mut row = credential("first", "public");
-    row.secret = keys.seal(&row.meta, b"sealed-test-secret").unwrap();
+    row.secret = keys.seal(&row.meta, b"sealed-test-secret").unwrap().into();
     store
         .identity()
         .put_key_with_credential(&parent, &row)
@@ -718,7 +718,10 @@ async fn rewrap_settlement_replays_original_receipt_without_new_envelope_or_revi
     store.stop_admission().unwrap();
     store.identity().settle_pending().await.unwrap();
     let snapshot = store.identity().snapshot().await.unwrap();
-    assert_eq!(snapshot.credentials[0].secret, "exact-new-envelope");
+    assert_eq!(
+        snapshot.credentials[0].secret.as_str(),
+        "exact-new-envelope"
+    );
     let state = backend.state.lock().unwrap();
     assert_eq!(
         state.generation, generation,

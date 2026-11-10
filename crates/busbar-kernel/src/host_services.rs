@@ -3080,7 +3080,8 @@ impl HostServices for KernelServices {
             return Ran::Now(Stored::refused(NOT_READABLE));
         }
         let (secret, live) = credentials.read(kind, id);
-        let bytes = secret.expose(&crate::seal::lend()).as_bytes().to_vec();
+        let mut bytes =
+            zeroize::Zeroizing::new(secret.expose(&crate::seal::lend()).as_bytes().to_vec());
         let span = ItemSpan {
             key: absent_span(),
             value: Span {
@@ -3089,7 +3090,7 @@ impl HostServices for KernelServices {
             },
         };
         Ran::Now(Stored {
-            bytes,
+            bytes: std::mem::take(&mut *bytes),
             spans: vec![span],
             ..Stored::ready(if live {
                 svc::SECRET_LIVE

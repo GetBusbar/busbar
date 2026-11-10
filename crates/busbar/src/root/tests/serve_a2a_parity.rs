@@ -254,7 +254,7 @@ fn bind_plane(
         max_inflight_cap: 64,
         sink: Arc::new(NoSink),
         dispatcher: dispatcher.adopter(),
-        conns: ConnTable::Host(conns),
+        conns: ConnTable::Host(crate::root::connector::admit(conns)),
     };
     let (row, getter) = crate::LINKED
         .plane_doors
@@ -1313,7 +1313,9 @@ async fn actual_a2a_relay_keeps_whole_narrow_short_and_lifecycle_both_ways() {
                 dispatcher.clone(),
                 crate::LINKED.auths,
                 None,
-                ConnTable::Host(conns.clone() as Arc<dyn DeclaredConns>),
+                ConnTable::Host(crate::root::connector::admit(
+                    conns.clone() as Arc<dyn DeclaredConns>
+                )),
                 busbar_kernel::diagnostics::Catalogue::NEUTRAL,
             )),
             conns: conns.clone() as Arc<dyn PollConns>,

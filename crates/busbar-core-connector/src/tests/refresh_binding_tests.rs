@@ -369,7 +369,12 @@ fn refused_vault_refresh_preserves_the_committed_connector_binding() {
         bind(
             &dispatcher,
             "refresh-transaction-vault",
-            ConnTable::Host(table.clone()),
+            ConnTable::Host(
+                busbar_contract::conn::admissions::AdmissionAuthority::issue(
+                    &busbar_contract::caps::KernelSeal::acquire_for_kernel(),
+                    table.clone(),
+                ),
+            ),
         ),
     )
     .expect("actual Vault admitted with production DeclaredConns");

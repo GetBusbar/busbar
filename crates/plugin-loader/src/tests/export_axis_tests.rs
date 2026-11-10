@@ -64,21 +64,30 @@ fn the_trace_sink_answers_the_same_through_either_door() {
         actual_exports::otlp::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher())
-            .with_conns(Arc::new(crate::needs_restated::Inert));
+        let rows = ExportRows::new(&registry, dispatcher()).with_conns(
+            crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
+        );
         let module = row;
         let good = serde_json::json!({ "url": "http://127.0.0.1:4318/v1/traces" });
-        let (streams, clean, _) = rows.probe(module, "trace", &good).expect("an export row");
+        let (streams, clean, _) = rows
+            .probe(module, "trace", &crate::dispatch::test_settings(&good))
+            .expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Traces as u8]));
         assert!(clean.is_empty(), "{clean:?}");
         let bad = serde_json::json!({ "url": "http://127.0.0.1:4318", "bogus": 1 });
-        let (_, refused, _) = rows.probe(module, "trace", &bad).expect("an export row");
+        let (_, refused, _) = rows
+            .probe(module, "trace", &crate::dispatch::test_settings(&bad))
+            .expect("an export row");
         assert_eq!(
             refused,
             vec!["export.trace.settings: unknown field `bogus`, expected `url`".to_string()]
         );
         let sink = rows
-            .open(module, "export.trace", &good)
+            .open(
+                module,
+                "export.trace",
+                &crate::export_axis::test_opening(&good),
+            )
             .expect("the sink opens");
         format!("{refused:?} {:?}", sink.streams())
     });
@@ -94,22 +103,31 @@ fn the_request_log_webhook_sink_answers_the_same_through_either_door() {
         actual_exports::webhook::path(),
     );
     let transcripts = doors.map(|registry| {
-        let rows = ExportRows::new(&registry, dispatcher())
-            .with_conns(Arc::new(crate::needs_restated::Inert));
+        let rows = ExportRows::new(&registry, dispatcher()).with_conns(
+            crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
+        );
         let module = row;
         let good = serde_json::json!({ "url": "https://collector.example.com/v1/logs" });
-        let (streams, clean, _) = rows.probe(module, "audit", &good).expect("an export row");
+        let (streams, clean, _) = rows
+            .probe(module, "audit", &crate::dispatch::test_settings(&good))
+            .expect("an export row");
         assert_eq!(streams, Some(vec![ExportStream::Logs as u8]));
         assert!(clean.is_empty(), "{clean:?}");
         let bad = serde_json::json!({ "url": "https://collector.example.com", "bogus": 1 });
-        let (_, refused, _) = rows.probe(module, "audit", &bad).expect("an export row");
+        let (_, refused, _) = rows
+            .probe(module, "audit", &crate::dispatch::test_settings(&bad))
+            .expect("an export row");
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert!(
             refused[0].starts_with("export.audit.settings: unknown field `bogus`"),
             "{refused:?}"
         );
         let sink = rows
-            .open(module, "export.audit", &good)
+            .open(
+                module,
+                "export.audit",
+                &crate::export_axis::test_opening(&good),
+            )
             .expect("the sink opens");
         format!("{refused:?} {:?}", sink.streams())
     });
@@ -132,7 +150,9 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
         .expect("the linked sink admits");
     let rows = ExportRows::new(&registry, dispatcher())
         .with_logs(&logs)
-        .with_conns(Arc::new(crate::needs_restated::Refusing));
+        .with_conns(crate::dispatch::test_admissions(Arc::new(
+            crate::needs_restated::Refusing,
+        )));
 
     let target = serde_json::json!({ "url": "http://127.0.0.1:1/said-once" });
     let said = || {
@@ -147,7 +167,7 @@ fn a_refused_webhook_target_is_said_once_in_busbars_log_at_start() {
             .count()
     };
     let sink = rows
-        .open(row, "export.wh", &target)
+        .open(row, "export.wh", &crate::export_axis::test_opening(&target))
         .expect("a refused target never refuses the open");
     let at_open = said();
     sink.start()
@@ -178,17 +198,21 @@ fn check_runs_when_the_first_instance_does_not_open() {
             actual_exports::prometheus::door,
         )])
         .expect("the linked door admits the sink");
-    let rows =
-        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
+        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
+    );
     let findings = rows
         .check(
             row,
             busbar_contract::abi::export::CHECK_PHASE_LIMITS,
             &[
-                ("metrics".into(), &serde_json::json!({ "bogus": 1 })),
+                (
+                    "metrics".into(),
+                    &crate::dispatch::test_settings(&serde_json::json!({ "bogus": 1 })),
+                ),
                 (
                     "second".into(),
-                    &serde_json::json!({ "buffer_seconds": 60 }),
+                    &crate::dispatch::test_settings(&serde_json::json!({ "buffer_seconds": 60 })),
                 ),
             ],
         )
@@ -204,9 +228,19 @@ fn check_runs_when_the_first_instance_does_not_open() {
 fn a_module_no_row_answers_is_not_on_the_axis() {
     let registry = PluginRegistry::empty();
     let rows = ExportRows::new(&registry, dispatcher());
-    assert!(rows.probe("nothing", "x", &serde_json::json!({})).is_none());
+    assert!(rows
+        .probe(
+            "nothing",
+            "x",
+            &crate::dispatch::test_settings(&serde_json::json!({}))
+        )
+        .is_none());
     assert!(rows.check("nothing", 0, &[]).is_none());
-    let Err(refused) = rows.open("nothing", "export.x", &serde_json::json!({})) else {
+    let Err(refused) = rows.open(
+        "nothing",
+        "export.x",
+        &crate::export_axis::test_opening(&serde_json::json!({})),
+    ) else {
         panic!("no row answers");
     };
     assert_eq!(refused, "no `kind: export` plugin answers to 'nothing'");
@@ -219,18 +253,27 @@ fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
         .expect("the linked witness admits");
-    let rows =
-        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
+        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
+    );
     let refused = serde_json::json!({ "ready": "err:the target is refused" });
     let before = READIES.load(Ordering::SeqCst);
-    let _ = rows.check(NAME, CHECK_PHASE_INSTANCES, &[("audit".into(), &refused)]);
+    let _ = rows.check(
+        NAME,
+        CHECK_PHASE_INSTANCES,
+        &[("audit".into(), &crate::dispatch::test_settings(&refused))],
+    );
     assert_eq!(
         READIES.load(Ordering::SeqCst),
         before,
         "check's instance is never asked"
     );
     let sink = rows
-        .open(NAME, "export.audit", &refused)
+        .open(
+            NAME,
+            "export.audit",
+            &crate::export_axis::test_opening(&refused),
+        )
         .expect("the instance opens; it is not asked yet");
     assert_eq!(READIES.load(Ordering::SeqCst), before, "open does not ask");
     let failed = sink.start().expect_err("a refused ready refuses the start");
@@ -239,7 +282,7 @@ fn an_export_door_stating_ready_is_awaited_when_it_starts() {
     rows.open(
         NAME,
         "export.audit",
-        &serde_json::json!({ "ready": "fine" }),
+        &crate::export_axis::test_opening(&serde_json::json!({ "ready": "fine" })),
     )
     .expect("the sink opens")
     .start()
@@ -254,15 +297,17 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
     let registry = PluginRegistry::empty()
         .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
         .expect("the linked witness admits");
-    let rows =
-        ExportRows::new(&registry, dispatcher()).with_conns(Arc::new(crate::needs_restated::Inert));
+    let rows = ExportRows::new(&registry, dispatcher()).with_conns(
+        crate::dispatch::test_admissions(Arc::new(crate::needs_restated::Inert)),
+    );
     let row = rows.row(NAME).expect("an export row");
     let bound = |stated: Option<u64>| {
         let mut settings = serde_json::json!({ "ready": "fine" });
         if let Some(n) = stated {
             settings["max_inflight_deliveries"] = n.into();
         }
-        rows.load(row, "export.audit", Some(&settings))
+        let admitted = crate::export_axis::test_opening(&settings);
+        rows.load(row, "export.audit", Some(admitted.max_inflight()))
             .expect("the sink binds")
             .max_inflight()
     };
@@ -284,6 +329,27 @@ fn an_export_instance_is_bound_by_its_own_inflight_clamped_to_one() {
 }
 
 #[test]
+fn an_export_opening_requires_the_host_settings_seal() {
+    use crate::dispatch::ready::ready_plugins::export::{door, NAME};
+    let registry = PluginRegistry::empty()
+        .link(vec![crate::LinkedPlugin::door(manifest(NAME), door)])
+        .expect("the linked witness admits");
+    let rows = ExportRows::new(
+        &registry,
+        Arc::new(Dispatcher::new_unlent(DispatchConfig::default())),
+    );
+    let settings = crate::export_axis::test_opening(
+        &serde_json::json!({"ready":"fine","password":"unlent-canary"}),
+    );
+    let error = rows
+        .open(NAME, "export.unlent", &settings)
+        .err()
+        .expect("unlent settings refused");
+    assert!(error.contains("host settings seal"), "{error}");
+    assert!(!error.contains("unlent-canary"), "{error}");
+}
+
+#[test]
 fn a_check_on_a_row_that_will_not_load_answers_why() {
     let row = "export-unloadable";
     let registry = both_ways::dropped(row, manifest(row), b"not a library");
@@ -292,7 +358,10 @@ fn a_check_on_a_row_that_will_not_load_answers_why() {
         .check(
             row,
             CHECK_PHASE_INSTANCES,
-            &[("audit".into(), &serde_json::json!({}))],
+            &[(
+                "audit".into(),
+                &crate::dispatch::test_settings(&serde_json::json!({})),
+            )],
         )
         .expect("an export row");
     assert_eq!(findings.len(), 1, "{findings:?}");

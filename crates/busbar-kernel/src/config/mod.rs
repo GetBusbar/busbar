@@ -36,7 +36,9 @@ pub mod settings_public;
 pub(crate) mod security_policy;
 pub mod transaction;
 
-pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
+pub use prepass::{
+    deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value, deploy_with_sources,
+};
 
 pub use credentials::{AtRestCfg, CredentialsCfg};
 pub use groups::GroupCfg;
@@ -344,7 +346,7 @@ fn mapping_key_repr(key: &serde_yaml::Value) -> String {
 /// carries no `Deserialize` derive and no field-level serde defaults — those would be inert, and
 /// implying a YAML parse path here would mislead a reader into reasoning about defaults that never
 /// fire.
-#[derive(Debug)]
+#[derive()]
 pub struct RootCfg {
     pub listen: String,
     /// Whether the operator supplied the legacy data bind, including its default address.
@@ -799,7 +801,7 @@ pub struct PlaneFeesCfg {
 }
 
 /// Deployment configuration - operator-owned config.yaml structure.
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeployCfg {
     /// Set by the document reader when the operator supplies a listen address.
@@ -1138,7 +1140,7 @@ pub struct GithubFetch {
     feature = "openapi-schema",
     derive(schemars::JsonSchema, serde::Serialize)
 )]
-#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct UrlFetch {
     pub url: String,
@@ -1178,7 +1180,7 @@ fn fetch_filename_from_url(url: &str) -> Result<String, String> {
 /// One `plugins.fetch` entry, resolved: the URL, its optional sha256 pin and the tarball filename
 /// inside `plugins.dir` it writes to. The composition root's fetch downloads it
 /// ([`crate::preflight::PluginsFetch`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct FetchTarget {
     /// The URL.
     pub url: String,
@@ -1441,10 +1443,10 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
             if seen_once.contains(&module) {
                 if !refused.contains(&module) {
                     refused.push(module);
-                    let instances: Vec<(String, serde_json::Value)> = defs
+                    let instances: Vec<(String, busbar_contract::plugin_settings::Settings)> = defs
                         .iter()
                         .filter(|(_, d)| d.module.trim() == module)
-                        .map(|(n, d)| (n.clone(), serde_json::Value::Object(d.settings.clone())))
+                        .map(|(n, d)| (n.clone(), d.settings.clone()))
                         .collect();
                     errors.extend(crate::export::plugin::check_one_instance(
                         module, &instances,
@@ -1999,3 +2001,110 @@ pub use providers::ProviderAuth;
 mod config_boundary_tests;
 
 mod provider_grammar;
+
+impl std::fmt::Debug for RootCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootCfg")
+            .field("listen", &self.listen)
+            .field("listen_explicit", &self.listen_explicit)
+            .field("public_url", &"<redacted>")
+            .field("endpoint_resources", &self.endpoint_resources)
+            .field("oauth_as", &self.oauth_as)
+            .field("credentials", &self.credentials)
+            .field("plane_defs", &self.plane_defs)
+            .field("tls", &self.tls)
+            .field("admin_listen", &self.admin_listen)
+            .field("admin_tls", &self.admin_tls)
+            .field("auth", &self.auth)
+            .field("providers", &self.providers)
+            .field("models", &self.models)
+            .field("pools", &self.pools)
+            .field("upstream_credentials", &self.upstream_credentials)
+            .field("hooks", &self.hooks)
+            .field("admin_auth", &self.admin_auth)
+            .field("groups", &self.groups)
+            .field("rate_card", &self.rate_card)
+            .field("per_request_fee", &self.per_request_fee)
+            .field("plane_fees", &self.plane_fees)
+            .field("store", &self.store)
+            .field("secrets", &self.secrets)
+            .field("global_hooks", &self.global_hooks)
+            .field("blocked_metadata_hosts", &self.blocked_metadata_hosts)
+            .field("allow_metadata_hosts", &self.allow_metadata_hosts)
+            .field("allow_all_metadata", &self.allow_all_metadata)
+            .field("guard", &self.guard)
+            .field("limits", &self.limits)
+            .field("export", &self.export)
+            .field("identity_providers", &self.identity_providers)
+            .field("export_defs", &self.export_defs)
+            .field("plane_pools", &self.plane_pools)
+            .field("plane_sections", &self.plane_sections)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for DeployCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeployCfg")
+            .field("listen_explicit", &self.listen_explicit)
+            .field("authored_routing", &self.authored_routing)
+            .field(
+                "document_source_fingerprints",
+                &self.document_source_fingerprints,
+            )
+            .field("listen", &self.listen)
+            .field("public_url", &"<redacted>")
+            .field("tls", &self.tls)
+            .field("admin_listen", &self.admin_listen)
+            .field("config", &self.config)
+            .field("providers_file", &self.providers_file)
+            .field("endpoint", &self.endpoint)
+            .field("oauth_as", &self.oauth_as)
+            .field("credentials", &self.credentials)
+            .field("admin_tls", &self.admin_tls)
+            .field("admin_require_mtls", &self.admin_require_mtls)
+            .field("auth", &self.auth)
+            .field("identity_providers", &self.identity_providers)
+            .field("providers", &self.providers)
+            .field("models", &self.models)
+            .field("pools", &self.pools)
+            .field("hooks", &self.hooks)
+            .field("groups", &self.groups)
+            .field("rate_card", &self.rate_card)
+            .field("per_request_fee", &self.per_request_fee)
+            .field("plane_rate_cards", &self.plane_rate_cards)
+            .field("plane_fees", &self.plane_fees)
+            .field("plane_raw", &self.plane_raw)
+            .field("declared_raw", &self.declared_raw)
+            .field("store", &self.store)
+            .field("secrets", &self.secrets)
+            .field("advanced", &self.advanced)
+            .field("export", &self.export)
+            .field("declared", &self.declared)
+            .field("plugins", &self.plugins)
+            .field("security", &self.security)
+            .field("limits", &self.limits)
+            .field("health", &self.health)
+            .field("routing", &self.routing)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for UrlFetch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UrlFetch")
+            .field("url", &"<redacted>")
+            .field("sha256", &self.sha256)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for FetchTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FetchTarget")
+            .field("url", &"<redacted>")
+            .field("sha256", &self.sha256)
+            .field("filename", &self.filename)
+            .finish()
+    }
+}

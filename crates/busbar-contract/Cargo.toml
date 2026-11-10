@@ -25,7 +25,7 @@ indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 smallvec = { workspace = true }
-zeroize = { workspace = true }
+zeroize = { workspace = true, features = ["serde"] }
 num-bigint = { workspace = true }
 getrandom = { workspace = true }
 ring = { workspace = true }
@@ -59,3 +59,9 @@ test-seal = ["test-support"]
 # struct, `Default` on it, and the lending pairs. It forges nothing; sealed credentials stay
 # behind the dev-dependency-only `test-seal` feature.
 test-support = []
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }

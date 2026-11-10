@@ -7,7 +7,7 @@ use busbar_contract::abi::auth::{FACT_DEFAULT_INBOUND_STYLE, FACT_READS_CREDENTI
 use busbar_contract::abi::mechanism::door::REWRITE_ALIAS;
 use busbar_contract::abi::mechanism::rendering::read;
 use busbar_contract::auth_calls::AuthCalls;
-use busbar_contract::conn::DeclaredConns;
+use busbar_contract::conn::admissions::AdmissionAuthority;
 
 use crate::auth_door::{AuthInstance, AuthSink};
 use crate::dispatch::kinds::auth::{Auth, AuthFacts};
@@ -31,9 +31,9 @@ pub struct AuthRows {
     registry: Arc<PluginRegistry>,
     dispatcher: Arc<Dispatcher>,
 
-    conns: Option<fn() -> Arc<dyn DeclaredConns>>,
+    conns: Option<fn() -> AdmissionAuthority>,
 
-    held: Option<Arc<dyn DeclaredConns>>,
+    held: Option<AdmissionAuthority>,
 
     logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
 
@@ -68,13 +68,13 @@ impl AuthRows {
     }
 
     #[must_use]
-    pub fn with_conns(mut self, conns: fn() -> Arc<dyn DeclaredConns>) -> Self {
+    pub fn with_conns(mut self, conns: fn() -> AdmissionAuthority) -> Self {
         self.conns = Some(conns);
         self
     }
 
     #[must_use]
-    pub fn with_table(mut self, table: Arc<dyn DeclaredConns>) -> Self {
+    pub fn with_table(mut self, table: AdmissionAuthority) -> Self {
         self.held = Some(table);
         self
     }
@@ -307,7 +307,7 @@ impl AuthRows {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<dyn AuthCalls>, String> {
         self.open_instance(module, label, settings)
             .map(|opened| opened as Arc<dyn AuthCalls>)
@@ -317,7 +317,7 @@ impl AuthRows {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<AuthInstance>, String> {
         let row = self
             .row(module)
@@ -330,13 +330,17 @@ impl AuthRows {
             .unwrap_or_default();
         self.one_reader_per_kind(row, &kinds)?;
         let (settings, secrets) = crate::auth_door::split_secrets(&plugin, settings);
-        let text = settings.to_string();
+        let text = settings.encode().map_err(|error| error.to_string())?;
+        let seal = self
+            .dispatcher
+            .seal()
+            .ok_or("auth opening requires the host settings seal")?;
         let opened = AuthInstance::open(
             plugin,
             sink,
             self.dispatcher.clone(),
             label,
-            text.as_bytes(),
+            text.expose(seal),
             secrets,
         )
         .map_err(|e| format!("plugin '{name}' open failed: {e}"))?;
@@ -434,7 +438,7 @@ impl busbar_contract::auth_calls::AuthAxis for AuthRows {
         &self,
         module: &str,
         label: &str,
-        settings: &serde_json::Value,
+        settings: &busbar_contract::plugin_settings::ResolvedSettings,
     ) -> Result<Arc<dyn AuthCalls>, String> {
         AuthRows::open(self, module, label, settings)
     }

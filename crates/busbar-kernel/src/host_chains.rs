@@ -129,7 +129,7 @@ pub(crate) struct Held {
 type Positions = IndexMap<Position, Held>;
 
 struct RetainedClaim {
-    token: String,
+    token: zeroize::Zeroizing<String>,
     expires_at: u64,
 }
 
@@ -169,7 +169,7 @@ impl ChainBook {
         let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
         claimed.retain(|_, held| held.expires_at > now);
         match claimed.get(at) {
-            Some(held) if held.token == token => Some(held.expires_at),
+            Some(held) if held.token.as_str() == token => Some(held.expires_at),
             _ => {
                 claimed.remove(at);
                 None
@@ -180,7 +180,13 @@ impl ChainBook {
     fn hold(&self, at: &Position, token: String, expires_at: u64) {
         let mut claimed = self.claimed.lock().unwrap_or_else(|e| e.into_inner());
         if claimed.contains_key(at) || claimed.len() < POSITIONS_CAP {
-            claimed.insert(at.clone(), RetainedClaim { token, expires_at });
+            claimed.insert(
+                at.clone(),
+                RetainedClaim {
+                    token: token.into(),
+                    expires_at,
+                },
+            );
         }
     }
 

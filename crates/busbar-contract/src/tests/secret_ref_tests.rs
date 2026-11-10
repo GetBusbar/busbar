@@ -342,19 +342,22 @@ fn serialize_yields_the_canonical_module_settings_wire_shape() {
 #[test]
 fn a_template_reference_resolves_each_variable_in_place() {
     let resolve = |r: &SecretRef| match r.env_var() {
-        Some("A") => Ok("alpha".to_string()),
-        Some("B") => Ok("beta".to_string()),
+        Some("A") => Ok(crate::Secret::new("alpha".to_string())),
+        Some("B") => Ok(crate::Secret::new("beta".to_string())),
         _ => Err(format!("{} does not resolve", r.describe())),
     };
     let t = SecretRef::template("Bearer ${A}:${B} $5 ${ and ${");
     assert_eq!(t.module, SECRET_MODULE_TEMPLATE);
     assert_eq!(t.template_text(), Some("Bearer ${A}:${B} $5 ${ and ${"));
     assert_eq!(
-        t.resolve_template(&resolve).as_deref(),
+        t.resolve_template(&resolve).map(|s| s.0.clone()).as_deref(),
         Ok("Bearer alpha:beta $5 ${ and ${")
     );
     assert_eq!(
-        SecretRef::env("B").resolve_template(&resolve).as_deref(),
+        SecretRef::env("B")
+            .resolve_template(&resolve)
+            .map(|s| s.0.clone())
+            .as_deref(),
         Ok("beta")
     );
     let unresolved = SecretRef::template("x ${C}").resolve_template(&resolve);
