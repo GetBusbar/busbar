@@ -260,26 +260,8 @@ fn the_linked_default_inbound_style_is_the_1_5_5_client_token_lines_in_order() {
     );
 }
 
-#[cfg(linked_every_auth)]
-#[test]
-fn the_info_auth_modules_are_the_inbound_rows_only() {
-    link();
-    let linked = busbar_kernel::preflight::linked_auth_names();
-    assert!(
-        linked.len() > 1,
-        "the default build links an outbound-only auth row beside the operator credential's: {linked:?}"
-    );
-    assert_eq!(
-        busbar_core_admin::v1::service::auth_modules_compiled_in(),
-        vec![
-            "keys",
-            config::operator_provider(),
-            "busbar-auth-webhook-signature"
-        ],
-        "only inbound auth-chain modules are listed, 1.5.5's two first and the default build's \
-         webhook-signature row after them (linked rows: {linked:?})"
-    );
-}
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(linked_auth);
 
 #[tokio::test]
 async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
