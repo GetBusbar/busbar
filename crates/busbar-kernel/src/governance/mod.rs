@@ -1490,7 +1490,13 @@ pub fn spawn_budget_flusher(
                     let app = app.clone();
                     tokio::spawn(async move {
                         resume_current_correction_verdicts(&gov, app.as_ref()).await;
-                        let _ = gov.flush_unit_checkpoints().await;
+                        if let Err(e) = gov.flush_unit_checkpoints().await {
+                            tracing::warn!(
+                                error = ?e,
+                                "flush_unit_checkpoints failed; \
+                                 retrying next tick"
+                            );
+                        }
                         gov.flush_budgets().await;
                         gov.flush_metering().await;
                         drop(guard);
@@ -1504,7 +1510,13 @@ pub fn spawn_budget_flusher(
                     let app = app.clone();
                     let _ = tokio::spawn(async move {
                         resume_current_correction_verdicts(&gov, app.as_ref()).await;
-                        let _ = gov.flush_unit_checkpoints().await;
+                        if let Err(e) = gov.flush_unit_checkpoints().await {
+                            tracing::warn!(
+                                error = ?e,
+                                "shutdown: flush_unit_checkpoints failed; \
+                                 checkpoint data may be stale on next start"
+                            );
+                        }
                         gov.flush_budgets_final().await;
                         gov.flush_metering_final().await;
                         drop(guard);

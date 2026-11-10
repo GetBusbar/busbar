@@ -133,7 +133,15 @@ impl GovState {
         let pending = &self.pending_metering;
         let owner = match pending.flush_runner.enter(shutdown).await {
             Ok(owner) => owner,
-            Err(_) => return 0,
+            Err(_) => {
+                if shutdown {
+                    tracing::warn!(
+                        "metering flush runner refused entry at shutdown; \
+                         pending metering counts will not persist"
+                    );
+                }
+                return 0;
+            }
         };
         owner.scope(async {
         let mut captured = false;
