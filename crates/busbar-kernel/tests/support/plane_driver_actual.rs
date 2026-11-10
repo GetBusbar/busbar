@@ -631,6 +631,15 @@ impl Double {
             match u.mode.as_slice() {
                 b"fault" => return (ready(Outcome::Fault), Hold::No),
 
+                b"far-only" => {
+                    let request = b"PRIVATE_OUTBOUND_REQUEST";
+                    assert!(request.len() <= i.reply_cap);
+                    std::ptr::copy_nonoverlapping(request.as_ptr(), i.reply_buf, request.len());
+                    o.emitted = request.len() as u64;
+                    o.flags = EMIT_TO_FAR_END;
+                    return (ready(Outcome::Ready), Hold::No);
+                }
+
                 b"wedge" => return (ready(Outcome::Fault), Hold::Wedge),
                 b"hang" | b"hang-row" | b"cancel-fault" => {
                     return (ready(Outcome::Pending), Hold::Forever)

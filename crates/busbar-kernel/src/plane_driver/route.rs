@@ -1349,6 +1349,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             let out = match (done.outcome, out) {
                 (AbiOutcome::Ready, Some(out)) => {
+                    // An ordinary response leg cannot dispatch another request. Never
+                    // reinterpret bytes explicitly addressed upstream as caller output.
+                    if out.flags & EMIT_TO_FAR_END != 0 && matches!(toward, Toward::Caller) {
+                        return Step::End(End::Failed(ReasonCode::PlanePanic));
+                    }
                     if out.verdict == VERDICT_COUNT_REFUSED {
                         let detail = String::from_utf8_lossy(run.bufs.arena(out.fault_reason));
                         tracing::warn!(%detail, "provider usage count refused");

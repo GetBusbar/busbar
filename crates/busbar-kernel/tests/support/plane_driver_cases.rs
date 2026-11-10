@@ -747,6 +747,33 @@ async fn a_fault_becomes_a_failed_end_with_the_planes_refusal() {
     }
 }
 
+#[tokio::test]
+async fn upstream_only_output_never_reaches_the_caller_on_a_response_leg() {
+    for way in ways() {
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["far-only"], CHUNKS),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+        let outcome = drive(&units).await;
+        assert_eq!(
+            caller.text(),
+            "",
+            "upstream-only bytes crossed to the caller"
+        );
+        assert!(matches!(
+            outcome,
+            Outcome::Failed(StepName::Route, ReasonCode::PlanePanic)
+        ));
+        let refusal = units.take_rendered().expect("refusal is rendered");
+        assert!(!refusal.body.windows(7).any(|bytes| bytes == b"PRIVATE"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_wedged_on_piece_keeps_the_units_buffers_until_it_returns() {
     for way in ways() {
