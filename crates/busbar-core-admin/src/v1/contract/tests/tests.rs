@@ -148,6 +148,7 @@ fn usage_view_serializes_currency_from_const() {
         by_key: Vec::new(),
         by_key_truncated: false,
         others: None,
+        observations: Vec::new(),
     };
     let v: serde_json::Value = serde_json::to_value(&view).expect("serialize UsageView");
     assert_eq!(

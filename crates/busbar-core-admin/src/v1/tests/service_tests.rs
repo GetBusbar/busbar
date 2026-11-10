@@ -9,6 +9,7 @@ mod usage_adjustment_range;
 
 pub(crate) fn hook(kind: HookKind, global: bool) -> HookCfg {
     HookCfg {
+        child_dispatch: None,
         kind,
         plugin: "test-hook".to_string(),
         timeout_ms: 5,
@@ -1596,4 +1597,362 @@ fn full_range_free_usage_projects_all_classes_and_exact_inverse() {
             assert_eq!(usage.spend_micros, 0);
         }
     }
+}
+
+static CLASS_PARENT_PLANE: busbar_kernel::plane_driver::registry::PlaneDecl =
+    busbar_kernel::plane_driver::registry::PlaneDecl {
+        declaration: busbar_kernel::plane_driver::registry::PlaneDeclaration {
+            key: "class-parent-plane",
+            fallback: true,
+            config_section: "streams",
+            scope_kinds: &[],
+            subject_noun: "stream",
+            admin_noun: "stream",
+            audit_kind: "stream",
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            owned_config_sections: &[],
+            billable_classes: &[
+                busbar_kernel::plane_driver::registry::BillableClass {
+                    class: "input",
+                    family: "token",
+                },
+                busbar_kernel::plane_driver::registry::BillableClass {
+                    class: "part_a",
+                    family: "token",
+                },
+                busbar_kernel::plane_driver::registry::BillableClass {
+                    class: "part_b",
+                    family: "token",
+                },
+                busbar_kernel::plane_driver::registry::BillableClass {
+                    class: "batch",
+                    family: "token",
+                },
+            ],
+            class_parents: &[
+                busbar_contract::plane::ClassParent {
+                    child: "part_a",
+                    parent: "batch",
+                },
+                busbar_contract::plane::ClassParent {
+                    child: "part_b",
+                    parent: "batch",
+                },
+                busbar_contract::plane::ClassParent {
+                    child: "batch",
+                    parent: "input",
+                },
+            ],
+            fee_units: &[],
+            metric_families: &[],
+            record_kinds: &[],
+            required_config_sections: &[],
+            trust_keys: &[],
+            served_op_classes: &[],
+            caller_credential_refusal: None,
+        },
+        wire_format_names: |_| &[],
+        provider_dialects: |_| &[],
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_, _| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
+        door: None,
+    };
+
+#[test]
+fn class_parent_export_projects_counts_after_disjoint_pricing() {
+    const CHILD: &str = "BUSBAR_CLASS_PARENT_EXPORT";
+    if std::env::var_os(CHILD).is_none() {
+        let full = concat!(
+            module_path!(),
+            "::class_parent_export_projects_counts_after_disjoint_pricing"
+        );
+        let (_, name) = full.split_once("::").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    busbar_kernel::plane_driver::registry::publish_planes(&[&CLASS_PARENT_PLANE]);
+    use busbar_contract::{count::Count, records::MeteringRow};
+    use std::collections::BTreeMap;
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&BTreeMap::from([(
+            "subject".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 1000.0,
+                units: BTreeMap::from([
+                    (
+                        "part_a".into(),
+                        serde_json::from_value(serde_json::json!(2)).unwrap(),
+                    ),
+                    (
+                        "part_b".into(),
+                        serde_json::from_value(serde_json::json!(5)).unwrap(),
+                    ),
+                ]),
+                ..Default::default()
+            },
+        )])),
+        0,
+        &BTreeMap::new(),
+    );
+    let cost = Arc::new(cost);
+    let row = MeteringRow {
+        scale: 0,
+        key_id: "key".into(),
+        model: "subject".into(),
+        provider: "source".into(),
+        tokens_input: 0,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 0,
+        billable_requests: 0,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+        usage_units: BTreeMap::from([("part_a".into(), 3), ("part_b".into(), 4)]),
+    };
+    let view = super::operations::project_usage_rows(
+        Arc::clone(&cost),
+        None,
+        None,
+        UsageWindow {
+            start: 0,
+            end: 86400,
+        },
+        0,
+        (vec![row.clone()], HashMap::new(), Vec::new()),
+    )
+    .unwrap();
+    assert_eq!(view.total.tokens_input, Count::from_integer(7).unwrap());
+    assert_eq!(
+        view.total.spend_micros, 26,
+        "parent's high price never charges derived children"
+    );
+    assert_eq!(view.by_model[0].usage.tokens_input, view.total.tokens_input);
+    assert_eq!(view.by_key[0].usage.spend_micros, 26);
+    // Original and later raw rows keep their own dated rates while parent counts add once.
+    use busbar_kernel::cost::{Author, CardEntryDraft, History};
+    let mut history = History::opening(cost.card().clone(), 0);
+    let mut first = row.clone();
+    first.pricing_version = history.entries()[0].id().metering_version();
+    let newer = busbar_kernel::cost::CostModel::resolve_parts(
+        Some(&BTreeMap::from([(
+            "subject".into(),
+            busbar_kernel::config::RateEntryCfg {
+                input_utok: 1000.0,
+                units: BTreeMap::from([
+                    (
+                        "part_a".into(),
+                        serde_json::from_value(serde_json::json!(3)).unwrap(),
+                    ),
+                    (
+                        "part_b".into(),
+                        serde_json::from_value(serde_json::json!(7)).unwrap(),
+                    ),
+                ]),
+                ..Default::default()
+            },
+        )])),
+        0,
+        &BTreeMap::new(),
+    );
+    history.append(CardEntryDraft {
+        effective_from: 1000,
+        effective_until: None,
+        card: newer.card().clone(),
+        appended_at: 1000,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    let mut second = row;
+    second.priced_from_ms = 1000;
+    second.pricing_version = history.entries()[1].id().metering_version();
+    let dated = super::operations::project_usage_rows(
+        Arc::new(newer),
+        Some(Arc::new(history)),
+        None,
+        UsageWindow {
+            start: 0,
+            end: 86400,
+        },
+        2,
+        (vec![first, second], HashMap::new(), Vec::new()),
+    )
+    .unwrap();
+    assert_eq!(dated.total.tokens_input, Count::from_integer(14).unwrap());
+    assert_eq!(dated.total.spend_micros, 26 + 37);
+}
+
+#[test]
+fn observation_export_merges_once_and_preserves_original_accounting() {
+    use busbar_contract::{count::Count, records::MeteringRow};
+    use busbar_kernel::{cost::CostModel, persistence::observations::DatedRecord};
+    use std::collections::BTreeMap;
+    let cost = |rate| {
+        Arc::new(CostModel::resolve_parts(
+            Some(&BTreeMap::from([(
+                "ordinary".into(),
+                busbar_kernel::config::RateEntryCfg {
+                    input_utok: rate,
+                    ..Default::default()
+                },
+            )])),
+            0,
+            &BTreeMap::new(),
+        ))
+    };
+    let ordinary = MeteringRow {
+        scale: 6,
+        key_id: "key".into(),
+        model: "ordinary".into(),
+        provider: "source".into(),
+        tokens_input: 3_000_000,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests: 5,
+        billable_requests: 0,
+        key_group_at_use: "old-group".into(),
+        pricing_version: String::new(),
+        priced_from_ms: 0,
+        usage_units: BTreeMap::new(),
+    };
+    let observation = DatedRecord {
+        principal: "key".into(),
+        group: "old-group".into(),
+        instance: "instance".into(),
+        destination: "source".into(),
+        accounting_namespace: "account".into(),
+        serving_subject: "original".into(),
+        rated_subject: "leaf".into(),
+        rate_time: 100,
+        classes: BTreeMap::from([(0, "input".into())]),
+        rates_nanos: BTreeMap::from([(0, 2000)]),
+        counts: BTreeMap::from([(0, Count::from_integer(10).unwrap())]),
+        spent_nanos: 20_000,
+    };
+    let mut outside = observation.clone();
+    outside.rate_time = 86_400;
+    outside.spent_nanos = 999_000;
+    let read = |cost, records| {
+        super::operations::project_usage_rows_with_observations(
+            cost,
+            None,
+            None,
+            UsageWindow {
+                start: 0,
+                end: 86_400,
+            },
+            200,
+            (vec![ordinary.clone()], HashMap::new(), Vec::new()),
+            records,
+        )
+        .unwrap()
+    };
+    let first = read(cost(5.0), vec![observation.clone(), outside]);
+    assert_eq!(
+        first.total.requests, 5,
+        "observations add no gateway requests"
+    );
+    assert_eq!(first.total.tokens_input, Count::from_integer(13).unwrap());
+    assert_eq!(first.total.spend_micros, 35);
+    assert_eq!(first.by_key[0].usage.spend_micros, 35);
+    assert_eq!(first.observations.len(), 1);
+    assert_eq!(first.observations[0].serving_subject, "original");
+    assert_eq!(first.observations[0].rated_subject, "leaf");
+    assert_eq!(first.observations[0].group, "old-group");
+    assert_eq!(first.observations[0].spend_micros, "20");
+    assert_eq!(first.observations[0].counts["input"], "10");
+    let again = read(cost(5.0), vec![observation.clone()]);
+    assert_eq!(
+        serde_json::to_value(&first).unwrap(),
+        serde_json::to_value(&again).unwrap(),
+        "a repeated read never adds settlement again"
+    );
+    let repriced = read(cost(99.0), vec![observation.clone()]);
+    assert_eq!(
+        repriced.total.spend_micros,
+        297 + 20,
+        "only ordinary rows use the current card"
+    );
+    let mut corrected = observation;
+    corrected.counts.insert(0, Count::parse("6.0005").unwrap());
+    corrected.spent_nanos = 12_001;
+    let after = read(cost(5.0), vec![corrected]);
+    assert_eq!(after.total.tokens_input, Count::parse("9.0005").unwrap());
+    assert_eq!(after.observations[0].spend_micros, "12.001");
+    assert_eq!(
+        after.total.spend_micros, 27,
+        "a corrected authoritative total replaces the old total"
+    );
+}
+
+#[test]
+fn observation_export_detail_preserves_decimal_strings_above_js_integer_range() {
+    use busbar_contract::count::Count;
+    use busbar_kernel::{cost::CostModel, persistence::observations::DatedRecord};
+    use std::collections::BTreeMap;
+    let exact = "9007199254740993.000001";
+    let record = DatedRecord {
+        principal: "key".into(),
+        group: String::new(),
+        instance: "instance".into(),
+        destination: "source".into(),
+        accounting_namespace: "account".into(),
+        serving_subject: "original".into(),
+        rated_subject: "leaf".into(),
+        rate_time: 100,
+        classes: BTreeMap::from([(0, "input".into())]),
+        rates_nanos: BTreeMap::from([(0, 0)]),
+        counts: BTreeMap::from([(0, Count::parse(exact).unwrap())]),
+        spent_nanos: 0,
+    };
+    let view = super::operations::project_usage_rows_with_observations(
+        Arc::new(CostModel::resolve_parts(None, 0, &BTreeMap::new())),
+        None,
+        None,
+        UsageWindow {
+            start: 0,
+            end: 86_400,
+        },
+        200,
+        (vec![], HashMap::new(), Vec::new()),
+        vec![record],
+    )
+    .unwrap();
+    let wire = serde_json::to_value(view).unwrap();
+    assert_eq!(wire["observations"][0]["counts"]["input"], exact);
+    assert_eq!(wire["observations"][0]["accounting_time"], "100");
+    assert_eq!(wire["observations"][0]["spend_micros"], "0");
 }

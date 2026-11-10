@@ -314,12 +314,21 @@ impl GovState {
                         .filter(|(k, _)| is_token_class(k))
                         .map(|(_, n)| *n),
                 )?;
-                for unit in units.keys() {
-                    Count::total(
-                        cell.models
-                            .iter()
-                            .map(|m| m.cur.get(unit).copied().unwrap_or_default()),
-                    )?;
+                // Validate changed raw classes and their derived caps before publishing,
+                // including ancestors shared by several classes and lanes.
+                let classes: std::collections::BTreeSet<&str> = units
+                    .keys()
+                    .map(String::as_str)
+                    .chain(
+                        class_owner(lane)
+                            .into_iter()
+                            .flat_map(|owner| owner.class_parents.iter().map(|edge| edge.parent)),
+                    )
+                    .collect();
+                for class in classes {
+                    cell.models.iter().try_fold(Count::ZERO, |total, model| {
+                        total.checked_add(class_total(&model.model, &model.cur, class)?)
+                    })?;
                 }
                 if durable {
                     let model = cell

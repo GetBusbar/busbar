@@ -1820,6 +1820,12 @@ impl Instance {
             Ok(loan) => loan,
             Err(()) => return Crossed::host(Outcome::Refused),
         };
+        // SAFETY: this crossing owns the input; the guard restores its previous extension loan.
+        let _observation_input =
+            match unsafe { super::observation::prepare(self.wake, s, input, unit) } {
+                Ok(loan) => loan,
+                Err(()) => return Crossed::host(Outcome::Refused),
+            };
         // SAFETY: the host owns the frame; this final input loan restores prior extensions.
         let completion_input =
             match unsafe { super::completion_retirement::prepare(self.wake, s, input) } {
@@ -2001,6 +2007,20 @@ impl Instance {
         } else {
             ticket
         };
+        // Usage observations reject combined effects before either independent operation commits.
+        // SAFETY: the answer remains live under its lease and its kind's checks passed.
+        if let Err(error) = unsafe {
+            super::observation::answer(
+                self.wake,
+                self.kind,
+                inspection_ticket,
+                unit,
+                &head,
+                &answer,
+            )
+        } {
+            return Crossed::host(error.outcome()).unread(head.lease);
+        }
         // Copy and validate the transaction before any independent inspection effect or lease release.
         // SAFETY: the answer remains live under its lease and its kind's checks passed.
         if let Err(error) = unsafe {

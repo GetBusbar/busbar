@@ -927,6 +927,7 @@ macro_rules! gauge_plane {
                     card_kid_prefix: None,
                     owned_config_sections: &[],
                     billable_classes: $classes,
+                    class_parents: &[],
                     fee_units: &[],
                     metric_families: &[],
                     record_kinds: &[],

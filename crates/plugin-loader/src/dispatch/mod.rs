@@ -39,6 +39,7 @@ pub(crate) mod lifecycle;
 pub mod load;
 pub mod log_file;
 pub mod migrate;
+pub(crate) mod observation;
 pub mod plane_calls;
 pub mod plugin;
 pub mod ready;

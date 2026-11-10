@@ -363,6 +363,10 @@ pub const REQUEST_HAS_MAX_TOKENS: u32 = 1 << 0;
 pub const REQUEST_HAS_TOOLS: u32 = 1 << 1;
 /// [`RequestView::flags`]: the request is streamed.
 pub const REQUEST_STREAM: u32 = 1 << 2;
+/// The projecting plane attests that its text projection represents the whole prompt.
+/// Omit for unknown, omitted, non-text or tool content. The host clears this assurance
+/// when it withholds or truncates the projection before lending it to a hook.
+pub const REQUEST_TEXT_COMPLETE: u32 = 1 << 3;
 
 /// The request view: what `decide`/`transform` see
 /// about the request itself, minus the prompt and identity (their own views, granted separately).
@@ -557,6 +561,8 @@ pub const VIEW_HAS_PROMPT: u32 = 1 << 0;
 pub const VIEW_HAS_USER: u32 = 1 << 1;
 /// [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is
 pub const VIEW_HAS_BUDGET_REMAINING: u32 = 1 << 2;
+/// [`DecideIn::present`]: the host supports [`VERB_PRIORITIZE`]. Older hosts leave this unset.
+pub const VIEW_SUPPORTS_PRIORITIZE: u32 = 1 << 3;
 
 /// `decide`'s and `transform`'s shared `in` (both ops see identical views; only their `out` and
 /// grant differ — B.4: "identical for both"). Carries every HOST-owned result buffer the two ops
@@ -621,6 +627,9 @@ pub const VERB_REJECT: u32 = 1 << 2;
 pub const VERB_RESTRICT: u32 = 1 << 3;
 /// [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the
 pub const VERB_HAS_REJECT_STATUS: u32 = 1 << 4;
+/// [`DecideOut::verbs`]: prioritize an unordered set in `order_buf`, retaining ordinary ranking
+/// or weighted selection within that set and the remaining eligible fallback candidates.
+pub const VERB_PRIORITIZE: u32 = 1 << 5;
 
 /// `decide`'s `out`. Exactly one of [`VERB_PREFER`], [`VERB_ABSTAIN`], [`VERB_REJECT`],
 ///
@@ -631,7 +640,7 @@ pub struct DecideOut {
     /// The head.
     pub head: OutHead,
     /// [`VERB_PREFER`] | [`VERB_ABSTAIN`] | [`VERB_REJECT`] | [`VERB_RESTRICT`] |
-    /// [`VERB_HAS_REJECT_STATUS`].
+    /// [`VERB_HAS_REJECT_STATUS`] | [`VERB_PRIORITIZE`].
     pub verbs: u32,
     /// The reject status, meaningful only when [`VERB_HAS_REJECT_STATUS`] is set; the
     /// kernel clamps it to 400-499, else 403.

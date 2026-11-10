@@ -222,6 +222,10 @@ pub enum RoutingDecision {
     /// NOT excluded — the failover loop can still reach it after the ranked ones are exhausted, so a
     /// broken policy never strands a healthy lane. Duplicates and unknown idxs are ignored.
     Prefer(Vec<usize>),
+    /// Prefer this unordered set, then fall back to all other eligible candidates. The ordinary
+    /// ranking or weighted policy still selects within each group. Existing session affinity
+    /// keeps precedence, so this does not migrate a pinned session.
+    Prioritize(Vec<usize>),
     /// "No preference" — fall back to the pool's default (weighted/SWRR). Identical to the policy not
     /// being configured. A timeout / error / malformed response is coerced to this (per `on_error`).
     Abstain,

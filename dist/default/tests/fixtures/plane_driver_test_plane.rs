@@ -892,7 +892,11 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 vec![estimate(0, i.body.len as u64)]
             }
-            t if t == b"/call/local" || t == b"/call/services" || t.starts_with(b"/call/nest:") => {
+            t if t == b"/call/local"
+                || t == b"/call/local-child-pending"
+                || t == b"/call/services"
+                || t.starts_with(b"/call/nest:") =>
+            {
                 o.route = ROUTE_DIRECT;
                 o.pool = AbiStr {
                     ptr: b"m".as_ptr(),
@@ -1060,6 +1064,9 @@ extern "C" fn on_piece(
                 o.flags = EMIT_DONE;
             }
             return say(out, Outcome::Ready);
+        }
+        if head == b"/call/local-child-pending" && i.from == FROM_CALLER {
+            return say(out, Outcome::Pending);
         }
         match i.from {
             FROM_KERNEL if i.attempt_no > 0 => {

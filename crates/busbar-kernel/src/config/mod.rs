@@ -1519,7 +1519,14 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
             "a hook definition must name a non-empty `module:` (a `kind: hook` plugin)".to_string(),
         );
     }
+    if let Some(grant) = &def.child_dispatch {
+        grant.validate().map_err(str::to_owned)?;
+        if def.kind == Some(HookKind::Tap) {
+            return Err("child dispatch requires a gate hook".into());
+        }
+    }
     Ok(HookCfg {
+        child_dispatch: def.child_dispatch.clone(),
         kind: def.kind.unwrap_or(HookKind::Gate),
         plugin,
         timeout_ms: def.timeout_ms.unwrap_or(DEFAULT_POLICY_TIMEOUT_MS),

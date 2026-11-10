@@ -1307,6 +1307,7 @@ static CLASS_PLANE: crate::plane_driver::registry::PlaneDeclaration =
         card_kid_prefix: None,
         owned_config_sections: &[],
         billable_classes: &[bc("calls", "count"), bc("bytes", "byte")],
+        class_parents: &[],
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],
@@ -1437,6 +1438,7 @@ static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDeclaration =
             bc("bytes", "byte"),
             bc(busbar_contract::plane::PER_REQUEST, "count"),
         ],
+        class_parents: &[],
         fee_units: &[busbar_contract::plane::PER_REQUEST],
         ..CLASS_PLANE
     };
@@ -1553,6 +1555,7 @@ fn a_fee_the_plane_does_not_count_fails_naming_it_and_the_counted_list() {
         Box::leak(Box::new(crate::plane_driver::registry::PlaneDeclaration {
             key: "session-plane",
             config_section: "streams",
+            class_parents: &[],
             fee_units: &[PER_SESSION],
             ..CLASS_PLANE
         }));
@@ -1596,6 +1599,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
             key: "session-plane",
             config_section: "live",
             billable_classes: CLASSES,
+            class_parents: &[],
             fee_units: &[PER_SESSION],
             ..CLASS_PLANE
         }));

@@ -331,7 +331,7 @@ impl DecideView {
         );
         let mut store = Store::default();
         let request = request_view(&mut store, req);
-        let mut present = 0;
+        let mut present = crate::abi::hook::VIEW_SUPPORTS_PRIORITIZE;
         let prompt = match store.prompt(req) {
             Some(p) => {
                 present |= VIEW_HAS_PROMPT;
@@ -540,6 +540,7 @@ pub struct DecideFrame {
     view: Arc<DecideView>,
     caps: Caps,
     buffers_busy: AtomicBool,
+    child: Option<Arc<dyn crate::services::HookChildInvocation>>,
     order: HostBuf<u32>,
     reject_message: HostBuf<u8>,
     restrict_tags: HostBuf<u8>,
@@ -569,11 +570,26 @@ impl DecideFrame {
             view,
             caps,
             buffers_busy: AtomicBool::new(false),
+            child: None,
             order: HostBuf::new(caps.order),
             reject_message: HostBuf::new(caps.reject_message),
             restrict_tags: HostBuf::new(caps.restrict_tags),
             rewrite: HostBuf::new(caps.rewrite),
         })
+    }
+
+    /// Attach host-only child authority before lending the frame to the loader.
+    pub fn with_child(
+        mut self: Arc<Self>,
+        child: Option<Arc<dyn crate::services::HookChildInvocation>>,
+    ) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("unshared hook frame").child = child;
+        self
+    }
+
+    /// Read host-only authority; this is never part of the plugin's input bytes.
+    pub fn child(&self) -> Option<Arc<dyn crate::services::HookChildInvocation>> {
+        self.child.clone()
     }
 
     /// The first frame of a call.
@@ -586,13 +602,13 @@ impl DecideFrame {
     /// The frame for the one short-buffer re-call of `decide`: the same view, grown buffers.
     #[must_use]
     pub fn regrown_decide(&self, out: &DecideOut) -> Arc<Self> {
-        Self::new(self.view.clone(), self.caps.after_decide(out))
+        Self::new(self.view.clone(), self.caps.after_decide(out)).with_child(self.child.clone())
     }
 
     /// The frame for the one short-buffer re-call of `transform`.
     #[must_use]
     pub fn regrown_transform(&self, out: &TransformOut) -> Arc<Self> {
-        Self::new(self.view.clone(), self.caps.after_transform(out))
+        Self::new(self.view.clone(), self.caps.after_transform(out)).with_child(self.child.clone())
     }
 
     /// Reserve the answer buffers for one native operation, including its pending invocations.

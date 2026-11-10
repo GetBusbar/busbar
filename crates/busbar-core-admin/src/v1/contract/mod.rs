@@ -899,6 +899,30 @@ pub struct UsageView {
     /// `total == sum(by_key) + others`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub others: Option<UsageBreakdown>,
+    /// Immutable observation accounting, already included in the totals above. Omitted when
+    /// empty. These rows preserve the original serving subject separately from the priced one;
+    /// a rate-card snapshot query never reprices their committed charges.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<ObservationUsageView>,
+}
+
+/// An authoritative dated observation total. Decimal strings preserve exact numeric values
+/// in clients whose JSON number representation cannot represent every integer or decimal.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct ObservationUsageView {
+    pub key_id: String,
+    pub group: String,
+    pub instance: String,
+    pub destination: String,
+    pub serving_subject: String,
+    pub rated_subject: String,
+    /// Original accounting time, as an exact epoch-seconds integer string.
+    pub accounting_time: String,
+    /// Disjoint raw class counts, as canonical decimal strings. No derived parents are inserted.
+    pub counts: std::collections::BTreeMap<String, String>,
+    /// Committed spend in micro-units, as an exact decimal string (up to three fractional places).
+    pub spend_micros: String,
 }
 
 /// A metering window: `[start, end)` epoch seconds.

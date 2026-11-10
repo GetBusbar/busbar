@@ -1319,6 +1319,70 @@ async fn the_stage_reports_a_hook_that_failed_as_failed() {
 }
 
 #[tokio::test]
+async fn prioritize_gate_runs_the_ordinary_policy_while_prefer_keeps_its_override() {
+    struct Decision(&'static str, RoutingDecision);
+    #[async_trait::async_trait]
+    impl RoutingPolicy for Decision {
+        async fn decide(
+            &self,
+            _: &RoutingRequest<'_>,
+            _: &[Candidate<'_>],
+            _: &RoutingContext<'_>,
+            _: Duration,
+        ) -> PolicyResult {
+            Ok(self.1.clone())
+        }
+        fn name(&self) -> &str {
+            self.0
+        }
+    }
+    let resolve = |name, answer| ResolvedPolicy::Policy {
+        policy: Arc::new(Decision(name, answer)),
+        on_error: PolicyOnError::Reject,
+        on_error_chain: Vec::new(),
+        timeout: Duration::from_millis(500),
+        send_prompt: false,
+        send_user: false,
+        on_empty: PolicyOnError::Reject,
+    };
+    for (answer, policy_runs) in [
+        (RoutingDecision::Prioritize(vec![0]), true),
+        (RoutingDecision::Prefer(vec![0]), false),
+    ] {
+        let mut hooks = bound(Vec::new(), vec![(0, resolve("priority-gate", answer))]);
+        hooks.pool_policies.insert(
+            "pool-a".into(),
+            resolve("ordinary-ranking", RoutingDecision::Prefer(vec![0])),
+        );
+        let mut r = rig_with_hooks(
+            Way::Double,
+            BufferCaps::default(),
+            Book::default(),
+            Some(hooks),
+        );
+        let journal = Arc::new(Reports::default());
+        r.driver = r
+            .driver
+            .with_hook_journal(Arc::clone(&journal) as Arc<dyn HookJournal>);
+        let (steps, far, caller) = (
+            TestUnits::passing(),
+            Far::new(&["ok"], &[b"done"]).naming_its_pool(),
+            Caller::default(),
+        );
+        let units = r
+            .driver
+            .unit(&steps, &far, &caller, arrival("/call", b"user:hello"), 0);
+        let _ = drive(&units).await;
+        let reports = journal.0.lock().unwrap().clone();
+        let mut expected = vec![ran("priority-gate", HookHead::Modify, false)];
+        if policy_runs {
+            expected.push(ran("ordinary-ranking", HookHead::Modify, false));
+        }
+        assert_eq!(reports[0].hooks, expected);
+    }
+}
+
+#[tokio::test]
 async fn caller_transport_deadline_bounds_pending_routed_and_gated_hooks() {
     use std::sync::atomic::{AtomicBool, Ordering};
     struct PendingGate(Arc<AtomicBool>);

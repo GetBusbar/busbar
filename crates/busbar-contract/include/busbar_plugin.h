@@ -257,6 +257,7 @@ extern "C" {
 #define BB_HOOK_REQUEST_HAS_MAX_TOKENS UINT32_C(1) /* [`RequestView::flags`]: `max_tokens` is present. */
 #define BB_HOOK_REQUEST_HAS_TOOLS UINT32_C(2) /* [`RequestView::flags`]: the request declares tool definitions. */
 #define BB_HOOK_REQUEST_STREAM UINT32_C(4) /* [`RequestView::flags`]: the request is streamed. */
+#define BB_HOOK_REQUEST_TEXT_COMPLETE UINT32_C(8) /* The projecting plane attests that its text projection represents the whole prompt. */
 #define BB_HOOK_CANDIDATE_HAS_CONTEXT_MAX UINT32_C(1) /* [`CandidateStatic::present`]: `context_max` is present. */
 #define BB_HOOK_CANDIDATE_HAS_TIER UINT32_C(2) /* [`CandidateStatic::present`]: `tier` is present. */
 #define BB_HOOK_CANDIDATE_HAS_COST_PER_MTOK UINT32_C(4) /* [`CandidateStatic::present`]: `cost_per_mtok` is present. */
@@ -267,11 +268,13 @@ extern "C" {
 #define BB_HOOK_VIEW_HAS_PROMPT UINT32_C(1) /* [`DecideIn`]'s `present`: the prompt view/body are populated. */
 #define BB_HOOK_VIEW_HAS_USER UINT32_C(2) /* [`DecideIn`]'s `present`: the user view is populated. */
 #define BB_HOOK_VIEW_HAS_BUDGET_REMAINING UINT32_C(4) /* [`DecideIn`]'s `present`: `budget_remaining` (the pool's remaining request budget) is */
+#define BB_HOOK_VIEW_SUPPORTS_PRIORITIZE UINT32_C(8) /* [`DecideIn::present`]: the host supports [`VERB_PRIORITIZE`]. Older hosts leave this unset. */
 #define BB_HOOK_VERB_PREFER UINT32_C(1) /* [`DecideOut::verbs`]: prefer an order (`order_buf`/`order_written` hold it). */
 #define BB_HOOK_VERB_ABSTAIN UINT32_C(2) /* [`DecideOut::verbs`]: no opinion. */
 #define BB_HOOK_VERB_REJECT UINT32_C(4) /* [`DecideOut::verbs`]: refuse the request. */
 #define BB_HOOK_VERB_RESTRICT UINT32_C(8) /* [`DecideOut::verbs`]: narrow to `restrict_tags`. */
 #define BB_HOOK_VERB_HAS_REJECT_STATUS UINT32_C(16) /* [`DecideOut::verbs`]/[`TransformOut::verbs`]: `reject_status` is populated; unset means the */
+#define BB_HOOK_VERB_PRIORITIZE UINT32_C(32) /* [`DecideOut::verbs`]: prioritize an unordered set in `order_buf`, retaining ordinary ranking */
 #define BB_HOOK_VERB_REWRITE UINT32_C(1) /* [`TransformOut::verbs`]: apply the rewrite bytes. */
 #define BB_HOOK_STAGE_HAS_PROJECTION UINT32_C(1) /* [`StageView::stage_present`]: the stage fields are present at all (a REQUEST-stage tap sets */
 #define BB_HOOK_STAGE_HAS_MODEL UINT32_C(2) /* [`StageView::stage_present`]: `model` is present. */
@@ -696,7 +699,8 @@ extern "C" {
 #define BB_HSVC_OP_TICKET_TAKE UINT32_C(33) /* `ticket.take`. */
 #define BB_HSVC_OP_WORK_STATUS UINT32_C(34) /* `work.status`: instance-scoped, read-only durable receipt status. */
 #define BB_HSVC_OP_OUTBOUND_AUTHORIZE UINT32_C(35) /* `outbound.authorize`: publish, bind, revoke or prepare scoped outbound custody. */
-#define BB_HSVC_SERVICES UINT32_C(36) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_HOOK_CHILD UINT32_C(36) /* Invocation-scoped, configured hook child dispatch. */
+#define BB_HSVC_SERVICES UINT32_C(37) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -1050,6 +1054,7 @@ typedef struct bb_plane_Ops bb_plane_Ops;
 typedef struct bb_plane_DialectAuth bb_plane_DialectAuth;
 typedef struct bb_plane_OpClass bb_plane_OpClass;
 typedef struct bb_plane_BillableClass bb_plane_BillableClass;
+typedef struct bb_plane_ClassParent bb_plane_ClassParent;
 typedef struct bb_plane_RouteCost bb_plane_RouteCost;
 typedef struct bb_plane_RecordChain bb_plane_RecordChain;
 typedef struct bb_plane_RecordRetention bb_plane_RecordRetention;
@@ -1158,6 +1163,7 @@ typedef struct bb_hsvc_RecordsClaimIn bb_hsvc_RecordsClaimIn;
 typedef struct bb_hsvc_RecordsSecretIn bb_hsvc_RecordsSecretIn;
 typedef struct bb_hsvc_DestJudgeIn bb_hsvc_DestJudgeIn;
 typedef struct bb_hsvc_SignIn bb_hsvc_SignIn;
+typedef struct bb_hsvc_HookChildIn bb_hsvc_HookChildIn;
 typedef struct bb_hsvc_UnitNestIn bb_hsvc_UnitNestIn;
 typedef struct bb_hsvc_WorkOpenIn bb_hsvc_WorkOpenIn;
 typedef struct bb_hsvc_WorkFindIn bb_hsvc_WorkFindIn;
@@ -2408,6 +2414,12 @@ struct bb_plane_BillableClass {
     bb_mech_AbiStr family;
 };
 
+/* A declared reporting/cap parent for a disjoint raw class. Both indices name billable classes. */
+struct bb_plane_ClassParent {
+    uint32_t child;
+    uint32_t parent;
+};
+
 /* One term of the plane's route cost: `cheapest` = Σ price(class) × weight. */
 struct bb_plane_RouteCost {
     uint32_t class_;
@@ -2504,6 +2516,8 @@ struct bb_plane_PlaneTail {
     size_t record_retentions_len;
     const bb_mech_AbiStr *streaming_content_types;
     size_t streaming_content_types_len;
+    const bb_plane_ClassParent *class_parents;
+    size_t class_parents_len;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -3654,6 +3668,13 @@ struct bb_hsvc_SignIn {
     bb_hsvc_ServiceBufs into;
 };
 
+/* [`op::HOOK_CHILD`]'s input: invoke one configured child through host-only invocation authority. */
+struct bb_hsvc_HookChildIn {
+    bb_hsvc_ServiceHead head;
+    bb_mech_Blob body;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* [`op::UNIT_NEST`]'s `in`: run a nested unit on whatever plugin serves the named claim, as a child */
 struct bb_hsvc_UnitNestIn {
     bb_hsvc_ServiceHead head;
@@ -3977,6 +3998,7 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn ticket_take;
     bb_hsvc_ServiceFn work_status;
     bb_hsvc_ServiceFn outbound_authorize;
+    bb_hsvc_ServiceFn hook_child;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -4065,7 +4087,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 280 of 280 structures are pinned by the golden ---- */
+/* ---- layout proof: 282 of 282 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5005,6 +5027,10 @@ BB_ASSERT(sizeof(bb_plane_BillableClass) == 32, "bb_plane_BillableClass: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_BillableClass) == 8, "bb_plane_BillableClass: alignment");
 BB_ASSERT(offsetof(bb_plane_BillableClass, class_) == 0, "bb_plane_BillableClass.class_: offset");
 BB_ASSERT(offsetof(bb_plane_BillableClass, family) == 16, "bb_plane_BillableClass.family: offset");
+BB_ASSERT(sizeof(bb_plane_ClassParent) == 8, "bb_plane_ClassParent: size");
+BB_ASSERT(BB_ALIGNOF(bb_plane_ClassParent) == 4, "bb_plane_ClassParent: alignment");
+BB_ASSERT(offsetof(bb_plane_ClassParent, child) == 0, "bb_plane_ClassParent.child: offset");
+BB_ASSERT(offsetof(bb_plane_ClassParent, parent) == 4, "bb_plane_ClassParent.parent: offset");
 BB_ASSERT(sizeof(bb_plane_RouteCost) == 16, "bb_plane_RouteCost: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RouteCost) == 8, "bb_plane_RouteCost: alignment");
 BB_ASSERT(offsetof(bb_plane_RouteCost, class_) == 0, "bb_plane_RouteCost.class_: offset");
@@ -5039,7 +5065,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 456, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 472, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -5089,6 +5115,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions) == 424, "bb_plane_Plan
 BB_ASSERT(offsetof(bb_plane_PlaneTail, record_retentions_len) == 432, "bb_plane_PlaneTail.record_retentions_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, streaming_content_types) == 440, "bb_plane_PlaneTail.streaming_content_types: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, streaming_content_types_len) == 448, "bb_plane_PlaneTail.streaming_content_types_len: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, class_parents) == 456, "bb_plane_PlaneTail.class_parents: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, class_parents_len) == 464, "bb_plane_PlaneTail.class_parents_len: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");
@@ -6023,6 +6051,11 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_SignIn) == 8, "bb_hsvc_SignIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_SignIn, head) == 0, "bb_hsvc_SignIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_SignIn, data) == 24, "bb_hsvc_SignIn.data: offset");
 BB_ASSERT(offsetof(bb_hsvc_SignIn, into) == 48, "bb_hsvc_SignIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_HookChildIn) == 80, "bb_hsvc_HookChildIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_HookChildIn) == 8, "bb_hsvc_HookChildIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_HookChildIn, head) == 0, "bb_hsvc_HookChildIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_HookChildIn, body) == 24, "bb_hsvc_HookChildIn.body: offset");
+BB_ASSERT(offsetof(bb_hsvc_HookChildIn, into) == 48, "bb_hsvc_HookChildIn.into: offset");
 BB_ASSERT(sizeof(bb_hsvc_UnitNestIn) == 112, "bb_hsvc_UnitNestIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_UnitNestIn) == 8, "bb_hsvc_UnitNestIn: alignment");
 BB_ASSERT(offsetof(bb_hsvc_UnitNestIn, head) == 0, "bb_hsvc_UnitNestIn.head: offset");
@@ -6248,7 +6281,7 @@ BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expected_revision) == 80, "bb_hs
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, expires_at_unix) == 88, "bb_hsvc_OutboundAuthorizeIn.expires_at_unix: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, field_name) == 96, "bb_hsvc_OutboundAuthorizeIn.field_name: offset");
 BB_ASSERT(offsetof(bb_hsvc_OutboundAuthorizeIn, credential) == 112, "bb_hsvc_OutboundAuthorizeIn.credential: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 296, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 304, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6288,6 +6321,7 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 264, "bb_hsvc_HostSlots.ti
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 272, "bb_hsvc_HostSlots.ticket_take: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, work_status) == 280, "bb_hsvc_HostSlots.work_status: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, outbound_authorize) == 288, "bb_hsvc_HostSlots.outbound_authorize: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, hook_child) == 296, "bb_hsvc_HostSlots.hook_child: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");

@@ -206,7 +206,13 @@ impl<S: DriverSteps, F: FarEnd, C> PlaneUnits<'_, S, F, C> {
         self.screen_gates(&hooks, &view, ran).await?;
 
         for (timeout, hook) in &hooks.rewrites {
-            let req = view.request(hooks.request_id, &view.pool, true, None);
+            let req = view.request(
+                hooks.request_id,
+                &view.pool,
+                true,
+                None,
+                &crate::hooks::RequestedSignals::default(),
+            );
             if req.prompt.is_some() {
                 (hooks.reads)(hook.name(), principal.as_deref(), &view.dialect, false)
                     .await

@@ -404,7 +404,7 @@ pub(crate) fn ranking_on_axis(
         |module, label, settings, budget| axis.open(module, label, settings, budget),
     )?;
     Ok((
-        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name),
+        crate::plane_driver::hooks::policy::HookPolicy::policy(calls, name, None),
         budget,
     ))
 }

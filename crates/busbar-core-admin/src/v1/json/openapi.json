@@ -1658,7 +1658,8 @@
                   "candidate_latency_p95_ms",
                   "routing_policy",
                   "response_tokens_out",
-                  "candidate_route_cost"
+                  "candidate_route_cost",
+                  "request_text_complete"
                 ]
               },
               "default": []
@@ -3975,7 +3976,10 @@
                   "default": []
                 },
                 "upstream_credentials": {
-                  "const": "own"
+                  "enum": [
+                    "own",
+                    "connection"
+                  ]
                 },
                 "pools": {
                   "type": "object",
@@ -4027,7 +4031,79 @@
                     "pattern": "^[A-Za-z0-9.-]+$"
                   }
                 ]
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "upstream_credentials"
+                    ],
+                    "properties": {
+                      "upstream_credentials": {
+                        "const": "connection"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "own"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "else": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "connection"
+                          }
+                        }
+                      },
+                      "then": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      },
+                      "else": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
             },
             "validate_section": {
               "type": "object",
@@ -4040,7 +4116,10 @@
                   "default": []
                 },
                 "upstream_credentials": {
-                  "const": "own"
+                  "enum": [
+                    "own",
+                    "connection"
+                  ]
                 }
               },
               "additionalProperties": {
@@ -4059,7 +4138,79 @@
                     "pattern": "^[A-Za-z0-9.-]+$"
                   }
                 ]
-              }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "upstream_credentials"
+                    ],
+                    "properties": {
+                      "upstream_credentials": {
+                        "const": "connection"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "own"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "else": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "connection"
+                          }
+                        }
+                      },
+                      "then": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      },
+                      "else": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
             },
             "server": {
               "type": "object",
@@ -4419,6 +4570,7 @@
                 "upstream_credentials": {
                   "enum": [
                     "own",
+                    "connection",
                     null
                   ]
                 },
@@ -4428,6 +4580,19 @@
                     "type": "string"
                   },
                   "default": []
+                },
+                "oauth": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/PlaneInput:mcp/$defs/oauth_connection"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "apps": {
+                  "$ref": "#/$defs/PlaneInput:mcp/$defs/apps"
                 }
               },
               "additionalProperties": false,
@@ -4496,6 +4661,9 @@
                         "type": "null"
                       },
                       "tls": {
+                        "type": "null"
+                      },
+                      "oauth": {
                         "type": "null"
                       }
                     }
@@ -4692,6 +4860,40 @@
                       }
                     }
                   }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "upstream_credentials"
+                    ],
+                    "properties": {
+                      "upstream_credentials": {
+                        "const": "connection"
+                      }
+                    }
+                  },
+                  "then": {
+                    "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                  }
+                },
+                {
+                  "if": {
+                    "required": [
+                      "upstream_credentials"
+                    ],
+                    "properties": {
+                      "upstream_credentials": {
+                        "const": "own"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "oauth": {
+                        "type": "null"
+                      }
+                    }
+                  }
                 }
               ]
             },
@@ -4794,6 +4996,10 @@
                     }
                   },
                   "default": []
+                },
+                "meta": {
+                  "type": "object",
+                  "description": "Approved MCP tool metadata, including versioned Apps visibility and resource identity."
                 }
               },
               "additionalProperties": false,
@@ -5172,36 +5378,50 @@
                       "type": "object"
                     }
                   },
-                  "additionalProperties": false,
                   "required": [
                     "module"
-                  ]
+                  ],
+                  "additionalProperties": false
                 },
                 {
                   "type": "object",
                   "properties": {
-                    "env": {
-                      "type": "string",
-                      "pattern": "\\S"
+                    "template": {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "object",
+                          "properties": {
+                            "module": {
+                              "type": "string",
+                              "pattern": "\\S"
+                            },
+                            "setting": {
+                              "type": "string",
+                              "pattern": "\\S"
+                            }
+                          },
+                          "required": [
+                            "module",
+                            "setting"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "source"
+                      ],
+                      "additionalProperties": false
                     }
                   },
-                  "additionalProperties": false,
                   "required": [
-                    "env"
-                  ]
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "file": {
-                      "type": "string",
-                      "pattern": "\\S"
-                    }
-                  },
-                  "additionalProperties": false,
-                  "required": [
-                    "file"
-                  ]
+                    "template"
+                  ],
+                  "additionalProperties": false
                 }
               ]
             },
@@ -5216,7 +5436,10 @@
                   "default": []
                 },
                 "upstream_credentials": {
-                  "const": "own"
+                  "enum": [
+                    "own",
+                    "connection"
+                  ]
                 },
                 "pools": false
               },
@@ -5237,7 +5460,79 @@
                   }
                 ]
               },
-              "description": "Plane-owned raw tools section grammar; host-injected pools are not writable registration input. Core security/source policy, reserved-name checks, SecretRef resolution and module validation still apply."
+              "description": "Plane-owned raw tools section grammar; host-injected pools are not writable registration input. Core security/source policy, reserved-name checks, SecretRef resolution and module validation still apply.",
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "upstream_credentials"
+                    ],
+                    "properties": {
+                      "upstream_credentials": {
+                        "const": "connection"
+                      }
+                    }
+                  },
+                  "then": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "own"
+                          }
+                        }
+                      },
+                      "then": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      },
+                      "else": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      }
+                    }
+                  },
+                  "else": {
+                    "properties": {
+                      "hooks": {},
+                      "upstream_credentials": {},
+                      "pools": {}
+                    },
+                    "additionalProperties": {
+                      "if": {
+                        "required": [
+                          "upstream_credentials"
+                        ],
+                        "properties": {
+                          "upstream_credentials": {
+                            "const": "connection"
+                          }
+                        }
+                      },
+                      "then": {
+                        "$ref": "#/$defs/PlaneInput:mcp/$defs/connection_server"
+                      },
+                      "else": {
+                        "properties": {
+                          "oauth": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
             },
             "user_configuration": {
               "type": "object",
@@ -5301,6 +5596,131 @@
               "additionalProperties": true,
               "x-busbar-partial": true,
               "description": "The supported plane-owned blocks within a complete deploy document. This is not a complete host boot schema."
+            },
+            "oauth_connection": {
+              "type": "object",
+              "properties": {
+                "issuer": {
+                  "type": "string",
+                  "pattern": "^https://[^/?#@\\s]+(?:/[^?#\\s]*)?$"
+                },
+                "resource": {
+                  "type": "string",
+                  "pattern": "^https://[^/?#@\\s]+(?:[/?][^#\\s]*)?$"
+                },
+                "client_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "redirect_uri": {
+                  "type": "string",
+                  "pattern": "^(?:https://[^/?#@\\s]+|http://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]+)?)(?:[/?][^#\\s]*)?$"
+                },
+                "authorization_endpoint": {
+                  "type": "string",
+                  "pattern": "^https://[^/?#@\\s]+(?:[/?][^#\\s]*)?$"
+                },
+                "token_endpoint": {
+                  "type": "string",
+                  "pattern": "^https://[^/?#@\\s]+(?:[/?][^#\\s]*)?$"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[\\x21\\x23-\\x5B\\x5D-\\x7E]+$"
+                  },
+                  "default": []
+                }
+              },
+              "required": [
+                "issuer",
+                "resource",
+                "client_id",
+                "redirect_uri",
+                "authorization_endpoint",
+                "token_endpoint"
+              ],
+              "additionalProperties": false,
+              "description": "Explicit public-client OAuth registration using PKCE S256. Configured endpoints are authoritative; this does not enable metadata discovery or confidential-client authentication."
+            },
+            "connection_server": {
+              "type": "object",
+              "required": [
+                "oauth",
+                "url"
+              ],
+              "properties": {
+                "oauth": {
+                  "$ref": "#/$defs/PlaneInput:mcp/$defs/oauth_connection"
+                },
+                "url": {
+                  "type": "string",
+                  "pattern": "^https://[^/?#@\\s]+(?:[/?][^#\\s]*)?$"
+                },
+                "transport": {
+                  "enum": [
+                    "streamable_http",
+                    null
+                  ]
+                },
+                "token_exchange": {
+                  "type": "null"
+                }
+              }
+            },
+            "apps": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "spec_version": {
+                  "const": "2026-01-26",
+                  "default": "2026-01-26"
+                },
+                "mime_types": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "const": "text/html;profile=mcp-app"
+                  }
+                },
+                "max_resource_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 8388608
+                },
+                "allow_legacy_resource_meta": {
+                  "type": "boolean",
+                  "default": false
+                },
+                "resources": {
+                  "type": "object",
+                  "maxProperties": 1024,
+                  "propertyNames": {
+                    "pattern": "^ui://"
+                  },
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "digest": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "pattern": "^sha256:[a-fA-F0-9]{64}$"
+                      },
+                      "ui": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
             }
           },
           "description": "Lifecycle tools settings and the dealt validate envelope. Cross-entry published-name uniqueness, URI/base64 validity, schema annotations, matching local-program keys, duration values and cross-field numerical comparisons remain lifecycle judgments.",
@@ -8450,6 +8870,13 @@
               }
             ],
             "description": "The summed remainder BEYOND the `by_key` cap, present exactly when `by_key_truncated`, so\nevery unit of consumption is attributable at least to \"others\" (FinOps completeness:\n`total == sum(by_key) + others`)."
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ObservationUsageView"
+            },
+            "description": "Immutable observation accounting, already included in the totals above. Omitted when\nempty. These rows preserve the original serving subject separately from the priced one;\na rate-card snapshot query never reprices their committed charges."
           }
         },
         "required": [
@@ -8841,6 +9268,56 @@
           "spend_micros"
         ],
         "description": "One key's row of the per-key aggregation: the key id/name (never the secret) + its counts."
+      },
+      "ObservationUsageView": {
+        "type": "object",
+        "properties": {
+          "key_id": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "instance": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "serving_subject": {
+            "type": "string"
+          },
+          "rated_subject": {
+            "type": "string"
+          },
+          "accounting_time": {
+            "type": "string",
+            "description": "Original accounting time, as an exact epoch-seconds integer string."
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Disjoint raw class counts, as canonical decimal strings. No derived parents are inserted."
+          },
+          "spend_micros": {
+            "type": "string",
+            "description": "Committed spend in micro-units, as an exact decimal string (up to three fractional places)."
+          }
+        },
+        "required": [
+          "key_id",
+          "group",
+          "instance",
+          "destination",
+          "serving_subject",
+          "rated_subject",
+          "accounting_time",
+          "counts",
+          "spend_micros"
+        ],
+        "description": "An authoritative dated observation total. Decimal strings preserve exact numeric values\nin clients whose JSON number representation cannot represent every integer or decimal."
       },
       "EffectiveConfigView": {
         "type": "object",
@@ -13028,7 +13505,8 @@
                 "candidate_latency_p95_ms",
                 "routing_policy",
                 "response_tokens_out",
-                "candidate_route_cost"
+                "candidate_route_cost",
+                "request_text_complete"
               ]
             },
             "default": []

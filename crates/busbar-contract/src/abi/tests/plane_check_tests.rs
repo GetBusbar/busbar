@@ -3988,3 +3988,102 @@ fn a_within_pin_with_an_empty_entry_is_refused() {
         Some(vec!["10.0.0.1".parse().unwrap()])
     );
 }
+
+#[test]
+fn class_parent_declarations_require_a_same_family_forest() {
+    let classes = [
+        BillableClass {
+            class: s("aggregate"),
+            family: s("count"),
+        },
+        BillableClass {
+            class: s("part_a"),
+            family: s("count"),
+        },
+        BillableClass {
+            class: s("part_b"),
+            family: s("count"),
+        },
+        BillableClass {
+            class: s("elapsed"),
+            family: s("duration"),
+        },
+    ];
+    let validate = |edges: &[ClassParent], fees: &[AbiStr]| {
+        // SAFETY: all strings in these fixture declarations are static literals.
+        unsafe { check_class_parents(edges, &classes, fees) }
+    };
+    assert_eq!(validate(&[], &[]), Ok(()));
+    assert_eq!(
+        validate(
+            &[
+                ClassParent {
+                    child: 1,
+                    parent: 0
+                },
+                ClassParent {
+                    child: 2,
+                    parent: 1
+                }
+            ],
+            &[]
+        ),
+        Ok(())
+    );
+    for edges in [
+        vec![ClassParent {
+            child: 4,
+            parent: 0,
+        }],
+        vec![ClassParent {
+            child: 1,
+            parent: 4,
+        }],
+        vec![ClassParent {
+            child: 1,
+            parent: 1,
+        }],
+        vec![ClassParent {
+            child: 1,
+            parent: 3,
+        }],
+        vec![
+            ClassParent {
+                child: 1,
+                parent: 0,
+            },
+            ClassParent {
+                child: 1,
+                parent: 2,
+            },
+        ],
+        vec![
+            ClassParent {
+                child: 1,
+                parent: 2,
+            },
+            ClassParent {
+                child: 2,
+                parent: 0,
+            },
+            ClassParent {
+                child: 0,
+                parent: 1,
+            },
+        ],
+    ] {
+        assert!(validate(&edges, &[]).is_err(), "{edges:?}");
+    }
+    for fee in ["part_a", "aggregate"] {
+        assert!(validate(
+            &[ClassParent {
+                child: 1,
+                parent: 0
+            }],
+            &[s(fee)]
+        )
+        .is_err());
+    }
+    // SAFETY: all strings in these fixture declarations are static literals.
+    assert!(unsafe { check_class_parents(&[], &[classes[0], classes[0]], &[]) }.is_err());
+}

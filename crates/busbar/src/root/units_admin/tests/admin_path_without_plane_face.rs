@@ -1201,6 +1201,7 @@ const A_SERVED_PLANE: busbar_contract::plane::PlaneDeclaration =
             class: "calls",
             family: "count",
         }],
+        class_parents: &[],
         fee_units: &[busbar_contract::plane::PER_REQUEST],
         metric_families: &[],
         record_kinds: &["note"],

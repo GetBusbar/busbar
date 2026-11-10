@@ -61,6 +61,7 @@ static PROBE: PlaneDecl = PlaneDecl {
         card_kid_prefix: None,
         owned_config_sections: &[],
         billable_classes: &[],
+        class_parents: &[],
         fee_units: &[],
         metric_families: &[],
         record_kinds: &[],

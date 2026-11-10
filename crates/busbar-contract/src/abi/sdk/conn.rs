@@ -216,7 +216,8 @@ snapshot_table!(
     ticket_mint,
     ticket_take,
     work_status,
-    outbound_authorize
+    outbound_authorize,
+    hook_child
 );
 
 snapshot_table!(

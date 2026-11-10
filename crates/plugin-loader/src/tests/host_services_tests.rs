@@ -3688,6 +3688,7 @@ fn slots_of(slots: &HostSlots) -> [Option<svc::ServiceFn>; SERVICES as usize] {
         slots.ticket_take,
         slots.work_status,
         slots.outbound_authorize,
+        slots.hook_child,
     ]
 }
 
@@ -4065,4 +4066,64 @@ fn outbound_prepare_accepts_sealed_body_once_and_rejects_invalid_action_fields()
     input.credential = blob(b"different sealed body");
     assert_eq!(invoke(&input).0.outcome(), Outcome::Fault);
     assert_eq!(d.route.provider.scoped.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn hook_child_requires_exact_invocation_and_kind_and_replays_one_service_result() {
+    use busbar_contract::abi::mechanism::KindCode;
+    #[derive(Debug, Default)]
+    struct Child(AtomicUsize);
+    impl busbar_contract::services::HookChildInvocation for Child {
+        fn request(&self, _: &Caller, body: Vec<u8>, _: Later) -> Ran {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let mut answer = Stored::ready(201);
+            answer.bytes = body;
+            Ran::Now(answer)
+        }
+    }
+    let d = double_for(KindCode::Hook);
+    let child = Arc::new(Child::default());
+    let caller = d.wake.caller.get().unwrap();
+    let mut buf = [0; 32];
+    let mut input = svc::HookChildIn {
+        head: head(op::HOOK_CHILD, TICKET, 0, size_of::<svc::HookChildIn>()),
+        body: blob(b"bounded"),
+        into: bufs(&mut buf, &mut []),
+    };
+    let call = |input: &svc::HookChildIn| {
+        let mut out = blank();
+        // SAFETY: initialized input and writable output/response buffers remain live here.
+        let result = unsafe {
+            HOST_SLOTS.hook_child.unwrap()(d.ctx, std::ptr::from_ref(input).cast(), &mut out)
+        };
+        (result.outcome(), out)
+    };
+    assert_eq!(call(&input).0, Outcome::Refused);
+    let other = Caller::for_test(Arc::from("double"), KindCode::Hook);
+    d.route.store.bind_child(TICKET, &other, child.clone());
+    assert_eq!(
+        call(&input).0,
+        Outcome::Refused,
+        "same name cannot forge incarnation"
+    );
+    d.route.store.bind_child(TICKET, caller, child.clone());
+    assert_eq!(call(&input).0, Outcome::Ready);
+    assert_eq!(call(&input).0, Outcome::Ready);
+    assert_eq!(child.0.load(Ordering::SeqCst), 1);
+    assert_eq!(&buf[..7], b"bounded");
+    input.head.handle.ticket.generation += 1;
+    assert_eq!(
+        call(&input).0,
+        Outcome::Refused,
+        "ticket cannot adopt another invocation"
+    );
+    input.head.handle.ticket = TICKET;
+    d.route.store.unbind_child(TICKET);
+    assert_eq!(
+        call(&input).0,
+        Outcome::Refused,
+        "cached result cannot outlive grant"
+    );
+    assert!(host_slots(KindCode::Hook).unit_nest.is_none());
+    assert!(host_slots(KindCode::Plane).hook_child.is_none());
 }

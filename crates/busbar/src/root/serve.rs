@@ -56,6 +56,9 @@ pub const DEFAULT_EGRESS_CLASS: u32 = 0;
 #[path = "serve_neutral.rs"]
 pub(crate) mod neutral;
 
+#[path = "serve_observations.rs"]
+mod observations;
+
 #[must_use]
 pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
     KernelServices::new()
@@ -960,6 +963,7 @@ fn bound_conns(
 }
 
 pub struct DoorLive {
+    observations: BTreeMap<String, busbar_kernel::plane_driver::ObservationPolicy>,
     pub(crate) ticket_nonce: Arc<()>,
     pub section: serde_yaml::Value,
 
@@ -988,6 +992,7 @@ pub struct ApplyReach {
 }
 
 pub struct DoorApply {
+    observations_supported: bool,
     plugin: DoorPlane,
     dispatcher: Arc<Dispatcher>,
     served_facts: crate::root::loader::dispatch::kinds::plane::ServedFacts,
@@ -1257,7 +1262,22 @@ impl DoorApply {
                 &self.units,
             );
         }
+        let observations = observations::parse(
+            self.plugin
+                .service_caller()
+                .ok_or_else(|| "unbound plane caller".to_owned())?
+                .namespace(),
+            section,
+            &facts,
+            &pools,
+        )?;
+        if !observations.is_empty() && !self.observations_supported {
+            return Err("usage observations require an atomic durable store"
+                .to_owned()
+                .into());
+        }
         Ok(DoorLive {
+            observations,
             ticket_nonce: Arc::new(()),
             section: section.clone(),
             generation,
@@ -1372,6 +1392,13 @@ impl DoorAppliers {
                 &p.units,
             ) {
                 Ok(mut live) => {
+                    if !live.observations.is_empty() && !p.observations_supported {
+                        tracing::error!(
+                            plane = name,
+                            "usage observations require an atomic durable store"
+                        );
+                        continue;
+                    }
                     arm_probes(&p.driver, facts, &mut live, Some(egress), &p.probe_schedule);
                     *p.live
                         .write()
@@ -1443,6 +1470,63 @@ pub struct Served {
     /// (`App::serve_tables`) the composition was lent, held here for the data listener's public
     /// mount ([`public_routes`]).
     pub tables: ServeTables,
+}
+
+/// Validate configured child bindings against opened, typed plane facts before publication.
+fn validate_hook_children(served: &Served, app: &busbar_kernel::state::App) -> Result<(), String> {
+    use busbar_kernel::guest::{Claimant, GuestList, Matched};
+    for (name, hook) in &app.hook_registry {
+        let Some(grant) = hook.child_dispatch.as_ref() else {
+            continue;
+        };
+        let at = format!("hooks.{name}.child_dispatch");
+        grant.validate().map_err(|why| format!("{at}: {why}"))?;
+        if hook.kind != busbar_kernel::config::HookKind::Gate
+            || !hook.fires_at_stage(busbar_kernel::config::HookStage::Request)
+            || app.governance.is_none()
+        {
+            return Err(format!(
+                "{at}: child dispatch requires a request-stage gate and governance"
+            ));
+        }
+        let plane = served
+            .planes
+            .iter()
+            .find(|plane| plane.instance == grant.plane)
+            .ok_or_else(|| format!("{at}: unknown configured plane '{}'", grant.plane))?;
+        if !plane
+            .live
+            .current()
+            .pools
+            .entries()
+            .contains(&grant.target_binding)
+        {
+            return Err(format!(
+                "{at}: unknown target binding '{}' in plane '{}'",
+                grant.target_binding, grant.plane
+            ));
+        }
+        let lines = plane
+            .snapshot
+            .claims
+            .iter()
+            .enumerate()
+            .filter(|(_, claim)| routed(claim))
+            .map(|(rung, claim)| {
+                claim_line(&plane.instance, rung as u32, claim, &[], &[], &[]).map(|(line, _)| line)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let claims = GuestList::seal(lines).map_err(|_| format!("{at}: ambiguous plane claims"))?;
+        let path = grant.target.split('?').next().unwrap_or_default();
+        if !matches!(claims.matched(&grant.operation, path, &[]), Matched::Line(line) if matches!(&line.claimant, Claimant::Plane(instance) if instance == &grant.plane))
+        {
+            return Err(format!(
+                "{at}: operation '{}' target '{}' is not a claim of plane '{}'",
+                grant.operation, grant.target, grant.plane
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -2011,6 +2095,9 @@ pub fn pools_into(
 pub fn plane_settings(section: &serde_yaml::Value) -> serde_yaml::Value {
     use busbar_contract::section::{POOL_MEMBERS_KEY, POOL_MEMBER_NAME_KEY, RESERVED_POOLS_KEY};
     let mut section = section.clone();
+    if let Some(map) = section.as_mapping_mut() {
+        map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+    }
     let pools = section
         .as_mapping_mut()
         .and_then(|m| m.get_mut(RESERVED_POOLS_KEY))
@@ -2341,6 +2428,11 @@ pub(crate) async fn compose_planes_over(
             scope,
             kernel.units(),
         )?;
+        if !live.observations.is_empty() && !plane_money.observations_supported() {
+            return Err(format!(
+                "{instance}: usage observations require an atomic durable store"
+            ));
+        }
         let driver = Arc::new(driver);
         kernel.register_plane_cleanup(Arc::downgrade(&driver));
         let probe_schedule = Arc::new(busbar_kernel::probe::ProbeSchedule::new(
@@ -2360,6 +2452,7 @@ pub(crate) async fn compose_planes_over(
             upgrades: e.reach.upgrades.clone(),
         });
         let live = Arc::new(DoorApply {
+            observations_supported: plane_money.observations_supported(),
             plugin: plugin.clone(),
             dispatcher: Arc::clone(dispatcher),
             served_facts: served_facts.clone(),
@@ -2617,7 +2710,9 @@ fn seal_live(
         Some((e, shown)) => (Some(e), shown),
         None => (None, None),
     };
+    let observations = observations::parse(instance, section, &facts, &pools)?;
     Ok(DoorLive {
+        observations,
         ticket_nonce: Arc::new(()),
         section: section.clone(),
         generation,
@@ -2724,14 +2819,23 @@ fn settings_of(
     sections: &BTreeMap<&'static str, serde_yaml::Value>,
 ) -> serde_yaml::Value {
     if !handed_keyed(facts) {
-        return section.clone();
+        let mut settings = section.clone();
+        if let Some(map) = settings.as_mapping_mut() {
+            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+        }
+        return settings;
     }
     let own = if facts.section == busbar_contract::section::RESERVED_POOLS_KEY {
-        section.clone()
+        let mut own = section.clone();
+        if let Some(map) = own.as_mapping_mut() {
+            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
+        }
+        own
     } else {
         let mut own = plane_settings(section);
         if let Some(map) = own.as_mapping_mut() {
             map.remove(busbar_contract::section::RESERVED_WORK_KEY);
+            map.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY);
         }
         own
     };
@@ -2760,7 +2864,17 @@ fn walked_section(
         Some(models) if facts.section == RESERVED_POOLS_KEY => {
             let mut uniform = serde_yaml::Mapping::new();
             uniform.insert(RESERVED_MODELS_KEY.into(), models.clone());
-            uniform.insert(RESERVED_POOLS_KEY.into(), section.clone());
+            let mut pools = section.clone();
+            if let Some(policy) = pools
+                .as_mapping_mut()
+                .and_then(|m| m.remove(busbar_contract::section::USAGE_OBSERVATIONS_KEY))
+            {
+                uniform.insert(
+                    busbar_contract::section::USAGE_OBSERVATIONS_KEY.into(),
+                    policy,
+                );
+            }
+            uniform.insert(RESERVED_POOLS_KEY.into(), pools);
             serde_yaml::Value::Mapping(uniform)
         }
         _ => section.clone(),
@@ -2936,7 +3050,21 @@ impl busbar_kernel::host_services::NestRoute for DoorNests {
             return;
         };
 
-        let child = async move { done(routes.nested(nest, bound).await) };
+        let child = async move {
+            let limits = nest.constraints.clone();
+            let run = routes.nested(nest, bound);
+            let answer = if let Some(limits) = limits {
+                tokio::select! {
+                    biased;
+                    _ = limits.cancellation.cancelled() => busbar_kernel::host_services::NestReply::Failed("hook child cancelled"),
+                    _ = tokio::time::sleep_until(limits.deadline.into()) => busbar_kernel::host_services::NestReply::Failed("hook child deadline exceeded"),
+                    answer = run => answer,
+                }
+            } else {
+                run.await
+            };
+            done(answer);
+        };
         drop(match &self.detached {
             Some(detached) => detached.spawn_on(&self.runtime, child),
             None => self.runtime.spawn(child),
@@ -3306,6 +3434,7 @@ impl ListenerPlan {
     ) -> Result<(), String> {
         use busbar_contract::abi::transport::route::PATH_EXACT;
         use busbar_kernel::guest::{Claimant, Line, LineAuth, Route};
+        validate_hook_children(served, app)?;
         let cfg = self.config(app)?;
         let chain: Vec<_> = cfg
             .data_chain
@@ -3476,6 +3605,7 @@ impl ListenerPlan {
         let Some(served) = self.served.get() else {
             return Ok(());
         };
+        validate_hook_children(served, app)?;
         let cfg = self.config(app)?;
         if cfg.listener_routes.get().is_some() {
             return Ok(());
@@ -5253,6 +5383,12 @@ impl DataRoutes {
             Arc::clone(&live.ticket_nonce),
         );
         let far = DoorFar {
+            observations: Some(observations::UnitBinding {
+                served,
+                live: &live,
+                unit,
+                selected_member: OnceLock::new(),
+            }),
             authorization: Arc::clone(served.kernel.units()),
             egress: live.egress.as_deref(),
             shown: live.shown.as_ref(),
@@ -5707,6 +5843,19 @@ impl DataRoutes {
         let Some((plane, claim)) = door else {
             return NestReply::Unserved(NEST_UNSERVED);
         };
+        if let Some(limits) = &nest.constraints {
+            if limits.grant.plane != self.served.planes[plane].instance
+                || limits.grant.operation != nest.ask.verb
+                || limits.grant.target != nest.ask.target
+                || limits.grant.validate().is_err()
+            {
+                return NestReply::Unserved("hook child target is outside its grant");
+            }
+        }
+        let reply_bound = nest
+            .constraints
+            .as_ref()
+            .map_or(NEST_REPLY_MAX, |c| c.grant.max_output_bytes);
         let principal = match nest.principal.as_deref() {
             Some(key) => PrincipalId::new(key.id.as_str()),
             None => PrincipalId::new(AuthPrincipal(None).actor_id()),
@@ -5729,6 +5878,8 @@ impl DataRoutes {
         let nesting = Nesting {
             parent,
             depth: nest.depth,
+            ancestry: nest.ancestry,
+            constraints: nest.constraints,
         };
         let key = nest.principal;
         let (caller, reply) = IngressCaller::new();
@@ -5748,7 +5899,7 @@ impl DataRoutes {
                 )
                 .await
         };
-        reply.answer_nested(Box::pin(unit)).await
+        reply.answer_nested_bound(Box::pin(unit), reply_bound).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5817,9 +5968,21 @@ impl DataRoutes {
             Arc::clone(&live.ticket_nonce),
         );
         if let Some(n) = &nesting {
-            steps = steps.under(n.parent.cell());
+            served
+                .kernel
+                .units()
+                .set_child_ancestry(unit.get(), n.ancestry.clone());
+            steps = steps
+                .under(n.parent.cell())
+                .with_child_constraints(n.constraints.clone());
         }
         let far = DoorFar {
+            observations: Some(observations::UnitBinding {
+                served,
+                live: &live,
+                unit,
+                selected_member: OnceLock::new(),
+            }),
             authorization: Arc::clone(served.kernel.units()),
             egress: live.egress.as_deref(),
             shown: live.shown.as_ref(),
@@ -5943,6 +6106,8 @@ fn journal_refused(
 struct Nesting {
     parent: crate::root::plane_node::Parent,
     depth: u32,
+    ancestry: Vec<Arc<str>>,
+    constraints: Option<busbar_kernel::hook_child::Constraints>,
 }
 
 pub(crate) fn report_of(
@@ -5978,6 +6143,7 @@ pub(crate) fn report_of(
 }
 
 struct DoorFar<'d, 's> {
+    observations: Option<observations::UnitBinding<'d>>,
     egress: Option<&'d Egress>,
 
     shown: Option<&'d crate::root::model_egress::ModelShown>,
@@ -5998,6 +6164,7 @@ impl<'d> DoorFar<'d, '_> {
                 let pool = egress_pool(self.steps.plane(), &routed);
                 let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
                 let mut far = egress.unit(UnitRoute {
+                    allowed_member: self.steps.child_member(),
                     unit: self.unit,
                     pool,
                     connection_required: self.steps.connection_required(),
@@ -6048,7 +6215,19 @@ impl FarEnd for DoorFar<'_, '_> {
 
     async fn member(&self, token: &Pass<Route>, attempt_no: u32) -> Pick {
         match self.far() {
-            Some(far) => far.member(token, attempt_no).await,
+            Some(far) => {
+                let picked = far.member(token, attempt_no).await;
+                if let Pick::Member { name, .. } = &picked {
+                    if self
+                        .observations
+                        .as_ref()
+                        .is_some_and(|binding| !binding.selected(name))
+                    {
+                        return spent();
+                    }
+                }
+                picked
+            }
             None => spent(),
         }
     }
@@ -6073,6 +6252,13 @@ impl FarEnd for DoorFar<'_, '_> {
         match self.far() {
             Some(far) => far.next(token).await,
             None => None,
+        }
+    }
+
+    async fn followup(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
+        match self.far() {
+            Some(far) => far.followup(token, request).await,
+            None => false,
         }
     }
 
@@ -6522,7 +6708,16 @@ impl IngressReply {
         self.answer_collecting(unit).await
     }
 
-    async fn answer_nested(self, mut unit: DrivenUnit) -> busbar_kernel::host_services::NestReply {
+    #[cfg(test)]
+    async fn answer_nested(self, unit: DrivenUnit) -> busbar_kernel::host_services::NestReply {
+        self.answer_nested_bound(unit, NEST_REPLY_MAX).await
+    }
+
+    async fn answer_nested_bound(
+        self,
+        mut unit: DrivenUnit,
+        bound: usize,
+    ) -> busbar_kernel::host_services::NestReply {
         use busbar_kernel::host_services::NestReply;
         let IngressReply {
             mut head, mut body, ..
@@ -6534,7 +6729,7 @@ impl IngressReply {
         };
         let rendered = match first {
             Ok(Some((status, fields))) => {
-                return match collect_nested(body, unit).await {
+                return match collect_nested_bound(body, unit, bound).await {
                     Some(body) => NestReply::Answered {
                         status,
                         fields,
@@ -6546,7 +6741,7 @@ impl IngressReply {
             Ok(None) => unit.await,
             Err(rendered) => match head.try_recv() {
                 Ok((status, fields)) => {
-                    let mut whole = NestedBody::default();
+                    let mut whole = NestedBody::bounded(bound);
                     while let Ok(piece) = body.try_recv() {
                         if !whole.push(piece) {
                             return NestReply::Failed(NEST_UNREAD);
@@ -6566,7 +6761,7 @@ impl IngressReply {
                 status,
                 fields,
                 body,
-            }) if body.len() <= NEST_REPLY_MAX => NestReply::Answered {
+            }) if body.len() <= bound => NestReply::Answered {
                 status,
                 fields,
                 body,
@@ -6739,8 +6934,17 @@ async fn collect(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Bytes
 
 /// A nested reply is opaque and bounded while its producer is still running. Owning the
 /// producer here makes an over-limit reply or a dropped collector cancel it synchronously.
-async fn collect_nested(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -> Option<Vec<u8>> {
-    let mut whole = NestedBody::default();
+#[cfg(test)]
+async fn collect_nested(body: mpsc::Receiver<Bytes>, unit: DrivenUnit) -> Option<Vec<u8>> {
+    collect_nested_bound(body, unit, NEST_REPLY_MAX).await
+}
+
+async fn collect_nested_bound(
+    mut body: mpsc::Receiver<Bytes>,
+    mut unit: DrivenUnit,
+    bound: usize,
+) -> Option<Vec<u8>> {
+    let mut whole = NestedBody::bounded(bound);
     loop {
         tokio::select! {
             biased;
@@ -6766,16 +6970,23 @@ async fn collect_nested(mut body: mpsc::Receiver<Bytes>, mut unit: DrivenUnit) -
 
 #[derive(Default)]
 struct NestedBody {
+    bound: Option<usize>,
     length: usize,
     whole: Whole,
 }
 
 impl NestedBody {
+    fn bounded(bound: usize) -> Self {
+        Self {
+            bound: Some(bound),
+            ..Self::default()
+        }
+    }
     fn push(&mut self, piece: Bytes) -> bool {
         let Some(length) = self
             .length
             .checked_add(piece.len())
-            .filter(|n| *n <= NEST_REPLY_MAX)
+            .filter(|n| *n <= self.bound.unwrap_or(NEST_REPLY_MAX))
         else {
             return false;
         };

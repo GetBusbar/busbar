@@ -548,6 +548,7 @@ pub fn apply_pre_resolve_sections(deploy: &mut DeployCfg, doc: &OverlayDoc) {
         deploy.hooks.insert(
             name.clone(),
             super::HookDefCfg {
+                child_dispatch: hook.child_dispatch.clone(),
                 module: hook.plugin.clone(),
                 settings: hook.settings.clone(),
                 groups: hook.groups.clone(),

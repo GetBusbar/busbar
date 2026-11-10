@@ -148,7 +148,8 @@ impl MutationLimiter {
             state.windows.retain(|_, (w, _, _)| *w >= window);
         }
         state.latest_window = window;
-        let entry = state.windows
+        let entry = state
+            .windows
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));
         if entry.1 >= class.limit() {

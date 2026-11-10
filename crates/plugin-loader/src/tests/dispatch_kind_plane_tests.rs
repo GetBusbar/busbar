@@ -1744,3 +1744,39 @@ fn snapshot_registration_static_routes_validate_security_metadata() {
     })
     .is_ok());
 }
+
+#[test]
+fn class_parent_tail_refuses_invalid_graphs_before_resolving_indices() {
+    use busbar_contract::abi::plane::{BillableClass, ClassParent};
+    let classes = [
+        BillableClass {
+            class: AbiStr::of("total"),
+            family: AbiStr::of("count"),
+        },
+        BillableClass {
+            class: AbiStr::of("part"),
+            family: AbiStr::of("count"),
+        },
+    ];
+    let good = [ClassParent {
+        child: 1,
+        parent: 0,
+    }];
+    let bad = [ClassParent {
+        child: 1,
+        parent: 99,
+    }];
+    for (edges, valid) in [(&good, true), (&bad, false)] {
+        let result = bounded_tail_context(|tail| {
+            tail.billable_classes = classes.as_ptr();
+            tail.billable_classes_len = classes.len();
+            tail.class_parents = edges.as_ptr();
+            tail.class_parents_len = edges.len();
+        });
+        assert_eq!(result.is_ok(), valid);
+    }
+    assert!(bounded_tail_context(|tail| {
+        tail.class_parents_len = 1;
+    })
+    .is_err());
+}

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::hook::{
-    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
+    VERB_HAS_REJECT_STATUS, VERB_PREFER, VERB_PRIORITIZE, VERB_REJECT, VERB_RESTRICT, VERB_REWRITE,
 };
 use busbar_contract::abi::host::hook::{CandidateStatics, DecideFrame, DecideView, NotifyFrame};
 use busbar_contract::abi::mechanism::call::Outcome;
@@ -19,6 +19,7 @@ pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
 
     name: Arc<str>,
+    child: Option<Arc<crate::hook_child::Grant>>,
 
     statics: std::sync::Mutex<Vec<Arc<CandidateStatics>>>,
 }
@@ -26,10 +27,15 @@ pub(crate) struct HookPolicy {
 const STATIC_HALVES: usize = 16;
 
 impl HookPolicy {
-    pub(crate) fn policy(calls: Arc<dyn HookCalls>, name: &str) -> Arc<dyn RoutingPolicy> {
+    pub(crate) fn policy(
+        calls: Arc<dyn HookCalls>,
+        name: &str,
+        child: Option<&crate::hook_child::Grant>,
+    ) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
             name: Arc::from(name),
+            child: child.cloned().map(Arc::new),
             statics: std::sync::Mutex::new(Vec::new()),
         })
     }
@@ -115,11 +121,16 @@ pub(super) fn decision(
             .collect();
         return RoutingDecision::Restrict { tags_any };
     }
-    if verbs & VERB_PREFER == 0 {
+    if verbs & (VERB_PREFER | VERB_PRIORITIZE) == 0 {
         return RoutingDecision::Abstain;
     }
     let valid: std::collections::HashSet<usize> = candidates.iter().map(|c| c.idx).collect();
-    RoutingDecision::from_ranked(order(), &valid)
+    match RoutingDecision::from_ranked(order(), &valid) {
+        RoutingDecision::Prefer(set) if verbs & VERB_PRIORITIZE != 0 => {
+            RoutingDecision::Prioritize(set)
+        }
+        decision => decision,
+    }
 }
 
 fn lower_transform(
@@ -163,8 +174,14 @@ impl RoutingPolicy for HookPolicy {
         ctx: &RoutingContext<'_>,
         budget: Duration,
     ) -> PolicyResult {
+        if crate::hook_child::recursive(&self.name) {
+            return Ok(RoutingDecision::Abstain);
+        }
         let statics = self.statics_for(candidates);
-        let frame = DecideFrame::first(DecideView::build_with(req, statics, candidates, ctx));
+        let frame =
+            DecideFrame::first(DecideView::build_with(req, statics, candidates, ctx)).with_child(
+                crate::hook_child::invocation(&self.name, self.child.as_ref(), budget),
+            );
         match self.calls.decide(frame, budget).await {
             Answered::Answer {
                 outcome: Outcome::Ready,

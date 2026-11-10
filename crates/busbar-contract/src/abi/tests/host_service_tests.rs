@@ -612,6 +612,7 @@ fn every_service_field_sits_at_its_op_index() {
             offset_of!(HostSlots, outbound_authorize),
             op::OUTBOUND_AUTHORIZE,
         ),
+        (offset_of!(HostSlots, hook_child), op::HOOK_CHILD),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");

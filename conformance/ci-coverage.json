@@ -140,7 +140,7 @@
       "repo": "GetBusbar/busbar-plane-mcp",
       "script": "testing/conformance/mcp.sh",
       "script_sha256": "55184d825e3761de70c0f468e34108e93886d164abe6baabfd55e545d27c9e2b",
-      "source_commit": "0e7b08999429b85abde5ec9cda2d0893097f2d1a",
+      "source_commit": "c9133e6ed1952045a16d8f66e7e9d518b41baf83",
       "stage": "qa"
     },
     "oidf-oauth2": {

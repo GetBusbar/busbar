@@ -582,6 +582,7 @@ pub struct DoorSteps<'s> {
     ticket_lineage: Mutex<Option<busbar_kernel::plane_driver::ReservedRequestLineage>>,
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     parent_admission: Option<&'s ParentAdmission<'s>>,
+    child_constraints: Option<busbar_kernel::hook_child::Constraints>,
     unit: Mutex<DoorUnit>,
 }
 
@@ -654,6 +655,7 @@ impl<'s> DoorSteps<'s> {
             ticket_lineage: Mutex::new(None),
             parent: None,
             parent_admission: None,
+            child_constraints: None,
             unit: Mutex::new(DoorUnit::default()),
         }
     }
@@ -674,6 +676,37 @@ impl<'s> DoorSteps<'s> {
     pub fn under(mut self, parent: &'s busbar_contract::caps::HoldCell) -> Self {
         self.parent = Some(parent);
         self
+    }
+
+    pub(crate) fn with_child_constraints(
+        mut self,
+        constraints: Option<busbar_kernel::hook_child::Constraints>,
+    ) -> Self {
+        self.child_constraints = constraints;
+        self
+    }
+
+    pub(crate) fn child_member(&self) -> Option<String> {
+        self.child_constraints
+            .as_ref()
+            .map(|c| c.grant.target_binding.clone())
+    }
+
+    fn child_live(&self) -> Result<(), Refusal> {
+        if let Some(c) = &self.child_constraints {
+            // DoorNests already binds the grant to the matched configured instance.
+            // The declared plane pricing key here may be shared by several instances.
+            if self.key.is_none()
+                || self.money.is_none()
+                || self.app.governance.is_none()
+                || !self.pools.entries().contains(&c.grant.target_binding)
+                || c.cancellation.is_cancelled()
+                || std::time::Instant::now() >= c.deadline
+            {
+                return Err(Refusal::new(ReasonCode::ScopeDenied));
+            }
+        }
+        Ok(())
     }
 
     pub fn parent_admission<'a>(
@@ -860,6 +893,21 @@ impl<'s> DoorSteps<'s> {
             let pool = self.charged_pool(label);
             let lanes = lanes_of(&routed);
             let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+            if let Some(c) = &self.child_constraints {
+                let lane = plane_lane(&self.facts.plane, &c.grant.target_binding);
+                let fee = u128::try_from(self.app.cost.request_fee_on(&self.facts.plane))
+                    .ok()
+                    .and_then(|n| n.checked_mul(busbar_kernel_ledger::cost::NANOS_PER_CENT));
+                let estimate = self
+                    .app
+                    .cost
+                    .price_counts_nanos(&lane, &units)
+                    .zip(fee)
+                    .and_then(|(usage, fee)| usage.checked_add(fee));
+                if !estimate.is_some_and(|n| n <= u128::from(c.grant.max_budget_micros) * 1_000) {
+                    return Err(Refusal::new(ReasonCode::Unpriced));
+                }
+            }
             match gov.try_admit_estimated_counts(
                 &self.app.cost,
                 key,
@@ -872,7 +920,9 @@ impl<'s> DoorSteps<'s> {
                 Err(LimitBlocked::Limit {
                     downgrade_to: Some(to),
                     ..
-                }) if self.downgrade_reaches(key, &to, &visited) => {
+                }) if self.child_constraints.is_none()
+                    && self.downgrade_reaches(key, &to, &visited) =>
+                {
                     routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
                     visited.push(to);
                 }
@@ -908,6 +958,11 @@ impl<'s> DoorSteps<'s> {
             },
             Arc::clone(&grant),
         );
+        if let Some(c) = &self.child_constraints {
+            money
+                .limit_unit_spend(ctx.key, c.grant.max_budget_micros)
+                .map_err(Refusal::new)?;
+        }
         let mut u = self.lock();
         u.grant = Some(grant);
         u.charged_unit = Some(ctx.key);
@@ -1008,6 +1063,11 @@ impl DriverSteps for DoorSteps<'_> {
                 .iter()
                 .filter(|entry| candidates.as_ref().is_none_or(|c| c.contains(entry)))
                 .filter(|entry| {
+                    self.child_constraints
+                        .as_ref()
+                        .is_none_or(|c| **entry == c.grant.target_binding)
+                })
+                .filter(|entry| {
                     self.facts.scope_candidate_granted(
                         self.pools,
                         self.key.as_deref(),
@@ -1065,7 +1125,18 @@ impl DriverSteps for DoorSteps<'_> {
                 }
             }
         }
-        let routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        let mut routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        self.child_live()?;
+        if let Some(c) = &self.child_constraints {
+            if let Some((_, members)) = &mut routed {
+                members.retain(|member| member == &c.grant.target_binding);
+                if members.is_empty() {
+                    return Err(Refusal::new(ReasonCode::ScopeDenied));
+                }
+            } else if local_entry.as_ref() != Some(&c.grant.target_binding) {
+                return Err(Refusal::new(ReasonCode::ScopeDenied));
+            }
+        }
 
         let sealed: Vec<VerifiedDestination> = routed
             .iter()
@@ -1128,6 +1199,55 @@ impl DriverSteps for DoorSteps<'_> {
         }
     }
 
+    async fn prepare_admission(
+        &self,
+        _ctx: &UnitCtx,
+        _principal: &PrincipalId,
+        _destinations: &[VerifiedDestination],
+    ) -> Result<(), Refusal> {
+        self.child_live()?;
+        // These paths consume an existing host reservation, or perform a free local
+        // operation. They do not acquire a second budget admission here.
+        if self.host_ticket_admission.is_some() || self.parent_admission.is_some() {
+            return Ok(());
+        }
+        let (Some(gov), Some(key)) = (self.app.governance.as_ref(), self.key.as_ref()) else {
+            return Ok(());
+        };
+        let (routed, expected) = {
+            let unit = self.lock();
+            let local = unit
+                .named
+                .as_ref()
+                .is_some_and(|(route, _)| *route == ROUTE_LOCAL || *route == ROUTE_SCOPE_LOCAL);
+            if local
+                && !unit.counted
+                && unit.expected.is_empty()
+                && self.child_constraints.is_none()
+            {
+                return Ok(());
+            }
+            (unit.routed.clone(), unit.expected.clone())
+        };
+        let units = self.expected_units(&expected)?;
+        let pool = self.charged_pool(routed.as_ref().map_or("", |(label, _)| label));
+        let lanes: Vec<_> = routed
+            .iter()
+            .flat_map(|(_, members)| members)
+            .map(|m| plane_lane(&self.facts.plane, m))
+            .collect();
+        let models: Vec<_> = lanes.iter().map(String::as_str).collect();
+        gov.check_observation_admission(
+            &self.app.cost,
+            key,
+            &pool,
+            self.arrived,
+            self.app.cost.estimate_counts_minor(&models, &units),
+        )
+        .await
+        .map_err(|blocked| refusal_for(&blocked))
+    }
+
     fn admit(
         &self,
         admit: &Grant<Admittance>,
@@ -1136,6 +1256,12 @@ impl DriverSteps for DoorSteps<'_> {
         _destinations: &[VerifiedDestination],
         _leases: &GroupLeaseSlip,
     ) -> Result<busbar_contract::caps::Admission, Refusal> {
+        self.child_live()?;
+        if self.child_constraints.is_some()
+            && (self.host_ticket_admission.is_some() || self.parent_admission.is_some())
+        {
+            return Err(Refusal::new(ReasonCode::Unpriced));
+        }
         let (local, counted, estimated) = {
             let u = self.lock();
             let local = u
@@ -1274,7 +1400,9 @@ impl DriverSteps for DoorSteps<'_> {
         }
         match admission(self.key.as_ref(), self.open) {
             Admission::Refused => return Err(Refusal::new(ReasonCode::Unauthenticated)),
-            Admission::Keyed if !local || counted || estimated => {
+            Admission::Keyed
+                if !local || counted || estimated || self.child_constraints.is_some() =>
+            {
                 if let Some(key) = self.key.clone() {
                     if let Err(refusal) = self.charge(ctx, &key) {
                         self.lock().refused.0 = refusal.retry_after_secs();

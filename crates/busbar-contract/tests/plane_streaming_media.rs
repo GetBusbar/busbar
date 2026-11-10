@@ -28,6 +28,7 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
         suffix.extend_from_slice(&(mime.len() as u32).to_le_bytes());
         suffix.extend_from_slice(mime.as_bytes());
     }
+    suffix.extend_from_slice(&0_u32.to_le_bytes()); // appended empty class-parent list
     assert!(full.kind_tail.ends_with(&suffix));
 
     let old_size = offset_of!(PlaneTail, streaming_content_types);
@@ -63,12 +64,9 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
     let absent = rendering::read(&unsafe { rendering::render(&st) }.unwrap()).unwrap();
     assert_eq!(
         legacy.kind_tail,
-        absent.kind_tail[..absent.kind_tail.len() - 4]
+        absent.kind_tail[..absent.kind_tail.len() - 8]
     );
-    assert_eq!(
-        &absent.kind_tail[absent.kind_tail.len() - 4..],
-        &0_u32.to_le_bytes()
-    );
+    assert_eq!(&absent.kind_tail[absent.kind_tail.len() - 8..], &[0_u8; 8]);
     assert_ne!(full.kind_tail, absent.kind_tail);
 }
 

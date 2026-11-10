@@ -57,6 +57,8 @@ pub struct UnitRecord {
 /// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
 struct UnitEntry {
+    child_ancestry: Vec<Arc<str>>,
+    children: HashMap<String, Arc<crate::hook_child::Memo>>,
     prepared: Option<crate::host_outbound::Prepared>,
     outbound: Option<crate::host_outbound::Bound>,
     record: Option<Arc<UnitRecord>>,
@@ -97,6 +99,31 @@ impl UnitRecords {
         self.lock(unit).entry(unit).or_default().record = Some(Arc::new(record));
     }
 
+    pub fn set_child_ancestry(&self, unit: u64, ancestry: Vec<Arc<str>>) {
+        self.lock(unit).entry(unit).or_default().child_ancestry = ancestry;
+    }
+    pub fn child_ancestry(&self, unit: u64) -> Vec<Arc<str>> {
+        self.lock(unit)
+            .get(&unit)
+            .map(|e| e.child_ancestry.clone())
+            .unwrap_or_default()
+    }
+    pub(crate) fn hook_child(
+        &self,
+        unit: u64,
+        name: &str,
+        create: impl FnOnce() -> Arc<crate::hook_child::Memo>,
+    ) -> Option<Arc<crate::hook_child::Memo>> {
+        let mut shard = self.lock(unit);
+        let entry = shard.get_mut(&unit).filter(|e| e.record.is_some())?;
+        Some(
+            entry
+                .children
+                .entry(name.to_owned())
+                .or_insert_with(create)
+                .clone(),
+        )
+    }
     pub fn ended(&self, unit: u64) {
         self.lock(unit).remove(&unit);
     }

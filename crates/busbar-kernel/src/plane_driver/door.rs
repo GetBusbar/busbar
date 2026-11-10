@@ -74,6 +74,7 @@ fn declaration_of(reg: &PlaneRegistration) -> PlaneDeclaration {
             .map(|&(class, family)| BillableClass { class, family })
             .collect::<Vec<_>>()
             .leak(),
+        class_parents: reg.class_parents.clone().leak(),
         fee_units: reg.fee_units.clone().leak(),
         metric_families: &[],
         record_kinds: reg.record_kinds.clone().leak(),

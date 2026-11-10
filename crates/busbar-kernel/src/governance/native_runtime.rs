@@ -34,6 +34,12 @@ impl GovState {
     ) -> RecordStoreResult<DerivedUsage> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
+        let observed = self.observation_total_async(bucket_id, window).await?;
+        if observed.spent_nanos != 0 || !observed.units.is_empty() {
+            return self
+                .price_observed_cell(cost, include_request_fee, cell, observed)?
+                .map_err(|error| money_refusal(bucket_id, &error));
+        }
         let inputs = money_view::Inputs::of(cost, budget_period, include_request_fee, &cell);
         let priced = match self.money_view.fresh(bucket_id, &inputs) {
             Some(priced) => priced,
@@ -82,7 +88,18 @@ impl GovState {
         if overflow.get() {
             return Err(RecordStoreError("lane count total overflow".into()));
         }
-        Ok(by_lane)
+        let observed = self.observation_total_async(bucket_id, window).await?;
+        let mut by_lane: BTreeMap<String, BTreeMap<String, Count>> = by_lane.into_iter().collect();
+        for (lane, units) in observed.units {
+            let counts = by_lane.entry(lane).or_default();
+            for (class, count) in units {
+                let entry = counts.entry(class).or_default();
+                *entry = entry
+                    .checked_add(count)
+                    .map_err(|_| RecordStoreError("observation lane count overflow".into()))?;
+            }
+        }
+        Ok(by_lane.into_iter().collect())
     }
 
     pub async fn derived_bucket_usage_async(
@@ -114,7 +131,68 @@ impl GovState {
     ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
-        self.price_cell(cost, include_request_fee, cell)
+        let observed = self.observation_total_async(bucket_id, window).await?;
+        self.price_observed_cell(cost, include_request_fee, cell, observed)
+    }
+
+    pub(super) async fn observation_total_async(
+        &self,
+        bucket: &str,
+        window: u64,
+    ) -> RecordStoreResult<crate::persistence::observations::BudgetTotal> {
+        use crate::persistence::observations::{BudgetTotal, ObservationStore};
+        if !ObservationStore::supports(&self.core) {
+            return Ok(BudgetTotal::default());
+        }
+        let store = ObservationStore::open(self.core.clone())
+            .map_err(|e| RecordStoreError(e.to_string()))?;
+        if !store
+            .has_accounting()
+            .await
+            .map_err(|e| RecordStoreError(e.to_string()))?
+        {
+            return Ok(BudgetTotal::default());
+        }
+        let total = store
+            .budget(&crate::plane_driver::observation_budget_id(bucket, window))
+            .await
+            .map_err(|e| RecordStoreError(e.to_string()))?;
+        self.cache_observation_total(bucket, window, total.clone());
+        Ok(total)
+    }
+
+    fn price_observed_cell(
+        &self,
+        cost: &crate::cost::CostModel,
+        include_request_fee: bool,
+        cell: BudgetCell,
+        observed: crate::persistence::observations::BudgetTotal,
+    ) -> RecordStoreResult<Result<DerivedUsage, MoneyError>> {
+        if observed.spent_nanos == 0 && observed.units.is_empty() {
+            return self.price_cell(cost, include_request_fee, cell);
+        }
+        let tokens = Count::total(
+            std::iter::once(cell.total_tokens()).chain(
+                observed
+                    .units
+                    .values()
+                    .flat_map(|units| units.iter())
+                    .filter(|(class, _)| is_token_class(class))
+                    .map(|(_, count)| *count),
+            ),
+        )
+        .map_err(|_| RecordStoreError("observation token count overflow".into()))?;
+        let spend = cell
+            .spend(cost, include_request_fee)
+            .and_then(|ordinary| ordinary.checked_add(Money::of_nanos(observed.spent_nanos)?));
+        // Reservations constrain admission but are not fabricated finalized usage.
+        Ok(spend
+            .and_then(Money::minor_i64)
+            .map(|spend_cents| DerivedUsage {
+                spend_cents,
+                tokens,
+                requests: cell.requests,
+            }))
     }
 
     pub(super) async fn bucket_cell_async(

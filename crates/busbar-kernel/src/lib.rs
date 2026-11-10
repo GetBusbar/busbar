@@ -151,6 +151,7 @@ pub mod failover {
     pub use crate::config::pools::CandidatePoolCfg;
 }
 pub mod governance;
+pub mod hook_child;
 pub mod hooks;
 pub mod host_chains;
 pub mod host_disk;

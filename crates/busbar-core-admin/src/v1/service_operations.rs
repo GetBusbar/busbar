@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
+use crate::v1::contract::ObservationUsageView;
 use busbar_kernel::admission::{Judged, PluginAdmission, Refusal, Stated};
 use busbar_kernel::config::groups::LimitMetric;
 
@@ -1245,43 +1246,68 @@ impl AdminService {
             by_key: Vec::new(),
             by_key_truncated: false,
             others: None,
+            observations: Vec::new(),
         };
         let Some(gov) = self.app.governance.clone() else {
             return Ok(empty());
         };
         type UsageFetchError = (&'static str, busbar_kernel::governance::RecordStoreError);
-        let fetched: Result<FetchedUsage<Count>, UsageFetchError> = async {
-            let rows = gov
-                .metering_for_async(bucket)
-                .await
-                .map_err(|e| ("usage.metering", e))?;
-            let names = gov
-                .all_keys_async()
-                .await
-                .map_err(|e| ("usage.keys", e))?
-                .into_iter()
-                .map(|k| (k.id, k.name))
-                .collect();
-            let adjustments = gov
-                .usage_adjustments_exact_async(bucket)
-                .await
-                .map_err(|e| ("usage.adjustments", e))?;
-            Ok((rows, names, adjustments))
-        }
-        .await;
+        let fetched: Result<(FetchedUsage<Count>, Vec<ObservationRecord>), UsageFetchError> =
+            async {
+                let rows = gov
+                    .metering_for_async(bucket)
+                    .await
+                    .map_err(|e| ("usage.metering", e))?;
+                let names = gov
+                    .all_keys_async()
+                    .await
+                    .map_err(|e| ("usage.keys", e))?
+                    .into_iter()
+                    .map(|k| (k.id, k.name))
+                    .collect();
+                let adjustments = gov
+                    .usage_adjustments_exact_async(bucket)
+                    .await
+                    .map_err(|e| ("usage.adjustments", e))?;
+                let core = gov
+                    .core_store_handle()
+                    .map_err(|e| ("usage.observations", e))?;
+                let observations =
+                    if busbar_kernel::persistence::observations::ObservationStore::supports(&core) {
+                        let store =
+                            busbar_kernel::persistence::observations::ObservationStore::open(core)
+                                .map_err(|e| {
+                                    (
+                                        "usage.observations",
+                                        busbar_kernel::governance::RecordStoreError(e.to_string()),
+                                    )
+                                })?;
+                        store.dated_records_for_day(bucket).await.map_err(|e| {
+                            (
+                                "usage.observations",
+                                busbar_kernel::governance::RecordStoreError(e.to_string()),
+                            )
+                        })?
+                    } else {
+                        Vec::new()
+                    };
+                Ok(((rows, names, adjustments), observations))
+            }
+            .await;
         let cost = self.app.cost.clone();
-        let (rows, names, adjustments) = fetched.map_err(|(operation, error)| {
+        let ((rows, names, adjustments), observations) = fetched.map_err(|(operation, error)| {
             diag_error!(ADMIN_STORE_OPERATION_FAILED, operation, error = %error, "admin store operation failed");
             AdminError::Internal
         })?;
 
-        project_usage_rows_exact(
+        project_usage_rows_with_observations(
             cost,
             history,
             snapshot,
             window,
             now,
             (rows, names, adjustments),
+            observations,
         )
     }
 
@@ -1320,6 +1346,8 @@ impl AdminService {
     }
 }
 
+type ObservationRecord = busbar_kernel::persistence::observations::DatedRecord;
+
 type FetchedUsage<T = i128> = (
     Vec<busbar_kernel::governance::MeteringRow>,
     std::collections::HashMap<String, String>,
@@ -1347,6 +1375,7 @@ pub(super) fn project_usage_rows(
     )
 }
 
+#[cfg(test)]
 pub(super) fn project_usage_rows_exact(
     cost: Arc<busbar_kernel::cost::CostModel>,
     history: Option<Arc<busbar_kernel::cost::History>>,
@@ -1354,6 +1383,18 @@ pub(super) fn project_usage_rows_exact(
     window: UsageWindow,
     now: u64,
     data: FetchedUsage<Count>,
+) -> Result<UsageView, AdminError> {
+    project_usage_rows_with_observations(cost, history, snapshot, window, now, data, Vec::new())
+}
+
+pub(super) fn project_usage_rows_with_observations(
+    cost: Arc<busbar_kernel::cost::CostModel>,
+    history: Option<Arc<busbar_kernel::cost::History>>,
+    snapshot: Option<busbar_kernel::cost::EntryKey>,
+    window: UsageWindow,
+    now: u64,
+    data: FetchedUsage<Count>,
+    records: Vec<ObservationRecord>,
 ) -> Result<UsageView, AdminError> {
     let (mut rows, names, adjustments) = data;
     let view = history.as_deref().map(|h| match snapshot {
@@ -1429,6 +1470,28 @@ pub(super) fn project_usage_rows_exact(
                 );
             }
         }
+        // Price the disjoint stored classes first. Reserved usage columns are reporting
+        // views only; their declared descendants must not be charged again as parent usage.
+        let mut raw = classes.clone();
+        for (class, count) in [
+            (busbar_contract::records::UNIT_INPUT, row.usage.tokens_input),
+            (
+                busbar_contract::records::UNIT_OUTPUT,
+                row.usage.tokens_output,
+            ),
+            (
+                busbar_contract::records::UNIT_CACHE_READ,
+                row.usage.tokens_cache_read,
+            ),
+            (
+                busbar_contract::records::UNIT_CACHE_WRITE,
+                row.usage.tokens_cache_creation,
+            ),
+        ] {
+            // Named planes carry all raw classes in usage_units; fallback lanes use columns.
+            raw.entry(class.to_string()).or_insert(count);
+        }
+        project_reserved_counts(&lane, &raw, &mut row.usage)?;
         for aggregate in [
             &mut total,
             by_model
@@ -1438,6 +1501,47 @@ pub(super) fn project_usage_rows_exact(
         ] {
             aggregate.add(&row)?;
         }
+    }
+    let mut observations = Vec::new();
+    for record in records
+        .into_iter()
+        .filter(|r| window.start <= r.rate_time && r.rate_time < window.end)
+    {
+        let (row, raw) = observation_rollup(&record)?;
+        let rated_subject = observation_subject(&record.rated_subject);
+        for aggregate in [
+            &mut total,
+            by_model
+                .entry((rated_subject.to_string(), record.destination.clone()))
+                .or_default(),
+            by_key.entry(record.principal.clone()).or_default(),
+        ] {
+            aggregate.add(&row)?;
+        }
+        observations.push(ObservationUsageView {
+            key_id: record.principal,
+            group: record.group,
+            instance: record.instance,
+            destination: record.destination,
+            serving_subject: observation_subject(&record.serving_subject).to_string(),
+            rated_subject: rated_subject.to_string(),
+            accounting_time: record.rate_time.to_string(),
+            counts: raw
+                .into_iter()
+                .map(|(class, n)| (class, n.to_decimal_string()))
+                .collect(),
+            spend_micros: if record.spent_nanos % 1_000 == 0 {
+                (record.spent_nanos / 1_000).to_string()
+            } else {
+                format!(
+                    "{}.{:03}",
+                    record.spent_nanos / 1_000,
+                    record.spent_nanos % 1_000
+                )
+                .trim_end_matches('0')
+                .to_string()
+            },
+        });
     }
     let by_model = by_model
         .into_iter()
@@ -1488,7 +1592,86 @@ pub(super) fn project_usage_rows_exact(
         by_key,
         by_key_truncated,
         others,
+        observations,
     })
+}
+
+fn project_reserved_counts(
+    lane: &str,
+    raw: &std::collections::BTreeMap<String, Count>,
+    usage: &mut UsageBreakdown,
+) -> Result<(), AdminError> {
+    for (class, count) in [
+        (
+            busbar_contract::records::UNIT_INPUT,
+            &mut usage.tokens_input,
+        ),
+        (
+            busbar_contract::records::UNIT_OUTPUT,
+            &mut usage.tokens_output,
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_READ,
+            &mut usage.tokens_cache_read,
+        ),
+        (
+            busbar_contract::records::UNIT_CACHE_WRITE,
+            &mut usage.tokens_cache_creation,
+        ),
+    ] {
+        *count = busbar_kernel::governance::class_total(lane, raw, class)
+            .map_err(|_| AdminError::Internal)?;
+    }
+    Ok(())
+}
+
+fn observation_subject(lane: &str) -> &str {
+    lane.split_once(busbar_kernel::governance::PLANE_LANE_SEP)
+        .map_or(lane, |(_, subject)| subject)
+}
+
+fn observation_rollup(
+    record: &ObservationRecord,
+) -> Result<(UsageRollup, std::collections::BTreeMap<String, Count>), AdminError> {
+    let mut raw = std::collections::BTreeMap::new();
+    let mut row = UsageRollup {
+        // The durable settlement is authoritative. Never reprice with a current card or
+        // reapply its journal to ordinary metering; both would change a committed charge.
+        exact: i128::try_from(record.spent_nanos)
+            .ok()
+            .and_then(|n| n.checked_mul(1_000_000))
+            .ok_or_else(|| rollup_refused("the observation spend left the range"))?,
+        ..Default::default()
+    };
+    for (index, count) in &record.counts {
+        let class = record
+            .classes
+            .get(index)
+            .ok_or_else(|| rollup_refused("unknown observation class"))?;
+        let rate = record
+            .rates_nanos
+            .get(index)
+            .ok_or_else(|| rollup_refused("unpriced observation class"))?;
+        if count.is_negative() || raw.insert(class.clone(), *count).is_some() {
+            return Err(rollup_refused("invalid observation class counts"));
+        }
+        if !busbar_contract::records::RESERVED_UNITS.contains(&class.as_str()) {
+            let exact = count
+                .micros()
+                .checked_mul(i128::from(*rate))
+                .ok_or_else(|| rollup_refused("the observation class price left the range"))?;
+            row.class_exact.insert(class.clone(), exact);
+            row.usage.classes.insert(
+                class.clone(),
+                ClassUsage {
+                    count: *count,
+                    cost: 0,
+                },
+            );
+        }
+    }
+    project_reserved_counts(&record.serving_subject, &raw, &mut row.usage)?;
+    Ok((row, raw))
 }
 
 /// Read-time totals retain scale-15 prices until each complete wire view is projected.

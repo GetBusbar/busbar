@@ -2480,6 +2480,7 @@ fn plugin_pool_cfg(plugin: &str) -> RootCfg {
 
 fn gate_hook(plugin: &str, timeout_ms: u64) -> config::HookCfg {
     config::HookCfg {
+        child_dispatch: None,
         kind: config::HookKind::Gate,
         plugin: plugin.to_string(),
         timeout_ms,

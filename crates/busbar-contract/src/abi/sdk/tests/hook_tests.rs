@@ -610,6 +610,8 @@ fn every_verdict_writes_an_answer_the_validator_accepts_and_the_host_reads_back(
     let i = frame.input();
     for v in [
         Verdict::Prefer(vec![9, 3]),
+        Verdict::Prioritize(vec![9, 3]),
+        Verdict::Prioritize(Vec::new()),
         Verdict::Prefer(Vec::new()),
         Verdict::Abstain,
         Verdict::Reject {
@@ -633,7 +635,7 @@ fn every_verdict_writes_an_answer_the_validator_accepts_and_the_host_reads_back(
             "{v:?}"
         );
         match &v {
-            Verdict::Prefer(o) if !o.is_empty() => {
+            Verdict::Prefer(o) | Verdict::Prioritize(o) if !o.is_empty() => {
                 assert_eq!(frame.order(out.order_written), *o)
             }
             Verdict::Reject { message, .. } => {
@@ -685,6 +687,47 @@ fn a_buffer_too_small_is_the_one_short_answer_with_nothing_written() {
         check_transform(&t, i.reject_message_cap, i.rewrite_cap),
         Ok(())
     );
+}
+
+#[test]
+fn prioritize_negotiates_support_and_regrows_the_shared_order_buffer() {
+    use crate::abi::hook::{VERB_PRIORITIZE, VIEW_SUPPORTS_PRIORITIZE};
+    let frame = frame_with(caps(1, 64));
+    let mut input = frame.input();
+    let verdict = Verdict::Prioritize(vec![9, 3]);
+    let mut out: DecideOut = zeroed();
+    input.present &= !VIEW_SUPPORTS_PRIORITIZE;
+    assert_eq!(
+        write_verdict(&verdict, lend(&input), &mut out),
+        Outcome::Failed
+    );
+    assert_eq!((out.verbs, out.order_written, out.order_needed), (0, 0, 0));
+    input.present |= VIEW_SUPPORTS_PRIORITIZE;
+    assert_eq!(
+        write_verdict(&verdict, lend(&input), &mut out),
+        Outcome::Failed
+    );
+    assert_eq!((out.order_written, out.order_needed), (0, 2));
+    let grown = frame.regrown_decide(&out);
+    out = zeroed();
+    assert_eq!(
+        write_verdict(&verdict, lend(&grown.input()), &mut out),
+        Outcome::Ready
+    );
+    assert_eq!(out.verbs, VERB_PRIORITIZE);
+    assert_eq!(grown.order(out.order_written), vec![9, 3]);
+    assert_eq!(
+        lower_decide_reply(Ok(json!({"prioritize": [9, 3]}))),
+        verdict
+    );
+    assert!(matches!(
+        lower_decide_reply(Ok(json!({"prioritize": [1], "order": [0]}))),
+        Verdict::Failed(_)
+    ));
+    assert!(matches!(
+        lower_decide_reply(Ok(json!({"prioritize": ["bad"]}))),
+        Verdict::Failed(_)
+    ));
 }
 
 /// A typed hook: prefers the candidates in reverse, and records what its tap saw.

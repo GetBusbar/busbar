@@ -108,6 +108,8 @@ pub struct ServedFacts {
     /// The tail's billable classes, in order: a unit count's `class` indexes them (the money
     /// steps ledger each count under its class name, THE DESIGN §7).
     pub billable_classes: Vec<&'static str>,
+    /// Validated generic class parent edges, resolved to names.
+    pub class_parents: Vec<busbar_contract::plane::ClassParent>,
     /// The validated routing-cost terms: billable-class index and default expected units.
     pub route_cost: Vec<(u32, f64)>,
     /// The tail's fee units, each also one of [`Self::billable_classes`]: the plane's report of
@@ -375,6 +377,16 @@ fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|c| kept(c.class))
                 .collect(),
+            class_parents: {
+                let classes = listed(tail.billable_classes, tail.billable_classes_len);
+                listed(tail.class_parents, tail.class_parents_len)
+                    .into_iter()
+                    .map(|edge| busbar_contract::plane::ClassParent {
+                        child: kept(classes[edge.child as usize].class),
+                        parent: kept(classes[edge.parent as usize].class),
+                    })
+                    .collect()
+            },
             route_cost: listed(tail.route_cost, tail.route_cost_len)
                 .into_iter()
                 .map(|term| (term.class, term.weight))
@@ -837,6 +849,7 @@ fn registered(
             .copied()
             .zip(served.billable_families.iter().copied())
             .collect(),
+        class_parents: served.class_parents.clone(),
         fee_units: served.fee_units.clone(),
         record_kinds: declared.record_kinds.clone(),
         trust_keys: declared.trust_keys.clone(),
@@ -1212,6 +1225,7 @@ fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
     let classes: Vec<BillableClass> = listed(tail.billable_classes, tail.billable_classes_len);
     for class in &classes {
         check_tail_text(class.class, "billable_class.class")?;
+        check_tail_text(class.family, "billable_class.family")?;
     }
     check_billable_classes(&classes)?;
     let fee_units: Vec<AbiStr> = listed(tail.fee_units, tail.fee_units_len);
@@ -1219,7 +1233,14 @@ fn check_tail_fee_units(tail: &PlaneTail) -> Result<(), Fault> {
         check_tail_text(*fee, "tail.fee_units")?;
     }
     // SAFETY: the bound Statement owns the static fee/class bytes for the loaded plugin lifetime.
-    unsafe { check_fee_units(&fee_units, &classes) }
+    unsafe {
+        check_fee_units(&fee_units, &classes)?;
+        busbar_contract::abi::plane::check::check_class_parents(
+            &listed(tail.class_parents, tail.class_parents_len),
+            &classes,
+            &fee_units,
+        )
+    }
 }
 
 fn check_tail_text(text: AbiStr, field: &'static str) -> Result<(), Fault> {
