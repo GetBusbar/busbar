@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Pin ABI counters to one increment from released v1.5.5; new kinds start at one.
+//! Pin current ABI generations, including semantic changes without layout changes.
 
 use std::os::raw::c_void;
 
@@ -21,7 +21,7 @@ fn current_abi_generations_are_explicit() {
     assert_eq!(secret::ABI_VERSION, 2);
     assert_eq!(auth::ABI_VERSION, 3);
     assert_eq!(hook::ABI_VERSION, 2);
-    assert_eq!(export::ABI_VERSION, 3);
+    assert_eq!(export::ABI_VERSION, 4);
     // Plane and Transport are new kinds since v1.5.5.
     assert_eq!(plane::ABI_VERSION, 1);
     assert_eq!(transport::ABI_VERSION, 1);

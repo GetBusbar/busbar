@@ -326,32 +326,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn sanitized(s: &str, colon: bool) -> String {
-    let ok = |i: usize, c: char| {
-        c.is_ascii_alphabetic() || c == '_' || (colon && c == ':') || (i > 0 && c.is_ascii_digit())
-    };
-
-    let mut out = zeroize::Zeroizing::new(String::with_capacity(s.len()));
-    for (i, c) in s.chars().enumerate() {
-        out.push(if ok(i, c) { c } else { '_' });
-    }
-    std::mem::take(&mut *out)
-}
-
-fn escaped(s: &str, quotes: bool) -> String {
-    let capacity = s.len().checked_mul(2).expect("metric escape size overflow");
-    let mut out = zeroize::Zeroizing::new(String::with_capacity(capacity));
-    for c in s.chars() {
-        match c {
-            '\n' => out.push_str("\\n"),
-            '"' if quotes => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c => out.push(c),
-        }
-    }
-    std::mem::take(&mut *out)
-}
-
 fn labels_of(key: &Key) -> Vec<(String, String)> {
     let mut labels: Vec<(&str, &str)> = Vec::new();
     for l in key.labels() {
@@ -360,8 +334,10 @@ fn labels_of(key: &Key) -> Vec<(String, String)> {
             None => labels.push((l.key(), l.value())),
         }
     }
-    let sanitize = |(k, v): (&str, &str)| (sanitized(k, false), escaped(v, true));
-    labels.into_iter().map(sanitize).collect()
+    labels
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect()
 }
 
 struct Series {
@@ -390,7 +366,7 @@ impl Drop for SnapshotName {
 type Building = BTreeMap<(u8, SnapshotName), BTreeMap<Key, Series>>;
 
 fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>, String)>) {
-    let name = SnapshotName(sanitized(key.name(), true));
+    let name = SnapshotName(key.name().to_owned());
     let labels = zeroize::Zeroizing::new(labels_of(key));
     let samples = lines.into_iter().map(|(suffix, quantile, value)| {
         let mut sample_labels = (*labels).clone();
@@ -586,8 +562,8 @@ impl Source {
 
     fn describe(&self, name: &KeyName, help: &str) {
         let mut all = lock(&self.help);
-        let entry = all.entry(sanitized(name.as_str(), true));
-        entry.or_insert_with(|| escaped(help, false));
+        let entry = all.entry(name.as_str().to_owned());
+        entry.or_insert_with(|| help.to_owned());
     }
 }
 

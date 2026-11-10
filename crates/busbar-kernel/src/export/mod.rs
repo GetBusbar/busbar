@@ -158,3 +158,7 @@ pub(crate) fn deliver_request_log(facts: &RequestLogFacts<'_>) {
     let mut cache = PayloadCache::new(facts);
     plugin::deliver_logs(&mut cache);
 }
+
+#[cfg(test)]
+#[path = "tests/snapshot_crossings.rs"]
+mod snapshot_crossings;

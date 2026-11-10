@@ -71,7 +71,6 @@ sha2 = { workspace = true }
 # Integration tests use ordinary production ABI test support, never kernel fixture exports.
 # Dev-only: the test seal is absent from release builds.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
-metrics-exporter-prometheus = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "net"] }
 tokio-tungstenite = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

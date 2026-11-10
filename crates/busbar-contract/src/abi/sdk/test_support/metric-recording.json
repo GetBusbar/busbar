@@ -1,0 +1,208 @@
+[
+  {
+    "op": "describe",
+    "kind": "counter",
+    "name": "busbar_eq_requests_total",
+    "help": "requests, by \"pool\"\nand \\ outcome"
+  },
+  {
+    "op": "describe",
+    "kind": "gauge",
+    "name": "busbar_eq_gauge",
+    "help": "a gauge"
+  },
+  {
+    "op": "describe",
+    "kind": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "help": "latency"
+  },
+  {
+    "op": "counter",
+    "name": "busbar_eq_requests_total",
+    "labels": [
+      [
+        "pool",
+        "a\"b\\c\nd"
+      ],
+      [
+        "outcome",
+        "ok"
+      ]
+    ],
+    "value": 3
+  },
+  {
+    "op": "counter",
+    "name": "busbar_eq_requests_total",
+    "labels": [
+      [
+        "pool",
+        "plain"
+      ],
+      [
+        "outcome",
+        "ok"
+      ]
+    ],
+    "value": 1
+  },
+  {
+    "op": "counter",
+    "name": "busbar_eq_requests_total",
+    "labels": [
+      [
+        "pool",
+        "back\\slash"
+      ],
+      [
+        "outcome",
+        "ok"
+      ]
+    ],
+    "value": 2
+  },
+  {
+    "op": "counter",
+    "name": "busbar_eq_unlabelled_total",
+    "labels": [],
+    "value": 0
+  },
+  {
+    "op": "counter",
+    "name": "busbar.eq-dotted:name",
+    "labels": [
+      [
+        "9key",
+        "v"
+      ]
+    ],
+    "value": 5
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_gauge",
+    "labels": [
+      [
+        "key",
+        "a"
+      ]
+    ],
+    "value": 1.5
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_gauge",
+    "labels": [
+      [
+        "key",
+        "b"
+      ]
+    ],
+    "value": 0.0
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_gauge",
+    "labels": [
+      [
+        "key",
+        "c"
+      ]
+    ],
+    "value": 1e+21
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_gauge",
+    "labels": [
+      [
+        "key",
+        "d"
+      ]
+    ],
+    "value": -3.0
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_gauge",
+    "labels": [
+      [
+        "key",
+        "e"
+      ]
+    ],
+    "value": 0.30000000000000004
+  },
+  {
+    "op": "gauge",
+    "name": "busbar_eq_big",
+    "labels": [
+      [
+        "key",
+        "max"
+      ]
+    ],
+    "value": 9.223372036854776e+18
+  },
+  {
+    "op": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "labels": [
+      [
+        "pool",
+        "p"
+      ]
+    ],
+    "value": 0.001
+  },
+  {
+    "op": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "labels": [
+      [
+        "pool",
+        "p"
+      ]
+    ],
+    "value": 0.25
+  },
+  {
+    "op": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "labels": [
+      [
+        "pool",
+        "p"
+      ]
+    ],
+    "value": 0.5
+  },
+  {
+    "op": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "labels": [
+      [
+        "pool",
+        "p"
+      ]
+    ],
+    "value": 2.0
+  },
+  {
+    "op": "histogram",
+    "name": "busbar_eq_duration_seconds",
+    "labels": [
+      [
+        "pool",
+        "q"
+      ]
+    ],
+    "value": 7.0
+  },
+  {
+    "op": "register_histogram",
+    "name": "busbar_eq_idle_seconds",
+    "labels": []
+  }
+]
