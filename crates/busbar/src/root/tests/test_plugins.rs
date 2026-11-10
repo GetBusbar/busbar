@@ -205,12 +205,13 @@ pub async fn provision_fresh_application_store_with_backend(
     let backend = busbar_kernel::appbuild::bootstrap_config_store(cfg, plugins).await?;
     let opened = core_over(decorate(backend)).await;
     let seal = busbar_kernel::seal::acquire();
+    let store_sha256 = busbar_kernel::governance::principal_transition::store_fingerprint(
+        &cfg.store.as_ref().map(|store| store.authoring(&seal)),
+    )?;
     Ok(FreshApplicationStore {
         opened,
         evidence_sha256,
-        store_sha256: busbar_kernel::governance::principal_transition::store_fingerprint(
-            &cfg.store.as_ref().map(|store| store.authoring(&seal)),
-        )?,
+        store_sha256,
     })
 }
 
