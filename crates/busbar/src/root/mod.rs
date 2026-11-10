@@ -64,10 +64,6 @@ mod doors_refresh;
 mod scoped_framing_tests;
 
 #[cfg(test)]
-#[path = "tests/inbound_reload.rs"]
-mod inbound_reload_tests;
-
-#[cfg(test)]
 pub(crate) use crate::test_common::plugins as test_plugins;
 
 #[cfg(test)]

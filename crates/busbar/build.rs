@@ -257,9 +257,19 @@ fn main() {
     std::fs::write(out_dir.join("door_cells.rs"), cells).expect("write door_cells.rs");
     std::fs::write(
         out_dir.join("root_test_sources.rs"),
-        root_test_sources_source(&manifest),
+        test_sources_source(&manifest, "root-test-sources", "__busbar_root_tests", false),
     )
     .expect("write root_test_sources.rs");
+    std::fs::write(
+        out_dir.join("common_test_sources.rs"),
+        test_sources_source(
+            &manifest,
+            "test-common-sources",
+            "__busbar_common_tests",
+            true,
+        ),
+    )
+    .expect("write common_test_sources.rs");
     std::fs::write(out_dir.join("door_cells_files.rs"), cells_files)
         .expect("write door_cells_files.rs");
 
@@ -401,20 +411,23 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
 // A source-only fixture can be a dev-dependency, whose links metadata Cargo does
 // not pass to this build script. Its owner exports the source inclusion macro;
 // the package-literal arm checks the explicit roster against the actual owner.
-fn root_test_sources_source(manifest: &str) -> String {
-    let mut out = String::from("// @generated from package.metadata.busbar.root-test-sources.\n");
-    for (module, krate) in metadata_map(manifest, "package.metadata.busbar.root-test-sources") {
+fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: bool) -> String {
+    let mut out = format!("// @generated from package.metadata.busbar.{table}.\n");
+    for (module, krate) in metadata_map(manifest, &format!("package.metadata.busbar.{table}")) {
         assert!(
             !module.is_empty()
                 && module.bytes().enumerate().all(|(i, b)| b == b'_'
                     || b.is_ascii_alphabetic()
                     || (i > 0 && b.is_ascii_digit())),
-            "invalid root test source module: {module}"
+            "invalid test source module: {module}"
         );
         out.push_str(&format!(
-            "{}::__busbar_root_tests!({module}, {krate:?});\n",
+            "{}::{macro_name}!({module}, {krate:?});\n",
             ident(&krate)
         ));
+        if reexport {
+            out.push_str(&format!("pub use {module}::*;\n"));
+        }
     }
     out
 }

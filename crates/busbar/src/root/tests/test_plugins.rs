@@ -447,9 +447,8 @@ pub fn cdylib(snake: &str) -> Option<Vec<u8>> {
     std::fs::read(cdylib_path(snake)?).ok()
 }
 
-pub fn token_verifier_cdylib_path() -> Option<PathBuf> {
-    cdylib_path("busbar_auth_oidc_plugin")
-}
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/common_test_sources.rs"));
 
 fn libraries() -> Vec<PathBuf> {
     let Some(profile) = profile_dir() else {

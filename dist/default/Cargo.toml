@@ -566,9 +566,13 @@ node = "plane_node"
 # Source-owned root fixtures from any plugin kind, compiled only in root test builds.
 [package.metadata.busbar.root-test-sources]
 auth_oidc = "busbar-auth-oidc"
+ranking_hook = "busbar-hook-ranking"
 source_env = "busbar-secret-env"
 source_file = "busbar-secret-file"
 metrics_fixture = "busbar-export-prometheus"
+
+[package.metadata.busbar.test-common-sources]
+token_verifier = "busbar-auth-oidc"
 
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
@@ -577,6 +581,7 @@ planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
 operator-auth = ["busbar-auth-admin-tokens-plugin"]
 
 [dev-dependencies]
+busbar-hook-ranking = { workspace = true }
 # The source-owned metrics fixture is available even when its runtime row is disabled.
 busbar-export-prometheus = { workspace = true }
 busbar-plugin-loader = { path = "../../crates/plugin-loader", features = ["test-support"] }
