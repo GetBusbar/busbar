@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Owner-side protected admission. Never install this credential in candidate CI.
 
-GitLab enforces protected branches, successful pipelines and fast-forward merging.
+Approved operators may push development checkpoints directly to dev. QA/main reject
+all direct pushes, and force pushes remain disabled everywhere. Qualified merges
+still require successful pipelines and fast-forward history.
 This controller additionally admits only the trusted native job for the exact source,
 target, host, SDK and policy revision. Fork/external-status pipelines cannot impersonate it.
 """
@@ -67,9 +69,9 @@ def matches(pattern, branch):
     return re.fullmatch(re.escape(pattern).replace(r'\*', '.*'), branch) is not None
 
 
-def validate_protection(project_rules, group_rules, merge_users):
+def validate_protection(project_rules, group_rules, merge_users, *, branches=('dev', 'qa', 'main')):
     """GitLab combines matching rules permissively: examine every matching rule."""
-    for branch in ('dev', 'qa', 'main'):
+    for branch in branches:
         rules = [row for row in [*project_rules, *group_rules] if matches(row['name'], branch)]
         if not rules:
             raise ValueError('unprotected branch: ' + branch)
@@ -78,7 +80,10 @@ def validate_protection(project_rules, group_rules, merge_users):
             if rule.get('allow_force_push'):
                 raise ValueError('force-push allowance: ' + rule['name'])
             for row in rule['push_access_levels']:
-                if row.get('access_level', 0) or any(row.get(key) for key in ('user_id', 'group_id', 'deploy_key_id')):
+                controlled_dev_push = (branch == 'dev' and row.get('user_id') in merge_users
+                                       and not row.get('group_id') and not row.get('deploy_key_id'))
+                if not controlled_dev_push and (row.get('access_level', 0) or any(
+                        row.get(key) for key in ('user_id', 'group_id', 'deploy_key_id'))):
                     raise ValueError('direct-push allowance: ' + rule['name'])
             for row in rule['merge_access_levels']:
                 if row.get('group_id') or row.get('deploy_key_id'):
@@ -103,14 +108,22 @@ def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
     rules = api.all(identity + '/protected_branches')
     for branch in ('dev', 'qa', 'main'):
         rule = next((r for r in rules if r['name'] == branch and not r.get('inherited')), None)
-        desired = {'allowed_to_push': [{'access_level': 0}],
+        desired = {'allowed_to_push': ([{'user_id': user} for user in sorted(merge_users)]
+                                       if branch == 'dev' else [{'access_level': 0}]),
                    'allowed_to_merge': [{'user_id': user} for user in sorted(merge_users)], 'allow_force_push': False}
         if rule:
             if branch != 'dev':
                 # Preserve stricter owner-only QA/main admission; never give the dev
                 # operator a new promotion permission as a side effect of this setup.
                 desired.pop('allowed_to_merge')
-            desired['allowed_to_push'] = [{'id': row['id'], '_destroy': True} for row in rule['push_access_levels']] + desired['allowed_to_push']
+            retained_push = {row['user_id'] for row in rule['push_access_levels']
+                             if branch == 'dev' and row.get('user_id') in merge_users
+                             and not row.get('group_id') and not row.get('deploy_key_id')}
+            desired['allowed_to_push'] = [
+                {'id': row['id'], '_destroy': True} for row in rule['push_access_levels']
+                if row.get('user_id') not in retained_push
+            ] + ([{'user_id': user} for user in sorted(merge_users - retained_push)]
+                 if branch == 'dev' else [{'access_level': 0}])
             if 'allowed_to_merge' in desired:
                 # Preserve existing approved records. Destroy/recreate of the same
                 # user in one PATCH fails GitLab's unique access-record validation.
@@ -125,7 +138,9 @@ def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
             try:
                 # Do not rewrite already-strict rules whose unprotect permission may
                 # deliberately belong only to the instance owner (especially qa/main).
-                validate_protection([dict(rule, name='*')], [], merge_users)
+                validate_protection([rule], [], merge_users, branches=(branch,))
+                if branch == 'dev' and retained_push != merge_users:
+                    raise ValueError('approved development push permissions are missing')
             except ValueError:
                 api.request(identity + '/protected_branches/' + encoded(branch), 'PATCH', desired)
         else:
