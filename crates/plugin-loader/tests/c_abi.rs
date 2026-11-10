@@ -30,7 +30,7 @@ fn supplied_path(name: &str) -> PathBuf {
 }
 
 fn sources() -> Vec<PathBuf> {
-    let source_extension = Path::new("witness.c").extension().expect("C source suffix");
+    let source_extension = std::ffi::OsStr::new("c");
     let mut sources: Vec<_> = std::fs::read_dir(supplied_path("BUSBAR_C_ABI_SOURCES"))
         .expect("read the external C witness source directory")
         .map(|entry| entry.expect("read a C witness source entry").path())
