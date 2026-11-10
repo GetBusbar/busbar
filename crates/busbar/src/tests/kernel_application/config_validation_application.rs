@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 // Ordinary distribution validation includes the transport-owned phase installed after registry
 // admission, so these endpoint cases exercise the same pure locator as --validate.
-fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
+pub(crate) fn validate(cfg: &RootCfg) -> Result<(), Vec<String>> {
     validate_with_unset(cfg, &[])
 }
 
@@ -24,7 +24,7 @@ fn validate_with_unset(cfg: &RootCfg, unset: &[String]) -> Result<(), Vec<String
 const MAX_DURATION_SECS: u64 = 30 * 365 * 86_400;
 const MAX_DURATION_MS: u64 = MAX_DURATION_SECS * 1_000;
 
-fn make_root_cfg(
+pub(crate) fn make_root_cfg(
     providers: HashMap<String, config::ProviderCfg>,
     models: HashMap<String, config::ModelCfg>,
     pools: HashMap<String, config::PoolCfg>,
@@ -95,7 +95,11 @@ fn make_root_cfg_with_blocked(
     cfg
 }
 
-fn make_provider(protocol: &str, base_url: &str, api_key_env: &str) -> config::ProviderCfg {
+pub(crate) fn make_provider(
+    protocol: &str,
+    base_url: &str,
+    api_key_env: &str,
+) -> config::ProviderCfg {
     let mut error_map = std::collections::HashMap::new();
     error_map.insert("400".to_string(), "client_error".to_string());
 
@@ -130,7 +134,7 @@ fn shipped_protocol(nth: usize) -> &'static str {
         })
 }
 
-fn proto_a() -> &'static str {
+pub(crate) fn proto_a() -> &'static str {
     shipped_protocol(0)
 }
 fn proto_b() -> &'static str {
@@ -231,7 +235,7 @@ fn make_trip(
     }
 }
 
-fn valid_maps() -> (
+pub(crate) fn valid_maps() -> (
     HashMap<String, config::ProviderCfg>,
     HashMap<String, config::ModelCfg>,
     HashMap<String, config::PoolCfg>,
@@ -1090,25 +1094,6 @@ fn test_validate_accepts_known_failover_exclusion() {
     assert!(
         validate(&cfg).is_ok(),
         "a failover exclusion naming a real pool member must validate"
-    );
-}
-
-#[test]
-fn test_validate_operator_token_secret_module_checked() {
-    let (providers, models, pools) = valid_maps();
-    let mut cfg = make_root_cfg(providers, models, pools);
-    let mut auth = config::AuthCfg::default_none();
-    let mut entry = config::AuthChainEntry::bare(config::operator_provider());
-    entry.token = Some(without_scalar(source_fill("fixture-input")));
-    auth.admin_auth = vec![entry];
-    cfg.auth = Some(auth);
-    let errs = validate(&cfg).expect_err("an env secret ref without settings.key must fail");
-
-    let path = format!("auth.admin_auth.{}.token", config::operator_provider());
-    assert!(
-        errs.iter()
-            .any(|e| e.contains(&path) && e.contains("requires settings.key")),
-        "expected the env-shape error; got: {errs:?}"
     );
 }
 
@@ -3879,84 +3864,6 @@ fn test_validate_role_binding_reserved_role_name_rejected() {
     );
 }
 
-#[test]
-fn test_validate_secret_module_resolvability() {
-    let (mut providers, models, pools) = valid_maps();
-    providers.get_mut("myprovider").unwrap().api_key =
-        config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
-            module: "fixture-source".into(),
-            settings: Default::default(),
-        });
-    let cfg = make_root_cfg(providers, models, pools);
-    assert!(
-        validate(&cfg).is_ok(),
-        "a plugin-backed api_key module must not be rejected by pre-registry validate; got: {:?}",
-        validate(&cfg)
-    );
-
-    let (providers, models, pools) = valid_maps();
-    let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.tls = Some(config::TlsCfg {
-        cert: config::SecretRef::Source(busbar_contract::secret_ref::SourceReference {
-            module: "fixture-source".into(),
-            settings: Default::default(),
-        }),
-        key: without_scalar(source_path("fixture-input")),
-        client_ca: Some(without_scalar(source_fill("fixture-input"))),
-    });
-    let errs = validate(&cfg).expect_err("structurally-bad tls secret refs must fail validation");
-
-    assert!(
-        !errs.iter().any(|e| e.contains("tls.cert")),
-        "a plugin-backed tls.cert must not be rejected by pre-registry validate; got: {errs:?}"
-    );
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("tls.key") && e.contains("requires settings.path")),
-        "tls.key file ref without settings.path must error; got: {errs:?}"
-    );
-    assert!(
-        errs.iter()
-            .any(|e| e.contains("tls.client_ca") && e.contains("requires settings.key")),
-        "tls.client_ca env ref without settings.key must error; got: {errs:?}"
-    );
-
-    let (providers, models, pools) = valid_maps();
-    let mut cfg = make_root_cfg(providers, models, pools);
-    cfg.tls = Some(config::TlsCfg {
-        cert: crate::distribution::config_validation_application::source_path(
-            "/run/secrets/tls-cert.pem",
-        ),
-        key: crate::distribution::config_validation_application::source_path(
-            "/run/secrets/tls-key.pem",
-        ),
-        client_ca: Some(
-            crate::distribution::config_validation_application::source_fill("BUSBAR_CLIENT_CA_PEM"),
-        ),
-    });
-    assert!(
-        validate(&cfg).is_ok(),
-        "well-formed tls secret refs must validate; got: {:?}",
-        validate(&cfg)
-    );
-
-    let (providers, models, pools) = valid_maps();
-    let mut cfg = make_root_cfg(providers, models, pools);
-    let mut auth = config::AuthCfg::default_none();
-    auth.signing_key = Some(config::SecretRef::Source(
-        busbar_contract::secret_ref::SourceReference {
-            module: "fixture-source".into(),
-            settings: Default::default(),
-        },
-    ));
-    cfg.auth = Some(auth);
-    assert!(
-        validate(&cfg).is_ok(),
-        "a plugin-backed signing_key module must not be rejected by pre-registry validate; got: {:?}",
-        validate(&cfg)
-    );
-}
-
 fn resolve_yaml(yaml: &str) -> Result<RootCfg, Vec<String>> {
     crate::dist_root_install::install();
     let deploy: config::DeployCfg =
@@ -4195,64 +4102,6 @@ fn test_reasoning_effort_budgets_rejects_a_single_zero_field() {
         errs.iter()
             .any(|e| e.contains("reasoning_effort_budgets entries must be > 0")),
         "expected the zero-entry error; got: {errs:?}"
-    );
-}
-
-#[test]
-fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
-    let empty_env: config::SecretRef =
-        serde_yaml::from_str("{ module: env, settings: { key: \"\" } }")
-            .expect("canonical empty-key env ref deserializes (the guard is sugar-only)");
-    assert_eq!(
-        empty_env,
-        source_fill(""),
-        "precondition: the canonical reference retains its empty scalar"
-    );
-
-    let mut providers = HashMap::new();
-    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
-    p.api_key = empty_env;
-    providers.insert("acme".to_string(), p);
-    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
-        .expect_err("an empty canonical env secret key must fail validation");
-    assert!(
-        errs.iter().any(|e| e.contains("providers.acme.api_key")
-            && e.contains("'env'")
-            && e.to_lowercase().contains("non-empty")),
-        "expected a non-empty settings.key error naming providers.acme.api_key; got: {errs:?}"
-    );
-
-    let empty_file: config::SecretRef =
-        serde_yaml::from_str("{ module: file, settings: { path: \"\" } }")
-            .expect("canonical empty-path file ref deserializes");
-    let mut providers = HashMap::new();
-    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
-    p.api_key = empty_file;
-    providers.insert("acme".to_string(), p);
-    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
-        .expect_err("an empty canonical file path must fail validation");
-    assert!(
-        errs.iter().any(|e| e.contains("providers.acme.api_key")
-            && e.contains("'file'")
-            && e.to_lowercase().contains("non-empty")),
-        "expected a non-empty settings.path error naming providers.acme.api_key; got: {errs:?}"
-    );
-
-    let good: config::SecretRef =
-        serde_yaml::from_str("{ module: env, settings: { key: REAL_KEY } }")
-            .expect("canonical non-empty env ref deserializes");
-    let mut providers = HashMap::new();
-    let mut p = make_provider(proto_a(), "https://api.acme.example.com", "IGNORED");
-    p.api_key = good;
-    providers.insert("acme".to_string(), p);
-    let errs = validate(&make_root_cfg(providers, HashMap::new(), HashMap::new()))
-        .err()
-        .unwrap_or_default();
-    assert!(
-        !errs
-            .iter()
-            .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
-        "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
 
@@ -4573,13 +4422,13 @@ fn deferred_oauth_credential_does_not_hide_invalid_endpoint_settings() {
 }
 
 // Host fixtures obtain references from the admitted source grammar, without naming a backend.
-pub(super) fn source_fill(value: impl AsRef<str>) -> config::SecretRef {
+pub(crate) fn source_fill(value: impl AsRef<str>) -> config::SecretRef {
     source_role(
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_FILL,
         value,
     )
 }
-pub(super) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
+pub(crate) fn source_path(value: impl AsRef<str>) -> config::SecretRef {
     source_role(
         busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
         value,
@@ -4592,12 +4441,4 @@ fn source_role(role: &str, value: impl AsRef<str>) -> config::SecretRef {
         .sugars()
         .reference_for_role(role, value.as_ref())
         .expect("the admitted source declares the fixture's role")
-}
-
-fn without_scalar(reference: config::SecretRef) -> config::SecretRef {
-    let config::SecretRef::Source(mut source) = reference else {
-        panic!("fixture source reference")
-    };
-    source.settings = Default::default();
-    config::SecretRef::Source(source)
 }
