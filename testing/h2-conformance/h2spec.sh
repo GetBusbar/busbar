@@ -23,7 +23,10 @@
 # pinned linux/amd64 debian image (its platform manifest, by digest) on the host network, on macOS
 # natively. The PKI is generated at run time
 # (testing/evidence-conformance/pki.py, no openssl). Needs docker (Linux: --network host), python3,
-# cargo. Writes $CONFORMANCE_OUT/verdict.json and the JUnit reports beside it.
+# cargo. Confined CI instead stages the pinned native h2spec and Caddy executables
+# at /opt/busbar-conformance; all three listeners then run on private loopback,
+# without a Docker socket, host network, image pull or tool download.
+# Writes $CONFORMANCE_OUT/verdict.json and the JUnit reports beside it.
 set -uo pipefail
 : "${CONFORMANCE_OUT:?}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -77,7 +80,48 @@ _sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -
 free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 wait_port() { for _ in $(seq 1 120); do (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0; sleep 1; done; return 1; }
 
+# Cache first, then one bounded pull. Preserve its original diagnostic rather
+# than starting another registry request to obtain an error message.
+ensure_image() {
+  python3 -I - "$@" <<'PYIMAGE'
+import subprocess, sys
+image, log, *options = sys.argv[1:]
+try:
+    cached = subprocess.run(["docker", "image", "inspect", image],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, timeout=15)
+    if cached.returncode == 0:
+        raise SystemExit(0)
+    with open(log, "w") as output:
+        try:
+            result = subprocess.run(["docker", "pull", "--quiet", *options, image],
+                                    stdin=subprocess.DEVNULL, stdout=output,
+                                    stderr=subprocess.STDOUT, timeout=180)
+        except subprocess.TimeoutExpired:
+            output.write("pinned image pull exceeded 180 seconds\n")
+            raise SystemExit(124)
+    raise SystemExit(result.returncode)
+except (OSError, subprocess.TimeoutExpired) as error:
+    with open(log, "w") as output:
+        output.write("pinned image preparation failed: " + type(error).__name__ + "\n")
+    raise SystemExit(1)
+PYIMAGE
+}
+
 # ── the instrument: h2spec at the pin ───────────────────────────────────────────────────────────────
+# The controller's content-addressed image/payload proves the provenance of these
+# fixed paths. This branch never falls back to host Docker or a network fetch.
+if [ -n "${CONFORMANCE_CAPABILITIES+x}" ]; then
+  plat=confined
+  H2SPEC=/opt/busbar-conformance/h2spec
+  CADDY=/opt/busbar-conformance/caddy
+  [ -x "$H2SPEC" ] && [ -x "$CADDY" ] \
+    || { why+=("the controller has not staged pinned native h2spec and Caddy executables"); final; }
+  "$H2SPEC" --version 2>&1 | grep -Eq '^Version: v?2\.6\.0([[:space:]]|$)' \
+    || { why+=("the staged h2spec executable is not v2.6.0"); final; }
+  "$CADDY" version 2>&1 | grep -Eq '^v2\.11\.7([[:space:]]|$)' \
+    || { why+=("the staged Caddy executable is not v2.11.7"); final; }
+else
 case "$(uname -s)" in
   Linux)  plat=linux_amd64; sha=$H2SPEC_SHA_linux_amd64
           command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || { why+=("docker is unavailable, so h2spec (amd64) and the Caddy peers could not run"); final; } ;;
@@ -95,21 +139,23 @@ if [ ! -f "$tgz" ] || [ "$(_sha256 "$tgz")" != "$sha" ]; then
   mv "$tgz.part.$$" "$tgz"
 fi
 mkdir -p "$W/h2spec" && tar -xzf "$tgz" -C "$W/h2spec" h2spec || { why+=("the h2spec archive could not be unpacked"); final; }
-docker pull -q "$CADDY_IMAGE" >/dev/null 2>&1 || docker image inspect "$CADDY_IMAGE" >/dev/null 2>&1 \
-  || { why+=("the pinned Caddy image could not be pulled"); final; }
+ensure_image "$CADDY_IMAGE" "$W/caddy-pull.log" \
+  || { why+=("the pinned Caddy image is unavailable: $(tail -1 "$W/caddy-pull.log")"); final; }
 if [ "$plat" = linux_amd64 ]; then
-  docker pull -q --platform linux/amd64 "$CARRIER_IMAGE" >/dev/null 2>&1 || docker image inspect "$CARRIER_IMAGE" >/dev/null 2>&1 \
-    || { why+=("h2spec's pinned carrier image (debian, linux/amd64) could not be pulled: $(docker pull --platform linux/amd64 "$CARRIER_IMAGE" 2>&1 | tail -1)"); final; }
+  ensure_image "$CARRIER_IMAGE" "$W/carrier-pull.log" --platform linux/amd64 \
+    || { why+=("h2spec's pinned carrier image (debian, linux/amd64) is unavailable: $(tail -1 "$W/carrier-pull.log")"); final; }
+fi
+H2SPEC="$W/h2spec/h2spec"
 fi
 
 # h2spec_run <name> <port>: the JUnit report at $W/<name>.xml, the console at $W/<name>.log.
 h2spec_run() {
   if [ "$plat" = linux_amd64 ]; then
-    docker run --rm --platform linux/amd64 --network host --user "$(id -u):$(id -g)" \
+    docker run --pull=never --rm --platform linux/amd64 --network host --user "$(id -u):$(id -g)" \
       -v "$W/h2spec:/h2:ro" -v "$W:/out" --entrypoint /h2/h2spec "$CARRIER_IMAGE" \
       -t -k -h 127.0.0.1 -p "$2" --timeout 5 -j "/out/$1.xml" >"$W/$1.log" 2>&1
   else
-    "$W/h2spec/h2spec" -t -k -h 127.0.0.1 -p "$2" --timeout 5 -j "$W/$1.xml" >"$W/$1.log" 2>&1
+    "$H2SPEC" -t -k -h 127.0.0.1 -p "$2" --timeout 5 -j "$W/$1.xml" >"$W/$1.log" 2>&1
   fi
   return 0
 }
@@ -151,7 +197,9 @@ chmod 644 "$W/pki/"*
 
 # caddy_leg <name> <h1 h2|h1>: run Caddy serving those protocols on a free port, run h2spec at it.
 caddy_leg() {
-  local port; port="$(free_port)"
+  local port tls_dir; port="$(free_port)"
+  tls_dir=/etc/tls
+  [ "$plat" != confined ] || tls_dir="$W/pki"
   mkdir -p "$W/$1"
   cat >"$W/$1/Caddyfile" <<CONF
 {
@@ -163,13 +211,20 @@ caddy_leg() {
 }
 https://:$port {
   bind 127.0.0.1
-  tls /etc/tls/leaf.pem /etc/tls/leaf.key
+  tls "$tls_dir/leaf.pem" "$tls_dir/leaf.key"
   # h2spec http2/6.9.2 needs at least five response bytes to exercise a negative window.
   respond "h2 conformance control"
 }
 CONF
+  if [ "$plat" = confined ]; then
+    "$CADDY" run --config "$W/$1/Caddyfile" --adapter caddyfile >"$W/$1-caddy.log" 2>&1 &
+    pids+=("$!")
+    wait_port "$port" || return 1
+    h2spec_run "$1" "$port"
+    return 0
+  fi
   local cid
-  if cid="$(docker run -d --rm --network host -v "$W/$1/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$W/pki:/etc/tls:ro" "$CADDY_IMAGE")" \
+  if cid="$(docker run --pull=never -d --rm --network host -v "$W/$1/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$W/pki:/etc/tls:ro" "$CADDY_IMAGE")" \
      && cids+=("$cid") && wait_port "$port"; then
     h2spec_run "$1" "$port"; return 0
   fi
