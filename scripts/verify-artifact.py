@@ -69,7 +69,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 DEFAULT_TARGETS = os.path.join(ROOT, "release", "release-targets.json")
-DEFAULT_CONTRACT = os.path.join(ROOT, ".github", "artifact-contract.json")
+DEFAULT_CONTRACT = os.path.join(ROOT, "release", "artifact-contract.json")
 
 # Below any real busbar archive by a wide margin and far above a header-only or empty upload.
 MIN_ARCHIVE_BYTES = 1024 * 1024
@@ -638,41 +638,34 @@ def row_quickstart_boots(ctx) -> str:
     )
 
 
-# The reusable workflow that mints the ARCHIVE attestations, and therefore the identity a verify
-# has to pin. `--repo` alone asserts only that SOME workflow in the repository signed these bytes,
-# which every workflow that can be given `id-token: write` + `attestations: write` satisfies equally
-# -- including one added on a branch by a PR that attested an archive the release path never built.
-#
-# It is the removed `build-artifact.yml` and not its callers, and that is how GitHub issues the certificate
-# rather than a preference: `gh attestation verify --help` says "if your attestation was generated
-# via a reusable workflow then that reusable workflow is the signer whose identity needs to be
-# validated", because the Fulcio SAN is the `job_workflow_ref` of the job that requested the OIDC
-# token, not the `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
-# the removed build-artifact.yml for archives (the removed docker.yml is the image half's signer). Naming a caller here
-# would fail every verify on a healthy release.
-ARCHIVE_SIGNER_WORKFLOW = "GetBusbar/busbar/.github/workflows/build-artifact.yml"
-
-
 def row_attestation(ctx) -> str:
-    if not shutil.which("gh"):
+    required = ("provenance_directory", "provenance_inventory_sha256",
+                "provenance_trust", "provenance_trust_sha256")
+    if any(not getattr(ctx, name, "") for name in required):
         raise RowFailure(
-            "`gh` is not on PATH, so the attestation the docs tell users to verify could not be "
-            "verified here. A row that cannot run is RED: an unproven attestation looks like "
-            "provenance and is not."
+            "GitLab-native release provenance is not activated without a complete downloaded "
+            "inventory and independently pinned inventory/trust digests. Supply all four "
+            "--provenance-* inputs; GitHub attestations are not this release's trust path."
         )
-    signer = os.environ.get("BUSBAR_ARCHIVE_SIGNER_WORKFLOW") or ARCHIVE_SIGNER_WORKFLOW
-    proc = run(["gh", "attestation", "verify", ctx.archive,
-                "--repo", ctx.repo, "--signer-workflow", signer])
-    if proc.returncode != 0:
-        raise RowFailure(
-            "`gh attestation verify %s --repo %s --signer-workflow %s` failed (exit %d). This is "
-            "the exact command the documentation tells users to run, against the exact bytes the "
-            "release serves -- with the SIGNER pinned, so that an attestation minted by anything "
-            "other than the release build path is refused instead of accepted as ours.\n%s%s"
-            % (os.path.basename(ctx.archive), ctx.repo, signer,
-               proc.returncode, proc.stdout, proc.stderr)
+    # This verifier comes from the trusted checkout, never from downloaded assets.
+    sys.path.insert(0, os.path.join(HERE, "release"))
+
+    try:
+        import release_verifier
+
+        result = release_verifier.verify(
+            ctx.provenance_directory, ctx.provenance_inventory_sha256,
+            ctx.provenance_trust, ctx.provenance_trust_sha256,
         )
-    return "gh attestation verify passes against the released bytes, signed by %s" % signer.rsplit("/", 1)[-1]
+        expected = {"name": os.path.basename(ctx.archive), "sha256": sha256_file(ctx.archive),
+                    "target": ctx.target}
+        matches = [row for row in result["subjects"]
+                   if all(row.get(key) == value for key, value in expected.items())]
+        if result["release"] != ctx.version.removeprefix("v") or len(matches) != 1:
+            raise ValueError("archive/target/version differs from verified inventory")
+    except Exception as error:
+        raise RowFailure("GitLab-native provenance verification refused (%s)." % type(error).__name__) from None
+    return "GitLab-native signed inventory, exact artifact provenance and SBOM mapping verified; SLSA level not assessed"
 
 
 def _evidence(ctx, name: str) -> str:
@@ -1787,6 +1780,10 @@ def main(argv=None) -> int:
                          "pointer, so verifying one proves something about whatever that name meant "
                          "at the moment of the pull; the digest is the artifact.")
     ap.add_argument("--evidence", default="", help="directory holding this build's evidence files")
+    ap.add_argument("--provenance-directory", default="", help="complete downloaded release inventory and subjects")
+    ap.add_argument("--provenance-inventory-sha256", default="", help="independently approved release inventory digest")
+    ap.add_argument("--provenance-trust", default="", help="operator-controlled GitLab-native Sigstore trust configuration")
+    ap.add_argument("--provenance-trust-sha256", default="", help="independently approved trust configuration digest")
     ap.add_argument("--repo", default="GetBusbar/busbar")
     ap.add_argument("--repo-root", default=ROOT)
     ap.add_argument("--targets", default=DEFAULT_TARGETS)
@@ -1879,6 +1876,10 @@ def main(argv=None) -> int:
     ctx.contract_rows = {r["id"]: r for r in rows}
     ctx.evidence = os.path.abspath(a.evidence) if a.evidence else ""
     ctx.repo_root, ctx.work = os.path.abspath(a.repo_root), work
+    ctx.provenance_directory = a.provenance_directory
+    ctx.provenance_inventory_sha256 = a.provenance_inventory_sha256
+    ctx.provenance_trust = a.provenance_trust
+    ctx.provenance_trust_sha256 = a.provenance_trust_sha256
 
     print("=== artifact contract: %s ===" % a.target)
     print("archive : %s" % ctx.archive)
