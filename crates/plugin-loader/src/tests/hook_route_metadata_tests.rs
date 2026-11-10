@@ -129,40 +129,40 @@ fn the_entropy_failure_guard_restores_its_thread_after_unwind() {
 
 use super::metadata_boundary;
 
-fn ranking_metadata_rows(way: Way) -> HookRows {
+fn witness_metadata_rows(way: Way) -> HookRows {
     rows(metadata_boundary::door, "hook_metadata_boundary", way)
 }
 
 #[test]
 fn nonempty_route_metadata_keeps_validation_and_binding() {
     for way in [Way::Linked, Way::Dropped] {
-        let axis = ranking_metadata_rows(way);
-        let name = ranking_name();
+        let axis = witness_metadata_rows(way);
+        let name = witness_name();
         let invalid = axis
             .routes(
                 &name,
-                "hooks.actual-metadata-invalid",
+                "hooks.witness-metadata-invalid",
                 &crate::dispatch::test_settings(&json!({})),
             )
-            .expect_err("a declared route must run actual Ranking VALIDATE");
+            .expect_err("a declared route must run neutral SDK witness VALIDATE");
         assert!(
-            invalid.contains("ranking: settings.policy is required"),
+            invalid.contains("settings: `reject_over_messages` must be a number"),
             "{invalid}"
         );
         let valid = axis
             .routes(
                 &name,
-                "hooks.actual-metadata-valid",
-                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                "hooks.witness-metadata-valid",
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             )
-            .expect("the same actual validator accepts a real Ranking policy");
+            .expect("the same witness validator accepts valid settings");
         assert_eq!(valid.len(), 1);
         let result = {
             let _entropy = EntropyFailure::new();
             axis.routes(
                 &name,
-                "hooks.actual-metadata-bind",
-                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                "hooks.witness-metadata-bind",
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             )
         };
         let error = result.expect_err("nonempty route queries require the actual HostCtx binding");
@@ -175,18 +175,18 @@ fn nonempty_route_metadata_keeps_validation_and_binding() {
 fn route_metadata_returns_owned_routes_after_row_retirement() {
     for way in [Way::Linked, Way::Dropped] {
         let returned = {
-            let axis = ranking_metadata_rows(way);
+            let axis = witness_metadata_rows(way);
             axis.routes(
-                &ranking_name(),
-                "hooks.actual-metadata-owned",
-                &crate::dispatch::test_settings(&json!({"policy": "cheapest"})),
+                &witness_name(),
+                "hooks.witness-metadata-owned",
+                &crate::dispatch::test_settings(&json!({"reject_over_messages": 3})),
             )
-            .expect("the metadata restatement uses actual Ranking validation")
+            .expect("the metadata restatement uses neutral SDK witness validation")
         };
         assert_eq!(
             returned,
             vec![Route {
-                path: "/hooks/ranking/metadata-boundary".to_owned(),
+                path: "/hooks/receiver/feedback".to_owned(),
                 method: RouteMethod::Post,
                 auth: RouteAuth::Key,
             }]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The suite's pending-hook control using the actual first-party Ranking image.
+//! The suite's pending-hook control using the neutral SDK Hook witness.
 
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::{
@@ -13,34 +13,16 @@ use busbar_contract::abi::mechanism::call::{
     DeadlineClass, InHead, Outcome, RawOutcome, FLAG_RESUME,
 };
 use busbar_contract::abi::mechanism::door::{Door, DoorParts};
-use busbar_contract::abi::sdk::door::RawDoorFn;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-fn actual() -> &'static Door {
-    static IMAGE: OnceLock<(libloading::Library, RawDoorFn)> = OnceLock::new();
-    let image = IMAGE.get_or_init(|| {
-        let path = std::env::var_os("BUSBAR_TEST_RANKING_CDYLIB")
-            .expect("BUSBAR_TEST_RANKING_CDYLIB names the actual qualified Ranking image");
-        let library = crate::dlopen_on_worker(&path).expect("load actual Ranking image");
-        // SAFETY: the actual product exports the typed ABI symbol; IMAGE retains
-        // the mapping for every descriptor loan and live instance.
-        let entry = unsafe {
-            *library
-                .get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
-                .expect("actual Ranking mechanism export")
-        };
-        (library, entry)
-    });
-    let ptr = crate::dispatch::load::enter_door(image.1);
-    crate::dispatch::load::validate_door::<Hook>(ptr).expect("actual Ranking hook validates");
-    // SAFETY: validated immutable descriptor in IMAGE's retained mapping.
-    unsafe { &*ptr }
+fn witness() -> &'static Door {
+    crate::hook_door_conformance_tests::hook_door_plugin::conforming::door()
 }
 
 static PENDING_ENTRIES: AtomicUsize = AtomicUsize::new(0);
-static PRODUCT_DECISIONS: AtomicUsize = AtomicUsize::new(0);
+static WITNESS_DECISIONS: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" fn pending_decide(
     instance: *mut std::ffi::c_void,
@@ -56,21 +38,21 @@ extern "C" fn pending_decide(
             (*out.cast::<DecideOut>()).head.outcome = RawOutcome::of(Outcome::Pending);
             return RawOutcome::of(Outcome::Pending);
         }
-        let ops = actual().ops().cast::<Ops>().read_unaligned();
-        PRODUCT_DECISIONS.fetch_add(1, Ordering::SeqCst);
-        ops.decide.expect("actual Ranking decides")(instance, input, out)
+        let ops = witness().ops().cast::<Ops>().read_unaligned();
+        WITNESS_DECISIONS.fetch_add(1, Ordering::SeqCst);
+        ops.decide.expect("neutral Hook witness decides")(instance, input, out)
     }
 }
 
 extern "C" fn pending_door() -> &'static Door {
     static DOOR: OnceLock<usize> = OnceLock::new();
     let ptr = *DOOR.get_or_init(|| {
-        let real = *actual();
+        let real = *witness();
         // SAFETY: validated retained immutable Hook table.
         let mut ops = unsafe { real.ops().cast::<Ops>().read_unaligned() };
         ops.decide = Some(pending_decide);
         let ops = Box::leak(Box::new(ops));
-        // SAFETY: same genuine descriptor and full Hook table, only DECIDE's
+        // SAFETY: same valid SDK descriptor and full Hook table, only DECIDE's
         // scheduling wrapper changed; table and descriptor are process-retained.
         let door = unsafe {
             Door::__from_parts(DoorParts {
@@ -90,26 +72,26 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
     use busbar_contract::abi::mechanism::call::BLOB_JSON;
     use busbar_contract::abi::mechanism::lifecycle::slot as life;
     PENDING_ENTRIES.store(0, Ordering::SeqCst);
-    PRODUCT_DECISIONS.store(0, Ordering::SeqCst);
+    WITNESS_DECISIONS.store(0, Ordering::SeqCst);
     let d = Dispatcher::new(
         DispatchConfig::default(),
         busbar_contract::services::test_caller_binding(),
     );
     let p = load_linked::<Hook>(
-        &LinkedRow::of(pending_door).expect("actual Ranking descriptor"),
+        &LinkedRow::of(pending_door).expect("neutral Hook witness descriptor"),
         Bind {
-            instance: "ranking-ticket-control".into(),
+            instance: "hook-ticket-control".into(),
             max_inflight_cap: 8,
             sink: Arc::new(NoSink),
             dispatcher: d.adopter(),
             conns: ConnTable::NoNeeds,
         },
     )
-    .expect("actual Ranking binds");
+    .expect("neutral Hook witness binds");
     assert_eq!(
         p.call(
             life::OPEN,
-            &mut open_frame(blob(br#"{"policy":"fastest"}"#, BLOB_JSON, 0))
+            &mut open_frame(blob(br#"{"reject_over_messages":3}"#, BLOB_JSON, 0))
         )
         .outcome,
         Outcome::Ready
@@ -135,16 +117,16 @@ fn red_a_gate_that_waits_is_resumed_on_its_ticket_never_faulted_ticketless() {
             now_ns().saturating_add(10_000_000_000),
         )
         .wait(Duration::from_secs(15))
-        .expect("the actual wake resumes Hook DECIDE");
+        .expect("the witness wake resumes Hook DECIDE");
     assert_eq!(done.outcome, Outcome::Ready);
     let frame = done.frame.expect("a completed Hook answer frame");
     assert_eq!(
         frame.out.verbs, VERB_ABSTAIN,
-        "actual Ranking abstains on an empty candidate set"
+        "neutral Hook witness abstains below its configured message limit"
     );
 
     assert_eq!(p.inner.crossings.load(Ordering::SeqCst) - before.0, 2);
     assert_eq!(PENDING_ENTRIES.load(Ordering::SeqCst), 1);
-    assert_eq!(PRODUCT_DECISIONS.load(Ordering::SeqCst), 1);
+    assert_eq!(WITNESS_DECISIONS.load(Ordering::SeqCst), 1);
     assert_eq!(p.inner.resumes.load(Ordering::SeqCst) - before.1, 1);
 }

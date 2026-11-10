@@ -228,6 +228,32 @@ impl SafeSlot for DecidePanics {
     }
 }
 
+pub struct Status;
+
+impl SafeSlot for Status {
+    type Kind = busbar_contract::plugin::markers::HookKind;
+    type In = busbar_contract::abi::mechanism::call::InHead;
+    type Out = busbar_contract::abi::hook::StatusOut;
+    type State = Held<Gate>;
+
+    fn call(
+        instance: Instance<'_, Self::State, Self::Kind>,
+        _: Lent<'_, Self::In>,
+        mut out: Out<'_, Self::Out>,
+    ) -> Outcome {
+        let Some(held) = instance.get() else {
+            return Outcome::Refused;
+        };
+        out.lease(
+            |o| &o.status,
+            held.leases(),
+            b"{}".to_vec(),
+            busbar_contract::abi::mechanism::call::BLOB_JSON,
+        );
+        Outcome::Ready
+    }
+}
+
 pub struct Configure;
 
 pub struct Serve;
@@ -358,8 +384,8 @@ impl<I: AbiIn, O: AbiOut> SafeSlot for Refuse<I, O> {
     }
 }
 
-/// The hook table's kind ops with `decide` named `$decide` over the Statement `$statement`; every
-/// other op [`Refuse`]s. `hook_door!(name, decide)` states the name with [`TAIL`].
+/// The hook table's kind ops with the selected decide/configure/serve bodies and a leased
+/// status answer; the remaining ops [`Refuse`]. `hook_door!(name, decide)` states [`TAIL`].
 macro_rules! hook_door {
     (@statement $statement:expr, $decide:ty) => {
         hook_door!(@statement $statement, $decide, super::Refuse<
@@ -389,10 +415,7 @@ macro_rules! hook_door {
                     busbar_contract::abi::mechanism::call::OutHead,
                 >>,
                 configure: busbar_contract::abi::sdk::Safe<$configure>,
-                status: busbar_contract::abi::sdk::Safe<super::Refuse<
-                    busbar_contract::abi::mechanism::call::InHead,
-                    busbar_contract::abi::hook::StatusOut,
-                >>,
+                status: busbar_contract::abi::sdk::Safe<super::Status>,
                 describe: busbar_contract::abi::sdk::Safe<super::Refuse<
                     busbar_contract::abi::mechanism::call::InHead,
                     busbar_contract::abi::hook::DescribeOut,
@@ -416,8 +439,7 @@ pub mod conforming {
     hook_door!(@statement busbar_contract::abi::sdk::hook::statement_with_tail(
         busbar_contract::abi::sdk::door::statement(super::NAME, "1.6.0", super::MAX_INFLIGHT),
         super::ROUTED_TAIL,
-    ), super::Decide, super::Refuse<busbar_contract::abi::hook::ConfigureIn,
-        busbar_contract::abi::hook::ConfigureOut>, super::Serve);
+    ), super::Decide, super::Configure, super::Serve);
 }
 
 pub mod broken {
