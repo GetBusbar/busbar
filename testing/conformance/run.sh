@@ -34,7 +34,7 @@
 #
 # THIS SCRIPT then holds each verdict to the schema (an absent, unreadable or mismatched verdict is
 # `fail`, never skipped), stamps what the suite's freshness is judged by (`repo`, `commit`,
-# `core_pin`, `run_id`, `evidence`: the ModernCI move, `generated_at`) and writes it to
+# `core_pin`, `run_id`, `evidence`: the native CI job or ModernCI move, `generated_at`) and writes it to
 # target/conformance/verdicts/<id>.json, the check's output. A successful nonempty run also writes
 # invocation.json binding its source inputs and verdict hashes; completed failed suites also carry
 # their actual exit code. Importing PASS requires the job's green result and receipt exit zero.
@@ -54,7 +54,7 @@ say() { printf 'conformance: %s\n' "$*" >&2; }
 # judge <raw verdict> <suite id> <command rc> <out file>: the verdict as published, or exit 1.
 judge() {
   python3 -I - "$@" <<'PY'
-import json, sys, os, stat, datetime, urllib.parse
+import json, sys, os, stat, datetime, urllib.parse, re
 raw, suite, rc, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 SCHEMA = "busbar.conformance.verdict/1"
 MAX_VERDICT_BYTES = 1024 * 1024
@@ -132,8 +132,17 @@ v["schema"] = SCHEMA
 v["repo"] = repo
 v["commit"] = head
 v["core_pin"] = env["BUSBAR_PIN"]
-url = env["CONF_MCI_URL"].rstrip("/") + "/move?" + urllib.parse.urlencode({"repo": repo, "from": frm, "head": head})
-v["run_id"] = "modernci:" + repo + "@" + head + ":conformance"
+if env.get("CI_SERVER_HOST"):
+    job, pipeline = env.get("CI_JOB_ID", ""), env.get("CI_PIPELINE_ID", "")
+    url = env.get("CI_JOB_URL", "")
+    expected_url = "https://" + env["CI_SERVER_HOST"] + "/" + repo + "/-/jobs/" + job
+    if not all(re.fullmatch(r"[1-9][0-9]*", value) for value in (job, pipeline)) or url != expected_url:
+        print("cannot publish conformance verdict: native CI job identity is missing or inconsistent", file=sys.stderr)
+        sys.exit(1)
+    v["run_id"] = f"gitlab:{repo}@{head}:pipeline:{pipeline}:job:{job}"
+else:
+    url = env["CONF_MCI_URL"].rstrip("/") + "/move?" + urllib.parse.urlencode({"repo": repo, "from": frm, "head": head})
+    v["run_id"] = "modernci:" + repo + "@" + head + ":conformance"
 v["evidence"] = url
 v["generated_at"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 try:
@@ -274,6 +283,7 @@ PYINVOCATION
 }
 
 selftest() (
+  unset CI_SERVER_HOST CI_JOB_ID CI_PIPELINE_ID CI_JOB_URL
   export MODERNCI_REPO=selftest/repo
   local t; t="$(mktemp -d)"; trap 'rm -rf "$t"' EXIT
   export BUSBAR_PIN=0000000000000000000000000000000000000000 CONF_REPO=selftest/repo CONF_HEAD=1111111111111111111111111111111111111111 CONF_MCI_URL="$MCI_URL"
@@ -302,6 +312,12 @@ selftest() (
   judge <(printf '%s' '{"suite":"s1","status":"pass","armed":true}') s1 0 "$t/out.json" >/dev/null
   python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["repo"]=="selftest/repo" and v["core_pin"].startswith("0000") and v["evidence"].endswith("&head=1111111111111111111111111111111111111111"), v' "$t/out.json" \
     && echo "  ok: the stamp names the repo, the commit, the core pin and the move" || { echo "selftest FAILED: the stamp"; ok=1; }
+  export CI_SERVER_HOST=github.com CI_JOB_ID=2371 CI_PIPELINE_ID=1420 CI_JOB_URL=https://github.com/selftest/repo/-/jobs/2371
+  judge <(printf '%s' '{"suite":"s1","status":"pass","armed":true}') s1 0 "$t/out.json" >/dev/null
+  python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["run_id"]=="gitlab:selftest/repo@1111111111111111111111111111111111111111:pipeline:1420:job:2371" and v["evidence"]=="https://github.com/selftest/repo/-/jobs/2371", v' "$t/out.json" \
+    && echo "  ok: native evidence names the actual GitLab job" || { echo "selftest FAILED: native stamp"; ok=1; }
+  unset CI_PIPELINE_ID
+  expect 1 "incomplete native identity cannot claim ModernCI evidence" '{"suite":"s1","status":"pass","armed":true}' 0
   return "$ok"
 )
 

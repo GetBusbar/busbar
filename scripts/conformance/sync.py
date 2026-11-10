@@ -288,6 +288,15 @@ def stamp_problem(v, repo, head, core):
         return f"stamped for commit {str(v.get('commit'))[:12]}, not the shipped {head[:12]}"
     if v.get("core_pin") != core:
         return f"judged against core {str(v.get('core_pin'))[:12]}, not the expected core {core[:12]}"
+    run_id = str(v.get("run_id", ""))
+    if run_id.startswith("gitlab:"):
+        match = re.fullmatch(re.escape(f"gitlab:{repo}@{head}") + r":pipeline:([1-9][0-9]*):job:([1-9][0-9]*)", run_id)
+        if not match:
+            return "native CI run identity does not match the repository and source"
+        expected_url = f"https://github.com/{repo}/-/jobs/{match[2]}"
+        if v.get("evidence") != expected_url:
+            return "native CI evidence does not name the stamped job"
+        return None
     if v.get("run_id") != f"modernci:{repo}@{head}:conformance":
         return f"run_id {v.get('run_id')!r} is not ModernCI's conformance run of {repo}@{head[:12]}"
     ev = urlsplit(str(v.get("evidence", "")))
