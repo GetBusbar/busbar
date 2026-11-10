@@ -46,6 +46,19 @@ use crate::abi::mechanism::ticket::{CompletionHandle, HostCtx, HostTables, Ticke
 use crate::redacted::{OwnerSeal, Secret};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+/// Public scope of host-held outbound custody. Connection identity carries no authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboundScope<'a> {
+    /// Declared outbound need index.
+    pub need: u32,
+    /// Declared need member.
+    pub member: &'a str,
+    /// Exact final outbound URL, including the request target.
+    pub resource: &'a str,
+    /// Public nonsecret identity; never authority.
+    pub connection: &'a str,
+}
+
 /// A read-only observation of a durable work reference owned by this instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkStatus {
@@ -614,6 +627,162 @@ impl<K: KindMarker> Services<K> {
             }));
         }
         Poll::Ready(Err(ServiceError::Broken))
+    }
+
+    /// Publish sealed outbound custody. Credentials remain opaque to plugin code.
+    #[allow(clippy::too_many_arguments)]
+    pub fn outbound_publish(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        expected_revision: u64,
+        expires_at_unix: u64,
+        field_name: &str,
+        seal: &super::cred::Seal,
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::OUTBOUND_AUTHORIZE }>,
+    {
+        self.outbound_authorize(
+            handle,
+            scope,
+            crate::abi::host::service::OUTBOUND_PUBLISH,
+            expected_revision,
+            expires_at_unix,
+            field_name,
+            seal.wire(),
+        )
+    }
+
+    /// Publish a reusable sealed request body in host-held connection custody.
+    /// Bind its public scope and revision for governed dispatch; revoke invalidates the body.
+    pub fn outbound_publish_body(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        expected_revision: u64,
+        expires_at_unix: u64,
+        body: &super::cred::SealedWrite,
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::OUTBOUND_AUTHORIZE }>,
+    {
+        self.outbound_authorize(
+            handle,
+            scope,
+            crate::abi::host::service::OUTBOUND_PUBLISH_BODY,
+            expected_revision,
+            expires_at_unix,
+            "",
+            &body.buf,
+        )
+    }
+
+    /// Prepare a sealed request body for one secured dispatch by this crossing's serving unit.
+    /// The host consumes the body once through governed outbound dispatch; no handle is exposed.
+    pub fn outbound_prepare(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        expires_at_unix: u64,
+        body: &super::cred::SealedWrite,
+    ) -> Pend<()>
+    where
+        K: crate::abi::host::access::Permitted<{ op::OUTBOUND_AUTHORIZE }>,
+    {
+        self.outbound_authorize(
+            handle,
+            scope,
+            crate::abi::host::service::OUTBOUND_PREPARE,
+            0,
+            expires_at_unix,
+            "",
+            &body.buf,
+        )
+        .map(|answer| answer.map(|_| ()))
+    }
+
+    /// Bind a retained outbound custody revision to this crossing's serving unit.
+    pub fn outbound_bind(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        revision: u64,
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::OUTBOUND_AUTHORIZE }>,
+    {
+        self.outbound_authorize(
+            handle,
+            scope,
+            crate::abi::host::service::OUTBOUND_BIND,
+            revision,
+            0,
+            "",
+            &[],
+        )
+    }
+
+    /// Revoke the named outbound custody revision, or tombstone an absent connection at zero.
+    pub fn outbound_revoke(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        revision: u64,
+    ) -> Pend<u64>
+    where
+        K: crate::abi::host::access::Permitted<{ op::OUTBOUND_AUTHORIZE }>,
+    {
+        self.outbound_authorize(
+            handle,
+            scope,
+            crate::abi::host::service::OUTBOUND_REVOKE,
+            revision,
+            0,
+            "",
+            &[],
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn outbound_authorize(
+        &self,
+        handle: CompletionHandle,
+        scope: OutboundScope<'_>,
+        action: u32,
+        expected_revision: u64,
+        expires_at_unix: u64,
+        field_name: &str,
+        credential: &[u8],
+    ) -> Pend<u64> {
+        use crate::abi::host::service::{
+            check_outbound_authorize, check_outbound_authorize_in, OutboundAuthorizeIn,
+        };
+        let input = OutboundAuthorizeIn {
+            head: head::<OutboundAuthorizeIn>(op::OUTBOUND_AUTHORIZE, handle),
+            action,
+            need: scope.need,
+            member: text(scope.member),
+            resource: text(scope.resource),
+            connection: text(scope.connection),
+            expected_revision,
+            expires_at_unix,
+            field_name: text(field_name),
+            credential: if credential.is_empty() {
+                NO_BLOB
+            } else {
+                blob(credential, BLOB_OCTETS)
+            },
+        };
+        if check_outbound_authorize_in(&input).is_err() {
+            return Poll::Ready(Err(ServiceError::Declined(Outcome::Refused)));
+        }
+        verdict(self.cross(
+            op::OUTBOUND_AUTHORIZE,
+            |t| t.outbound_authorize,
+            &input,
+            check_outbound_authorize,
+        ))
     }
 
     /// `ticket.take`: the record of the ticket that admitted the unit this crossing serves, once.

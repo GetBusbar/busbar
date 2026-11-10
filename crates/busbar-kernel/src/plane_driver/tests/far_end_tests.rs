@@ -60,6 +60,7 @@ type Lines = Vec<(Vec<u8>, Vec<u8>)>;
 /// A connection table whose far ends answer from `scripts`, by the target's host.
 #[derive(Default)]
 struct Table {
+    secured: std::sync::atomic::AtomicBool,
     scripts: HashMap<&'static str, Script>,
     opened: Mutex<Vec<Opened>>,
     /// What each open's host sealed-fields field named (`conn::SEALED_FIELDS_FIELD`), taken out of
@@ -118,6 +119,19 @@ fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Pie
 }
 
 impl Conns for Table {
+    fn open_with_security(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        desc: &OpenDesc<'_>,
+        require_secure: bool,
+    ) -> Result<ConnId, ConnError> {
+        if require_secure && !self.secured.load(Ordering::SeqCst) {
+            return Err(ConnError::AuthRefused);
+        }
+        self.open(caller, need, desc)
+    }
+
     fn open(&self, _: InstanceId, need: NeedId, d: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
         self.needs.lock().unwrap().push(need.0);
         let host = d
@@ -614,6 +628,8 @@ fn rig(
             (
                 DestinationId::new(k as u64 + 1),
                 MemberRoute {
+                    ride_anchors: Vec::new(),
+                    connection_required: false,
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
                     provider: format!("p{k}"),
@@ -3344,6 +3360,290 @@ fn opaque_status_namespace_survives_without_a_reserved_fallback() {
     assert!(super::wire_code(&answer).is_none());
     answer.status_namespace = Some("".to_owned());
     assert!(super::wire_code(&answer).is_none());
+}
+
+fn delegated_ask<'a>(
+    action: u32,
+    credential: &'a [u8],
+    revision: u64,
+) -> busbar_contract::services::OutboundAuthorization<'a> {
+    busbar_contract::services::OutboundAuthorization {
+        action,
+        need: 0,
+        member: "m0",
+        resource: "https://a.test/v1/chat",
+        connection: "public-account",
+        expected_revision: revision,
+        expires_at_unix: if credential.is_empty() { 0 } else { u64::MAX },
+        field_name: if action == busbar_contract::abi::host::service::OUTBOUND_PUBLISH {
+            "authorization"
+        } else {
+            ""
+        },
+        credential,
+    }
+}
+
+fn delegated_service(
+    services: &crate::host_services::KernelServices,
+    caller: &busbar_contract::services::Caller,
+    unit: u64,
+    ask: busbar_contract::services::OutboundAuthorization<'_>,
+) -> busbar_contract::services::Stored {
+    use busbar_contract::services::{HostServices, Ran};
+    match services.outbound_authorize(
+        caller,
+        Some(unit),
+        ask,
+        Box::new(|_| panic!("synchronous custody")),
+    ) {
+        Ran::Now(result) => result,
+        Ran::Later => panic!("synchronous custody"),
+    }
+}
+
+fn delegated_owner(services: &crate::host_services::KernelServices, unit: u64, owner: &str) {
+    services.units().admitted(
+        unit,
+        crate::host_units::UnitRecord {
+            principal: Some(Arc::new(busbar_contract::records::VirtualKey {
+                id: owner.into(),
+                enabled: true,
+                ..Default::default()
+            })),
+            depth: 0,
+        },
+    );
+}
+
+#[tokio::test]
+async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
+    use busbar_contract::abi::host::service::{OUTBOUND_BIND, OUTBOUND_PUBLISH, OUTBOUND_REVOKE};
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.table.secured.store(true, Ordering::SeqCst);
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .unwrap()
+        .connection_required = true;
+    let services = crate::host_services::KernelServices::new();
+    let caller = busbar_contract::services::Caller::issue(
+        &crate::seal::acquire(),
+        Arc::from("plane"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    let t = token();
+    for (unit, owner, credential) in [
+        (1, "bob", b"Bearer bob".as_slice()),
+        (2, "joe", b"Bearer joe".as_slice()),
+    ] {
+        delegated_owner(&services, unit, owner);
+        assert_eq!(
+            delegated_service(
+                &services,
+                &caller,
+                unit,
+                delegated_ask(OUTBOUND_PUBLISH, credential, 0)
+            )
+            .outcome,
+            busbar_contract::abi::mechanism::call::Outcome::Ready
+        );
+        assert_eq!(
+            delegated_service(
+                &services,
+                &caller,
+                unit,
+                delegated_ask(OUTBOUND_BIND, &[], 1)
+            )
+            .outcome,
+            busbar_contract::abi::mechanism::call::Outcome::Ready
+        );
+        let far = r.egress.unit(UnitRoute {
+            unit: busbar_contract::UnitKey::new(unit),
+            authorization: Some(Arc::clone(services.units())),
+            ..route()
+        });
+        let _ = far.member(&t, 1).await;
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    let opened = r.table.opened.lock().unwrap().clone();
+    for (open, credential) in opened.iter().zip([b"Bearer bob", b"Bearer joe"]) {
+        assert_eq!(
+            open.1.iter().find(|(n, _)| n == "authorization").unwrap().1,
+            credential
+        );
+    }
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+    // Already bound work is invalidated before another dispatch; the host's ordinary auth
+    // remains configured in this rig and must not rescue revoked or entirely absent bindings.
+    delegated_service(
+        &services,
+        &caller,
+        1,
+        delegated_ask(OUTBOUND_REVOKE, &[], 1),
+    );
+    for unit in [1, 3] {
+        let far = r.egress.unit(UnitRoute {
+            unit: busbar_contract::UnitKey::new(unit),
+            authorization: Some(Arc::clone(services.units())),
+            ..route()
+        });
+        let _ = far.member(&t, 1).await;
+        assert!(!far.send(&t, request()).await);
+    }
+    assert_eq!(r.table.opened.lock().unwrap().len(), 2);
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn delegated_prepared_exchange_is_secure_exact_once_and_has_no_shared_auth() {
+    use busbar_contract::abi::host::service::OUTBOUND_PREPARE;
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.table.secured.store(true, Ordering::SeqCst);
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .unwrap()
+        .connection_required = true;
+    let services = crate::host_services::KernelServices::new();
+    let caller = busbar_contract::services::Caller::issue(
+        &crate::seal::acquire(),
+        Arc::from("plane"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    delegated_owner(&services, 1, "bob");
+    let secret = b"grant_type=authorization_code&code=private&code_verifier=private";
+    let result = delegated_service(
+        &services,
+        &caller,
+        1,
+        delegated_ask(OUTBOUND_PREPARE, secret, 0),
+    );
+    assert_eq!(
+        result.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Ready
+    );
+    assert!(result.bytes.is_empty());
+    let t = token();
+    for success in [true, false] {
+        let far = r.egress.unit(UnitRoute {
+            unit: busbar_contract::UnitKey::new(1),
+            authorization: Some(Arc::clone(services.units())),
+            ..route()
+        });
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        req.body.clear();
+        assert_eq!(far.send(&t, req).await, success);
+        if success {
+            let _ = drain(&far, &t).await;
+        }
+    }
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].2, secret);
+    assert!(!opened[0]
+        .1
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
+    // An insecure connector refuses before receiving the protected request body.
+    delegated_service(
+        &services,
+        &caller,
+        1,
+        delegated_ask(OUTBOUND_PREPARE, secret, 0),
+    );
+    r.table.secured.store(false, Ordering::SeqCst);
+    let far = r.egress.unit(UnitRoute {
+        unit: busbar_contract::UnitKey::new(1),
+        authorization: Some(Arc::clone(services.units())),
+        ..route()
+    });
+    let _ = far.member(&t, 1).await;
+    let mut req = request();
+    req.body.clear();
+    assert!(!far.send(&t, req).await);
+    assert_eq!(r.table.opened.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn delegated_stored_body_is_reusable_but_fenced_before_each_dispatch() {
+    use busbar_contract::abi::host::service::{
+        OUTBOUND_BIND, OUTBOUND_PUBLISH_BODY, OUTBOUND_REVOKE,
+    };
+    let mut r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    r.table.secured.store(true, Ordering::SeqCst);
+    r.egress
+        .routes
+        .get_mut(&DestinationId::new(1))
+        .unwrap()
+        .connection_required = true;
+    let services = crate::host_services::KernelServices::new();
+    let caller = busbar_contract::services::Caller::issue(
+        &crate::seal::acquire(),
+        Arc::from("plane"),
+        busbar_contract::abi::mechanism::KindCode::Plane,
+    );
+    delegated_owner(&services, 1, "bob");
+    let secret = b"grant_type=refresh_token&refresh_token=private";
+    let published = delegated_service(
+        &services,
+        &caller,
+        1,
+        delegated_ask(OUTBOUND_PUBLISH_BODY, secret, 0),
+    );
+    assert_eq!(
+        published.outcome,
+        busbar_contract::abi::mechanism::call::Outcome::Ready
+    );
+    assert!(published.bytes.is_empty());
+    delegated_service(&services, &caller, 1, delegated_ask(OUTBOUND_BIND, &[], 1));
+    let t = token();
+    for success in [true, true, false] {
+        if !success {
+            delegated_service(
+                &services,
+                &caller,
+                1,
+                delegated_ask(OUTBOUND_REVOKE, &[], 1),
+            );
+        }
+        let far = r.egress.unit(UnitRoute {
+            unit: busbar_contract::UnitKey::new(1),
+            authorization: Some(Arc::clone(services.units())),
+            ..route()
+        });
+        let _ = far.member(&t, 1).await;
+        let mut req = request();
+        req.body.clear();
+        assert_eq!(far.send(&t, req).await, success);
+        if success {
+            let _ = drain(&far, &t).await;
+        }
+    }
+    let opened = r.table.opened.lock().unwrap();
+    assert_eq!(opened.len(), 2);
+    for (_, fields, body, _) in opened.iter() {
+        assert_eq!(body, secret);
+        assert!(!fields
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization")));
+    }
+    assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

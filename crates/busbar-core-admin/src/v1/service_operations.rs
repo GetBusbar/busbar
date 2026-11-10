@@ -1293,6 +1293,7 @@ impl AdminService {
             upstream_credentials: match self.app.upstream_creds() {
                 busbar_kernel::auth::UpstreamCreds::Own => "own",
                 busbar_kernel::auth::UpstreamCreds::Passthrough => "passthrough",
+                busbar_kernel::auth::UpstreamCreds::Connection => "connection",
             },
         })
     }

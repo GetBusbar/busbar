@@ -608,6 +608,10 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, ticket_mint), op::TICKET_MINT),
         (offset_of!(HostSlots, ticket_take), op::TICKET_TAKE),
         (offset_of!(HostSlots, work_status), op::WORK_STATUS),
+        (
+            offset_of!(HostSlots, outbound_authorize),
+            op::OUTBOUND_AUTHORIZE,
+        ),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1811,4 +1815,55 @@ fn a_take_writes_a_record_only_when_a_ticket_admitted_the_unit() {
         rule(unsafe { check_ticket_take(&i, ready(&odd), &odd) }),
         Rule::UnknownCode
     );
+}
+
+#[test]
+fn outbound_body_publication_and_revision_zero_revocation_keep_distinct_shapes() {
+    let text = |s: &'static str| AbiStr {
+        ptr: s.as_ptr(),
+        len: s.len(),
+    };
+    let mut input = OutboundAuthorizeIn {
+        head: head(
+            op::OUTBOUND_AUTHORIZE,
+            TICKET,
+            core::mem::size_of::<OutboundAuthorizeIn>(),
+        ),
+        action: OUTBOUND_REVOKE,
+        need: 2,
+        member: text("issuer"),
+        resource: text("https://issuer.example.test/token"),
+        connection: text("public-id"),
+        expected_revision: 0,
+        expires_at_unix: 0,
+        field_name: none(),
+        credential: empty_blob(),
+    };
+    assert!(check_outbound_authorize_in(&input).is_ok());
+    input.action = OUTBOUND_BIND;
+    assert!(check_outbound_authorize_in(&input).is_err());
+    input.action = OUTBOUND_REVOKE;
+    input.expires_at_unix = 1;
+    assert!(check_outbound_authorize_in(&input).is_err());
+    input.expires_at_unix = 0;
+    input.field_name = text("Authorization");
+    assert!(check_outbound_authorize_in(&input).is_err());
+    input.field_name = none();
+    input.credential = Blob {
+        ptr: b"private-body".as_ptr(),
+        len: 12,
+        fmt: crate::abi::mechanism::call::BLOB_OCTETS,
+        flags: 0,
+    };
+    assert!(check_outbound_authorize_in(&input).is_err());
+    input.action = OUTBOUND_PUBLISH_BODY;
+    input.expires_at_unix = 1_900_000_000;
+    assert!(check_outbound_authorize_in(&input).is_ok());
+    input.expected_revision = 7;
+    assert!(check_outbound_authorize_in(&input).is_ok());
+    input.action = OUTBOUND_PREPARE;
+    assert!(check_outbound_authorize_in(&input).is_err());
+    input.action = OUTBOUND_PUBLISH_BODY;
+    input.field_name = text("Authorization");
+    assert!(check_outbound_authorize_in(&input).is_err());
 }

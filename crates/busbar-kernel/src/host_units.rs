@@ -57,6 +57,8 @@ pub struct UnitRecord {
 /// the unit runs and dropped (zeroised) at its end.
 #[derive(Default)]
 struct UnitEntry {
+    prepared: Option<crate::host_outbound::Prepared>,
+    outbound: Option<crate::host_outbound::Bound>,
     record: Option<Arc<UnitRecord>>,
     stage: Option<Arc<dyn UnitHookStage>>,
     lent: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
@@ -97,6 +99,43 @@ impl UnitRecords {
 
     pub fn ended(&self, unit: u64) {
         self.lock(unit).remove(&unit);
+    }
+
+    pub fn prepare_outbound(&self, unit: u64, prepared: crate::host_outbound::Prepared) -> bool {
+        let mut shard = self.lock(unit);
+        let Some(entry) = shard
+            .get_mut(&unit)
+            .filter(|entry| entry.record.as_ref().is_some_and(|r| r.principal.is_some()))
+        else {
+            return false;
+        };
+        if entry.prepared.is_some() {
+            return false;
+        }
+        entry.outbound = None;
+        entry.prepared = Some(prepared);
+        true
+    }
+
+    pub fn take_prepared(&self, unit: u64) -> Option<crate::host_outbound::Prepared> {
+        self.lock(unit).get_mut(&unit)?.prepared.take()
+    }
+
+    /// Retain a binding only while this authenticated unit is live.
+    pub fn bind_outbound(&self, unit: u64, bound: crate::host_outbound::Bound) -> bool {
+        let mut shard = self.lock(unit);
+        let Some(entry) = shard
+            .get_mut(&unit)
+            .filter(|entry| entry.record.as_ref().is_some_and(|r| r.principal.is_some()))
+        else {
+            return false;
+        };
+        entry.outbound = Some(bound);
+        true
+    }
+
+    pub fn outbound(&self, unit: u64) -> Option<crate::host_outbound::Bound> {
+        self.lock(unit).get(&unit)?.outbound.clone()
     }
 
     pub fn ticketed(&self, unit: u64, ticket: Option<Vec<u8>>) -> bool {

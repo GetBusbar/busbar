@@ -915,6 +915,7 @@ impl Drop for TrustDecisionGrant<'_> {
 }
 
 pub struct KernelServices {
+    outbound: crate::host_outbound::Custody,
     origin: Instant,
     wall_ms: WallMs,
 
@@ -1078,6 +1079,7 @@ impl KernelServices {
             disk: Arc::default(),
             sessions: Mutex::default(),
             verify: crate::host_verify::VerifyBook::default(),
+            outbound: crate::host_outbound::Custody::default(),
             credentials: None,
             tickets: OnceLock::new(),
         }
@@ -3130,6 +3132,56 @@ impl HostServices for KernelServices {
             &principal,
         );
         Stored::ready(0)
+    }
+
+    fn outbound_authorize(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ask: busbar_contract::services::OutboundAuthorization<'_>,
+        _later: Later,
+    ) -> Ran {
+        let refused = || Ran::Now(Stored::refused(crate::host_outbound::REFUSED));
+        if caller.kind() != busbar_contract::abi::mechanism::KindCode::Plane {
+            return refused();
+        }
+        let Some(unit) = unit else {
+            return refused();
+        };
+        let Some(principal) = self.units.get(unit).and_then(|r| r.principal.clone()) else {
+            return refused();
+        };
+        let now = (self.wall_ms)() / 1000;
+        if !principal.enabled
+            || principal.deleted_at.is_some()
+            || principal.expires_at.is_some_and(|at| at <= now)
+        {
+            return refused();
+        }
+        if ask.action == svc::OUTBOUND_PREPARE {
+            let Some(prepared) = crate::host_outbound::Prepared::new(&ask, now) else {
+                return refused();
+            };
+            return if self.units.prepare_outbound(unit, prepared) {
+                Ran::Now(Stored::ready(1))
+            } else {
+                refused()
+            };
+        }
+        match self
+            .outbound
+            .authorize(caller, &principal.id, &ask, (self.wall_ms)() / 1000)
+        {
+            Ok((revision, bound)) => {
+                if let Some(bound) = bound {
+                    if !self.units.bind_outbound(unit, bound) {
+                        return refused();
+                    }
+                }
+                Ran::Now(Stored::ready(revision))
+            }
+            Err(_) => refused(),
+        }
     }
 
     fn ticket_mint(

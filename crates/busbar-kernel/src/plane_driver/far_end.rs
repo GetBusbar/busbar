@@ -85,6 +85,8 @@ pub const DEFAULT_ERROR_BODY_MAX: usize = 256 * 1024;
 /// joined onto, and its auth binding.
 #[derive(Clone)]
 pub struct MemberRoute {
+    /// Shared configured authorization is never used for this route.
+    pub connection_required: bool,
     /// The plane instance's declared need the connection opens on, resolved once at config load
     /// by the member's auth key ([`super::resolve_member_needs`]).
     pub need: NeedId,
@@ -108,6 +110,8 @@ pub struct MemberRoute {
     /// busbar's client identity, sealed into the connector at the egress's composition so every
     /// connection to the member, the walk's and the plane's own, is held to them. Default = none.
     pub anchors: busbar_contract::transport::trust::Anchors,
+    /// Explicit per-need trust for independently declared destinations.
+    pub ride_anchors: Vec<(NeedId, busbar_contract::transport::trust::Anchors)>,
     /// The base URL a bound need dials, where its transport spells the member's `base_url` in its
     /// own scheme (a framer composed over the base URL's carrier: the same authority and path, read
     /// by that framer); a need not listed dials [`Self::base_url`]. Composed by the root, which
@@ -127,6 +131,13 @@ pub struct Ride<'a> {
 }
 
 impl MemberRoute {
+    pub fn anchors_for(&self, need: NeedId) -> &busbar_contract::transport::trust::Anchors {
+        self.ride_anchors
+            .iter()
+            .find(|(id, _)| *id == need)
+            .map_or(&self.anchors, |(_, anchors)| anchors)
+    }
+
     #[must_use]
     pub fn ride(&self, named: u32) -> Option<Ride<'_>> {
         let (need, keep) = match named.checked_sub(1) {
@@ -233,6 +244,10 @@ pub struct Egress {
 /// What one unit's walk is told at its start.
 #[derive(Debug, Clone)]
 pub struct UnitRoute {
+    /// Deployment-level requirement independent of the plane's selected binding.
+    pub connection_required: bool,
+    /// Live host request context; no binding crosses the plane ABI.
+    pub authorization: Option<Arc<crate::host_units::UnitRecords>>,
     /// The unit the walk serves; every dispatch
     /// record it writes names this unit.
     pub unit: busbar_contract::UnitKey,
@@ -256,6 +271,8 @@ pub struct UnitRoute {
 impl Default for UnitRoute {
     fn default() -> Self {
         UnitRoute {
+            connection_required: false,
+            authorization: None,
             unit: busbar_contract::UnitKey::new(0),
             pool: String::new(),
             affinity: None,
@@ -1263,11 +1280,15 @@ impl EgressFarEnd<'_> {
 
         let live = {
             let w = self.lock();
-            w.live
-                .as_ref()
-                .map(|live| (live.member.destination, live.record.clone()))
+            w.live.as_ref().map(|live| {
+                (
+                    live.member.destination,
+                    live.member.name.clone(),
+                    live.record.clone(),
+                )
+            })
         };
-        let Some((destination, record)) = live else {
+        let Some((destination, member, record)) = live else {
             self.lock().unsent = Some(RefusalCode::UnsentNoAttempt);
             return false;
         };
@@ -1340,7 +1361,55 @@ impl EgressFarEnd<'_> {
                 return false;
             }
         };
-        let opening: &[u8] = if request.text { &[] } else { &request.body };
+        let pending = self
+            .route
+            .authorization
+            .as_ref()
+            .and_then(|units| units.take_prepared(self.route.unit.get()));
+        let delegated = self
+            .route
+            .authorization
+            .as_ref()
+            .and_then(|units| units.outbound(self.route.unit.get()));
+        let bound = pending.is_some()
+            || delegated.is_some()
+            || route.connection_required
+            || self.route.connection_required;
+        let presented = if let Some(pending) = pending {
+            pending
+                .take(need.0, &member, &url, e.clock.now_secs())
+                .map(crate::host_outbound::Presentation::Body)
+        } else {
+            delegated.and_then(|bound| bound.present(need.0, &member, &url, e.clock.now_secs()))
+        };
+        if bound && presented.is_none() {
+            self.lock().refused = Some(ReasonCode::CredentialUnavailable);
+            self.settle_attempt(&record);
+            return false;
+        }
+        let (prepared, mut auth) = match presented {
+            Some(crate::host_outbound::Presentation::Body(body)) => {
+                if request.text || !request.body.is_empty() {
+                    self.lock().refused = Some(ReasonCode::CredentialUnavailable);
+                    self.settle_attempt(&record);
+                    return false;
+                }
+                (Some(crate::host_outbound::Body(body)), Vec::new())
+            }
+            Some(crate::host_outbound::Presentation::Field(field)) => (None, vec![field]),
+            None => (None, Vec::new()),
+        };
+        let protected = prepared.is_some();
+        let opening: &[u8] = prepared.as_ref().map_or_else(
+            || {
+                if request.text {
+                    &[][..]
+                } else {
+                    &request.body[..]
+                }
+            },
+            AsRef::as_ref,
+        );
         let defaults = located.completing(
             |name| {
                 request
@@ -1351,8 +1420,7 @@ impl EgressFarEnd<'_> {
             opening.len(),
         );
 
-        let mut auth = Vec::new();
-        if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
+        if let Some(binding) = route.auth.as_ref().filter(|_| !waived && !bound) {
             let handle = match &binding.per_request {
                 Some(per) => per.handle_now(),
                 None => Some(binding.handle),
@@ -1435,7 +1503,7 @@ impl EgressFarEnd<'_> {
                 sealed.join(",").into_bytes(),
             ));
         }
-        let require_secure = auth.iter().any(|f| f.require_secure);
+        let require_secure = protected || auth.iter().any(|f| f.require_secure);
         drop(auth);
         let borrowed: Vec<(&str, &[u8])> = head
             .0
@@ -1470,7 +1538,9 @@ impl EgressFarEnd<'_> {
                 target: &url,
                 fields: &borrowed,
 
-                body: if request.text {
+                body: if let Some(prepared) = prepared {
+                    bytes::Bytes::from_owner(prepared)
+                } else if request.text {
                     bytes::Bytes::new()
                 } else {
                     std::mem::take(&mut request.body).into()

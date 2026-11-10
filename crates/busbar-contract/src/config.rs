@@ -99,4 +99,6 @@ pub enum UpstreamCreds {
     Own,
     /// Forward the CALLER's credential upstream unchanged.
     Passthrough,
+    /// Require a host-held connection belonging to this authenticated caller.
+    Connection,
 }

@@ -120,7 +120,7 @@ pub const MEMBER_TARGET_PREFIX: &str = "settings.*.";
 pub fn member_target(target_from: &str) -> Option<&str> {
     target_from
         .strip_prefix(MEMBER_TARGET_PREFIX)
-        .filter(|key| !key.is_empty() && !key.contains('.'))
+        .filter(|key| key.split('.').all(|part| !part.is_empty() && part != "*"))
 }
 
 /// THE MEMBER-PROGRAM PATH of a need's `target_from`: `settings.*`, where `*` stands for EACH registration of the section, names

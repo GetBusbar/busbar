@@ -1484,13 +1484,30 @@ fn compute_layout() -> String {
             unit_refuse,
             ticket_mint,
             ticket_take,
-            work_status
+            work_status,
+            outbound_authorize
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
     record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
     record!(s, hsvc::TicketMintIn, [head, ttl_secs, record, into]);
     record!(s, hsvc::TicketTakeIn, [head, into]);
+    record!(
+        s,
+        hsvc::OutboundAuthorizeIn,
+        [
+            head,
+            action,
+            need,
+            member,
+            resource,
+            connection,
+            expected_revision,
+            expires_at_unix,
+            field_name,
+            credential
+        ]
+    );
     record!(
         s,
         hsvc::TrustVerifyIn,

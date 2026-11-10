@@ -258,6 +258,8 @@ async fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
         app: crate::root::model_egress::LiveApp::fixed(app),
     };
     let route = |provider: &str| busbar_kernel::plane_driver::MemberRoute {
+        ride_anchors: Vec::new(),
+        connection_required: false,
         need: busbar_contract::conn::NeedId(0),
         base_url: "https://far.invalid".to_string(),
         auth: None,

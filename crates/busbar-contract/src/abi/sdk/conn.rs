@@ -215,7 +215,8 @@ snapshot_table!(
     unit_refuse,
     ticket_mint,
     ticket_take,
-    work_status
+    work_status,
+    outbound_authorize
 );
 
 snapshot_table!(

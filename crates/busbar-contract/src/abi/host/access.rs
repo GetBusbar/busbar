@@ -77,6 +77,14 @@
 //! }
 //! ```
 
+//! Outbound custody is available only to planes.
+//! ```compile_fail,E0277
+//! use busbar_contract::{abi::{sdk::conn::Host, sdk::services::OutboundScope, mechanism::ticket::CompletionHandle}, plugin::markers::TransportKind};
+//! fn transport(host: &Host<TransportKind>, scope: OutboundScope<'_>) {
+//!     let _ = host.services().unwrap().outbound_bind(CompletionHandle::ZERO, scope, 1);
+//! }
+//! ```
+
 use super::service::op;
 use crate::abi::mechanism::KindCode;
 use crate::plugin::{markers::*, KindMarker};
@@ -177,6 +185,7 @@ services! {
     TICKET_MINT: Unit, Active => [PlaneKind];
     TICKET_TAKE: Unit, Active => [PlaneKind];
     WORK_STATUS: Work, Drain => [PlaneKind];
+    OUTBOUND_AUTHORIZE: Unit, Active => [PlaneKind];
 }
 
 /// Lookup is exhaustive over the advertised service table; unknown codes fail closed.
