@@ -98,9 +98,10 @@ class Admission(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.validate()
         self.mr['source_project_id'] = 3
-        self.pipeline['source'] = 'push'
-        with self.assertRaises(ValueError):
-            self.validate()
+        for source in ('push', 'api'):
+            self.pipeline['source'] = source
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                self.validate()
 
     def test_changed_server_gate_or_missing_checks_refuse(self):
         self.project['allow_merge_on_skipped_pipeline'] = True

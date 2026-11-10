@@ -4,6 +4,7 @@ workflow:
   auto_cancel:
     on_new_commit: conservative
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "dev" && ($CI_PROJECT_NAMESPACE == "GetBusbar" || $CI_PROJECT_NAMESPACE == "BusbarInc")'
     - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
@@ -14,7 +15,7 @@ stages: [qualify, website]
 native-qualification:
   stage: qualify
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
       when: never
     - when: on_success
   tags: [busbar-native-admission]

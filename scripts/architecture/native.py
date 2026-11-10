@@ -187,6 +187,16 @@ def checkout(repository, revision, destination):
     return destination
 
 
+def published_dev_target(repository, source):
+    """Requalification must bind to the current published dev, never an arbitrary ref."""
+    remote = os.environ['CI_SERVER_URL'].rstrip('/') + '/' + repository + '.git'
+    lines = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'],
+                                    env=fetch_environment(), text=True).splitlines()
+    if len(lines) != 1 or lines[0].split() != [source, 'refs/heads/dev']:
+        raise Violation('published dev moved; qualify its current revision')
+    return source
+
+
 class Qualification:
     def __init__(self, args):
         self.conformance_only = args.conformance_only
@@ -228,10 +238,11 @@ class Qualification:
             if subprocess.run(['git', '-C', str(self.root), 'merge-base', '--is-ancestor', target, self.receipt['source']]).returncode:
                 raise Violation('candidate must be rebased on current dev and qualified again')
             self.receipt['target_revision'] = target
+        elif os.environ['CI_PIPELINE_SOURCE'] in ('push', 'api') and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
+            self.receipt['target_revision'] = (published_dev_target(self.repository, self.receipt['source'])
+                if os.environ['CI_PIPELINE_SOURCE'] == 'api' else self.receipt['source'])
         elif self.evaluation_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
             self.receipt['target_revision'] = None
-        elif os.environ['CI_PIPELINE_SOURCE'] == 'push' and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
-            self.receipt['target_revision'] = self.receipt['source']
         else:
             raise Violation('qualification requires a dev MR or published dev commit')
         # Build/test children receive no project tokens, cloud credentials or merge/settings
