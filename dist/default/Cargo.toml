@@ -574,6 +574,7 @@ metrics_fixture = "busbar-export-prometheus"
 
 [package.metadata.busbar.test-common-sources]
 token_verifier = "busbar-auth-oidc"
+metrics_fixture = "busbar-export-prometheus"
 
 [package.metadata.busbar.test-linked]
 planes = ["busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-a2a"]
@@ -1249,5 +1250,3 @@ strip = true         # strip symbols from the shipped binary (much smaller; set 
 # task, not abort the whole gateway. `panic = "abort"` would trade per-request isolation for a
 # little size — the wrong trade for a service in the request path.
 
-[package.metadata.busbar.test-common-sources]
-metrics_fixture = "busbar-export-prometheus"
