@@ -59,6 +59,7 @@ def qualify_plugin(q, host, sdk):
     if not library.is_file():
         raise RuntimeError('native library was not produced')
     q.env['BUSBAR_PLUGIN_CDYLIB'] = str(library)
+    prepare_runtime(q)
     q.run('plugin-runtime', ['cargo', 'nextest', 'run', '--locked', '--workspace', '--all-features', '--no-fail-fast',
         '--tool-config-file', 'admission:' + str(q.trusted / 'ci/native-nextest.toml')])
     q.run('plugin-doctests', ['cargo', 'test', '--locked', '--workspace', '--all-features', '--doc', '--no-fail-fast'])
@@ -78,6 +79,16 @@ def qualify_plugin(q, host, sdk):
     q.receipt['library_sha256'] = digest(collected)
     q.receipt['lock_sha256'] = digest(q.root / 'Cargo.lock')
     q.receipt['private'] = entry['private']
+
+
+def prepare_runtime(q):
+    """Prepare owner test subjects outside nextest's per-test runtime deadline."""
+    from native_policy import native_settings
+    from product_artifacts import regular_under
+    script = native_settings(q.repository, q.policy).get('prepare_runtime')
+    if script is not None:
+        command = regular_under(q.root / script, q.root)
+        q.run('plugin-runtime-prepare', ['bash', '-euo', 'pipefail', str(command)])
 
 
 def qualify_generator(q):
