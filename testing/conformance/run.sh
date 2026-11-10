@@ -256,7 +256,8 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 def inputs():
     required = ("testing/conformance/run.sh", "testing/conformance/tools.sh", "testing/conformance/suites.tsv")
-    optional = (".busbar-ref", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml")
+    optional = (".busbar-ref", "Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml",
+                "testing/conformance/capabilities.py")
     return {name: digest(root / name) for name in required + optional if name in required or (root / name).is_file()}
 try:
     if phase == "start":
@@ -455,8 +456,10 @@ fi
 
 invocation_receipt start || exit 2
 
-# shellcheck source=testing/conformance/tools.sh
-. testing/conformance/tools.sh "${tools[@]}" || { say "the pinned tools could not be provisioned"; exit 2; }
+if [ -z "${CONFORMANCE_CAPABILITIES+x}" ]; then
+  # shellcheck source=testing/conformance/tools.sh
+  . testing/conformance/tools.sh "${tools[@]}" || { say "the pinned tools could not be provisioned"; exit 2; }
+fi
 
 fail=0; n=0
 while IFS=$'\t' read -r id cmd || [ -n "$id" ]; do
@@ -467,7 +470,13 @@ while IFS=$'\t' read -r id cmd || [ -n "$id" ]; do
   dir="$OUT/$id"; mkdir -p "$dir"
   say "=== $id: $cmd"
   start=$(date +%s); rc=0
-  ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; run_suite "$cmd" ) || rc=$?
+  if [ -n "${CONFORMANCE_CAPABILITIES+x}" ] && ! python3 -I testing/conformance/capabilities.py "$id" "$dir/verdict.json"; then
+    # Missing isolated fixtures are required failures, never skips or permission
+    # to expose the host Docker daemon/network to candidate suite commands.
+    rc=1
+  else
+    ( export CONFORMANCE_SUITE="$id" CONFORMANCE_OUT="$dir"; run_suite "$cmd" ) || rc=$?
+  fi
   say "$id: command exit $rc after $(( $(date +%s) - start ))s"
   if res="$(judge "$dir/verdict.json" "$id" "$rc" "$OUT/verdicts/$id.json")"; then
     say "$id: PASS"

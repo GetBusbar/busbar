@@ -1258,6 +1258,9 @@ def main():
     if which == "tls":
         v["plan"] += "; upstream TLSfuzzer mandatory-client-auth RSA-PSS CertificateVerify profile"
         v["spec_version"] += "; TLSfuzzer 5eebc4464e5197a7f7392fb9acda99cfc32441f7 application version 9"
+    elif which == "rbac":
+        v["plan"] += "; upstream ZAP Access Control Testing complete operation/principal matrix"
+        v["spec_version"] += "; ZAP 2.17.0; AccessControl 13; zap-extensions e7aaf9014287478da76bdbd56316ea171ee840d3"
     if why:
         v["reason"] = "; ".join(why)[:4000]
     with open(os.path.join(out, "verdict.json"), "w") as f:
