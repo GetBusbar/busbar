@@ -957,7 +957,7 @@ impl<L: Life<Kind = crate::plugin::markers::AuthKind>, I: AbiIn, O: AbiOut> Safe
 /// ```
 #[macro_export]
 macro_rules! auth_outbound_door {
-    ($plugin:ty, $statement:expr $(,)?) => {
+    ($plugin:ty, $statement:expr $(, migrate: $migrator:ty)? $(,)?) => {
         $crate::plugin_door! {
             ops: $crate::abi::auth::Ops,
             statement: {
@@ -987,6 +987,7 @@ macro_rules! auth_outbound_door {
                 close: $crate::abi::sdk::Safe<$crate::abi::sdk::life::Close<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>>>,
             },
+            $(migrate: $migrator,)?
             kind_ops: {
                 verify: $crate::abi::sdk::Safe<$crate::abi::sdk::auth_outbound::NotServed<
                     $crate::abi::sdk::auth_outbound::Outbound<$plugin>,

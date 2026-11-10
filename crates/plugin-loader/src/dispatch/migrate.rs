@@ -14,14 +14,67 @@ pub fn migrate_door(
     settings: &serde_json::Value,
     from: &str,
 ) -> Result<Option<MigrationAnswer>, String> {
+    settings_migration(door, settings, from, false)
+}
+
+/// Cold reference discovery for a registered plane without selecting it for ordinary migration.
+pub fn migrate_references_door(door: RawDoorFn, settings: &serde_json::Value, from: &str)
+    -> Result<Option<MigrationAnswer>, String> {
+    settings_migration(door, settings, from, true)
+}
+
+fn settings_migration(door: RawDoorFn, settings: &serde_json::Value, from: &str, references: bool)
+    -> Result<Option<MigrationAnswer>, String> {
+    let section = zeroize::Zeroizing::new(serde_json::to_vec(settings).map_err(|e| e.to_string())?);
+    let Some((outcome, answer)) = call_migration(door, &section, BLOB_JSON, from, references)? else {
+        return Ok(None);
+    };
+    read_answer(outcome, &answer).map(Some)
+}
+
+/// Lend a resolved credential to its auth owner's cold migration entry.
+/// Neither secret bytes nor owner refusal text escape through diagnostic strings.
+pub fn migrate_credential_door(
+    door: RawDoorFn,
+    credential: &busbar_contract::Secret<String>,
+    from: &str,
+    seal: &dyn busbar_contract::plugin::KernelSeal,
+) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
+    let refused = || "credential owner could not migrate the original reference".to_owned();
+    let Some((outcome, answer)) =
+        call_migration(door, credential.expose(seal).as_bytes(), BLOB_OCTETS, from, false)
+            .map_err(|_| refused())?
+    else {
+        return Err(refused());
+    };
+    if outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+        return Err(refused());
+    }
+    serde_json::from_slice(&answer).map_err(|_| refused())
+}
+
+type MigrationWireAnswer = (
+    busbar_contract::abi::mechanism::call::Outcome,
+    zeroize::Zeroizing<Vec<u8>>,
+);
+
+fn call_migration(
+    door: RawDoorFn,
+    section: &[u8],
+    format: u32,
+    from: &str,
+    references: bool,
+) -> Result<Option<MigrationWireAnswer>, String> {
     let p = super::load::enter_door(door);
-    super::load::validate_any(p).map_err(|e| e.to_string())?;
+    let admitted = super::load::validate_any(p).map_err(|e| e.to_string())?;
+    if format == BLOB_OCTETS && admitted.kind != busbar_contract::abi::mechanism::KindCode::Auth {
+        return Err("credential migration requires an auth owner".into());
+    }
     // SAFETY: `validate_any` admitted `p`: a non-NULL `'static` door readable through its stated
     // size; `read_migrate` reads the tail only when that size covers it.
     let Some(op) = (unsafe { Door::read_migrate(p) }) else {
         return Ok(None);
     };
-    let section = zeroize::Zeroizing::new(serde_json::to_vec(settings).map_err(|e| e.to_string())?);
     let mut answer = zeroize::Zeroizing::new(vec![0u8; ANSWER_CAP]);
     let mut head = super::in_head();
     head.size = size_of::<ValidateIn>() as u32;
@@ -30,15 +83,19 @@ pub fn migrate_door(
         ptr: from.as_ptr(),
         len: from.len(),
         fmt: BLOB_OCTETS,
-        flags: 0,
+        flags: if references { busbar_contract::abi::sdk::migrate::REFERENCE_DISCOVERY } else { 0 },
     };
     let input = ValidateIn {
         head,
         settings: Blob {
             ptr: section.as_ptr(),
             len: section.len(),
-            fmt: BLOB_JSON,
-            flags: 0,
+            fmt: format,
+            flags: if format == BLOB_OCTETS {
+                busbar_contract::abi::mechanism::call::BLOB_SECRET
+            } else {
+                0
+            },
         },
         err_buf: answer.as_mut_ptr(),
         err_cap: answer.len(),
@@ -67,7 +124,7 @@ pub fn migrate_door(
     } else {
         return Err("its migrate named an answer outside the host's buffer".to_string());
     };
-    read_answer(outcome, bytes).map(Some)
+    Ok(Some((outcome, zeroize::Zeroizing::new(bytes.to_vec()))))
 }
 
 /// Pure current-settings validation after a cold migration, before the host emits configuration.
@@ -142,6 +199,17 @@ pub fn migrate_library(
     settings: &serde_json::Value,
     from: &str,
 ) -> Result<Option<MigrationAnswer>, String> {
+    settings_migration_library(bytes, display, settings, from, false)
+}
+
+/// Loaded-image counterpart of reference discovery.
+pub fn migrate_references_library(bytes: &[u8], display: &str, settings: &serde_json::Value, from: &str)
+    -> Result<Option<MigrationAnswer>, String> {
+    settings_migration_library(bytes, display, settings, from, true)
+}
+
+fn settings_migration_library(bytes: &[u8], display: &str, settings: &serde_json::Value, from: &str, references: bool)
+    -> Result<Option<MigrationAnswer>, String> {
     let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
     // SAFETY: `DOOR_SYMBOL` is typed `RawDoorFn` by the mechanism; `lib` is held open until the
     // call below has returned.
@@ -150,7 +218,7 @@ pub fn migrate_library(
             .map(|s| *s)
     };
     let answered = match door {
-        Ok(door) => migrate_door(door, settings, from),
+        Ok(door) => settings_migration(door, settings, from, references),
         Err(e) => Err(format!("{display}: no door: {e}")),
     };
     crate::dlclose_on_worker(lib);
@@ -161,3 +229,26 @@ pub fn migrate_library(
 #[cfg(test)]
 #[path = "../tests/migrate_door_tests.rs"]
 mod tests;
+
+/// Credential counterpart of `migrate_library`; the loaded image stays live through the call.
+pub fn migrate_credential_library(
+    bytes: &[u8],
+    display: &str,
+    credential: &busbar_contract::Secret<String>,
+    from: &str,
+    seal: &dyn busbar_contract::plugin::KernelSeal,
+) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
+    let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
+    // SAFETY: the image remains loaded through the admitted migration call.
+    let door = unsafe {
+        lib.get::<RawDoorFn>(busbar_contract::abi::mechanism::DOOR_SYMBOL)
+            .map(|symbol| *symbol)
+    };
+    let result = match door {
+        Ok(door) => migrate_credential_door(door, credential, from, seal),
+        Err(_) => Err("credential owner has no migration door".into()),
+    };
+    crate::dlclose_on_worker(lib);
+    drop(staged);
+    result
+}

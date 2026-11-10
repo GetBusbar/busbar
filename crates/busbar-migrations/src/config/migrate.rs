@@ -220,9 +220,6 @@ fn migrate_document(
 
     migrate_dropped_scopes(&mut root, &mut warnings);
     migrate_providers(&mut root, &mut changes);
-    if source_specific {
-        super::migrate_credentials::migrate(&mut root, host, &mut changes, &mut todos);
-    }
     migrate_hooks_block(&mut root, &mut changes, &mut todos);
     migrate_pools(&mut root, &mut changes, &mut todos);
 

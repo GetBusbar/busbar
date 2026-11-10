@@ -194,6 +194,30 @@ impl LoadablePlugin {
         }
     }
 
+    /// Discover credential references in a registered owner's borrowed source sections.
+    pub fn migrate_references(&self, settings: &serde_json::Value, from: &str)
+        -> Result<Option<busbar_contract::abi::sdk::migrate::MigrationAnswer>, String> {
+        use crate::dispatch::migrate::{migrate_references_door, migrate_references_library};
+        match self.door() {
+            Some(door) => migrate_references_door(door, settings, from),
+            None => migrate_references_library(&self.lib_bytes, &self.file, settings, from),
+        }
+    }
+
+    /// Route guarded credential custody through the receiving owner's migration door.
+    pub fn migrate_credential(
+        &self,
+        credential: &busbar_contract::Secret<String>,
+        from: &str,
+        seal: &dyn busbar_contract::plugin::KernelSeal,
+    ) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
+        use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
+        match self.door() {
+            Some(door) => migrate_credential_door(door, credential, from, seal),
+            None => migrate_credential_library(&self.lib_bytes, &self.file, credential, from, seal),
+        }
+    }
+
     pub fn migrate(
         &self,
         settings: &serde_json::Value,
