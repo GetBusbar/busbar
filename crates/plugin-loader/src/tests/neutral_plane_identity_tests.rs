@@ -5,6 +5,9 @@ use crate::dispatch::{
     rendering_of, rendering_of_loaded, rendering_of_macro, LinkedRow, LoadedDoor,
 };
 
+#[path = "neutral_kind_rename_tests.rs"]
+mod neutral_kind_rename_tests;
+
 #[test]
 fn neutral_plane_function_macro_and_loaded_rows_preserve_the_same_door_and_statement() {
     let door = crate::neutral_plane::door;
