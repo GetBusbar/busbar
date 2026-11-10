@@ -802,9 +802,10 @@ fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Fo
             return Err(Box::new(req));
         };
 
-        let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
-            .await
-            .unwrap_or_default();
+        let bytes = match axum::body::to_bytes(req.into_body(), 64 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(StatusCode::PAYLOAD_TOO_LARGE.into_response()),
+        };
         let form = parse_query(&String::from_utf8_lossy(&bytes));
         let app = handle.load();
         Ok(credential_submit(&app, &handle, cookie, form).await)

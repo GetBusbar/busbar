@@ -4793,7 +4793,7 @@ pub(crate) async fn validate_config(
     )
 }
 
-const EMPTY_CHAIN_REFUSED_LIVE: bool = false;
+const EMPTY_CHAIN_REFUSED_LIVE: bool = true;
 
 fn empty_chain_refusal(operator: impl std::fmt::Display) -> AdminError {
     diag_warn!(

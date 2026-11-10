@@ -143,11 +143,12 @@ impl MutationLimiter {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let window = arrived_in.max(state.latest_window);
-        state.latest_window = window;
-        let map = &mut state.windows;
 
-        map.retain(|_, (w, _, _)| *w >= window);
-        let entry = map
+        if window > state.latest_window {
+            state.windows.retain(|_, (w, _, _)| *w >= window);
+        }
+        state.latest_window = window;
+        let entry = state.windows
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));
         if entry.1 >= class.limit() {

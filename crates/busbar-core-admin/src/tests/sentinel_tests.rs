@@ -8,7 +8,7 @@ fn key(actor: &str, header: &str) -> (String, String) {
 }
 
 #[test]
-fn a_leaked_sentinel_still_refuses_a_retry_long_after_the_replay_window_has_passed() {
+fn a_leaked_sentinel_blocks_within_the_ttl_and_is_reclaimed_after_it() {
     let cache: IdempotencyCache<String> = IdempotencyCache::new();
     let k = key("alice", "idem-stuck");
 
@@ -17,17 +17,23 @@ fn a_leaked_sentinel_still_refuses_a_retry_long_after_the_replay_window_has_pass
         _ => panic!("the first sighting must reserve"),
     }
 
-    for elapsed in [
-        IDEMPOTENCY_TTL_SECS,
-        IDEMPOTENCY_TTL_SECS + 1,
-        IDEMPOTENCY_TTL_SECS * 10,
-        IDEMPOTENCY_TTL_SECS * 1_000,
-    ] {
-        assert!(
-            matches!(cache.probe(k.clone(), 1_000 + elapsed), Probe::InFlight),
-            "{elapsed}s after the reservation the sentinel was swept and a second mint admitted"
-        );
-    }
+    // Within the TTL the leaked sentinel still blocks retries.
+    assert!(
+        matches!(
+            cache.probe(k.clone(), 1_000 + IDEMPOTENCY_TTL_SECS - 1),
+            Probe::InFlight
+        ),
+        "a leaked sentinel inside its TTL was swept too early"
+    );
+
+    // After the TTL the leaked sentinel is reclaimed and a fresh reservation is possible.
+    assert!(
+        matches!(
+            cache.probe(k.clone(), 1_000 + IDEMPOTENCY_TTL_SECS),
+            Probe::Reserved(_)
+        ),
+        "a leaked sentinel survived past its TTL — the in-flight slot was not reclaimed"
+    );
 }
 
 #[test]

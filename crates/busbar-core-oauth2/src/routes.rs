@@ -433,9 +433,9 @@ async fn consent_submit(
     };
 
     let approve = match form.answer.as_deref() {
-        None | Some("approve") => true,
+        Some("approve") => true,
         Some("deny") => false,
-        Some(_) => {
+        None | Some(_) => {
             return (
                 axum::http::StatusCode::BAD_REQUEST,
                 axum::response::Html(PAGE_NO_REQUEST.to_string()),

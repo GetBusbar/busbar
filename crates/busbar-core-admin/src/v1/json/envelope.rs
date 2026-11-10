@@ -9,12 +9,19 @@ use crate::v1::contract::taxonomy::Cond;
 use crate::v1::contract::AdminError;
 
 pub fn ok_json<T: Serialize>(status: StatusCode, view: &T) -> Response {
-    (
-        status,
-        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
-        serde_json::to_string(view).unwrap_or_else(|_| "{}".to_string()),
-    )
-        .into_response()
+    match serde_json::to_string(view) {
+        Ok(body) => (
+            status,
+            [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
+            body,
+        )
+            .into_response(),
+        Err(_) => busbar_kernel::admin::gate::error_envelope(
+            StatusCode::INTERNAL_SERVER_ERROR.into(),
+            "internal",
+            "response serialization failed",
+        ),
+    }
 }
 
 pub fn err_json(e: &AdminError) -> Response {
