@@ -3430,6 +3430,12 @@ async fn delegated_users_dispatch_with_their_own_auth_and_no_shared_fallback() {
         .get_mut(&DestinationId::new(1))
         .unwrap()
         .connection_required = true;
+    // Root qualifies member ledger names, while the plane selects its configured entry.
+    for pool in r.egress.pools.values_mut() {
+        for member in &mut pool.members {
+            member.name = format!("plane{}{}", crate::governance::PLANE_LANE_SEP, member.name);
+        }
+    }
     let services = crate::host_services::KernelServices::new();
     let caller = busbar_contract::services::Caller::issue(
         &crate::seal::acquire(),

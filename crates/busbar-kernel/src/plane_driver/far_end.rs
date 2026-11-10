@@ -1283,7 +1283,9 @@ impl EgressFarEnd<'_> {
             w.live.as_ref().map(|live| {
                 (
                     live.member.destination,
-                    live.member.name.clone(),
+                    busbar_kernel_ledger::cost::split_plane_lane(&live.member.name)
+                        .1
+                        .to_owned(),
                     live.record.clone(),
                 )
             })
