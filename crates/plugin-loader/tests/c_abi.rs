@@ -30,10 +30,11 @@ fn supplied_path(name: &str) -> PathBuf {
 }
 
 fn sources() -> Vec<PathBuf> {
+    let source_extension = Path::new("witness.c").extension().expect("C source suffix");
     let mut sources: Vec<_> = std::fs::read_dir(supplied_path("BUSBAR_C_ABI_SOURCES"))
         .expect("read the external C witness source directory")
         .map(|entry| entry.expect("read a C witness source entry").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "c"))
+        .filter(|path| path.extension() == Some(source_extension))
         .collect();
     sources.sort();
     assert!(!sources.is_empty(), "the C witness has no C source");

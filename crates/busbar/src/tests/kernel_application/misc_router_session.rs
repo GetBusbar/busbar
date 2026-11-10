@@ -105,10 +105,11 @@ async fn real_session_framer(
     }
     let http = products.remove(0);
     let ws = products.remove(0);
-    let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| match scheme {
-        "http" => Some(http.clone()),
-        "ws" => Some(ws.clone()),
-        _ => None,
+    let framer = crate::root::listener::framed::data_framer(Arc::new(move |scheme| {
+        [&http, &ws]
+            .into_iter()
+            .find(|door| door.facts().claims.contains(&scheme))
+            .cloned()
     }))
     .expect("the actual HTTP framer accepts the connection");
     let guests = GuestList::seal(vec![Line {

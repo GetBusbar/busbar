@@ -387,7 +387,13 @@ fn generated_include(
     let syn::Expr::Macro(environment) = &args[0] else {
         return None;
     };
-    if !environment.mac.path.is_ident("env")
+    // Match compiler syntax as an identifier, not a runtime implementation name.
+    let env_macro: syn::Ident = syn::parse_quote!(env);
+    if !environment
+        .mac
+        .path
+        .get_ident()
+        .is_some_and(|name| *name == env_macro)
         || syn::parse2::<syn::LitStr>(environment.mac.tokens.clone())
             .ok()?
             .value()
@@ -500,9 +506,26 @@ fn private_import_alias_and_test_cfg_are_distinguished() {
 struct Selectors {
     names: BTreeSet<String>,
     errors: Vec<String>,
+    seen: BTreeSet<(usize, usize)>,
 }
 
 impl<'ast> Visit<'ast> for Selectors {
+    // Selection predicates also occur outside `if`: iterator filters, match guards,
+    // assigned booleans, and `while` conditions all execute policy.
+    fn visit_expr_binary(&mut self, expr: &'ast syn::ExprBinary) {
+        if matches!(expr.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_)) {
+            self.inspect(expr);
+        }
+        visit::visit_expr_binary(self, expr);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if mac.path.is_ident("matches") {
+            self.inspect(&mac.tokens);
+        }
+        visit::visit_macro(self, mac);
+    }
+
     fn visit_expr_if(&mut self, expr: &'ast syn::ExprIf) {
         self.inspect(&expr.cond);
         visit::visit_expr_if(self, expr);
@@ -521,13 +544,16 @@ impl Selectors {
             input: proc_macro2::TokenStream,
             names: &BTreeSet<String>,
             found: &mut Vec<String>,
+            seen: &mut BTreeSet<(usize, usize)>,
         ) {
             for token in input {
                 match token {
-                    proc_macro2::TokenTree::Group(g) => tokens(g.stream(), names, found),
+                    proc_macro2::TokenTree::Group(g) => tokens(g.stream(), names, found, seen),
                     proc_macro2::TokenTree::Literal(l) => {
                         if let Ok(s) = syn::parse_str::<syn::LitStr>(&l.to_string()) {
-                            if names.contains(&s.value()) {
+                            let start = l.span().start();
+                            if names.contains(&s.value()) && seen.insert((start.line, start.column))
+                            {
                                 found.push(s.value());
                             }
                         }
@@ -536,7 +562,12 @@ impl Selectors {
                 }
             }
         }
-        tokens(syntax.to_token_stream(), &self.names, &mut self.errors);
+        tokens(
+            syntax.to_token_stream(),
+            &self.names,
+            &mut self.errors,
+            &mut self.seen,
+        );
     }
 }
 
@@ -567,6 +598,42 @@ fn selector_checks_cannot_be_disabled_by_test_or_platform_attributes() {
         check.visit_file(&syn::parse_file(code).unwrap());
         assert_eq!(check.errors, ["fixture-owner"], "unchecked code: {code}");
     }
+}
+
+#[test]
+fn selectors_reject_standalone_predicates_and_overlapping_protocol_names() {
+    for code in [
+        r#"fn f(name: &str) -> bool { name == "http" }"#,
+        r#"fn f(name: &str) -> bool { name != "env" }"#,
+        r#"fn f(name: &str) -> bool { matches!(name, "ws" | "http") }"#,
+        r#"fn f(names: &[&str]) { let _ = names.iter().find(|name| **name == "http"); }"#,
+        r#"#[cfg(test)] fn f(name: &str) { let selected = name == "http"; }"#,
+        r#"#[cfg(windows)] fn f(name: &str) -> bool { matches!(name, "env") }"#,
+        r#"fn f(name: &str) { match name { candidate if candidate == "ws" => (), _ => () } }"#,
+        r#"fn f(name: &str) { while name == "http" {} }"#,
+    ] {
+        let mut check = Selectors {
+            names: ["http".into(), "ws".into(), "env".into()].into(),
+            ..Default::default()
+        };
+        check.visit_file(&syn::parse_file(code).unwrap());
+        assert!(!check.errors.is_empty(), "unchecked predicate: {code}");
+    }
+    let mut check = Selectors {
+        names: ["http".into(), "ws".into(), "env".into()].into(),
+        ..Default::default()
+    };
+    check.visit_file(
+        &syn::parse_file(
+            r#"fn f(name: &str) { if name == "http" { match name { "ws" => (), _ => () } } }"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        check.errors,
+        ["http", "ws"],
+        "overlapping visitor paths report each source literal once"
+    );
 }
 
 #[test]

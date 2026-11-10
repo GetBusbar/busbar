@@ -1115,7 +1115,7 @@ pub fn plugin_fetch_admits(url: &str, blocked: &[String]) -> Result<bool, String
             .as_deref()
             .map(config_validate::host_is_private_or_loopback)
             .unwrap_or(false);
-        if !(config_validate::scheme_is(url, "http") && host_local) {
+        if !(config_validate::scheme_is(url, http::uri::Scheme::HTTP.as_str()) && host_local) {
             return Err(format!(
                 "plugins.fetch url must use https for a public host (got '{url}')"
             ));

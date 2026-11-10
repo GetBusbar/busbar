@@ -9,8 +9,8 @@ use std::task::{Context, Poll};
 
 use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
-use crate::transport::ConnFacts;
 use crate::transport::wire::{WireFault, WireStatusClass};
+use crate::transport::ConnFacts;
 
 /// The frozen bytes an [`OpenDesc`] carries its body in.
 pub use bytes::Bytes;
@@ -794,10 +794,7 @@ impl Program {
         sources: &crate::secret_ref::Sugars,
     ) -> Result<Self, ProgramRefused> {
         let map = value.as_object().ok_or(ProgramRefused::NoCommand)?;
-        if map
-            .keys()
-            .any(|k| !matches!(k.as_str(), "command" | "args" | "env" | "cwd"))
-        {
+        if map.keys().any(|k| !PROGRAM_KEYS.contains(&k.as_str())) {
             return Err(ProgramRefused::UnknownKey);
         }
         let command = map

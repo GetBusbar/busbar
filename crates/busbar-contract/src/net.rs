@@ -329,7 +329,9 @@ pub fn scheme_is(url: &str, scheme: &str) -> bool {
 /// Strip a web scheme (`https` or its plaintext twin) case-insensitively, returning the
 fn strip_scheme(url: &str) -> Option<&str> {
     let (scheme, rest) = url.split_once("://")?;
-    (scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")).then_some(rest)
+    (scheme.eq_ignore_ascii_case(http::uri::Scheme::HTTPS.as_str())
+        || scheme.eq_ignore_ascii_case(http::uri::Scheme::HTTP.as_str()))
+    .then_some(rest)
 }
 
 /// Percent-decode a host string (`%XX` → byte). An invalid escape is left verbatim, so a malformed
@@ -440,9 +442,20 @@ impl UrlFamily {
     /// The family a (lower-case) scheme is read by.
     #[must_use]
     pub fn of(scheme: &str) -> Self {
-        match scheme {
-            "http" | "https" | "ws" | "wss" => UrlFamily::Web,
-            _ => UrlFamily::Generic,
+        // This is URL grammar, independent of which transport products are installed.
+        // `http` supplies the HTTP scheme vocabulary; RFC 6455 supplies its WebSocket twins.
+        static WEB: std::sync::LazyLock<[http::uri::Scheme; 4]> = std::sync::LazyLock::new(|| {
+            [
+                http::uri::Scheme::HTTP,
+                http::uri::Scheme::HTTPS,
+                "ws".parse().expect("RFC 6455 WebSocket scheme"),
+                "wss".parse().expect("RFC 6455 secure WebSocket scheme"),
+            ]
+        });
+        if WEB.iter().any(|protocol| protocol.as_str() == scheme) {
+            UrlFamily::Web
+        } else {
+            UrlFamily::Generic
         }
     }
 }

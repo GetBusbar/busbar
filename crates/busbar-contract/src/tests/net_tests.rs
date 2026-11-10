@@ -792,3 +792,23 @@ fn bc2_private_or_loopback_zoned_and_alternate_spellings() {
     assert!(!host_is_private_or_loopback("8.8.8"));
     assert!(host_is_private_or_loopback("0x7f000001"));
 }
+
+#[test]
+fn url_family_is_exact_protocol_grammar_independent_of_transport_inventory() {
+    for scheme in ["http", "https", "ws", "wss"] {
+        assert_eq!(UrlFamily::of(scheme), UrlFamily::Web, "{scheme}");
+    }
+    for scheme in [
+        "",
+        "HTTP",
+        "Ws",
+        "ftp",
+        "sqlite",
+        "http:",
+        "ws+fixture",
+        " http",
+        "http/",
+    ] {
+        assert_eq!(UrlFamily::of(scheme), UrlFamily::Generic, "{scheme}");
+    }
+}

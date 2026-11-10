@@ -34,7 +34,7 @@ pub fn parse_proxy(v: &str) -> Result<ProxyHop, String> {
     };
     let parsed = url::Url::parse(&url)
         .map_err(|e| format!("proxy env value {shown:?} is not a valid URL: {e}"))?;
-    if parsed.scheme() != "http" {
+    if parsed.scheme() != busbar_contract::http::uri::Scheme::HTTP.as_str() {
         return Err(format!(
             "proxy env value {shown:?} uses scheme {:?}: only plain http:// CONNECT proxies \
              are supported (an https:// proxy would need TLS-to-proxy, which this tunnel does \

@@ -178,7 +178,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|row| row["file"] == "reviewed.tar.gz")
+        .find(|row| artifact_file(row) == "reviewed.tar.gz")
         .unwrap();
     assert_eq!(row["archive_sha256"], digest);
     let version = handle.load().config_version;
@@ -213,7 +213,7 @@ async fn plugin_archive_preconditions_fence_replacement_delete_and_rollback() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["file"] == "reviewed.tar.gz")
+            .find(|row| artifact_file(row) == "reviewed.tar.gz")
             .unwrap()["archive_sha256"],
         next_digest
     );
@@ -446,4 +446,15 @@ async fn restart_if_match_is_checked_at_serialized_admission_without_stale_drain
         .unwrap();
     server.abort();
     let _ = server.await;
+}
+
+// Decode the archive listing's field schema; the field name is not a provider selector.
+fn artifact_file(row: &serde_json::Value) -> &str {
+    #[derive(serde::Deserialize)]
+    struct Artifact<'a> {
+        file: &'a str,
+    }
+    <Artifact<'_> as serde::Deserialize>::deserialize(row)
+        .expect("the archive listing supplies its file field")
+        .file
 }

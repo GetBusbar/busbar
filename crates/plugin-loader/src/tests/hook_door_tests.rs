@@ -499,7 +499,7 @@ mod sdk_refresh {
             true
         }
         fn serves_scheme(&self, scheme: &str) -> bool {
-            scheme == "http"
+            scheme == busbar_contract::http::uri::Scheme::HTTP.as_str()
         }
     }
     impl Conns for Peer {

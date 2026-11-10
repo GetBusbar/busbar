@@ -2102,7 +2102,9 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         .as_deref()
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
-    if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+    if !(scheme_is(token_uri, "https")
+        || (host_private && scheme_is(token_uri, http::uri::Scheme::HTTP.as_str())))
+    {
         let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
