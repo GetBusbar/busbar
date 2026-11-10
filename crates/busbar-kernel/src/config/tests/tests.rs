@@ -2540,6 +2540,24 @@ fn reserved_hook_names_are_frozen() {
 }
 
 #[test]
+fn named_hook_signal_grants_survive_resolution_and_omission_stays_empty() {
+    use busbar_contract::signal::Signal;
+    let def: super::HookDefCfg =
+        serde_yaml::from_str("module: fixture\nprompt: ro\nsignals: [request_text_complete]")
+            .unwrap();
+    assert_eq!(
+        super::hook_cfg_from_def(&def).unwrap().signals,
+        vec![Signal::RequestTextComplete]
+    );
+    let def: super::HookDefCfg = serde_yaml::from_str("module: fixture").unwrap();
+    assert!(super::hook_cfg_from_def(&def).unwrap().signals.is_empty());
+    assert!(serde_yaml::from_str::<super::HookDefCfg>(
+        "module: fixture\nsignals: [request_text_complet]",
+    )
+    .is_err());
+}
+
+#[test]
 fn omitted_phase_is_exactly_the_four_core_stages() {
     use crate::config::HookStage;
 
