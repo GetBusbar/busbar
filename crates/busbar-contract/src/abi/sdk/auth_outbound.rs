@@ -616,7 +616,7 @@ impl<T> Both<T> {
 /// preparation must finish before either half becomes visible; a refused refresh retains both
 /// halves and their previous generation. The returned count is the inbound cache entries dropped.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0277
 /// // SDK_COMBINED_AUTH_WITNESS missing combined lifecycle
 /// use busbar_contract::abi::sdk::{auth_door::VerifyPlugin, auth_outbound::{Both, OutboundPlugin}, life::Life};
 /// fn require_life<T: Life>() {}
