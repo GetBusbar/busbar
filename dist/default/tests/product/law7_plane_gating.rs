@@ -376,7 +376,7 @@ async fn resolve_reads_the_configured_plane_sections_off_the_config() {
         door, tools_plane.config_section,
         "the `tools:` plane declares an endpoint door of its own"
     );
-    let peer = crate::root::door_steps::tests::tool_door::TlsToolServer::new().await;
+    let peer = crate::root::serve::plane_mcp_door::tool_door::TlsToolServer::new().await;
     let sections = |extra: &str| {
         let yaml = format!(
             "providers:\n  acme: {{ api_key: none }}\nmodels:\n  m: {{ provider: acme }}\n{extra}"

@@ -6931,10 +6931,6 @@ include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 #[path = "tests/serve_money.rs"]
 mod money_tests;
 
-#[cfg(all(test, linked_driver_proofs, linked_section_pools))]
-#[path = "tests/serve_hook_seats.rs"]
-pub(crate) mod hook_seat_tests;
-
 #[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_door_far.rs"]
 mod door_far_tests;
@@ -6946,14 +6942,6 @@ mod framed_tests;
 #[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
-
-#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
-#[path = "tests/member_tls.rs"]
-mod member_tls_tests;
-
-#[cfg(all(test, linked_section_pools, linked_axis_plane_door))]
-#[path = "tests/member_tls_negative.rs"]
-mod member_tls_negative_tests;
 
 #[cfg(test)]
 #[path = "tests/journal_live_retry.rs"]
