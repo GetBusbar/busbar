@@ -14,8 +14,8 @@ use crate::root::loader::boot::{BindOwner, InboundBind};
 #[path = "listener_upgrade_permits.rs"]
 mod upgrade_permit_tests;
 
-#[path = "listener_bindings_cases.rs"]
-mod binding_tests;
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+owner_test_sources!(listener_bindings);
 
 struct Answer;
 impl PluginHttpDispatch for Answer {

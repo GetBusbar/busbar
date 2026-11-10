@@ -56,14 +56,6 @@ mod admin_plugin_admission;
 pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[cfg(test)]
-#[path = "tests/doors_refresh.rs"]
-mod doors_refresh;
-
-#[cfg(test)]
-#[path = "tests/scoped_framing.rs"]
-mod scoped_framing_tests;
-
-#[cfg(test)]
 pub(crate) use crate::test_common::plugins as test_plugins;
 
 #[cfg(test)]
@@ -81,3 +73,10 @@ pub(crate) mod test_plane_registry;
 #[cfg(test)]
 #[path = "tests/real_store.rs"]
 pub(crate) mod real_store;
+
+#[cfg(test)]
+include!(concat!(env!("OUT_DIR"), "/context_test_sources.rs"));
+#[cfg(test)]
+owner_test_sources!(root_stdio);
+#[cfg(test)]
+owner_test_sources!(root_http);

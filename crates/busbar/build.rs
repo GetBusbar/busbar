@@ -270,6 +270,11 @@ fn main() {
         ),
     )
     .expect("write common_test_sources.rs");
+    std::fs::write(
+        out_dir.join("context_test_sources.rs"),
+        context_test_sources_source(&manifest),
+    )
+    .expect("write context_test_sources.rs");
     std::fs::write(out_dir.join("door_cells_files.rs"), cells_files)
         .expect("write door_cells_files.rs");
 
@@ -432,6 +437,27 @@ fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: 
             ));
         }
     }
+    out
+}
+
+// The same source-owner boundary can mount tests beneath private host modules.
+// Context names are assembly data; an absent context adds no tests or dependency.
+fn context_test_sources_source(manifest: &str) -> String {
+    let mut out = String::from("// @generated from package.metadata.busbar.test-source-contexts.\n#[allow(unused_macros)]\nmacro_rules! owner_test_sources {\n");
+    for (context, owner) in metadata_map(manifest, "package.metadata.busbar.test-source-contexts") {
+        assert!(
+            !context.is_empty()
+                && context.bytes().enumerate().all(|(i, b)| b == b'_'
+                    || b.is_ascii_alphabetic()
+                    || (i > 0 && b.is_ascii_digit())),
+            "invalid test source context: {context}"
+        );
+        out.push_str(&format!(
+            "    ({context}) => {{ {}::__busbar_context_tests!({context}, {owner:?}); }};\n",
+            ident(&owner)
+        ));
+    }
+    out.push_str("    ($context:ident) => {};\n}\n");
     out
 }
 
