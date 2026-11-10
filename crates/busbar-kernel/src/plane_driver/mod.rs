@@ -512,6 +512,43 @@ impl PlaneDriver {
         self
     }
 
+    /// Host scheduler access to this exact opened instance's durable polling work.
+    pub async fn recovery_work(
+        &self,
+    ) -> Result<Vec<crate::host_services::RecoveryWork>, &'static str> {
+        match &self.records {
+            Some((services, caller)) => services.recovery_work(caller).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Adopt the current signer's references for identities that predate durable bindings.
+    /// Run before listener publication, while the deployment still possesses that signer.
+    /// Existing bindings win; a newly configured signer never overwrites their references.
+    pub async fn migrate_caller_references(
+        &self,
+        gov: &crate::governance::GovState,
+    ) -> Result<(), String> {
+        let Some((services, caller)) = &self.records else {
+            return Ok(());
+        };
+        let Some(slot) = &self.config.caller_refs else {
+            return Ok(());
+        };
+        let key = slot
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| "caller reference key unavailable during migration".to_string())?;
+        for principal in gov.all_keys_async().await.map_err(|e| e.to_string())? {
+            services
+                .resolve_caller_reference(caller, &principal.id, &key.caller_ref(&principal.id))
+                .await
+                .map_err(str::to_owned)?;
+        }
+        Ok(())
+    }
+
     /// Bind a carrier session to this opened plane, so a replacement sharing the
     /// configured namespace cannot inherit its live session authority.
     pub fn open_carrier_session(
@@ -1445,14 +1482,22 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         op.ok_or_else(|| Refusal::new(ReasonCode::DecodeFailed))
     }
 
-    fn bind_authenticated_caller(&self, principal: &PrincipalId) -> Result<(), Refusal> {
+    async fn bind_authenticated_caller(&self, principal: &PrincipalId) -> Result<(), Refusal> {
         if let Some(slot) = &self.driver.config.caller_refs {
             let key = slot.read().unwrap_or_else(|e| e.into_inner()).clone();
             if *principal != PrincipalId::anonymous() {
                 let Some(key) = key.filter(|_| !principal.as_str().is_empty()) else {
                     return Err(Refusal::new(ReasonCode::Unauthenticated));
                 };
-                self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
+                let proposed = key.caller_ref(principal.as_str());
+                let reference = match &self.driver.records {
+                    Some((services, caller)) => services
+                        .resolve_caller_reference(caller, principal.as_str(), &proposed)
+                        .await
+                        .map_err(|_| Refusal::new(ReasonCode::DurabilityUnavailable))?,
+                    None => proposed,
+                };
+                self.lock().caller_ref = reference.into_bytes();
             } else if let Some(key) = key {
                 self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
             }

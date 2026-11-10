@@ -1397,6 +1397,7 @@ async fn run(
 
     let door_appliers = served.appliers();
     let door_post = served.post.clone();
+    let recovery_served = served.clone();
 
     if let Some(refusal) = root::serve::lines::refusal() {
         die(refusal);
@@ -1636,6 +1637,9 @@ async fn run(
             Some(app_handle.clone()),
         )
     });
+    let work_recovery =
+        recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());
+    drop(recovery_served);
 
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
@@ -1648,6 +1652,8 @@ async fn run(
             stop,
         )
         .await;
+        let _ = shutdown_tx.send(());
+        let recovery_result = work_recovery.await;
         control_work.drain().await;
         let lease_result = join_node_lease(node_lease_task).await;
         let gov = app_handle.load().governance.clone();
@@ -1660,6 +1666,7 @@ async fn run(
         )
         .await
         .unwrap_or_else(|error| die(error));
+        recovery_result.unwrap_or_else(|error| die(format!("work recovery did not stop: {error}")));
         if let Err(error) =
             root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
         {
@@ -1815,6 +1822,8 @@ async fn run(
                 .expect("data runtime thread panicked");
         }
     }
+    let _ = shutdown_tx.send(());
+    let recovery_result = work_recovery.await;
     let _ = tokio::task::spawn_blocking(move || {
         for task in plugin_tasks {
             let _ = task.join();
@@ -1834,6 +1843,7 @@ async fn run(
     )
     .await
     .unwrap_or_else(|error| die(error));
+    recovery_result.unwrap_or_else(|error| die(format!("work recovery did not stop: {error}")));
     if let Err(error) =
         root::shutdown::retire_storage(&mut store_admission, book.as_ref(), drained).await
     {

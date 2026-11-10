@@ -322,6 +322,8 @@ pub(crate) struct PieceBufs {
 
     pub(crate) caller_ref: Vec<u8>,
 
+    extensions: Vec<u8>,
+
     stream: u64,
 
     head: FieldList,
@@ -354,6 +356,7 @@ impl PieceBufs {
             claim: 0,
             dialect: 0,
             caller_ref: Vec::new(),
+            extensions: Vec::new(),
             stream: 0,
             head: FieldList::default(),
             passthrough: false,
@@ -458,7 +461,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
             }
         }
     };
-    let input = OnPieceIn {
+    let mut input = OnPieceIn {
         unit,
         from: p.from,
         flags: p.flags,
@@ -497,6 +500,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         reason: p.reason,
         ..blank_in()
     };
+    input.head.extensions = blob(&bufs.extensions);
     (input, blank_out())
 }
 
@@ -651,6 +655,15 @@ impl<'u> Pumping<'u> {
         body: bytes::Bytes,
     ) -> Self {
         driver.calls.bind_unit(ticket, ctx.key.get());
+        let mut bufs = Box::new(PieceBufs::new(&driver.config.caps, body));
+        if driver.records.as_ref().is_some_and(|(services, caller)| {
+            services.supports_unit_recovery(caller, ctx.key.get())
+        }) {
+            bufs.extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+                busbar_contract::abi::sdk::recovery::CAPABILITY,
+                &[1],
+            )]);
+        }
         Pumping {
             driver,
             token,
@@ -659,7 +672,7 @@ impl<'u> Pumping<'u> {
             ticket,
             deadline_ns,
             stop: driver.reload.subscribe(),
-            bufs: Box::new(PieceBufs::new(&driver.config.caps, body)),
+            bufs,
             keep: Arc::new(Mutex::new(None)),
             flight: None,
             closing: None,

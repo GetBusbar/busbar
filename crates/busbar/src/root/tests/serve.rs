@@ -7,6 +7,13 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use super::*;
 
 #[test]
+fn recovery_work_header_cannot_be_supplied_by_an_external_caller() {
+    assert!(!keep_arrival_field(b"x-busbar-recovery-work"));
+    assert!(!keep_arrival_field(b"X-Busbar-Recovery-Work"));
+    assert!(keep_arrival_field(b"content-type"));
+}
+
+#[test]
 fn duplicate_plane_routes_fail_with_the_listener_method_and_resolution() {
     use busbar_contract::abi::{
         auth::AuthPoints,

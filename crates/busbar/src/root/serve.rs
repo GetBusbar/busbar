@@ -1543,6 +1543,57 @@ impl std::fmt::Debug for StreamFramers {
 }
 
 impl Served {
+    /// One process-owned scanner. Kept and joined by main before storage retirement.
+    pub fn spawn_work_recovery(
+        &self,
+        app: Arc<busbar_kernel::state::AppHandle>,
+        mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    ) -> tokio::task::JoinHandle<()> {
+        let routes = self.nests.clone();
+        let kernels: Vec<_> = self.planes.iter().map(|p| p.kernel.clone()).collect();
+        struct Ready(Vec<Arc<KernelServices>>);
+        impl Drop for Ready {
+            fn drop(&mut self) {
+                for kernel in &self.0 {
+                    kernel.set_recovery_scheduler_ready(false);
+                }
+            }
+        }
+        let ready = Ready(kernels);
+        if routes.is_some() {
+            for kernel in &ready.0 {
+                kernel.set_recovery_scheduler_ready(true);
+            }
+        }
+        tokio::spawn(async move {
+            let _ready = ready;
+            let Some(routes) = routes else { return };
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                }
+                let live: Vec<_> = routes
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .filter_map(std::sync::Weak::upgrade)
+                    .collect();
+                let cycle = async {
+                    for routes in live {
+                        routes.recover_work(app.load()).await;
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    _ = shutdown.recv() => break,
+                    _ = cycle => {}
+                }
+            }
+        })
+    }
+
     #[must_use]
     pub fn appliers(&self) -> DoorAppliers {
         DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
@@ -1719,6 +1770,7 @@ pub async fn compose_served_checked(
         journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     });
     let site = Arc::clone(&post);
+    let caller_migration = gov.clone();
     let money = move || {
         Arc::new(PlaneMoney::new(
             Arc::clone(&gov),
@@ -1741,6 +1793,12 @@ pub async fn compose_served_checked(
         tables,
     )
     .await?;
+    for plane in &served.planes {
+        plane
+            .driver
+            .migrate_caller_references(&caller_migration)
+            .await?;
+    }
     served.post = Some(post);
     let binds = check(&served)?;
 
@@ -2976,8 +3034,10 @@ fn arrival_entries(served: &Served) -> Vec<Arc<EntrySpans>> {
 
 /// Reserved credential and hop fields never enter a plane request, regardless of carrier.
 fn keep_arrival_field(name: &[u8]) -> bool {
-    !name
-        .eq_ignore_ascii_case(busbar_contract::abi::host::service::CARRIER_SESSION_FIELD.as_bytes())
+    !name.eq_ignore_ascii_case(b"x-busbar-recovery-work")
+        && !name.eq_ignore_ascii_case(
+            busbar_contract::abi::host::service::CARRIER_SESSION_FIELD.as_bytes(),
+        )
         && !NEVER_KEPT
             .iter()
             .any(|reserved| name.eq_ignore_ascii_case(reserved.as_bytes()))
@@ -5248,6 +5308,101 @@ type BoundParent = (
 );
 
 impl DataRoutes {
+    /// Resume one Store page per opened plane through the ordinary unit machinery. Recovery
+    /// carries host-owned identity only: no caller credential is reconstructed or lent.
+    /// The scheduler owns cadence/shutdown; each individual poll has a finite deadline.
+    pub async fn recover_work(self: &Arc<Self>, app: Arc<busbar_kernel::state::App>) -> usize {
+        use busbar_kernel::guest::{Claimant, Matched};
+        if app.governance.is_none() {
+            return 0;
+        }
+        let mut attempted = 0;
+        for (plane, served) in self.served.planes.iter().enumerate() {
+            let work = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                served.driver.recovery_work(),
+            )
+            .await
+            {
+                Ok(Ok(work)) => work,
+                Ok(Err(error)) => {
+                    tracing::warn!(instance = %served.instance, error, "durable work recovery scan failed");
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            for work in work {
+                let now = busbar_kernel::store::now();
+                let Some(key) = work.restore_for_app(&app, now) else {
+                    continue;
+                };
+                let original_expiry = key.expires_at;
+                let Some(mut key) =
+                    busbar_kernel::plane_driver::standing_over(app.clone())(&key, now)
+                else {
+                    continue;
+                };
+                if let Some(original) = original_expiry {
+                    let until = key
+                        .expires_at
+                        .map_or(original, |current| current.min(original));
+                    Arc::make_mut(&mut key).expires_at = Some(until);
+                }
+                let path = work.target().split('?').next().unwrap_or_default();
+                let claim = match self.guests.matched("GET", path, &[]) {
+                    Matched::Line(line) => match &line.claimant {
+                        Claimant::Plane(instance) if instance == &served.instance => self
+                            .of_line
+                            .get(&(instance.clone(), line.route.rung))
+                            .filter(|(owner, _)| *owner == plane)
+                            .map(|(_, claim)| *claim),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let Some(claim) = claim else { continue };
+                let arrival = Arrival {
+                    claim,
+                    method: b"GET".to_vec(),
+                    target: work.target().as_bytes().to_vec(),
+                    fields: vec![(
+                        b"x-busbar-recovery-work".to_vec(),
+                        work.reference().into_bytes(),
+                    )],
+                    body: bytes::Bytes::new(),
+                };
+                let principal = PrincipalId::new(key.id.as_str());
+                let (caller, reply) = IngressCaller::new();
+                let routes = self.clone();
+                let app = app.clone();
+                let unit = async move {
+                    routes
+                        .drive(
+                            plane,
+                            app,
+                            (principal, Some(key), None, None, None),
+                            false,
+                            &caller,
+                            arrival,
+                            None,
+                            None,
+                        )
+                        .await
+                };
+                // Never infer settlement from HTTP status. The plugin must publish its exact
+                // receipt and settle the owned work; failed polls remain durable and retryable.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    reply.answer_nested_bound(Box::pin(unit), NEST_REPLY_MAX),
+                )
+                .await;
+                attempted += 1;
+                drop(work);
+            }
+        }
+        attempted
+    }
+
     fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
         let names = busbar_kernel::endpoints::catalog_names(
             &req.app,
