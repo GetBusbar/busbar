@@ -426,7 +426,10 @@ fn test_sources_source(manifest: &str, table: &str, macro_name: &str, reexport: 
             ident(&krate)
         ));
         if reexport {
-            out.push_str(&format!("pub use {module}::*;\n"));
+            out.push_str(&format!(
+                "#[allow(unused_imports, reason = \"Owner test helpers are shared by independently compiled harnesses.\")]\n\
+                 pub use {module}::*;\n"
+            ));
         }
     }
     out
