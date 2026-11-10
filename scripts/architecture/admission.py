@@ -113,6 +113,32 @@ def validate_protection(project_rules, group_rules, merge_users, *, branches=('d
             raise ValueError('no controlled admission user can merge: ' + branch)
 
 
+def configure_ci_read_access(api, project):
+    """Allow the two canonical organizations to fetch inputs with bounded job tokens."""
+    identity = 'projects/' + str(project['id'])
+    approved = ('GetBusbar', 'BusbarInc')
+    if project['path_with_namespace'].split('/')[0] not in approved:
+        raise ValueError('CI input project is outside the canonical organizations')
+    groups = []
+    for name in approved:
+        group = api.request('groups/' + encoded(name))
+        if group.get('full_path') != name or type(group.get('id')) is not int:
+            raise ValueError('canonical CI reader group identity mismatch')
+        groups.append(group['id'])
+    scope = identity + '/job_token_scope'
+    if not api.request(scope).get('inbound_enabled'):
+        api.request(scope, 'PATCH', {'enabled': True})
+    existing = {row['id'] for row in api.all(scope + '/groups_allowlist')}
+    for group_id in groups:
+        if group_id not in existing:
+            api.request(scope + '/groups_allowlist', 'POST', {'target_group_id': group_id})
+    actual = api.all(scope + '/groups_allowlist')
+    if (not api.request(scope).get('inbound_enabled')
+            or not set(groups).issubset({row['id'] for row in actual})):
+        raise RuntimeError('restricted canonical CI read access did not hold')
+    return actual
+
+
 def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
     identity = 'projects/' + str(project['id'])
     expected = 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + policy_revision
@@ -170,7 +196,9 @@ def apply_project(api, project, policy_revision, merge_users, stage_owner=None):
         if actual.get(key) != value:
             raise RuntimeError(f'{project["path_with_namespace"]}: setting did not hold: {key}')
     rules = api.all(identity + '/protected_branches')
-    return {'project': project['path_with_namespace'], 'id': project['id'], 'settings': settings, 'rules': rules}
+    readers = configure_ci_read_access(api, project)
+    return {'project': project['path_with_namespace'], 'id': project['id'],
+            'settings': settings, 'rules': rules, 'ci_read_groups': readers}
 
 
 def expected_inputs(api, project, source):
