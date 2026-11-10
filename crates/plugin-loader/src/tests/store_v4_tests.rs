@@ -199,6 +199,17 @@ mod linked {
     static OPEN_GATE: (Mutex<(bool, bool, bool)>, Condvar) =
         (Mutex::new((false, false, false)), Condvar::new());
 
+    #[derive(Clone, Debug)]
+    struct ScanCrossing {
+        prefix: Vec<u8>,
+        max_bytes: u64,
+        max_items: u64,
+        capacity: usize,
+        pointer: usize,
+        ticket: busbar_contract::abi::mechanism::ticket::Ticket,
+    }
+    static SCANS: Mutex<Vec<ScanCrossing>> = Mutex::new(Vec::new());
+
     fn info() -> owned::BackendInfo {
         owned::BackendInfo {
             dataset: owned::DatasetId([1; 16]),
@@ -296,6 +307,62 @@ mod linked {
                     out.code = wire::SCAN_PAGE;
                     out.continuation = wire::SCAN_EXHAUSTED;
                     out.generation = 1;
+                    let input = &*input.cast::<wire::ScanIn>();
+                    if input.namespace == [9; 16] {
+                        let source = sdk::decode::scan(input, 4096).unwrap();
+                        SCANS.lock().unwrap().push(ScanCrossing {
+                            prefix: source.prefix.clone(),
+                            max_bytes: input.max_bytes,
+                            max_items: input.max_items,
+                            capacity: input.rows.bytes.cap,
+                            pointer: input.rows.bytes.ptr as usize,
+                            ticket: input.head.ticket,
+                        });
+                        *out = blank();
+                        if source.prefix == b"oversized" {
+                            out.needed_bytes = u64::MAX;
+                            outcome = Outcome::Failed;
+                        } else if source.prefix == b"large"
+                            && input.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME
+                                == 0
+                        {
+                            out.head.wake_at_ns = now_ns().saturating_add(1_000_000);
+                            outcome = Outcome::Pending;
+                        } else {
+                            let mut page = owned::Page {
+                                generation: 1,
+                                rows: vec![],
+                                next: None,
+                            };
+                            if source.prefix == b"large" {
+                                page.rows.push((
+                                    owned::Address {
+                                        namespace: input.namespace,
+                                        key: b"large-key".to_vec(),
+                                    },
+                                    busbar_contract::Secret::new(vec![42; 8192]),
+                                ));
+                                page.next = Some(b"large-key".to_vec());
+                            }
+                            // The SDK decoder owns copies of the selector spans.
+                            let rebound = sdk::scan(&source, input.head, input.rows);
+                            *out = sdk::encode::scan(
+                                &source,
+                                &rebound,
+                                Ok(&page),
+                                std::slice::from_raw_parts_mut(
+                                    input.rows.items,
+                                    input.rows.items_cap,
+                                ),
+                                std::slice::from_raw_parts_mut(
+                                    input.rows.bytes.ptr,
+                                    input.rows.bytes.cap,
+                                ),
+                            )
+                            .unwrap();
+                            outcome = out.head.outcome.outcome();
+                        }
+                    }
                 }
                 wire::slot::COMMIT => {
                     let input = &*input.cast::<wire::CommitIn>();
@@ -399,6 +466,76 @@ mod linked {
             backend.clock(info().dataset).await.unwrap().unix_seconds,
             123
         );
+    }
+
+    #[tokio::test]
+    async fn scan_allocates_for_answers_and_preserves_limits_and_pending_loans() {
+        use owned::axis::{PersistenceAxis, StoreDoor};
+        const PAGE_LIMIT: usize = 32 * 1024 * 1024;
+        let mut axis = axis();
+        axis.limits.output_bytes = PAGE_LIMIT;
+        let backend = axis
+            .open(StoreDoor::Linked(door), "scan-allocation", b"{}")
+            .await
+            .unwrap();
+        let scan = |prefix: &[u8]| {
+            Arc::new(owned::Scan {
+                dataset: info().dataset,
+                namespace: owned::NamespaceId([9; 16]),
+                prefix: prefix.to_vec(),
+                after: None,
+                generation: None,
+                allow_change: false,
+                max_items: 4096,
+                max_bytes: PAGE_LIMIT,
+            })
+        };
+        let empty = backend.scan(scan(b"empty")).await.unwrap();
+        assert!(empty.rows.is_empty());
+        let empty_calls = std::mem::take(&mut *SCANS.lock().unwrap());
+        assert_eq!(empty_calls.len(), 1);
+        assert!(
+            empty_calls[0].capacity <= 4096,
+            "empty scan allocated {} bytes",
+            empty_calls[0].capacity
+        );
+
+        let page = backend.scan(scan(b"large")).await.unwrap();
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(page.rows[0].1, busbar_contract::Secret::new(vec![42; 8192]));
+        assert_eq!(page.next.as_deref(), Some(b"large-key".as_slice()));
+        let calls = std::mem::take(&mut *SCANS.lock().unwrap());
+        assert_eq!(calls.len(), 4, "pending/short then pending/ready");
+        assert_eq!(calls[0].capacity, 4096);
+        assert_eq!(calls[2].capacity, 8192 + 2 * b"large-key".len());
+        for pair in calls.as_chunks::<2>().0 {
+            assert_eq!(
+                pair[0].pointer, pair[1].pointer,
+                "pending loan stays allocated"
+            );
+            assert_eq!(pair[0].capacity, pair[1].capacity);
+        }
+        for call in empty_calls.iter().chain(&calls) {
+            assert_eq!(call.max_bytes, PAGE_LIMIT as u64);
+            assert_eq!(call.max_items, 4096);
+        }
+        for call in &calls {
+            assert_eq!(call.prefix, b"large");
+            assert_eq!(
+                call.ticket, calls[0].ticket,
+                "growth retains the same ticket"
+            );
+        }
+        assert_eq!(
+            backend.scan(scan(b"oversized")).await.unwrap_err(),
+            Failure::Overloaded
+        );
+        assert_eq!(
+            SCANS.lock().unwrap().len(),
+            1,
+            "oversized growth never retries"
+        );
+        SCANS.lock().unwrap().clear();
     }
 
     #[tokio::test]
