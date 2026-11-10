@@ -5,12 +5,41 @@
 
 use serde::Deserialize as _;
 
-/// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
+/// Reserved host configuration keys at every plane section's top level.
 pub const RESERVED_SECTION_KEYS: &[&str] =
     &["hooks", UPSTREAM_CREDENTIALS_KEY, USAGE_OBSERVATIONS_KEY];
 
 /// Host-only durable accounting policy, keyed by configured upstream member.
 pub const USAGE_OBSERVATIONS_KEY: &str = "usage_observations";
+
+/// Host-owned accounting configuration. The root validates member/class bindings;
+/// section parsers validate the same shape before excluding it from registrations.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageObservationPolicy {
+    /// Durable accounting namespace.
+    pub accounting_namespace: String,
+    /// Declared usage classes charged by observations.
+    pub classes: Vec<String>,
+    /// Additional configured members that may be charged.
+    #[serde(default)]
+    pub rated_subjects: Vec<String>,
+    /// Reservation held before dispatch, in nanos.
+    pub reserve_nanos: u64,
+    /// Whether revisions must arrive in sequence.
+    #[serde(default)]
+    pub ordered_revisions: bool,
+}
+
+/// Read the host policy map without accepting null or sequence shorthand as an empty map.
+pub fn usage_observation_policies(
+    value: serde_yaml::Value,
+) -> Result<std::collections::BTreeMap<String, UsageObservationPolicy>, String> {
+    if !value.is_mapping() {
+        return Err("usage_observations must be a mapping".into());
+    }
+    serde_yaml::from_value(value).map_err(|e| e.to_string())
+}
 
 /// The reserved `upstream_credentials:` word: how a member is credentialed (`own` or
 pub const UPSTREAM_CREDENTIALS_KEY: &str = "upstream_credentials";
@@ -211,7 +240,11 @@ where
     };
 
     let mut entries = indexmap::IndexMap::new();
-    raw.shift_remove(USAGE_OBSERVATIONS_KEY);
+    if let Some(value) = raw.shift_remove(USAGE_OBSERVATIONS_KEY) {
+        usage_observation_policies(value).map_err(|_| {
+            D::Error::custom(reserved_name_refusal(section, noun, USAGE_OBSERVATIONS_KEY))
+        })?;
+    }
     for (name, value) in raw {
         if RESERVED_SECTION_KEYS.contains(&name.as_str()) {
             return Err(D::Error::custom(reserved_name_refusal(
@@ -237,12 +270,70 @@ pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
         format!(
             "a {noun} may not be named `{name}`: that key is RESERVED at the \
              `{section}:` section level (the all-{section} `hooks:` attach list and \
-             `upstream_credentials:` default). Rename the {noun}."
+             `upstream_credentials:` default, and host-owned `usage_observations:` policy). \
+             Rename the {noun}."
         )
     } else {
         format!(
             "a {noun} may not be named `{name}`: that key is RESERVED at the \
              `{section}:` section level (the core-owned `{name}:` setting). Rename the {noun}."
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(input: &str) -> Result<Section<serde_yaml::Value>, serde_yaml::Error> {
+        split_section(
+            serde_yaml::Deserializer::from_str(input),
+            "witness",
+            "member",
+            |_, _| Ok(()),
+        )
+    }
+
+    #[test]
+    fn host_observation_policy_is_validated_and_excluded_from_members() {
+        let parsed = parse(
+            r#"{
+            "usage_observations": {
+                "one": {"accounting_namespace":"example", "classes":["requests"], "reserve_nanos":1}
+            },
+            "one": {"target":"https://example.test"}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.entries.len(), 1);
+        assert!(parsed.entries.contains_key("one"));
+    }
+
+    #[test]
+    fn malformed_host_observation_policy_cannot_swallow_a_registration() {
+        for value in [
+            r#"{"target":"https://example.test"}"#,
+            r#"{"one":{"accounting_namespace":"example","classes":[],"reserve_nanos":1,"unknown":true}}"#,
+            "null",
+            "[]",
+            "true",
+            "17",
+        ] {
+            let input = format!(r#"{{"usage_observations":{value}}}"#);
+            let error = parse(&input).unwrap_err().to_string();
+            assert!(error.contains("RESERVED"), "{value}: {error}");
+            assert!(error.contains(USAGE_OBSERVATIONS_KEY), "{error}");
+        }
+    }
+
+    #[test]
+    fn ordinary_reserved_keys_still_refuse_member_definitions() {
+        for key in ["hooks", UPSTREAM_CREDENTIALS_KEY] {
+            let input = format!(r#"{{"{key}":{{"target":"https://example.test"}}}}"#);
+            assert!(parse(&input).unwrap_err().to_string().contains("RESERVED"));
+        }
+        let parsed = parse(r#"{"hooks":["gate"],"upstream_credentials":"own","one":{}}"#).unwrap();
+        assert_eq!(parsed.hooks, ["gate"]);
+        assert_eq!(parsed.entries.len(), 1);
     }
 }

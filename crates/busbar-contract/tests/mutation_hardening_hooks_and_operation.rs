@@ -227,8 +227,38 @@ impl RoutingPolicy for MinimalPolicy {
 
 #[test]
 fn routing_policy_configure_default_is_a_loud_error() {
+    use busbar_contract::{
+        config_time::ConfigScope,
+        plugin_settings::{Resolution, Settings},
+        secret::SecretResolve,
+        secret_ref::{SecretRef, Sugars},
+        Secret,
+    };
+
+    struct MustNotResolve;
+    impl SecretResolve for MustNotResolve {
+        fn resolve(&self, _: &SecretRef) -> Result<Secret<Vec<u8>>, String> {
+            panic!("empty settings must not resolve a reference")
+        }
+
+        fn resolve_string(&self, _: &SecretRef) -> Result<Secret<String>, String> {
+            panic!("empty settings must not resolve a reference")
+        }
+    }
+
     let p = MinimalPolicy;
-    let settings = serde_json::Map::new();
+    let settings = Settings::default()
+        .resolve(
+            &Resolution {
+                owner: p.name(),
+                secrets: &[],
+                references: &[],
+                sources: &Sugars::default(),
+            },
+            &MustNotResolve,
+            &ConfigScope::config_time(),
+        )
+        .expect("empty owner settings resolve without source access");
     let result: Result<(), PolicyError> =
         block_on(p.configure("hook-1", &settings, 1, std::time::Duration::from_millis(10)));
     assert!(

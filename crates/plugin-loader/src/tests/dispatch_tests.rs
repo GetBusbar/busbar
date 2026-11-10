@@ -4560,6 +4560,53 @@ fn another_layout_is_refused<K: Kind>(kind: KindCode) {
 }
 
 #[test]
+fn invalid_layout_is_refused_before_statement_dependent_slots() {
+    use crate::dispatch::kinds::hook::Hook;
+    use crate::hook_door_conformance_tests::hook_door_plugin::ordering;
+    use busbar_contract::abi::hook;
+
+    let base = ordering::door();
+    // SAFETY: the SDK witness owns a static, complete hook table.
+    let mut ops = unsafe { *base.ops().cast::<hook::Ops>() };
+    ops.serve = None;
+    let descriptor = |ops: hook::Ops, layout| {
+        let ops = Box::leak(Box::new(ops));
+        // SAFETY: the copied table and witness metadata remain live. Only a checked
+        // layout word or callback presence differs; no callback is invoked here.
+        unsafe {
+            Door::__from_parts(DoorParts {
+                ops: &ops.head,
+                layout,
+                ..base.parts()
+            })
+        }
+    };
+    let valid = descriptor(ops, base.layout());
+    assert!(
+        validate_door::<Hook>(&valid).is_ok(),
+        "no routes need no SERVE"
+    );
+    for layout in [0, base.layout() ^ 1] {
+        let invalid = descriptor(ops, layout);
+        assert_eq!(
+            validate_door::<Hook>(&invalid).err(),
+            Some(LoadError::KindLayout {
+                plugin: crate::hook_door_conformance_tests::hook_door_plugin::ORDERING_NAME.into(),
+                kind: KindCode::Hook,
+                stated: layout,
+                host: base.layout(),
+            })
+        );
+    }
+    ops.decide = None;
+    let missing_required = descriptor(ops, base.layout());
+    assert_eq!(
+        validate_door::<Hook>(&missing_required).err(),
+        Some(LoadError::NullSlot(hook::slot::DECIDE))
+    );
+}
+
+#[test]
 fn a_store_door_built_against_another_layout_is_refused() {
     another_layout_is_refused::<crate::dispatch::kinds::store_v4::StoreV4>(KindCode::Store);
 }

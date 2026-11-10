@@ -1,5 +1,6 @@
 """Targeted source/receipt/sandbox regressions; no repository-wide scans."""
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -93,6 +94,118 @@ class SecurityScans(unittest.TestCase):
             self.assertEqual(private.stat().st_mode & 0o777, 0o700)
             self.assertEqual(reports[0].stat().st_mode & 0o777, 0o600)
             self.assertEqual(reports[0].read_bytes(), payload)
+            self.assertNotIn('diagnostics', scanner.steps[0])
+
+    def test_failed_scans_retain_only_actionable_metadata(self):
+        canary = 'CANARY-private-source-token'
+        reports = {
+            'dependencies': ({'SchemaVersion': 2, 'Results': [{
+                'Target': 'Cargo.lock', 'Vulnerabilities': [{
+                    'VulnerabilityID': 'RUSTSEC-2026-0001', 'PkgName': 'example-crate',
+                    'InstalledVersion': '1.2.3', 'FixedVersion': '1.2.4, 2.0.1',
+                    'Severity': 'HIGH', 'Title': canary, 'Description': canary,
+                    'References': [canary], 'PkgIdentifier': {'PURL': canary},
+                    'CauseMetadata': {'Source': canary}, 'Secret': canary}]}]},
+                {'vulnerability_id': 'RUSTSEC-2026-0001', 'package': 'example-crate',
+                 'installed_version': '1.2.3', 'fixed_versions': ['1.2.4', '2.0.1'],
+                 'severity': 'HIGH', 'path': 'Cargo.lock'}),
+            'sast': ({'results': [{
+                'check_id': 'policy.busbar.python-dynamic-shell', 'path': '/input/src/tool.py',
+                'start': {'line': 17, 'col': 3}, 'end': {'line': 18},
+                'extra': {'severity': 'ERROR', 'message': canary, 'lines': canary,
+                          'metavars': {'$CMD': {'abstract_content': canary}},
+                          'metadata': {'secret': canary}, 'fix': canary}}],
+                'errors': [], 'paths': {'scanned': ['src/tool.py']}},
+                {'rule_id': 'busbar.python-dynamic-shell', 'path': 'src/tool.py',
+                 'line': 17, 'severity': 'ERROR'}),
+        }
+        for kind, (report, expected) in reports.items():
+            for code in (0, 1, 2):
+                with self.subTest(kind=kind, code=code), tempfile.TemporaryDirectory() as temporary:
+                    scanner = scan.Scanner(Path(__file__).resolve().parents[2], Path(temporary))
+                    scanner.source_rows = [{'path': 'Cargo.lock'}, {'path': 'src/tool.py'}]
+                    payload = json.dumps(report).encode()
+                    with patch.object(scanner, 'container', return_value=(code, payload, '0' * 64)):
+                        with self.assertRaisesRegex(ValueError, '^security scan refused: ' + kind + '$'):
+                            scanner.scan(kind, kind, Path(temporary), [])
+                    row = scanner.steps[0]
+                    self.assertEqual(row['status'], 'fail')
+                    self.assertEqual(row['findings'], 1)
+                    self.assertEqual(row['diagnostics'], [expected])
+                    self.assertEqual(row['diagnostics_omitted'], 0)
+                    self.assertEqual(row['report_sha256'], hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(row['stderr_sha256'], '0' * 64)
+                    self.assertNotIn(canary.encode(), scan.encoded(scanner.steps))
+                    self.assertFalse((Path(temporary) / 'private-scanner-reports').exists())
+
+    def test_diagnostics_omit_untrusted_or_oversized_metadata(self):
+        canary = 'CANARY-private-source-token'
+        result = {'check_id': canary, 'path': '/etc/' + canary,
+                  'start': {'line': True}, 'extra': {'severity': canary, 'message': canary}}
+        diagnostic = scan.finding_diagnostics('sast', {'results': [result]},
+            source_paths={'src/tool.py'}, rule_ids=['busbar.python-dynamic-shell'])
+        self.assertEqual(diagnostic, [{}])
+        for path in ('/etc/passwd', '/input/../src/tool.py', './src/tool.py',
+                     'src//tool.py', 'src\\tool.py', 'https://user:password@host/tool.py',
+                     'a' * 513, 'src/line\nbreak.py'):
+            with self.subTest(path=path):
+                result['path'] = path
+                self.assertEqual(scan.finding_diagnostics('sast', {'results': [result]},
+                    source_paths={path}, rule_ids=[]), [{}])
+        finding = {'VulnerabilityID': canary, 'PkgName': 'https://user:password@example.test/pkg',
+                   'InstalledVersion': {'value': canary}, 'FixedVersion': ['1.2.3', canary],
+                   'Severity': canary}
+        report = {'Results': [{'Target': canary, 'Vulnerabilities': [finding]}]}
+        self.assertEqual(scan.finding_diagnostics('dependencies', report,
+            source_paths=set(), rule_ids=[]), [{}])
+        for key, value in [('VulnerabilityID', 'CVE-2026-' + '1' * 100),
+                           ('PkgName', 'a' * 129), ('InstalledVersion', '1' * 65),
+                           ('FixedVersion', '1' * 257), ('FixedVersion', ', '.join(['1.0'] * 9)),
+                           ('FixedVersion', '1.0, token=secret')]:
+            with self.subTest(key=key, value=value):
+                mutated = {**finding, key: value}
+                self.assertEqual(scan.finding_diagnostics('dependencies',
+                    {'Results': [{'Vulnerabilities': [mutated]}]},
+                    source_paths=set(), rule_ids=[]), [{}])
+
+    def test_diagnostics_cap_does_not_change_failure_or_raw_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            scanner = scan.Scanner(Path(__file__).resolve().parents[2], Path(temporary))
+            findings = [{'VulnerabilityID': 'CVE-2026-12345', 'Severity': 'HIGH'}] * (
+                scan.DIAGNOSTIC_LIMIT + 3)
+            payload = json.dumps({'SchemaVersion': 2, 'Results': [
+                {'Vulnerabilities': findings[:50]}, {'Vulnerabilities': findings[50:]}]}).encode()
+            with patch.object(scanner, 'container', return_value=(0, payload, '0' * 64)):
+                with self.assertRaises(ValueError):
+                    scanner.scan('dependencies', 'dependencies', Path(temporary), [])
+            row = scanner.steps[0]
+            self.assertEqual(row['findings'], scan.DIAGNOSTIC_LIMIT + 3)
+            self.assertEqual(len(row['diagnostics']), scan.DIAGNOSTIC_LIMIT)
+            self.assertEqual(row['diagnostics_omitted'], 3)
+            self.assertEqual(row['status'], 'fail')
+
+    def test_clean_scans_and_malformed_reports_keep_fail_closed_behavior(self):
+        reports = [
+            ('sast', {'results': [], 'errors': [], 'paths': {'scanned': ['src/tool.py']}}, True),
+            ('dependencies', {'SchemaVersion': 2, 'Results': []}, True),
+            ('sast', {'results': [], 'errors': [{'message': 'CANARY-private-token'}],
+                      'paths': {'scanned': ['src/tool.py']}}, False),
+            ('sast', {'results': [None], 'errors': [], 'paths': {'scanned': ['src/tool.py']}}, False),
+            ('dependencies', {'SchemaVersion': 2, 'Results': [{'Vulnerabilities': [None]}]}, False),
+        ]
+        for kind, report, clean in reports:
+            with self.subTest(kind=kind, report=report), tempfile.TemporaryDirectory() as temporary:
+                scanner = scan.Scanner(Path(__file__).resolve().parents[2], Path(temporary))
+                with patch.object(scanner, 'container', return_value=(0, json.dumps(report).encode(), '0' * 64)):
+                    if clean:
+                        scanner.scan(kind, kind, Path(temporary), [])
+                        self.assertEqual(scanner.steps[0]['diagnostics'], [])
+                        self.assertEqual(scanner.steps[0]['diagnostics_omitted'], 0)
+                    else:
+                        with self.assertRaises(ValueError):
+                            scanner.scan(kind, kind, Path(temporary), [])
+                    self.assertEqual(scanner.steps[0]['status'], 'pass' if clean else 'fail')
+                    self.assertNotIn('CANARY-private-token', json.dumps(scanner.steps))
 
     def test_candidate_symlink_refuses_before_mount(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -922,17 +922,10 @@ fn read_door_with_abi(
 pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadError> {
     let (door, kind) = read_door_with_abi(p, Some(K::CODE), Some(K::ABI_VERSION))?;
 
-    let stated = statement_with_layout(&door, Some(K::LAYOUT_FINGERPRINT));
-    let by_statement = |i| {
-        stated
-            .as_ref()
-            .is_ok_and(|st| K::optional_by_statement(i, st))
-    };
-    let (slots, operations) = table::<K>(door.ops, by_statement)?;
-    // Surface the Statement error after the table check so that a missing or
-    // malformed Statement is not masked. The original order is preserved
-    // because table() depends on by_statement's closure, which captures stated.
-    let statement = stated?;
+    // Callback requirements depend on valid metadata. Refuse incompatible layouts
+    // before interpreting their table or deciding which callbacks may be absent.
+    let statement = statement_with_layout(&door, Some(K::LAYOUT_FINGERPRINT))?;
+    let (slots, operations) = table::<K>(door.ops, |i| K::optional_by_statement(i, &statement))?;
     let context = K::context(&statement).map_err(LoadError::KindTail)?;
     Ok(Validated {
         kind,
