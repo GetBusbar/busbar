@@ -48,9 +48,7 @@ pub fn migrate_credential_door(
     from: &str,
     seal: &dyn busbar_contract::plugin::KernelSeal,
 ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
-    use busbar_contract::abi::sdk::migrate::{
-        encode_credential_input, CredentialMigration, CredentialMigrationStep,
-    };
+    use busbar_contract::abi::sdk::migrate::{encode_credential_input, CredentialMigration};
     let refused = || "credential owner could not migrate the original reference".to_owned();
     let call =
         |file: Option<&busbar_contract::Secret<Vec<u8>>>| -> Result<CredentialMigration, String> {
@@ -66,6 +64,18 @@ pub fn migrate_credential_door(
             }
             serde_json::from_slice(&answer).map_err(|_| refused())
         };
+    complete_credential_migration(credential, seal, call)
+}
+
+fn complete_credential_migration(
+    credential: &busbar_contract::Secret<String>,
+    seal: &dyn busbar_contract::plugin::KernelSeal,
+    mut call: impl FnMut(
+        Option<&busbar_contract::Secret<Vec<u8>>>,
+    ) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String>,
+) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
+    use busbar_contract::abi::sdk::migrate::CredentialMigrationStep;
+    let refused = || "credential owner could not migrate the original reference".to_owned();
     let answer = call(None)?;
     match answer.step() {
         CredentialMigrationStep::Unchanged => {
