@@ -19,6 +19,7 @@ pub(crate) struct HookPolicy {
     calls: Arc<dyn HookCalls>,
 
     name: Arc<str>,
+    signals: Vec<busbar_contract::Signal>,
     child: Option<Arc<crate::hook_child::Grant>>,
 
     statics: std::sync::Mutex<Vec<Arc<CandidateStatics>>>,
@@ -30,11 +31,13 @@ impl HookPolicy {
     pub(crate) fn policy(
         calls: Arc<dyn HookCalls>,
         name: &str,
+        signals: &[busbar_contract::Signal],
         child: Option<&crate::hook_child::Grant>,
     ) -> Arc<dyn RoutingPolicy> {
         Arc::new(Self {
             calls,
             name: Arc::from(name),
+            signals: signals.to_vec(),
             child: child.cloned().map(Arc::new),
             statics: std::sync::Mutex::new(Vec::new()),
         })
@@ -178,10 +181,18 @@ impl RoutingPolicy for HookPolicy {
             return Ok(RoutingDecision::Abstain);
         }
         let statics = self.statics_for(candidates);
-        let frame =
-            DecideFrame::first(DecideView::build_with(req, statics, candidates, ctx)).with_child(
-                crate::hook_child::invocation(&self.name, self.child.as_ref(), budget),
-            );
+        let frame = DecideFrame::first(DecideView::build_with_signals(
+            req,
+            statics,
+            candidates,
+            ctx,
+            &self.signals,
+        ))
+        .with_child(crate::hook_child::invocation(
+            &self.name,
+            self.child.as_ref(),
+            budget,
+        ));
         match self.calls.decide(frame, budget).await {
             Answered::Answer {
                 outcome: Outcome::Ready,
@@ -208,7 +219,13 @@ impl RoutingPolicy for HookPolicy {
             budget_remaining: None,
             budget: &[],
         };
-        let frame = DecideFrame::first(DecideView::build(req, &[], &ctx));
+        let frame = DecideFrame::first(DecideView::build_with_signals(
+            req,
+            self.statics_for(&[]),
+            &[],
+            &ctx,
+            &self.signals,
+        ));
         match self.calls.transform(frame, budget).await {
             Answered::Answer {
                 outcome: Outcome::Ready,
@@ -252,7 +269,9 @@ impl RoutingPolicy for HookPolicy {
     }
 
     async fn notify(&self, tap: Arc<NotifyFrame>, budget: Duration) {
-        self.calls.notify(tap, budget).await;
+        self.calls
+            .notify(tap.with_signals(&self.signals), budget)
+            .await;
     }
 }
 

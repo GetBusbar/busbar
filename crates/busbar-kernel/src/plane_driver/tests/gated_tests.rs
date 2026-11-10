@@ -72,7 +72,7 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
 }
 
 #[test]
-fn a_pool_route_binds_only_a_member_of_the_recorded_pool() {
+fn a_pool_route_preserves_its_named_pool_or_binds_a_verified_member() {
     use super::bound_entry;
     use busbar_contract::abi::plane::ROUTE_POOL;
     let named = |entry: &str| {
@@ -81,6 +81,17 @@ fn a_pool_route_binds_only_a_member_of_the_recorded_pool() {
         view
     };
     let holds = |pool: &[u8], member: &str| pool == b"pair" && member == "files";
+    assert_eq!(
+        bound_entry(
+            Some(b"pair"),
+            ROUTE_POOL,
+            &named("pair"),
+            |_, _| unreachable!()
+        )
+        .ok(),
+        Some(Some("pair")),
+        "an unchanged pool does not need to be a member of itself"
+    );
     assert!(
         bound_entry(Some(b"pair"), ROUTE_POOL, &named("shell"), holds).is_err(),
         "a projection naming an entry outside the recorded pool bound that entry's gates"

@@ -104,6 +104,7 @@ async fn after_a_reload_the_hook_sees_the_new_candidates_never_stale_ones() {
     let seen = Arc::new(Seen::default());
     let policy = HookPolicy {
         child: None,
+        signals: Vec::new(),
         calls: seen.clone(),
         name: "c7-seen".into(),
         statics: std::sync::Mutex::new(Vec::new()),

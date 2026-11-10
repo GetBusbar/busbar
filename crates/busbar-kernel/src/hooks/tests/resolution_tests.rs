@@ -361,3 +361,19 @@ async fn replacing_the_public_registry_cannot_reuse_a_stale_path_snapshot() {
     assert!(configured.len() == 2);
     assert!(source.reads.load(Ordering::SeqCst) == 2);
 }
+
+#[test]
+fn changing_signal_grants_invalidates_cached_hook_policy() {
+    let mut hook = settings(json!({}));
+    hook.signals.clear();
+    let empty = resolution::key_for_settings(1, HOOK_NAME, &hook, &[]).unwrap();
+    hook.signals
+        .push(busbar_contract::Signal::RequestTextComplete);
+    let granted = resolution::key_for_settings(1, HOOK_NAME, &hook, &[]).unwrap();
+    assert_ne!(empty, granted);
+    hook.signals.clear();
+    assert_eq!(
+        Some(empty),
+        resolution::key_for_settings(1, HOOK_NAME, &hook, &[])
+    );
+}

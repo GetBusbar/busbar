@@ -348,3 +348,83 @@ fn completing_a_reservation_does_not_let_its_late_drop_release_the_next_operatio
     drop(next);
     assert!(frame.try_lend().is_some());
 }
+
+#[test]
+fn per_hook_signal_grants_filter_request_candidates_and_taps() {
+    let request = req(true);
+    let candidates = [Candidate {
+        idx: 0,
+        model: "m",
+        provider: "p",
+        weight: 1,
+        context_max: None,
+        tier: None,
+        cost_per_mtok: None,
+        tags: &[],
+        latency_ms: None,
+        available_concurrency: 1,
+        budget_remaining: None,
+        rate_headroom: None,
+        signals: request.signals.clone(),
+    }];
+    let ctx = RoutingContext {
+        pool: "p",
+        budget_remaining: None,
+        budget: &[],
+    };
+    let statics = CandidateStatics::build(&candidates);
+    for (allowed, expected) in [(&[][..], 0), (&[Signal::RoutingPolicy][..], 1)] {
+        let frame = DecideFrame::first(DecideView::build_with_signals(
+            &request,
+            statics.clone(),
+            &candidates,
+            &ctx,
+            allowed,
+        ));
+        let input = frame.input();
+        assert_eq!(input.request.signals_len, expected);
+        // SAFETY: frame owns this one-element dynamic array for this borrow.
+        assert_eq!(unsafe { &*input.candidate_dynamics }.signals_len, expected);
+        assert_eq!(
+            input.prompt.messages_len, 2,
+            "signal filtering preserves separate prompt grant"
+        );
+        let original = NotifyFrame::build(&request, None, true);
+        let filtered = original.with_signals(allowed);
+        assert_eq!(
+            original.input().signals_len,
+            1,
+            "shared frame remains unchanged"
+        );
+        drop(original);
+        assert_eq!(filtered.input().signals_len, expected);
+        assert_eq!(filtered.input().prompt.messages_len, 2);
+        assert_eq!(check_notify_in(&filtered.input()), Ok(()));
+        let projected = filtered.projection_json();
+        assert!(
+            !projected.is_null(),
+            "retained strings and prompt remain readable"
+        );
+    }
+}
+
+#[test]
+fn filtered_tap_retains_allowed_string_signal_after_original_is_dropped() {
+    let mut request = req(false);
+    request
+        .signals
+        .push(Signal::RequestTextComplete, Value::Bool(true));
+    let original = NotifyFrame::build(&request, None, false);
+    let filtered = original.with_signals(&[Signal::RoutingPolicy]);
+    drop(original);
+    drop(request);
+    let input = filtered.input();
+    assert_eq!(input.signals_len, 1);
+    // SAFETY: filtered retains the original frame's backing string through its parent Arc.
+    let entry = unsafe { &*input.signals };
+    assert_eq!(entry.id, Signal::RoutingPolicy.bit());
+    assert_eq!(entry.tag, SIGNAL_TAG_STR);
+    let text = unsafe { entry.value.str_ };
+    let bytes = unsafe { std::slice::from_raw_parts(text.ptr, text.len) };
+    assert_eq!(bytes, b"cheapest");
+}
