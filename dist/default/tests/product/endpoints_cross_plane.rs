@@ -656,9 +656,9 @@ async fn with_listing_door(
 }
 
 #[tokio::test]
-async fn test_v1_models_appends_each_plane_generations_listed_names() {
+async fn test_v1_models_appends_its_own_plane_generations_listed_names() {
     let app = with_listing_door(
-        "v1-models-listing",
+        linked::fallback().key,
         "v1_models_listing",
         &["listed-b", "pool-a", "listed-a"],
     )
@@ -666,7 +666,7 @@ async fn test_v1_models_appends_each_plane_generations_listed_names() {
     assert_eq!(
         models_ids(Arc::clone(&app), GovCtx::default()).await,
         ["pool-a", "pool-b", "model-a0", "model-a1", "model-b", "listed-b", "listed-a"],
-        "the plane's listed names follow the tables' own, once each"
+        "this plane's listed names follow its own tables, once each"
     );
     let pools_only = GovCtx {
         key: Some(vkey(&["pool-a"])),
