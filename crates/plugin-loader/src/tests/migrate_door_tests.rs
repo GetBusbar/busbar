@@ -291,3 +291,55 @@ fn host_refuses_unsolicited_file_acceptance_and_bounds_file_continuations() {
     );
     std::fs::remove_file(file).unwrap();
 }
+
+#[test]
+fn migration_file_admission_refuses_oversized_and_nonregular_sources_before_continuation() {
+    let dir = std::env::temp_dir().join(format!("migration-file-admission-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let large = dir.join(" SYNTHETIC_PRIVATE_FILENAME ");
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(super::ANSWER_CAP as u64 + 1)
+        .unwrap();
+    let paths = vec![dir.clone(), large];
+    #[cfg(unix)]
+    let paths = {
+        let mut paths = paths;
+        paths.push(std::path::PathBuf::from("/dev/zero"));
+        paths
+    };
+    for path in paths {
+        let mut calls = 0;
+        let result = super::complete_credential_migration(
+            &busbar_contract::Secret::new(path.to_str().unwrap().into()),
+            &busbar_contract::plugin::TestKernelSeal,
+            |loan| {
+                calls += 1;
+                assert!(loan.is_none());
+                Ok(serde_json::from_str(r#"{"action":"read_file"}"#).unwrap())
+            },
+        );
+        assert_eq!(calls, 1);
+        assert_eq!(
+            result.unwrap_err(),
+            "credential owner could not migrate the original reference"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let regular = dir.join(" regular.json ");
+        let alias = dir.join(" symlink.json ");
+        std::fs::write(&regular, b"SYNTHETIC").unwrap();
+        std::os::unix::fs::symlink(&regular, &alias).unwrap();
+        let bytes = super::read_credential_file(
+            &busbar_contract::Secret::new(alias.to_str().unwrap().into()),
+            &busbar_contract::plugin::TestKernelSeal,
+        )
+        .unwrap();
+        assert_eq!(
+            bytes.expose(&busbar_contract::plugin::TestKernelSeal),
+            b"SYNTHETIC"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
