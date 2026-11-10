@@ -183,13 +183,13 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
     let serving = tokio::spawn(async move { axum::serve(listener, admin).await.unwrap() });
     let client = reqwest::Client::new();
     let endpoint = format!("http://{address}/api/v1/admin/hooks/receiver");
-    let metrics = format!("http://{data_address}/metrics");
+    let metrics = format!("http://{data_address}/capture");
     let first_metrics = client.get(&metrics).send().await.unwrap();
     assert_eq!(first_metrics.status().as_u16(), 200);
     let first_metrics = first_metrics.text().await.unwrap();
     assert!(
-        first_metrics.contains("# HELP") || first_metrics.contains("# TYPE"),
-        "the retained endpoint is served by the actual exporter: {first_metrics}"
+        first_metrics.as_bytes() == neutral_routes::BODY,
+        "the retained endpoint is served by the neutral SDK witness: {first_metrics}"
     );
     let mut definition = serde_json::json!({
         "kind": "gate", "module": "test-hook", "timeout_ms": 11, "global": true,
@@ -228,12 +228,12 @@ async fn timeout_only_admin_put_refreshes_the_actual_policy_atomically() {
         "timeout-only hook updates retain the real export dispatcher on the same listener"
     );
     let retained_metrics = retained_metrics.text().await.unwrap();
-    assert!(retained_metrics.contains("# HELP") || retained_metrics.contains("# TYPE"));
+    assert!(retained_metrics.as_bytes() == neutral_routes::BODY);
     let retained_export = next
         .plugin_routes
         .descriptors()
         .into_iter()
-        .find(|route| route.path == "/metrics")
+        .find(|route| route.path == "/capture")
         .expect("the real exporter remains registered");
     assert_eq!(
         retained_export.kind,
@@ -330,15 +330,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     busbar_kernel::snapshot::init_for_test(std::time::Duration::from_secs(60));
     use crate::root::loader::dispatch::{
         kinds::export::{Export, ExportFacts},
-        load_dropped, rendering_of_library, Bind, ConnTable, DispatchConfig, Dispatcher, NoSink,
+        load_linked, Bind, ConnTable, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
-    let path = std::path::PathBuf::from(
-        std::env::var_os("BUSBAR_TEST_PROMETHEUS_CDYLIB")
-            .expect("BUSBAR_TEST_PROMETHEUS_CDYLIB names the actual built metrics exporter"),
-    );
-    let statement = rendering_of_library(&path)
-        .expect("the actual exporter statement reads")
-        .expect("the actual exporter carries its statement");
     crate::dist_root_install::install();
     let connector = crate::root::connector::installed()
         .expect("the normal root installs the actual transport connector");
@@ -357,9 +350,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
     ));
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     crate::root::connector::install_io(&dispatcher);
-    let plugin = load_dropped::<Export>(
-        &path,
-        &statement,
+    let plugin = load_linked::<Export>(
+        &LinkedRow::of(neutral_routes::door).expect("the SDK witness descriptor"),
         Bind {
             instance: "serve-http-metrics".into(),
             max_inflight_cap: 64,
@@ -371,23 +363,19 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             )),
         },
     )
-    .expect("the actual HTTP exporter loads through its memory ABI");
+    .expect("the neutral SDK witness loads through its memory ABI");
     let routes = plugin
         .context::<ExportFacts>()
-        .expect("the actual exporter declares its routes")
+        .expect("the neutral SDK witness declares its routes")
         .routes
         .clone();
     assert!(
-        routes.iter().any(|route| route.path == "/metrics"),
-        "the actual exporter declares the scrape route"
+        routes.iter().any(|route| route.path == "/capture"),
+        "the neutral SDK witness declares the scrape route"
     );
     let exporter = std::sync::Arc::new(
-        crate::root::loader::export_door::ExportInstance::open(
-            plugin,
-            dispatcher,
-            br#"{"buffer_seconds":60}"#,
-        )
-        .expect("the actual HTTP exporter opens"),
+        crate::root::loader::export_door::ExportInstance::open(plugin, dispatcher, b"{}")
+            .expect("the neutral SDK witness opens"),
     );
     let dispatch = busbar_kernel::export::serve_test_sink(exporter);
     let declarations = routes
@@ -397,7 +385,7 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
             source_instance: "sink-instance".into(),
             dispatch_available: true,
             kind: busbar_kernel::plugin_routes::RouteKind::Export,
-            scrape: matches!(route.path.as_str(), "/metrics" | "/metrics/hooks"),
+            scrape: matches!(route.path.as_str(), "/capture" | "/retained"),
             persistent: true,
             route,
             dispatch: dispatch.clone(),
@@ -405,6 +393,8 @@ fn metrics_routes() -> std::sync::Arc<busbar_kernel::plugin_routes::PluginRouteT
         .collect();
     std::sync::Arc::new(
         busbar_kernel::plugin_routes::build_route_table(declarations)
-            .expect("the actual export routes obey the product namespace rules"),
+            .expect("the witness routes obey the namespace rules"),
     )
 }
+
+use crate::root::test_plugins::neutral_export_routes as neutral_routes;
