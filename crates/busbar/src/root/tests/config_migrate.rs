@@ -419,3 +419,46 @@ auth: {chain: [keys], admin_auth: [rig], signing_key: {env: UNUSED_CATALOG_WITNE
         historical.todos
     );
 }
+
+#[cfg(distribution_root)]
+#[test]
+fn credential_owner_migration_resolves_outer_source_once_and_keeps_inline_reference() {
+    crate::dist_root_install::install();
+    let directory = super::FetchedDir::create_in(&std::env::temp_dir()).unwrap();
+    let key = directory.0.join(" key.json ");
+    let pointer = directory.0.join("old-credential");
+    std::fs::write(
+        &key,
+        br#"{"client_email":"test@example.com","private_key":"SYNTHETIC_KEY"}"#,
+    )
+    .unwrap();
+    std::fs::write(&pointer, format!("{}\r\n", key.display())).unwrap();
+    let host = super::RootHost::for_document("{}", &directory.0.join("elsewhere/config.yaml"));
+    let sources = host.source_declarations().unwrap();
+    let source = |path: &std::path::Path| {
+        sources
+            .reference_for_role(
+                busbar_contract::abi::mechanism::door::SUGAR_ROLE_PATH,
+                path.to_str().unwrap(),
+            )
+            .unwrap()
+    };
+    let original = source(&pointer);
+    let migrated = host
+        .migrate_credential("oauth", &original, "1.5.5")
+        .unwrap()
+        .unwrap();
+    assert_eq!(migrated, source(&key));
+    assert!(host
+        .migrate_credential("oauth", &migrated, "1.5.5")
+        .unwrap()
+        .is_none());
+    let error = host
+        .migrate_credential(
+            "oauth",
+            &source(&directory.0.join("SYNTHETIC_ABSENT")),
+            "1.5.5",
+        )
+        .unwrap_err();
+    assert!(!error.contains("SYNTHETIC_ABSENT"));
+}

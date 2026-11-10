@@ -47,23 +47,50 @@ pub fn migrate_credential_door(
     credential: &busbar_contract::Secret<String>,
     from: &str,
     seal: &dyn busbar_contract::plugin::KernelSeal,
-) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
-    let refused = || "credential owner could not migrate the original reference".to_owned();
-    let Some((outcome, answer)) = call_migration(
-        door,
-        credential.expose(seal).as_bytes(),
-        BLOB_OCTETS,
-        from,
-        false,
-    )
-    .map_err(|_| refused())?
-    else {
-        return Err(refused());
+) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
+    use busbar_contract::abi::sdk::migrate::{
+        encode_credential_input, CredentialMigration, CredentialMigrationStep,
     };
-    if outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
-        return Err(refused());
+    let refused = || "credential owner could not migrate the original reference".to_owned();
+    let call =
+        |file: Option<&busbar_contract::Secret<Vec<u8>>>| -> Result<CredentialMigration, String> {
+            let input = encode_credential_input(credential, file, seal);
+            let Some((outcome, answer)) =
+                call_migration(door, input.expose(seal), BLOB_OCTETS, from, false)
+                    .map_err(|_| refused())?
+            else {
+                return Err(refused());
+            };
+            if outcome != busbar_contract::abi::mechanism::call::Outcome::Ready {
+                return Err(refused());
+            }
+            serde_json::from_slice(&answer).map_err(|_| refused())
+        };
+    let answer = call(None)?;
+    match answer.step() {
+        CredentialMigrationStep::Unchanged => {
+            return answer.finish(None, seal).map_err(|_| refused())
+        }
+        CredentialMigrationStep::UseFile => return Err(refused()),
+        CredentialMigrationStep::ReadFile => {}
     }
-    serde_json::from_slice(&answer).map_err(|_| refused())
+    // This is the sole file operation admitted by this protocol: the exact original
+    // credential-derived filename, anchored to process cwd. The owner cannot replace it.
+    let cwd = std::env::current_dir().map_err(|_| refused())?;
+    let encoded = zeroize::Zeroizing::new(
+        cwd.join(credential.expose(seal))
+            .into_os_string()
+            .into_encoded_bytes(),
+    );
+    let path = busbar_contract::Secret::new(
+        std::str::from_utf8(&encoded)
+            .map_err(|_| refused())?
+            .to_owned(),
+    );
+    let file =
+        busbar_contract::Secret::new(std::fs::read(path.expose(seal)).map_err(|_| refused())?);
+    let answer = call(Some(&file))?;
+    answer.finish(Some(&path), seal).map_err(|_| refused())
 }
 
 type MigrationWireAnswer = (
@@ -263,7 +290,7 @@ pub fn migrate_credential_library(
     credential: &busbar_contract::Secret<String>,
     from: &str,
     seal: &dyn busbar_contract::plugin::KernelSeal,
-) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
+) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
     let (lib, staged) = crate::stage::load_library_from_bytes(bytes, display)?;
     // SAFETY: the image remains loaded through the admitted migration call.
     let door = unsafe {

@@ -213,7 +213,7 @@ impl LoadablePlugin {
         credential: &busbar_contract::Secret<String>,
         from: &str,
         seal: &dyn busbar_contract::plugin::KernelSeal,
-    ) -> Result<busbar_contract::abi::sdk::migrate::CredentialMigration, String> {
+    ) -> Result<busbar_contract::abi::sdk::migrate::MigratedCredential, String> {
         use crate::dispatch::migrate::{migrate_credential_door, migrate_credential_library};
         match self.door() {
             Some(door) => migrate_credential_door(door, credential, from, seal),

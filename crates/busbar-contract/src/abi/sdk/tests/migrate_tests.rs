@@ -419,7 +419,12 @@ fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
         }
     }
     let mut input = ValidateIn::default();
-    input.settings = Blob::of(b"SYNTHETIC_CREDENTIAL")
+    let encoded = super::encode_credential_input(
+        &crate::Secret::new("SYNTHETIC_CREDENTIAL".to_owned()),
+        None,
+        &crate::plugin::TestKernelSeal,
+    );
+    input.settings = Blob::of(encoded.expose(&crate::plugin::TestKernelSeal))
         .with_fmt(BLOB_OCTETS)
         .with_flags(crate::abi::mechanism::call::BLOB_SECRET);
     input.head.extensions = Blob::of(b"1.5.5");

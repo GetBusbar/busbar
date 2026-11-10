@@ -205,7 +205,7 @@ impl Serialize for MigrationAuthoring<'_> {
 /// }
 /// ```
 /// ```compile_fail
-/// fn inspect(value: busbar_contract::abi::sdk::migrate::MigrationFile) { println!("{value:?}"); }
+/// fn inspect(value: busbar_contract::abi::sdk::migrate::MigrationFile<'_>) { println!("{value:?}"); }
 /// ```
 ///
 /// ```compile_fail
@@ -216,6 +216,7 @@ impl Serialize for MigrationAuthoring<'_> {
 #[allow(missing_debug_implementations)]
 pub struct MigrationCredential<'a, K: crate::plugin::KindMarker> {
     text: &'a str,
+    file: Option<&'a [u8]>,
     kind: PhantomData<K>,
 }
 
@@ -224,41 +225,36 @@ impl<K: crate::plugin::KindMarker> MigrationCredential<'_, K> {
     pub fn text(&self) -> &str {
         self.text
     }
-
-    /// Read an exact filename relative to the migration process working directory.
-    /// No trimming, canonicalization, JSON interpretation, or error interpolation occurs.
-    pub fn read_file(&self, filename: &str) -> Result<MigrationFile, CredentialRefusal> {
-        let cwd = std::env::current_dir().map_err(|_| CredentialRefusal)?;
-        let encoded =
-            zeroize::Zeroizing::new(cwd.join(filename).into_os_string().into_encoded_bytes());
-        let path = zeroize::Zeroizing::new(
-            std::str::from_utf8(&encoded)
-                .map_err(|_| CredentialRefusal)?
-                .to_owned(),
-        );
-        let bytes = std::fs::read(path.as_str()).map_err(|_| CredentialRefusal)?;
-        Ok(MigrationFile {
-            path,
-            bytes: zeroize::Zeroizing::new(bytes),
+    /// Request one host-mediated read of exactly this credential's filename.
+    /// The owner cannot substitute a path or repeat a read after continuation.
+    pub fn request_file(&self) -> Result<CredentialMigration, CredentialRefusal> {
+        if self.file.is_some() {
+            return Err(CredentialRefusal);
+        }
+        Ok(CredentialMigration {
+            action: CredentialMigrationStep::ReadFile,
         })
     }
+    /// The guarded file bytes supplied by the host on the single continuation.
+    pub fn file(&self) -> Option<MigrationFile<'_>> {
+        self.file.map(|bytes| MigrationFile { bytes })
+    }
 }
 
-/// File custody lent to the migration owner for its own format validation.
+/// File bytes lent only to the receiving migration owner for format validation.
 #[allow(missing_debug_implementations)]
-pub struct MigrationFile {
-    path: zeroize::Zeroizing<String>,
-    bytes: zeroize::Zeroizing<Vec<u8>>,
+pub struct MigrationFile<'a> {
+    bytes: &'a [u8],
 }
-impl MigrationFile {
-    /// Read the file bytes inside the receiving owner's migration.
+impl MigrationFile<'_> {
+    /// Inspect the supplied file inside the receiving owner's migration entry.
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        self.bytes
     }
-    /// Approve this verified filename for public configuration authoring.
+    /// Approve the host's already-read filename for configuration authoring.
     pub fn accept(self) -> CredentialMigration {
         CredentialMigration {
-            file: Some(self.path.to_string()),
+            action: CredentialMigrationStep::UseFile,
         }
     }
 }
@@ -267,40 +263,117 @@ impl MigrationFile {
 #[derive(Debug, Clone, Copy)]
 pub struct CredentialRefusal;
 
-/// The owner's approved file reference, or an unchanged credential. Its path is
-/// private until converted to an ordinary source reference; file bytes never leave the owner.
-///
-/// ```compile_fail
-/// fn inspect(answer: busbar_contract::abi::sdk::migrate::CredentialMigration) {
-///     let _ = answer.file;
-/// }
-/// ```
-#[derive(Serialize, Deserialize)]
+/// The bounded credential migration protocol. No action carries a path or secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialMigrationStep {
+    /// Preserve the original source reference.
+    Unchanged,
+    /// Ask the host to read the original credential as an exact filename once.
+    ReadFile,
+    /// Approve the file lent on that continuation.
+    UseFile,
+}
+
+/// Owner-side answer; a file approval is valid only after the host supplied that file.
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialMigration {
-    file: Option<String>,
-}
-impl std::fmt::Debug for CredentialMigration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("CredentialMigration([REDACTED])")
-    }
+    action: CredentialMigrationStep,
 }
 impl CredentialMigration {
     /// Preserve the original source reference.
     pub fn unchanged() -> Self {
-        Self { file: None }
+        Self {
+            action: CredentialMigrationStep::Unchanged,
+        }
     }
-    /// Author an approved filename using the admitted source owner's path role.
+    /// The generic protocol action, never a credential or filename.
+    pub fn step(&self) -> CredentialMigrationStep {
+        self.action
+    }
+    /// Complete only with the host's actual read path, under its sealed custody.
+    pub fn finish(
+        self,
+        path: Option<&crate::Secret<String>>,
+        seal: &dyn crate::plugin::KernelSeal,
+    ) -> Result<MigratedCredential, CredentialRefusal> {
+        let path = match self.action {
+            CredentialMigrationStep::Unchanged => None,
+            CredentialMigrationStep::UseFile => Some(zeroize::Zeroizing::new(
+                path.ok_or(CredentialRefusal)?.expose(seal).clone(),
+            )),
+            CredentialMigrationStep::ReadFile => return Err(CredentialRefusal),
+        };
+        Ok(MigratedCredential { path })
+    }
+}
+
+/// Host custody of an approved credential source, with no plaintext path accessor.
+/// ```compile_fail
+/// fn inspect(answer: busbar_contract::abi::sdk::migrate::MigratedCredential) { let _ = answer.path; }
+/// ```
+pub struct MigratedCredential {
+    path: Option<zeroize::Zeroizing<String>>,
+}
+impl std::fmt::Debug for MigratedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MigratedCredential([REDACTED])")
+    }
+}
+impl MigratedCredential {
+    /// Author the approved filename using the admitted source owner's path role.
     pub fn into_reference(
         self,
         sources: &crate::secret_ref::Sugars,
     ) -> Result<Option<crate::secret_ref::SecretRef>, String> {
-        self.file
+        self.path
             .map(|path| {
                 sources.reference_for_role(crate::abi::mechanism::door::SUGAR_ROLE_PATH, &path)
             })
             .transpose()
     }
+}
+
+/// Encode a guarded credential and optional guarded file loan for MIGRATE.
+/// The length-prefixed binary frame is parsed by borrowing, so no plaintext parse tree exists.
+pub fn encode_credential_input(
+    credential: &crate::Secret<String>,
+    file: Option<&crate::Secret<Vec<u8>>>,
+    seal: &dyn crate::plugin::KernelSeal,
+) -> crate::Secret<Vec<u8>> {
+    let credential = credential.expose(seal).as_bytes();
+    let mut bytes = Vec::new();
+    bytes.push(u8::from(file.is_some()));
+    bytes.extend_from_slice(&(credential.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(credential);
+    if let Some(file) = file {
+        bytes.extend_from_slice(file.expose(seal));
+    }
+    crate::Secret::new(bytes)
+}
+
+fn credential_input<K: crate::plugin::KindMarker>(
+    bytes: &[u8],
+) -> Result<MigrationCredential<'_, K>, CredentialRefusal> {
+    let header = bytes.get(..9).ok_or(CredentialRefusal)?;
+    let len = usize::try_from(u64::from_le_bytes(
+        header[1..9].try_into().map_err(|_| CredentialRefusal)?,
+    ))
+    .map_err(|_| CredentialRefusal)?;
+    let end = 9usize.checked_add(len).ok_or(CredentialRefusal)?;
+    let text = std::str::from_utf8(bytes.get(9..end).ok_or(CredentialRefusal)?)
+        .map_err(|_| CredentialRefusal)?;
+    let file = match header[0] {
+        0 if end == bytes.len() => None,
+        1 => Some(&bytes[end..]),
+        _ => return Err(CredentialRefusal),
+    };
+    Ok(MigrationCredential {
+        text,
+        file,
+        kind: PhantomData,
+    })
 }
 
 /// A plugin's own migration of its settings section.
@@ -349,16 +422,9 @@ impl<M: Migrate> RawSlot for Migrator<M> {
             {
                 return Outcome::Refused;
             }
-            let result = std::str::from_utf8(settings)
-                .map_err(|_| CredentialRefusal)
-                .and_then(|text| {
-                    M::migrate_credential(
-                        MigrationCredential {
-                            text,
-                            kind: PhantomData,
-                        },
-                        &String::from_utf8_lossy(from),
-                    )
+            let result = credential_input::<M::Kind>(settings)
+                .and_then(|credential| {
+                    M::migrate_credential(credential, &String::from_utf8_lossy(from))
                 })
                 .and_then(|answer| serde_json::to_vec(&answer).map_err(|_| CredentialRefusal));
             match result {
