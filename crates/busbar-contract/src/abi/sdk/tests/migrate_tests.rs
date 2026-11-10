@@ -437,10 +437,7 @@ fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
     assert_eq!(outcome, Outcome::Ready);
     let answer: super::CredentialMigration =
         serde_json::from_slice(&buffer[..out.error.len]).unwrap();
-    assert!(answer
-        .into_reference(&Default::default())
-        .unwrap()
-        .is_none());
+    assert_eq!(answer.step(), super::CredentialMigrationStep::Unchanged);
     input.settings.flags = 0;
     // SAFETY: same complete frame, missing the required secret flag.
     assert_eq!(
@@ -453,4 +450,42 @@ fn credential_entry_is_guarded_kind_specific_and_separate_from_settings() {
         unsafe { Migrator::<Stub>::call(std::ptr::null_mut(), &input, &mut out) },
         Outcome::Refused
     );
+}
+
+#[test]
+fn credential_file_protocol_cannot_substitute_paths_accept_without_a_loan_or_repeat_reads() {
+    use super::{CredentialMigration, CredentialMigrationStep, MigrationCredential};
+    use crate::plugin::{markers::AuthKind, TestKernelSeal};
+    let credential: MigrationCredential<'_, AuthKind> = MigrationCredential {
+        text: "authorized-filename",
+        file: None,
+        kind: std::marker::PhantomData,
+    };
+    assert_eq!(
+        credential.request_file().unwrap().step(),
+        CredentialMigrationStep::ReadFile
+    );
+    assert!(credential.file().is_none());
+    assert!(
+        serde_json::from_value::<CredentialMigration>(serde_json::json!({
+            "action":"read_file", "path":"/unrelated-file"
+        }))
+        .is_err()
+    );
+    let premature: CredentialMigration = serde_json::from_str(r#"{"action":"use_file"}"#).unwrap();
+    assert!(premature.finish(None, &TestKernelSeal).is_err());
+    let supplied: MigrationCredential<'_, AuthKind> = MigrationCredential {
+        text: "authorized-filename",
+        file: Some(b"SYNTHETIC_FILE"),
+        kind: std::marker::PhantomData,
+    };
+    assert!(supplied.request_file().is_err());
+    assert_eq!(supplied.file().unwrap().bytes(), b"SYNTHETIC_FILE");
+    let repeated: CredentialMigration = serde_json::from_str(r#"{"action":"read_file"}"#).unwrap();
+    assert!(repeated
+        .finish(
+            Some(&crate::Secret::new("/authorized-filename".into())),
+            &TestKernelSeal
+        )
+        .is_err());
 }
