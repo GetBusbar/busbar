@@ -99,13 +99,24 @@ if [ -n "$CX" ]; then
   # the comparison must use that same target and graph; core alone deliberately has no plugins.
   (cd "$repo" && cargo metadata --format-version 1 --locked --filter-platform "$target" --manifest-path "$manifest") >"$META" 2>"$W/meta.err" \
     || { why+=("cargo metadata failed: $(tail -1 "$W/meta.err")"); META=""; }
-  before="$W/before.txt"; (cd "$repo" && git ls-files --others --exclude-standard -- '*.cdx.json' | sort) >"$before" 2>/dev/null || : >"$before"
-  if [ -n "$META" ] && (cd "$repo" && "$CX" cyclonedx --manifest-path "$manifest" --target "$target" --format json --spec-version 1.5 --describe binaries) >&2 \
-     && [ -f "$repo/dist/default/busbar_bin.cdx.json" ]; then
-    cp "$repo/dist/default/busbar_bin.cdx.json" "$W/busbar.cdx.json"; SBOM="$W/busbar.cdx.json"
-  else why+=("cargo-cyclonedx wrote no SBOM for dist/default's busbar binary"); fi
-  # cargo-cyclonedx writes beside every workspace member's manifest: remove what this run created.
-  (cd "$repo" && git ls-files --others --exclude-standard -- '*.cdx.json' | sort | comm -13 "$before" - | while IFS= read -r f; do rm -f "$f"; done)
+  # cargo-cyclonedx 0.5.9 always writes beside Cargo.toml. The candidate checkout
+  # is read-only in native CI, so use byte-identical inputs in a private view.
+  # Continue judging against META from the original locked distribution above.
+  staged_manifest=""
+  if [ -n "$META" ]; then
+    staged_manifest="$(python3 -I "$H/stage.py" "$repo" "$W/subject")" \
+      || why+=("the SBOM's private output view could not be prepared")
+  fi
+  if [ -n "$staged_manifest" ]; then
+    if (cd "$W/subject" && "$CX" cyclonedx --manifest-path "$staged_manifest" --target "$target" --format json --spec-version 1.5 --describe binaries) >"$W/generate.log" 2>&1; then
+      if [ -f "$W/subject/dist/default/busbar_bin.cdx.json" ]; then
+        cp "$W/subject/dist/default/busbar_bin.cdx.json" "$W/busbar.cdx.json"; SBOM="$W/busbar.cdx.json"
+      else why+=("cargo-cyclonedx wrote no SBOM for dist/default's busbar binary"); fi
+    else why+=("cargo-cyclonedx failed: $(tail -1 "$W/generate.log")"); fi
+    cat "$W/generate.log" >&2
+    [ "$(sha "$W/subject/dist/default/Cargo.lock")" = "$lock_before" ] \
+      || { why+=("cargo-cyclonedx changed the staged distribution lock"); SBOM=""; }
+  fi
   [ "$(sha "$repo/dist/default/Cargo.lock")" = "$lock_before" ] \
     || { why+=("cargo-cyclonedx changed the shipped distribution lock"); SBOM=""; }
 fi

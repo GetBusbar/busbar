@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sys
 import ssl
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -53,6 +54,77 @@ class NativeAdapter(unittest.TestCase):
             self.assertEqual((output / "Cargo.toml").read_text(), "[package]\n")
             with self.assertRaisesRegex(oidf.Refused, "revision differs"):
                 oidf.staged_oidc_source({**pin, "rev": "b" * 40}, output)
+
+    def test_staged_plugin_build_copy_is_writable_without_changing_measured_inputs(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(oidf, "OIDC_BUNDLE", Path(directory) / "source"):
+            source = oidf.OIDC_BUNDLE
+            (source / "nested").mkdir(parents=True)
+            pin = {"url": "https://github.com/GetBusbar/busbar-auth-oidc", "rev": "a" * 40}
+            (source / "source-identity.json").write_text(json.dumps(pin))
+            (source / "Cargo.lock").write_text("measured lockfile")
+            (source / "nested/tool").write_text("measured executable")
+            for path in source.rglob("*"):
+                path.chmod(0o555 if path.is_dir() or path.name == "tool" else 0o444)
+            source.chmod(0o555)
+            original = {path.relative_to(source): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                        for path in source.rglob("*") if path.is_file()}
+            try:
+                output = Path(directory) / "build"
+                self.assertTrue(oidf.staged_oidc_source(pin, output))
+                self.assertEqual((output / "Cargo.lock").read_text(), "measured lockfile")
+                self.assertEqual(stat.S_IMODE((output / "Cargo.lock").stat().st_mode), 0o644)
+                self.assertEqual(stat.S_IMODE((output / "nested/tool").stat().st_mode), 0o755)
+                self.assertEqual(stat.S_IMODE((output / "nested").stat().st_mode), 0o755)
+                (output / "Cargo.lock").write_text("Cargo's updated lockfile")
+                (output / "nested/new-source").write_text("build-local file")
+                self.assertEqual(original, {
+                    path.relative_to(source): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                    for path in source.rglob("*") if path.is_file()})
+                self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o555)
+            finally:
+                source.chmod(0o755)
+                (source / "nested").chmod(0o755)
+
+    def test_staged_plugin_refuses_a_build_copy_overlapping_measured_source(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(oidf, "OIDC_BUNDLE", Path(directory) / "source"):
+            source = oidf.OIDC_BUNDLE
+            source.mkdir()
+            pin = {"url": "https://github.com/GetBusbar/busbar-auth-oidc", "rev": "a" * 40}
+            (source / "source-identity.json").write_text(json.dumps(pin))
+            for destination in (source, source / "nested", source.parent):
+                with self.subTest(destination=destination), self.assertRaisesRegex(oidf.Refused, "overlap"):
+                    oidf.staged_oidc_source(pin, destination)
+
+    def test_java_loader_has_jdk_application_home_and_preserves_pinned_runtime(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(oidf, "NATIVE_BUNDLE", Path(directory) / "bundle"):
+            server = oidf.NATIVE_BUNDLE / "server"
+            java = server / "opt/java/openjdk"
+            (java / "bin").mkdir(parents=True)
+            (java / "lib").mkdir()
+            (java / "conf").mkdir()
+            for name in ("java", "keytool"):
+                (java / "bin" / name).write_bytes(b"pinned JDK binary")
+            (java / "lib/libjava.so").write_bytes(b"pinned JDK library")
+            (server / "lib64").mkdir()
+            loader = server / "lib64/ld-linux-x86-64.so.2"
+            loader.write_bytes(b"pinned image loader")
+            loader.chmod(0o555)
+            (server / "runtime.json").write_text(json.dumps({
+                "loaders": {"opt/java/openjdk/bin/" + binary: "lib64/ld-linux-x86-64.so.2"
+                            for binary in ("java", "keytool")}, "library_dirs": ["opt/java/openjdk/lib"]}))
+            suite = oidf.NativeSuite(str(Path(directory) / "work"), "pki", "source", "wheels", "log")
+            args = suite.java("keytool", "-importcert", "-keystore", suite.trust)
+            private_loader = Path(args[0])
+            self.assertNotEqual(private_loader.stat().st_ino, loader.stat().st_ino)
+            self.assertEqual(private_loader.read_bytes(), loader.read_bytes())
+            self.assertEqual(stat.S_IMODE(loader.stat().st_mode), 0o555)
+            self.assertEqual((private_loader.parent.parent / "lib/libjava.so").read_bytes(), b"pinned JDK library")
+            self.assertEqual(args[1:], ["--library-path", str(java / "lib"), str(java / "bin/keytool"),
+                                       "-importcert", "-keystore", suite.trust])
+            self.assertEqual(suite.java("java", "-version")[0], str(private_loader))
 
     def test_native_runner_preserves_official_plan_and_exports(self):
         with tempfile.TemporaryDirectory() as directory, \

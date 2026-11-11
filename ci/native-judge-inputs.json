@@ -11,17 +11,17 @@
       "portable_manifest_sha256": "3b9c0444660f4ed5d8743c6f9f50b4599c881e182575695c05387a11b053d51b"
     },
     "core": {
-      "archive_sha256": "59ae26ffedaeb7769a6ee680196cc1378cded15a80f5b36b2eee97be00c46ee0",
-      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-core/20261110-59ae26ffedaeb7769a6ee680196cc1378cded15a80f5b36b2eee97be00c46ee0/core.tar.gz",
+      "archive_sha256": "4712b47c1d100f58b0bd6510d6ad6ffc3fe480f625a98f0e66a0c0358e1cd868",
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-core/20261111-4712b47c1d100f58b0bd6510d6ad6ffc3fe480f625a98f0e66a0c0358e1cd868/core.tar.gz",
       "bundles": [
         "h2",
         "oidc-source",
         "sbom",
         "zap"
       ],
-      "bytes": 209161452,
+      "bytes": 209161484,
       "expanded_bytes": 431034206,
-      "portable_manifest_sha256": "f64b6f41fa0eb452ac7243c744e29af158f43951704e431da1e3f8d06a054416"
+      "portable_manifest_sha256": "e4ff805bc6c478c5364e4fba4353f3711b117457ebf47f04b965b513497677e9"
     },
     "llm": {
       "archive_sha256": "b583ec83859b0cca09da1f9f16cfc85823551b6170ecebccffd4ee5e7591fa9d",
