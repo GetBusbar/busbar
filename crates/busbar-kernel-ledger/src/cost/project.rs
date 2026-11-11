@@ -58,6 +58,11 @@ impl<'r> MeteredRow<'r> {
     #[allow(clippy::type_complexity)]
     fn lanes(&self) -> Result<(Vec<(String, BTreeMap<String, Count>)>, Option<u64>), MoneyError> {
         let mut counts = self.counts.clone();
+        if crate::cost::split_measurement_lane(self.lane).is_some() {
+            // Common measurement facts live exclusively in open classes. Legacy token fields
+            // are placeholders, including when a declared common class is named `input`.
+            return Ok((vec![(self.lane.to_string(), self.classes.clone())], None));
+        }
         let (plane, subject) = split_plane_lane(self.lane);
         if plane.is_empty() {
             add_classes(&mut counts, &self.classes)?;

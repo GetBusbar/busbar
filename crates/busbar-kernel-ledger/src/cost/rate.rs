@@ -184,6 +184,8 @@ pub struct RateCard {
     /// sub-key of every plane's section) and none of the node's: a plane that configured no fees
     /// bills a fee of nothing, whatever another plane charges.
     planes: BTreeMap<String, RateCard>,
+    /// Common plugin measurements, keyed by kind; each child prices configured namespaces.
+    measurements: BTreeMap<String, RateCard>,
     /// The flat fee per opened SESSION, in minor units (#44 `fees.per_session`). Zero on the flat
     /// card, whose one fee is 1.5.5's `per_request_fee:`.
     session_fee: i64,
@@ -196,8 +198,40 @@ static NO_CARD: RateCard = RateCard {
     fee: 0,
     refused: Vec::new(),
     planes: BTreeMap::new(),
+    measurements: BTreeMap::new(),
     session_fee: 0,
 };
+
+/// A missing common measurement rate is unpriced, independently of legacy billing switches.
+static NO_MEASUREMENT_CARD: RateCard = RateCard {
+    present: true,
+    prices: BTreeMap::new(),
+    fee: 0,
+    refused: Vec::new(),
+    planes: BTreeMap::new(),
+    measurements: BTreeMap::new(),
+    session_fee: 0,
+};
+
+/// Host-reserved lane prefix. Configured legacy identifiers must not contain control characters.
+pub const MEASUREMENT_LANE_PREFIX: &str = "\u{1e}measurement:";
+
+/// Encode a host-bound plugin kind and configured namespace without delimiter collisions.
+pub fn measurement_lane(kind: &str, namespace: &str) -> String {
+    format!("{MEASUREMENT_LANE_PREFIX}{}:{kind}{namespace}", kind.len())
+}
+
+/// Decode a common measurement lane without treating its owner as a plane or provider.
+pub fn split_measurement_lane(lane: &str) -> Option<(&str, &str)> {
+    let (length, rest) = lane
+        .strip_prefix(MEASUREMENT_LANE_PREFIX)?
+        .split_once(':')?;
+    let length: usize = length.parse().ok()?;
+    if length == 0 || length >= rest.len() || !rest.is_char_boundary(length) {
+        return None;
+    }
+    Some(rest.split_at(length))
+}
 
 /// The reserved class a plane's REQUEST fee units are counted under, on its fee lane
 pub const PER_REQUEST: &str = "per_request";
@@ -266,6 +300,7 @@ impl RateCard {
             fee: per_request_fee.max(0),
             refused: Vec::new(),
             planes: BTreeMap::new(),
+            measurements: BTreeMap::new(),
             session_fee: 0,
         }
     }
@@ -294,6 +329,7 @@ impl RateCard {
             fee: per_request_fee.max(0),
             refused: Vec::new(),
             planes: BTreeMap::new(),
+            measurements: BTreeMap::new(),
             session_fee: 0,
         };
         for (cell, nanos) in entries {
@@ -307,23 +343,10 @@ impl RateCard {
         entries: impl IntoIterator<Item = (LaneClass, u64)>,
         per_request_fee: i64,
     ) -> Self {
-        let mut prices: BTreeMap<String, BTreeMap<String, CellPrices>> = BTreeMap::new();
-        for (cell, nanos) in entries {
-            prices
-                .entry(cell.lane)
-                .or_default()
-                .entry(cell.class)
-                .or_default()
-                .set(nanos);
-        }
-        RateCard {
-            present: true,
-            prices,
-            fee: per_request_fee.max(0),
-            refused: Vec::new(),
-            planes: BTreeMap::new(),
-            session_fee: 0,
-        }
+        RateCard::from_cells(
+            entries.into_iter().map(|(cell, nanos)| (cell, Some(nanos))),
+            per_request_fee,
+        )
     }
 
     /// Every configured cell this card could not represent, in the order it was configured. Empty
@@ -341,7 +364,12 @@ impl RateCard {
             return RateCard::absent(per_request_fee);
         };
         let mut by_plane: BTreeMap<&str, Vec<(LaneClass, Option<u64>)>> = BTreeMap::new();
+        let mut has_measurements = false;
         for (key, tiers) in lanes {
+            if split_measurement_lane(key).is_some() {
+                has_measurements = true;
+                continue;
+            }
             let (plane, lane) = split_plane_lane(key);
             let cells = by_plane.entry(plane).or_default();
             if !lane.is_empty() {
@@ -352,7 +380,8 @@ impl RateCard {
                 );
             }
         }
-        let flat_present = flat_card_present(by_plane.keys().copied());
+        let flat_present = flat_card_present(by_plane.keys().copied())
+            && (!by_plane.is_empty() || !has_measurements);
         let flat = by_plane.remove("").unwrap_or_default();
         let mut card = if flat_present {
             RateCard::from_cells(flat, per_request_fee)
@@ -369,6 +398,10 @@ impl RateCard {
     /// **THE OPEN CLASSES a deployment configured**: each `(lane, class)` cell set to an
     pub fn with_unit_rates(mut self, cells: impl IntoIterator<Item = (LaneClass, u64)>) -> Self {
         for (cell, nanos) in cells {
+            if split_measurement_lane(&cell.lane).is_some() {
+                self.place_rate(cell, Some(nanos));
+                continue;
+            }
             let (plane, lane) = split_plane_lane(&cell.lane);
             let card = match plane {
                 "" => &mut self,
@@ -416,6 +449,13 @@ impl RateCard {
             card.fee = fee.max(0);
         }
         for (cell, nanos) in cells {
+            if let Some((kind, namespace)) = split_measurement_lane(&cell.lane) {
+                card.measurements
+                    .entry(kind.to_string())
+                    .or_insert_with(|| RateCard::from_cells([], 0))
+                    .place_rate(LaneClass::new(namespace, &cell.class), Some(nanos));
+                continue;
+            }
             let (plane, lane) = split_plane_lane(&cell.lane);
             if lane.is_empty() {
                 return None;
@@ -482,6 +522,15 @@ impl RateCard {
             text(out, plane);
             card.digest_into(out);
         }
+        // Preserve every historical legacy digest when no common measurement rates exist.
+        if !self.measurements.is_empty() {
+            out.extend_from_slice(b"busbar/measurement-rates/v1\0");
+            count(out, self.measurements.len());
+            for (kind, card) in &self.measurements {
+                text(out, kind);
+                card.digest_into(out);
+            }
+        }
     }
 
     /// The fee a reserved fee class ([`PER_REQUEST`], [`PER_SESSION`]) prices at on this card, in
@@ -493,8 +542,14 @@ impl RateCard {
         }
     }
 
-    /// **THE CARD A LANE IS PRICED BY, and the lane as that card keys it** (#42 "scoped per plane",
+    /// Resolve a common measurement owner first, otherwise the legacy plane and its local lane.
     pub fn plane_lane<'l>(&self, lane: &'l str) -> (&RateCard, &'l str) {
+        if let Some((kind, namespace)) = split_measurement_lane(lane) {
+            return (
+                self.measurements.get(kind).unwrap_or(&NO_MEASUREMENT_CARD),
+                namespace,
+            );
+        }
         match split_plane_lane(lane) {
             ("", _) => (self, lane),
             (plane, lane) => (self.planes.get(plane).unwrap_or(&NO_CARD), lane),
@@ -503,6 +558,13 @@ impl RateCard {
 
     /// The one placement of a configured rate into a cell, used by the constructor alone. A card is
     fn place_rate(&mut self, cell: LaneClass, nanos_per_unit: Option<u64>) {
+        if let Some((kind, namespace)) = split_measurement_lane(&cell.lane) {
+            self.measurements
+                .entry(kind.to_string())
+                .or_insert_with(|| RateCard::from_cells([], 0))
+                .place_rate(LaneClass::new(namespace, &cell.class), nanos_per_unit);
+            return;
+        }
         self.present = true;
         let slot = self
             .prices
@@ -524,7 +586,7 @@ impl RateCard {
         }
     }
 
-    /// Whether a card is configured at all (token pricing active).
+    /// Whether the legacy flat card is configured (independent of common measurement rates).
     pub fn pricing_enabled(&self) -> bool {
         self.present
     }
@@ -550,10 +612,14 @@ impl RateCard {
     /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
     pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
         let (card, lane) = self.plane_lane(lane);
-        if !card.present {
+        card.local_lane_rates(lane)
+    }
+
+    fn local_lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
+        if !self.present {
             return Some(LaneRates { classes: None });
         }
-        card.prices.get(lane).map(|classes| LaneRates {
+        self.prices.get(lane).map(|classes| LaneRates {
             classes: Some(classes),
         })
     }
@@ -564,7 +630,7 @@ impl RateCard {
         let rule = if key.is_empty() && lane.ends_with(crate::cost::PLANE_LANE_SEP) {
             LaneRule::Fees
         } else {
-            match card.lane_rates(key) {
+            match card.local_lane_rates(key) {
                 Some(rates) => LaneRule::Rates(rates),
                 None => LaneRule::Unnamed,
             }

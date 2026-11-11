@@ -464,3 +464,37 @@ fn an_old_entry_row_can_straddle_a_nominal_configuration_cutover() {
         "the actual bucket boundary separates all raw rows"
     );
 }
+
+#[test]
+fn measurement_dated_readback_prices_only_reported_classes_at_the_serving_entry() {
+    use crate::cost::{measurement_lane, Count, Money, RawRateEra};
+    let lane = measurement_lane("store", "primary");
+    let measured_card =
+        |nanos| RateCard::absent(99).with_unit_rates([(LaneClass::new(&lane, "input"), nanos)]);
+    let live = measured_card(500);
+    let history = edited(measured_card(125), live.clone());
+    let old = RawRateEra::entry(0, history.entries()[0].id());
+    let new = RawRateEra::entry(EDIT_MS, history.entries()[1].id());
+    // This is BudgetCell.cur's raw-class shape: no manufactured token tiers or request fee.
+    let counts = BTreeMap::from([("input".to_string(), Count::from_micros(8_000_000))]);
+    let got = crate::usage::price_dated_counts_raw(
+        [(lane.as_str(), old, &counts), (lane.as_str(), new, &counts)],
+        [],
+        EDIT_MS + 1_000,
+        &live,
+        Some(DatedHistory::of(&history, EDIT_MS + 1_000)),
+    )
+    .unwrap();
+    assert_eq!(got, Money::of_nanos(5_000).unwrap());
+    let unpriced = BTreeMap::from([("output".to_string(), Count::from_micros(1_000_000))]);
+    assert!(matches!(
+        crate::usage::price_dated_counts_raw(
+            [(lane.as_str(), old, &unpriced)],
+            [],
+            EDIT_MS + 1_000,
+            &live,
+            Some(DatedHistory::of(&history, EDIT_MS + 1_000)),
+        ),
+        Err(MoneyError::ClassUnpriced { .. })
+    ));
+}

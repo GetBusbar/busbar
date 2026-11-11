@@ -240,7 +240,7 @@ use crate::caps::ReasonCode;
 pub const ABI_VERSION: u32 = 1;
 
 /// The plane kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0xded167218e200fce;
+pub const LAYOUT_FINGERPRINT: u64 = 0xf333cffc6e7801db;
 
 /// The plane kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
@@ -486,38 +486,25 @@ pub const SHAPE_WHOLE: u32 = 0;
 pub const SHAPE_PIECEWISE: u32 = 1;
 
 /// The layout of this kind's answers, as one number: the revision of every plane `out` struct the
-pub const ANSWER_LAYOUT: u32 = 1;
+pub const ANSWER_LAYOUT: u32 = 2;
 
 const _: () = {
     use core::mem::{offset_of, size_of};
-    assert!(ANSWER_LAYOUT == 1);
+    assert!(ANSWER_LAYOUT == 2);
     if usize::BITS == 64 {
-        assert!(size_of::<ArriveOut>() == 232);
-        assert!(offset_of!(ArriveOut, refusal_flags) == 124);
-        assert!(size_of::<OnPieceOut>() == 248);
-        assert!(offset_of!(OnPieceOut, fault_reason) == 240);
-        assert!(size_of::<RefusalOut>() == 152);
-        assert!(size_of::<ServeOut>() == 152);
-        assert!(size_of::<ProjectOut>() == 328);
-        assert!(size_of::<PlaneOpenOut>() == 120);
-        assert!(size_of::<PlaneRefreshOut>() == 104);
-        assert!(size_of::<PlaneDriveOut>() == 104);
-        assert!(size_of::<PlaneCancelOut>() == 120);
+        assert!(size_of::<ArriveOut>() == 256);
+        assert!(offset_of!(ArriveOut, refusal_flags) == 148);
+        assert!(size_of::<OnPieceOut>() == 272);
+        assert!(offset_of!(OnPieceOut, fault_reason) == 264);
+        assert!(size_of::<RefusalOut>() == 176);
+        assert!(size_of::<ServeOut>() == 176);
+        assert!(size_of::<ProjectOut>() == 352);
+        assert!(size_of::<PlaneOpenOut>() == 144);
+        assert!(size_of::<PlaneRefreshOut>() == 128);
+        assert!(size_of::<PlaneDriveOut>() == 128);
+        assert!(size_of::<PlaneCancelOut>() == 144);
     }
 };
-
-/// [`UnitCount::source`]: the plane's own estimate; never billed.
-pub const UNITS_ESTIMATED: u32 = 0;
-/// [`UnitCount::source`]: the far end reported it; it bills.
-pub const UNITS_REPORTED: u32 = 1;
-/// [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be
-pub const UNITS_FLOOR: u32 = 2;
-/// An estimated count whose amount is an exact scale-six mantissa; never billed.
-pub const UNITS_ESTIMATED_MICROS: u32 = 3;
-/// A reported count whose amount is an exact scale-six mantissa.
-pub const UNITS_REPORTED_MICROS: u32 = 4;
-/// A usage floor whose amount is an exact scale-six mantissa.
-pub const UNITS_FLOOR_MICROS: u32 = 5;
 
 /// [`OnPieceOut::tap_fault`]: no usage-tap fault.
 pub const TAP_FAULT_NONE: u8 = 0;
@@ -527,14 +514,6 @@ pub const TAP_FAULT_DECODE: u8 = 1;
 pub const TAP_FAULT_BAD_JSON: u8 = 2;
 /// [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads
 pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
-
-/// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
-pub const fn units_bill(source: u32) -> bool {
-    matches!(
-        source,
-        UNITS_REPORTED | UNITS_FLOOR | UNITS_REPORTED_MICROS | UNITS_FLOOR_MICROS
-    )
-}
 
 /// [`ArriveOut::principal_need`]: no principal.
 pub const PRINCIPAL_NONE: u32 = 0;
@@ -1129,24 +1108,6 @@ impl OpClass {
     pub const ZERO: Self = Self {
         op: AbiStr::ZERO,
         name: AbiStr::ZERO,
-    };
-}
-
-/// One billable class and the unit family it counts in. Classes are disjoint.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct BillableClass {
-    /// The class.
-    pub class: AbiStr,
-    /// Its unit family.
-    pub family: AbiStr,
-}
-
-impl BillableClass {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    pub const ZERO: Self = Self {
-        class: AbiStr::ZERO,
-        family: AbiStr::ZERO,
     };
 }
 
@@ -1907,73 +1868,6 @@ impl OutField {
     pub const ZERO: Self = Self {
         name: Span::ZERO,
         value: Span::ZERO,
-    };
-}
-
-/// One cumulative unit count, in a HOST buffer.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct UnitCount {
-    /// Index into [`PlaneTail::billable_classes`].
-    pub class: u32,
-    /// Whole-unit source 0/1/2, or the corresponding explicit micro-unit source 3/4/5.
-    pub source: u32,
-    /// The cumulative count, interpreted using `source`; legacy whole values are unchanged.
-    pub amount: u64,
-}
-
-impl UnitCount {
-    /// Read the measurement without changing the legacy whole-unit source codes.
-    pub fn count(self) -> Result<crate::Count, crate::count::CountError> {
-        let scale = match self.source {
-            UNITS_ESTIMATED | UNITS_REPORTED | UNITS_FLOOR => 0,
-            UNITS_ESTIMATED_MICROS | UNITS_REPORTED_MICROS | UNITS_FLOOR_MICROS => 6,
-            _ => return Err(crate::count::CountError::UnknownScale),
-        };
-        crate::Count::from_stored(i128::from(self.amount), scale)
-    }
-
-    /// Encode a nonnegative measurement within the declared signed store range.
-    /// Whole counts retain their original source and amount; fractional counts explicitly name scale six.
-    pub fn from_count(
-        class: u32,
-        source: u32,
-        count: crate::Count,
-    ) -> Result<Self, crate::count::CountError> {
-        use crate::count::CountError;
-        if count.is_negative() {
-            return Err(CountError::Negative);
-        }
-        if !count.fits_a_64_bit_column() {
-            return Err(CountError::OutOfRange);
-        }
-        let base = match source {
-            UNITS_ESTIMATED | UNITS_ESTIMATED_MICROS => UNITS_ESTIMATED,
-            UNITS_REPORTED | UNITS_REPORTED_MICROS => UNITS_REPORTED,
-            UNITS_FLOOR | UNITS_FLOOR_MICROS => UNITS_FLOOR,
-            _ => return Err(CountError::UnknownScale),
-        };
-        let micros = u64::try_from(count.micros()).map_err(|_| CountError::OutOfRange)?;
-        Ok(if micros % 1_000_000 == 0 {
-            Self {
-                class,
-                source: base,
-                amount: micros / 1_000_000,
-            }
-        } else {
-            Self {
-                class,
-                source: base + 3,
-                amount: micros,
-            }
-        })
-    }
-
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    pub const ZERO: Self = Self {
-        class: 0,
-        source: 0,
-        amount: 0,
     };
 }
 
@@ -2907,3 +2801,9 @@ super::sdk::door::slot_structs!(PlaneLifecycle {
 #[cfg(test)]
 #[path = "../tests/plane_kind_tests.rs"]
 mod tests;
+
+// Neutral wire quantities remain source-compatible for existing planes.
+pub use crate::abi::measurement::{
+    units_bill, BillableClass, UnitCount, UNITS_ESTIMATED, UNITS_ESTIMATED_MICROS, UNITS_FLOOR,
+    UNITS_FLOOR_MICROS, UNITS_REPORTED, UNITS_REPORTED_MICROS,
+};

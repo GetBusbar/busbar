@@ -19,6 +19,7 @@ fn card() -> CardFields {
     );
     CardFields {
         rate_card: Some(BTreeMap::from([("m".to_string(), entry(1.0))])),
+        plugin_rate_cards: Default::default(),
         per_request_fee: 2,
         plane_rate_cards: planes,
         plane_fees: BTreeMap::from([(

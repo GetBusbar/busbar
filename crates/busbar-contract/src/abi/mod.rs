@@ -386,3 +386,6 @@ macro_rules! read_sized_field {
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;
+
+/// Kind-neutral immutable units and exact factual reports.
+pub mod measurement;

@@ -192,12 +192,22 @@ fn call_migration(
         // SAFETY: the door's admitted `migrate`, called with no instance on a frame the host owns for the
         // whole call: `input` and what it lends (`section`, `from`, `answer`) outlive it, and `out`
         // is a whole `OutHead`.
-        unsafe {
+        let raw = unsafe {
             op(
                 std::ptr::null_mut(),
                 std::ptr::from_ref(&input).cast(),
                 std::ptr::from_mut(&mut out).cast(),
             )
+        };
+        // Standalone migration/validation is explicitly host maintenance: no caller exists,
+        // cursor zero is fixed by this host path, and a plugin may not report measurements.
+        let batch = out.envelope.measurements;
+        if batch.revision != 0 || batch.counts_len != 0 || !batch.counts.is_null() {
+            busbar_contract::abi::mechanism::call::RawOutcome::of(
+                busbar_contract::abi::mechanism::call::Outcome::Fault,
+            )
+        } else {
+            raw
         }
     })
     .map_err(|_| "its migrate panicked".to_string())?;
@@ -244,12 +254,22 @@ pub fn validate_migrated_door(door: RawDoorFn, settings: &serde_json::Value) -> 
     let called = crate::ffi_thread::on_plugin_thread(|| {
         // SAFETY: admission checked this lifecycle slot; VALIDATE is pure and receives no
         // instance. All input/output buffers remain live for the complete native call.
-        unsafe {
+        let raw = unsafe {
             op(
                 std::ptr::null_mut(),
                 std::ptr::from_ref(&input).cast(),
                 std::ptr::from_mut(&mut out).cast(),
             )
+        };
+        // Standalone migration/validation is explicitly host maintenance: no caller exists,
+        // cursor zero is fixed by this host path, and a plugin may not report measurements.
+        let batch = out.envelope.measurements;
+        if batch.revision != 0 || batch.counts_len != 0 || !batch.counts.is_null() {
+            busbar_contract::abi::mechanism::call::RawOutcome::of(
+                busbar_contract::abi::mechanism::call::Outcome::Fault,
+            )
+        } else {
+            raw
         }
     })
     .map_err(|_| "current plugin validation panicked")?;

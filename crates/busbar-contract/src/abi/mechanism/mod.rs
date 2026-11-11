@@ -37,8 +37,9 @@ pub mod kind {
 }
 
 /// The mechanism's version, stamped in every [`door::Door`]. v1.5.5 called it `TRANSPORT_VERSION`.
-/// Version 3 requires kind-bound host access and host-issued caller authority.
-pub const MECHANISM_VERSION: u32 = 3;
+/// Version 4 adds signed common measurement declarations, an input revision cursor and a typed
+/// output batch; every input/output layout changes. Version 3 kind-bound host access remains.
+pub const MECHANISM_VERSION: u32 = 4;
 
 /// ASCII `"BUSBARPL"`, little-endian: a door's first eight bytes. Deliberately not the retired
 pub const DOOR_MAGIC: u64 = u64::from_le_bytes(*b"BUSBARPL");

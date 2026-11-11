@@ -163,6 +163,7 @@ pub(crate) struct Stats {
 }
 
 pub(crate) struct Env {
+    measurements: super::measurement::AuthoritySlot,
     callers: Arc<dyn busbar_contract::services::CallerBinding>,
     pub(crate) budgets: Budgets,
 
@@ -564,6 +565,8 @@ impl<I, O> Drop for JobOf<I, O> {
 }
 
 pub(crate) struct Meta {
+    measurement: Option<super::measurement::Reservation>,
+    measurement_context: Option<super::measurement::Context>,
     pub(crate) instance: Arc<Instance>,
     framing: Option<Arc<dyn busbar_contract::framing_scope::FramingScope>>,
     tracing: Option<Arc<TraceContext>>,
@@ -614,6 +617,9 @@ impl Meta {
             }
             if self.lifecycle {
                 self.instance.leave_lifecycle();
+            }
+            if let Some(measurement) = &self.measurement {
+                measurement.released();
             }
         }
     }
@@ -843,6 +849,8 @@ impl Driven {
 }
 
 pub(crate) struct Driver {
+    measurement: Option<super::measurement::Reservation>,
+    measurement_context: Option<super::measurement::Context>,
     instance: Arc<Instance>,
     tracing: Option<Arc<TraceContext>>,
 
@@ -855,6 +863,9 @@ pub(crate) struct Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
+        if let Some(measurement) = self.measurement.take() {
+            measurement.released();
+        }
         hold_past_lock(&self.instance);
         if let Some(tracing) = self.tracing.take() {
             drop_after_lock(Box::new(tracing));
@@ -882,6 +893,7 @@ pub(crate) struct Entry {
     recycle_when_idle: bool,
     /// The op whose last answer was SHORT: its next answer on this ticket is the one re-call.
     short_slot: Option<u32>,
+    short_measurement: Option<super::measurement::Reservation>,
     /// Immutable negotiated SHORT storage belongs to this live ticket until recall or abandon.
     short_reply: Option<UnhandedShort>,
     next: Option<Action>,
@@ -1235,6 +1247,7 @@ impl Worker {
                     e.client_dropped = true;
                     e.short_reply = None;
                     e.short_slot = None;
+                    e.short_measurement = None;
                     if e.unit_binding.is_some() {
                         Self::schedule(st, idx, Action::Cancel);
                         return true;
@@ -1315,6 +1328,7 @@ impl Worker {
         e.client_dropped = false;
         e.recycle_when_idle = false;
         e.short_slot = None;
+        e.short_measurement = None;
         e.short_reply = None;
         e.next = None;
         e.driver = None;
@@ -1352,6 +1366,7 @@ impl Worker {
         e.latched = false;
 
         let recall = e.short_slot.take() == Some(cur.meta.slot);
+        e.short_measurement = None;
         e.short_reply = None;
         if c.short && recall {
             let _lease = UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.lease);
@@ -1360,6 +1375,7 @@ impl Worker {
             c = Crossed::host(Outcome::Fault);
         } else if c.short {
             e.short_slot = Some(cur.meta.slot);
+            e.short_measurement = cur.meta.measurement.clone();
             let lease = std::mem::take(&mut c.short_lease);
             if lease != 0 {
                 let owner = Arc::new(ShortLease {
@@ -1479,6 +1495,24 @@ impl Worker {
         st.crossing = Some(instance.clone());
 
         let entry = st.entries.get(idx as usize);
+        let measurement = if s == slot::DRIVE {
+            entry
+                .and_then(|e| e.driver.as_ref())
+                .and_then(|d| d.measurement.clone())
+        } else {
+            entry
+                .and_then(|e| e.current.as_ref())
+                .and_then(|c| c.meta.measurement.clone())
+        };
+        let measurement_context = if s == slot::DRIVE {
+            entry
+                .and_then(|e| e.driver.as_ref())
+                .and_then(|d| d.measurement_context.clone())
+        } else {
+            entry
+                .and_then(|e| e.current.as_ref())
+                .and_then(|c| c.meta.measurement_context.clone())
+        };
         let read_only_route = instance.kind == busbar_contract::abi::mechanism::KindCode::Plane
             && (s == busbar_contract::abi::plane::slot::AUTHENTICATED_ROUTE
                 || (matches!(s, slot::CANCEL | slot::RELEASE)
@@ -1511,7 +1545,11 @@ impl Worker {
         let crossing = || {
             let _framing = super::framing_context::enter(framing.clone());
             // SAFETY: the frame is boxed and owned by this crossing; `s` passed `refuse` at submit.
-            unsafe { instance.cross(s, heads.0, heads.1, heads.2) }
+            super::measurement::with_context(measurement_context, || {
+                super::measurement::with_reservation(measurement, || unsafe {
+                    instance.cross(s, heads.0, heads.1, heads.2)
+                })
+            })
         };
         let mut crossed = match &tracing {
             Some(tracing) => tracing.in_scope(crossing),
@@ -1579,7 +1617,7 @@ impl Worker {
                 if let Some(admission) = admission {
                     drop_after_lock(Box::new(admission));
                 }
-                let Some((meta, mut job)) = e.queue.pop_front() else {
+                let Some((mut meta, mut job)) = e.queue.pop_front() else {
                     return Some(st);
                 };
                 if e.short_reply
@@ -1593,6 +1631,7 @@ impl Worker {
                 {
                     e.short_reply = None;
                     e.short_slot = None;
+                    e.short_measurement = None;
                 }
 
                 let (mut full, mut kept_cycle) = (false, false);
@@ -1614,6 +1653,32 @@ impl Worker {
                     forget_conns(meta.instance.instance, ticket);
                 }
                 let inst = meta.instance.clone();
+                let measurement = if let Some(reservation) = meta.measurement.take() {
+                    Some(Ok(Some(reservation)))
+                } else if e.short_slot == Some(meta.slot) {
+                    e.short_measurement
+                        .take()
+                        .filter(|r| r.instance == inst.instance)
+                        .map(Some)
+                        .map(Ok)
+                } else {
+                    e.short_measurement = None;
+                    None
+                };
+                let measurement = measurement.unwrap_or_else(|| {
+                    inst.reserve_measurements(meta.measurement_context.as_ref(), meta.slot)
+                });
+                match measurement {
+                    Ok(reservation) => meta.measurement = reservation,
+                    Err(_) => {
+                        meta.give_back();
+                        job.finish(Crossed::host(Outcome::Refused), None);
+                        if !e.queue.is_empty() {
+                            Self::schedule(&mut st, idx, Action::Start);
+                        }
+                        return Some(st);
+                    }
+                }
                 let expired = meta.class != DeadlineClass::WriteBehind
                     && meta.deadline_ns != 0
                     && now_ns() >= meta.deadline_ns;
@@ -1792,6 +1857,26 @@ impl Worker {
                     self.unpark(&mut st, idx, env);
                     return Some(st);
                 }
+                if d.measurement.is_none() {
+                    // A parked operation still owns this continuation. Preserve its host
+                    // attribution, including bootstrap maintenance, only for this instance.
+                    // With no matching owner, autonomous work is explicitly system work.
+                    // Keep the selected context unchanged while this DRIVE remains Pending.
+                    if !d.pending {
+                        d.measurement_context = e
+                            .current
+                            .as_ref()
+                            .filter(|current| Arc::ptr_eq(&current.meta.instance, &inst))
+                            .and_then(|current| current.meta.measurement_context.clone());
+                    }
+                    match inst.reserve_measurements(d.measurement_context.as_ref(), slot::DRIVE) {
+                        Ok(reservation) => d.measurement = reservation,
+                        Err(_) => {
+                            inst.driven.answer(Outcome::Refused);
+                            return Some(st);
+                        }
+                    }
+                }
                 let Some(mut frame) = d.frame.take() else {
                     return Some(st);
                 };
@@ -1819,9 +1904,16 @@ impl Worker {
                     if let Some(d) = e.driver.as_mut() {
                         d.frame = Some(frame);
                         d.pending = c.outcome == Outcome::Pending;
+                        if d.pending {
+                            d.measurement = d.measurement.as_ref().map(|r| r.refreshed());
+                        }
                         d.wake_at_ns = c.wake_at_ns;
 
                         if !d.pending {
+                            if let Some(measurement) = d.measurement.take() {
+                                measurement.released();
+                            }
+                            d.measurement_context = None;
                             d.ticks_held = 0;
                             env.services.held.drained(ticket);
                         }
@@ -1905,6 +1997,7 @@ impl Worker {
         cur.job = Some(job);
         if c.outcome == Outcome::Pending && e.driver.is_none() {
             cur.pending = true;
+            cur.meta.measurement = cur.meta.measurement.as_ref().map(|r| r.refreshed());
             cur.wake_at_ns = c.wake_at_ns;
             if std::mem::take(&mut e.latched) {
                 Self::schedule(&mut st, idx, Action::Resume);
@@ -2071,6 +2164,17 @@ impl std::fmt::Debug for Adopter {
 }
 
 impl Adopter {
+    pub(crate) fn is_live(&self) -> bool {
+        self.pool.upgrade().is_some()
+    }
+
+    pub(crate) fn measurements(&self) -> super::measurement::AuthoritySlot {
+        self.pool
+            .upgrade()
+            .map(|p| p.env.measurements.clone())
+            .unwrap_or_default()
+    }
+
     pub(crate) fn bind_caller(
         &self,
         namespace: Arc<str>,
@@ -2104,14 +2208,24 @@ impl Adopter {
         };
         let route: Arc<dyn WakeRoute> = pool.clone();
         let mine = Arc::downgrade(&route);
-        let bound = inst.wake.route.get_or_init(|| {
-            pool.adopted
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(Arc::downgrade(inst));
-            mine.clone()
-        });
-        Weak::ptr_eq(bound, &mine)
+        let mut adopted = pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(bound) = inst.wake.route.get() {
+            return Weak::ptr_eq(bound, &mine);
+        }
+        if pool
+            .env
+            .measurements
+            .get()
+            .is_some_and(|authority| authority.admit(&inst.measurement_binding).is_err())
+        {
+            return false;
+        }
+        let bound = inst.wake.route.get_or_init(|| mine.clone());
+        if !Weak::ptr_eq(bound, &mine) {
+            return false;
+        }
+        adopted.push(Arc::downgrade(inst));
+        true
     }
 }
 
@@ -2128,6 +2242,35 @@ impl std::fmt::Debug for Dispatcher {
 }
 
 impl Dispatcher {
+    /// Install the host custody authority once; declaring plugins refuse work until installed.
+    pub fn set_measurement_authority(
+        &self,
+        authority: Arc<dyn super::measurement::Authority>,
+    ) -> Result<(), Arc<dyn super::measurement::Authority>> {
+        let adopted = self.pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
+        if adopted
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|instance| authority.admit(&instance.measurement_binding).is_err())
+        {
+            return Err(authority);
+        }
+        self.pool.env.measurements.set(authority)
+    }
+
+    /// Snapshot the immutable declarations of currently bound instances, including plugins
+    /// declaring no classes. Used by the host to reject unknown configured namespaces.
+    pub fn measurement_bindings(&self) -> Vec<super::measurement::Binding> {
+        self.pool
+            .adopted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(|instance| instance.measurement_binding.clone())
+            .collect()
+    }
+
     pub fn new(
         config: DispatchConfig,
         callers: Arc<dyn busbar_contract::services::CallerBinding>,
@@ -2241,6 +2384,7 @@ impl Dispatcher {
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let services: Arc<ServiceStore> = Arc::default();
         let env = Arc::new(Env {
+            measurements: Arc::default(),
             callers,
             budgets: config.budgets,
             quarantine_after: config.quarantine_after.max(1),
@@ -2463,6 +2607,10 @@ impl Dispatcher {
             return None;
         }
         let driver = self.worker(worker)?.mint(Some(Driver {
+            measurement: None,
+            // An autonomous driver can span many request owners. It is explicit system work,
+            // never attribution inherited accidentally from the task that created the driver.
+            measurement_context: None,
             instance: inst.clone(),
             tracing: Some(TraceContext::current()),
             frame: Some(K::drive_frame()),
@@ -2679,6 +2827,8 @@ impl Dispatcher {
         }
         let slot = Arc::new(ReplySlot::new());
         let meta = Meta {
+            measurement: None,
+            measurement_context: super::measurement::current_context(),
             instance: inst.clone(),
             framing: super::framing_context::current(),
             tracing: Some(TraceContext::current()),

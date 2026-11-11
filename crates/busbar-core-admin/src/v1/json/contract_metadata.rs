@@ -72,6 +72,17 @@ pub(super) fn root_settings_schema() -> Value {
                 "anyOf":[{"type":"object","additionalProperties":true},{"type":"array","items":{}}],
                 "description":"RateEntryCfg: input_utok, output_utok, cache_read_utok, cache_write_utok and units. Normal rate validation applies."
             }},
+            "plugin_rate_cards": {
+                "type":["object","null"],
+                "description":"Exact common measurement rates by plugin kind, actual configured namespace, and declared class. Integer or decimal-string micro-units per quantity; missing rates remain unpriced. The whole map is replaced when supplied, including an empty map to clear it.",
+                "propertyNames":{"enum":["plane","transport","auth","store","secret","hook","export"]},
+                "additionalProperties":{"type":"object","additionalProperties":{
+                    "type":"object","maxProperties":busbar_contract::abi::measurement::MAX_MEASUREMENT_CLASSES,"additionalProperties":{
+                        "oneOf":[{"type":"integer","minimum":0},{"type":"string","pattern":"^[0-9]+(\\.[0-9]{1,3})?$"}],
+                        "description":"Exact non-negative micro-units; the resolved nano-unit rate must fit uint64."
+                    }
+                }}
+            },
             "per_request_fee": {"type":["integer","null"],"format":"int64","minimum":i64::MIN,"maximum":i64::MAX},
             "store": section("Store selection: module and module-owned settings; requires restart."),
             "security": section("Per-field SecurityPatch; omitted or null members preserve their value."),

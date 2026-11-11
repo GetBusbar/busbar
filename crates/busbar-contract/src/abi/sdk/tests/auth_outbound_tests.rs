@@ -219,6 +219,7 @@ fn blob(b: &[u8], fmt: u32, flags: u32) -> Blob {
 
 fn head<T>(op: u32) -> InHead {
     InHead {
+        measurement_revision: 0,
         size: size_of::<T>() as u32,
         op,
         flags: 0,
@@ -245,6 +246,7 @@ fn out_head(size: usize) -> OutHead {
             len: 0,
         },
         envelope: Envelope {
+            measurements: crate::abi::measurement::MeasurementBatch::ZERO,
             metrics: ptr::null(),
             metrics_len: 0,
             diags: ptr::null(),

@@ -621,6 +621,8 @@ async fn run(
         ))
     });
     let authoring_seal = busbar_kernel::seal::acquire();
+    root::measurements::configure(&base_cfg.plugin_rate_cards)
+        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
     let base_store_settings = serde_json::to_value(
         base_cfg
             .store
@@ -649,76 +651,148 @@ async fn run(
             format!("bootstrap transport archive admission: {error}"),
         ))
     });
-    let _connector = root::connector::boot(
-        LINKED_TRANSPORT_DOORS,
-        &root::policy::client_settings(&base_cfg.limits),
-        dest.clone(),
-        &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
-    );
-    let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
-        .await
-        .unwrap_or_else(|error| {
-            die(boot_error(
-                "principal transition base Store opening refused",
-                format!("base Store overlay anchor: {error}"),
-            ))
-        });
-    let binding_inventory = root::startup_upgrade::bindings::inventory()
-        .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
-    let binding_resolver = Arc::new(
-        root::startup_upgrade::bindings::Resolver::new(
-            documents.clone(),
-            config_path.clone(),
-            providers_override.clone(),
-            safe_mode,
+    // Cold configuration, migration and recovery explicitly run without billable measurements.
+    // Keep the scope on the actual future: synchronous Secret resolution and every resumed
+    // native Store/Transport call inherit it before the durable measurement runtime exists.
+    let bootstrap = root::measurements::maintenance(async {
+        let _connector = root::connector::boot(
+            LINKED_TRANSPORT_DOORS,
+            &root::policy::client_settings(&base_cfg.limits),
+            dest.clone(),
+            &[base_cfg.listen.as_str(), base_cfg.admin_listen.as_str()],
+        );
+        let prepared_store = busbar_kernel::appbuild::prepare_config_store(&base_cfg, &deploy.plugins)
+            .await
+            .unwrap_or_else(|error| {
+                die(boot_error(
+                    "principal transition base Store opening refused",
+                    format!("base Store overlay anchor: {error}"),
+                ))
+            });
+        let binding_inventory = root::startup_upgrade::bindings::inventory()
+            .unwrap_or_else(|_| die("startup plane declaration inventory refused"));
+        let binding_resolver = Arc::new(
+            root::startup_upgrade::bindings::Resolver::new(
+                documents.clone(),
+                config_path.clone(),
+                providers_override.clone(),
+                safe_mode,
+                base_cfg.limits.migration_index_bytes,
+                base_cfg.limits.migration_value_bytes,
+                &binding_inventory,
+            )
+            .unwrap_or_else(|_| die("startup plane binding inventory refused")),
+        );
+        let mut upgrade = busbar_migrations::StartupUpgrade::new(
+            prepared_store,
+            busbar_contract::persistence::lifecycle::Bounds {
+                items: 4096,
+                bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
+                    die("limits.migration_value_bytes exceeds native frame capacity")
+                }),
+            },
+        )
+        .with_source_spool(
+            Arc::new(root::startup_upgrade::spool::Factory),
+            busbar_contract::persistence::archive::Limits {
+                frame_bytes: base_cfg.limits.migration_value_bytes,
+                total_bytes: u64::MAX,
+                rows: u64::MAX,
+                tables: u32::MAX,
+                columns: u32::MAX,
+                index_bytes: base_cfg.limits.migration_index_bytes,
+            },
             base_cfg.limits.migration_index_bytes,
             base_cfg.limits.migration_value_bytes,
-            &binding_inventory,
         )
-        .unwrap_or_else(|_| die("startup plane binding inventory refused")),
-    );
-    let mut upgrade = busbar_migrations::StartupUpgrade::new(
-        prepared_store,
-        busbar_contract::persistence::lifecycle::Bounds {
-            items: 4096,
-            bytes: u32::try_from(base_cfg.limits.migration_value_bytes).unwrap_or_else(|_| {
-                die("limits.migration_value_bytes exceeds native frame capacity")
-            }),
-        },
-    )
-    .with_source_spool(
-        Arc::new(root::startup_upgrade::spool::Factory),
-        busbar_contract::persistence::archive::Limits {
-            frame_bytes: base_cfg.limits.migration_value_bytes,
-            total_bytes: u64::MAX,
-            rows: u64::MAX,
-            tables: u32::MAX,
-            columns: u32::MAX,
-            index_bytes: base_cfg.limits.migration_index_bytes,
-        },
-        base_cfg.limits.migration_index_bytes,
-        base_cfg.limits.migration_value_bytes,
-    )
-    .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
-    .with_binding_inventory(binding_inventory.clone(), binding_resolver)
-    .unwrap_or_else(|_| die("startup frozen binding resolver admission refused"));
-    let released_source = loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during native Store inspection");
-        }
-        match upgrade.inspect_released().await {
-            Ok(source) => break source,
-            Err(busbar_migrations::Error::IntentPending) => {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+        .unwrap_or_else(|_| die("startup migration allocation limits must be positive"))
+        .with_binding_inventory(binding_inventory.clone(), binding_resolver)
+        .unwrap_or_else(|_| die("startup frozen binding resolver admission refused"));
+        let released_source = loop {
+            if *control_work.shutdown_rx.borrow() {
+                die("shutdown requested during native Store inspection");
             }
-            Err(error) => die(format!("automatic Store inspection refused: {error:?}")),
-        }
-    };
-    if let Some(source) = released_source.as_ref() {
-        documents
-            .enter_released_source(source)
+            match upgrade.inspect_released().await {
+                Ok(source) => break source,
+                Err(busbar_migrations::Error::IntentPending) => {
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                Err(error) => die(format!("automatic Store inspection refused: {error:?}")),
+            }
+        };
+        if let Some(source) = released_source.as_ref() {
+            documents
+                .enter_released_source(source)
+                .unwrap_or_else(|error| die(error));
+            let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
+                &config_path,
+                providers_override.as_deref(),
+                safe_mode,
+                config::EnvSubst::Strict,
+                &bootstrap_rules,
+            )
             .unwrap_or_else(|error| die(error));
-        let normalized = busbar_kernel::appbuild::load_config_from_disk_judged(
+            let normalized_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&normalized.deploy)
+                .unwrap_or_else(|errors| die(errors.join("; ")));
+            let same_store = documents
+                .bootstrap_equivalent(&base_cfg.store, &normalized_bootstrap.store, &config_path)
+                .unwrap_or_else(|error| die(error));
+            if !same_store
+                || normalized.deploy.plugins != deploy.plugins
+                || normalized.config_locked != config_locked
+            {
+                die("configuration conversion changed its prepared Store bootstrap binding");
+            }
+        }
+        let prepared = loop {
+            if *control_work.shutdown_rx.borrow() {
+                die("shutdown requested during native Store preparation");
+            }
+            match upgrade
+                .prepare()
+                .await
+                .unwrap_or_else(|error| die(format!("automatic Store upgrade refused: {error:?}")))
+            {
+                busbar_migrations::Preparation::Recovery(prepared) => break prepared,
+                busbar_migrations::Preparation::Pending => {
+                    tokio::time::sleep(Duration::from_millis(250)).await
+                }
+            }
+        };
+        let store_admission = root::boot::admit_prepared_store(&prepared)
+            .await
+            .unwrap_or_else(|error| die(error));
+        let anchor_store = store_admission.store().expect("confirmed Store admission");
+        let root::startup_upgrade::publication::Preparation {
+            mut publication,
+            mut progress,
+        } = root::startup_upgrade::publication::Publication::prepare(
+            &mut upgrade,
+            root::startup_upgrade::publication::Inputs {
+                backend: prepared.backend.clone(),
+                core: anchor_store.clone(),
+                documents: documents.clone(),
+                native_upgrade_id: prepared.upgrade_id,
+                host: root::durability::host_identity(),
+                checkpoint_budget: base_cfg.limits.migration_value_bytes,
+                fs: Arc::new(root::admission::RootDurable),
+            },
+        )
+        .await
+        .unwrap_or_else(|error| die(error));
+        while progress == root::startup_upgrade::publication::PrepareProgress::Pending {
+            if *control_work.shutdown_rx.borrow() {
+                die("shutdown requested during configuration preparation");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            progress = publication
+                .prepare_more(&mut upgrade)
+                .await
+                .unwrap_or_else(|error| die(error));
+        }
+        // A recovered inventory may contain a mixture of original and published files.
+        // Reload through its retained transformations before constructing the one App.
+        let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
             &config_path,
             providers_override.as_deref(),
             safe_mode,
@@ -726,226 +800,194 @@ async fn run(
             &bootstrap_rules,
         )
         .unwrap_or_else(|error| die(error));
-        let normalized_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&normalized.deploy)
+        let resumed_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&resumed.deploy)
             .unwrap_or_else(|errors| die(errors.join("; ")));
         let same_store = documents
-            .bootstrap_equivalent(&base_cfg.store, &normalized_bootstrap.store, &config_path)
+            .bootstrap_equivalent(&base_cfg.store, &resumed_bootstrap.store, &config_path)
             .unwrap_or_else(|error| die(error));
         if !same_store
-            || normalized.deploy.plugins != deploy.plugins
-            || normalized.config_locked != config_locked
+            || resumed.deploy.plugins != deploy.plugins
+            || resumed.config_locked != config_locked
         {
-            die("configuration conversion changed its prepared Store bootstrap binding");
+            die("restored configuration changed its prepared Store bootstrap binding");
         }
-    }
-    let prepared = loop {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during native Store preparation");
+        let mut deploy = resumed.deploy;
+        let mut defs = resumed.defs;
+        let mut providers_path = resumed.providers_path;
+        // Even safe-mode must observe a pending transition in the anchor namespace before
+        // overlay recovery or application construction can open another effective Store.
+        if principal_transition.is_none() {
+            busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
+                .await
+                .unwrap_or_else(|error| die(error));
         }
-        match upgrade
-            .prepare()
+        if let Some(old_config) = overlay_migration.as_ref() {
+            root::overlay_migrate::run(
+                old_config,
+                &config_path,
+                deploy,
+                &defs,
+                &anchor_store,
+                config_locked,
+            )
             .await
-            .unwrap_or_else(|error| die(format!("automatic Store upgrade refused: {error:?}")))
+            .unwrap_or_else(|error| die(error));
+            return None;
+        }
+        root::boot::bind_plugin_floor(anchor_store.clone())
+            .await
+            .unwrap_or_else(|error| die(boot_error("Store plugin-floor authority refused", error)));
+        let mut overlay_path = if config_locked && principal_transition.is_none() {
+            None
+        } else {
+            Some(
+                config::overlay::OverlayStore::from_core(anchor_store.clone())
+                    .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
+            )
+        };
+        let overlay_doc = if safe_mode {
+            None
+        } else if let Some(store) = overlay_path.as_ref() {
+            store
+                .read_required_async()
+                .await
+                .unwrap_or_else(|error| die(boot_error("Store overlay recovery refused", error)))
+        } else {
+            None
+        };
+
+        // The base Store remains the bootstrap anchor. Its durable document layer is parsed with
+        // boot's schema before the established typed overlays, never substituted for the anchor.
+        if let Some(doc) = overlay_doc
+            .as_ref()
+            .filter(|doc| doc.document_patch.is_some() || doc.providers_patch.is_some())
         {
-            busbar_migrations::Preparation::Recovery(prepared) => break prepared,
-            busbar_migrations::Preparation::Pending => {
-                tokio::time::sleep(Duration::from_millis(250)).await
+            let patched = busbar_kernel::appbuild::load_config_from_disk_with_document_patches(
+                &config_path,
+                providers_override.as_deref(),
+                false,
+                config::EnvSubst::Strict,
+                &bootstrap_rules,
+                doc.document_patch.as_ref(),
+                doc.providers_patch.as_ref(),
+            )
+            .unwrap_or_else(|error| {
+                die(boot_error(
+                    "principal transition Store document overlay refused",
+                    format!("Store document overlay refused: {error}"),
+                ))
+            });
+            if patched.config_locked && principal_transition.is_none() {
+                overlay_path = None;
+            }
+            deploy = patched.deploy;
+            defs = patched.defs;
+            providers_path = patched.providers_path;
+        }
+
+        if let Some(notice) = root::cli::providers_override_notice(
+            root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
+            deploy.providers_file(),
+        ) {
+            eprintln!("[info] {notice}");
+        }
+
+        let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
+        let base_group_names: std::collections::HashSet<String> =
+            deploy.groups.keys().cloned().collect();
+        if let Some(doc) = overlay_doc.as_ref() {
+            config::overlay::apply_root_to_deploy(&mut deploy, doc);
+        }
+
+        let mut fresh_record_bootstrap = None;
+        if let Some(command) = principal_transition.as_ref() {
+            command
+                .validate_overlay_mode(config_locked, overlay_doc.is_some())
+                .unwrap_or_else(|error| die(error));
+            let transition_source_sha256 = root::principal_transition::source_fingerprint(
+                &config_path,
+                &providers_path,
+                deploy.document_source_fingerprints,
+            )
+            .unwrap_or_else(|error| die(error));
+            // This branch precedes governors, usage recovery, correction tasks and listeners.
+            // Reconstruct the same effective config that normal application boot consumes.
+            let mut effective = config::resolve(&deploy, &defs)
+                .unwrap_or_else(|_| die("principal transition effective configuration refused"));
+            if let Some(doc) = overlay_doc.as_ref() {
+                config::overlay::merge_into(&mut effective, doc.clone());
+            }
+            config_validate::validate(&effective).unwrap_or_else(|errors| {
+                die(format!(
+                    "principal transition effective configuration errors: {}",
+                    errors.join("; ")
+                ))
+            });
+            let result = root::principal_transition::execute(
+                command,
+                &effective,
+                &deploy.plugins,
+                &anchor_store,
+                &base_store_settings,
+                &transition_source_sha256,
+                overlay_doc.as_ref(),
+            )
+            .await
+            .unwrap_or_else(|_| die("principal transition refused; input or bound Store state does not satisfy cold transition requirements"));
+            println!(
+                "{}",
+                serde_json::to_string(&result.report)
+                    .unwrap_or_else(|_| die("principal transition output failed"))
+            );
+            fresh_record_bootstrap = result.record_bootstrap;
+            if !command.continues_serving() {
+                return None;
+            }
+            // The explicit fresh-instance action resumes every ordinary admission below. The same
+            // anchor is handed to appbuild; it must never be reopened as a new ephemeral namespace.
+            busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
+                .await
+                .unwrap_or_else(|_| die("fresh principal baseline is not ready for serving"));
+            if config_locked {
+                overlay_path = None;
             }
         }
-    };
-    let store_admission = root::boot::admit_prepared_store(&prepared)
-        .await
-        .unwrap_or_else(|error| die(error));
-    let anchor_store = store_admission.store().expect("confirmed Store admission");
-    let root::startup_upgrade::publication::Preparation {
-        mut publication,
-        mut progress,
-    } = root::startup_upgrade::publication::Publication::prepare(
-        &mut upgrade,
-        root::startup_upgrade::publication::Inputs {
-            backend: prepared.backend.clone(),
-            core: anchor_store.clone(),
-            documents: documents.clone(),
-            native_upgrade_id: prepared.upgrade_id,
-            host: root::durability::host_identity(),
-            checkpoint_budget: base_cfg.limits.migration_value_bytes,
-            fs: Arc::new(root::admission::RootDurable),
-        },
-    )
-    .await
-    .unwrap_or_else(|error| die(error));
-    while progress == root::startup_upgrade::publication::PrepareProgress::Pending {
-        if *control_work.shutdown_rx.borrow() {
-            die("shutdown requested during configuration preparation");
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        progress = publication
-            .prepare_more(&mut upgrade)
-            .await
-            .unwrap_or_else(|error| die(error));
-    }
-    // A recovered inventory may contain a mixture of original and published files.
-    // Reload through its retained transformations before constructing the one App.
-    let resumed = busbar_kernel::appbuild::load_config_from_disk_judged(
-        &config_path,
-        providers_override.as_deref(),
-        safe_mode,
-        config::EnvSubst::Strict,
-        &bootstrap_rules,
-    )
-    .unwrap_or_else(|error| die(error));
-    let resumed_bootstrap = root::startup_upgrade::bootstrap::bootstrap(&resumed.deploy)
-        .unwrap_or_else(|errors| die(errors.join("; ")));
-    let same_store = documents
-        .bootstrap_equivalent(&base_cfg.store, &resumed_bootstrap.store, &config_path)
-        .unwrap_or_else(|error| die(error));
-    if !same_store
-        || resumed.deploy.plugins != deploy.plugins
-        || resumed.config_locked != config_locked
-    {
-        die("restored configuration changed its prepared Store bootstrap binding");
-    }
-    let mut deploy = resumed.deploy;
-    let mut defs = resumed.defs;
-    let mut providers_path = resumed.providers_path;
-    // Even safe-mode must observe a pending transition in the anchor namespace before
-    // overlay recovery or application construction can open another effective Store.
-    if principal_transition.is_none() {
-        busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
-            .await
-            .unwrap_or_else(|error| die(error));
-    }
-    if let Some(old_config) = overlay_migration.as_ref() {
-        root::overlay_migrate::run(
-            old_config,
-            &config_path,
+
+        Some((
+            upgrade,
+            prepared,
+            store_admission,
+            anchor_store,
+            publication,
             deploy,
-            &defs,
-            &anchor_store,
-            config_locked,
-        )
-        .await
-        .unwrap_or_else(|error| die(error));
+            defs,
+            providers_path,
+            overlay_path,
+            overlay_doc,
+            base_hook_names,
+            base_group_names,
+            fresh_record_bootstrap,
+        ))
+    })
+    .await;
+    let Some((
+        mut upgrade,
+        prepared,
+        store_admission,
+        anchor_store,
+        mut publication,
+        deploy,
+        defs,
+        providers_path,
+        overlay_path,
+        overlay_doc,
+        base_hook_names,
+        base_group_names,
+        fresh_record_bootstrap,
+    )) = bootstrap
+    else {
         return;
-    }
-    root::boot::bind_plugin_floor(anchor_store.clone())
-        .await
-        .unwrap_or_else(|error| die(boot_error("Store plugin-floor authority refused", error)));
-    let mut overlay_path = if config_locked && principal_transition.is_none() {
-        None
-    } else {
-        Some(
-            config::overlay::OverlayStore::from_core(anchor_store.clone())
-                .unwrap_or_else(|error| die(boot_error("Store overlay unavailable", error))),
-        )
     };
-    let overlay_doc = if safe_mode {
-        None
-    } else if let Some(store) = overlay_path.as_ref() {
-        store
-            .read_required_async()
-            .await
-            .unwrap_or_else(|error| die(boot_error("Store overlay recovery refused", error)))
-    } else {
-        None
-    };
-
-    // The base Store remains the bootstrap anchor. Its durable document layer is parsed with
-    // boot's schema before the established typed overlays, never substituted for the anchor.
-    if let Some(doc) = overlay_doc
-        .as_ref()
-        .filter(|doc| doc.document_patch.is_some() || doc.providers_patch.is_some())
-    {
-        let patched = busbar_kernel::appbuild::load_config_from_disk_with_document_patches(
-            &config_path,
-            providers_override.as_deref(),
-            false,
-            config::EnvSubst::Strict,
-            &bootstrap_rules,
-            doc.document_patch.as_ref(),
-            doc.providers_patch.as_ref(),
-        )
-        .unwrap_or_else(|error| {
-            die(boot_error(
-                "principal transition Store document overlay refused",
-                format!("Store document overlay refused: {error}"),
-            ))
-        });
-        if patched.config_locked && principal_transition.is_none() {
-            overlay_path = None;
-        }
-        deploy = patched.deploy;
-        defs = patched.defs;
-        providers_path = patched.providers_path;
-    }
-
-    if let Some(notice) = root::cli::providers_override_notice(
-        root::cli::value_flag(std::env::args().skip(1), "--providers", None).as_deref(),
-        deploy.providers_file(),
-    ) {
-        eprintln!("[info] {notice}");
-    }
-
-    let base_hook_names: std::collections::HashSet<String> = deploy.hooks.keys().cloned().collect();
-    let base_group_names: std::collections::HashSet<String> =
-        deploy.groups.keys().cloned().collect();
-    if let Some(doc) = overlay_doc.as_ref() {
-        config::overlay::apply_root_to_deploy(&mut deploy, doc);
-    }
-
-    let mut fresh_record_bootstrap = None;
-    if let Some(command) = principal_transition.as_ref() {
-        command
-            .validate_overlay_mode(config_locked, overlay_doc.is_some())
-            .unwrap_or_else(|error| die(error));
-        let transition_source_sha256 = root::principal_transition::source_fingerprint(
-            &config_path,
-            &providers_path,
-            deploy.document_source_fingerprints,
-        )
-        .unwrap_or_else(|error| die(error));
-        // This branch precedes governors, usage recovery, correction tasks and listeners.
-        // Reconstruct the same effective config that normal application boot consumes.
-        let mut effective = config::resolve(&deploy, &defs)
-            .unwrap_or_else(|_| die("principal transition effective configuration refused"));
-        if let Some(doc) = overlay_doc.as_ref() {
-            config::overlay::merge_into(&mut effective, doc.clone());
-        }
-        config_validate::validate(&effective).unwrap_or_else(|errors| {
-            die(format!(
-                "principal transition effective configuration errors: {}",
-                errors.join("; ")
-            ))
-        });
-        let result = root::principal_transition::execute(
-            command,
-            &effective,
-            &deploy.plugins,
-            &anchor_store,
-            &base_store_settings,
-            &transition_source_sha256,
-            overlay_doc.as_ref(),
-        )
-        .await
-        .unwrap_or_else(|_| die("principal transition refused; input or bound Store state does not satisfy cold transition requirements"));
-        println!(
-            "{}",
-            serde_json::to_string(&result.report)
-                .unwrap_or_else(|_| die("principal transition output failed"))
-        );
-        fresh_record_bootstrap = result.record_bootstrap;
-        if !command.continues_serving() {
-            return;
-        }
-        // The explicit fresh-instance action resumes every ordinary admission below. The same
-        // anchor is handed to appbuild; it must never be reopened as a new ephemeral namespace.
-        busbar_kernel::governance::principal_transition::pending_guard_native(anchor_store.clone())
-            .await
-            .unwrap_or_else(|_| die("fresh principal baseline is not ready for serving"));
-        if config_locked {
-            overlay_path = None;
-        }
-    }
 
     // Data workers are created after Store recovery, on their own runtimes. The
     // control runtime and bootstrap plugin dispatcher already exist and keep their own budgets.
@@ -975,7 +1017,7 @@ async fn run(
     );
 
     let plugins_cfg = deploy.plugins.clone();
-    root::boot::admit_recovered_plugins(&plugins_cfg)
+    root::measurements::maintenance(root::boot::admit_recovered_plugins(&plugins_cfg))
         .await
         .unwrap_or_else(|error| die(format!("Store plugin-floor admission: {error}")));
 
@@ -1008,6 +1050,8 @@ async fn run(
 
     let mut cfg = config::resolve(&deploy, &defs)
         .unwrap_or_else(|errs| die(format!("config errors:\n  - {}", errs.join("\n  - "))));
+    root::measurements::configure(&cfg.plugin_rate_cards)
+        .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 
     let door_kernel_sections = root::door_steps::kernel_sections(&cfg)
         .unwrap_or_else(|error| die(format!("config errors:\n  - {error}")));
@@ -1365,6 +1409,7 @@ async fn run(
     listener_plan
         .share_claim_doors(&mut served)
         .unwrap_or_else(|e| die(e));
+    root::measurements::validate_bindings().unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
     root_rules.hold_member_tls_sections(&served.member_tls_sections());
 
@@ -1631,11 +1676,13 @@ async fn run(
     }
 
     let budget_flusher = app_handle.load().governance.clone().map(|gov| {
-        busbar_kernel::governance::spawn_budget_flusher(
-            gov,
-            shutdown_tx.subscribe(),
-            Some(app_handle.clone()),
-        )
+        tokio::spawn(root::measurements::maintenance(
+            busbar_kernel::governance::run_budget_flusher(
+                gov,
+                shutdown_tx.subscribe(),
+                Some(app_handle.clone()),
+            ),
+        ))
     });
     let work_recovery =
         recovery_served.spawn_work_recovery(app_handle.clone(), shutdown_tx.subscribe());

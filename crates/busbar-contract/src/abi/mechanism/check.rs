@@ -585,6 +585,17 @@ unsafe fn list<'a, T>(ptr: *const T, len: usize, field: &'static str) -> Result<
 /// `st` is a Statement a door answered: every non-NULL list points at its stated count of live
 /// `'static` entries.
 pub unsafe fn check_statement(st: &Statement) -> Result<(), Fault> {
+    if st.measurement_classes_len > crate::abi::measurement::MAX_MEASUREMENT_CLASSES {
+        return Err(fault(Rule::OverMax, "statement.measurement_classes"));
+    }
+    // SAFETY: the caller guarantees static declarations and their string storage.
+    unsafe {
+        crate::abi::measurement::check_declarations(list(
+            st.measurement_classes,
+            st.measurement_classes_len,
+            "statement.measurement_classes",
+        )?)
+    }?;
     // SAFETY (each `list`): the caller's contract.
     let families = unsafe { list(st.families, st.families_len, "statement.families") }?;
     for f in families {

@@ -30,6 +30,7 @@ pub(crate) struct Slot {
 /// So a wake for one generation never takes the waker a later generation's task registered.
 #[derive(Debug, Default)]
 struct Held {
+    measurement: Option<super::measurement::Reservation>,
     generation: u32,
     waker: Option<Waker>,
     /// The instance whose ops this generation drove: its kept connector answers under the ticket
@@ -138,6 +139,7 @@ impl InlineTickets {
                 return false;
             }
             if fresh {
+                held.measurement = None;
                 held.framing = framing;
             }
             held.instance = Some(instance);
@@ -156,13 +158,28 @@ impl InlineTickets {
         true
     }
 
-    pub(crate) fn ended(&self, t: Ticket, s: u32, short: bool) {
+    pub(crate) fn measurement(&self, t: Ticket) -> Option<super::measurement::Reservation> {
+        let slot = self.lookup(t)?;
+        let held = slot.section();
+        (held.generation != 0 && held.generation == t.generation)
+            .then(|| held.measurement.clone())
+            .flatten()
+    }
+
+    pub(crate) fn ended(
+        &self,
+        t: Ticket,
+        s: u32,
+        short: bool,
+        measurement: Option<super::measurement::Reservation>,
+    ) {
         let Some(slot) = self.lookup(t) else {
             return;
         };
         let mut held = slot.section();
         if held.generation != 0 && held.generation == t.generation {
             held.short = short.then_some(s);
+            held.measurement = measurement;
         }
     }
 
@@ -177,6 +194,7 @@ impl InlineTickets {
                 held.0.push(Arc::new(Slot {
                     count: AtomicU32::new(1),
                     held: Mutex::new(Held {
+                        measurement: None,
                         generation: ticket_generation(self.key, INLINE_WORKER, i, 1),
                         waker: None,
                         instance: None,
@@ -252,6 +270,7 @@ impl InlineTickets {
             let old = held.generation;
             held.generation = g;
             held.short = None;
+            held.measurement = None;
             held.framing = None;
             (held.waker.take(), held.instance.take(), old)
         };

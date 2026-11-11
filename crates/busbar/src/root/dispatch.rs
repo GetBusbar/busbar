@@ -28,6 +28,12 @@ pub fn build(workers: usize, services: &LateServices) -> Dispatcher {
         busbar_kernel::host_services::caller_binding(),
     );
     let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    assert!(
+        dispatcher
+            .set_measurement_authority(super::measurements::authority())
+            .is_ok(),
+        "new dispatcher must accept the root measurement authority"
+    );
     dispatcher
 }
 

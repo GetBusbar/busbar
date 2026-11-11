@@ -113,6 +113,7 @@ impl ConfiguredView {
         put!("admin_tls", tls_view(cfg.admin_tls.as_ref()));
         put!("per_request_fee", cfg.per_request_fee);
         put!("rate_card", cfg.rate_card);
+        put!("plugin_rate_cards", cfg.plugin_rate_cards);
         put!("groups", cfg.groups);
         put!(
             "security",

@@ -221,6 +221,7 @@ fn unit() -> UnitCheckpoint {
         ended: false,
         terminal: None,
         audit: Some(serde_json::to_vec(&audit).unwrap()),
+        measurement: None,
     }
 }
 
@@ -761,4 +762,692 @@ async fn actual_store_terminal_replay_after_ack_before_delete_uses_settled_recei
         Count::parse("0.125").unwrap()
     );
     stop(&resumed);
+}
+
+async fn measurement_total(gov: &GovState, report: &UnitCheckpoint, class: &str) -> Count {
+    measurement_total_at(gov, &report.principal, &report.lane, report.arrived, class).await
+}
+
+async fn measurement_total_at(
+    gov: &GovState,
+    principal: &str,
+    lane: &str,
+    arrived: u64,
+    class: &str,
+) -> Count {
+    gov.metering_for_async(busbar_kernel::governance::metering_bucket(arrived))
+        .await
+        .unwrap()
+        .iter()
+        .filter(|row| row.key_id == principal && row.model == lane)
+        .fold(Count::ZERO, |total, row| {
+            assert_eq!(row.requests, 0);
+            assert_eq!(row.billable_requests, 0);
+            assert_eq!(
+                (
+                    row.tokens_input,
+                    row.tokens_output,
+                    row.tokens_cache_read,
+                    row.tokens_cache_write
+                ),
+                (0, 0, 0, 0)
+            );
+            total
+                .checked_add(
+                    Count::from_stored(row.usage_units.get(class).copied().unwrap_or(0), row.scale)
+                        .unwrap(),
+                )
+                .unwrap()
+        })
+}
+
+fn measurement_binding(
+    kind: busbar_contract::abi::mechanism::KindCode,
+) -> busbar_kernel::host_measurement::MeasurementBinding {
+    busbar_kernel::host_measurement::MeasurementBinding {
+        caller: busbar_contract::services::Caller::issue(
+            &busbar_kernel::seal::acquire(),
+            "neutral-measurement".into(),
+            kind,
+        ),
+        statement_digest: [0x71; 32],
+        classes: vec!["work".into(), "input".into()],
+    }
+}
+
+#[tokio::test]
+async fn actual_store_measurement_cumulative_cancel_and_restart_keep_original_request() {
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime, Refusal};
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "measurement-request-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    let gov = Arc::new(governor(store.clone(), &book).await);
+    let seal = busbar_kernel::seal::acquire();
+    let runtime = MeasurementRuntime::new(&seal, gov.clone(), 1).unwrap();
+    let context = MeasurementContext::request(
+        &seal,
+        73,
+        "original-user".into(),
+        "original-group".into(),
+        vec![UnitTarget {
+            bucket: "original-user".into(),
+            window: 0,
+            group: Some("original-group".into()),
+        }],
+        1_700_000_000,
+        Default::default(),
+    )
+    .unwrap();
+    let operation = runtime
+        .reserve(&seal, measurement_binding(KindCode::Hook), &context, 11)
+        .unwrap();
+    assert_eq!(operation.revision(), 1);
+    assert!(matches!(
+        runtime.reserve(&seal, measurement_binding(KindCode::Hook), &context, 11),
+        Err(Refusal::Unavailable)
+    ));
+    operation.capture(1, [(0, Count::ONE)]).unwrap();
+    operation.capture(1, [(0, Count::ONE)]).unwrap();
+    assert_eq!(
+        operation.capture(1, [(0, Count::from_micros(2_000_000))]),
+        Err(Refusal::Conflict)
+    );
+    assert_eq!(
+        operation.capture(2, [(0, Count::ZERO)]),
+        Err(Refusal::Conflict)
+    );
+    assert_eq!(
+        operation.capture(2, [(0, Count::ONE), (0, Count::ONE)]),
+        Err(Refusal::Malformed)
+    );
+    assert!(unit_checkpoint_sink(&book)
+        .replay()
+        .await
+        .unwrap()
+        .is_empty());
+    operation.released(false);
+    gov.flush_unit_checkpoints().await.unwrap();
+    let first = unit_checkpoint_sink(&book)
+        .replay()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert!(first.audit.is_none());
+    assert!(first.measurement.is_some());
+    assert!(
+        !first.units.contains_key("input"),
+        "unreported classes are not invented zeros"
+    );
+    assert_eq!(first.principal, "original-user");
+    assert_eq!(total(&store, &first).await, Count::ZERO);
+    operation
+        .capture(
+            2,
+            [
+                (1, Count::parse("0.25").unwrap()),
+                (0, Count::from_micros(2_000_000)),
+            ],
+        )
+        .unwrap();
+    operation.released(true); // Cancellation preserves the last accepted cumulative snapshot.
+    operation.released(true);
+    assert_eq!(operation.revision(), 0);
+    assert_eq!(
+        operation.capture(3, [(0, Count::from_micros(3_000_000))]),
+        Err(Refusal::Conflict)
+    );
+    gov.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(runtime.pending(), 0);
+    assert_eq!(
+        measurement_total(&gov, &first, "work").await,
+        Count::from_micros(2_000_000)
+    );
+    assert_eq!(
+        measurement_total(&gov, &first, "input").await,
+        Count::parse("0.25").unwrap()
+    );
+    assert_eq!(total(&store, &first).await, Count::from_micros(2_000_000));
+    let rows = store.ledger().get_usage("original-user", 0).await.unwrap();
+    let row = rows
+        .models
+        .iter()
+        .find(|row| row.model == first.lane)
+        .unwrap();
+    assert_eq!(
+        Count::from_stored(row.usage_units["input"], row.scale).unwrap(),
+        Count::parse("0.25").unwrap()
+    );
+    drop(operation);
+    drop(runtime);
+    drop(gov);
+    drop(book);
+    let reopened = opened(store.clone(), &host).await;
+    let resumed = governor(store.clone(), &reopened).await;
+    resumed.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(total(&store, &first).await, Count::from_micros(2_000_000));
+}
+
+#[tokio::test]
+async fn actual_store_measurement_system_origins_recover_without_admission_or_user_budget() {
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime};
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "measurement-system-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    let gov = Arc::new(governor(store.clone(), &book).await);
+    let seal = busbar_kernel::seal::acquire();
+    let runtime = MeasurementRuntime::new(&seal, gov.clone(), 7).unwrap();
+    let context = MeasurementContext::system(&seal, 1_700_000_000, Default::default());
+    for kind in [
+        KindCode::Auth,
+        KindCode::Store,
+        KindCode::Secret,
+        KindCode::Export,
+        KindCode::Hook,
+        KindCode::Transport,
+        KindCode::Plane,
+    ] {
+        let operation = runtime
+            .reserve(&seal, measurement_binding(kind), &context, 5)
+            .unwrap();
+        operation
+            .capture(1, [(0, Count::parse("0.125").unwrap())])
+            .unwrap();
+        operation.released(false);
+    }
+    gov.flush_unit_checkpoints().await.unwrap();
+    let reports = unit_checkpoint_sink(&book).replay().await.unwrap();
+    assert_eq!(reports.len(), 7);
+    let principals: std::collections::BTreeSet<_> = reports.iter().map(|r| &r.principal).collect();
+    assert_eq!(principals.len(), 7);
+    for report in &reports {
+        assert!(report.principal.starts_with("system-measurement:"));
+        assert_eq!(report.unit, 0);
+        assert!(report.targets.is_empty());
+        assert!(report.audit.is_none());
+        let mut forged = report.clone();
+        forged.targets.push(UnitTarget {
+            bucket: "arbitrary-user".into(),
+            window: 0,
+            group: None,
+        });
+        assert!(forged.validate().is_err());
+        assert!(unit_checkpoint_sink(&book).persist(&forged).await.is_err());
+    }
+    drop(runtime);
+    drop(gov);
+    drop(book);
+    let reopened = opened(store.clone(), &host).await;
+    let resumed = governor(store.clone(), &reopened).await;
+    for report in &reports {
+        assert_eq!(
+            total(&store, report).await,
+            Count::ZERO,
+            "system work has no user budget row"
+        );
+        assert_eq!(
+            measurement_total(&resumed, report, "work").await,
+            Count::parse("0.125").unwrap()
+        );
+    }
+    resumed.flush_unit_checkpoints().await.unwrap();
+    for report in &reports {
+        assert_eq!(
+            total(&store, report).await,
+            Count::ZERO,
+            "system work has no user budget row"
+        );
+        assert_eq!(
+            measurement_total(&resumed, report, "work").await,
+            Count::parse("0.125").unwrap()
+        );
+    }
+    assert!(store
+        .ledger()
+        .get_usage("arbitrary-user", 0)
+        .await
+        .unwrap()
+        .models
+        .is_empty());
+}
+
+#[tokio::test]
+async fn actual_store_measurement_lost_applied_ack_replays_exact_raw_identity_once() {
+    use busbar_contract::abi::mechanism::KindCode;
+    use busbar_kernel::host_measurement::{MeasurementContext, MeasurementRuntime};
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "measurement-ack-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    let gov = Arc::new(
+        GovState::new_with_core(store.clone(), None, None)
+            .await
+            .unwrap(),
+    );
+    gov.attach_recovery_sink(Arc::new(LoseAppliedAck {
+        inner: recovery_sink(&book),
+        armed: AtomicBool::new(true),
+    }))
+    .await
+    .unwrap();
+    gov.attach_unit_checkpoint_sink(unit_checkpoint_sink(&book))
+        .await
+        .unwrap();
+    let seal = busbar_kernel::seal::acquire();
+    let runtime = MeasurementRuntime::new(&seal, gov.clone(), 1).unwrap();
+    let context = MeasurementContext::system(&seal, 1_700_000_000, Default::default());
+    let operation = runtime
+        .reserve(&seal, measurement_binding(KindCode::Secret), &context, 2)
+        .unwrap();
+    operation.capture(1, [(0, Count::ONE)]).unwrap();
+    operation.released(true);
+    assert!(gov.flush_unit_checkpoints().await.is_err());
+    let terminal = unit_checkpoint_sink(&book)
+        .replay()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        runtime.pending(),
+        1,
+        "uncertain ACK cannot release reserved custody"
+    );
+    assert_eq!(measurement_total(&gov, &terminal, "work").await, Count::ONE);
+    let identities: Vec<_> = terminal
+        .terminal
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| e.operation_id)
+        .collect();
+    assert!(!identities.is_empty());
+    drop(operation);
+    drop(runtime);
+    drop(gov);
+    drop(book);
+    let reopened = opened(store.clone(), &host).await;
+    let replay = unit_checkpoint_sink(&reopened)
+        .replay()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        replay, terminal,
+        "restart retains the exact signed cumulative evidence and raw identities"
+    );
+    let resumed = governor(store.clone(), &reopened).await;
+    assert!(
+        resumed.flush_unit_checkpoints().await.is_err(),
+        "restart cannot reconstruct the previous process's monotonic dedupe age"
+    );
+    assert_eq!(
+        measurement_total(&resumed, &terminal, "work").await,
+        Count::ONE
+    );
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(None, 0, &Default::default());
+    let unknown = resumed.recovery().list(None, 100).await.unwrap();
+    assert!(unknown
+        .iter()
+        .any(|event| event.state == RecoveryState::LandedUnknown));
+    for event in unknown
+        .into_iter()
+        .filter(|event| event.state == RecoveryState::LandedUnknown)
+    {
+        assert!(identities.contains(&event.operation_id));
+        resumed
+            .recovery()
+            .resolve(
+                &cost,
+                RecoveryResolution {
+                    operation_id: event.operation_id,
+                    body_fingerprint: event.body_fingerprint,
+                    expected_revision: event.revision,
+                    verdict: RecoveryVerdict::Landed,
+                    sender_quiesced: true,
+                    backend_quiesced: true,
+                    actor: "measurement-test-owner".into(),
+                    reason: "actual native metering readback proves the planted write landed"
+                        .into(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    resumed.flush_unit_checkpoints().await.unwrap();
+    let events = recovery_sink(&reopened).replay().await.unwrap();
+    for id in identities {
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.operation_id == id && event.revision == 0)
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .rev()
+                .find(|event| event.operation_id == id)
+                .unwrap()
+                .state,
+            RecoveryState::Settled
+        );
+    }
+    assert_eq!(
+        measurement_total(&resumed, &terminal, "work").await,
+        Count::ONE
+    );
+    assert!(unit_checkpoint_sink(&reopened)
+        .replay()
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+/// A neutral SDK callback: the only reported fact is a quarter of a named unit
+/// across two separate invocations. It has no account/rate/operation ID input.
+mod measurement_secret_fixture {
+    use busbar_contract::abi::{
+        measurement::{BillableClass, UnitCount, UNITS_REPORTED_MICROS},
+        mechanism::{call::Outcome, door::Statement},
+        sdk::{
+            life::{Held, Life, Refreshed, Refusal},
+            Instance, Lent, Out, SafeSlot,
+        },
+    };
+    pub struct Witness;
+    impl Life for Witness {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
+        const CANCEL: u32 = busbar_contract::abi::secret::cancel::ABORTED;
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+            Ok(Self)
+        }
+        fn refresh(&self, _: &[u8], _: &[&[u8]], _: u64) -> Result<Refreshed, Refusal> {
+            Ok(Refreshed::default())
+        }
+    }
+    pub struct Resolve;
+    impl SafeSlot for Resolve {
+        type Kind = busbar_contract::plugin::markers::SecretKind;
+        type State = Held<Witness>;
+        type In = busbar_contract::abi::secret::ResolveIn;
+        type Out = busbar_contract::abi::secret::ResolveOut;
+        fn call(
+            instance: Instance<'_, Self::State, Self::Kind>,
+            input: Lent<'_, Self::In>,
+            mut out: Out<'_, Self::Out>,
+        ) -> Outcome {
+            if instance.get().is_none() {
+                return Outcome::Refused;
+            }
+            out.measurements(
+                &input.head,
+                &[UnitCount {
+                    class: 0,
+                    source: UNITS_REPORTED_MICROS,
+                    amount: 125_000,
+                }],
+            )
+            .unwrap();
+            busbar_contract::abi::sdk::cred::resolved(
+                input,
+                &mut out,
+                busbar_contract::abi::sdk::cred::Held::new(b"fixture-value".to_vec()),
+            )
+        }
+    }
+    const CLASSES: &[BillableClass] = &[BillableClass {
+        class: busbar_contract::abi::sdk::door::abi_str("work"),
+        family: busbar_contract::abi::sdk::door::abi_str("units"),
+    }];
+    const fn statement() -> Statement {
+        let mut statement =
+            busbar_contract::abi::sdk::door::statement("measurement-native-witness", "1.6.0", 4);
+        statement.measurement_classes = CLASSES.as_ptr();
+        statement.measurement_classes_len = CLASSES.len();
+        statement
+    }
+    busbar_contract::plugin_door! {
+        ops: busbar_contract::abi::secret::Ops,
+        statement: statement(),
+        lifecycle: life(Witness),
+        kind_ops: { resolve: busbar_contract::abi::sdk::Safe<Resolve> },
+    }
+}
+
+#[tokio::test]
+async fn measurement_root_loader_callback_preserves_early_and_admitted_attribution_in_signed_store()
+{
+    use crate::root::loader::dispatch::{
+        self, kinds::secret::Secret as SecretKind, Bind, ConnTable, DispatchConfig, Dispatcher,
+        Frame, LinkedRow, NoSink,
+    };
+    use busbar_contract::abi::mechanism::{
+        call::Outcome,
+        lifecycle::{slot, OpenIn, OpenOut},
+    };
+    use busbar_kernel::plane_driver::{EndPost, FeeRefund, PlaneMoney, UnitMoney};
+    struct Post(Vec<u8>);
+    impl EndPost for Post {
+        fn post(&self, _: &busbar_kernel::teller::UnitCtx, _: busbar_kernel::teller::Ended) {}
+        fn checkpoint_facts(&self, _: busbar_contract::UnitKey) -> Option<Vec<u8>> {
+            Some(self.0.clone())
+        }
+    }
+    let fixture = ActualStore::new();
+    let store = fixture.open().await;
+    let host = format!(
+        "measurement-root-callback-{}",
+        hex::encode(busbar_kernel::door::op_id().0)
+    );
+    let book = opened(store.clone(), &host).await;
+    let gov = Arc::new(governor(store.clone(), &book).await);
+    let dispatcher = Arc::new(Dispatcher::new(
+        DispatchConfig::default(),
+        busbar_kernel::host_services::caller_binding(),
+    ));
+    let authority =
+        crate::root::measurements::local_authority(gov.clone(), Default::default()).unwrap();
+    assert!(dispatcher.set_measurement_authority(authority).is_ok());
+    let plugin = dispatch::load_linked::<SecretKind>(
+        &LinkedRow::of(measurement_secret_fixture::door).unwrap(),
+        Bind {
+            instance: "measured-root-secret".into(),
+            max_inflight_cap: 4,
+            sink: Arc::new(NoSink),
+            dispatcher: dispatcher.adopter(),
+            conns: ConnTable::NoNeeds,
+        },
+    )
+    .unwrap();
+    let mut opening = Frame::new(
+        OpenIn {
+            head: dispatch::in_head(),
+            host: std::ptr::null(),
+            settings: dispatch::NO_BLOB,
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+            generation: 1,
+            err_buf: std::ptr::null_mut(),
+            err_cap: 0,
+        },
+        OpenOut {
+            head: dispatch::out_head(),
+            instance: std::ptr::null_mut(),
+            err_len: 0,
+        },
+    );
+    assert_eq!(
+        plugin.call(slot::OPEN, &mut opening).outcome,
+        Outcome::Ready
+    );
+    let key = Arc::new(busbar_contract::records::VirtualKey {
+        id: "checkpoint-principal".into(),
+        enabled: true,
+        ..Default::default()
+    });
+    let money = Arc::new(PlaneMoney::new(
+        gov.clone(),
+        Arc::new(Post(unit().audit.unwrap())),
+    ));
+    let cost = Arc::new(busbar_kernel::cost::CostModel::resolve_parts(
+        None,
+        0,
+        &Default::default(),
+    ));
+    let unit_key = busbar_contract::UnitKey::new(17);
+    let arrived = 1_700_000_000;
+    let lane = busbar_kernel_ledger::cost::measurement_lane("secret", "measured-root-secret");
+    let scope = crate::root::measurements::RequestScope::new(
+        &money,
+        unit_key,
+        &busbar_contract::caps::PrincipalId::new(key.id.clone()),
+        Some(&key),
+        crate::root::plane_node::Arrived::at(arrived * 1000, 91),
+    )
+    .unwrap();
+    let invoke = || {
+        let mut bytes = [0u8; 32];
+        let mut frame = Frame::new(
+            busbar_contract::abi::secret::ResolveIn {
+                head: dispatch::in_head(),
+                settings: dispatch::NO_BLOB,
+                secret_buf: bytes.as_mut_ptr(),
+                secret_cap: bytes.len(),
+            },
+            busbar_contract::abi::secret::ResolveOut {
+                head: dispatch::out_head(),
+                secret: dispatch::NO_BLOB,
+                error_kind: 0,
+                _reserved: 0,
+                needed: 0,
+            },
+        );
+        let called = plugin.call(busbar_contract::abi::secret::slot::RESOLVE, &mut frame);
+        assert_eq!(
+            called.outcome,
+            Outcome::Ready,
+            "actual SDK callback and root custody accepted"
+        );
+        assert_eq!(&bytes[..13], b"fixture-value");
+        if called.lease != 0 {
+            let mut release = Frame::new(
+                busbar_contract::abi::mechanism::lifecycle::ReleaseIn {
+                    head: dispatch::in_head(),
+                    lease: called.lease,
+                },
+                dispatch::out_head(),
+            );
+            assert_eq!(
+                plugin.call(slot::RELEASE, &mut release).outcome,
+                Outcome::Ready
+            );
+        }
+    };
+    crate::root::measurements::request(scope, async {
+        invoke();
+        gov.flush_unit_checkpoints().await.unwrap();
+        assert_eq!(
+            measurement_total_at(&gov, &key.id, &lane, arrived, "work").await,
+            Count::parse("0.125").unwrap()
+        );
+        assert!(
+            store
+                .ledger()
+                .get_usage(&key.id, 0)
+                .await
+                .unwrap()
+                .models
+                .is_empty(),
+            "pre-admission facts never invent budget targets"
+        );
+        let grant = Arc::new(gov.try_admit(&cost, &key, "", arrived).unwrap());
+        money.open_admitted(
+            unit_key,
+            UnitMoney {
+                key: key.clone(),
+                cost: cost.clone(),
+                pool: String::new(),
+                lane: String::new(),
+                classes: Vec::<String>::new().into(),
+                arrived,
+                mode: busbar_kernel::config::groups::ExhaustionMode::FinishUnit,
+                fee: FeeRefund::CallerStatus,
+                charge: Default::default(),
+            },
+            grant,
+        );
+        invoke();
+        gov.flush_unit_checkpoints().await.unwrap();
+        assert_eq!(
+            measurement_total_at(&gov, &key.id, &lane, arrived, "work").await,
+            Count::parse("0.25").unwrap()
+        );
+        let usage = store.ledger().get_usage(&key.id, 0).await.unwrap();
+        let target = usage
+            .models
+            .iter()
+            .find(|model| model.model == lane)
+            .unwrap();
+        assert_eq!(
+            Count::from_stored(target.usage_units["work"], target.scale).unwrap(),
+            Count::parse("0.125").unwrap(),
+            "only work reserved after actual admission charges its targets"
+        );
+        money.settle_end(unit_key, 200);
+        // This fixture stops before the normal end-post audit append. The actual
+        // admission must retain its signed checkpoint until restart seals it;
+        // successful generic usage cannot bypass that independent audit guard.
+        let audit_pending = gov.flush_unit_checkpoints().await.unwrap_err();
+        assert!(audit_pending.0.contains("sealed audit line"));
+        let pending = unit_checkpoint_sink(&book).replay().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].measurement.is_none());
+        assert!(pending[0].audit.is_some());
+        gov.flush_budgets_final().await;
+        gov.flush_metering_final().await;
+    })
+    .await;
+    drop(plugin);
+    drop(dispatcher);
+    drop(money);
+    drop(gov);
+    drop(book);
+    let reopened = opened(store.clone(), &host).await;
+    let resumed = governor(store.clone(), &reopened).await;
+    resumed.flush_unit_checkpoints().await.unwrap();
+    assert_eq!(
+        measurement_total_at(&resumed, &key.id, &lane, arrived, "work").await,
+        Count::parse("0.25").unwrap()
+    );
+    let usage = store.ledger().get_usage(&key.id, 0).await.unwrap();
+    let target = usage
+        .models
+        .iter()
+        .find(|model| model.model == lane)
+        .unwrap();
+    assert_eq!(
+        Count::from_stored(target.usage_units["work"], target.scale).unwrap(),
+        Count::parse("0.125").unwrap()
+    );
+    assert!(unit_checkpoint_sink(&reopened)
+        .replay()
+        .await
+        .unwrap()
+        .is_empty());
 }

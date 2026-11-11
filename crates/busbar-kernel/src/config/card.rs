@@ -19,6 +19,8 @@ pub struct CardFields {
     pub plane_rate_cards: PlaneRateCards,
     /// Each other plane's own fees.
     pub plane_fees: PlaneFeesMap,
+    /// Common measurement rates, independently owned by each configured plugin instance.
+    pub plugin_rate_cards: super::PluginRateCards,
 }
 
 /// One plane's card and fees, as the stored form spells them.
@@ -71,6 +73,8 @@ struct StoredCard {
     per_request_fee: i64,
     #[serde(default)]
     planes: BTreeMap<String, PlaneCardFields>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugin_rate_cards: super::PluginRateCards,
 }
 
 impl CardFields {
@@ -81,6 +85,7 @@ impl CardFields {
             per_request_fee: deploy.per_request_fee,
             plane_rate_cards: deploy.plane_rate_cards.clone(),
             plane_fees: deploy.plane_fees.clone(),
+            plugin_rate_cards: deploy.plugin_rate_cards.clone(),
         }
     }
 
@@ -89,6 +94,9 @@ impl CardFields {
         if let Some(root) = root {
             if let Some(card) = root.rate_card.as_ref() {
                 self.rate_card = Some(card.clone());
+            }
+            if let Some(cards) = root.plugin_rate_cards.as_ref() {
+                self.plugin_rate_cards = cards.clone();
             }
             if let Some(fee) = root.per_request_fee {
                 self.per_request_fee = fee;
@@ -102,17 +110,20 @@ impl CardFields {
             self.rate_card.as_ref(),
             &self.plane_rate_cards,
         );
+        cfg.plugin_rate_cards = self.plugin_rate_cards.clone();
         cfg.per_request_fee = self.per_request_fee;
         cfg.plane_fees = self.plane_fees.clone();
     }
 
     #[must_use]
     pub fn of_root(cfg: &RootCfg) -> Self {
-        Self::from_composed(
+        let mut card = Self::from_composed(
             cfg.rate_card.as_ref(),
             cfg.per_request_fee,
             cfg.plane_fees.clone(),
-        )
+        );
+        card.plugin_rate_cards = cfg.plugin_rate_cards.clone();
+        card
     }
 
     #[must_use]
@@ -121,6 +132,27 @@ impl CardFields {
         per_request_fee: i64,
         plane_fees: PlaneFeesMap,
     ) -> Self {
+        let mut plugin_rate_cards = super::PluginRateCards::new();
+        let legacy = composed.map(|map| {
+            map.iter()
+                .filter_map(|(lane, entry)| {
+                    if let Some((kind, namespace)) =
+                        busbar_kernel_ledger::cost::split_measurement_lane(lane)
+                    {
+                        plugin_rate_cards
+                            .entry(kind.to_string())
+                            .or_default()
+                            .insert(namespace.to_string(), entry.units.clone());
+                        None
+                    } else {
+                        Some((lane.clone(), entry.clone()))
+                    }
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        let composed = legacy
+            .as_ref()
+            .filter(|map| !map.is_empty() || plugin_rate_cards.is_empty());
         let sep = busbar_kernel_ledger::cost::PLANE_LANE_SEP;
         let mut flat: Option<BTreeMap<String, RateEntryCfg>> = None;
         let mut planes: PlaneRateCards = BTreeMap::new();
@@ -157,20 +189,28 @@ impl CardFields {
             per_request_fee,
             plane_rate_cards: planes,
             plane_fees,
+            plugin_rate_cards,
         }
     }
 
     #[must_use]
     pub fn composed(&self) -> Option<BTreeMap<String, RateEntryCfg>> {
-        busbar_kernel_ledger::cost::compose_plane_cards(
-            self.rate_card.as_ref(),
-            &self.plane_rate_cards,
+        super::measurement_rates::compose(
+            busbar_kernel_ledger::cost::compose_plane_cards(
+                self.rate_card.as_ref(),
+                &self.plane_rate_cards,
+            )
+            .as_ref(),
+            &self.plugin_rate_cards,
         )
     }
 
     #[must_use]
     pub fn differing_fields(&self, other: &CardFields) -> Vec<String> {
         let mut out = Vec::new();
+        if self.plugin_rate_cards != other.plugin_rate_cards {
+            out.push("plugin_rate_cards".to_string());
+        }
         if self.rate_card != other.rate_card {
             out.push("rate_card".to_string());
         }
@@ -208,6 +248,7 @@ impl CardFields {
             rate_card: self.rate_card.clone(),
             per_request_fee: self.per_request_fee,
             planes,
+            plugin_rate_cards: self.plugin_rate_cards.clone(),
         };
         serde_json::to_vec(&stored).unwrap_or_default()
     }
@@ -218,6 +259,7 @@ impl CardFields {
         let mut card = CardFields {
             rate_card: stored.rate_card,
             per_request_fee: stored.per_request_fee,
+            plugin_rate_cards: stored.plugin_rate_cards,
             ..CardFields::default()
         };
         for (plane, p) in stored.planes {
@@ -228,6 +270,7 @@ impl CardFields {
                 card.plane_fees.insert(plane, fees.into());
             }
         }
+        super::measurement_rates::validate(&card.plugin_rate_cards)?;
         Ok(card)
     }
 
@@ -247,6 +290,16 @@ impl CardFields {
             lanes.push((lane.clone(), e.raw_tier_rates()));
             for (class, rate) in &e.units {
                 units.push((lane.clone(), class.clone(), rate.nanos_per_unit()));
+            }
+        }
+        for (kind, instances) in &self.plugin_rate_cards {
+            for (namespace, classes) in instances {
+                let lane = busbar_kernel_ledger::cost::measurement_lane(kind, namespace);
+                units.extend(
+                    classes
+                        .iter()
+                        .map(|(class, rate)| (lane.clone(), class.clone(), rate.nanos_per_unit())),
+                );
             }
         }
         CardRates {

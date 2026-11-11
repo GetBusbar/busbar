@@ -38,6 +38,7 @@ pub mod kinds;
 pub(crate) mod lifecycle;
 pub mod load;
 pub mod log_file;
+pub mod measurement;
 pub mod migrate;
 pub(crate) mod observation;
 pub mod plane_calls;
@@ -350,6 +351,7 @@ pub fn in_head() -> InHead {
         deadline_ns: 0,
         trace_id: [0; 16],
         parent_span_id: 0,
+        measurement_revision: 0,
         extensions: NO_BLOB,
     }
 }
@@ -366,6 +368,7 @@ pub fn out_head() -> OutHead {
             len: 0,
         },
         envelope: busbar_contract::abi::mechanism::call::Envelope {
+            measurements: busbar_contract::abi::measurement::MeasurementBatch::ZERO,
             metrics: std::ptr::null(),
             metrics_len: 0,
             diags: std::ptr::null(),

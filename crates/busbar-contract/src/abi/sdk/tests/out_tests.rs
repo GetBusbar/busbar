@@ -544,3 +544,42 @@ fn keep_names_a_lease_for_static_material() {
     assert_eq!(leases.release(o.head.lease), Outcome::Ready);
     assert_eq!(leases.held(), 0);
 }
+
+#[test]
+fn measurements_copy_short_lived_counts_and_keep_them_with_the_reply() {
+    use crate::abi::measurement::{check_batch, UnitCount, UNITS_REPORTED_MICROS};
+    use crate::abi::mechanism::call::InHead;
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
+    let mut raw: TickOut = zeroed();
+    let mut input: InHead = zeroed();
+    input.measurement_revision = 7;
+    {
+        let counts = [UnitCount {
+            class: 0,
+            source: UNITS_REPORTED_MICROS,
+            amount: 1_234_567,
+        }];
+        Out::kept(&mut raw, &kept, &reporting, holders())
+            .measurements(&input, &counts)
+            .unwrap();
+        assert_ne!(raw.head.envelope.measurements.counts, counts.as_ptr());
+    }
+    let report = reporting.take().expect("owns counts");
+    assert!(report.has_envelope());
+    // SAFETY: report retains its private copied array after the caller's stack slice is gone.
+    unsafe {
+        check_batch(&raw.head.envelope.measurements, 1, 7).unwrap();
+        assert_eq!((*raw.head.envelope.measurements.counts).amount, 1_234_567);
+    }
+}
+
+#[test]
+fn measurements_require_a_host_cursor_and_instance_retention() {
+    use crate::abi::mechanism::call::InHead;
+    let mut input: InHead = zeroed();
+    let mut raw: TickOut = zeroed();
+    assert!(Out::new(&mut raw).measurements(&input, &[]).is_err());
+    input.measurement_revision = 1;
+    assert!(Out::new(&mut raw).measurements(&input, &[]).is_err());
+}

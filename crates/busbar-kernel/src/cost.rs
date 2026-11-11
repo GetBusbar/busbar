@@ -186,8 +186,27 @@ impl<'a> Chain<'a> {
     }
 }
 
+/// Resolve common measurement prices once, using the host's collision-free namespace.
+/// The same cells feed live pricing and the existing dated rate-card history.
+pub fn measurement_rate_cells(
+    rates: &crate::config::PluginRateCards,
+) -> impl Iterator<Item = (busbar_kernel_ledger::cost::LaneClass, u64)> + '_ {
+    rates.iter().flat_map(|(kind, namespaces)| {
+        namespaces.iter().flat_map(move |(namespace, classes)| {
+            let lane = busbar_kernel_ledger::cost::measurement_lane(kind, namespace);
+            classes.iter().map(move |(class, rate)| {
+                (
+                    busbar_kernel_ledger::cost::LaneClass::new(&lane, class),
+                    rate.nanos_per_unit(),
+                )
+            })
+        })
+    })
+}
+
 pub struct CostModel {
     card: busbar_kernel_ledger::cost::RateCard,
+    measurement_rates: std::sync::Arc<crate::config::PluginRateCards>,
 
     routing_prices: std::sync::Arc<BTreeMap<String, BTreeMap<String, f64>>>,
     groups: Vec<GroupRuntime>,
@@ -199,6 +218,20 @@ pub struct CostModel {
 }
 
 impl CostModel {
+    /// Add host-configured prices for common plugin measurements. These cells do not
+    /// enable or change legacy plane pricing, and never pass through routing estimates.
+    #[must_use]
+    pub fn with_measurement_rates(mut self, rates: &crate::config::PluginRateCards) -> Self {
+        self.card = self.card.with_unit_rates(measurement_rate_cells(rates));
+        self.measurement_rates = std::sync::Arc::new(rates.clone());
+        self
+    }
+
+    /// The same frozen configuration used to build the card, for instance declaration checks.
+    pub fn measurement_rates(&self) -> &crate::config::PluginRateCards {
+        &self.measurement_rates
+    }
+
     pub fn resolve_parts(
         rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
         per_request_fee: i64,
@@ -234,6 +267,7 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card,
+            measurement_rates: std::sync::Arc::default(),
             routing_prices: std::sync::Arc::new(
                 rate_card
                     .into_iter()
@@ -268,6 +302,7 @@ impl CostModel {
             capped_bucket_ids: Self::capped_bucket_ids(&groups),
             generation: crate::trust::validate::next_generation(),
             card: self.card.clone(),
+            measurement_rates: std::sync::Arc::clone(&self.measurement_rates),
             routing_prices: std::sync::Arc::clone(&self.routing_prices),
             groups,
             group_idx,
@@ -395,6 +430,7 @@ impl CostModel {
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
             card: busbar_kernel_ledger::cost::RateCard::absent(price_per_request_cents),
+            measurement_rates: std::sync::Arc::default(),
             routing_prices: std::sync::Arc::default(),
             groups: Vec::new(),
             group_idx: HashMap::new(),

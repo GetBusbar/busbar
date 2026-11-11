@@ -39,7 +39,11 @@ impl GovState {
             }
         }
         let (plane, subject) = busbar_kernel_ledger::cost::split_plane_lane(&snapshot.lane);
-        let (model, provider) = if plane.is_empty() {
+        let (model, provider) = if snapshot.measurement.is_some() {
+            // Keep the dedicated encoded measurement lane. It is not a model or
+            // plane lane and must not merge with either in the metering rows.
+            (snapshot.lane.as_str(), "")
+        } else if plane.is_empty() {
             (
                 snapshot.lane.as_str(),
                 snapshot.provider.as_deref().unwrap_or(""),
@@ -47,7 +51,10 @@ impl GovState {
         } else {
             (subject, plane)
         };
-        let mut counts = if snapshot.metered && (!plane.is_empty() || snapshot.provider.is_some()) {
+        let mut counts = if snapshot.measurement.is_none()
+            && snapshot.metered
+            && (!plane.is_empty() || snapshot.provider.is_some())
+        {
             if plane.is_empty() {
                 MeterCounts::request(&snapshot.units)
             } else {
@@ -64,7 +71,8 @@ impl GovState {
             .iter()
             .filter(|(name, count)| {
                 !count.is_zero()
-                    && !(plane.is_empty()
+                    && !(snapshot.measurement.is_none()
+                        && plane.is_empty()
                         && busbar_contract::records::RESERVED_UNITS.contains(&name.as_str()))
             })
             .map(|(name, count)| (name.clone(), *count))

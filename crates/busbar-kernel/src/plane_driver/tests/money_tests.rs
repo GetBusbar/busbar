@@ -2456,3 +2456,125 @@ async fn exact_store_range_checks_estimates_separately_from_reported_counts() {
         "the estimate is not an additional bill"
     );
 }
+
+#[tokio::test]
+async fn host_measurement_context_requires_live_original_admission() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let seal = crate::seal::acquire();
+    assert!(
+        matches!(
+            r.money.measurement_context(&seal, UnitKey::new(1)),
+            Err(crate::host_measurement::Refusal::Unavailable)
+        ),
+        "a billing key without actual admission cannot mint request attribution"
+    );
+    let _parent = admit_parent(&r);
+    assert!(r.money.measurement_context(&seal, UnitKey::new(1)).is_ok());
+    assert!(matches!(
+        r.money.measurement_context(&seal, UnitKey::new(99)),
+        Err(crate::host_measurement::Refusal::Unavailable)
+    ));
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert!(
+        matches!(
+            r.money.measurement_context(&seal, UnitKey::new(1)),
+            Err(crate::host_measurement::Refusal::Unavailable)
+        ),
+        "a terminal admission cannot originate new billable work"
+    );
+}
+
+#[tokio::test]
+async fn host_measurement_request_refused_before_admission_never_resurrects() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let money = Arc::new(PlaneMoney::new(r.gov.clone(), r.posted.clone()));
+    let seal = crate::seal::acquire();
+    let unit = UnitKey::new(91);
+    assert!(matches!(
+        money.measurement_request_state(&seal, unit),
+        MeasurementRequestState::Retired
+    ));
+    let _guard = money.begin_measurement_request(&seal, unit).unwrap();
+    assert!(matches!(
+        money.measurement_request_state(&seal, unit),
+        MeasurementRequestState::PendingAdmission
+    ));
+    money.settle_end(unit, 403);
+    assert!(matches!(
+        money.measurement_request_state(&seal, unit),
+        MeasurementRequestState::Retired
+    ));
+    assert_eq!(
+        money.open_units(),
+        0,
+        "request lifetime marker is not an admission"
+    );
+}
+
+#[tokio::test]
+async fn host_measurement_request_admitted_then_retired_before_first_query_is_not_pending() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let money = Arc::new(PlaneMoney::new(r.gov.clone(), r.posted.clone()));
+    let seal = crate::seal::acquire();
+    for (id, observe_admission) in [(92, false), (93, true)] {
+        let unit = UnitKey::new(id);
+        let _guard = money.begin_measurement_request(&seal, unit).unwrap();
+        let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).unwrap());
+        money.open_admitted(unit, r.unit.clone(), grant);
+        if observe_admission {
+            assert!(matches!(
+                money.measurement_request_state(&seal, unit),
+                MeasurementRequestState::Admitted(_)
+            ));
+        }
+        money.settle_end(unit, 200);
+        assert!(matches!(
+            money.measurement_request_state(&seal, unit),
+            MeasurementRequestState::Retired
+        ));
+    }
+}
+
+#[tokio::test]
+async fn host_measurement_request_cancellation_and_scope_drop_revoke_pending_authority() {
+    let r = rig(None, 0, ExhaustionMode::FinishUnit).await;
+    let money = Arc::new(PlaneMoney::new(r.gov.clone(), r.posted.clone()));
+    let seal = crate::seal::acquire();
+    for id in 94..=96 {
+        let unit = UnitKey::new(id);
+        let guard = money.begin_measurement_request(&seal, unit).unwrap();
+        if id == 94 {
+            money.cancelled(&ctx(id), &bill(ReasonCode::ClientGone, 0));
+        }
+        if id == 95 {
+            money.abandoned(&ctx(id), Ended::AlreadySettled);
+        }
+        if id == 96 {
+            drop(guard);
+        } else {
+            assert!(matches!(
+                money.measurement_request_state(&seal, unit),
+                MeasurementRequestState::Retired
+            ));
+        }
+        assert!(matches!(
+            money.measurement_request_state(&seal, unit),
+            MeasurementRequestState::Retired
+        ));
+    }
+    let unit = UnitKey::new(97);
+    let guard = money.begin_measurement_request(&seal, unit).unwrap();
+    let grant = Arc::new(r.gov.try_admit(&r.cost, &r.key, "", NOW).unwrap());
+    money.open_admitted(unit, r.unit.clone(), grant);
+    drop(guard);
+    assert!(matches!(
+        money.measurement_request_state(&seal, unit),
+        MeasurementRequestState::Retired
+    ));
+    assert_eq!(
+        money.open_units(),
+        1,
+        "scope drop does not discard existing financial custody"
+    );
+    money.settle_end(unit, 200);
+}

@@ -1542,10 +1542,10 @@ impl BookPreparation {
             tokio::select! {
                 biased;
                 _ = stop.wait_for(|stopping| *stopping) => Err("startup stopped during boot book preparation".to_owned()),
-                result = self.run(app, store) => result,
+                result = super::measurements::maintenance(self.run(app, store)) => result,
             }
         } else {
-            self.run(app, store).await
+            super::measurements::maintenance(self.run(app, store)).await
         };
         match result {
             Ok(book) => Ok((book, self.node_lease_task.take())),
@@ -1575,10 +1575,8 @@ impl BookPreparation {
         // Recovery may wait for foreign writers' leases. Renew our actual writer
         // before any journal, keyset, price or recovery await can outlast its lease.
         if let (Some(watch), Some(lease)) = (&self.lease_watch, self.node_lease.clone()) {
-            self.node_lease_task = Some(tokio::spawn(crate::refresh_node_lease(
-                lease,
-                watch.stop.clone(),
-                watch.failure.clone(),
+            self.node_lease_task = Some(tokio::spawn(super::measurements::maintenance(
+                crate::refresh_node_lease(lease, watch.stop.clone(), watch.failure.clone()),
             )));
         }
         let node = self.taken.as_ref().expect("retained node result").id;
@@ -1663,6 +1661,7 @@ impl BookPreparation {
             tracing::warn!(%error,"usage correction remains retained for continuation");
         }
         super::durability::bind_amendments(shared, &app.amendments).await?;
+        super::measurements::install(app)?;
         let token = self.token.take().unwrap();
         let verb_store = super::durability::node_verb_store(shared.clone(), token, store);
         self.phase = BookPhase::Ready;

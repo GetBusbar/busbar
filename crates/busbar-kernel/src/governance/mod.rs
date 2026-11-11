@@ -1511,68 +1511,51 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
-    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    shutdown: tokio::sync::broadcast::Receiver<()>,
     app: Option<Arc<crate::state::AppHandle>>,
 ) -> tokio::task::JoinHandle<()> {
-    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
+    tokio::spawn(run_budget_flusher(gov, shutdown, app))
+}
 
-    let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    tokio::spawn(async move {
-        purge_usage_windows(&gov).await;
-        let mut purged_at = std::time::Instant::now();
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {
-                    if purged_at.elapsed() >= USAGE_PURGE_EVERY {
-                        purge_usage_windows(&gov).await;
-                        purged_at = std::time::Instant::now();
-                    }
-                    // The held gate joins periodic work at shutdown and skips
-                    // overlapping ticks without blocking an executor thread.
-                    let Ok(guard) = flush_gate.clone().try_lock_owned() else {
-                        continue;
-                    };
-                    let gov = gov.clone();
-                    let app = app.clone();
-                    tokio::spawn(async move {
-                        resume_current_correction_verdicts(&gov, app.as_ref()).await;
-                        if let Err(e) = gov.flush_unit_checkpoints().await {
-                            tracing::warn!(
-                                error = ?e,
-                                "flush_unit_checkpoints failed; \
-                                 retrying next tick"
-                            );
-                        }
-                        gov.flush_budgets().await;
-                        gov.flush_metering().await;
-                        drop(guard);
-                    });
+/// Run in the root's host maintenance scope. Keeping every flush on this future
+/// preserves that scope across awaits and avoids recursively metering journal IO.
+/// A shutdown signal never cancels an in-flight native write: it is observed at
+/// the next loop boundary, then the same task performs the final custody drain.
+pub async fn run_budget_flusher(
+    gov: std::sync::Arc<GovState>,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    app: Option<Arc<crate::state::AppHandle>>,
+) {
+    let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
+    purge_usage_windows(&gov).await;
+    let mut purged_at = std::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {
+                if purged_at.elapsed() >= USAGE_PURGE_EVERY {
+                    purge_usage_windows(&gov).await;
+                    purged_at = std::time::Instant::now();
                 }
-                _ = shutdown.recv() => {
-                    // Drain the current driver before final flushes. Admission
-                    // has stopped; unresolved custody remains explicitly held.
-                    let guard = flush_gate.clone().lock_owned().await;
-                    let gov = gov.clone();
-                    let app = app.clone();
-                    let _ = tokio::spawn(async move {
-                        resume_current_correction_verdicts(&gov, app.as_ref()).await;
-                        if let Err(e) = gov.flush_unit_checkpoints().await {
-                            tracing::warn!(
-                                error = ?e,
-                                "shutdown: flush_unit_checkpoints failed; \
-                                 checkpoint data may be stale on next start"
-                            );
-                        }
-                        gov.flush_budgets_final().await;
-                        gov.flush_metering_final().await;
-                        drop(guard);
-                    })
-                    .await;
-                    break;
+                resume_current_correction_verdicts(&gov, app.as_ref()).await;
+                if let Err(e) = gov.flush_unit_checkpoints().await {
+                    tracing::warn!(error = ?e,
+                        "flush_unit_checkpoints failed; retrying next tick");
                 }
+                gov.flush_budgets().await;
+                gov.flush_metering().await;
+            }
+            _ = shutdown.recv() => {
+                resume_current_correction_verdicts(&gov, app.as_ref()).await;
+                if let Err(e) = gov.flush_unit_checkpoints().await {
+                    tracing::warn!(error = ?e,
+                        "shutdown: flush_unit_checkpoints failed; checkpoint data may be stale on next start");
+                }
+                gov.flush_budgets_final().await;
+                gov.flush_metering_final().await;
+                break;
             }
         }
-    })
+    }
 }
 
 async fn resume_current_correction_verdicts(

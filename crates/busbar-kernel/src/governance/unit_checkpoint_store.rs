@@ -28,6 +28,14 @@ use std::{
 
 const FAMILY: NamespaceId = NamespaceId(*b"busbar.unitcp.v1");
 const TAG: &str = "unit.accrued";
+const MEASUREMENT_TAG: &str = "measurement.accrued";
+fn checkpoint_tag(snapshot: &UnitCheckpoint) -> &'static str {
+    if snapshot.measurement.is_some() {
+        MEASUREMENT_TAG
+    } else {
+        TAG
+    }
+}
 fn error(e: impl std::fmt::Debug) -> RecordStoreError {
     RecordStoreError(format!("unit checkpoint: {e:?}"))
 }
@@ -280,7 +288,8 @@ impl StoreUnitCheckpoints {
             .map_err(error)?;
         let record = JournalRecord::decode(&original.body).map_err(error)?;
         let mut reader = BodyReader::new(&record.body);
-        if record.class != RecordClass::Checkpoint || reader.text() != Some(TAG) {
+        let tag = reader.text();
+        if record.class != RecordClass::Checkpoint || !matches!(tag, Some(TAG | MEASUREMENT_TAG)) {
             return Err(refusal(
                 "running money head does not name unit.accrued evidence",
             ));
@@ -292,7 +301,9 @@ impl StoreUnitCheckpoints {
             .bytes()
             .ok_or_else(|| refusal("unsigned unit.accrued evidence"))?;
         let mut signed = BodyWriter::new();
-        signed.text(TAG).bytes(encoded);
+        signed
+            .text(tag.expect("validated checkpoint tag"))
+            .bytes(encoded);
         self.audit
             .keys()
             .verify_checkpoint_body(&signed.finish(), signature)
@@ -300,8 +311,18 @@ impl StoreUnitCheckpoints {
         if !reader.is_done() {
             return Err(refusal("trailing unit.accrued evidence"));
         }
+        if tag == Some(MEASUREMENT_TAG)
+            && encoded.len() > crate::host_measurement::MAX_EVIDENCE_BYTES
+        {
+            return Err(refusal("host measurement evidence exceeds bound"));
+        }
         let snapshot: UnitCheckpoint = serde_json::from_slice(encoded).map_err(error)?;
         snapshot.validate()?;
+        if tag != Some(checkpoint_tag(&snapshot)) {
+            return Err(refusal(
+                "checkpoint origin differs from signed evidence domain",
+            ));
+        }
         if snapshot.id != *id || snapshot.revision != head.revision {
             return Err(refusal("running money head differs from journal evidence"));
         }
@@ -470,7 +491,7 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         }
         self.no_foreign_pending()?;
         snapshot.validate()?;
-        if snapshot.audit.is_none() {
+        if snapshot.measurement.is_none() && snapshot.audit.is_none() {
             return Err(refusal("unit.accrued lacks captured admission audit facts"));
         }
         let previous = self.head(&snapshot.id).await?;
@@ -498,8 +519,13 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
             }
         }
         let encoded = serde_json::to_vec(snapshot).map_err(error)?;
+        if snapshot.measurement.is_some()
+            && encoded.len() > crate::host_measurement::MAX_EVIDENCE_BYTES
+        {
+            return Err(refusal("host measurement evidence exceeds bound"));
+        }
         let mut body = BodyWriter::new();
-        body.text(TAG).bytes(&encoded);
+        body.text(checkpoint_tag(snapshot)).bytes(&encoded);
         let mut signed = body.finish();
         let signature = self.audit.sign_checkpoint(&signed)?;
         let mut field = BodyWriter::new();
@@ -547,7 +573,9 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
                 "cannot remove running money before terminal custody",
             ));
         }
-        self.audit.confirm(snapshot).await?;
+        if snapshot.measurement.is_none() {
+            self.audit.confirm(snapshot).await?;
+        }
         let Some(raw) = self.head(&snapshot.id).await? else {
             let proof = self.evidence.proof().await?;
             StoreJournal::new(&self.evidence.store, self.evidence.node)
@@ -609,6 +637,10 @@ impl UnitCheckpointSink for StoreUnitCheckpoints {
         Ok(out.into_values().collect())
     }
     async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
-        self.audit.recover(snapshot).await
+        if snapshot.measurement.is_some() {
+            snapshot.validate()
+        } else {
+            self.audit.recover(snapshot).await
+        }
     }
 }

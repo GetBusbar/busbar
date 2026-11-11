@@ -387,7 +387,54 @@ impl Open {
 
 const SHARDS: usize = 16;
 
-type Shard = HashMap<UnitKey, Open>;
+#[derive(Default)]
+struct Shard {
+    units: HashMap<UnitKey, Open>,
+    measurement_requests: HashMap<UnitKey, Arc<()>>,
+}
+impl std::ops::Deref for Shard {
+    type Target = HashMap<UnitKey, Open>;
+    fn deref(&self) -> &Self::Target {
+        &self.units
+    }
+}
+impl std::ops::DerefMut for Shard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.units
+    }
+}
+impl Shard {
+    fn remove(&mut self, key: &UnitKey) -> Option<Open> {
+        self.measurement_requests.remove(key);
+        self.units.remove(key)
+    }
+}
+
+/// A root-issued live request scope, distinct from a governor admission.
+/// Drop retires its measurement authority even if the driving future is cancelled.
+pub struct MeasurementRequestGuard {
+    money: Arc<PlaneMoney>,
+    key: UnitKey,
+    identity: Arc<()>,
+}
+impl Drop for MeasurementRequestGuard {
+    fn drop(&mut self) {
+        let mut shard = self.money.shard(self.key);
+        if shard
+            .measurement_requests
+            .get(&self.key)
+            .is_some_and(|identity| Arc::ptr_eq(identity, &self.identity))
+        {
+            shard.measurement_requests.remove(&self.key);
+        }
+    }
+}
+
+pub enum MeasurementRequestState {
+    PendingAdmission,
+    Admitted(crate::host_measurement::MeasurementContext),
+    Retired,
+}
 
 pub struct PlaneMoney {
     book: Arc<()>,
@@ -404,13 +451,110 @@ impl PlaneMoney {
             book: Arc::new(()),
             gov,
             post,
-            units: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            units: std::array::from_fn(|_| Mutex::new(Shard::default())),
         }
     }
 
     #[must_use]
     pub fn caller_refs(&self) -> Option<super::CallerRefs> {
         Some(self.gov.caller_ref_slot())
+    }
+
+    /// Register the actual root request lifetime before ARRIVE/ROUTE/hooks. This
+    /// does not admit it, select a budget, or reconstruct a missing money entry.
+    pub fn begin_measurement_request(
+        self: &Arc<Self>,
+        _seal: &busbar_contract::caps::KernelSeal,
+        key: UnitKey,
+    ) -> Result<MeasurementRequestGuard, crate::host_measurement::Refusal> {
+        use crate::host_measurement::Refusal;
+        let mut shard = self.shard(key);
+        if key.get() == 0
+            || shard.contains_key(&key)
+            || shard.measurement_requests.contains_key(&key)
+        {
+            return Err(Refusal::Conflict);
+        }
+        shard
+            .measurement_requests
+            .try_reserve(1)
+            .map_err(|_| Refusal::Unavailable)?;
+        let identity = Arc::new(());
+        shard.measurement_requests.insert(key, identity.clone());
+        Ok(MeasurementRequestGuard {
+            money: self.clone(),
+            key,
+            identity,
+        })
+    }
+
+    /// Missing/closed authority is always Retired. Only an explicitly registered
+    /// live request with no money entry can be PendingAdmission.
+    pub fn measurement_request_state(
+        &self,
+        seal: &busbar_contract::caps::KernelSeal,
+        key: UnitKey,
+    ) -> MeasurementRequestState {
+        let shard = self.shard(key);
+        if !shard.measurement_requests.contains_key(&key) {
+            return MeasurementRequestState::Retired;
+        }
+        match shard.get(&key) {
+            None => MeasurementRequestState::PendingAdmission,
+            Some(open) => match Self::measurement_context_of(seal, key, open) {
+                Ok(context) => MeasurementRequestState::Admitted(context),
+                Err(_) => MeasurementRequestState::Retired,
+            },
+        }
+    }
+
+    /// Capture only the host's original, still-live admission. No caller-supplied
+    /// account, targets, or current rate lookup participates in this attribution.
+    pub fn measurement_context(
+        &self,
+        seal: &busbar_contract::caps::KernelSeal,
+        key: UnitKey,
+    ) -> Result<crate::host_measurement::MeasurementContext, crate::host_measurement::Refusal> {
+        let units = self.shard(key);
+        let open = units
+            .get(&key)
+            .ok_or(crate::host_measurement::Refusal::Unavailable)?;
+        Self::measurement_context_of(seal, key, open)
+    }
+
+    fn measurement_context_of(
+        seal: &busbar_contract::caps::KernelSeal,
+        key: UnitKey,
+        open: &Open,
+    ) -> Result<crate::host_measurement::MeasurementContext, crate::host_measurement::Refusal> {
+        use crate::host_measurement::{MeasurementContext, Refusal};
+        if open.finished || open.ledgered || open.abandoned || open.grant.is_none() {
+            return Err(Refusal::Unavailable);
+        }
+        let money = &open.money;
+        let (_, pool) = busbar_kernel_ledger::cost::split_plane_lane(&money.pool);
+        let chain = money
+            .cost
+            .chain_for(&money.key)
+            .map_err(|_| Refusal::Unavailable)?;
+        let targets = chain
+            .iter()
+            .filter(|bucket| bucket.applies_to_pool(pool))
+            .map(|bucket| crate::governance::unit_checkpoint::UnitTarget {
+                bucket: bucket.bucket_id.to_string(),
+                window: crate::governance::budget_window(bucket.window, money.arrived),
+                group: bucket.group_name.map(str::to_string),
+            })
+            .collect();
+        MeasurementContext::request(
+            seal,
+            key.get(),
+            money.key.id.clone(),
+            money.key.group.clone().unwrap_or_default(),
+            targets,
+            money.arrived,
+            money.charge.raw_era(),
+        )
     }
 
     fn shard(&self, key: UnitKey) -> std::sync::MutexGuard<'_, Shard> {
@@ -855,6 +999,7 @@ impl PlaneMoney {
             metered,
             ended: false,
             terminal: None,
+            measurement: None,
             audit: self
                 .post
                 .checkpoint_facts(key)
@@ -1059,6 +1204,7 @@ impl MoneySeam for PlaneMoney {
     fn cancelled(&self, ctx: &UnitCtx, bill: &CancelBill) {
         let (money, provider, removed, durable) = {
             let mut all = self.shard(ctx.key);
+            all.measurement_requests.remove(&ctx.key);
             let Some(open) = all.get_mut(&ctx.key) else {
                 return;
             };
@@ -1090,6 +1236,7 @@ impl MoneySeam for PlaneMoney {
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         let removed = {
             let mut all = self.shard(ctx.key);
+            all.measurement_requests.remove(&ctx.key);
             match all.get_mut(&ctx.key) {
                 Some(open) if !open.ledgered && open.finished => {
                     all.remove(&ctx.key).map(|open| (open, true))

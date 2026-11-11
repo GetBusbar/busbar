@@ -203,6 +203,7 @@ fn table() -> &'static Ops {
 
 fn in_head<T>(op: u32) -> InHead {
     InHead {
+        measurement_revision: 0,
         size: size_of::<T>() as u32,
         op,
         flags: 0,

@@ -340,6 +340,7 @@ impl Worker {
             entry.latched = false;
             entry.next = None;
             entry.short_slot = None;
+            entry.short_measurement = None;
             entry.short_reply = None;
             waiters.append(&mut entry.unit_waiters);
         }
@@ -605,13 +606,15 @@ pub(super) fn cancel_orphan(mut orphan: Orphan) {
         })
     });
     let cancel = || {
-        instance.cancel_abandoned(
-            *ticket,
-            current.meta.class,
-            current.meta.slot,
-            unit,
-            current.meta.framing.clone(),
-        )
+        crate::dispatch::measurement::with_reservation(current.meta.measurement.clone(), || {
+            instance.cancel_abandoned(
+                *ticket,
+                current.meta.class,
+                current.meta.slot,
+                unit,
+                current.meta.framing.clone(),
+            )
+        })
     };
     let crossed = match &current.meta.tracing {
         Some(tracing) => tracing.in_scope(cancel),

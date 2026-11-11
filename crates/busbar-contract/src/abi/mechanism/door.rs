@@ -451,9 +451,24 @@ pub struct Statement {
     pub claims: *const AbiStr,
     /// How many.
     pub claims_len: usize,
+    /// Immutable raw unit declarations for every plugin kind, covered by the signed rendering.
+    pub measurement_classes: *const crate::abi::measurement::BillableClass,
+    /// At most 64; zero declarations means no reporting.
+    pub measurement_classes_len: usize,
 }
 
 impl Statement {
+    /// Declare common units using immutable storage retained for the program lifetime.
+    pub const fn with_measurement_classes(
+        mut self,
+        classes: &'static [crate::abi::measurement::BillableClass],
+    ) -> Self {
+        assert!(classes.len() <= crate::abi::measurement::MAX_MEASUREMENT_CLASSES);
+        self.measurement_classes = classes.as_ptr();
+        self.measurement_classes_len = classes.len();
+        self
+    }
+
     /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
     pub const ZERO: Self = Self {
         size: 0,
@@ -486,6 +501,8 @@ impl Statement {
         answers_len: 0,
         claims: std::ptr::null(),
         claims_len: 0,
+        measurement_classes: std::ptr::null(),
+        measurement_classes_len: 0,
     };
 }
 
