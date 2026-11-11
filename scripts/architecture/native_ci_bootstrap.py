@@ -430,7 +430,8 @@ def stage_judges(trusted, repository, job, store, token):
             source = portable_path.parent / 'bundles' / name
             actual_bytes += sum(path.stat().st_size for path in source.rglob('*') if path.is_file())
             merged['bundles'][name] = dict(bundle, path=str(source))
-        require(actual_bytes == row['expanded_bytes'], 'expanded judge size differs from the protected input plan')
+        require(actual_bytes == row['expanded_bytes'],
+                f"expanded judge size differs for {owner} ({owner}.tar.gz): expected {row['expanded_bytes']}, actual {actual_bytes}")
         retained.append({'owner': owner, 'archive_sha256': row['archive_sha256'],
                          'portable_manifest_sha256': row['portable_manifest_sha256'],
                          'expanded_bytes': actual_bytes, 'bundles': row['bundles']})
