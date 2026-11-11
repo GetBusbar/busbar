@@ -5,6 +5,7 @@ import json
 import io
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -125,6 +126,81 @@ class Oracle(unittest.TestCase):
             with self.assertRaisesRegex(Violation, 'administrator identity'):
                 native_oracle.install(self.pin, 'x86_64', self.judge, self.root / 'installation')
         self.assertFalse((self.root / 'installation').exists())
+
+
+class OracleShim(unittest.TestCase):
+    """Run the real shim with a bounded test engine, not a conformance judge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.host = self.root / 'host'
+        (self.host / 'bin').mkdir(parents=True)
+        self.shim = self.host / 'bin/oracle'
+        shutil.copyfile(Path(__file__).resolve().parents[2] / 'bin/oracle', self.shim)
+        self.judge = self.root / 'test-engine'
+        self.judge.write_text('''#!/bin/sh
+case "$1" in
+  tool-dir)
+    [ "$#" = 3 ] && [ "$3" = --materialize ] || exit 97
+    printf '# test materialization\\n' > "$2/oracle-config.sh" ;;
+  --help) printf 'bounded test engine\\n' ;;
+  *) exit 98 ;;
+esac
+''')
+        self.judge.chmod(0o755)
+        digest = hashlib.sha256(self.judge.read_bytes()).hexdigest()
+        self.target = self.root / 'writable target'
+        self.ref = 'a' * 40
+        self.env = dict(PATH=os.environ['PATH'], CI='true',
+                        CARGO_TARGET_DIR=str(self.target),
+                        BUSBAR_ORACLE_RELEASE_REPO='GetBusbar/busbar-release',
+                        BUSBAR_ORACLE_RELEASE_REF=self.ref,
+                        BUSBAR_ORACLE_SHA256_LINUX_X86_64=digest,
+                        BUSBAR_ORACLE_SHA256_LINUX_AARCH64=digest,
+                        BUSBAR_ORACLE_CRATE='busbar-oracle', BUSBAR_ORACLE_BIN='busbar-oracle',
+                        BUSBAR_ORACLE_JUDGE_PATH=str(self.judge))
+
+    def tool_dir(self):
+        return subprocess.run(['bash', str(self.shim), 'tool-dir'], env=self.env,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_explicit_target_avoids_host_writes_and_keeps_judge_reverification(self):
+        # A file obstructs host/target even under root, unlike chmod alone. The real
+        # confined host is a read-only mount and likewise cannot create this directory.
+        (self.host / 'target').write_text('host target is unavailable\n')
+        result = self.tool_dir()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tool = self.target / 'oracle/rust' / self.ref / 'tool'
+        self.assertEqual(result.stdout.strip(), str(tool))
+        self.assertTrue((tool / 'record.sh').is_file())
+        self.assertEqual((tool / 'oracle-config.sh').read_text(), '# test materialization\n')
+        self.assertEqual((self.host / 'target').read_text(), 'host target is unavailable\n')
+        wrapper = tool / 'judge-verified'
+        accepted = subprocess.run([str(wrapper), '--help'], env=self.env,
+                                  capture_output=True, text=True, timeout=30)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(accepted.stdout, 'bounded test engine\n')
+        self.judge.write_text('#!/bin/sh\nprintf "substituted engine ran\\n"\n')
+        rejected = subprocess.run([str(wrapper), '--help'], env=self.env,
+                                  capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('NO JUDGE', rejected.stderr)
+        self.assertEqual(rejected.stdout, '')
+        # A fresh shim invocation must also refuse the changed installed bytes.
+        rejected = self.tool_dir()
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn('NO JUDGE', rejected.stderr)
+        self.assertEqual(rejected.stdout, '')
+
+    def test_no_explicit_target_preserves_checkout_target_fallback(self):
+        self.env.pop('CARGO_TARGET_DIR')
+        result = self.tool_dir()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(),
+                         str(self.host / 'target/oracle/rust' / self.ref / 'tool'))
+        self.assertFalse(self.target.exists())
 
 
 if __name__ == '__main__':

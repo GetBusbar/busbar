@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "9ba2783048f9f574fae1bbeffc532856344a62d8",
+      "commit": "bd01d74ed92a24109d270576be14abd435684075",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -290,7 +290,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "adfed5ca21a5d91a85c5a3ca81aeb341a4ee9664",
+      "commit": "f471abcdc2ddec3ce6d41e9e4bded07e3d3e6fce",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "d7b699ce1ae2dd19e34bdf2c48f35985c5e5e42e",
+      "commit": "b4e50b072de47d45e3a1cdedc6a02c87f33120fc",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "a247cfff7c98c01efd000193254b8ad2754b4c7d",
+      "commit": "76678fb8791291ae887cac0b12da138e4676bb79",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",

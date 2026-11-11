@@ -27,13 +27,23 @@ from check import Policy, Violation, read
 from native_policy import native_settings
 
 
-def build_parallelism(execution):
+def native_scheduling(execution):
     # The trusted controller sees host CPUs, but rustc runs inside the candidate's
     # smaller CPU/memory boundary. Do not fan out to the controller's CPU count.
     available = os.cpu_count() or 4
+    memory = None
     if execution is not None:
         available = min(available, execution.config['resources']['cpus'])
-    return max(1, min(available, 16))
+        memory = execution.config['resources']['memory_bytes']
+    test_threads = max(1, min(available, 16))
+    # Conservative scheduling after concurrent optimized compilers exhausted the
+    # 6 GiB boundary. This is not a measured peak or a guarantee that one fits.
+    memory_per_slot = 6 * 1024**3
+    build_jobs = (test_threads if memory is None else
+                  max(1, min(test_threads, memory // memory_per_slot)))
+    return {'build_jobs': build_jobs, 'test_threads': test_threads,
+            'candidate_memory_bytes': memory, 'compiler_memory_bytes_per_slot': memory_per_slot,
+            'memory_policy': 'conservative-slot-budget-not-measured-peak-or-fit-guarantee'}
 
 
 def validate_test_report(path):
@@ -383,10 +393,11 @@ class Qualification:
         # Keep native test libraries free of embedded debug-symbol bulk. Rust assertions
         # and optimization settings are unchanged; archive admission still hashes the
         # actual complete library used by every runtime and custody witness.
+        self.receipt['native_scheduling'] = native_scheduling(self.execution)
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
             RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
             CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
-            CARGO_BUILD_JOBS=str(build_parallelism(self.execution)), CARGO_TERM_COLOR='never',
+            CARGO_BUILD_JOBS=str(self.receipt['native_scheduling']['build_jobs']), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
             MODERNCI_CACHE_DIR=str(self.work / 'cache'), XDG_CACHE_HOME=str(self.work / 'cache'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')
@@ -592,7 +603,7 @@ class Qualification:
                 '-shared', '-fPIC', '-fvisibility=hidden', '-I', str(host / Path(PUBLIC_C_HEADER).parent),
                 *[str(c_source / source) for source in recipe['sources']], '-o', str(library)])
             self.env.update(BUSBAR_C_ABI_SOURCES=str(c_source / recipe['test-root']), BUSBAR_C_ABI_LIBRARY=str(library))
-            nextest = ['--no-fail-fast', '--test-threads', self.env['CARGO_BUILD_JOBS'], '--tool-config-file',
+            nextest = ['--no-fail-fast', '--test-threads', str(self.receipt['native_scheduling']['test_threads']), '--tool-config-file',
                        'admission:' + str(self.trusted / 'ci/native-nextest.toml')]
             selected = 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | (package(busbar-default) & test(/^distribution::admin_cross_plane::/)) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
             features = 'test-harness,transport-webrtc,openapi-schema'
