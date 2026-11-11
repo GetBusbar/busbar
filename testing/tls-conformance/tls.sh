@@ -80,6 +80,19 @@ cleanup() {
 trap 'cleanup || exit 1' EXIT
 why=()
 final() {
+  mkdir -p "$CONFORMANCE_OUT/evidence"
+  python3 -I - "$W" "$CONFORMANCE_OUT/evidence/diagnostics.json" <<'PYLOG'
+import json, pathlib, sys
+work = pathlib.Path(sys.argv[1])
+logs = {}
+for name in ("control.log", "weak.log", "subject.log", "nginx.log", "weak-server.log", "subject-server.log"):
+    path = work / name
+    if path.is_file():
+        with path.open("rb") as stream:
+            stream.seek(max(0, path.stat().st_size - 65536))
+            logs[name] = stream.read(65536).decode("utf-8", errors="replace")
+pathlib.Path(sys.argv[2]).write_text(json.dumps({"logs": logs}, indent=2) + "\n")
+PYLOG
   cleanup || why+=("the TLS subject supervisor did not shut down and reap cleanly")
   python3 -I - "$CONFORMANCE_OUT/verdict.json" "$TESTSSL_VER" "${why[@]+"${why[@]}"}" <<'PY'
 import json, sys
@@ -111,13 +124,18 @@ cat >"$W/testssl" <<'SH'
 #!/usr/bin/env bash
 exec bash /opt/busbar-conformance/testssl/testssl.sh --add-ca "$TLS_CA" "$@"
 SH
-cat >"$W/hexdump" <<'SH'
+# testssl requires a resolver executable even for localhost. Use the real
+# applets from the already pinned BusyBox; no downloads or synthetic DNS answers.
+for applet in hexdump nslookup; do
+cat >"$W/$applet" <<'SH'
 #!/usr/bin/env bash
 exec /opt/busbar-conformance/testssl/nginx/lib/ld-musl-x86_64.so.1 \
   --library-path /opt/busbar-conformance/testssl/nginx/lib \
-  /opt/busbar-conformance/testssl/nginx/busybox hexdump "$@"
+  /opt/busbar-conformance/testssl/nginx/busybox "${0##*/}" "$@"
 SH
-chmod +x "$W/testssl" "$W/hexdump"
+chmod +x "$W/$applet"
+done
+chmod +x "$W/testssl"
 export TESTSSL="$W/testssl" PATH="$W:$PATH"
 
 free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
@@ -176,7 +194,9 @@ else why+=("the control server (nginx) could not be started"); fi
 say "=== leg 2: negative control (old OpenSSL s_server: SSLv3/TLS1.0, 3DES/RC4/export, RSA 1024)"
 mkcert "$W/weak" 1024
 port="$(free_port)"
-OPENSSL_CONF=/dev/null "$OLD_OPENSSL" s_server -accept "127.0.0.1:$port" -cert "$W/weak/cert.pem" -key "$W/weak/key.pem" -www \
+# This OpenSSL's -accept takes a service/port, not modern host:port syntax.
+# Its socket is confined to the candidate network namespace.
+OPENSSL_CONF=/dev/null "$OLD_OPENSSL" s_server -accept "$port" -cert "$W/weak/cert.pem" -key "$W/weak/key.pem" -www \
   -cipher 'DES-CBC3-SHA:RC4-SHA:RC4-MD5:AES128-SHA:EXP-RC4-MD5:EXP-DES-CBC-SHA:ECDHE-RSA-AES128-SHA' >"$W/weak-server.log" 2>&1 &
 fixture_pids+=($!)
 if [ -s "$W/weak/cert.pem" ] && wait_port "$port"; then
