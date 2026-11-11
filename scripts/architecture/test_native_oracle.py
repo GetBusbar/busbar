@@ -2,6 +2,8 @@
 import base64
 import hashlib
 import json
+import io
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -12,11 +14,12 @@ from unittest.mock import patch
 
 from check import Violation
 from native_oracle import prepare, root_owned, verify
+import native_oracle
 
 
 class Oracle(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
+        self.tmp = tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.judge = self.root / 'busbar-oracle'
@@ -91,6 +94,37 @@ class Oracle(unittest.TestCase):
         self.assertEqual(q.receipt['oracle_judge']['sha256'], digest)
         self.assertTrue(q.receipt['oracle_judge']['signature_verified'])
         self.assertEqual(calls[0][0], ('oracle-judge-available', [str(installed), '--help']))
+
+    def test_staging_uses_same_origin_api_and_verifies_signed_bytes(self):
+        row = self.pin['platforms']['x86_64']
+        row['canonical_asset'] = 'https://github.com/GetBusbar/busbar-release/-/releases/dev-bin/downloads/' + row['filename']
+        calls = []
+        class Opener:
+            def open(_, request, timeout):
+                calls.append(request)
+                return io.BytesIO(self.judge.read_bytes())
+        release = {'assets': {'links': [{'name': row['filename'], 'direct_asset_url': row['canonical_asset'],
+                    'url': 'https://github.com/-/project/29/uploads/' + 'a' * 32 + '/' + row['filename']}]}}
+        api = SimpleNamespace(server='https://github.com', token='test-only',
+                              request=lambda path: release if path.endswith('/dev-bin') else {'id': 29})
+        with patch.object(native_oracle.urllib.request, 'build_opener', return_value=Opener()):
+            result = native_oracle.stage(self.pin, 'x86_64', self.root / 'staged', api)
+        self.assertTrue(result['signature_verified'])
+        self.assertEqual(result['sha256'], row['sha256'])
+        self.assertIn('/api/v4/projects/29/uploads/', calls[0].full_url)
+        self.assertNotIn('test-only', json.dumps(result))
+        self.assertEqual(Path(result['artifact']).stat().st_mode & 0o777, 0o555)
+
+    def test_staging_redirect_cannot_forward_credential_to_another_origin(self):
+        request = native_oracle.urllib.request.Request('https://github.com/download', headers={'PRIVATE-TOKEN': 'test-only'})
+        with self.assertRaisesRegex(Violation, 'credential origin'):
+            native_oracle.SameOriginRedirect().redirect_request(request, None, 302, '', {}, 'https://other.invalid/file')
+
+    def test_cache_installation_never_escalates_a_build_identity(self):
+        with patch.object(native_oracle.os, 'geteuid', return_value=1000):
+            with self.assertRaisesRegex(Violation, 'administrator identity'):
+                native_oracle.install(self.pin, 'x86_64', self.judge, self.root / 'installation')
+        self.assertFalse((self.root / 'installation').exists())
 
 
 if __name__ == '__main__':

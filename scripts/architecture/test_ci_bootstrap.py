@@ -11,7 +11,7 @@ from unittest.mock import patch
 class ConfigReference(unittest.TestCase):
     def match(self, uri, project='GetBusbar/busbar-auth-admin-tokens'):
         yaml = (Path(__file__).parents[2] / 'ci/architecture-pipeline.yml').read_text()
-        source = textwrap.dedent(yaml.split("      python3 - <<'PY'\n", 1)[1].split('\n      PY', 1)[0])
+        source = textwrap.dedent(yaml.split("      python3 -I -B - <<'PY'\n", 1)[1].split('\n      PY', 1)[0])
         assignment = next(node for node in ast.parse(source).body
                           if isinstance(node, ast.Assign)
                           and any(isinstance(target, ast.Name) and target.id == 'match' for target in node.targets))

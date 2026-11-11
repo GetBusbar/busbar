@@ -1,0 +1,13 @@
+{
+  "engine_version": "29.1.3",
+  "engine_git_commit": "fbf3ed25f893e6ce21336f1101590e40a13934f4",
+  "seccomp_module": "github.com/moby/profiles/seccomp@v0.1.0",
+  "baseline_url": "https://raw.githubusercontent.com/moby/moby/fbf3ed25f893e6ce21336f1101590e40a13934f4/vendor/github.com/moby/profiles/seccomp/default.json",
+  "baseline_sha256": "01536f1d1df938ae611eba20d6349e0de7a99b6ecdee1549427a0b01b8301e28",
+  "profile_sha256": "8901a497db4e8270de320dfd06b5af316ab7c6bea6fdc24f2c91e362c83295f3",
+  "allowed_personality": 262144,
+  "status": "unqualified-native-x86",
+  "schema": "busbar.native-tsan-probe-pins/1",
+  "default_go_sha256": "9fcf5ac6798c0639a8460d55a332dce76b835d60ec45cbf984c30794f9f5a50b",
+  "local_fixture_only": true
+}

@@ -85,6 +85,39 @@ def main():
         actual == seed["files"] and seed["plan_sha256"] == recipe["plan_sha256"],
         "seed changed during assembly",
     )
+    native_tools = recipe.get('native_tools', {})
+    for name, expected in native_tools.get('files', {}).items():
+        require(sha(Path('/') / name) == expected, 'installed native payload differs')
+    for name, item in native_tools.get('cargo_tools', {}).items():
+        source = inputs / 'tool-sources' / item['root']
+        require(sha(source / 'Cargo.lock') == item['lock_sha256'], 'native tool build lock differs')
+        build_env = {'PATH': '/usr/local/cargo/bin:/usr/bin:/bin', 'HOME': '/tmp/tool-home',
+                     'CARGO_HOME': '/opt/busbar-native/tool-seed', 'RUSTUP_HOME': '/usr/local/rustup',
+                     'RUSTUP_TOOLCHAIN': recipe['rust'], 'CARGO_NET_OFFLINE': 'true',
+                     'CARGO_BUILD_JOBS': '2', 'CARGO_INCREMENTAL': '0',
+                     'RUSTFLAGS': '--remap-path-prefix=/inputs=/usr/src/busbar-native-tools',
+                     'SOURCE_DATE_EPOCH': str(recipe['source_date_epoch'])}
+        Path(build_env['HOME']).mkdir(exist_ok=True)
+        subprocess.run(['cargo', 'install', '--offline', '--locked', '--path', str(source),
+                        '--root', '/usr/local/cargo', '--target-dir', '/tmp/tool-build'],
+                       env=build_env, check=True, timeout=900)
+        output = subprocess.check_output(['/usr/local/cargo/bin/' + name, '--version'], text=True)
+        require(output.strip().startswith(item['version']), 'native Cargo tool version differs')
+        shutil.rmtree('/tmp/tool-build')
+        shutil.rmtree('/tmp/tool-home')
+    for name, item in native_tools.get('tools', {}).items():
+        output = subprocess.check_output([item['installed'], '--version'], text=True)
+        require(output.strip().startswith(item['version']), 'native tool version differs')
+    for item in native_tools.get('wheels', []):
+        output = subprocess.check_output(['/usr/bin/python3', '-I', '-c',
+            'import importlib; print(importlib.import_module(' + repr(item['module']) + ').__version__)'], text=True)
+        require(output.strip() == item['version'], 'native Python package version differs')
+    # Cargo tool installation uses the same cache but must not alter seeded inputs.
+    for name, expected in seed['files'].items():
+        require(sha(cache / name) == expected, 'tool install mutated offline dependency seed')
+    for path in cache.glob('.*cache*'):
+        require(path.is_file(), 'unexpected cache state')
+        path.unlink()
     Path("/opt/busbar-native/recipe.json").write_text(
         json.dumps(recipe, sort_keys=True, indent=2) + "\n"
     )
@@ -92,6 +125,9 @@ def main():
         [
             "find",
             "/usr/local/rustup",
+            "/usr/local/cargo",
+            "/usr/local/bin",
+            "/usr/local/lib/python3.11/dist-packages",
             "/opt/busbar-native",
             "-exec",
             "touch",

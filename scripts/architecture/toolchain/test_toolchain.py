@@ -1,14 +1,17 @@
 """Exact-vector and hostile-input preparation regressions; no image builds here."""
 
 import json
+import io
 import os
 from pathlib import Path
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
 import build
 import prepare
+import tool_assets
 
 
 class Inputs(unittest.TestCase):
@@ -72,7 +75,7 @@ class Inputs(unittest.TestCase):
             },
         }
         (self.tools / "pins.json").write_text(json.dumps(pins))
-        for name in ("prepare.py", "seed.py", "install.py"):
+        for name in ("prepare.py", "seed.py", "install.py", "tool_assets.py"):
             (self.tools / name).write_text("# trusted unit fixture\n")
 
     def run_prepare(self, name="output"):
@@ -197,6 +200,42 @@ class Inputs(unittest.TestCase):
                     self.root / "build",
                 )
             execute.assert_not_called()
+
+    def test_v2_payload_is_digest_bound_and_cannot_replace_compiler_tools(self):
+        binary = self.source / 'h2spec'
+        binary.write_bytes(b'unit fixture, never executed')
+        entry = {'path': 'h2spec', 'sha256': prepare.sha(binary), 'executable': True}
+        self.plan.update(schema='busbar.native-toolchain-inputs/2', advisory_db=None, oracle=None,
+                         payload={'opt/busbar-conformance/h2spec': entry})
+        result = self.run_prepare()
+        installed = self.root / 'output/tool-payload/opt/busbar-conformance/h2spec'
+        self.assertEqual(installed.read_bytes(), binary.read_bytes())
+        self.assertTrue(installed.stat().st_mode & 0o111)
+        self.assertEqual(result['native_tools']['payload'], self.plan['payload'])
+        self.plan['payload'] = {'usr/local/bin/cargo': entry}
+        with self.assertRaisesRegex(ValueError, 'supplemental'):
+            self.run_prepare('replacement')
+
+    def test_tool_source_archives_reject_links_and_traversal(self):
+        for name, kind in [('tool/../../outside', tarfile.REGTYPE),
+                           ('tool/link', tarfile.SYMTYPE), ('tool/hard', tarfile.LNKTYPE)]:
+            archive = self.root / 'unsafe.tar'
+            with tarfile.open(archive, 'w') as output:
+                row = tarfile.TarInfo(name)
+                row.type = kind
+                row.linkname = '/etc/passwd'
+                row.size = 1 if kind == tarfile.REGTYPE else 0
+                output.addfile(row, io.BytesIO(b'x') if row.size else None)
+            with self.assertRaises(ValueError):
+                tool_assets.unpack_source(archive, self.root / 'unpack', 'tool')
+        self.assertFalse((self.root / 'outside').exists())
+
+    def test_unused_pinned_patches_are_part_of_the_offline_input_closure(self):
+        patch = {'name': 'unused-fork', 'version': '1.0.0',
+                 'source': 'git+https://github.com/example/fork?rev=' + 'a' * 40 + '#' + 'a' * 40}
+        rows = prepare.packages({'package': [self.package], 'patch': {'unused': [patch]}})
+        self.assertIn(patch, rows)
+        self.assertEqual(len(rows), 2)
 
 
 if __name__ == "__main__":

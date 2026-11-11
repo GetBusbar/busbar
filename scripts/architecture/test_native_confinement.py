@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import check
+import linux_job_isolation
 import native
 from native_confinement import Execution, digest
 from native_fixture_proxy import Fixtures
@@ -40,7 +41,7 @@ class Fixture:
             "url=https://secret-token@example.invalid/repo"
         )
         self.config = {
-            "schema": "busbar.native-confinement/1",
+            "schema": "busbar.native-confinement/2",
             "docker": "/bin/echo",
             "docker_sha256": digest("/bin/echo"),
             "docker_host": "unix:///var/run/docker.sock",
@@ -51,6 +52,16 @@ class Fixture:
             "python": "/usr/local/bin/python3",
             "environment": {"PATH": "/usr/local/bin:/usr/bin:/bin"},
             "resources": {"cpus": 2, "memory_bytes": 2 * 1024**3, "pids": 256},
+            "collector": {"docker_host": "unix:///var/run/docker.sock", "uid": 525288, "gid": 525288},
+            "isolation": {
+                "storage_kind": "tmpfs",
+                "storage_reserve_bytes": 0,
+                "storage_root": str(self.base),
+                "storage_bytes": 64 * 1024**2,
+                "storage_inodes": 4096,
+                "uid_map": [0, 524288, 65536],
+                "gid_map": [0, 524288, 65536],
+            },
         }
 
     def execution(self):
@@ -58,6 +69,15 @@ class Fixture:
 
 
 class Boundary(Fixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        # Host-kernel contracts have separate focused tests and actual Linux
+        # witnesses. Only these controller unit tests substitute them.
+        for name in ("prepare_writable", "validate_userns", "validate_storage"):
+            mocked = patch.object(linux_job_isolation, name, return_value={})
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
     def test_requires_pinned_client_image_nonroot_and_private_roots(self):
         for key, value in [
             ("docker_sha256", "0" * 64),
@@ -135,6 +155,26 @@ class Boundary(Fixture, unittest.TestCase):
         self.assertNotIn("BUSBAR_TEST_UNKNOWN_CDYLIB", execution.environment({
             key: value, "BUSBAR_TEST_UNKNOWN_CDYLIB": value}))
 
+    def test_conformance_manifest_is_controller_pinned_and_not_environment_authorized(self):
+        execution = self.execution()
+        self.assertNotIn('CONFORMANCE_CAPABILITIES', execution.environment({
+            'CONFORMANCE_CAPABILITIES': '/candidate/forged.json'}))
+        source = 'a' * 40
+        data = {'schema': 'busbar.conformance.capabilities/1', 'repo': 'GetBusbar/busbar',
+                'source': source, 'toolchain_ready': True,
+                'suites': {'h2': {'available': False, 'reason': 'fixture not staged'}}}
+        path = self.control / 'approved-capabilities.json'
+        path.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, 'digest differs'):
+            execution.set_conformance_capabilities(path, data['repo'], source, '0' * 64)
+        with self.assertRaisesRegex(ValueError, 'identity'):
+            execution.set_conformance_capabilities(path, data['repo'], 'b' * 40, digest(path))
+        execution.set_conformance_capabilities(path, data['repo'], source, digest(path))
+        self.assertEqual(execution.environment({'CONFORMANCE_CAPABILITIES': 'forged'})[
+            'CONFORMANCE_CAPABILITIES'], '/__busbar_conformance_capabilities.json')
+        self.assertEqual(json.loads(execution.conformance_capabilities.read_text()), data)
+        self.assertEqual(execution.conformance_capabilities.stat().st_mode & 0o222, 0)
+
     def test_weakened_runtime_refuses_and_daemon_loss_is_not_disposal_proof(self):
         for daemon_available in (True, False):
             execution = self.execution()
@@ -145,7 +185,8 @@ class Boundary(Fixture, unittest.TestCase):
                 payload = (
                     json.dumps([{"HostConfig": {"NetworkMode": "bridge"}}])
                     if argv[0] == "inspect"
-                    else ""
+                    else json.dumps({"SecurityOptions": ["name=userns"]})
+                    if argv[0] == "info" else ""
                 )
                 code = 1 if argv[0] == "container" and not daemon_available else 0
                 return subprocess.CompletedProcess(
@@ -229,6 +270,59 @@ class Boundary(Fixture, unittest.TestCase):
         os.mkfifo(source)
         with self.assertRaisesRegex(native.Violation, "nonregular"):
             native.collect_output(q, source, destination)
+
+    def test_artifact_intake_rejects_parent_traversal_and_hardlinks(self):
+        q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
+        secret = self.control / "secret"
+        secret.write_bytes(b"controller only")
+        destination = self.control / "artifact"
+        with self.assertRaisesRegex(native.Violation, "escapes"):
+            native.collect_output(q, q.work / "../control/secret", destination)
+        alias = q.work / "linked"
+        os.link(secret, alias)
+        with self.assertRaisesRegex(native.Violation, "linked"):
+            native.collect_output(q, alias, destination)
+        self.assertFalse(destination.exists())
+
+    def test_cargo_hardlinked_output_is_copied_to_single_link_controller_artifact(self):
+        q = SimpleNamespace(work=self.roots['candidate'], root=self.roots['checkout'], receipt={})
+        original = q.work / 'compiler.so'
+        original.write_bytes(b'actual compiler fixture content')
+        alias = q.work / 'compiler-alias.so'
+        os.link(original, alias)
+        destination = self.control / 'artifact.so'
+        native.collect_output(q, alias, destination, compiler_output=True)
+        self.assertEqual(destination.read_bytes(), original.read_bytes())
+        self.assertEqual(destination.stat().st_nlink, 1)
+        self.assertEqual(q.receipt['collected_outputs'][0]['source_link_count'], 2)
+        # An alias to controller-owned input is still refused under the remapped
+        # candidate boundary, even when a caller expects a compiler artifact.
+        q.execution = self.execution()
+        with self.assertRaisesRegex(native.Violation, 'linked'):
+            native.collect_output(q, alias, self.control / 'refused', compiler_output=True)
+
+    def test_artifact_collection_removes_partial_copy_on_mutation(self):
+        q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
+        source = q.work / "artifact"
+        source.write_bytes(b"actual artifact")
+        destination = self.control / "artifact"
+        original = os.fstat
+        count = 0
+
+        def changed(fd):
+            nonlocal count
+            count += 1
+            result = original(fd)
+            if count == 2:
+                return SimpleNamespace(st_size=result.st_size + 1,
+                    st_mtime_ns=result.st_mtime_ns, st_ctime_ns=result.st_ctime_ns,
+                    st_nlink=result.st_nlink)
+            return result
+
+        with patch.object(native.os, "fstat", side_effect=changed):
+            with self.assertRaisesRegex(native.Violation, "changed"):
+                native.collect_output(q, source, destination)
+        self.assertFalse(destination.exists())
 
     def test_fixture_capability_relays_only_to_its_fixed_loopback_peer(self):
         class Echo(socketserver.BaseRequestHandler):
@@ -331,6 +425,54 @@ print(json.dumps({'uid':os.getuid(),'passed':True}))
             (self.roots["candidate"] / "output").read_text(), "actual isolated process"
         )
         self.assertTrue(execution.observations[-1]["disposed"])
+        state = execution.observations[-1]['state_before_disposal']
+        self.assertEqual(state['ExitCode'], 0)
+        self.assertFalse(state['Running'])
+
+    def test_actual_conformance_manifest_is_readonly_and_rejects_candidate_override(self):
+        execution = self.execution()
+        execution.set_conformance_capabilities(None, 'GetBusbar/busbar', 'a' * 40)
+        script = '''import json,os,pathlib
+p=pathlib.Path(os.environ['CONFORMANCE_CAPABILITIES'])
+assert json.loads(p.read_text())['toolchain_ready'] is False
+try:p.write_text('{}')
+except OSError:pass
+else:raise AssertionError('candidate rewrote controller capabilities')
+'''
+        result = execution.run([self.config['python'], '-c', script],
+            cwd=self.roots['checkout'], env={'CONFORMANCE_CAPABILITIES': '/forged'},
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Unix fixture sockets require a same-kernel Linux controller')
+    def test_actual_fixed_fixture_capability_crosses_only_the_unix_socket(self):
+        class Echo(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.sendall(self.request.recv(4096))
+        peer = socketserver.ThreadingTCPServer(('127.0.0.1', 0), Echo)
+        threading.Thread(target=peer.serve_forever, daemon=True).start()
+        execution = self.execution()
+        execution.fixture_directory = self.base / 's'
+        execution.fixture_directory.mkdir()
+        fixtures = Fixtures(execution)
+        port = peer.server_address[1]
+        try:
+            fixtures.add(port)
+            script = '''import socket
+with socket.create_connection(('127.0.0.1', %d), timeout=5) as peer:
+ peer.sendall(b'CONNECT 169.254.169.254:80\\r\\n')
+ assert peer.recv(4096) == b'CONNECT 169.254.169.254:80\\r\\n'
+try:socket.create_connection(('169.254.169.254',80),timeout=.2)
+except OSError:pass
+else:raise AssertionError('metadata network available')
+''' % port
+            result = execution.run([self.config['python'], '-c', script],
+                cwd=self.roots['checkout'], env={}, capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            fixtures.close()
+            peer.shutdown()
+            peer.server_close()
 
     def test_native_candidate_and_controller_dispatch_are_separate(self):
         execution = self.execution()

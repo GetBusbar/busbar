@@ -149,7 +149,7 @@ def stop_process_group(process, grace=10):
 
 
 def git(root, *args):
-    return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+    return subprocess.check_output(['git', '-c', 'safe.directory=' + str(Path(root).resolve()), '-C', str(root), *args], text=True).strip()
 
 
 def digest(path):
@@ -157,29 +157,72 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
-def collect_output(q, source, destination, limit=2 * 1024**3):
+@contextmanager
+def candidate_output(q, source, limit, *, compiler_output=False):
+    """Open each component without following links, including during rename races."""
+    source = Path(source)
+    roots = [q.root.resolve() / 'target', q.root.resolve() / 'dist/default/target']
+    if getattr(q, 'work', None) is not None:
+        roots.append(q.work.resolve())
+    if (not source.is_absolute() or source != Path(os.path.abspath(source))
+            or not any(source.is_relative_to(root) for root in roots)):
+        raise Violation('collected output escapes candidate build roots')
+    descriptors = []
+    try:
+        parent = os.open(source.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        descriptors.append(parent)
+        for part in source.parts[1:-1]:
+            parent = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            descriptors.append(parent)
+        fd = os.open(source.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        with os.fdopen(fd, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            execution = getattr(q, 'execution', None)
+            owner = (execution.config['isolation']['uid_map'][1] + execution.config['uid']
+                     if execution is not None else os.geteuid())
+            linked_compiler_output = compiler_output and before.st_uid == owner and before.st_nlink > 0
+            if (not stat.S_ISREG(before.st_mode) or before.st_size > limit
+                    or (before.st_nlink != 1 and not linked_compiler_output)):
+                raise Violation('candidate output is nonregular, linked or exceeds limit')
+            yield stream, before
+            after = os.fstat(stream.fileno())
+            fields = ('st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_nlink')
+            if any(getattr(before, key) != getattr(after, key) for key in fields):
+                raise Violation('candidate output changed during collection')
+    except OSError as error:
+        raise Violation('missing or indirect candidate output: ' + str(error)) from error
+    finally:
+        for fd in reversed(descriptors):
+            os.close(fd)
+
+
+def collect_output(q, source, destination, limit=2 * 1024**3, *, compiler_output=False):
     """Copy only regular candidate outputs after execution has ended; never follow links."""
     source, destination = Path(source), Path(destination)
-    roots = (q.work.resolve(), q.root.resolve() / 'target', q.root.resolve() / 'dist/default/target')
-    if not source.is_absolute() or not any(source.is_relative_to(root) for root in roots):
-        raise Violation('collected output escapes candidate build roots')
-    if any(path.is_symlink() for path in (source, *source.parents)):
-        raise Violation('indirect candidate output')
-    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, 'rb') as stream:
-        before = os.fstat(stream.fileno())
-        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
-            raise Violation('candidate output is nonregular or exceeds limit')
-        with destination.open('xb') as output:
-            remaining = limit
-            while chunk := stream.read(min(1024**2, remaining + 1)):
-                remaining -= len(chunk)
-                if remaining < 0:
-                    raise Violation('candidate output grew beyond limit')
-                output.write(chunk)
-        after = os.fstat(stream.fileno())
-        if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise Violation('candidate output changed during collection')
+    created = False
+    try:
+        with candidate_output(q, source, limit, compiler_output=compiler_output) as (stream, before):
+            with destination.open('xb') as output:
+                created = True
+                remaining = limit
+                while chunk := stream.read(min(1024**2, remaining + 1)):
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise Violation('candidate output grew beyond limit')
+                    output.write(chunk)
+                if limit - remaining != before.st_size:
+                    raise Violation('candidate output changed during collection')
+    except BaseException:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+    if hasattr(q, 'receipt'):
+        q.receipt.setdefault('collected_outputs', []).append({
+            'source': str(source), 'destination': str(destination),
+            'sha256': digest(destination), 'bytes': before.st_size,
+            'regular_file': True, 'single_link': True, 'source_link_count': before.st_nlink,
+            'compiler_output': compiler_output, 'mutation_checked': True,
+        })
     return destination
 
 
@@ -263,8 +306,17 @@ class Qualification:
                 'confinement_configured': True,
                 'configuration_sha256': args.confinement_sha256,
                 'observations': self.execution.observations,
-                'limitation': 'controller observations are not an independent deployed host witness',
+                'observer': 'protected-controller',
+                'limitation': 'development execution evidence; not a release-producer attestation',
             }
+            capability_path = getattr(args, 'conformance_capabilities', None)
+            capability_digest = getattr(args, 'conformance_capabilities_sha256', None)
+            if bool(capability_path) != bool(capability_digest):
+                raise Violation('conformance capabilities require an independently approved digest')
+            self.receipt['conformance_capabilities_sha256'] = self.execution.set_conformance_capabilities(
+                capability_path, self.repository, self.receipt['source'], capability_digest)
+        elif getattr(args, 'conformance_capabilities', None) or getattr(args, 'conformance_capabilities_sha256', None):
+            raise Violation('conformance capabilities require confined execution')
         if self.evaluation_only:
             expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance, self.policy)
             if (os.environ.get('CI_JOB_NAME') != expected_job
@@ -274,6 +326,21 @@ class Qualification:
             self.receipt['schema'] = 'busbar.protected-conformance/1'
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
+        tools_path = getattr(args, 'conformance_inputs', None)
+        tools_digest = getattr(args, 'conformance_inputs_sha256', None)
+        if tools_path or tools_digest:
+            if not self.execution or not tools_path or not tools_digest:
+                raise Violation('conformance instruments require confined execution and a protected plan digest')
+            from native_conformance_inputs import stage as stage_instruments
+            stage_instruments(self, tools_path, tools_digest)
+        self.staged_fixtures = {}
+        fixture_path = getattr(args, 'fixture_inputs', None)
+        fixture_digest = getattr(args, 'fixture_inputs_sha256', None)
+        if bool(fixture_path) != bool(fixture_digest) or (fixture_path and self.execution is None):
+            raise Violation('staged fixture inputs require confinement and a protected digest')
+        if fixture_path:
+            from native_staged_fixtures import stage
+            self.staged_fixtures = stage(self, fixture_path, fixture_digest)
         if git(self.root, 'status', '--porcelain'):
             raise Violation('candidate checkout is dirty before qualification')
         if os.environ['CI_PIPELINE_SOURCE'] == 'merge_request_event':
@@ -325,7 +392,8 @@ class Qualification:
         if execution and 'execution_boundary' in self.receipt:
             rows = execution.observations
             self.receipt['execution_boundary']['isolated'] = bool(rows) and all(
-                row.get('inspected') and row.get('disposed') for row in rows)
+                row.get('inspected') and row.get('disposed') and row.get('storage')
+                and row.get('user_namespace') for row in rows)
         (self.evidence / 'receipt.json').write_text(json.dumps(self.receipt, indent=2) + '\n')
 
     def run(self, name, argv, cwd=None, timeout=3600):
@@ -336,6 +404,11 @@ class Qualification:
 
     def _run(self, name, argv, cwd=None, timeout=3600, controller=False):
         execution = None if controller else getattr(self, 'execution', None)
+        argv = list(argv)
+        if execution and argv[:2] == ['cargo', 'deny']:
+            argv.insert(2, '--frozen')
+        if execution and argv[:2] == ['cargo', 'vet']:
+            argv[2:2] = ['--locked', '--frozen']
         row = dict(name=name, argv=list(map(str, argv)), status='running', started_at=now(),
                    authority='controller' if controller else 'candidate')
         self.receipt['steps'].append(row)
@@ -461,6 +534,10 @@ class Qualification:
             '-s', str(self.trusted / 'scripts/architecture'), '-p', 'test_*.py'], cwd=self.trusted)
         self.run_controller('toolchain-regressions', [sys.executable, '-m', 'unittest', 'discover',
             '-s', str(self.trusted / 'scripts/architecture/toolchain'), '-p', 'test_*.py'], cwd=self.trusted)
+        for name, relative in (
+                ('conformance-capability-regressions', 'testing/conformance/test_capabilities.py'),
+                ('conformance-confined-tools-regressions', 'testing/h2-conformance/test_confined_tools.py')):
+            self.run_controller(name, [sys.executable, '-B', '-I', str(self.trusted / relative)], cwd=self.trusted)
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
         self.sdk()
@@ -522,7 +599,7 @@ class Qualification:
                 self.run(name, command)
             self.run('default-dependency-vet', ['cargo', 'vet'], cwd=host / 'dist/default')
             binary = Path(self.env['CARGO_TARGET_DIR']) / 'release/busbar'
-            collected = collect_output(self, binary, self.evidence / 'busbar')
+            collected = collect_output(self, binary, self.evidence / 'busbar', compiler_output=True)
             self.receipt['binary_sha256'] = digest(collected)
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
@@ -544,10 +621,15 @@ class Qualification:
             qualify_plugin(self, host, sdk)
 
     def conformance(self, name):
-        if getattr(self, 'execution', None):
-            raise Violation('confined conformance requires controller-owned Docker fixture API migration')
+        if getattr(self, 'execution', None) and self.execution.conformance_capabilities is None:
+            raise Violation('confined conformance requires controller-owned capability manifest')
         suites = self.root / 'testing/conformance/suites.tsv'
         if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
+            if getattr(self, 'execution', None):
+                for relative in ('testing/conformance/run.sh', 'testing/conformance/capabilities.py'):
+                    path = self.root / relative
+                    if path.is_symlink() or not path.is_file() or digest(path) != digest(self.trusted / relative):
+                        raise Violation('confined conformance requires the published capability-aware controls: ' + relative)
             try:
                 self.run(name, ['bash', str(self.root / 'testing/conformance/run.sh')], timeout=10800)
             finally:
@@ -567,7 +649,7 @@ class Qualification:
                 raise Violation('missing or indirect conformance evidence')
             out = destination / relative
             out.parent.mkdir(exist_ok=True)
-            shutil.copyfile(path, out)
+            collect_output(self, path, out, limit=64 * 1024**2)
         # Preserve the external judge's diagnostic evidence, not its tool/source
         # trees, fixture credentials or arbitrary candidate-selected paths.
         # These reports contain only dedicated synthetic protocol fixtures.
@@ -590,10 +672,10 @@ class Qualification:
             # reading anything, including the output root itself.
             if any(p.is_symlink() for p in (source, path, *path.parents) if p == source or source in p.parents):
                 raise Violation('indirect conformance diagnostic evidence')
-            if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
-                raise Violation('invalid or oversized conformance diagnostic evidence')
-            with path.open('rb') as stream:
-                payload = stream.read(64 * 1024 * 1024 + 1)
+            with candidate_output(self, path, 64 * 1024**2) as (stream, before):
+                payload = stream.read(64 * 1024**2 + 1)
+                if len(payload) != before.st_size:
+                    raise Violation('conformance diagnostic changed during collection')
             total += len(payload)
             if len(payload) > 64 * 1024 * 1024 or total > 256 * 1024 * 1024:
                 raise Violation('conformance diagnostic evidence exceeds its byte budget')
@@ -655,7 +737,7 @@ class Qualification:
             self.conformance('core-native-conformance')
         except Violation:
             failed = True
-        out = self.evidence / 'sigstore'
+        out = (self.work if getattr(self, 'execution', None) else self.evidence) / 'sigstore'
         out.mkdir()
         self.env['CONFORMANCE_OUT'] = str(out)
         try:
@@ -663,6 +745,12 @@ class Qualification:
                 str(self.root / 'testing/conformance/sigstore.py'), '--require'])
         except Violation:
             failed = True
+        finally:
+            if getattr(self, 'execution', None):
+                destination = self.evidence / 'sigstore'
+                destination.mkdir()
+                for path in sorted(out.iterdir()):
+                    collect_output(self, path, destination / path.name, limit=64 * 1024**2)
         if failed:
             raise Violation('one or more conformance evaluations did not pass; inspect actual verdicts')
 
@@ -713,6 +801,12 @@ def qualify():
     parser.add_argument('--work', required=True, type=Path)
     parser.add_argument('--confinement', type=Path, help='Protected pinned runtime configuration; never falls back to host')
     parser.add_argument('--confinement-sha256')
+    parser.add_argument('--conformance-capabilities', type=Path)
+    parser.add_argument('--conformance-capabilities-sha256')
+    parser.add_argument('--conformance-inputs', type=Path)
+    parser.add_argument('--conformance-inputs-sha256')
+    parser.add_argument('--fixture-inputs', type=Path)
+    parser.add_argument('--fixture-inputs-sha256')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--conformance-only', action='store_true')
     modes.add_argument('--external-conformance', action='store_true')
@@ -728,6 +822,11 @@ def qualify():
             prepare_oracle(qualification)
         from native_sources import prepare
         prepare(qualification, qualification.host())
+        if qualification.execution is not None:
+            from native_seed import prepare as prepare_seed
+            prepare_seed(qualification)
+            from native_staged_fixtures import collect_required
+            collect_required(qualification)
         evaluation_error = None
         if args.external_conformance:
             try:
@@ -743,8 +842,6 @@ def qualify():
             qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
             from native_plugins import qualify_generator
-            if qualification.execution:
-                raise Violation('generated-project qualification requires controller harness registration')
             qualify_generator(qualification)
         elif qualification.repository in qualification.policy.data['repositories']:
             qualification.plugin()

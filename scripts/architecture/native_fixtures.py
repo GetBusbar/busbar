@@ -58,7 +58,11 @@ class Services:
         qualification.env.update(BUSBAR_STORE_QA_TAG=self.tag, SERVICE_IMAGES_TSV=str(table))
         self.controller_env = dict(qualification.env)
         if self.execution:
-            self.controller_env['DOCKER_HOST'] = self.execution.config['docker_host']
+            endpoint = self.execution.config['collector']['docker_host']
+            self.controller_env['DOCKER_HOST'] = endpoint
+            self.q.env['DOCKER_HOST'] = endpoint
+            self.q.env['PATH'] = str(Path(self.execution.config['docker']).parent) + ':' + self.q.env.get('PATH', '/usr/bin:/bin')
+            self.controller_env['PATH'] = self.q.env['PATH']
         self.store_script = qualification.trusted / 'testing/fleet-fixtures/store-services.sh'
 
     def store(self, verb, service, *args):
@@ -89,8 +93,11 @@ class Services:
 
     def __enter__(self):
         try:
-            if self.execution and self.required.get('migration_fixture'):
-                raise RuntimeError('confined migration witness requires precollected pinned 1.5.5 inputs; online host recorder is forbidden')
+            migration = self.required.get('migration_fixture')
+            if self.execution and migration and migration not in getattr(self.q, 'staged_fixtures', {}):
+                raise RuntimeError('confined migration witness requires its typed, pinned 1.5.5 fixture input')
+            if self.execution and self.requested:
+                raise RuntimeError('confined service fixtures require qualified network-none controller routing')
             for service in self.requested:
                 if service in ('postgres', 'mysql', 'valkey'):
                     self.stores.append(service)
@@ -145,9 +152,12 @@ class Services:
             # The supported migration witness is produced by the real published 1.5.5
             # artifact, using the repository's existing digest-checked recorder.
             if self.required.get('migration_fixture'):
-                fixture = self.q.work / 'sqlite-1.5.5'
-                self.run_controller('migration-fixture', ['bash', str(self.q.trusted / 'scripts/store-migration-fixture.sh'),
-                    'record', 'sqlite', str(fixture)], timeout=900)
+                if self.execution:
+                    fixture = self.q.staged_fixtures[migration]
+                else:
+                    fixture = self.q.work / 'sqlite-1.5.5'
+                    self.run_controller('migration-fixture', ['bash', str(self.q.trusted / 'scripts/store-migration-fixture.sh'),
+                        'record', 'sqlite', str(fixture)], timeout=900)
                 self.run_controller('migration-fixture-check', ['bash', str(self.q.trusted / 'scripts/store-migration-fixture.sh'),
                     'check', str(fixture)], timeout=120)
                 self.q.env['BUSBAR_TEST_SQLITE_155_FIXTURE'] = str(fixture)

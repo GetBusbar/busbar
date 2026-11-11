@@ -40,7 +40,7 @@ def qualify_plugin(q, host, sdk):
             '-I', str(include), str(q.root / recipe['schema']['source']),
             *[str(q.root / path) for path in recipe['sources']], '-o', str(schema)])
         q.run('c-schema', ['python3', str(q.root / recipe['schema']['driver']), str(schema)])
-        collected = collect_output(q, library, q.evidence / library.name)
+        collected = collect_output(q, library, q.evidence / library.name, compiler_output=True)
         q.receipt.update(library_sha256=digest(collected), private=False)
         return
     q.run('fmt', ['cargo', 'fmt', '--all', '--check'])
@@ -75,7 +75,7 @@ def qualify_plugin(q, host, sdk):
     if registered.get('extra_test'):
         q.run('plugin-required-extra', ['bash', '-euo', 'pipefail', '-c', registered['extra_test']])
     q.conformance('plugin-native-conformance')
-    collected = collect_output(q, library, q.evidence / library.name)
+    collected = collect_output(q, library, q.evidence / library.name, compiler_output=True)
     q.receipt['library_sha256'] = digest(collected)
     q.receipt['lock_sha256'] = digest(q.root / 'Cargo.lock')
     q.receipt['private'] = entry['private']
@@ -122,7 +122,9 @@ def qualify_generator(q):
             library = Path(q.env['CARGO_TARGET_DIR']) / 'debug' / ('lib' + name.replace('-', '_') + '_plugin' + ('.dylib' if sys.platform == 'darwin' else '.so'))
             q.env['BUSBAR_PLUGIN_CDYLIB'] = str(library)
             q.run(label + '-native-doors', ['cargo', 'test', '--locked', '-p', name + '-plugin', '--test', 'conformance'], cwd=root)
-            scratch = q.work / ('generated-guard-' + label)
+            if q.execution is not None:
+                q.execution.register_generated(root)
+            scratch = (q.harness if q.execution is not None else q.work) / ('generated-guard-' + label)
             scratch.mkdir()
             policy_file = scratch / 'policy.toml'
             policy_file.write_text((q.trusted / 'ci/architecture.toml').read_text() + f"""
@@ -141,9 +143,15 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 """)
             output = q.evidence / (label + '-architecture.json')
-            q.run(label + '-architecture', ['python3', str(q.trusted / 'scripts/architecture/check.py'),
+            command = ['python3', str(q.trusted / 'scripts/architecture/check.py'),
                 '--policy', str(policy_file), '--repository', repo, '--checkout', str(root),
-                '--trusted', str(q.trusted), '--scratch', str(scratch), '--output', str(output)])
+                '--trusted', str(q.trusted), '--scratch', str(scratch), '--output', str(output)]
+            if q.execution is not None:
+                context, expected = q.execution.write_context()
+                command += ['--execution-context', str(context), '--execution-context-sha256', expected]
+            q.run_controller(label + '-architecture', command)
             result = json.loads(output.read_text())
+            if q.execution is not None:
+                q.execution.observations.extend(result['candidate_execution'])
             results.append(dict(kind=kind, distribution=variant, **result))
     q.receipt['generated_plugins'] = results

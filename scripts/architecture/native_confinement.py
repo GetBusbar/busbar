@@ -11,8 +11,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import uuid
+
+import linux_job_isolation
 
 
 def require(value, message):
@@ -73,11 +76,13 @@ class Execution:
                 "python",
                 "environment",
                 "resources",
+                "isolation",
+                "collector",
             },
             "unknown isolation configuration",
         )
         require(
-            config["schema"] == "busbar.native-confinement/1",
+            config["schema"] == "busbar.native-confinement/2",
             "unknown isolation schema",
         )
         require(
@@ -111,6 +116,13 @@ class Execution:
             and all(isinstance(v, str) for v in config["environment"].values()),
             "unexpected toolchain environment",
         )
+        linux_job_isolation.validate_configuration(config["isolation"])
+        collector = config['collector']
+        require(isinstance(collector, dict) and set(collector) == {'docker_host', 'uid', 'gid'}
+                and re.fullmatch(r'unix:///[^\s,]+', collector['docker_host'])
+                and collector['uid'] == config['isolation']['uid_map'][1] + config['uid']
+                and collector['gid'] == config['isolation']['gid_map'][1] + config['gid'],
+                'invalid protected dependency collector identity')
         resources = config["resources"]
         require(
             set(resources) == {"cpus", "memory_bytes", "pids"}
@@ -171,8 +183,12 @@ class Execution:
         for key, value in config["environment"].items():
             if key == "PATH":
                 require(
-                    all(Path(part).is_absolute() for part in value.split(":")),
-                    "relative tool search path",
+                    all(Path(part).is_absolute()
+                        and not Path(part).is_relative_to('/tmp')
+                        and not any(Path(part).is_relative_to(self.roots[name])
+                                    for name in ('candidate', 'checkout'))
+                        for part in value.split(":")),
+                    "relative or candidate writable tool search path",
                 )
                 continue
             path = Path(value)
@@ -201,12 +217,26 @@ class Execution:
         self.extra_readonly = []
         self.observations = []
         self.product_inputs = {}
+        self.oracle_inputs = {}
+        self.conformance_capabilities = None
+        self.conformance_mounts = []
+        self.conformance_inputs_manifest = None
+        self.dependency_seed = None
+        self.dependency_seed_sha256 = None
 
     @classmethod
     def from_context(cls, path, expected):
         require(digest(path) == expected, "controller execution context digest differs")
         data = json.loads(Path(path).read_text())
-        return cls(data["configuration"], data["roots"], data["control"])
+        execution = cls(data["configuration"], data["roots"], data["control"])
+        execution.extra_readonly = [checked_directory(value) for value in data.get('extra_readonly', [])]
+        execution.conformance_mounts = [(Path(source), Path(target)) for source, target in data.get('conformance_mounts', [])]
+        if data.get('conformance_inputs_manifest'):
+            execution.conformance_inputs_manifest = Path(data['conformance_inputs_manifest'])
+        if data.get('dependency_seed') is not None:
+            execution.dependency_seed = checked_directory(data['dependency_seed'])
+            execution.dependency_seed_sha256 = data['dependency_seed_sha256']
+        return execution
 
     def write_context(self):
         path = self.control / "execution-context.json"
@@ -216,6 +246,11 @@ class Execution:
                     "configuration": self.config,
                     "roots": {k: str(v) for k, v in self.roots.items()},
                     "control": str(self.control),
+                    "extra_readonly": list(map(str, self.extra_readonly)),
+                    "conformance_mounts": [[str(source), str(target)] for source, target in self.conformance_mounts],
+                    "conformance_inputs_manifest": str(self.conformance_inputs_manifest) if self.conformance_inputs_manifest else None,
+                    "dependency_seed": str(self.dependency_seed) if self.dependency_seed else None,
+                    "dependency_seed_sha256": self.dependency_seed_sha256,
                 }
             )
         )
@@ -224,6 +259,12 @@ class Execution:
     def _client(self, argv, **kwargs):
         kwargs.setdefault("timeout", 60)
         return subprocess.run([*self.docker, *argv], env=self.client_env, **kwargs)
+
+    def collector_client(self, argv, **kwargs):
+        """Only trusted fetch code uses the separate pre-existing network daemon."""
+        kwargs.setdefault("timeout", 60)
+        command = [self.config['docker'], '--host', self.config['collector']['docker_host'], *argv]
+        return subprocess.run(command, env=self.client_env, **kwargs)
 
     def sanitize_git(self):
         """Expose source history without GitLab clone credentials, hooks or host config."""
@@ -263,6 +304,59 @@ class Execution:
         require(isinstance(values, ProductInputs), "product inputs require controller validation")
         self.product_inputs = dict(values)
 
+    def allow_oracle_inputs(self, values):
+        from native_oracle import OracleInputs
+        require(isinstance(values, OracleInputs), 'oracle inputs require signed controller validation')
+        self.oracle_inputs = dict(values)
+
+    def register_generated(self, path):
+        root = checked_directory(path)
+        require(root.is_relative_to(self.roots['candidate'] / 'generated'),
+                'generated project escapes its registered output root')
+        total = 0
+        for entry in root.rglob('*'):
+            info = entry.lstat()
+            require(stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode),
+                    'generated project contains indirect or special files')
+            if stat.S_ISREG(info.st_mode):
+                total += info.st_size
+                require(info.st_nlink == 1 and info.st_size <= 16 * 1024**2 and total <= 128 * 1024**2,
+                        'generated source exceeds its collection bounds')
+            require('.git' not in entry.relative_to(root).parts,
+                    'generated projects must not supply Git control metadata')
+        self.extra_readonly.append(root)
+
+    def set_conformance_capabilities(self, manifest, repository, source, expected=None):
+        """Only a protected controller input can authorize pre-staged suite interfaces."""
+        if manifest is None:
+            data = {'schema': 'busbar.conformance.capabilities/1', 'repo': repository,
+                    'source': source, 'toolchain_ready': False, 'suites': {}}
+        else:
+            manifest = Path(manifest)
+            require(expected and digest(manifest) == expected,
+                    'protected conformance capabilities digest differs')
+            require(not manifest.is_symlink() and not any(
+                manifest.resolve().is_relative_to(self.roots[key])
+                for key in ('checkout', 'candidate')), 'candidate supplied conformance capabilities')
+            data = json.loads(manifest.read_text())
+        require(set(data) == {'schema', 'repo', 'source', 'toolchain_ready', 'suites'}
+                and data['schema'] == 'busbar.conformance.capabilities/1'
+                and data['repo'] == repository and data['source'] == source
+                and type(data['toolchain_ready']) is bool and isinstance(data['suites'], dict),
+                'conformance capability identity or schema differs')
+        for name, row in data['suites'].items():
+            require(re.fullmatch(r'[a-z0-9][a-z0-9-]*', name)
+                    and isinstance(row, dict) and set(row) <= {'available', 'reason'}
+                    and type(row.get('available')) is bool
+                    and isinstance(row.get('reason', ''), str)
+                    and len(row.get('reason', '')) <= 2000,
+                    'invalid conformance suite capability')
+        path = self.control / 'conformance-capabilities.json'
+        path.write_bytes(canonical(data))
+        path.chmod(0o444)
+        self.conformance_capabilities = path
+        return digest(path)
+
     def environment(self, env):
         # An allowlist prevents ambient cloud/registry/SSH credentials crossing the boundary.
         allowed = {
@@ -288,12 +382,18 @@ class Execution:
             "CI_JOB_URL",
             "CI_JOB_ID",
             "CI_PIPELINE_ID",
+            "CI_PROJECT_PATH",
+            "CONFORMANCE_OUT",
+            "CONFORMANCE_TIMEOUT_SECONDS",
             "VALKEY_URL",
             "BUSBAR_V4_TRANSPORT_URL",
             "BUSBAR_V4_TEST_TMP",
             "BUSBAR_VALKEY_SERVER",
             "BUSBAR_CHECKOUT",
             "BUSBAR_ADMISSION_CORE_REVISION",
+            "BUSBAR_SDK_CHECKOUT",
+            "BUSBAR_SDK_REVISION",
+            "BUSBAR_SCAFFOLD_OUTPUT",
             "BUSBAR_PIN",
             "BUSBAR_TEST_TMP_ROOT",
             "BUSBAR_TEST_VAULT_TOKEN",
@@ -317,7 +417,7 @@ class Execution:
             if re.fullmatch(r"BUSBAR_TEST_[A-Z0-9_]+_(URL|ADDR|FIXTURE)", k)
         )
         result = {k: str(v) for k, v in env.items() if k in allowed}
-        for key, value in self.product_inputs.items():
+        for key, value in (self.product_inputs | self.oracle_inputs).items():
             if key in env:
                 require(env[key] == value, "registered product input was overridden")
                 result[key] = value
@@ -344,6 +444,14 @@ class Execution:
             result["GIT_CONFIG_KEY_" + str(index)] = key
             result["GIT_CONFIG_VALUE_" + str(index)] = value
         result.update(self.config["environment"])
+        if self.conformance_inputs_manifest is not None:
+            result['BUSBAR_CONFORMANCE_INPUTS'] = '/__busbar_conformance_inputs.json'
+        if self.dependency_seed is not None:
+            result['CARGO_HOME'] = '/__busbar_job_seed'
+        if self.conformance_capabilities is not None:
+            result['CONFORMANCE_CAPABILITIES'] = '/__busbar_conformance_capabilities.json'
+            capability_identity = json.loads(self.conformance_capabilities.read_text())
+            result['MODERNCI_REPO'] = capability_identity['repo']
         result.update(
             HOME=str(self.roots["candidate"] / "home"),
             GIT_CONFIG_GLOBAL="/dev/null",
@@ -383,6 +491,24 @@ class Execution:
                 result["RUSTC_WORKSPACE_WRAPPER"] = ""
         return result
 
+    def prepare_command(self, argv, cwd):
+        if argv[:2] != ['cargo', 'vet']:
+            return argv
+        require('--store-path' not in argv, 'candidate-selected vet store is forbidden')
+        manifest = Path(cwd) / 'Cargo.toml'
+        if '--manifest-path' in argv:
+            manifest = Path(argv[argv.index('--manifest-path') + 1])
+            if not manifest.is_absolute():
+                manifest = Path(cwd) / manifest
+        store = manifest.parent / 'supply-chain'
+        require(store.is_dir() and not any(p.is_symlink() for p in (store, *store.rglob('*'))),
+                'missing or indirect vet policy store')
+        # cargo-vet takes writable locks even with --locked/--frozen. Give it a
+        # fresh copy, retaining the source policy and earlier invocation isolation.
+        destination = self.roots['candidate'] / ('vet-store-' + uuid.uuid4().hex)
+        shutil.copytree(store, destination)
+        return [*argv, '--store-path', str(destination)]
+
     @contextmanager
     def invocation(self, argv, cwd, env):
         argv = list(map(str, argv))
@@ -392,6 +518,7 @@ class Execution:
             any(cwd.is_relative_to(root) for root in self.roots.values()),
             "candidate cwd escapes execution roots",
         )
+        argv = self.prepare_command(argv, cwd)
         name = "busbar-candidate-" + uuid.uuid4().hex
         root = self.roots
         target = root["checkout"] / "target"
@@ -424,6 +551,15 @@ class Execution:
         mounts.extend(
             (checked_directory(path), Path(path), False) for path in self.extra_readonly
         )
+        mounts.extend((source, target, False) for source, target in self.conformance_mounts)
+        if self.conformance_capabilities is not None:
+            mounts.append((self.conformance_capabilities,
+                           Path('/__busbar_conformance_capabilities.json'), False))
+        if self.dependency_seed is not None:
+            mounts.append((self.dependency_seed, Path('/__busbar_job_seed'), False))
+        fixture_hosts = (['localhost.emobix.co.uk:127.0.0.1', 'busbar.oidf.test:127.0.0.1']
+                         if any(target == Path('/opt/busbar-conformance/oidf')
+                                for _, target in self.conformance_mounts) else [])
         args = [
             "create",
             "--name",
@@ -446,10 +582,13 @@ class Execution:
             "--workdir",
             str(cwd),
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=1g,mode=1777",
+            "/tmp:rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777",
+            "--shm-size=64m",
             "--entrypoint",
             "/usr/bin/env",
         ]
+        for alias in fixture_hosts:
+            args += ['--add-host', alias]
         for source, destination, writable in mounts:
             require(
                 "," not in str(source) and "," not in str(destination),
@@ -461,6 +600,21 @@ class Execution:
                 + ("" if writable else ",readonly"),
             ]
         safe_env = self.cargo_environment(argv, env)
+        cargo_home = None
+        if safe_env.get('CARGO_HOME'):
+            cargo_home = root['candidate'] / ('cargo-home-' + uuid.uuid4().hex)
+            cargo_home.mkdir(mode=0o700)
+            safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = str(cargo_home)
+        isolation = self.config['isolation']
+        storage = linux_job_isolation.prepare_writable(isolation, [src for src, _, writable in mounts if writable],
+                                   self.config['uid'], self.config['gid'])
+        daemon_result = self._client(['info', '--format', '{{json .}}'], capture_output=True, text=True)
+        require(daemon_result.returncode == 0, 'candidate daemon identity unavailable')
+        daemon = json.loads(daemon_result.stdout)
+        user_namespace = linux_job_isolation.validate_userns(isolation, daemon)
+        safe_env.update(BUSBAR_EXPECTED_UID_MAP=json.dumps(isolation['uid_map']),
+                        BUSBAR_EXPECTED_GID_MAP=json.dumps(isolation['gid_map']))
+        storage.update(tmp_bytes=1024**3, tmp_inodes=65536, shm_bytes=64 * 1024**2)
         args += [
             self.config["image"],
             "-i",
@@ -478,6 +632,16 @@ class Execution:
             "runtime": self.config["runtime"],
             "candidate_uid": self.config["uid"],
             "disposed": False,
+            "command_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
+            "environment_sha256": hashlib.sha256(canonical(safe_env)).hexdigest(),
+            "working_directory": str(cwd),
+            "docker_client_sha256": self.config['docker_sha256'],
+            "configuration_sha256": hashlib.sha256(canonical(self.config)).hexdigest(),
+            "resources": dict(self.config['resources']),
+            "dependency_seed_sha256": self.dependency_seed_sha256,
+            "storage": storage,
+            "user_namespace": user_namespace,
+            "fixture_hosts": fixture_hosts,
         }
         self.observations.append(observation)
         try:
@@ -486,6 +650,7 @@ class Execution:
             inspection = self._client(["inspect", name], capture_output=True, text=True)
             require(inspection.returncode == 0, "candidate inspection failed")
             actual = json.loads(inspection.stdout)[0]
+            linux_job_isolation.validate_userns(isolation, daemon, actual)
             host = actual["HostConfig"]
             require(
                 host["NetworkMode"] == "none"
@@ -503,7 +668,10 @@ class Execution:
                 and host["Memory"] == self.config["resources"]["memory_bytes"]
                 and host["NanoCpus"] == self.config["resources"]["cpus"] * 10**9
                 and not host.get("Devices")
-                and not host.get("DeviceRequests"),
+                and not host.get("DeviceRequests")
+                and (host.get('ExtraHosts') or []) == fixture_hosts
+                and host.get('ShmSize') == 64 * 1024**2
+                and host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777'},
                 "runtime weakened candidate isolation",
             )
             expected_mounts = {(str(src), str(dst), rw) for src, dst, rw in mounts}
@@ -529,6 +697,8 @@ class Execution:
                 image_id=actual["Image"],
                 network="none",
                 inspected=True,
+                mounts_sha256=hashlib.sha256(canonical(sorted(expected_mounts))).hexdigest(),
+                security_options=host['SecurityOpt'],
             )
             yield [
                 *self.docker,
@@ -537,6 +707,21 @@ class Execution:
                 name,
             ], self.client_env, observation
         finally:
+            # Read process state from the engine before deleting the container.
+            # These controller observations are still not an independent host attestation.
+            state_error = None
+            if observation.get('inspected'):
+                try:
+                    state = self._client(['inspect', '--format', '{{json .State}}', name],
+                                         capture_output=True, text=True)
+                    require(state.returncode == 0, 'candidate process state unavailable')
+                    actual_state = json.loads(state.stdout)
+                    observation['state_before_disposal'] = {
+                        key: actual_state.get(key) for key in
+                        ('Status', 'Running', 'ExitCode', 'OOMKilled', 'Error', 'StartedAt', 'FinishedAt')}
+                except Exception as error:
+                    state_error = error
+                    observation['state_observation_error'] = type(error).__name__
             result = self._client(
                 ["rm", "--force", name],
                 stdout=subprocess.DEVNULL,
@@ -561,6 +746,13 @@ class Execution:
                 "candidate disposal was not confirmed",
             )
             observation["disposed"] = True
+            if cargo_home is not None:
+                if cargo_home.is_symlink():
+                    cargo_home.unlink()
+                elif cargo_home.exists():
+                    shutil.rmtree(cargo_home)
+                observation['private_cargo_cache_removed'] = True
+            require(state_error is None, 'candidate process state observation failed')
 
     def run(self, argv, *, cwd, env=None, **kwargs):
         with self.invocation(argv, cwd, os.environ if env is None else env) as (

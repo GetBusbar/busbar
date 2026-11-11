@@ -65,8 +65,13 @@ class Fixtures:
 
         server = Server(str(path), Handler)
         server.slots = self.slots
-        os.chmod(path, 0o666)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            os.chmod(path, 0o666)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        except BaseException:
+            server.server_close()
+            path.unlink(missing_ok=True)
+            raise
         self.servers.append((server, path))
         self.ports.add(port)
         self.execution.fixture_map.write_text(

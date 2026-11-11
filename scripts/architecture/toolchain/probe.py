@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from native_confinement import Execution, digest, require
 
 
-def probe(config, expected, plan_sha256, work, require_tsan=False):
+def probe(config, expected, plan_sha256, work, require_tsan=False, require_tools=False):
     require(digest(config) == expected, "runtime configuration digest differs")
     config = json.loads(Path(config).read_text())
     work = Path(work).resolve()
@@ -73,6 +73,11 @@ def probe(config, expected, plan_sha256, work, require_tsan=False):
         )
         for tool in ("rustc", "cargo", "rustfmt", "clippy-driver", "cc"):
             run(tool + "-version", [tool, "--version"])
+        if require_tools:
+            for tool in ('cargo-nextest', 'cargo-deny', 'cargo-vet', 'node'):
+                run(tool + '-version', [tool, '--version'])
+            run('python-yaml', ['/usr/bin/python3', '-I', '-c',
+                'import yaml; assert yaml.__version__ == "6.0.3"; assert yaml.safe_load("key: value") == {"key":"value"}'])
         personality = run(
             "personality-query",
             [
@@ -83,12 +88,13 @@ def probe(config, expected, plan_sha256, work, require_tsan=False):
         )
         report["personality_query"] = json.loads(personality.stdout)
         checkout, harness = roots["checkout"], roots["harness"]
+        has_registry = any(p["name"] == "itoa" for entries in seed.get("packages", {}).values() for p in entries)
         (checkout / "src").mkdir()
         (checkout / "Cargo.toml").write_text(
-            '[workspace]\n[package]\nname="boundary-candidate"\nversion="0.0.0"\nedition="2021"\n[dependencies]\nitoa="=1.0.18"\n'
+            '[workspace]\n[package]\nname="boundary-candidate"\nversion="0.0.0"\nedition="2021"\n[dependencies]\n' + ('itoa="=1.0.18"\n' if has_registry else '')
         )
         (checkout / "src/lib.rs").write_text(
-            'pub fn answer() -> u64 { let mut b = itoa::Buffer::new(); assert_eq!(b.format(42), "42"); 42 }\n'
+            'pub fn answer() -> u64 { let mut b = itoa::Buffer::new(); assert_eq!(b.format(42), "42"); 42 }\n' if has_registry else 'pub fn answer() -> u64 { 42 }\n'
         )
         git_packages = [
             p
@@ -137,6 +143,23 @@ def probe(config, expected, plan_sha256, work, require_tsan=False):
             "cargo-positive",
             ["cargo", "test", "--offline", "--manifest-path", manifest, "--lib"],
         )
+        if require_tools:
+            tool_fixture = roots['candidate'] / 'native-tools'
+            shutil.copytree(harness, tool_fixture)
+            tool_manifest = str(tool_fixture / 'Cargo.toml')
+            run('nextest-positive', ['cargo', 'nextest', 'run', '--offline',
+                                    '--manifest-path', tool_manifest, '--lib'])
+            # Exercise vet's actual policy-store locks against read-only inputs.
+            store = tool_fixture / 'supply-chain'
+            store.mkdir()
+            (store / 'config.toml').write_text('\n# cargo-vet config file\n\n[cargo-vet]\nversion = "0.10"\n' + ('\n[[exemptions.itoa]]\nversion = "1.0.18"\ncriteria = "safe-to-deploy"\n' if has_registry else ''))
+            (store / 'audits.toml').write_text('\n# cargo-vet audits file\n\n[audits]\n')
+            (store / 'imports.lock').write_text('\n# cargo-vet imports lock\n')
+            execution.extra_readonly.append(tool_fixture)
+            run('vet-offline', ['cargo', 'vet', '--locked', '--frozen', '--manifest-path', tool_manifest])
+            execution.extra_readonly.remove(tool_fixture)
+            report['native_tools'] = {'nextest': True, 'vet_offline': True,
+                                      'deny_version': True, 'node': True, 'python_yaml': True}
         run(
             "cargo-clippy",
             [
@@ -187,7 +210,7 @@ def probe(config, expected, plan_sha256, work, require_tsan=False):
         report["cargo_harness"] = {
             "positive": True,
             "negative_E0308": True,
-            "offline_registry_dependency": True,
+            "offline_registry_dependency": has_registry,
             "offline_git_dependency": bool(git_packages),
             "readonly_harness": True,
             "external_lockfile": True,
@@ -303,9 +326,11 @@ def main():
     parser.add_argument("--plan-sha256", required=True)
     parser.add_argument("--work", required=True, type=Path)
     parser.add_argument("--require-tsan", action="store_true")
+    parser.add_argument("--require-tools", action="store_true")
     args = parser.parse_args()
     result = probe(
-        args.config, args.config_sha256, args.plan_sha256, args.work, args.require_tsan
+        args.config, args.config_sha256, args.plan_sha256, args.work, args.require_tsan,
+        args.require_tools
     )
     print(
         json.dumps(
