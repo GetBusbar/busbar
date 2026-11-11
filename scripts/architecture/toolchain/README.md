@@ -4,10 +4,13 @@ This directory prepares a digest-pinned Rust/C compiler image and an exact-lock
 Cargo seed. It does not activate native CI or signing. The image contains the
 repository's Rust 1.98.0, Clippy and rustfmt, plus the Python/GCC tools from its
 immutable official Rust Bookworm base. Both Linux platform manifests and component
-archives are pinned in `pins.json`; the actual local checks used Linux ARM64.
+archives are pinned in `pins.json`; bounded actual checks cover Linux ARM64 and
+x86_64. The reusable worker image contains public tools only. Per-job product
+and private dependencies are collected separately by `native_seed.py`.
 
 The approved input plan has schema `busbar.native-toolchain-inputs/1` and exactly
-these fields:
+these fields (version 2 additionally requires `payload`, `advisory_db`,
+and `oracle`):
 
 | Field | Meaning |
 | --- | --- |
@@ -22,8 +25,11 @@ Paths are relative to the protected `--source` directory. The planner must inclu
 every product, trusted harness and tooling lock needed by the qualification;
 omitted roots cannot be inferred from an arbitrary caller's list. A changed
 vector, toolchain file, lock or Git object inventory requires a new approved plan.
-Canonical private Git fetches happen before this step, in the authorized source
-collector. No source-fetch credential is supplied to image preparation.
+Reusable worker plans must have an empty product dependency closure: no private
+Git or product sources may enter a shared image. Nonempty plans are supported for
+private disposable qualification fixtures only. No source-fetch credential is
+supplied to image preparation. Version 2 binds supplemental public executable
+files, an exact RustSec Git/file inventory and the signature-verified oracle bytes.
 
 `prepare.py` verifies the independently supplied plan digest and all input bytes.
 It constructs new Cargo manifests containing only the exact external package
@@ -42,7 +48,10 @@ resolver drift fails. Git index filesystem metadata and reflogs are normalized;
 every resulting regular seed file is hashed.
 
 `install.py` runs without network. It installs the checksum-pinned Clippy/rustfmt
-archives, checks tool versions and rechecks the seed inventory. `build.py` requires
+archives, checksum-pinned nextest/deny/Node/PyYAML, and an offline Cargo-vet build
+from its pinned source and lock. Tool-build dependencies use a transient BuildKit
+mount and do not enter the reusable runtime cache. It checks tool versions and
+rechecks the seed inventory. `build.py` requires
 the exact prepared-context digest and pinned Docker/Buildx executables. It exports
 an OCI archive with fixed timestamps, loads it into the existing local daemon and
 requires the resulting immutable `name@sha256:…` reference to resolve. It never
@@ -77,6 +86,9 @@ execution in the collector; it must run only in the confined compiler phase.
 The probe checks actual tool versions, offline registry/Git use, a positive Cargo
 test, Clippy, an exact negative E0308 witness, denied build-script writes to the
 trusted harness, external harness lockfiles, C execution and TSan behavior.
+`--require-tools` also runs actual nextest and frozen vet plus Node/PyYAML checks.
+An empty public-tools seed uses a dependency-free compiler fixture; a private
+fixture seed can additionally prove offline registry/Git resolution.
 `--require-tsan` makes an unsupported sanitizer runtime a failing result.
 
 On 2026-11-10, those Rust/Clippy/C fixtures passed on the existing ARM64 Linux
@@ -84,9 +96,9 @@ runtime. Two uncached builds of the same prepared fixture context produced the
 same image digest. TSan is blocked under the unchanged default profile; the
 separately authorized local profile below passed its bounded controls. These are fixture
 results, not qualification of the changing release vector or deployed native
-worker. Additional native roster tools such as nextest/deny/vet, Node and Python
-packages still need explicit pins and full-vector CI qualification before this
-base image can serve the complete native job.
+worker. Nextest/deny/vet, Node and PyYAML now have explicit pins and bounded real
+Linux witnesses. Full-vector CI qualification, scoped external suite tooling and
+target-compatible TSan execution remain separate requirements.
 
 Run only the targeted unit checks locally:
 

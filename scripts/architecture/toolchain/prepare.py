@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tomllib
 import urllib.request
 
@@ -51,7 +52,7 @@ def pinned(root, name, expected):
 
 def packages(lock):
     result = []
-    for row in lock.get("package", []):
+    for row in lock.get("package", []) + lock.get('patch', {}).get('unused', []):
         source = row.get("source")
         if source is None:
             continue
@@ -70,9 +71,9 @@ def packages(lock):
             require(
                 match and match[2] == match[3], "unsupported or unpinned Git source"
             )
-        result.append(
-            {k: row[k] for k in ("name", "version", "source", "checksum") if k in row}
-        )
+        identity = {k: row[k] for k in ("name", "version", "source", "checksum") if k in row}
+        if identity not in result:
+            result.append(identity)
     return sorted(result, key=lambda p: (p["name"], p["version"], p["source"]))
 
 
@@ -104,12 +105,44 @@ def synthetic_manifest(rows, name):
     return "\n".join(lines) + "\n"
 
 
+def advisory_seed(entry, source, output):
+    """Copy one independently inventoried RustSec snapshot; no fetch or source config."""
+    destination = output / 'seed-payload'
+    destination.mkdir()
+    if entry is None:
+        return None
+    require(isinstance(entry, dict) and set(entry) == {'path', 'files', 'revision'}
+            and isinstance(entry['files'], dict) and entry['files']
+            and re.fullmatch('[0-9a-f]{40}', entry['revision']), 'invalid RustSec snapshot')
+    root = Path(source) / relative(entry['path'])
+    require(not any(p.is_symlink() for p in (root, *root.rglob('*'))), 'indirect RustSec input')
+    actual = {str(p.relative_to(root)) for p in root.rglob('*') if not p.is_dir()}
+    require(actual == set(entry['files']), 'RustSec inventory differs')
+    repo = destination / 'advisory-dbs/advisory-db-3157b0e258782691'
+    repo.mkdir(parents=True)
+    for name, expected in entry['files'].items():
+        path = pinned(root, name, expected)
+        if name.startswith('.git/'):
+            allowed = name in ('.git/HEAD', '.git/packed-refs', '.git/shallow') or name.startswith(('.git/objects/', '.git/refs/'))
+            require(name != '.git/objects/info/alternates', 'external RustSec object store')
+            if not allowed:
+                continue
+        target = repo / relative(name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+    for name in ('objects', 'refs'):
+        (repo / '.git' / name).mkdir(exist_ok=True)
+    (repo / '.git/config').write_text('[core]\nrepositoryformatversion=0\nbare=false\n[remote "origin"]\nurl=https://github.com/RustSec/advisory-db\n')
+    revision = subprocess.check_output(['git', '--git-dir=' + str(repo / '.git'), 'rev-parse', 'HEAD'],
+                                      env={'PATH': '/usr/bin:/bin', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}, text=True).strip()
+    require(revision == entry['revision'], 'RustSec snapshot revision differs')
+    return {'revision': revision, 'input_files': entry['files']}
+
+
 def prepare(plan_path, expected, source, output, downloads):
     require(sha(plan_path) == expected, "approved preparation plan digest differs")
     plan = json.loads(Path(plan_path).read_text())
-    require(
-        set(plan)
-        == {
+    fields = {
             "schema",
             "platform",
             "source_date_epoch",
@@ -117,10 +150,15 @@ def prepare(plan_path, expected, source, output, downloads):
             "vector",
             "locks",
             "git",
-        },
+        }
+    if plan.get('schema') == 'busbar.native-toolchain-inputs/2':
+        fields.update(('payload', 'advisory_db', 'oracle'))
+    require(
+        set(plan) == fields,
         "closed native input plan required",
     )
-    require(plan["schema"] == "busbar.native-toolchain-inputs/1", "unknown input plan")
+    require(plan["schema"] in ('busbar.native-toolchain-inputs/1', 'busbar.native-toolchain-inputs/2'), "unknown input plan")
+    require(isinstance(plan.get('payload', {}), dict), 'invalid supplemental tool payload')
     pins = json.loads((HERE / "pins.json").read_text())
     require(plan["platform"] in pins["platforms"], "unsupported native platform")
     require(
@@ -167,6 +205,7 @@ def prepare(plan_path, expected, source, output, downloads):
     require(not Path(output).exists(), "output context must be fresh")
     output = Path(output)
     output.mkdir(parents=True)
+    advisory = advisory_seed(plan.get('advisory_db'), source, output)
     settings = {}
     for index, (url, entry) in enumerate(sorted(plan["git"].items())):
         require(
@@ -231,6 +270,9 @@ def prepare(plan_path, expected, source, output, downloads):
         require(sha(path) == item["sha256"], "component archive digest differs")
         shutil.copyfile(path, output / path.name)
         components.append({"file": path.name, "sha256": item["sha256"]})
+    from tool_assets import stage
+    native_tools = stage(pins, platform, output, downloads, plan.get('payload', {}), source,
+                         plan.get('oracle'))
     recipe = {
         "schema": "busbar.native-seed-recipe/1",
         "plan_sha256": expected,
@@ -245,11 +287,13 @@ def prepare(plan_path, expected, source, output, downloads):
         "triple": platform["triple"],
         "source_date_epoch": plan["source_date_epoch"],
         "components": components,
+        "native_tools": native_tools,
+        "advisory_db": advisory,
     }
     (output / "recipe.json").write_text(
         json.dumps(recipe, sort_keys=True, indent=2) + "\n"
     )
-    for name in ("prepare.py", "seed.py", "install.py"):
+    for name in ("prepare.py", "seed.py", "install.py", "tool_assets.py"):
         shutil.copyfile(HERE / name, output / name)
     dockerfile = f"""FROM {platform['base']} AS collect
 COPY . /inputs/
@@ -258,8 +302,10 @@ FROM {platform['base']}
 ARG SOURCE_DATE_EPOCH={plan['source_date_epoch']}
 COPY --from=collect /opt/busbar-native/cargo-seed/ /opt/busbar-native/cargo-seed/
 COPY --from=collect /opt/busbar-native/seed.json /opt/busbar-native/seed.json
+COPY --from=collect /inputs/tool-sources/ /inputs/tool-sources/
+COPY tool-payload/ /
 COPY install.py prepare.py recipe.json {' '.join(item['file'] for item in components)} /inputs/
-RUN --network=none /usr/bin/python3 -I -B /inputs/install.py
+RUN --network=none --mount=type=bind,from=collect,source=/opt/busbar-native/tool-seed,target=/opt/busbar-native/tool-seed,rw /usr/bin/python3 -I -B /inputs/install.py
 ENV PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin CARGO_HOME=/opt/busbar-native/cargo-seed RUSTUP_HOME=/usr/local/rustup CARGO_NET_OFFLINE=true
 LABEL busbar.native.input-plan-sha256="{expected}" busbar.native.vector-sha256="{plan['vector']['sha256']}"
 WORKDIR /work

@@ -51,6 +51,15 @@ def start(port, path):
 
 
 def verify_boundary():
+    for kind in ("uid", "gid"):
+        expected = json.loads(os.environ.pop("BUSBAR_EXPECTED_" + kind.upper() + "_MAP"))
+        actual = [list(map(int, row.split())) for row in
+                  Path("/proc/self/" + kind + "_map").read_text().splitlines()]
+        if (not isinstance(expected, list) or len(expected) != 3
+                or not all(type(value) is int for value in expected)
+                or expected[0] != 0 or expected[1] < 65536
+                or actual != [expected]):
+            raise RuntimeError("candidate user namespace differs from protected mapping")
     status = dict(
         line.split(":", 1)
         for line in Path("/proc/self/status").read_text().splitlines()
@@ -74,9 +83,10 @@ def main():
     if seed:
         # Each invocation starts from the immutable image cache. Cargo can acquire
         # its locks without letting an earlier candidate poison a trusted harness.
-        fresh = Path(
-            tempfile.mkdtemp(prefix="cargo-home-", dir=Path(os.environ["HOME"]).parent)
-        )
+        fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
+        if (fresh.parent != Path(os.environ['HOME']).parent or not fresh.name.startswith('cargo-home-')
+                or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
+            raise RuntimeError('private Cargo cache was not prepared by the controller')
         shutil.copytree(
             seed,
             fresh,

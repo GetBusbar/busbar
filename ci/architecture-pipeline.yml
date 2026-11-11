@@ -34,7 +34,7 @@ native-qualification:
       set -eu
       # Bootstrap from the server-selected top-level configuration, not a variable
       # or script supplied by the candidate. Pipeline variable overrides are disabled.
-      python3 - <<'PY'
+      python3 -I -B - <<'PY'
       import base64, os, pathlib, re, shutil, subprocess
       uri = os.environ['CI_CONFIG_REF_URI']
       # GitLab identifies the consumer project/ref around the full external
@@ -58,14 +58,10 @@ native-qualification:
           actual = subprocess.check_output(['git', '-C', str(trusted), 'rev-parse', 'HEAD'], text=True).strip()
           if actual != match[1]:
               raise SystemExit('trusted policy checkout mismatch')
-          command = ['python3', str(trusted / 'scripts/architecture/native.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
+          command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/native_ci_bootstrap.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
           if os.environ['CI_JOB_NAME'] == 'security-scans':
               command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
-          elif os.environ['CI_JOB_NAME'] == 'core-conformance':
-              command.append('--conformance-only')
-          elif os.environ['CI_JOB_NAME'] == 'external-conformance':
-              command.append('--external-conformance')
-          elif os.environ['CI_JOB_NAME'] != 'native-qualification':
+          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
               raise SystemExit('unrecognized trusted native job')
           subprocess.run(command, check=True)
       finally:
@@ -76,6 +72,15 @@ native-qualification:
     access: developer
     expire_in: 30 days
     paths: [boundary-evidence/]
+
+# Fixed-source runtime witnesses execute on an exclusive existing native worker.
+# This API-only core diagnostic neither qualifies candidate code nor publishes it.
+native-isolation-diagnostic:
+  extends: native-qualification
+  timeout: 30m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
+    - when: never
 
 # Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
 # max_use_count=1, no shared cache). This job never executes candidate processes.
@@ -96,6 +101,8 @@ core-conformance:
   extends: native-qualification
   tags: [busbar-conformance]
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
+      when: never
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
 

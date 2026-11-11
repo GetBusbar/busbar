@@ -1,0 +1,17 @@
+{
+  "fixtures": {
+    "sqlite-1.5.5": {
+      "files": {
+        "MANIFEST.tsv": "e899d7836e0dfb7b4d62786a617a599563494fe814af6c6ccd681b7dca48833c",
+        "governance.db": "662326a043082b2fc95d9759144d633ea602f6997fc79f431ef98bb1d1fdd1a7",
+        "rows.json": "690e23fe2f209e2aabd132fa3ff4c694f22d3fb7dddc5bdcbccc9bf81c253869"
+      },
+      "origin": {
+        "path": "store-sqlite/tests/fixtures/1.5.5",
+        "repository": "GetBusbar/busbar-store-sqlite",
+        "revision": "9ab32f9e6e0967c0a449711556ee2f0907ca0056"
+      }
+    }
+  },
+  "schema": "busbar.native-fixture-catalog/1"
+}

@@ -1,6 +1,7 @@
 """Network collector: generated manifests only; Cargo fetch never compiles code."""
 
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,9 +16,25 @@ from prepare import packages, require, sha
 def main():
     inputs = Path("/inputs")
     recipe = json.loads((inputs / "recipe.json").read_text())
-    root = Path("/opt/busbar-native")
+    root = Path(os.environ.get('BUSBAR_NATIVE_SEED_ROOT', '/opt/busbar-native'))
     cache = root / "cargo-seed"
     cache.mkdir(parents=True)
+    shutil.copytree(inputs / 'seed-payload', cache, dirs_exist_ok=True)
+    if recipe.get('copy_image_advisories'):
+        # This fixed image-owned public snapshot is the only reusable runtime
+        # cache. Product and private Git sources always belong to this job.
+        original = Path('/opt/busbar-native/cargo-seed')
+        measured = json.loads(Path('/opt/busbar-native/seed.json').read_text())
+        for name, expected in measured['files'].items():
+            if not name.startswith('advisory-dbs/'):
+                continue
+            path = original / name
+            require(not path.is_symlink() and sha(path) == expected, 'public advisory seed differs')
+            target = cache / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+        require((cache / 'advisory-dbs').is_dir(), 'public image has no pinned advisory snapshot')
+        recipe['advisory_db'] = measured.get('advisory_db')
     home = Path("/tmp/collector-home")
     home.mkdir(mode=0o700)
     env = {
@@ -42,10 +59,25 @@ def main():
     observed = {}
     import tomllib
 
+    tool_locks = {}
+    tool_cache = root / 'tool-seed'
+    tool_cache.mkdir()
+    tool_env = dict(env, CARGO_HOME=str(tool_cache))
+    for name, item in recipe.get('native_tools', {}).get('cargo_tools', {}).items():
+        directory = inputs / 'tool-sources' / item['root']
+        lock = directory / 'Cargo.lock'
+        require(sha(lock) == item['lock_sha256'], 'native tool lock differs')
+        subprocess.run(['cargo', 'fetch', '--locked', '--manifest-path', str(directory / 'Cargo.toml')],
+                       cwd=directory, env=tool_env, check=True, timeout=900)
+        require(sha(lock) == item['lock_sha256'], 'native tool fetch changed lock')
+        subprocess.run(['cargo', 'fetch', '--frozen', '--manifest-path', str(directory / 'Cargo.toml')],
+                       cwd=directory, env=tool_env, check=True, timeout=60)
+        tool_locks[name] = {'lock_sha256': sha(lock), 'packages': packages(tomllib.loads(lock.read_text()))}
+
     for name, expected in recipe["expected_packages"].items():
         directory = inputs / "locks" / name
         subprocess.run(
-            ["cargo", "fetch", "--manifest-path", str(directory / "Cargo.toml")],
+            ["cargo", "fetch", *(["--locked"] if recipe.get("exact_manifest_graphs") else []), "--manifest-path", str(directory / "Cargo.toml")],
             cwd=directory,
             env=env,
             check=True,
@@ -105,9 +137,21 @@ def main():
     for path in sorted(cache.rglob("*")):
         require(not path.is_symlink(), "indirect seed file")
         if path.is_file():
+            # Cargo's local Git clone can hard-link its own db/checkouts. Break
+            # those aliases before handing a measured seed to another boundary.
+            if path.stat().st_nlink != 1:
+                detached = path.with_name(path.name + '.busbar-detached')
+                require(not detached.exists(), 'unexpected seed detachment file')
+                shutil.copyfile(path, detached)
+                detached.chmod(path.stat().st_mode & 0o777)
+                detached.replace(path)
+            # Some registry archives retain restrictive publisher permissions.
+            # The immutable seed must be readable by the nonroot compiler uid.
+            path.chmod(0o755 if path.stat().st_mode & 0o111 else 0o644)
             files[str(path.relative_to(cache))] = sha(path)
         else:
             require(path.is_dir(), "special seed file")
+            path.chmod(0o755)
     (root / "seed.json").write_text(
         json.dumps(
             {
@@ -119,6 +163,8 @@ def main():
                 "collector_locks": observed,
                 "files": files,
                 "packages": recipe["expected_packages"],
+                "tool_locks": tool_locks,
+                "advisory_db": recipe.get('advisory_db'),
                 "release_eligible": False,
             },
             sort_keys=True,

@@ -40,6 +40,7 @@ class ProfileExecution(Execution):
         result = super()._client(argv, **kwargs)
         if (
             argv[0] == "inspect"
+            and '--format' not in argv
             and result.returncode == 0
             and kwargs.get("capture_output")
         ):

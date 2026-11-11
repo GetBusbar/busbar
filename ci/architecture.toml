@@ -89,7 +89,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 
 [repositories."GetBusbar/busbar-auth-github"]
-native = { services = ["wiremock"] }
+native = { services = ["wiremock"], prepare_runtime = "testing/native/prepare.sh" }
 kind = "auth"
 private = false
 
