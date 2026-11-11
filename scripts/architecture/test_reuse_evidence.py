@@ -11,7 +11,8 @@ from unittest.mock import patch
 import zipfile
 
 from reuse_evidence import Archive, Resolver, independent_qualification_job
-from input_identity import encoded
+from input_identity import (encoded, TRIVY_METADATA_CONTRACT_IMAGE,
+                            TRIVY_METADATA_CONTRACT_SCANNER)
 
 
 def archive(files):
@@ -158,6 +159,36 @@ class EvidenceTests(unittest.TestCase):
                 resolver._security(self.original, receipt, context)
         with patch.dict(receipt['steps'][0], {'tool_image': 'untrusted'}), self.assertRaises(ValueError):
             resolver._security(self.original, receipt, context)
+
+    def test_authenticated_security_compares_semantics_and_preserves_metadata_hashes(self):
+        original = dict(self.original, job='security-scans')
+        database = dict(updated_at='2026-11-11T13:00:00Z', sha256='8' * 64,
+                        metadata_sha256='9' * 64)
+        receipt_bytes = json.dumps(dict(job_id='12', database=database)).encode()
+        artifact_bytes = archive({'security.json': receipt_bytes})
+        tools = dict(trivy=TRIVY_METADATA_CONTRACT_IMAGE, database_max_age_hours=72)
+        context = dict(receipt_bytes=receipt_bytes, artifact_bytes=artifact_bytes,
+                       policy=dict(tools=tools, files={
+                           'scripts/security/scan.py': TRIVY_METADATA_CONTRACT_SCANNER}))
+        resolver = self.resolver()
+        resolver.now = lambda: dt.datetime(2026, 11, 11, 20, tzinfo=dt.timezone.utc)
+        resolver._security = lambda request, receipt, context: receipt['database']
+        witness = dict(database=dict(database, metadata_sha256='a' * 64), tools=tools,
+                       scanner_sha256=TRIVY_METADATA_CONTRACT_SCANNER)
+        resolver.database_witness = witness
+        key = json.dumps(original, sort_keys=True), '12'
+        resolver._authenticated[key] = context
+        self.assertTrue(resolver.validate_original(original, receipt_bytes, artifact_bytes))
+        self.assertEqual(json.loads(receipt_bytes)['database']['metadata_sha256'], '9' * 64)
+        self.assertEqual(witness['database']['metadata_sha256'], 'a' * 64)
+        for replacement in (dict(database, sha256='b' * 64),
+                            dict(database, updated_at='2026-11-01T13:00:00Z')):
+            resolver._authenticated[key] = context
+            with patch.dict(witness, {'database': replacement}), self.assertRaises(ValueError):
+                resolver.validate_original(original, receipt_bytes, artifact_bytes)
+        resolver._authenticated[key] = context
+        with patch.dict(witness, {'scanner_sha256': '0' * 64}), self.assertRaises(ValueError):
+            resolver.validate_original(original, receipt_bytes, artifact_bytes)
 
     def test_wrong_job_policy_source_and_optional_job_refuse(self):
         for key, value in [('name', 'other'), ('allow_failure', True),

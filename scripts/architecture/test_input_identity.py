@@ -32,9 +32,9 @@ class Objects:
             'ci/architecture.toml': '[repositories."' + OWNER + '"]\nkind="secret"\n',
             'ci/architecture-pipeline.yml': 'protected controller',
             'ci/native.json': '{"image":"sha256:abc","isolation":true}',
-            'ci/security/tools.json': '{"database_max_age_hours":72}',
+            'ci/security/tools.json': (Path(__file__).resolve().parents[2] / 'ci/security/tools.json').read_text(),
             'scripts/architecture/native.py': 'required checks, assertions and feature flags',
-            'scripts/security/scan.py': 'trusted scanner',
+            'scripts/security/scan.py': (Path(__file__).resolve().parents[1] / 'security/scan.py').read_text(),
             'conformance/ci-coverage.json': json.dumps({'schema': 'busbar.conformance.ci-coverage/1',
                 'suites': {'owner': {'repo': OWNER, 'script_sha256': 'd' * 64},
                            'other': {'repo': 'GetBusbar/other', 'source_commit': SOURCE}}}),
@@ -314,6 +314,31 @@ class Reuse(unittest.TestCase):
         result = self.proof()
         self.assertEqual(result['original']['source'], SOURCE)
         self.assertEqual(result['requested']['source'], NEW)
+
+    def test_security_same_scanned_database_preserves_distinct_original_metadata_provenance(self):
+        self.original['job'] = self.requested['job'] = 'security-scans'
+        original_bytes = self.receipt('security-scans')
+        witness = dict(DATABASE, metadata_sha256='e' * 64)
+        args = self.kwargs() | {'database': witness}
+        proof = make_proof(self.original, self.requested, self.objects, **args)
+        verify_reuse(proof, self.requested, self.objects, **args)
+        self.assertEqual(self.receipt('security-scans'), original_bytes)
+        self.assertEqual(json.loads(original_bytes)['database']['metadata_sha256'], DATABASE['metadata_sha256'])
+        self.assertNotIn('metadata_sha256', proof['identity']['database'])
+        self.assertEqual(proof['identity']['database']['sha256'], DATABASE['sha256'])
+
+    def test_security_metadata_projection_refuses_unknown_scanner_or_wrapper_contract(self):
+        self.original['job'] = self.requested['job'] = 'security-scans'
+        for path, value in (
+            ('scripts/security/scan.py', '# unknown wrapper semantics'),
+            ('ci/security/tools.json', json.dumps(dict(database_max_age_hours=72,
+                                                      trivy='unknown@sha256:' + 'f' * 64))),
+        ):
+            with self.subTest(path=path):
+                objects = Objects()
+                objects.files[CORE, POLICY][path] = value
+                with self.assertRaisesRegex(ValueError, 'scanner.*contract'):
+                    compute_identity(self.requested, objects, database=DATABASE, now=NOW)
 
     def test_security_changed_database_stale_database_or_changed_source_refuses(self):
         self.original['job'] = self.requested['job'] = 'security-scans'
