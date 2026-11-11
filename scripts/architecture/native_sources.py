@@ -18,15 +18,23 @@ SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?re
 
 
 def standalone_products(repository, evaluation_only, vector):
-    """Only core native qualification invokes ci-product-inputs.sh.
+    """Select the exact standalone graphs needed by the trusted job's callers.
 
-    Plugin/conformance subjects build the host distribution using its lock;
-    release scaffolds use their candidate and SDK graphs. Neither builds each
-    standalone product with that product's independent workspace lockfile.
+    Core native builds all declared product artifacts. Core conformance also
+    builds the pinned OIDC workspace. Release scaffolds need the SDK as a Git
+    dependency, which the local SDK workspace lock cannot materialize; the same
+    admitted OIDC graph supplies both SDK contract and loader Git dependencies.
     """
     if type(evaluation_only) is not bool:
         raise ValueError('standalone product selection requires the controller job mode')
-    return vector['products'] if repository == 'GetBusbar/busbar' and not evaluation_only else []
+    if repository == 'GetBusbar/busbar' and not evaluation_only:
+        return vector['products']
+    if repository in ('GetBusbar/busbar', 'GetBusbar/busbar-release'):
+        selected = [row for row in vector['products'] if row['repo'] == 'busbar-auth-oidc']
+        if len(selected) != 1:
+            raise ValueError('required OIDC SDK consumer graph is absent or ambiguous')
+        return selected
+    return []
 
 
 def lock_inputs(text, policy):

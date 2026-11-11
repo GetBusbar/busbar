@@ -15,7 +15,7 @@ from native_seed import prepare, manifest_snapshot, lock_inputs
 
 
 class ManifestGraph(Fixture, unittest.TestCase):
-    def test_all_four_subject_locks_stay_identical_and_only_core_adds_standalone_graphs(self):
+    def test_four_subject_locks_stay_identical_and_generated_consumers_add_oidc_graph(self):
         candidate, host, sdk = (self.roots[name] for name in ('checkout', 'trusted', 'harness'))
         (host / 'dist/default').mkdir(parents=True)
         expected = {}
@@ -30,12 +30,16 @@ class ManifestGraph(Fixture, unittest.TestCase):
         expected['sdk'] += ('[[patch.unused]]\nname="required-codec"\nversion="1.0.0"\n'
             'source="git+https://github.com/GetBusbar/busbar-store-mysql?rev=' + 'b' * 40 + '#' + 'b' * 40 + '"\n').encode()
         (sdk / 'Cargo.lock').write_bytes(expected['sdk'])
-        product_data = b'version=4\n[[package]]\nname="standalone-only"\nversion="1.0.0"\n'
-        product = {'repo': 'busbar-store-mysql', 'commit': 'a' * 40,
+        sdk_revision = 'd' * 40
+        product_data = ('version=4\n' + ''.join(
+            '[[package]]\nname="' + name + '"\nversion="1.6.0"\n'
+            'source="git+https://github.com/GetBusbar/busbar?rev=' + sdk_revision + '#' + sdk_revision + '"\n'
+            for name in ('busbar-contract', 'busbar-plugin-loader'))).encode()
+        product = {'repo': 'busbar-auth-oidc', 'commit': 'a' * 40,
                    'lock_sha256': hashlib.sha256(product_data).hexdigest()}
         for repository, evaluation, included in (
-            ('GetBusbar/busbar', False, True), ('GetBusbar/busbar', True, False),
-            ('GetBusbar/busbar-release', False, False), ('GetBusbar/busbar-plane-mcp', False, False),
+            ('GetBusbar/busbar', False, True), ('GetBusbar/busbar', True, True),
+            ('GetBusbar/busbar-release', False, True), ('GetBusbar/busbar-plane-mcp', False, False),
         ):
             with self.subTest(repository=repository, evaluation=evaluation):
                 q = SimpleNamespace(root=candidate, repository=repository, evaluation_only=evaluation)
@@ -43,8 +47,12 @@ class ManifestGraph(Fixture, unittest.TestCase):
                     locks, inputs = lock_inputs(q, host, sdk, self.base / 'canonical', {'products': [product]})
                 self.assertEqual({key: locks[key] for key in expected}, expected)
                 self.assertEqual(set(inputs), set(locks))
-                self.assertEqual(set(locks) - expected.keys(), {'product-busbar-store-mysql'} if included else set())
+                self.assertEqual(set(locks) - expected.keys(), {'product-busbar-auth-oidc'} if included else set())
                 self.assertEqual(fetch.call_count, int(included))
+                if included:
+                    from native_sources import lock_inputs as git_inputs
+                    self.assertEqual(git_inputs(locks['product-busbar-auth-oidc'].decode(),
+                        {'repositories': {}}), {'GetBusbar/busbar': {sdk_revision}})
         q = SimpleNamespace(root=candidate, repository='GetBusbar/busbar', evaluation_only=False)
         with patch('native_seed.subprocess.check_output', return_value=b'changed lock'):
             with self.assertRaisesRegex(ValueError, 'lock differs'):

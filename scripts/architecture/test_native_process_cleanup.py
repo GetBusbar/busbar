@@ -68,6 +68,7 @@ import native
 root = pathlib.Path(sys.argv[2])
 q = native.Qualification.__new__(native.Qualification)
 q.repository = 'GetBusbar/busbar'
+q.evaluation_only = False
 q.policy = types.SimpleNamespace(data={'repositories': {'GetBusbar/busbar': {'native': {}}}})
 q.execution = None
 q.root = root / 'checkout'
@@ -78,6 +79,8 @@ q.evidence.mkdir(parents=True)
 q.env = dict(os.environ)
 q.receipt = {'steps': []}
 q.host = lambda: q.root
+# This fixture exercises cancellation, not recursive controller regressions.
+q.core_regressions = lambda: None
 supervisor = sys.argv[3]
 q.core = lambda: q.run('nested', [sys.executable, supervisor, str(root)])
 native.Qualification = lambda args: q
