@@ -50,7 +50,21 @@ why=()
 
 # ── the tools, sha256-pinned ───────────────────────────────────────────────────────────────────────
 CX=""; CLI=""
-if [ -z "$CX_T" ]; then why+=("no pinned cargo-cyclonedx/cyclonedx-cli for $(uname -s)-$(uname -m)")
+if [ -n "${CONFORMANCE_CAPABILITIES+x}" ]; then
+  # A controller-verified, read-only bundle supplies these pinned tools and
+  # upstream controls. Never download or substitute a host tool in isolation.
+  C=/opt/busbar-conformance/sbom
+  export CARGO_NET_OFFLINE=true
+  CX="$C/cargo-cyclonedx"; CLI="$C/cyclonedx"
+  [ -x "$CX" ] || { why+=("the controller has not staged cargo-cyclonedx $CX_VER"); CX=""; }
+  [ -x "$CLI" ] || { why+=("the controller has not staged cyclonedx-cli $CLI_VER"); CLI=""; }
+  for fixture in valid invalid; do
+    if [ "$fixture" = valid ]; then name=spec-valid-bom-1.5.json; expected="$SPEC_VALID_SHA"
+    else name=spec-invalid-empty-component-1.5.json; expected="$SPEC_INVALID_SHA"; fi
+    [ -f "$C/$name" ] && [ "$(sha "$C/$name")" = "$expected" ] \
+      || why+=("the staged specification $fixture fixture is missing or changed")
+  done
+elif [ -z "$CX_T" ]; then why+=("no pinned cargo-cyclonedx/cyclonedx-cli for $(uname -s)-$(uname -m)")
 else
   if fetch "https://github.com/CycloneDX/cyclonedx-rust-cargo/releases/download/cargo-cyclonedx-$CX_VER/cargo-cyclonedx-$CX_T.tar.xz" "$CX_S" "$C/cx-$CX_VER-$CX_T.tar.xz" \
      && mkdir -p "$W/cx" && tar -xJf "$C/cx-$CX_VER-$CX_T.tar.xz" -C "$W/cx" && CX="$(find "$W/cx" -name cargo-cyclonedx -type f | head -1)" && [ -n "$CX" ]; then :
@@ -59,9 +73,11 @@ else
     CLI="$W/cyclonedx"; cp "$C/cyclonedx-$CLI_VER-$CLI_T" "$CLI" && chmod +x "$CLI"
   else why+=("cyclonedx-cli $CLI_VER could not be fetched and verified"); fi
 fi
-SPEC="https://raw.githubusercontent.com/CycloneDX/specification/$SPEC_COMMIT/tools/src/test/resources/1.5"
-fetch "$SPEC/valid-bom-1.5.json" "$SPEC_VALID_SHA" "$C/spec-valid-bom-1.5.json" || why+=("the specification's valid fixture could not be fetched")
-fetch "$SPEC/invalid-empty-component-1.5.json" "$SPEC_INVALID_SHA" "$C/spec-invalid-empty-component-1.5.json" || why+=("the specification's invalid fixture could not be fetched")
+if [ -z "${CONFORMANCE_CAPABILITIES+x}" ]; then
+  SPEC="https://raw.githubusercontent.com/CycloneDX/specification/$SPEC_COMMIT/tools/src/test/resources/1.5"
+  fetch "$SPEC/valid-bom-1.5.json" "$SPEC_VALID_SHA" "$C/spec-valid-bom-1.5.json" || why+=("the specification's valid fixture could not be fetched")
+  fetch "$SPEC/invalid-empty-component-1.5.json" "$SPEC_INVALID_SHA" "$C/spec-invalid-empty-component-1.5.json" || why+=("the specification's invalid fixture could not be fetched")
+fi
 
 # validate <file>: cyclonedx-cli's verdict on a CycloneDX 1.5 JSON document (0 = valid).
 validate() { "$CLI" validate --input-file "$1" --input-format json --input-version "$BOM_VERSION" --fail-on-errors >"$W/validate.log" 2>&1; }

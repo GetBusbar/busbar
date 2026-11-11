@@ -24,7 +24,7 @@
 # natively. The PKI is generated at run time
 # (testing/evidence-conformance/pki.py, no openssl). Needs docker (Linux: --network host), python3,
 # cargo. Confined CI instead stages the pinned native h2spec and Caddy executables
-# at /opt/busbar-conformance; all three listeners then run on private loopback,
+# at /opt/busbar-conformance/h2; all three listeners then run on private loopback,
 # without a Docker socket, host network, image pull or tool download.
 # Writes $CONFORMANCE_OUT/verdict.json and the JUnit reports beside it.
 set -uo pipefail
@@ -113,8 +113,9 @@ PYIMAGE
 # fixed paths. This branch never falls back to host Docker or a network fetch.
 if [ -n "${CONFORMANCE_CAPABILITIES+x}" ]; then
   plat=confined
-  H2SPEC=/opt/busbar-conformance/h2spec
-  CADDY=/opt/busbar-conformance/caddy
+  export CARGO_NET_OFFLINE=true
+  H2SPEC=/opt/busbar-conformance/h2/h2spec
+  CADDY=/opt/busbar-conformance/h2/caddy
   [ -x "$H2SPEC" ] && [ -x "$CADDY" ] \
     || { why+=("the controller has not staged pinned native h2spec and Caddy executables"); final; }
   "$H2SPEC" --version 2>&1 | grep -Eq '^Version: v?2\.6\.0([[:space:]]|$)' \

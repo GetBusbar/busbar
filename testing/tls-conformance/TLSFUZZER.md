@@ -8,11 +8,16 @@ not certification of the entire TLS standard or the entire TLSfuzzer project.
 The upstream repository is pinned to
 `5eebc4464e5197a7f7392fb9acda99cfc32441f7`. Both entry-point and application bytes
 are SHA-256 checked. Runtime dependencies are fully version/hash locked in
-`tlsfuzzer-requirements.lock`; a private virtual environment and source checkout
-live in the evidence rig's disposable workspace. Bootstrap creates the environment
+`tlsfuzzer-requirements.lock`; a private virtual environment and unpacked source
+live in the evidence rig's disposable workspace. The native worker admits the
+read-only `tlsfuzzer` bundle at `/opt/busbar-conformance/tlsfuzzer`: the exact
+`git archive` of that revision (`source.tar`), the three locked dependency wheels
+and the pinned pip wheel in `wheels/`. The archive SHA-256 is checked before
+extraction, and every source file is rechecked before and after each leg. Bootstrap creates the environment
 without `ensurepip`, which minimal Debian/Ubuntu Python installations omit, then
 installs the SHA-256-pinned pip 25.3 wheel without consulting an index. Only the
-hash-locked binary dependency wheels are installed afterward. The installer pin
+hash-locked binary dependency wheels are installed afterward with `--no-index`
+and the admitted wheelhouse. No candidate operation fetches code or packages. The installer pin
 is retained in `result.json`.
 
 The unmodified version-9 `test-tls13-certificate-verify.py` application generates
@@ -63,3 +68,17 @@ Published upstream test descriptions and implementation:
 - https://github.com/tlsfuzzer/tlsfuzzer/blob/5eebc4464e5197a7f7392fb9acda99cfc32441f7/USAGE.md
 - https://github.com/tlsfuzzer/tlsfuzzer/blob/5eebc4464e5197a7f7392fb9acda99cfc32441f7/tlsfuzzer/_apps/test_tls13_certificate_verify.py
 - https://www.rfc-editor.org/rfc/rfc8446.html#section-4.4.3
+
+The `tls` posture suite also runs natively. Its read-only `testssl` bundle holds
+unaltered testssl.sh 3.2.4 and static legacy OpenSSL from image
+`sha256:6f84a73a128117eddf45fb5196f6e6c6428e9a167b7dd6a022482b66ffc85c82`,
+plus nginx from the existing pinned index
+`sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951`
+(amd64 manifest `84ed8c0dd296c188bfc24ed506f46589e9285fb0b11cf3a04d91d524d3067e11`).
+nginx uses its bundled musl loader and complete shared-library closure. The same
+image supplies BusyBox `hexdump`, which minimal Bookworm does not include. The good
+nginx, weak OpenSSL and Busbar listeners all run on candidate loopback. The shared
+release assertions and required weak-server rejection reasons are unchanged.
+These ELF instruments require Linux x86_64; macOS/ARM adapter tests are not an
+x86 runtime qualification. Docker is used only by controller-side artifact
+extraction, never by a candidate.

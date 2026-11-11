@@ -141,6 +141,9 @@ def target_dir():
 def build_subject(log, *, oidc=False):
     manifest = os.path.join(REPO, "dist", "default", "Cargo.toml")
     tgt = target_dir()
+    build_env = (dict(os.environ, CARGO_NET_OFFLINE="true")
+                 if "CONFORMANCE_CAPABILITIES" in os.environ or "BUSBAR_CONFORMANCE_INPUTS" in os.environ
+                 else None)
     builds = [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt, "--bin", "busbar"]]
     if oidc:
         # The OIDC module is a dev-dependency of dist/default (cargo cannot build one alone with
@@ -150,11 +153,16 @@ def build_subject(log, *, oidc=False):
         src = os.path.join(tgt, f"oidc-src-{rev[:12]}")
         if not os.path.isfile(os.path.join(src, "Cargo.toml")):
             shutil.rmtree(src, ignore_errors=True)
-            os.makedirs(src)
-            for argv in (["git", "init", "-q", src], ["git", "-C", src, "fetch", "-q", "--depth", "1", url, rev],
-                         ["git", "-C", src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"]):
-                if run(argv, log) != 0:
-                    raise Refused(f"the OIDC module {url}@{rev[:12]} could not be fetched: {tail(log, 3)}")
+            try:
+                staged = oidf.staged_oidc_source({"url": url, "rev": rev}, src)
+            except oidf.Refused as error:
+                raise Refused(str(error)) from error
+            if not staged:
+                os.makedirs(src)
+                for argv in (["git", "init", "-q", src], ["git", "-C", src, "fetch", "-q", "--depth", "1", url, rev],
+                             ["git", "-C", src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"]):
+                    if run(argv, log) != 0:
+                        raise Refused(f"the OIDC module {url}@{rev[:12]} could not be fetched: {tail(log, 3)}")
         with open(os.path.join(src, "Cargo.toml")) as f:
             man = f.read()
         contract = os.path.join(REPO, "crates", "busbar-contract")
@@ -167,7 +175,7 @@ def build_subject(log, *, oidc=False):
                    ["cargo", "build", "--locked", "--target-dir", os.path.join(tgt, "root"),
                     "-p", "busbar-plugin-loader", "--features", "pack", "--bin", "busbar-plugin-pack"]]
     for argv in builds:
-        rc = run(argv, log, cwd=REPO)
+        rc = run(argv, log, cwd=REPO, env=build_env)
         if rc != 0:
             raise Refused(f"`{' '.join(argv[:3])} … {' '.join(argv[-4:])}` exited {rc}: {tail(log, 6)}")
     debug = os.path.join(tgt, "debug")

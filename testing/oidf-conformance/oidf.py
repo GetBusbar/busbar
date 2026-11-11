@@ -69,6 +69,7 @@ import http.server
 import json
 import os
 import platform
+from pathlib import Path
 import re
 import secrets
 import shutil
@@ -334,10 +335,55 @@ def wheels(cache):
 # KEYS AND CERTIFICATES, generated per run with openssl inside the pinned suite image
 # ---------------------------------------------------------------------------------------------------
 
+NATIVE_BUNDLE = Path("/opt/busbar-conformance/oidf")
+OIDC_BUNDLE = Path("/opt/busbar-conformance/oidc-source")
+
+
+def native_mode():
+    return (bool(os.environ.get("BUSBAR_CONFORMANCE_INPUTS") or os.environ.get("CONFORMANCE_CAPABILITIES"))
+            or NATIVE_BUNDLE.is_dir())
+
+
+def staged_oidc_source(pin, destination):
+    """Use the controller-measured distribution source without candidate Git/network access."""
+    if not OIDC_BUNDLE.is_dir():
+        if native_mode():
+            raise Refused("the pinned oidc-source bundle is missing", instrument=True)
+        return False
+    try:
+        identity = json.loads((OIDC_BUNDLE / "source-identity.json").read_text())
+        if (identity["rev"] != pin["rev"]
+                or source_repo(identity["url"]) != source_repo(pin["url"])):
+            raise ValueError("source revision differs from distribution lock")
+        shutil.copytree(OIDC_BUNDLE, destination, dirs_exist_ok=True)
+    except (OSError, ValueError, KeyError) as error:
+        raise Refused(f"invalid staged OIDC source: {error}", instrument=True) from error
+    return True
+
+
+def native_command(component, binary, *args):
+    """Use the image's own ELF loader and library closure, without chroot or host libraries."""
+    root = NATIVE_BUNDLE / component
+    try:
+        runtime = json.loads((root / "runtime.json").read_text())
+        loader = root / runtime["loaders"][binary]
+        libraries = ":".join(str(root / name) for name in runtime["library_dirs"])
+        executable = root / binary
+        if not loader.is_file() or not executable.is_file():
+            raise ValueError("missing binary or ELF loader")
+        return [str(loader), "--library-path", libraries, str(executable), *args]
+    except (OSError, ValueError, KeyError) as error:
+        raise Refused(f"invalid staged OIDF {component} runtime: {error}", instrument=True) from error
+
+
 def openssl(pki, log, *args):
     uid = f"{os.getuid()}:{os.getgid()}"
-    rc = run(["docker", "run", "--rm", "--user", uid, "-v", f"{pki}:/w", "-w", "/w",
-              "--entrypoint", "openssl", SERVER_IMAGE, *args], log)
+    if native_mode():
+        env = dict(os.environ, OPENSSL_CONF=str(NATIVE_BUNDLE / "server/etc/ssl/openssl.cnf"))
+        rc = run(native_command("server", "usr/bin/openssl", *args), log, cwd=pki, env=env)
+    else:
+        rc = run(["docker", "run", "--rm", "--user", uid, "-v", f"{pki}:/w", "-w", "/w",
+                  "--entrypoint", "openssl", SERVER_IMAGE, *args], log)
     if rc != 0:
         raise Refused(f"openssl {args[0]} failed (exit {rc}): {tail(log, 4)}", instrument=True)
 
@@ -432,6 +478,8 @@ def mint(pki, log):
 def cargo_env(target):
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = target
+    if native_mode():
+        env["CARGO_NET_OFFLINE"] = "true"
     return env
 
 
@@ -517,16 +565,17 @@ def build_subject(checkout, target, work, log):
     src = os.path.join(work, "busbar-auth-oidc")
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src)
-    for argv in (["git", "-C", src, "init", "-q"],
-                 ["git", "-C", src, "fetch", "-q", "--depth", "1", pin["url"], pin["rev"]],
-                 ["git", "-C", src, "checkout", "-q", "--detach", "FETCH_HEAD"]):
-        rc = run(argv, log, env=env)
-        if rc != 0:
-            raise Refused(f"the OIDC module source {pin['url']}@{pin['rev']} could not be fetched "
-                          f"(git {argv[3]} exit {rc}): {tail(log, 3)}", instrument=True)
-    _, head, _ = capture(["git", "-C", src, "rev-parse", "HEAD"])
-    if head.strip() != pin["rev"]:
-        raise Refused(f"the OIDC module source is at {head.strip()}, pinned {pin['rev']}", instrument=True)
+    if not staged_oidc_source(pin, src):
+        for argv in (["git", "-C", src, "init", "-q"],
+                     ["git", "-C", src, "fetch", "-q", "--depth", "1", pin["url"], pin["rev"]],
+                     ["git", "-C", src, "checkout", "-q", "--detach", "FETCH_HEAD"]):
+            rc = run(argv, log, env=env)
+            if rc != 0:
+                raise Refused(f"the OIDC module source {pin['url']}@{pin['rev']} could not be fetched "
+                              f"(git {argv[3]} exit {rc}): {tail(log, 3)}", instrument=True)
+        _, head, _ = capture(["git", "-C", src, "rev-parse", "HEAD"])
+        if head.strip() != pin["rev"]:
+            raise Refused(f"the OIDC module source is at {head.strip()}, pinned {pin['rev']}", instrument=True)
     contract = os.path.join(checkout, "crates", "busbar-contract")
     with open(os.path.join(src, "Cargo.toml")) as manifest:
         patches = contract_patches(manifest.read(), contract)
@@ -811,6 +860,147 @@ def compose_file(work, pki, suite_src, wheel_dir):
     return path
 
 
+def native_wheels(directory, destination):
+    """The pinned runner closure is pure Python; unpack it offline without spawning pip."""
+    for url, sha in WHEELS:
+        wheel = Path(directory) / url.rsplit("/", 1)[1]
+        if sha256_file(wheel) != sha:
+            raise Refused(f"native runner wheel digest differs: {wheel.name}", instrument=True)
+        with zipfile.ZipFile(wheel) as archive:
+            for entry in archive.infolist():
+                path = Path(entry.filename)
+                if path.is_absolute() or ".." in path.parts or (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise Refused("unsafe native runner wheel path", instrument=True)
+            archive.extractall(destination)
+
+
+class NativeSuite:
+    """The identical official instrument as processes in the candidate's isolated loopback network."""
+
+    def __init__(self, work, pki, suite_src, wheel_dir, log):
+        self.work, self.pki, self.src, self.wheels, self.log = work, pki, suite_src, wheel_dir, log
+        self.children = []
+        self.trust = os.path.join(work, "java-cacerts")
+        self.java_home = str(NATIVE_BUNDLE / "server/opt/java/openjdk")
+        self.env = dict(os.environ, JAVA_HOME=self.java_home, SPRING_PROFILES_ACTIVE="dev")
+        self.python_env = dict(os.environ, PYTHONHOME=str(NATIVE_BUNDLE / "python/usr/local"),
+                               PYTHONPATH=os.path.join(work, "runner-deps"), PYTHONDONTWRITEBYTECODE="1",
+                               CONFORMANCE_SERVER=SUITE_BASE, CONFORMANCE_DEV_MODE="1",
+                               DISABLE_SSL_VERIFY="1", CI="1", PIP_NO_CACHE_DIR="1")
+
+    def launch(self, name, argv, env=None):
+        with open(os.path.join(self.work, name + ".log"), "ab") as log:
+            self.children.append(subprocess.Popen(argv, cwd=self.work, env=env,
+                                                  stdin=subprocess.DEVNULL, stdout=log, stderr=log))
+
+    def java(self, binary, *args):
+        return native_command("server", "opt/java/openjdk/bin/" + binary, *args)
+
+    def start(self):
+        try:
+            self._start()
+        except (OSError, ValueError, zipfile.BadZipFile) as error:
+            raise Refused(f"native OIDF instrument startup failed: {error}", instrument=True) from error
+
+    def _start(self):
+        # Names are fixed by the protected controller, never an external DNS dependency.
+        for host in (SUBJECT_HOST, "localhost.emobix.co.uk"):
+            try:
+                addresses = {item[4][0] for item in socket.getaddrinfo(host, None)}
+            except OSError as error:
+                raise Refused(f"native OIDF hostname {host}: {error}", instrument=True) from error
+            if addresses != {"127.0.0.1"}:
+                raise Refused(f"native OIDF hostname {host} must resolve only to loopback", instrument=True)
+        shutil.copyfile(os.path.join(self.java_home, "lib/security/cacerts"), self.trust)
+        rc = run(self.java("keytool", "-importcert", "-noprompt", "-keystore", self.trust,
+                           "-storepass", "changeit", "-alias", "busbar-oidf-ca",
+                           "-file", os.path.join(self.pki, "ca.pem")), self.log, env=self.env)
+        if rc:
+            raise Refused("native suite JVM trust store could not be prepared", instrument=True)
+        db = os.path.join(self.work, "mongodb")
+        os.makedirs(db)
+        mongo_port, server_port = free_port(), free_port()
+        self.launch("mongodb", native_command("mongo", "usr/bin/mongod", "--dbpath", db,
+                                              "--bind_ip", "127.0.0.1", "--port", str(mongo_port)))
+        self.launch("suite-server", self.java("java", "-Djava.home=" + self.java_home,
+                    "-Djavax.net.ssl.trustStore=" + self.trust,
+                    "-Djavax.net.ssl.trustStorePassword=changeit",
+                    "-Dfintechlabs.base_url=" + SUITE_BASE.rstrip("/"),
+                    "-Dfintechlabs.base_mtls_url=https://localhost.emobix.co.uk:8444",
+                    f"-Dspring.mongodb.uri=mongodb://127.0.0.1:{mongo_port}/test_suite",
+                    "-Dserver.address=127.0.0.1", f"-Dserver.port={server_port}",
+                    "-jar", str(NATIVE_BUNDLE / "server/server/fapi-test-suite.jar"),
+                    "-Djdk.tls.maxHandshakeMessageSize=65536"), self.env)
+        config = (NATIVE_BUNDLE / "nginx/etc/nginx/nginx.conf").read_text()
+        # Preserve the release's proxy headers, TLS/mTLS listeners and policy; relocate only its
+        # Docker paths/upstream/listeners to this namespace's measured files and loopback.
+        config = config.replace("/etc/nginx/", str(NATIVE_BUNDLE / "nginx/etc/nginx") + "/")
+        config = config.replace("/etc/ssl/", str(NATIVE_BUNDLE / "nginx/etc/ssl") + "/")
+        config = config.replace("http://server:8080", f"http://127.0.0.1:{server_port}")
+        config = re.sub(r"resolver 127\.0\.0\.11 ipv6=off;", "", config)
+        config = re.sub(r"listen (844[345]) ssl;", r"listen 127.0.0.1:\1 ssl;", config)
+        temp = "\n".join(f"{kind}_temp_path {self.work}/nginx-{kind};"
+                         for kind in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"))
+        config = "pid " + self.work + "/nginx.pid;\n" + config.replace("http {", "http {\n" + temp)
+        conf = os.path.join(self.work, "nginx.conf")
+        Path(conf).write_text(config)
+        self.launch("nginx", native_command("nginx", "usr/sbin/nginx", "-p", self.work + "/",
+                                            "-c", conf, "-e", "stderr", "-g", "daemon off;"))
+        native_wheels(self.wheels, self.python_env["PYTHONPATH"])
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            if any(child.poll() is not None for child in self.children):
+                raise Refused("native OIDF process exited; see mongodb/nginx/suite-server logs", instrument=True)
+            try:
+                self.request("api/runner/available")
+                return
+            except (OSError, ValueError):
+                time.sleep(2)
+        raise Refused("native OIDF API did not become ready in 300 seconds", instrument=True)
+
+    def request(self, path):
+        ctx = ssl._create_unverified_context()  # release nginx uses its own self-signed fixture cert
+        with urllib.request.urlopen(SUITE_BASE + path, context=ctx, timeout=10) as response:
+            return response.read()
+
+    def reach(self, issuer):
+        ctx = ssl.create_default_context(cafile=os.path.join(self.pki, "ca.pem"))
+        try:
+            with urllib.request.urlopen(issuer + "/.well-known/oauth-authorization-server",
+                                        context=ctx, timeout=15) as response:
+                if response.status != 200:
+                    raise ValueError("metadata did not return 200")
+        except (OSError, ValueError) as error:
+            raise Refused(f"native suite cannot reach subject over verified TLS: {error}", instrument=True) from error
+
+    def runner(self, leg_dir, args):
+        export = os.path.join(leg_dir, "export")
+        os.makedirs(export, exist_ok=True)
+        out = os.path.join(leg_dir, "runner.log")
+        args = [os.path.join(self.work, arg[len("/work/"):]) if arg.startswith("/work/") else arg for arg in args]
+        rc = run(native_command("python", "usr/local/bin/python3", "scripts/run-test-plan.py",
+                 "--export-dir", export, "--no-parallel", "--verbose", *args), out,
+                 cwd=self.src, env=self.python_env, timeout=PLAN_TIMEOUT)
+        return rc, Path(out).read_text(errors="replace")
+
+    def images(self, test_id):
+        try:
+            return json.loads(self.request(f"api/log/{test_id}/images"))
+        except (OSError, ValueError):
+            return []
+
+    def down(self):
+        for child in reversed(self.children):
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+        self.children.clear()
+
+
 class Suite:
     def __init__(self, work, pki, suite_src, wheel_dir, log, compose=None):
         self.work, self.log = work, log
@@ -1082,19 +1272,30 @@ def run_all(work):
     log = os.path.join(work, "rig.log")
     record = {"plan": PLAN, "suite": f"{SUITE_TAG} ({SUITE_COMMIT[:12]})"}
 
-    for tool in ("docker", "git", "cargo"):
+    for tool in (("git", "cargo") if native_mode() else ("docker", "git", "cargo")):
         if not shutil.which(tool):
             raise Refused(f"`{tool}` is not on PATH", instrument=True)
-    compose = compose_command(work, log)
-
-    say("fetching the suite's source and the runner's wheels")
-    src = suite_source(cache, log)
-    wheel_dir = wheels(cache)
     pki = os.path.join(work, "pki")
+    compose = None
+    if native_mode():
+        src = str(NATIVE_BUNDLE / "source")
+        wheel_dir = str(NATIVE_BUNDLE / "wheels")
+        try:
+            identity = json.loads((NATIVE_BUNDLE / "identity.json").read_text())
+            if identity != {"suite_commit": SUITE_COMMIT, "images": [SERVER_IMAGE, NGINX_IMAGE, MONGO_IMAGE, PYTHON_IMAGE],
+                            "architecture": platform.machine()}:
+                raise ValueError("pinned suite, images or architecture differ")
+        except (OSError, ValueError) as error:
+            raise Refused(f"the native OIDF bundle is unavailable: {error}", instrument=True) from error
+    else:
+        compose = compose_command(work, log)
+        say("fetching the suite's source and the runner's wheels")
+        src = suite_source(cache, log)
+        wheel_dir = wheels(cache)
+        for image in (SERVER_IMAGE, NGINX_IMAGE, MONGO_IMAGE, PYTHON_IMAGE):
+            if run(["docker", "pull", "-q", image], log, timeout=900) != 0:
+                raise Refused(f"the pinned image {image} could not be pulled", instrument=True)
     say("minting the run's PKI and keys")
-    for image in (SERVER_IMAGE, NGINX_IMAGE, MONGO_IMAGE, PYTHON_IMAGE):
-        if run(["docker", "pull", "-q", image], log, timeout=900) != 0:
-            raise Refused(f"the pinned image {image} could not be pulled", instrument=True)
     as_jwks, clients = mint(pki, log)
     callback = f"{SUITE_BASE}test/a/{ALIAS}/callback"
     clients[0]["redirect_uri"] = callback
@@ -1102,7 +1303,8 @@ def run_all(work):
     # URIs exactly.
     clients[1]["redirect_uri"] = callback + "?dummy1=lorem&dummy2=ipsum"
 
-    suite = Suite(work, pki, src, wheel_dir, log, compose=compose)
+    suite = (NativeSuite(work, pki, src, wheel_dir, log) if native_mode()
+             else Suite(work, pki, src, wheel_dir, log, compose=compose))
     try:
         say("starting the suite")
         suite.start()
@@ -1285,7 +1487,9 @@ def run_identity(checkout):
         raise Refused("the subject checkout changes could not be read")
     return {"head": head.strip(), "changes_sha256": hashlib.sha256(changes.encode()).hexdigest(),
             "rig_sha256": sha256_file(os.path.abspath(__file__)),
-            "suite_commit": SUITE_COMMIT, "plan": PLAN}
+            "suite_commit": SUITE_COMMIT, "plan": PLAN, "runtime": "native" if native_mode() else "compose",
+            "native_inputs_sha256": (sha256_file(os.environ["BUSBAR_CONFORMANCE_INPUTS"])
+                                     if os.environ.get("BUSBAR_CONFORMANCE_INPUTS") else None)}
 
 
 def main():

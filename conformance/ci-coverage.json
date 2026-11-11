@@ -19,7 +19,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "e028c8f1e5e10eab19862db75dc30caf7160912b29b8c8578fdded52df6bebe2",
+      "script_sha256": "4f0c0105169fce5ef8fa1c5699650fe975047b4153f81353e0b8bb70c6dcac73",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -29,7 +29,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "e028c8f1e5e10eab19862db75dc30caf7160912b29b8c8578fdded52df6bebe2",
+      "script_sha256": "4f0c0105169fce5ef8fa1c5699650fe975047b4153f81353e0b8bb70c6dcac73",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -39,7 +39,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/evidence-conformance/evidence.py",
-      "script_sha256": "e028c8f1e5e10eab19862db75dc30caf7160912b29b8c8578fdded52df6bebe2",
+      "script_sha256": "4f0c0105169fce5ef8fa1c5699650fe975047b4153f81353e0b8bb70c6dcac73",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -49,7 +49,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "e96943e585dba64090d9e805f1676214d0591728795b2331a09ec9c186b6b2bf",
+      "script_sha256": "3f4d1eca6bd82e021daf9deafb1325f768e55f7c328a4105fb592135ef190b95",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -59,7 +59,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/h2-conformance/h2spec.sh",
-      "script_sha256": "e49e79e559a1d80396988c63e7a60937fda4bfb61130d49702757ad269c85ba9",
+      "script_sha256": "b5a5f13c568e7970905e17666c874b1677f281cbcd870e4d99b03a1561a5c09a",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -149,7 +149,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "e96943e585dba64090d9e805f1676214d0591728795b2331a09ec9c186b6b2bf",
+      "script_sha256": "3f4d1eca6bd82e021daf9deafb1325f768e55f7c328a4105fb592135ef190b95",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -179,7 +179,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/sbom/sbom.sh",
-      "script_sha256": "578e8acf8406e130febd7e7a9844d8837a3ebc4b530f8c9a0e8c2c7b5d0ff39b",
+      "script_sha256": "3d7b00e9c2a64aaa928c7f62c66c41ece26cf988dad1f1684a7ef6fa63d252ac",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -209,7 +209,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/tls-conformance/tls.sh",
-      "script_sha256": "bcec800510fc9897c0eea726851539dd47e52507d40aa9de1efbf4f395aaa779",
+      "script_sha256": "1cc6b2d8bd60472093fe9e3e4f750b7d079495d6a97188217faa77b49ea7b0c9",
       "source_commit": "checkout",
       "stage": "qa"
     },

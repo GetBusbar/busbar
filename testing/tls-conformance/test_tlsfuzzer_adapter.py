@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest import mock
@@ -34,12 +35,57 @@ def transcript(roster, negative=False, **counts):
 class AdapterChecks(unittest.TestCase):
     def test_untrusted_installer_wheel_is_refused_before_execution(self):
         with tempfile.TemporaryDirectory() as work, \
-                mock.patch.object(adapter.urllib.request, "urlopen",
-                                  return_value=io.BytesIO(b"untrusted wheel")), \
+                mock.patch.object(adapter, "digest", return_value="untrusted wheel"), \
+                mock.patch.object(Path, "is_file", return_value=True), \
                 mock.patch.object(adapter.subprocess, "Popen") as process:
             with self.assertRaisesRegex(adapter.Refused, "installer wheel digest mismatch"):
                 adapter.installer(work)
             process.assert_not_called()
+
+    def test_dependency_installation_is_offline_and_hash_required(self):
+        commands = adapter.environment_commands("/work", Path("/tools/pip.whl"))
+        for command in commands[1:]:
+            self.assertIn("--no-index", command)
+        self.assertIn("--require-hashes", commands[-1])
+        self.assertIn(str(adapter.INSTRUMENT / "wheels"), commands[-1])
+
+    def test_changed_source_archive_is_refused_before_extraction(self):
+        with mock.patch.object(adapter, "digest", return_value="tampered"), \
+                mock.patch.object(adapter.tarfile, "open") as opened:
+            with self.assertRaisesRegex(adapter.Refused, "source archive digest mismatch"):
+                adapter.unpack_source(Path("/source"))
+            opened.assert_not_called()
+
+    def test_source_archive_cannot_escape_workspace(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "source.tar"
+            with tarfile.open(archive, "w") as tar:
+                member = tarfile.TarInfo("../escape")
+                member.size = 1
+                tar.addfile(member, io.BytesIO(b"x"))
+            with mock.patch.object(adapter, "INSTRUMENT", root), \
+                    mock.patch.object(adapter, "SOURCE_SHA256", adapter.digest(archive)):
+                with self.assertRaisesRegex(adapter.Refused, "indirect paths"):
+                    adapter.unpack_source(root / "unpacked")
+            self.assertFalse((root / "escape").exists())
+
+    def test_upstream_dispatcher_links_are_materialized_as_exact_regular_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "source.tar"
+            with tarfile.open(archive, "w") as tar:
+                stub = tarfile.TarInfo("scripts/_stub.py")
+                stub.size = 3
+                tar.addfile(stub, io.BytesIO(b"abc"))
+                entry = tarfile.TarInfo(adapter.ENTRY)
+                entry.type, entry.linkname = tarfile.SYMTYPE, "_stub.py"
+                tar.addfile(entry)
+            with mock.patch.object(adapter, "INSTRUMENT", root), \
+                    mock.patch.object(adapter, "SOURCE_SHA256", adapter.digest(archive)):
+                files = adapter.unpack_source(root / "unpacked")
+            self.assertEqual(files[adapter.ENTRY], files["scripts/_stub.py"])
+            self.assertFalse((root / "unpacked" / adapter.ENTRY).is_symlink())
 
     def test_entire_applicable_rsa_2048_roster_is_2068_executions(self):
         roster = adapter.expected_cases(256, ALGORITHMS)
@@ -83,7 +129,8 @@ class AdapterChecks(unittest.TestCase):
     def test_changed_upstream_script_is_refused(self):
         profile = adapter.Profile.__new__(adapter.Profile)
         profile.source = Path("/pinned-source")
-        with mock.patch.object(adapter, "capture", side_effect=[adapter.REVISION, ""]), \
+        profile.source_files = {"entry": "original"}
+        with mock.patch.object(adapter, "source_inventory", return_value={"entry": "tampered"}), \
                 mock.patch.object(adapter, "digest", return_value="tampered"):
             with self.assertRaises(adapter.Refused):
                 profile.check_source()

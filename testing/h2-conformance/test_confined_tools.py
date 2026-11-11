@@ -28,8 +28,8 @@ class ConfinedTools(unittest.TestCase):
                 path.chmod(0o700)
             script = ('set -uo pipefail\nwhy=()\n'
                       'final() { printf "%s\\n" "${why[@]}"; exit 1; }\n'
-                      + SOURCE[START:END].replace("/opt/busbar-conformance", str(root))
-                      + '\nprintf "%s\\n" "$plat"\n')
+                      + SOURCE[START:END].replace("/opt/busbar-conformance/h2", str(root))
+                      + '\n[ "$CARGO_NET_OFFLINE" = true ] || exit 98\nprintf "%s\\n" "$plat"\n')
             return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                                   env=dict(os.environ, PATH=str(root) + ":" + os.environ["PATH"],
                                            CONFORMANCE_CAPABILITIES="controller-manifest"), timeout=5)

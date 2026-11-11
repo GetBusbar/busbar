@@ -17,7 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
-import urllib.request
+import tarfile
 
 REPOSITORY = "https://github.com/tlsfuzzer/tlsfuzzer.git"
 REVISION = "5eebc4464e5197a7f7392fb9acda99cfc32441f7"
@@ -26,6 +26,8 @@ APPLICATION_SHA256 = "533b673ef5b0c2bfd84b5b31f6a3f40d8b16eef1f390134d427d1dfba8
 ENTRY = "scripts/test-tls13-certificate-verify.py"
 ENTRY_SHA256 = "cc9a921f259b02c36b80c83b8647ac37bbf6c9729d776646e94e8985b1841fec"
 LOCK = Path(__file__).with_name("tlsfuzzer-requirements.lock")
+INSTRUMENT = Path("/opt/busbar-conformance/tlsfuzzer")
+SOURCE_SHA256 = "6c3e3cf1fe904196b8b5add996345b4e4fe22c0cdbaec8ba2fba9f315cc02ff2"
 EXCLUDED = {"check sigalgs in cert request":
             "Upstream sends no client certificate but expects HTTP; optional client authentication only."}
 PROFILE = "TLS 1.3 mandatory client authentication / RSA-PSS CertificateVerify profile"
@@ -79,22 +81,51 @@ def capture(argv):
 
 
 def installer(work):
-    """Minimal CI Python has no ensurepip; verify an installer before executing it."""
-    wheel = Path(work) / PIP_WHEEL["filename"]
-    with (
-        urllib.request.urlopen(PIP_WHEEL["url"], timeout=BOOTSTRAP_TIMEOUT) as source,
-        wheel.open("xb") as target,
-    ):
-        shutil.copyfileobj(source, target)
-    if digest(wheel) != PIP_WHEEL["sha256"]:
+    """Execute only the pinned installer admitted read-only by the native worker."""
+    wheel = INSTRUMENT / "wheels" / PIP_WHEEL["filename"]
+    if not wheel.is_file() or wheel.is_symlink() or digest(wheel) != PIP_WHEEL["sha256"]:
         raise Refused("TLSfuzzer installer wheel digest mismatch")
     return wheel
 
 
+def unpack_source(source):
+    archive = INSTRUMENT / "source.tar"
+    if archive.is_symlink() or digest(archive) != SOURCE_SHA256:
+        raise Refused("TLSfuzzer source archive digest mismatch")
+    source.mkdir()
+    with tarfile.open(archive) as tar:
+        for member in tar:
+            relative = Path(member.name)
+            if relative.is_absolute() or ".." in relative.parts:
+                raise Refused("TLSfuzzer source archive contains indirect paths")
+            # Upstream entries point to one dispatcher. Materialize its exact bytes
+            # at each entry name, without creating filesystem links.
+            if member.issym() and relative.parent == Path("scripts") and member.linkname == "_stub.py":
+                member = tar.getmember("scripts/_stub.py")
+            if not (member.isdir() or member.isfile()):
+                raise Refused("TLSfuzzer source archive contains indirect paths")
+            target = source / relative
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as content, target.open("xb") as output:
+                    shutil.copyfileobj(content, output)
+    return source_inventory(source)
+
+
+def source_inventory(source):
+    result = {}
+    for path in source.rglob("*"):
+        if path.is_symlink():
+            raise Refused("TLSfuzzer source contains indirect paths")
+        if path.is_file():
+            result[str(path.relative_to(source))] = digest(path)
+    return result
+
+
 def environment_commands(work, wheel):
     python = Path(work) / "venv/bin/python"
-    # No host pip, system-site-packages, mutable get-pip script or build backend.
-    # The pinned wheel is executable as a zip import and installs only itself.
     bootstrap = ('import runpy,sys;sys.path.insert(0,sys.argv.pop(1));'
                  'runpy.run_module("pip",run_name="__main__")')
     return [
@@ -102,7 +133,8 @@ def environment_commands(work, wheel):
         [str(python), "-B", "-I", "-c", bootstrap, str(wheel), "install",
          "--disable-pip-version-check", "--no-cache-dir", "--no-index", "--no-deps", str(wheel)],
         [str(python), "-B", "-I", "-m", "pip", "install", "--disable-pip-version-check",
-         "--no-cache-dir", "--only-binary=:all:", "--require-hashes", "-r", str(LOCK)],
+         "--no-cache-dir", "--no-index", "--find-links", str(INSTRUMENT / "wheels"),
+         "--only-binary=:all:", "--require-hashes", "-r", str(LOCK)],
     ]
 
 
@@ -164,7 +196,7 @@ class Profile:
                        "upstream": REPOSITORY, "revision": REVISION,
                        "application_sha256": APPLICATION_SHA256, "entry_sha256": ENTRY_SHA256,
                        "dependency_lock_sha256": digest(LOCK), "excluded_configuration": EXCLUDED,
-                       "installer": PIP_WHEEL,
+                       "installer": PIP_WHEEL, "source_archive_sha256": SOURCE_SHA256,
                        "upstream_socket_timeout_seconds": 5, "leg_timeout_seconds": LEG_TIMEOUT,
                        "negative_timeout_seconds": NEGATIVE_TIMEOUT,
                        "legs": {}, "pass": False}
@@ -172,12 +204,8 @@ class Profile:
         self.save()
         self.source = self.work / "source"
         self.python = self.work / "venv" / "bin" / "python"
-        commands = [
-            ["git", "init", "-q", str(self.source)],
-            ["git", "-C", str(self.source), "fetch", "-q", "--depth", "1", REPOSITORY, REVISION],
-            ["git", "-C", str(self.source), "checkout", "-q", "--detach", "FETCH_HEAD"],
-            *environment_commands(self.work, installer(self.work)),
-        ]
+        self.source_files = unpack_source(self.source)
+        commands = environment_commands(self.work, installer(self.work))
         for index, command in enumerate(commands):
             if bounded(command, self.output / f"bootstrap-{index}.log", BOOTSTRAP_TIMEOUT):
                 raise Refused(f"TLSfuzzer pinned bootstrap failed at step {index}")
@@ -197,9 +225,7 @@ class Profile:
                 "distribution_lock_sha256": digest(Path(self.checkout) / "dist/default/Cargo.lock")}
 
     def check_source(self):
-        if capture(["git", "-C", str(self.source), "rev-parse", "HEAD"]) != REVISION:
-            raise Refused("TLSfuzzer checkout differs from pinned revision")
-        if capture(["git", "-C", str(self.source), "status", "--porcelain", "--untracked-files=all"]):
+        if source_inventory(self.source) != self.source_files:
             raise Refused("TLSfuzzer source contains local changes")
         for name, expected in ((APPLICATION, APPLICATION_SHA256), (ENTRY, ENTRY_SHA256)):
             if digest(self.source / name) != expected:

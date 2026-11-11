@@ -31,6 +31,7 @@ report = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(report)
 Refused = report.Refused
 LOCK = json.loads((HERE / "runtime.lock.json").read_text())
+STAGED = Path("/opt/busbar-conformance/zap")
 
 
 def sha(path):
@@ -52,6 +53,18 @@ def bootstrap(work):
     """All installed JARs are covered by the runtime/addon digests, no updater."""
     work = Path(work)
     work.mkdir(parents=True, exist_ok=False)
+    if "CONFORMANCE_CAPABILITIES" in os.environ or "BUSBAR_CONFORMANCE_INPUTS" in os.environ:
+        runtime, java = STAGED / "runtime", STAGED / "java/bin/java"
+        if not (runtime / "zap-2.17.0.jar").is_file() or not os.access(java, os.X_OK):
+            raise Refused("controller has not staged pinned ZAP 2.17.0 and Temurin 21 runtime")
+        expected = dict(LOCK["bundled_plugins"])
+        expected.update({item["name"]: item["sha256"] for item in LOCK["addons"]})
+        if {p.name for p in (runtime / "plugin").glob("*.zap")} != set(expected):
+            raise Refused("staged ZAP addon roster differs from pinned runtime")
+        for name, expected_sha in expected.items():
+            if sha(runtime / "plugin" / name) != expected_sha:
+                raise Refused("staged ZAP addon digest mismatch")
+        return runtime, java
     archive = work / "runtime.zip"
     download(LOCK["runtime"], archive)
     with zipfile.ZipFile(archive) as bundle:
