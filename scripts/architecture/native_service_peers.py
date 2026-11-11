@@ -13,6 +13,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import socket
+import shlex
 import shutil
 import tarfile
 import stat
@@ -45,6 +46,31 @@ ENV = {
 COMMAND = {'mysql': ['--log-bin-trust-function-creators=1'], 'vault': ['server', '-dev']}
 CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID', 'NET_BIND_SERVICE']
 TMPFS = {'/tmp': 'rw,nosuid,nodev,size=64m,nr_inodes=4096,mode=1777'}
+
+
+def elf_dependencies(output):
+    """Parse the fixed image's ldd/loader listing without interpreting shell text."""
+    paths, loaders = {}, []
+    if not output.strip() or len(output) > 16384:
+        raise ValueError('invalid fixture ELF dependency listing')
+    for line in output.splitlines():
+        if re.fullmatch(r'\s*linux-vdso\.so\.1 \(0x[0-9a-f]+\)\s*', line):
+            continue
+        match = re.fullmatch(r'\s*(?:([A-Za-z0-9_.+-]+|/[A-Za-z0-9_./+-]+) => )?'
+                             r'(/[A-Za-z0-9_./+-]+) \(0x[0-9a-f]+\)\s*', line)
+        if match is None:
+            raise ValueError('unresolved or invalid fixture ELF dependency')
+        path = PurePosixPath(match[2])
+        if '..' in path.parts or str(path) != match[2] or len(paths) >= 64:
+            raise ValueError('invalid fixture ELF dependency path')
+        if path.name in paths and paths[path.name] != str(path):
+            raise ValueError('ambiguous fixture ELF dependency basename')
+        paths[path.name] = str(path)
+        if path.name.startswith('ld-linux-'):
+            loaders.append(str(path))
+    if len(loaders) != 1 or not paths:
+        raise ValueError('fixture ELF dependency listing lacks one loader')
+    return paths, loaders[0]
 
 
 
@@ -327,6 +353,43 @@ class Peers:
     def exec(self, service, args, **kwargs):
         return self.client(['exec', self.peers[service]['name'], *args], **kwargs)
 
+    def stage_server_binary(self, service, source, fixture):
+        # An executable copied out of a newer pinned service image cannot use
+        # the candidate toolchain's older libc. Keep its complete ELF closure.
+        dependencies, loader_source = elf_dependencies(self.exec(service, ['ldd', source]).stdout)
+        runtime = fixture / 'runtime'
+        runtime.mkdir()
+        binary = runtime / 'server'
+        sources = {binary: source, **{runtime / name: path for name, path in dependencies.items()}}
+        files, total = {}, 0
+        for destination, path in sources.items():
+            self.client(['cp', '-L', self.peers[service]['name'] + ':' + path, str(destination)])
+            observed = destination.lstat()
+            total += observed.st_size
+            if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1 or total > 128 * 1024**2:
+                raise ValueError('fixture ELF closure is not bounded regular files')
+            destination.chmod(0o755)
+            files[destination.name] = {'source': path, 'bytes': observed.st_size,
+                                      'sha256': hashlib.sha256(destination.read_bytes()).hexdigest()}
+        loader = runtime / PurePosixPath(loader_source).name
+        command = [str(loader), '--inhibit-cache', '--inhibit-rpath', '',
+                   '--library-path', str(runtime)]
+        listing = self.q.run('fixture-' + service + '-closure-check',
+                             [*command, '--list', str(binary)], timeout=30)
+        resolved, _ = elf_dependencies(listing.read_text())
+        if set(resolved.values()) != {str(runtime / name) for name in dependencies}:
+            raise ValueError('fixture ELF closure resolved outside its pinned runtime')
+        wrapper = fixture / (service + '-server')
+        wrapper.write_text('#!/bin/sh\nunset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT\nexec '
+                           + shlex.join([*command, str(binary)]) + ' "$@"\n')
+        wrapper.chmod(0o755)
+        self.q.receipt.setdefault('fixture_executables', {})[service] = {
+            'image': self.q.receipt['service_peers'][service]['image'],
+            'requested_image': self.owner.images[service], 'files': files,
+            'wrapper_sha256': hashlib.sha256(wrapper.read_bytes()).hexdigest(),
+            'resolved_libraries': resolved}
+        return wrapper
+
     def readiness_failure(self, service, reason, result=None):
         # Only fixed fixture diagnostics, never Config.Env or process arguments.
         # Collect before disposal and preserve the original failure if a probe fails.
@@ -437,8 +500,7 @@ class Peers:
                 if self.owner.required.get('server_binary') == service:
                     fixture = self.q.work / 'valkey-native'
                     fixture.mkdir()
-                    binary = fixture / 'valkey-server'
-                    self.client(['cp', peer['name'] + ':/usr/local/bin/valkey-server', str(binary)])
+                    binary = self.stage_server_binary(service, '/usr/local/bin/valkey-server', fixture)
                     self.q.run('fixture-valkey-server-check', [str(binary), '--version'], timeout=30)
                     self.q.env.update(BUSBAR_V4_TEST_TMP=str(fixture), BUSBAR_VALKEY_SERVER=str(binary))
             elif service == 'wiremock':

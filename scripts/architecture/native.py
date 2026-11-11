@@ -27,6 +27,15 @@ from check import Policy, Violation, read
 from native_policy import native_settings
 
 
+def build_parallelism(execution):
+    # The trusted controller sees host CPUs, but rustc runs inside the candidate's
+    # smaller CPU/memory boundary. Do not fan out to the controller's CPU count.
+    available = os.cpu_count() or 4
+    if execution is not None:
+        available = min(available, execution.config['resources']['cpus'])
+    return max(1, min(available, 16))
+
+
 def validate_test_report(path):
     """A successful process exit cannot contradict a failing machine report."""
     try:
@@ -377,7 +386,7 @@ class Qualification:
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
             RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
             CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
-            CARGO_BUILD_JOBS=str(min(os.cpu_count() or 4, 16)), CARGO_TERM_COLOR='never',
+            CARGO_BUILD_JOBS=str(build_parallelism(self.execution)), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
             MODERNCI_CACHE_DIR=str(self.work / 'cache'), XDG_CACHE_HOME=str(self.work / 'cache'),
             PYTHONDONTWRITEBYTECODE='1', CARGO_NET_GIT_FETCH_WITH_CLI='true', GIT_TERMINAL_PROMPT='0')

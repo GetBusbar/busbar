@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "e496b4a9e157cc78323dc919d7c39715116d6693",
+      "commit": "1cedcf689e20fa6d934a650640e5fa3920fe0131",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "a82106326ecfcbb89b7d30780ebab5b5dffe021c",
+      "commit": "9ba2783048f9f574fae1bbeffc532856344a62d8",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -290,7 +290,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "1f7d2662f295045825c607a00c863e87db936a4f",
+      "commit": "adfed5ca21a5d91a85c5a3ca81aeb341a4ee9664",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "7a515d2ba5ab0886bcfbdbe1d191cc9faa347c0d",
+      "commit": "d7b699ce1ae2dd19e34bdf2c48f35985c5e5e42e",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
@@ -334,7 +334,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "dd6969bd043b6fa9ca1f5dd6fdffcdee43f2ef03",
+      "commit": "f100843063df1bb2efb218a901b400fe257c9e66",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "5fac22f613dfad173b0e44d4437311c72db33f9f",
+      "commit": "7430f2e565791375447bbf549a69dd8132540d2f",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
