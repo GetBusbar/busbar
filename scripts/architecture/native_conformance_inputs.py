@@ -90,6 +90,8 @@ def stage(q, manifest, expected):
     q.execution.conformance_inputs_manifest = published
     q.receipt['conformance_inputs'] = {'plan_sha256': expected,
         'mounted_manifest_sha256': hashlib.sha256(published.read_bytes()).hexdigest(), 'bundles': inventory}
+    from native_python_runtime import bind
+    bind(q)
 
 
 def pack(manifest, expected, output):

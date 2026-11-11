@@ -112,6 +112,9 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-llm', 'external-conformance'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-decisions', 'native-qualification'), [])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-secret-c', 'native-qualification'), ['python-schema'])
+        self.assertEqual([repo for repo, owners in plan['repositories'].items() if 'python-schema' in owners],
+                         ['GetBusbar/busbar-secret-c'])
         row = dict(plan['owners']['mcp'])
         for bad in (row['archive_url'].replace('/projects/3/', '/projects/4/'),
                     row['archive_url'].replace('github.com', 'other.invalid'),
