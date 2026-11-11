@@ -217,6 +217,14 @@ def root_directory(path, fresh=False):
     return path
 
 
+def job_directory(path):
+    control = root_directory(path, fresh=True)
+    # Remapped graphroot must be traversable, but never listable or writable.
+    # Private controller children retain their own root-only permissions.
+    control.chmod(0o711)
+    return control
+
+
 @contextlib.contextmanager
 def subordinate_ids():
     paths = [Path('/etc/subuid'), Path('/etc/subgid')]
@@ -482,8 +490,7 @@ def root_main():
             'administrator bootstrap inputs changed')
     os.environ.clear()
     os.environ.update(BASE_ENV | env)
-    control = root_directory(ROOT / ('job-' + env['CI_JOB_ID']), fresh=True)
-    control.chmod(0o700)
+    control = job_directory(ROOT / ('job-' + env['CI_JOB_ID']))
     os.environ['HOME'] = str(control / 'home')
     os.environ['PATH'] = '/opt/cargo/bin:' + HOST_PATH
     os.environ['RUSTUP_HOME'] = '/opt/rustup'
@@ -491,6 +498,7 @@ def root_main():
     Path(os.environ['HOME']).mkdir(mode=0o700)
     trusted = control / 'trusted'
     shutil.copytree(original_trusted, trusted, symlinks=True)
+    trusted.chmod(0o755)  # Published source is mounted read-only in candidate invocations.
     verify_trusted(trusted, payload['revision'])
     shutil.copyfile(payload['archive'], control / 'image.tar')
     (control / 'image.tar').chmod(0o444)
@@ -502,7 +510,7 @@ def root_main():
     config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
     (control / 'daemon-inputs.json').write_text(json.dumps({'endpoint': endpoint}))
     evidence = control / 'evidence'
-    evidence.mkdir()
+    evidence.mkdir(mode=0o700)
     receipt = {'schema': 'busbar.native-ci-root-bootstrap/1', 'policy_revision': payload['revision'],
         'image_manifest_sha256': MANIFEST, 'archive_sha256': ARCHIVE_SHA256,
         'runtime_sha256': digest(config_path), 'root_controller': True, 'bootstrap_admin_entry_privileged': True, 'candidate_privileged': False,
@@ -511,6 +519,7 @@ def root_main():
     mounted = False
     success = False
     disposal = False
+    workload_started = False
     sys.path.insert(0, str(trusted / 'scripts/architecture'))
     import linux_job_isolation
     def interrupted(signum, frame):
@@ -552,9 +561,16 @@ def root_main():
                 receipt['host_available_bytes_after_image_import'] = capacity.f_bavail * capacity.f_frsize
                 require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
                         'public tooling import would consume the protected host disk reserve')
+                workload_started = True
                 if is_diagnostic:
                     diagnostic(trusted, config, config_path, store, evidence)
                 else:
+                    import native_service_inputs
+                    receipt['service_inputs'] = native_service_inputs.stage(
+                        trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
+                    capacity = os.statvfs(control)
+                    require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
+                            'service image imports would consume the protected host disk reserve')
                     checkout = store / 'checkout'
                     shutil.copytree(original_checkout, checkout, symlinks=True)
                     work = store / ('boundary-' + env['CI_PROJECT_ID'] + '-' + env['CI_JOB_ID'])
@@ -583,6 +599,10 @@ def root_main():
                     if ids:
                         run([*client, 'rm', '--force', *ids], env=BASE_ENV)
                     disposal = not subprocess.check_output([*client, 'ps', '--all', '--quiet'], env=BASE_ENV).strip()
+                # Before any workload, a failed daemon cannot have accepted a
+                # candidate. Stop its namespace before disposing the job mount.
+                if not workload_started:
+                    disposal = True
                 require(disposal, 'candidate disposal could not be confirmed')
                 supervisor.terminate()
                 supervisor.wait(timeout=70)

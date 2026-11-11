@@ -64,6 +64,16 @@
       "expanded_bytes": 489009140,
       "portable_manifest_sha256": "56f38a42a5357d7848f43b692ad6a7aa0dcf41c8c43b75dd8e4ee285a3f0eb52"
     },
+    "release-engineering": {
+      "archive_sha256": "7d6e957217ed53431d9e0691ed757a547a1c556559476570bea769ae41f5c447",
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-release-engineering/20261111-7d6e957217ed53431d9e0691ed757a547a1c556559476570bea769ae41f5c447/release-engineering.tar.gz",
+      "bundles": [
+        "release-engineering"
+      ],
+      "bytes": 125528242,
+      "expanded_bytes": 313963953,
+      "portable_manifest_sha256": "694279de756e0d6339b47961aef6e5f484327a5bfe5f5cee4cec783b8b405e00"
+    },
     "tls": {
       "archive_sha256": "5110e48cb977f8f855bdc728f22ee92f2209ce8559f0a25a7c08dfd64992b2a3",
       "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-tls/20261110-5110e48cb977f8f855bdc728f22ee92f2209ce8559f0a25a7c08dfd64992b2a3/tls.tar.gz",
@@ -100,7 +110,8 @@
     "GetBusbar/busbar": [
       "core",
       "tls",
-      "oidf"
+      "oidf",
+      "release-engineering"
     ],
     "GetBusbar/busbar-export-otlp": [
       "otlp"
