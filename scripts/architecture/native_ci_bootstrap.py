@@ -132,7 +132,16 @@ def fetch_archive(destination, token):
     destination.chmod(0o444)
 
 
-def load_tool_image(archive, endpoint, env):
+def import_failure(error):
+    detail = str(error.stderr or error.stdout or 'no daemon detail')
+    for token in (os.environ.get('CI_JOB_TOKEN'),):
+        if token:
+            detail = detail.replace(token, '[redacted]')
+    detail = re.sub(r'[\x00-\x08\x0b-\x1f\x7f]', '', detail)[-4096:]
+    return RuntimeError('offline image import failed (exit ' + str(error.returncode) + '): ' + detail)
+
+
+def load_tool_image(archive, endpoint, env, source_image=None):
     """Import offline and bind the daemon's identity to verified execution bytes."""
     with tarfile.open(archive, 'r:') as source:
         def blob(checksum):
@@ -146,7 +155,31 @@ def load_tool_image(archive, endpoint, env):
         config = blob(config_sha)
     require(config['architecture'] == 'amd64' and config['os'] == 'linux', 'tool image platform differs')
     client = [DOCKER, '--host', endpoint]
-    loaded = run([*client, 'image', 'load', '--input', str(archive)], env=env, capture_output=True, text=True)
+    try:
+        if source_image is None:
+            loaded = run([*client, 'image', 'load', '--input', str(archive)], env=env,
+                         capture_output=True, text=True, timeout=300)
+        else:
+            require(source_image in ('sha256:' + MANIFEST, 'sha256:' + config_sha),
+                    'unverified image selected for compatibility export')
+            # Docker save supplies manifest.json for the classic overlay store.
+            # Stream it directly: no second archive, registry or unpacked host tree.
+            producer = subprocess.Popen([DOCKER, '--host', 'unix:///var/run/docker.sock',
+                'image', 'save', '--platform', 'linux/amd64', source_image], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            try:
+                loaded = run([*client, 'image', 'load'], stdin=producer.stdout, env=env,
+                             capture_output=True, text=True, timeout=300)
+                producer.stdout.close()
+                require(producer.wait(timeout=30) == 0, 'verified tool image compatibility export failed')
+            finally:
+                if producer.stdout is not None:
+                    producer.stdout.close()
+                if producer.poll() is None:
+                    producer.kill()
+                    producer.wait(timeout=10)
+    except subprocess.CalledProcessError as error:
+        raise import_failure(error) from None
     names = re.findall(r'^Loaded image(?: ID)?: (.+)$', loaded.stdout, re.MULTILINE)
     require(len(names) == 1, 'tool archive must import exactly one image')
     actual = json.loads(run([*client, 'image', 'inspect', names[0]], env=env,
@@ -550,7 +583,8 @@ def root_main():
                     raise RuntimeError('private Docker daemon did not become ready')
                 info = json.loads(status.stdout)
                 linux_job_isolation.validate_userns(config['isolation'], info)
-                config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV)
+                config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV,
+                                                  source_image=payload['image'])
                 config['collector']['image'] = load_tool_image(control / 'image.tar', 'unix:///var/run/docker.sock', BASE_ENV)
                 require(config['collector']['image'] == payload['image'], 'administrator image identity changed')
                 config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
