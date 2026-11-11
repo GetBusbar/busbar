@@ -29,11 +29,12 @@ class Processes(unittest.TestCase):
         q.receipt = {'steps': []}
         return q
 
-    def wait_file(self, path, process):
+    def wait_file(self, path, process, log=None):
         deadline = time.monotonic() + 5
         while not path.exists():
             if process.poll() is not None or time.monotonic() > deadline:
-                self.fail('child did not become ready')
+                detail = log.read_text() if log is not None else ''
+                self.fail(f'child did not become ready (exit={process.poll()}): {detail}')
             time.sleep(0.01)
 
     def assert_dead(self, pid):
@@ -67,6 +68,8 @@ import native
 root = pathlib.Path(sys.argv[2])
 q = native.Qualification.__new__(native.Qualification)
 q.repository = 'GetBusbar/busbar'
+q.policy = types.SimpleNamespace(data={'repositories': {'GetBusbar/busbar': {'native': {}}}})
+q.execution = None
 q.root = root / 'checkout'
 q.root.mkdir()
 q.work = root / 'boundary-1-2'
@@ -95,7 +98,7 @@ native.main()
                         str(directory), str(supervisor),
                     ], stdout=output, stderr=output, start_new_session=True)
                     try:
-                        self.wait_file(directory / 'pids', process)
+                        self.wait_file(directory / 'pids', process, log)
                         pids = json.loads((directory / 'pids').read_text())
                         os.kill(process.pid, sig)
                         self.assertNotEqual(process.wait(timeout=5), 0)
