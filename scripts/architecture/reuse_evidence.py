@@ -1009,13 +1009,23 @@ class OwnerRuntime:
         revision = branch['commit']['id']
         self.ensure(name, revision)
         path = 'ci/scripts/collect-native-results.py'
-        raw = self.objects.blob(name, revision, path)
-        target = self.session / 'original-normalizer.py'
-        target.write_bytes(raw)
+        # Preserve the validator's repository-relative import layout. Its
+        # publisher is executable validation code too, so bind both files to
+        # the same authenticated immutable marketing revision.
+        root = self.session / 'normalizer'
+        files = {}
+        for relative in (path, 'scripts/publish-check-results.py'):
+            raw = self.objects.blob(name, revision, relative)
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            files[relative] = digest(raw)
+        target = root / path
         spec = importlib.util.spec_from_file_location('protected_original_normalizer', target)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module, dict(repository=name, source=revision, path=path, sha256=digest(raw))
+        return module, dict(repository=name, source=revision, path=path,
+                            sha256=files[path], files=files)
 
     def discover(self, rows):
         """One bounded snapshot; live jobs defer work and never count as passes."""

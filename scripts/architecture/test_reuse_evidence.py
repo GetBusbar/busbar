@@ -6,6 +6,8 @@ import io
 import json
 import tempfile
 import os
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -290,6 +292,49 @@ class EvidenceTests(unittest.TestCase):
             output.writestr('boundary-evidence/a', b'b')
         with self.assertRaisesRegex(ValueError, 'duplicate'):
             Archive(buffer.getvalue())
+
+
+class NormalizerLayoutTests(unittest.TestCase):
+    def test_authenticated_validator_keeps_same_revision_relative_helper(self):
+        revision = 'a' * 40
+        source = b'''import importlib.util
+from pathlib import Path
+root = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location('fixture_publisher', root / 'scripts/publish-check-results.py')
+publisher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(publisher)
+'''
+        files = {'ci/scripts/collect-native-results.py': source,
+                 'scripts/publish-check-results.py': b'VALUE = 42\n'}
+        reads = []
+
+        def blob(repository, ref, path):
+            self.assertEqual((repository, ref), ('BusbarInc/marketing', revision))
+            reads.append(path)
+            return files[path]
+
+        api = API({'projects/BusbarInc%2Fmarketing': dict(id=52,
+            path_with_namespace='BusbarInc/marketing', visibility='private'),
+            'projects/52/protected_branches': [], 'groups/BusbarInc/protected_branches': [],
+            'projects/52/repository/branches/dev': dict(protected=True, commit=dict(id=revision))}, {})
+        api.request = api.json
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            runtime = OwnerRuntime.__new__(OwnerRuntime)
+            runtime.reads = runtime.groups = api
+            runtime.principals = {6, 8}
+            runtime.session = Path(directory)
+            runtime.ensure = lambda repository, ref: self.assertEqual(
+                (repository, ref), ('BusbarInc/marketing', revision))
+            runtime.objects = SimpleNamespace(blob=blob)
+            with patch('admission.validate_protection'):
+                module, origin = runtime.load_normalizer()
+                self.assertEqual(module.publisher.VALUE, 42)
+                self.assertEqual(set(reads), set(files))
+                self.assertEqual(origin['files'], {path: hashlib.sha256(raw).hexdigest()
+                                                  for path, raw in files.items()})
+                del files['scripts/publish-check-results.py']
+                with self.assertRaises(KeyError):
+                    runtime.load_normalizer()
 
 
 if __name__ == '__main__':
