@@ -26,6 +26,9 @@ SCHEMA = 'busbar.protected-input-reuse/1'
 REUSE_CONTROLLERS = {'scripts/architecture/input_identity.py', 'scripts/architecture/reuse_evidence.py',
                      'scripts/architecture/qualification_selection.py'}
 PREPARATION_SELECTOR = 'scripts/architecture/native_sources.py'
+TRIVY_METADATA_CONTRACT_IMAGE = ('mirror.gcr.io/aquasec/trivy:0.76.2@sha256:'
+    '8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb')
+TRIVY_METADATA_CONTRACT_SCANNER = '0860330d2bbc1b2bf47b444ea6db82fa139656fe715f8c7aee9f7543e5fc3011'
 # Finite adapters for the two approved pure selectors, not a general Python
 # evaluator. Unknown selectors (including new side effects or checks) fail closed.
 LEGACY_STANDALONE_SELECTOR = '''def standalone_products(repository, evaluation_only, vector):
@@ -133,6 +136,33 @@ def database_identity(database, tools, now):
     return dict(database)
 
 
+def semantic_database_identity(database, tools, now, *, scanner_sha256):
+    """Actual scanned content/freshness under the one verified scanner contract.
+
+    Original metadata_sha256 remains mandatory authenticated receipt provenance;
+    this does NOT assert equality of unavailable original metadata JSON fields.
+    Trivy v0.76.2 pkg/db/db.go NeedsUpdate(skip=true) validates that metadata.Version
+    equals its compiled schema, then returns BEFORE NextUpdate/DownloadedAt
+    scheduling. The exact wrapper below always passes --skip-db-update and checks
+    UpdatedAt freshness. Both successful authenticated scans must use that same
+    image/policy. Thus content SHA + UpdatedAt + this pinned schema-check contract
+    identify the scanning inputs, while per-download metadata bytes do not.
+    Source: https://raw.githubusercontent.com/aquasecurity/trivy/v0.76.2/pkg/db/db.go
+    """
+    original = database_identity(database, tools, now)
+    require(tools.get('trivy') == TRIVY_METADATA_CONTRACT_IMAGE
+            and scanner_sha256 == TRIVY_METADATA_CONTRACT_SCANNER,
+            'unknown scanner metadata consumption contract; fresh scan required')
+    return {'sha256': original['sha256'], 'updated_at': original['updated_at'],
+            'scanner_image': tools['trivy'], 'schema_validation': 'trivy-0.76.2--skip-db-update'}
+
+
+def security_database_identity(request, objects, database, now):
+    tools = json.loads(objects.blob(CORE, request['policy'], 'ci/security/tools.json'))
+    scanner = sha(objects.blob(CORE, request['policy'], 'scripts/security/scan.py'))
+    return semantic_database_identity(database, tools, now, scanner_sha256=scanner)
+
+
 def compute_identity(request, objects, *, database=None, now=None):
     """Compute actual inputs, keeping revision-observable execution conservative.
 
@@ -157,8 +187,8 @@ def compute_identity(request, objects, *, database=None, now=None):
         require('scripts/security/scan.py' in paths and 'ci/security/tools.json' in paths
                 and 'ci/architecture-pipeline.yml' in paths, 'incomplete security controller')
         result['policy_inputs_sha256'] = sha(encoded(paths))
-        tools = json.loads(objects.blob(CORE, request['policy'], 'ci/security/tools.json'))
-        result['database'] = database_identity(database, tools, now or dt.datetime.now(dt.timezone.utc))
+        result['database'] = security_database_identity(request, objects, database,
+                                                        now or dt.datetime.now(dt.timezone.utc))
     else:
         result.update(source_revision=request['source'], policy_revision=request['policy'],
             policy_tree_sha256=sha(encoded(policy)), host_revision=request['host'],
@@ -405,7 +435,10 @@ def verify_reuse(proof, expected, objects, *, receipt_bytes, artifact_bytes,
     require(validate_original(original, receipt_bytes, artifact_bytes) is True,
             'original immutable receipt validation did not pass')
     if expected['job'] == 'security-scans':
-        require(receipt.get('database') == database, 'advisory database changed; rescan required')
+        clock = now or dt.datetime.now(dt.timezone.utc)
+        require(security_database_identity(original, objects, receipt.get('database'), clock)
+                == security_database_identity(expected, objects, database, clock),
+                'advisory database changed; rescan required')
     if proof['scope'] == 'retained-check':
         before = retained_check_identity(original, objects)
         after = retained_check_identity(expected, objects)

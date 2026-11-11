@@ -21,7 +21,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 
-from input_identity import CORE, checked_request, database_identity, encoded as identity_encoded, require
+from input_identity import (CORE, checked_request, database_identity,
+                            encoded as identity_encoded, require, semantic_database_identity)
 
 
 def digest(raw):
@@ -187,6 +188,7 @@ class Resolver:
             paths = set(POLICY_FILES)
             security = request['job'] == 'security-scans'
             if security:
+                paths.add('scripts/security/scan.py')
                 paths.update(path for path in self.objects.tree(CORE, request['policy'])
                              if path.startswith('ci/security/') and path.count('/') == 2)
             for path in sorted(paths):
@@ -349,10 +351,13 @@ class Resolver:
                 'database witness must use current protected scanner policy')
         context = self.resolve(original, receipt)
         database = self._security(original, receipt, context)
+        tools = context['policy']['tools']
+        scanner_sha256 = context['policy']['files']['scripts/security/scan.py']
+        semantic_database_identity(database, tools, self.now(), scanner_sha256=scanner_sha256)
         self.database_witness = dict(database=database, original=dict(original),
                                      receipt_sha256=context['receipt_sha256'],
                                      artifact_sha256=context['artifact_sha256'],
-                                     database_max_age_hours=context['policy']['tools']['database_max_age_hours'])
+                                     tools=tools, scanner_sha256=scanner_sha256)
         return dict(database)
 
     def authenticate_original(self, original, receipt, artifact_sha256):
@@ -375,10 +380,18 @@ class Resolver:
         artifact = Archive(artifact_bytes).read
         if original['job'] == 'security-scans':
             database = self._security(original, receipt, context)
-            require(self.database_witness is not None and
-                    database == self.database_witness['database'],
+            require(self.database_witness is not None,
+                    'authenticated current security database witness missing')
+            # Preserve both raw metadata hashes in their authenticated receipts.
+            # Only the known pinned offline scanner contract may compare actual
+            # advisory bytes/freshness independently of download-local metadata.
+            original_semantics = semantic_database_identity(database, context['policy']['tools'],
+                self.now(), scanner_sha256=context['policy']['files']['scripts/security/scan.py'])
+            witness_semantics = semantic_database_identity(self.database_witness['database'],
+                self.database_witness['tools'], self.now(),
+                scanner_sha256=self.database_witness['scanner_sha256'])
+            require(original_semantics == witness_semantics,
                     'original security database differs from authenticated fresh witness')
-            database_identity(database, self.database_witness, self.now())
             return True
         steps = receipt.get('steps')
         require(isinstance(steps, list) and steps, 'original receipt has no checks')
