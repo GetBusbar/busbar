@@ -127,6 +127,17 @@ class HarnessStorage(Fixture, unittest.TestCase):
 
 
 class CompilerWitnessStorage(unittest.TestCase):
+    def test_check_jobs_are_bounded_by_candidate_cpu_and_existing_memory(self):
+        for cpus, memory_gib, expected in [(4, 6, 4), (2, 6, 2), (16, 6, 4), (4, 3, 1)]:
+            resources = {'cpus': cpus, 'memory_bytes': memory_gib * 1024**3}
+            execution = SimpleNamespace(config={'resources': dict(resources)})
+            with self.subTest(cpus=cpus, memory_gib=memory_gib), \
+                    patch.object(check, 'EXECUTION', execution):
+                self.assertEqual(check.compiler_check_jobs(), expected)
+                self.assertEqual(execution.config['resources'], resources)
+        with patch.object(check, 'EXECUTION', None):
+            self.assertIsNone(check.compiler_check_jobs())
+
     def run_fixture(self, outcome):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             root = Path(directory)
@@ -152,16 +163,26 @@ class CompilerWitnessStorage(unittest.TestCase):
                                        'rendered': 'retained diagnostic'}}
                 return subprocess.CompletedProcess(argv, code,
                     stdout=json.dumps(message) if error_code else '', stderr='retained stderr')
-            execution = SimpleNamespace(roots={'checkout': root}, run=run)
-            with patch.object(check, 'EXECUTION', execution):
+            execution = SimpleNamespace(roots={'checkout': root}, run=run,
+                config={'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}})
+            with patch.object(check, 'EXECUTION', execution), patch('check.print') as progress:
                 try:
                     receipt = check.check_compiler_witnesses(policy, root, root, root / 'scratch')
                 finally:
                     for argv, kwargs in calls:
                         self.assertTrue(kwargs['discard_harness_target'])
                         self.assertIn('--message-format=json', argv)
+                        self.assertEqual(argv[:2], ['cargo', 'check'])
+                        self.assertEqual(argv[argv.index('--jobs') + 1], '4')
                     self.assertEqual(len(calls), 2)
                     self.assertIn('retained stderr', (root / 'scratch/compiler-witnesses/witness_01.log').read_text())
+                    rows = [json.loads(call.args[0].split(': ', 1)[1]) for call in progress.call_args_list]
+                    self.assertEqual([row['event'] for row in rows], ['start', 'finish'] * 2)
+                    self.assertEqual([row['case'] for row in rows], ['witness_00'] * 2 + ['witness_01'] * 2)
+                    self.assertTrue(all(row['build_jobs'] == 4 for row in rows))
+                    self.assertTrue(all(call.kwargs['flush'] for call in progress.call_args_list))
+                    self.assertEqual(rows[-1]['passed'], outcome == (1, 'E0624', 'witness_01'))
+                    self.assertEqual(len(rows[-1]['log_sha256']), 64)
             return receipt
 
     def test_positive_and_expected_negative_keep_their_verdicts_and_logs(self):

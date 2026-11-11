@@ -12,6 +12,19 @@ spec.loader.exec_module(evidence)
 
 
 class StagedSubject(unittest.TestCase):
+    def test_rbac_fixtures_enable_bounded_local_telemetry_for_declared_operation(self):
+        issuer = mock.Mock(url="https://127.0.0.1:4444/jwks")
+        with mock.patch.object(evidence.oidf, "sha256_file", return_value="a" * 64):
+            for ceiling in ("full", None):
+                cfg = evidence.rbac_config(8000, 8001, "/fixture/plugins", issuer,
+                                           "fixture CA", "/fixture/key", {"get_keys"}, ceiling)
+                self.assertEqual(cfg["export"], {
+                    "rbac-metrics": {"module": "prometheus", "settings": {"buffer_seconds": 60}}})
+                provider = cfg["identity-providers"]["rig"]
+                self.assertEqual(provider.get("max_admin_scope"), ceiling)
+                self.assertEqual(cfg["auth"]["admin_auth"], ["rig"])
+        self.assertNotIn("export", evidence.base_config(8000, 8001))
+
     def test_staged_oidc_uses_offline_builds_without_fetching(self):
         with tempfile.TemporaryDirectory() as directory:
             def staged(pin, destination):

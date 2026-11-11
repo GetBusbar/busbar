@@ -654,6 +654,24 @@ class ExternalRBAC:
                 raise Refused("credential transport script failed")
             statuses = self.credentials.finish()
             if any(status in (429, 500, 502, 503, 504) for status in statuses.values()):
+                # Preserve the failed synthetic cell in captured CI stderr. Do
+                # not include concrete URLs, headers, bodies or runtime logs:
+                # those can contain fixture credentials after startup.
+                diagnostic = {
+                    "schema": "busbar.zap-transport-failure/1",
+                    "label": label[:80],
+                    "operation_index": index,
+                    "method": method[:16],
+                    "declared_path": path[:512],
+                    "statuses": [
+                        {"principal_index": i, "principal": pname[:160], "status": status}
+                        for i, (pname, status) in enumerate(statuses.items())
+                    ][:64],
+                    "scope": "synthetic operation names and HTTP status codes only",
+                }
+                encoded = json.dumps(diagnostic, ensure_ascii=True)
+                (dest / "transport-failure.json").write_text(encoded + "\n")
+                print("ZAP_TRANSPORT_FAILURE " + encoded, file=sys.stderr, flush=True)
                 raise Refused("subject/control transport, rate-limit or server failure")
             html_file = dest / (name + ".html")
             self.api(

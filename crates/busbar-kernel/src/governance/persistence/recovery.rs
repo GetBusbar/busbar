@@ -27,6 +27,7 @@ use busbar_contract::{
     Secret,
 };
 use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, JournalRecord, Record, RecordClass};
+use futures::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -318,54 +319,68 @@ async fn head(
     Ok(Some((decoded, raw)))
 }
 async fn heads(store: &CoreStore) -> Result<Vec<([u8; 16], Head)>, RecoveryError> {
+    // Generations and pagination are scoped to each independent namespace. Bound
+    // backend pressure while avoiding 256 serial round trips on an empty store.
+    let mut buckets = stream::iter(0..=u8::MAX)
+        .map(|bucket| bucket_heads(store, bucket))
+        .buffer_unordered(4);
     let mut result = Vec::new();
-    for bucket in 0..=u8::MAX {
-        let namespace = partition::namespace(RECOVERY, &[&[bucket]]);
-        let mut after = None;
-        let mut generation = None;
-        loop {
-            let page = store
-                .backend()
-                .scan(Arc::new(Scan {
-                    dataset: store.info().dataset,
-                    namespace,
-                    prefix: RECOVERY.0.to_vec(),
-                    after: after.clone(),
-                    generation,
-                    allow_change: false,
-                    max_items: store.limits().scan_items,
-                    max_bytes: store.limits().scan_bytes,
-                }))
-                .await
-                .map_err(unavailable)?;
-            if generation.is_some_and(|g| g != page.generation) {
-                return Err(invalid("recovery scan generation changed"));
-            }
-            generation = Some(page.generation);
-            for (at, value) in page.rows {
-                if at.namespace != namespace.0
-                    || at.key.len() != 32
-                    || at.key[..16] != RECOVERY.0
-                    || at.key[16] != bucket
-                {
-                    return Err(invalid("invalid recovery head identity"));
-                }
-                let operation = at.key[16..].try_into().map_err(invalid)?;
-                let tip: Head =
-                    serde_json::from_slice(value.expose(&crate::seal::lend())).map_err(invalid)?;
-                if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
-                    return Err(invalid("invalid recovery head"));
-                }
-                result.push((operation, tip));
-            }
-            match page.next {
-                Some(next) if after.as_ref().is_none_or(|old| old < &next) => after = Some(next),
-                Some(_) => return Err(invalid("nonprogressing recovery scan")),
-                None => break,
-            }
-        }
+    while let Some(bucket) = buckets.next().await {
+        result.extend(bucket?);
     }
     result.sort_by_key(|(operation, _)| *operation);
+    Ok(result)
+}
+
+async fn bucket_heads(
+    store: &CoreStore,
+    bucket: u8,
+) -> Result<Vec<([u8; 16], Head)>, RecoveryError> {
+    let mut result = Vec::new();
+    let namespace = partition::namespace(RECOVERY, &[&[bucket]]);
+    let mut after = None;
+    let mut generation = None;
+    loop {
+        let page = store
+            .backend()
+            .scan(Arc::new(Scan {
+                dataset: store.info().dataset,
+                namespace,
+                prefix: RECOVERY.0.to_vec(),
+                after: after.clone(),
+                generation,
+                allow_change: false,
+                max_items: store.limits().scan_items,
+                max_bytes: store.limits().scan_bytes,
+            }))
+            .await
+            .map_err(unavailable)?;
+        if generation.is_some_and(|g| g != page.generation) {
+            return Err(invalid("recovery scan generation changed"));
+        }
+        generation = Some(page.generation);
+        for (at, value) in page.rows {
+            if at.namespace != namespace.0
+                || at.key.len() != 32
+                || at.key[..16] != RECOVERY.0
+                || at.key[16] != bucket
+            {
+                return Err(invalid("invalid recovery head identity"));
+            }
+            let operation = at.key[16..].try_into().map_err(invalid)?;
+            let tip: Head =
+                serde_json::from_slice(value.expose(&crate::seal::lend())).map_err(invalid)?;
+            if tip.version != 1 || tip.node == 0 || tip.sequence == 0 {
+                return Err(invalid("invalid recovery head"));
+            }
+            result.push((operation, tip));
+        }
+        match page.next {
+            Some(next) if after.as_ref().is_none_or(|old| old < &next) => after = Some(next),
+            Some(_) => return Err(invalid("nonprogressing recovery scan")),
+            None => break,
+        }
+    }
     Ok(result)
 }
 
