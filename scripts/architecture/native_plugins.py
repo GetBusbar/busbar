@@ -30,11 +30,10 @@ def qualify_plugin(q, host, sdk):
             q.env['TSAN_OPTIONS'] = 'halt_on_error=1'
             command = [str(binary)]
             if name == 'unit-tsan' and sys.platform == 'linux':
-                # Linux PIE ASLR can collide with GCC TSan's shadow reservation before main.
-                # util-linux setarch changes only this child process's personality;
-                # sanitizer instrumentation, halt-on-error and failure propagation stay intact.
-                command = ['setarch', '--addr-no-randomize', *command]
-            q.run('c-' + name, command)
+                from native_sanitizer import run_c_unit_tsan
+                run_c_unit_tsan(q)
+            else:
+                q.run('c-' + name, command)
         schema = q.work / 'settings-schema'
         q.run('c-build-schema', ['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic',
             '-I', str(include), str(q.root / recipe['schema']['source']),

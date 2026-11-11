@@ -19,6 +19,10 @@ class CQualification(unittest.TestCase):
         patcher = patch('check.load_c_recipe', return_value=recipe)
         patcher.start()
         self.addCleanup(patcher.stop)
+        sanitizer = patch('native_sanitizer.run_c_unit_tsan', side_effect=lambda q:
+            q.run('c-unit-tsan', ['setarch', '--addr-no-randomize', str(q.work / 'unit-tsan')]))
+        self.sanitizer = sanitizer.start()
+        self.addCleanup(sanitizer.stop)
         root = Path(directory)
         work, evidence = root / 'work', root / 'evidence'
         (work / 'architecture').mkdir(parents=True)
@@ -48,6 +52,7 @@ class CQualification(unittest.TestCase):
             self.assertEqual(q.env['TSAN_OPTIONS'], 'halt_on_error=1')
             self.assertIn('c-native-loader', calls)
             self.assertIn('c-schema', calls)
+            self.sanitizer.assert_called_once_with(q)
 
     def test_other_platform_retains_direct_sanitizer_execution(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
@@ -56,6 +61,7 @@ class CQualification(unittest.TestCase):
             with patch('native_plugins.sys.platform', 'darwin'):
                 qualify_plugin(q, Path(directory) / 'host', Path(directory) / 'sdk')
             q.run.assert_any_call('c-unit-tsan', [str(q.work / 'unit-tsan')])
+            self.sanitizer.assert_not_called()
 
     def test_sanitizer_or_setarch_failure_stops_qualification(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
