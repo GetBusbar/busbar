@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
-import http.server
 import json
 import os
 from pathlib import Path
@@ -22,7 +21,6 @@ import stat
 import subprocess
 import sys
 import tarfile
-import threading
 import time
 import urllib.error
 import urllib.parse
@@ -134,75 +132,31 @@ def fetch_archive(destination, token):
     destination.chmod(0o444)
 
 
-class Registry:
-    """Serve exact public OCI blobs only; no proxy, credentials or filesystem API."""
-    def __init__(self, archive, port=0):
-        self.archive = Path(archive)
-        self.blobs = {}
-        with tarfile.open(self.archive, 'r:') as source:
-            for member in source:
-                match = re.fullmatch(r'blobs/sha256/([0-9a-f]{64})', member.name)
-                if match:
-                    require(member.isfile() and match[1] not in self.blobs, 'invalid OCI blob member')
-                    self.blobs[match[1]] = (member.offset_data, member.size)
-        require(MANIFEST in self.blobs, 'pinned OCI manifest is absent')
-        owner = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_HEAD(self):
-                self.respond(False)
-
-            def do_GET(self):
-                self.respond(True)
-
-            def respond(self, body):
-                if self.path in ('/v2', '/v2/'):
-                    self.send_response(200)
-                    self.send_header('Content-Length', '2')
-                    self.end_headers()
-                    if body:
-                        self.wfile.write(b'{}')
-                    return
-                match = re.fullmatch(r'/v2/busbar-native-tools/(manifests|blobs)/sha256:([0-9a-f]{64})', self.path)
-                if not match or match[2] not in owner.blobs:
-                    self.send_error(404)
-                    return
-                offset, size = owner.blobs[match[2]]
-                with owner.archive.open('rb') as stream:
-                    stream.seek(offset)
-                    media = 'application/octet-stream'
-                    if match[1] == 'manifests':
-                        require(size < 1024**2, 'oversized OCI manifest')
-                        data = stream.read(size)
-                        require(hashlib.sha256(data).hexdigest() == match[2], 'OCI manifest digest differs')
-                        media = json.loads(data)['mediaType']
-                        stream.seek(offset)
-                    self.send_response(200)
-                    self.send_header('Content-Type', media)
-                    self.send_header('Content-Length', str(size))
-                    self.send_header('Docker-Content-Digest', 'sha256:' + match[2])
-                    self.end_headers()
-                    if body:
-                        remaining = size
-                        while remaining:
-                            chunk = stream.read(min(1024**2, remaining))
-                            require(chunk, 'truncated OCI blob')
-                            self.wfile.write(chunk)
-                            remaining -= len(chunk)
-
-            def log_message(self, *args):
-                pass
-
-        self.server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.port = self.server.server_port
-        self.reference = f'127.0.0.1:{self.port}/busbar-native-tools@sha256:{MANIFEST}'
-
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(timeout=10)
+def load_tool_image(archive, endpoint, env):
+    """Import offline and bind the daemon's identity to verified execution bytes."""
+    with tarfile.open(archive, 'r:') as source:
+        def blob(checksum):
+            member = source.getmember('blobs/sha256/' + checksum)
+            require(member.isfile() and member.size < 1024**2, 'invalid tool image metadata')
+            raw = source.extractfile(member).read()
+            require(hashlib.sha256(raw).hexdigest() == checksum, 'tool image metadata digest differs')
+            return json.loads(raw)
+        manifest = blob(MANIFEST)
+        config_sha = manifest['config']['digest'].removeprefix('sha256:')
+        config = blob(config_sha)
+    require(config['architecture'] == 'amd64' and config['os'] == 'linux', 'tool image platform differs')
+    client = [DOCKER, '--host', endpoint]
+    loaded = run([*client, 'image', 'load', '--input', str(archive)], env=env, capture_output=True, text=True)
+    names = re.findall(r'^Loaded image(?: ID)?: (.+)$', loaded.stdout, re.MULTILINE)
+    require(len(names) == 1, 'tool archive must import exactly one image')
+    actual = json.loads(run([*client, 'image', 'inspect', names[0]], env=env,
+                           capture_output=True, text=True).stdout)[0]
+    require(actual['Id'] in ('sha256:' + MANIFEST, 'sha256:' + config_sha), 'loaded tool identity differs')
+    require(actual.get('Os') == config['os'] and actual.get('Architecture') == config['architecture']
+            and actual.get('RootFS') == {'Type': config['rootfs']['type'], 'Layers': config['rootfs']['diff_ids']}
+            and all(actual.get('Config', {}).get(key) == value for key, value in config['config'].items()),
+            'loaded tool execution content differs')
+    return actual['Id']
 
 
 def entry_command(helper, expected, image, name):
@@ -230,22 +184,20 @@ def bootstrap(trusted, checkout, work):
             and checkout.is_relative_to('/home/fleeting/builds'), 'unexpected runner checkout')
     archive = work / 'public-tools.tar'
     fetch_archive(archive, env['CI_JOB_TOKEN'])
-    registry = Registry(archive)
     name = 'busbar-root-controller-' + env['CI_JOB_ID']
     client_env = dict(BASE_ENV, HOME=str(work), DOCKER_CONFIG=str(work / 'docker-client'))
     Path(client_env['DOCKER_CONFIG']).mkdir(mode=0o700)
     try:
-        run([DOCKER, '--host', 'unix:///var/run/docker.sock', 'pull', registry.reference], env=client_env)
+        image = load_tool_image(archive, 'unix:///var/run/docker.sock', client_env)
         payload = {'environment': env, 'trusted': str(trusted), 'checkout': str(checkout),
-                   'work': str(work), 'archive': str(archive), 'port': registry.port,
-                   'revision': revision, 'image': registry.reference}
+                   'work': str(work), 'archive': str(archive),
+                   'revision': revision, 'image': image}
         # The token crosses only stdin into the verified root controller. It is
         # absent from Docker's inspectable environment and the invoking process.
         os.environ.pop('CI_JOB_TOKEN', None)
-        run(entry_command(helper, digest(helper), registry.reference, name),
+        run(entry_command(helper, digest(helper), image, name),
             input=json.dumps(payload), text=True, env=client_env)
     finally:
-        registry.close()
         subprocess.run([DOCKER, '--host', 'unix:///var/run/docker.sock', 'stop', '--time', '30', name],
                        env=client_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run([DOCKER, '--host', 'unix:///var/run/docker.sock', 'rm', '--force', name],
@@ -311,7 +263,7 @@ def runtime_configuration(control, endpoint, image, diagnostic):
         'resources': {'cpus': 2 if diagnostic else 4, 'memory_bytes': (1 if diagnostic else 6) * 1024**3,
                       'pids': 256 if diagnostic else 1024},
         'isolation': isolation,
-        'collector': {'docker_host': 'unix:///var/run/docker.sock', 'uid': SUBID + 1001, 'gid': SUBID + 1002}}
+        'collector': {'docker_host': 'unix:///var/run/docker.sock', 'image': image, 'uid': SUBID + 1001, 'gid': SUBID + 1002}}
 
 
 def daemon_main(control):
@@ -324,7 +276,6 @@ def daemon_main(control):
     root_directory(data)
     run([host_program('ip'), 'link', 'set', 'lo', 'up'])
     processes = []
-    registry = Registry(control / 'image.tar', config['port'])
     def interrupted(signum, frame):
         raise KeyboardInterrupt('daemon supervisor interrupted')
     signal.signal(signal.SIGTERM, interrupted)
@@ -342,7 +293,6 @@ def daemon_main(control):
             time.sleep(.5)
         raise RuntimeError('private daemon exited unexpectedly')
     finally:
-        registry.close()
         for process in reversed(processes):
             if process.poll() is None:
                 process.terminate()
@@ -463,7 +413,7 @@ def collector_mount_witness(config, store, evidence):
              '--cap-drop=ALL', '--security-opt=no-new-privileges', '--network=bridge',
              '--pids-limit=32', '--memory=64m', '--cpus=1',
              '--mount', 'type=bind,src=' + str(output) + ',dst=/output',
-             '--entrypoint', config['python'], config['image'], '-I', '-B', '-c', code], env=BASE_ENV)
+             '--entrypoint', config['python'], config['collector']['image'], '-I', '-B', '-c', code], env=BASE_ENV)
         expected = str(config['collector']['uid']) + ':' + str(config['collector']['gid'])
         require((output / 'proof').read_text() == expected, 'default collector did not see the bounded host mount')
         (evidence / 'collector-mount.json').write_text(json.dumps({'mapped_identity': expected,
@@ -515,7 +465,7 @@ def root_main():
     require(os.geteuid() == 0 and os.stat('/proc/self/ns/mnt').st_ino == os.stat('/proc/1/ns/mnt').st_ino,
             'controller must execute as host root')
     payload = json.loads(sys.stdin.read(1024**2))
-    require(set(payload) == {'environment', 'trusted', 'checkout', 'work', 'archive', 'port', 'revision', 'image'},
+    require(set(payload) == {'environment', 'trusted', 'checkout', 'work', 'archive', 'revision', 'image'},
             'unknown root bootstrap input')
     env = ci_environment(payload['environment'])
     require(set(payload['environment']) <= CI_KEYS and approved_revision(env) == payload['revision'],
@@ -527,9 +477,7 @@ def root_main():
             and Path(payload['archive']) == expected_work / 'public-tools.tar'
             and original_checkout == original_checkout.resolve()
             and original_checkout.is_relative_to('/home/fleeting/builds'), 'root bootstrap paths differ')
-    require(type(payload['port']) is int and 1024 < payload['port'] < 65536
-            and payload['image'] == f"127.0.0.1:{payload['port']}/busbar-native-tools@sha256:{MANIFEST}",
-            'unapproved tool image reference')
+    require(re.fullmatch(r'sha256:[0-9a-f]{64}', payload['image']), 'unapproved tool image identity')
     require(digest(DOCKER) == DOCKER_SHA256 and digest(payload['archive']) == ARCHIVE_SHA256,
             'administrator bootstrap inputs changed')
     os.environ.clear()
@@ -552,7 +500,7 @@ def root_main():
     config = runtime_configuration(control, endpoint, payload['image'], is_diagnostic)
     config_path = control / 'runtime.json'
     config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
-    (control / 'daemon-inputs.json').write_text(json.dumps({'port': payload['port'], 'endpoint': endpoint}))
+    (control / 'daemon-inputs.json').write_text(json.dumps({'endpoint': endpoint}))
     evidence = control / 'evidence'
     evidence.mkdir()
     receipt = {'schema': 'busbar.native-ci-root-bootstrap/1', 'policy_revision': payload['revision'],
@@ -593,7 +541,13 @@ def root_main():
                     raise RuntimeError('private Docker daemon did not become ready')
                 info = json.loads(status.stdout)
                 linux_job_isolation.validate_userns(config['isolation'], info)
-                run([*client, 'pull', payload['image']], env=BASE_ENV)
+                config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV)
+                config['collector']['image'] = load_tool_image(control / 'image.tar', 'unix:///var/run/docker.sock', BASE_ENV)
+                require(config['collector']['image'] == payload['image'], 'administrator image identity changed')
+                config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
+                receipt['runtime_sha256'] = digest(config_path)
+                receipt['candidate_image_id'] = config['image']
+                receipt['collector_image_id'] = config['collector']['image']
                 capacity = os.statvfs(control)
                 receipt['host_available_bytes_after_image_import'] = capacity.f_bavail * capacity.f_frsize
                 require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],

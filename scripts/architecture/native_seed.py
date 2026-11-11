@@ -178,7 +178,7 @@ def prepare(q):
             '--tmpfs', '/tmp:rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777', '--shm-size=64m',
             '--mount', f'type=bind,src={context},dst=/inputs',
             '--mount', f'type=bind,src={output},dst=/__busbar_collected',
-            '--entrypoint', '/usr/bin/env', config['image'], '-i',
+            '--entrypoint', '/usr/bin/env', config['collector'].get('image', config['image']), '-i',
             'PATH=/usr/local/cargo/bin:/usr/bin:/bin', 'BUSBAR_NATIVE_SEED_ROOT=/__busbar_collected',
             config['python'], '-I', '-B', '/inputs/seed.py'],
             capture_output=True)

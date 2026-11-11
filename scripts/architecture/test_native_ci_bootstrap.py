@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 import tarfile
 import tempfile
@@ -128,30 +129,38 @@ class Bootstrap(unittest.TestCase):
             self.assertEqual(result['sha256'], bootstrap.digest(result['manifest']))
             self.assertEqual(result['suite_verdict'], 'not implied by input staging')
 
-    def test_registry_serves_pinned_blobs_and_has_no_filesystem_or_proxy_route(self):
+    def test_offline_import_checks_execution_bytes_without_registry_or_tls_changes(self):
+        config = {'architecture': 'amd64', 'os': 'linux', 'config': {'Cmd': ['fixed'], 'Env': ['PATH=/bin']},
+                  'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + 'a' * 64]}}
+        config_raw = json.dumps(config).encode()
+        config_sha = hashlib.sha256(config_raw).hexdigest()
+        manifest_raw = json.dumps({'config': {'digest': 'sha256:' + config_sha}}).encode()
+        manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             archive = Path(directory) / 'image.tar'
-            manifest = json.dumps({'mediaType': 'application/vnd.oci.image.manifest.v1+json'}).encode()
-            value = hashlib.sha256(manifest).hexdigest()
             with tarfile.open(archive, 'w') as output:
-                info = tarfile.TarInfo('blobs/sha256/' + value)
-                info.size = len(manifest)
-                output.addfile(info, io.BytesIO(manifest))
-            with patch.object(bootstrap, 'MANIFEST', value):
-                registry = bootstrap.Registry(archive)
-                try:
-                    url = 'http://127.0.0.1:' + str(registry.port)
-                    with urllib.request.urlopen(url + '/v2/busbar-native-tools/manifests/sha256:' + value) as response:
-                        self.assertEqual(response.read(), manifest)
-                        self.assertEqual(response.headers['Docker-Content-Digest'], 'sha256:' + value)
-                    for suffix in ('/etc/passwd', '/v2/other/blobs/sha256:' + value,
-                                   '/v2/busbar-native-tools/blobs/sha256:' + '0' * 64):
-                        with self.subTest(suffix=suffix), self.assertRaises(urllib.error.HTTPError) as error:
-                            urllib.request.urlopen(url + suffix)
-                        self.assertEqual(error.exception.code, 404)
-                        error.exception.close()
-                finally:
-                    registry.close()
+                for checksum, raw in [(config_sha, config_raw), (manifest_sha, manifest_raw)]:
+                    item = tarfile.TarInfo('blobs/sha256/' + checksum)
+                    item.size = len(raw)
+                    output.addfile(item, io.BytesIO(raw))
+            actual = {'Id': 'sha256:' + config_sha, 'Config': config['config'], 'Os': 'linux',
+                      'Architecture': 'amd64', 'RootFS': {'Type': 'layers', 'Layers': config['rootfs']['diff_ids']}}
+            def execute(argv, **kwargs):
+                self.assertNotIn('pull', argv)
+                self.assertNotIn('insecure', ' '.join(argv))
+                self.assertEqual(argv[1:3], ['--host', 'unix:///fixed.sock'])
+                if 'load' in argv:
+                    self.assertEqual(argv[-1], str(archive))
+                    return subprocess.CompletedProcess(argv, 0, 'Loaded image: fixed:tag\n')
+                return subprocess.CompletedProcess(argv, 0, json.dumps([actual]))
+            with patch.object(bootstrap, 'MANIFEST', manifest_sha), patch.object(bootstrap, 'run', side_effect=execute):
+                self.assertEqual(bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {}), actual['Id'])
+                actual['RootFS'] = {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]}
+                with self.assertRaisesRegex(ValueError, 'execution content'):
+                    bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
+                actual['Id'] = 'sha256:' + 'f' * 64
+                with self.assertRaisesRegex(ValueError, 'identity'):
+                    bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
 
 
 if __name__ == '__main__':

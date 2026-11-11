@@ -95,7 +95,7 @@ class Execution:
             "local Unix Docker endpoint required",
         )
         require(
-            re.fullmatch(r"[a-z0-9./:_-]+@sha256:[0-9a-f]{64}", config["image"]),
+            re.fullmatch(r"(?:[a-z0-9./:_-]+@)?sha256:[0-9a-f]{64}", config["image"]),
             "immutable toolchain image required",
         )
         require(config["runtime"] in ("runc", "runsc"), "unsupported candidate runtime")
@@ -118,7 +118,8 @@ class Execution:
         )
         linux_job_isolation.validate_configuration(config["isolation"])
         collector = config['collector']
-        require(isinstance(collector, dict) and set(collector) == {'docker_host', 'uid', 'gid'}
+        require(isinstance(collector, dict) and set(collector) in ({'docker_host', 'uid', 'gid'}, {'docker_host', 'uid', 'gid', 'image'})
+                and re.fullmatch(r'(?:[a-z0-9./:_-]+@)?sha256:[0-9a-f]{64}', collector.get('image', config['image']))
                 and re.fullmatch(r'unix:///[^\s,]+', collector['docker_host'])
                 and collector['uid'] == config['isolation']['uid_map'][1] + config['uid']
                 and collector['gid'] == config['isolation']['gid_map'][1] + config['gid'],
