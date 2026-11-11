@@ -6,6 +6,25 @@ It does not select or activate a profile for candidate jobs. The ordinary
 `native_confinement.Execution` constraints remain in force for every launch.
 The separate local ARM experiment remains in `SANITIZER-LOCAL.md`.
 
+## C unit-test activation
+
+On Linux, the trusted C branch in `native_plugins.qualify_plugin` calls
+`native_sanitizer.run_c_unit_tsan` only for `c-unit-tsan`. The helper runs fresh
+fixed-source controls with the current execution configuration, image, and
+daemon before selecting the profile. The baseline is bundled as
+`tsan-linux29-baseline.json` and must match the pinned digest. The helper accepts
+no command or profile from candidate input, and refuses host execution.
+
+After all controls pass, `CUnitExecution` permits only
+`setarch --addr-no-randomize <candidate-work>/unit-tsan`, the checkout working
+directory, and `TSAN_OPTIONS=halt_on_error=1`. It retains the default execution
+state and shared observation list, and the helper restores the original
+execution object in `finally`. Compilation, the ordinary unit test, schema
+checks, and all other commands continue through default confinement. Failed
+controls or product tests remain failures. The admission receipt binds the
+runtime configuration, control receipt, profile, exact command, and test binary
+digests; control results and engine observations are retained in evidence.
+
 The engine source is Moby commit
 `fbf3ed25f893e6ce21336f1101590e40a13934f4`, which vendors
 `github.com/moby/profiles/seccomp@v0.1.0`. The baseline and derived policy hashes
