@@ -9,7 +9,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import urllib.error
 import urllib.request
 
@@ -140,6 +140,17 @@ class Bootstrap(unittest.TestCase):
             self.assertEqual(result['sha256'], bootstrap.digest(result['manifest']))
             self.assertEqual(result['suite_verdict'], 'not implied by input staging')
 
+    def test_import_failure_is_bounded_and_redacts_job_credentials(self):
+        error = subprocess.CalledProcessError(1, ['docker', 'image', 'load'],
+            stderr='prefix' * 1000 + '\x1b[31m token-secret invalid archive: missing manifest.json')
+        with patch.dict(os.environ, {'CI_JOB_TOKEN': 'token-secret'}):
+            message = str(bootstrap.import_failure(error))
+        self.assertNotIn('token-secret', message)
+        self.assertNotIn('\x1b', message)
+        self.assertIn('[redacted]', message)
+        self.assertIn('missing manifest.json', message)
+        self.assertLess(len(message), 4200)
+
     def test_offline_import_checks_execution_bytes_without_registry_or_tls_changes(self):
         config = {'architecture': 'amd64', 'os': 'linux', 'config': {'Cmd': ['fixed'], 'Env': ['PATH=/bin']},
                   'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + 'a' * 64]}}
@@ -161,11 +172,25 @@ class Bootstrap(unittest.TestCase):
                 self.assertNotIn('insecure', ' '.join(argv))
                 self.assertEqual(argv[1:3], ['--host', 'unix:///fixed.sock'])
                 if 'load' in argv:
-                    self.assertEqual(argv[-1], str(archive))
+                    if '--input' in argv:
+                        self.assertEqual(argv[-1], str(archive))
+                    else:
+                        self.assertIn('stdin', kwargs)
                     return subprocess.CompletedProcess(argv, 0, 'Loaded image: fixed:tag\n')
                 return subprocess.CompletedProcess(argv, 0, json.dumps([actual]))
             with patch.object(bootstrap, 'MANIFEST', manifest_sha), patch.object(bootstrap, 'run', side_effect=execute):
                 self.assertEqual(bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {}), actual['Id'])
+                producer = Mock(stdout=io.BytesIO(b'fixed compatibility archive'))
+                producer.wait.return_value = 0
+                producer.poll.return_value = 0
+                with patch.object(bootstrap.subprocess, 'Popen', return_value=producer) as exported:
+                    self.assertEqual(bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {},
+                                     source_image='sha256:' + manifest_sha), actual['Id'])
+                self.assertEqual(exported.call_args.args[0][-4:],
+                                 ['save', '--platform', 'linux/amd64', 'sha256:' + manifest_sha])
+                self.assertTrue(producer.stdout.closed)
+                with self.assertRaisesRegex(ValueError, 'unverified'):
+                    bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {}, source_image='floating:tag')
                 actual['RootFS'] = {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]}
                 with self.assertRaisesRegex(ValueError, 'execution content'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
