@@ -1545,6 +1545,77 @@ fn a_plane_tails_cli_help_reads_back_with_no_library() {
 const DIALECTS: &[AbiStr] = &[abi_str("golden-dialect")];
 
 #[test]
+fn plane_record_authorities_accept_current_class_parent_tails_and_preserve_bounds() {
+    use crate::abi::plane::{BillableClass, ClassParent, PlaneTail};
+    let kinds = [abi_str("example.requests")];
+    let classes = ["tokens", "input", "cached"].map(|name| BillableClass {
+        class: abi_str(name),
+        family: abi_str("tokens"),
+    });
+    let parents = [
+        ClassParent {
+            child: 1,
+            parent: 0,
+        },
+        ClassParent {
+            child: 2,
+            parent: 1,
+        },
+    ];
+    for edges in [&parents[..0], &parents[..]] {
+        let tail = PlaneTail {
+            record_kinds: kinds.as_ptr(),
+            record_kinds_len: kinds.len(),
+            billable_classes: classes.as_ptr(),
+            billable_classes_len: classes.len(),
+            class_parents: edges.as_ptr(),
+            class_parents_len: edges.len(),
+            ..zeroed_tail()
+        };
+        let current = read(&with_tail(KindCode::Plane, &tail).unwrap()).unwrap();
+        assert_eq!(
+            current.kind_tail_size as usize,
+            core::mem::size_of::<PlaneTail>()
+        );
+        let records = read_plane_records(&current.kind_tail, current.kind_tail_size).unwrap();
+        assert_eq!(records.kinds, ["example.requests"]);
+        assert!(records.chains.is_empty());
+        assert!(records.retentions.is_empty());
+
+        // An older tail authenticates no class-parent field. Its rendering remains
+        // readable, but cannot authorize the appended count or any edge bytes.
+        let old_tail = PlaneTail {
+            head: KindTailHead {
+                size: core::mem::offset_of!(PlaneTail, class_parents) as u32,
+                _reserved: 0,
+            },
+            ..tail
+        };
+        let old = read(&with_tail(KindCode::Plane, &old_tail).unwrap()).unwrap();
+        assert_eq!(
+            read_plane_records(&old.kind_tail, old.kind_tail_size)
+                .unwrap()
+                .kinds,
+            records.kinds
+        );
+        assert!(read_plane_records(&current.kind_tail, old.kind_tail_size).is_err());
+        let mut appended = Vec::new();
+        appended.extend_from_slice(&(edges.len() as u32).to_le_bytes());
+        for edge in edges {
+            appended.extend_from_slice(&edge.child.to_le_bytes());
+            appended.extend_from_slice(&edge.parent.to_le_bytes());
+        }
+        assert_eq!(&current.kind_tail[old.kind_tail.len()..], appended);
+        for end in old.kind_tail.len()..current.kind_tail.len() {
+            assert!(read_plane_records(&current.kind_tail[..end], current.kind_tail_size).is_err());
+        }
+        let mut extra = current.kind_tail.clone();
+        extra.push(0);
+        assert!(read_plane_records(&extra, current.kind_tail_size).is_err());
+    }
+}
+
+#[test]
 fn plane_record_authorities_read_without_loading_and_reject_malformed_tails() {
     use crate::abi::plane::{PlaneTail, RecordChain, RecordRetention, CHAIN_LENGTH_PREFIXED};
     let kinds = [abi_str("example.requests")];

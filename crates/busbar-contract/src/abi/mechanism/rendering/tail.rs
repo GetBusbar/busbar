@@ -41,7 +41,8 @@
 //!            admin_routes list of { verb str, target str, flags u32, audit_verb str },
 //!            admin_openapi blob, stream_ceiling_secs u64, metric_lanes list of str,
 //!            record_retentions list of { kind u32, rule u32 },
-//!            streaming_content_types list of str (only when the original tail includes the list)
+//!            streaming_content_types list of str (only when the original tail includes the list),
+//!            class_parents list of { child u32, parent u32 } (only when the original tail includes it)
 //! transport  role u32, framing u32, facts u32, handshake_max_steps u32, composes_over list of str,
 //!            claim_rows list of { selector_forms str, egress_selector_forms str, facts list of str,
 //!                                 status_namespace str, session u8, session_bound u8,
@@ -846,6 +847,14 @@ pub fn read_plane_records(facts: &[u8], tail_size: u32) -> Result<ReadPlaneRecor
         >= core::mem::offset_of!(plane::PlaneTail, streaming_content_types_len) + size_of::<usize>()
     {
         i.strs("plane.streaming_content_types")?;
+    }
+    if tail_size as usize
+        >= core::mem::offset_of!(plane::PlaneTail, class_parents_len) + size_of::<usize>()
+    {
+        for _ in 0..i.count("plane.class_parents")? {
+            i.u32("plane.class_parent.child")?;
+            i.u32("plane.class_parent.parent")?;
+        }
     }
     if i.at != facts.len() {
         return Err(Unreadable {
