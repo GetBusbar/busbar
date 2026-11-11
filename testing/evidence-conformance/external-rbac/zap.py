@@ -14,6 +14,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import threading
 import time
@@ -246,6 +247,7 @@ class ExternalRBAC:
         self.credentials = None
         self.stream = None
         self.receipts = []
+        self.startup_failure = None
 
     def remaining(self):
         remaining = self.deadline - time.monotonic()
@@ -319,14 +321,22 @@ class ExternalRBAC:
             startup = min(self.deadline, time.monotonic() + 120)
             while True:
                 if self.proc.poll() is not None:
+                    self.startup_failure = {
+                        "reason": "process-exited",
+                        "exit_code": self.proc.returncode,
+                    }
                     raise Refused(
-                        "pinned ZAP exited during startup; inspect private runtime.log"
+                        "pinned ZAP exited during startup; inspect ZAP_STARTUP_FAILURE diagnostic"
                     )
                 try:
                     found = self.api("core", "view", "version")
                     break
                 except Refused:
                     if time.monotonic() >= startup:
+                        self.startup_failure = {
+                            "reason": "startup-deadline-exceeded",
+                            "exit_code": self.proc.poll(),
+                        }
                         raise Refused("pinned ZAP startup deadline exceeded") from None
                     time.sleep(0.2)
             if found != {"version": "2.17.0"}:
@@ -777,7 +787,16 @@ class ExternalRBAC:
             self.credentials.close()
         private_log = self.work / "runtime.log"
         if private_log.exists():
-            text = private_log.read_text(errors="replace")[-65536:]
+            # Bound the read itself: a failed JVM can produce a very large log.
+            with private_log.open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                start = max(0, size - 65536)
+                stream.seek(start)
+                payload = stream.read(65536)
+            # Never publish a partial first line that could split a credential.
+            if start:
+                payload = payload.partition(b"\n")[2]
+            text = payload.decode(errors="replace")
             text = re.sub(r'(?i)Bearer\s+[^\s"<>]+', "Bearer [redacted]", text)
             text = re.sub(
                 r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
@@ -791,6 +810,28 @@ class ExternalRBAC:
                 if secret:
                     text = text.replace(secret, "[redacted]")
             (self.output / "runtime-tail.log").write_text(text)
+            if self.startup_failure is not None and self.credentials is None:
+                # At this point no fixture credentials, sessions or requests have
+                # been created. The API key above is still private. Native CI
+                # retains stderr but intentionally does not collect private logs.
+                lines = []
+                for line in text.splitlines()[-80:]:
+                    if re.search(
+                        r"(?i)api[ ._-]?key|authorization|cookie|password|secret|token|bearer",
+                        line,
+                    ):
+                        line = "[redacted sensitive startup line]"
+                    lines.append(line[:512])
+                diagnostic = {
+                    "schema": "busbar.zap-startup-failure/1",
+                    **self.startup_failure,
+                    "log_bytes": size,
+                    "tail": "\n".join(lines)[-16384:],
+                    "scope": "startup only, before fixture credentials or requests",
+                }
+                encoded = json.dumps(diagnostic, ensure_ascii=True)
+                (self.output / "startup-failure.json").write_text(encoded + "\n")
+                print("ZAP_STARTUP_FAILURE " + encoded, file=sys.stderr, flush=True)
 
         # Private ZAP sessions can contain JWTs. Never publish or retain them.
         if self.work.exists():

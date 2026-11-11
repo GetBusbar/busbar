@@ -24,6 +24,7 @@ candidate starts; ext4 metadata means usable capacity is slightly smaller.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,50 @@ import time
 
 HOST_ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"}
 
+
+def kernel_no_swap():
+    """Observe zero host swap capacity; confined processes cannot add backing."""
+    snapshots = {}
+    for name in ('swaps', 'meminfo'):
+        with Path('/proc/' + name).open('rb') as stream:
+            snapshots[name] = stream.read(65537)
+        if len(snapshots[name]) > 65536:
+            raise ValueError('kernel swap evidence exceeds bound')
+    swaps = snapshots['swaps'].splitlines()
+    totals = [line for line in snapshots['meminfo'].splitlines() if line.startswith(b'SwapTotal:')]
+    if (len(swaps) != 1 or swaps[0].split() != [b'Filename', b'Type', b'Size', b'Used', b'Priority']
+            or len(totals) != 1 or totals[0].split() != [b'SwapTotal:', b'0', b'kB']):
+        raise ValueError('runtime swap is unbounded: kernel has swap capacity or invalid evidence')
+    return {'mechanism': 'kernel-zero-swap-capacity', 'effective_swap_bytes': 0,
+            'proc_swaps': snapshots['swaps'].decode('ascii'),
+            'proc_swaps_sha256': hashlib.sha256(snapshots['swaps']).hexdigest(),
+            'swap_total_entry': totals[0].decode('ascii'),
+            'swap_total_entry_sha256': hashlib.sha256(totals[0]).hexdigest()}
+
+
+def validate_swap_bound(daemon, host, required_memory):
+    """Require exact RAM and zero swap, including kernels without swap accounting."""
+    if (type(required_memory) is not int or required_memory <= 0
+            or type(host.get('Memory')) is not int or host['Memory'] != required_memory):
+        raise ValueError('runtime Memory differs from the protected RAM bound')
+    observed = host.get('MemorySwap')
+    if (daemon.get('SwapLimit') is True and type(observed) is int
+            and observed == required_memory):
+        proof = {'mechanism': 'docker-memory-swap-limit', 'effective_swap_bytes': 0}
+    elif (daemon.get('SwapLimit') is False and type(observed) is int
+            and observed in (required_memory, -1)):
+        proof = kernel_no_swap()
+        proof['daemon_swap_limit'] = False
+    else:
+        raise ValueError('runtime MemorySwap/SwapLimit do not prove the protected no-swap request')
+    proof.update(requested_memory_swap_bytes=required_memory, observed_memory_swap_bytes=observed)
+    return proof
+
+
+def recheck_swap_bound(proof):
+    """Reobserve host backing after disposal when no kernel swap controller exists."""
+    if proof.get('mechanism') == 'kernel-zero-swap-capacity':
+        proof['after_disposal'] = kernel_no_swap()
 
 def require(condition, message):
     if not condition:

@@ -107,7 +107,11 @@ input roster, access-rule context export, unmodified upstream HTML reports,
 method/user cell classifications, response statuses and binary/config/source/tool
 digests. No JWT is written by the adapter. ZAP's private history can contain JWTs;
 it is removed on success or failure along with runtime dependencies. Only a
-redacted bounded runtime log tail is retained. Scratch/build dependencies are
+redacted bounded runtime log tail is retained. Startup exits and startup deadlines
+also emit a bounded `ZAP_STARTUP_FAILURE` JSON diagnostic to captured stderr, before
+fixture credentials or requests exist; the API key and sensitive lines are redacted.
+This diagnostic preserves the failure and does not establish an RBAC verdict.
+Scratch/build dependencies are
 outside published output. Per-operation scans have a 60-second bound, startup has
 120 seconds, and the complete external runner has 900 seconds after subject
 compilation. Requests retain upstream network timeouts. There is no test retry,

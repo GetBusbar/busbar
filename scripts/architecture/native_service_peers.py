@@ -19,6 +19,8 @@ import stat
 import subprocess
 import time
 import threading
+from types import SimpleNamespace
+import uuid
 
 import linux_job_isolation
 
@@ -43,6 +45,7 @@ ENV = {
 COMMAND = {'mysql': ['--log-bin-trust-function-creators=1'], 'vault': ['server', '-dev']}
 CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID', 'NET_BIND_SERVICE']
 TMPFS = {'/tmp': 'rw,nosuid,nodev,size=64m,nr_inodes=4096,mode=1777'}
+
 
 
 class Peers:
@@ -228,27 +231,11 @@ class Peers:
                      self.execution.config['isolation']['gid_map'][1])
             hosts.chmod(0o644)
             writable.append((hosts, '/etc/hosts'))
-        args = ['create', '--name', name, '--pull=never', '--network=none', '--read-only',
-                '--runtime', self.execution.config.get('runtime', 'runc'),
-                '--ipc=private', '--cgroupns=private', '--cap-drop=ALL', '--security-opt=no-new-privileges',
-                '--memory=1073741824', '--memory-swap=1073741824', '--cpus=1', '--pids-limit=256',
-                '--shm-size=64m', '--log-driver=local', '--log-opt=max-size=1m', '--log-opt=max-file=1', '--log-opt=compress=false', '--label', 'busbar.admission.job=' + self.q.receipt['job_id']]
-        if service == 'openldap':
-            args += ['--hostname', 'busbar-ldap.example.org', '--add-host', 'busbar-ldap.example.org:127.0.0.1']
-        capabilities = CAPS + (['KILL'] if service == 'openldap' else [])
-        for cap in capabilities:
-            args += ['--cap-add', cap]
-        for path, options in TMPFS.items():
-            args += ['--tmpfs', path + ':' + options]
-        for src, dst in writable:
-            args += ['--mount', f'type=bind,src={src},dst={dst}']
-        for key, value in ENV.get(service, {}).items():
-            args += ['--env', key + '=' + value]
-        args += [image['Id'], *COMMAND.get(service, [])]
+        args, capabilities = self.create_arguments(service, name, image, writable)
         self.names.append(name)
         self.client(args)
         inspected = json.loads(self.client(['inspect', name]).stdout)[0]
-        self.verify(inspected, image, writable, capabilities)
+        swap_bound = self.verify(inspected, image, writable, capabilities)
         self.client(['start', name])
         inspected = json.loads(self.client(['inspect', name]).stdout)[0]
         if not inspected['State']['Running']:
@@ -273,29 +260,69 @@ class Peers:
         self.peers[service] = peer
         self.q.receipt.setdefault('service_peers', {})[service] = {
             'image': inspected['Image'], 'requested_image': self.owner.images[service], 'network': 'none', 'namespace_inode': os.fstat(namespace).st_ino,
-            'capabilities': capabilities, 'storage': storage, 'readonly_root': True, 'memory_bytes': 1073741824, 'pids': 256,
+            'capabilities': capabilities, 'storage': storage, 'swap_bound': swap_bound, 'readonly_root': True, 'memory_bytes': 1073741824, 'pids': 256,
             'uid_map': self.execution.config['isolation']['uid_map'], 'port': PORTS[service]}
         return peer
 
-    def verify(self, actual, image, writable, capabilities=CAPS):
+    def create_arguments(self, service, name, image, writable):
+        args = ['create', '--name', name, '--pull=never', '--network=none', '--read-only',
+                '--runtime', self.execution.config.get('runtime', 'runc'),
+                '--ipc=private', '--cgroupns=private', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                '--memory=1073741824', '--memory-swap=1073741824', '--cpus=1', '--pids-limit=256',
+                '--shm-size=64m', '--log-driver=local', '--log-opt=max-size=1m', '--log-opt=max-file=1', '--log-opt=compress=false', '--label', 'busbar.admission.job=' + self.q.receipt['job_id']]
+        if service == 'openldap':
+            args += ['--hostname', 'busbar-ldap.example.org', '--add-host', 'busbar-ldap.example.org:127.0.0.1']
+        capabilities = CAPS + (['KILL'] if service == 'openldap' else [])
+        for cap in capabilities:
+            args += ['--cap-add', cap]
+        for path, options in TMPFS.items():
+            args += ['--tmpfs', path + ':' + options]
+        for src, dst in writable:
+            args += ['--mount', f'type=bind,src={src},dst={dst}']
+        for key, value in ENV.get(service, {}).items():
+            args += ['--env', key + '=' + value]
+        args += [image['Id'], *COMMAND.get(service, [])]
+        return args, capabilities
+
+    def control_values(self, actual, image, capabilities):
         host = actual['HostConfig']
+        requested = {
+            'Image': image['Id'], 'NetworkMode': 'none', 'Privileged': False,
+            'ReadonlyRootfs': True, 'PidMode': '', 'IpcMode': 'private',
+            'CgroupnsMode': 'private', 'Runtime': self.execution.config.get('runtime', 'runc'),
+            'CapDrop': ['ALL'], 'CapAdd': sorted(capabilities),
+            'NoNewPrivileges': True, 'Memory': 1073741824, 'MemorySwap': 1073741824,
+            'NanoCpus': 1000000000, 'PidsLimit': 256, 'ShmSize': 64 * 1024**2,
+            'Tmpfs': TMPFS,
+            'ExtraHosts': ['busbar-ldap.example.org:127.0.0.1'] if 'KILL' in capabilities else [],
+            'PortBindings': {}, 'Devices': [],
+            'LogConfig': {'Type': 'local', 'Config': {'max-size': '1m', 'max-file': '1', 'compress': 'false'}},
+        }
+        observed = {key: host.get(key) for key in requested}
+        observed.update(Image=actual['Image'],
+            CapDrop=sorted(set(host['CapDrop'] or [])),
+            CapAdd=sorted({cap.removeprefix('CAP_') for cap in host['CapAdd'] or []}),
+            NoNewPrivileges='no-new-privileges' in (host['SecurityOpt'] or []),
+            ExtraHosts=host.get('ExtraHosts') or [], PortBindings=host.get('PortBindings') or {},
+            Devices=host.get('Devices') or [])
+        return requested, observed
+
+    def verify(self, actual, image, writable, capabilities=CAPS):
         linux_job_isolation.validate_userns(self.execution.config['isolation'], self.daemon, actual)
-        if not (actual['Image'] == image['Id'] and host['NetworkMode'] == 'none'
-                and not host['Privileged'] and host['ReadonlyRootfs'] and not host['PidMode']
-                and host['IpcMode'] == 'private' and host['CgroupnsMode'] == 'private'
-                and host['Runtime'] == self.execution.config.get('runtime', 'runc')
-                and set(host['CapDrop'] or []) == {'ALL'} and {cap.removeprefix('CAP_') for cap in host['CapAdd'] or []} == set(capabilities)
-                and 'no-new-privileges' in (host['SecurityOpt'] or [])
-                and host['Memory'] == host['MemorySwap'] == 1073741824
-                and host['NanoCpus'] == 1000000000 and host['PidsLimit'] == 256
-                and host['ShmSize'] == 64 * 1024**2 and host['Tmpfs'] == TMPFS
-                and (host.get('ExtraHosts') or []) == (['busbar-ldap.example.org:127.0.0.1'] if 'KILL' in capabilities else [])
-                and not host.get('PortBindings') and not host.get('Devices')
-                and host['LogConfig'] == {'Type': 'local', 'Config': {'max-size': '1m', 'max-file': '1', 'compress': 'false'}}):
-            raise ValueError('fixture runtime controls differ from protected request')
+        requested, observed = self.control_values(actual, image, capabilities)
+        mismatches = {key: {'requested': requested[key], 'observed': observed[key]}
+                      for key in requested if observed[key] != requested[key]}
+        swap_bound = linux_job_isolation.validate_swap_bound(self.daemon, actual['HostConfig'], 1073741824)
+        mismatches.pop('MemorySwap', None)
+        if mismatches:
+            # Never serialize Config.Env or the full inspection: fixture runtime
+            # failures need only bounded control fields, with no image secrets.
+            detail = json.dumps(mismatches, sort_keys=True, separators=(',', ':'))
+            raise ValueError('fixture runtime controls differ from protected request: ' + detail[:4096])
         mounts = {(m['Source'], m['Destination'], m['RW']) for m in actual['Mounts'] if m['Type'] != 'tmpfs'}
         if mounts != {(str(src), dst, True) for src, dst in writable}:
             raise ValueError('fixture writable mounts differ from bounded storage')
+        return swap_bound
 
     def exec(self, service, args, **kwargs):
         return self.client(['exec', self.peers[service]['name'], *args], **kwargs)
@@ -401,3 +428,57 @@ class Peers:
         self.namespaces.clear()
         for value in self.q.receipt.get('service_peers', {}).values():
             value['disposed'] = True
+        zero_swap = [value['swap_bound'] for value in self.q.receipt.get('service_peers', {}).values()
+                     if value.get('swap_bound', {}).get('mechanism') == 'kernel-zero-swap-capacity']
+        if zero_swap:
+            final = linux_job_isolation.kernel_no_swap()
+            for proof in zero_swap:
+                proof['after_disposal'] = final
+
+
+def runtime_controls_probe(config, evidence):
+    """Inspect the exact fixture request on the selected daemon without starting peers."""
+    evidence = Path(evidence)
+    client_home = evidence / 'fixture-probe-client'
+    client_home.mkdir(mode=0o700)
+    environment = {'PATH': os.defpath, 'HOME': str(client_home), 'DOCKER_CONFIG': str(client_home)}
+    def client(args):
+        return subprocess.run([config['docker'], '--host', config['docker_host'], *args],
+            env=environment, capture_output=True, text=True, check=True, timeout=60)
+    peers = Peers.__new__(Peers)
+    peers.execution = SimpleNamespace(config=config)
+    peers.q = SimpleNamespace(receipt={'job_id': '0'})
+    peers.daemon = json.loads(client(['info', '--format', '{{json .}}']).stdout)
+    image = json.loads(client(['image', 'inspect', config['image']]).stdout)[0]
+    if image['Config'].get('Volumes'):
+        raise ValueError('fixture control probe image declares writable volumes')
+    record = {'schema': 'busbar.native-fixture-controls-probe/1', 'started': False,
+              'engine_version': peers.daemon.get('ServerVersion'), 'image': image['Id'], 'cases': []}
+    errors = []
+    try:
+        for service in ('wiremock', 'openldap'):
+            name = 'busbar-fixture-controls-' + uuid.uuid4().hex
+            args, capabilities = peers.create_arguments(service, name, image, [])
+            case = {'service_controls': service, 'disposed': False}
+            record['cases'].append(case)
+            try:
+                client(args)
+                actual = json.loads(client(['inspect', name]).stdout)[0]
+                requested, observed = peers.control_values(actual, image, capabilities)
+                case.update(requested=requested, observed=observed)
+                case['swap_bound'] = peers.verify(actual, image, [], capabilities)
+                case['status'] = 'pass'
+            except Exception as error:
+                case.update(status='refused', error=str(error)[:4096])
+                errors.append(str(error)[:4096])
+            finally:
+                client(['rm', '--force', '--volumes', name])
+                case['disposed'] = not client(['ps', '--all', '--quiet', '--filter', 'name=^/' + name + '$']).stdout.strip()
+                if not case['disposed']:
+                    raise RuntimeError('fixture control probe disposal failed')
+                if 'swap_bound' in case:
+                    linux_job_isolation.recheck_swap_bound(case['swap_bound'])
+        if errors:
+            raise ValueError('fixture control probe refused: ' + '; '.join(errors)[:4096])
+    finally:
+        (evidence / 'fixture-controls-probe.json').write_text(json.dumps(record, indent=2) + '\n')

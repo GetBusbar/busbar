@@ -475,6 +475,102 @@ class Boundary(Fixture, unittest.TestCase):
         self.assertEqual(json.loads(execution.fixture_map.read_text()), [])
 
 
+class SwapCustody(Fixture, unittest.TestCase):
+    def invoke(self, swap_limit, observed_swap, kernel_results):
+        execution = self.execution()
+        calls, created = [], []
+        memory = self.config['resources']['memory_bytes']
+        def client(argv, **kwargs):
+            calls.append(argv[0])
+            if argv[0] == 'create':
+                created.extend(argv)
+            payload = ''
+            if argv[0] == 'info':
+                payload = json.dumps({'SecurityOptions':['name=userns'], 'SwapLimit':swap_limit})
+            elif argv[:2] == ['inspect','--format']:
+                payload = json.dumps({'Status':'exited','Running':False,'ExitCode':0,'OOMKilled':False})
+            elif argv[0] == 'inspect':
+                mounts = []
+                for index, value in enumerate(created):
+                    if value == '--mount':
+                        fields = dict(part.split('=',1) if '=' in part else (part,True)
+                                      for part in created[index+1].split(','))
+                        mounts.append({'Type':fields['type'],'Source':fields['src'],
+                            'Destination':fields['dst'],'RW':'readonly' not in fields})
+                payload = json.dumps([{'Id':'fixed-container','Image':self.config['image'],
+                    'Config':{'User':'1000:1000'},'Mounts':mounts,'HostConfig':{
+                        'NetworkMode':'none','ReadonlyRootfs':True,'Privileged':False,'PidMode':'',
+                        'IpcMode':'private','CgroupnsMode':'private','Runtime':'runc','CapDrop':['ALL'],
+                        'CapAdd':[],'PidsLimit':256,'Memory':memory,'MemorySwap':observed_swap,
+                        'NanoCpus':2*10**9,'Devices':[],'DeviceRequests':[],'ExtraHosts':[],
+                        'ShmSize':64*1024**2,'Tmpfs':{'/tmp':'rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777'},
+                        'SecurityOpt':['no-new-privileges']}}])
+            return subprocess.CompletedProcess(argv,0,stdout=payload,stderr='')
+        yielded = False
+        error = None
+        with patch.object(linux_job_isolation,'prepare_writable',return_value={}), \
+                patch.object(linux_job_isolation,'validate_userns',return_value={}), \
+                patch.object(linux_job_isolation,'kernel_no_swap',side_effect=kernel_results) as kernel, \
+                patch.object(execution,'_client',side_effect=client):
+            try:
+                with execution.invocation(['python3','-c','pass'],self.roots['checkout'],{}):
+                    yielded = True
+            except ValueError as failure:
+                error = str(failure)
+        self.assertIn('--memory-swap='+str(memory),created)
+        self.assertTrue(execution.observations[-1]['disposed'])
+        self.assertEqual(calls[-2:],['rm','container'])
+        return yielded,error,execution.observations[-1],kernel.call_count
+
+    def test_supported_swap_limit_requires_exact_protected_bound(self):
+        yielded,error,observation,calls = self.invoke(True,self.config['resources']['memory_bytes'],[])
+        self.assertTrue(yielded)
+        self.assertIsNone(error)
+        self.assertEqual(calls,0)
+        self.assertEqual(observation['swap_bound']['effective_swap_bytes'],0)
+        yielded,error,_,calls = self.invoke(True,-1,[])
+        self.assertFalse(yielded)
+        self.assertIn('MemorySwap',error)
+        self.assertEqual(calls,0)
+
+    def test_echoed_swap_request_requires_explicit_support_or_zero_kernel_backing(self):
+        memory = self.config['resources']['memory_bytes']
+        for flag in (None, 0, 1, 'true'):
+            with self.subTest(flag=flag):
+                yielded,error,_,calls = self.invoke(flag,memory,[])
+                self.assertFalse(yielded)
+                self.assertIn('SwapLimit',error)
+                self.assertEqual(calls,0)
+        yielded,error,_,calls = self.invoke(False,memory,[ValueError('swap is active')])
+        self.assertFalse(yielded)
+        self.assertIn('swap is active',error)
+        self.assertEqual(calls,1)
+        proof = {'mechanism':'kernel-zero-swap-capacity','effective_swap_bytes':0}
+        yielded,error,observation,calls = self.invoke(False,memory,[dict(proof),dict(proof)])
+        self.assertTrue(yielded)
+        self.assertIsNone(error)
+        self.assertEqual(calls,2)
+        self.assertEqual(observation['swap_bound']['mechanism'],'kernel-zero-swap-capacity')
+
+    def test_unsupported_swap_requires_zero_backing_before_start_and_after_disposal(self):
+        proof = {'mechanism':'kernel-zero-swap-capacity','effective_swap_bytes':0}
+        yielded,error,observation,calls = self.invoke(False,-1,[dict(proof),dict(proof)])
+        self.assertTrue(yielded)
+        self.assertIsNone(error)
+        self.assertEqual(calls,2)
+        self.assertEqual(observation['swap_bound']['observed_memory_swap_bytes'],-1)
+        self.assertEqual(observation['swap_bound']['after_disposal'],proof)
+        yielded,error,_,calls = self.invoke(False,-1,[ValueError('swap became active')])
+        self.assertFalse(yielded)
+        self.assertIn('swap became active',error)
+        self.assertEqual(calls,1)
+        yielded,error,observation,calls = self.invoke(False,-1,[dict(proof),ValueError('swap became active')])
+        self.assertTrue(yielded)
+        self.assertIn('swap became active',error)
+        self.assertTrue(observation['disposed'])
+        self.assertEqual(calls,2)
+
+
 @unittest.skipUnless(
     os.environ.get("BUSBAR_CONFINEMENT_TEST_CONFIG"),
     "requires an existing pinned Docker runtime",

@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "e9a89221e3fd17e582383d2d3e8547359d2b86fe",
+      "commit": "e496b4a9e157cc78323dc919d7c39715116d6693",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -103,7 +103,7 @@
     {
       "repo": "busbar-secret-env",
       "url": "https://github.com/GetBusbar/busbar-secret-env",
-      "commit": "147f2e5d6aba6864d804480c6cb30cf62cb8b75f",
+      "commit": "56cc557f96b59813855ed7b96b1214b9214885f2",
       "package": "busbar-secret-env-plugin",
       "kind": "secret",
       "alias": "env",
@@ -114,7 +114,7 @@
     {
       "repo": "busbar-secret-file",
       "url": "https://github.com/GetBusbar/busbar-secret-file",
-      "commit": "0e1244b2985f4e437a08bc74a6b379e62ccbc689",
+      "commit": "17638285ffd764f676ab50e56a908f77cea3dc52",
       "package": "busbar-secret-file-plugin",
       "kind": "secret",
       "alias": "file",
@@ -136,13 +136,13 @@
     {
       "repo": "busbar-store-sqlite",
       "url": "https://github.com/GetBusbar/busbar-store-sqlite",
-      "commit": "cd1b0266ce49c8cf9156343439ca83941dbf17c7",
+      "commit": "834590db24e76959bd349d0acba4d51617e42a2d",
       "package": "busbar-store-sqlite-plugin",
       "kind": "store",
       "alias": "sqlite",
       "image": "libbusbar_store_sqlite_plugin.so",
       "declares": "store-sqlite/declares.json",
-      "lock_sha256": "7b05a6d5c128c43870e5c0e530a031ad217a64c55df280c94341ab4582c44f44"
+      "lock_sha256": "dfa8211dcb9734009d8514229440577e4eddf5aa3c214280cc2ea4d299ffda80"
     },
     {
       "repo": "busbar-transport-grpc",
@@ -191,7 +191,7 @@
     {
       "repo": "busbar-transport-webrtc",
       "url": "https://github.com/GetBusbar/busbar-transport-webrtc",
-      "commit": "038599672e857cb0da502aafd8a168319f67d18c",
+      "commit": "b19e847ecbfb676a1a90a63c5133ceb1925e5f57",
       "package": "busbar-transport-webrtc-plugin",
       "kind": "transport",
       "alias": "webrtc",
@@ -235,7 +235,7 @@
     {
       "repo": "busbar-auth-oidc",
       "url": "https://github.com/GetBusbar/busbar-auth-oidc",
-      "commit": "84881b795f513d8d081218f5987a0ef0631367c3",
+      "commit": "810280c73d8fad2cbc36d9ab3c8129ab3eb1a2a2",
       "package": "busbar-auth-oidc-plugin",
       "kind": "auth",
       "alias": "oidc",
@@ -257,7 +257,7 @@
     {
       "repo": "busbar-export-webhook",
       "url": "https://github.com/GetBusbar/busbar-export-webhook",
-      "commit": "1976e448484d7556df39838d46efc2b314fbd4a9",
+      "commit": "66c2fe0a3dbb07ef10b73fe3d135574be3ca9d12",
       "package": "busbar-export-webhook-plugin",
       "kind": "export",
       "alias": "webhook",
@@ -279,7 +279,7 @@
     {
       "repo": "busbar-plane-a2a",
       "url": "https://github.com/GetBusbar/busbar-plane-a2a",
-      "commit": "b1f6abaadaffae4b2c481a42d812d0d3172ee3b4",
+      "commit": "a82106326ecfcbb89b7d30780ebab5b5dffe021c",
       "package": "busbar-plane-a2a-plugin",
       "kind": "plane",
       "alias": "a2a",
@@ -290,7 +290,7 @@
     {
       "repo": "busbar-plane-decisions",
       "url": "https://github.com/GetBusbar/busbar-plane-decisions",
-      "commit": "8095a11e0ed90bcdbe8a4e7fd02395f7fd234a72",
+      "commit": "1f7d2662f295045825c607a00c863e87db936a4f",
       "package": "busbar-plane-decisions-plugin",
       "kind": "plane",
       "alias": "decisions",
@@ -301,7 +301,7 @@
     {
       "repo": "busbar-plane-mcp",
       "url": "https://github.com/GetBusbar/busbar-plane-mcp",
-      "commit": "ed78cf8b044ae2ac406dffc1b3793cdee730db87",
+      "commit": "7a515d2ba5ab0886bcfbdbe1d191cc9faa347c0d",
       "package": "busbar-plane-mcp-plugin",
       "kind": "plane",
       "alias": "mcp",
