@@ -61,6 +61,7 @@ def run_c_unit_tsan(q):
             if path.is_file():
                 shutil.copyfile(path, q.evidence / target)
     require(proof.get("status") == "native-x86-sanitizer-controls-pass"
+            and proof.get("baseline_personality_denied") is True
             and proof.get("race_free_passed") is True
             and proof.get("deliberate_race_detected") is True
             and proof.get("denial_witness", {}).get("all_denied") is True

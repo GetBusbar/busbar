@@ -36,6 +36,7 @@ class SanitizerActivation(unittest.TestCase):
         sanitizer.derive(baseline.read_bytes())
         output.mkdir()
         report = {"status": "native-x86-sanitizer-controls-pass",
+                  "baseline_personality_denied": True,
                   "race_free_passed": True, "deliberate_race_detected": True,
                   "denial_witness": {"all_denied": True},
                   "image": self.original.config["image"]}
@@ -79,7 +80,8 @@ class SanitizerActivation(unittest.TestCase):
         self.assertTrue((self.q.evidence / "sanitizer-runtime.json").is_file())
 
     def test_unqualified_returned_controls_fail_closed(self):
-        for field, value in [("race_free_passed", False),
+        for field, value in [("baseline_personality_denied", False),
+                             ("race_free_passed", False),
                              ("deliberate_race_detected", False),
                              ("denial_witness", {"all_denied": False}),
                              ("image", "different")]:

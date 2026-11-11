@@ -70,7 +70,13 @@ python3 -B scripts/architecture/toolchain/tsan_linux29_probe.py \
   --baseline "$DOCKER_29_1_3_BASELINE" --work "$NEW_PROBE_OUTPUT"
 ```
 
-A pass requires the original startup obstruction, an instrumented mutex control
+A pass requires a successful fixed-source negative control that observes
+`personality(262144)` returning `-1` with `EPERM` under the unchanged baseline,
+with the personality remaining zero. An unexpected success, different error,
+or unsuccessful control process fails qualification. The randomized baseline
+TSan attempt is retained as diagnostic evidence only: its exit status or error
+text never substitutes for this syscall control or establishes a sanitizer pass.
+A pass also requires an instrumented mutex control
 exiting 0 with personality 262144, a deliberately racing control exiting 66
 with a TSan data-race diagnostic, and the boundary-denial witness. It retains
 compiler/platform output, exact commands, binary and policy hashes, container
@@ -101,6 +107,15 @@ Actual C plugin qualification through the controller activation added at
 `ec527084ec5112805027641ce7b3b62b92802058` remains pending. The per-job control
 gate remains mandatory; this result does not grant blanket profile activation
 or qualify a product revision.
+
+C plugin job 3880 (pipeline 2053) subsequently stopped before the dedicated
+profile controls because its baseline TSan attempt exited 245 with no stdout
+or stderr. The old message-matching prerequisite incorrectly assumed every
+randomized startup failure would print the mapping/personality diagnostic.
+The direct syscall negative control above replaces that prerequisite; the
+clean, deliberate-race, boundary-denial, and disposal requirements remain
+mandatory. Job 3880's failed attempt remains retained and is not a sanitizer
+pass. The corrected per-job gate still requires native CI execution.
 
 A compiler-only upgrade is not a demonstrated remedy: LLVM 23.1.0 still attempts
 `personality(ADDR_NO_RANDOMIZE)` when its initial layout is incompatible and

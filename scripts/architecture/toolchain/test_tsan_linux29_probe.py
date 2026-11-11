@@ -1,5 +1,6 @@
 """The CI sanitizer delta has fixed bytes and never broadens other syscalls."""
 import copy
+import errno
 import json
 import subprocess
 import unittest
@@ -9,6 +10,26 @@ import tsan_linux29_probe as probe
 
 
 class ProfileTests(unittest.TestCase):
+    def test_exact_successful_personality_denial_is_required(self):
+        observation = {"argument": 262144, "before": 0, "result": -1,
+                       "errno": errno.EPERM, "after": 0}
+        probe.verify_baseline_personality(
+            subprocess.CompletedProcess([], 0, json.dumps(observation), ""))
+        for key, value in [("result", 0), ("errno", errno.EINVAL),
+                           ("argument", 262145), ("after", 262144)]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                probe.verify_baseline_personality(subprocess.CompletedProcess(
+                    [], 0, json.dumps({**observation, key: value}), ""))
+
+    def test_baseline_startup_crash_or_diagnostic_cannot_substitute_for_denial(self):
+        for code, stderr in [(245, ""), (66, "FATAL: unexpected memory mapping"),
+                             (1, "personality: Operation not permitted")]:
+            with self.subTest(code=code), self.assertRaisesRegex(ValueError, "exit successfully"):
+                probe.verify_baseline_personality(
+                    subprocess.CompletedProcess([], code, "", stderr))
+        with self.assertRaises(json.JSONDecodeError):
+            probe.verify_baseline_personality(subprocess.CompletedProcess([], 0, "", ""))
+
     def test_exact_verified_ubuntu_build_is_required(self):
         observed = {"Version": "29.1.3", "GitCommit": "29.1.3-0ubuntu3~24.04.2"}
         probe.verify_engine(observed)
