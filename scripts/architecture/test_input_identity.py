@@ -1,4 +1,5 @@
 """Targeted proof and dependency-invalidation regressions; no builds or network."""
+import ast
 import copy
 import datetime as dt
 import hashlib
@@ -12,7 +13,8 @@ import unittest
 from input_identity import (CORE, GitObjects, component_identity, compute_identity,
                             encoded, make_proof, plan_reuse, preparation_source_identity,
                             retained_check_identity, verify_reuse, LEGACY_STANDALONE_SELECTOR,
-                            OIDC_STANDALONE_SELECTOR, PREPARATION_SELECTOR)
+                            OIDC_STANDALONE_SELECTOR, PREPARATION_SELECTOR,
+                            default_artifact_reader_identity, product_input_source_identity)
 
 
 OWNER = 'GetBusbar/busbar-secret-example'
@@ -20,6 +22,64 @@ SOURCE, POLICY, HOST, SDK = (str(index) * 40 for index in range(1, 5))
 NEW = 'a' * 40
 NOW = dt.datetime(2026, 11, 11, 12, tzinfo=dt.timezone.utc)
 DATABASE = {'updated_at': '2026-11-11T01:00:00Z', 'sha256': 'b' * 64, 'metadata_sha256': 'c' * 64}
+
+
+def artifact_reader_pair(filename):
+    """Exercise real module checks with only the approved reader-plumbing delta.
+
+    Works from either published form without historical Git objects/shallow refs.
+    All statements/guards come from the actual module, never a stubbed validator.
+    """
+    text = Path(__file__).with_name(filename).read_text()
+    module = ast.parse(text)
+    names = {'blob', 'plan'} if filename == 'product_artifacts.py' else {'load_product_inputs'}
+    selected = [n for n in module.body if isinstance(n, ast.FunctionDef) and n.name in names
+                or filename == 'native_product_inputs.py' and isinstance(n, ast.ImportFrom)
+                and n.module == 'product_artifacts']
+    old = copy.deepcopy(selected)
+    for node in old:
+        if isinstance(node, ast.ImportFrom):
+            node.names = [item for item in node.names if item.name != 'git']
+            continue
+        node.args.kwonlyargs, node.args.kw_defaults = [], []
+        node.body = [item for item in node.body if not isinstance(item, ast.FunctionDef)
+                     or item.name != 'canonical_git']
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call):
+                child.keywords = [item for item in child.keywords if item.arg != 'git_reader']
+            if isinstance(child, ast.Name) and child.id == 'git_reader':
+                child.id = 'git'
+    new = copy.deepcopy(old)
+    for node in new:
+        if isinstance(node, ast.ImportFrom):
+            node.names.insert(0, ast.alias(name='git'))
+            continue
+        if node.name in ('blob', 'plan'):
+            node.args.kwonlyargs = [ast.arg(arg='git_reader')]
+            node.args.kw_defaults = [ast.Name(id='git', ctx=ast.Load())]
+            for child in ast.walk(node):
+                if node.name == 'blob' and isinstance(child, ast.Name) and child.id == 'git':
+                    child.id = 'git_reader'
+                if node.name == 'plan' and isinstance(child, ast.Call) and isinstance(child.func, ast.Name) and child.func.id == 'blob':
+                    child.keywords.append(ast.keyword(arg='git_reader', value=ast.Name(id='git_reader', ctx=ast.Load())))
+            # The default itself must remain the generic reader.
+            node.args.kw_defaults = [ast.Name(id='git', ctx=ast.Load())]
+        else:
+            helper = ast.parse('''def canonical_git(source, *args):
+    require(Path(source).parent == work / "canonical-inputs", "unexpected canonical owner source")
+    return git(source, "-c", "safe.directory=", "-c", "safe.directory=" + str(source), *args)
+''').body[0]
+            index = next(i for i, item in enumerate(node.body) if isinstance(item, ast.Assign)
+                         and isinstance(item.value, ast.Call) and isinstance(item.value.func, ast.Name)
+                         and item.value.func.id == 'plan')
+            node.body[index].value.keywords.append(ast.keyword(arg='git_reader', value=ast.Name(id='canonical_git', ctx=ast.Load())))
+            node.body.insert(index, helper)
+    def render(nodes):
+        lines = text.splitlines(keepends=True)
+        for before, after in reversed(list(zip(selected, nodes))):
+            lines[before.lineno - 1:before.end_lineno] = [ast.unparse(ast.fix_missing_locations(after)) + '\n']
+        return ''.join(lines).encode()
+    return render(old), render(new)
 
 
 class Objects:
@@ -407,6 +467,66 @@ class ImmutableGitObjects(unittest.TestCase):
             self.assertEqual(objects.tree(CORE, revision), before)
             self.assertEqual(objects.blob(CORE, revision, 'source'), b'committed bytes')
             self.assertIn('source', before)
+
+
+class ArtifactReaderRetention(unittest.TestCase):
+    def test_exact_optional_default_reader_and_noncore_class_contract_are_equal(self):
+        old, new = artifact_reader_pair('product_artifacts.py')
+        self.assertEqual(default_artifact_reader_identity(old), default_artifact_reader_identity(new))
+        old, new = artifact_reader_pair('native_product_inputs.py')
+        for repository, job in ((OWNER, 'native-qualification'), (CORE, 'core-conformance'),
+                                ('GetBusbar/busbar-release', 'native-qualification')):
+            with self.subTest(repository=repository):
+                self.assertEqual(product_input_source_identity(old, repository, job),
+                                 product_input_source_identity(new, repository, job))
+        self.assertNotEqual(product_input_source_identity(old, CORE, 'native-qualification'),
+                            product_input_source_identity(new, CORE, 'native-qualification'))
+
+    def test_changed_default_checks_generic_reader_or_shared_class_are_not_hidden(self):
+        old, new = artifact_reader_pair('product_artifacts.py')
+        old_text, new_text = old.decode(), new.decode()
+        old_blob = next(node for node in ast.parse(old_text).body if isinstance(node, ast.FunctionDef) and node.name == 'blob')
+        new_blob = next(node for node in ast.parse(new_text).body if isinstance(node, ast.FunctionDef) and node.name == 'blob')
+        mixed = new_text.replace(ast.get_source_segment(new_text, new_blob), ast.get_source_segment(old_text, old_blob), 1)
+        with self.assertRaisesRegex(ValueError, 'mixed artifact reader'):
+            default_artifact_reader_identity(mixed.encode())
+        for changed in (new.replace(b'git_reader=git', b'git_reader=unsafe_git'),
+                        new.replace(b'len(data) <= limit', b'len(data) <= limit + 1'),
+                        new.replace(b'owner metadata must be a regular Git blob', b'weakened type check')):
+            with self.assertRaisesRegex(ValueError, 'unknown artifact reader'):
+                default_artifact_reader_identity(changed)
+        changed = new.replace(b'core.fsmonitor=false', b'core.fsmonitor=true')
+        self.assertNotEqual(default_artifact_reader_identity(old), default_artifact_reader_identity(changed))
+        old, new = artifact_reader_pair('native_product_inputs.py')
+        with self.assertRaisesRegex(ValueError, 'unknown product input'):
+            product_input_source_identity(new.replace(b'canonical-inputs', b'arbitrary-inputs'), OWNER, 'native-qualification')
+        self.assertNotEqual(product_input_source_identity(old, OWNER, 'native-qualification'),
+                            product_input_source_identity(new.replace(b'class ProductInputs(dict)', b'class ProductInputs(list)'),
+                                                          OWNER, 'native-qualification'))
+
+    def test_whole_retained_check_keeps_core_native_fresh_and_other_workloads_retained(self):
+        objects = Objects()
+        changed = {}
+        for name in ('product_artifacts.py', 'native_product_inputs.py'):
+            old, new = artifact_reader_pair(name)
+            path = 'scripts/architecture/' + name
+            for revision in (POLICY, HOST):
+                objects.files[CORE, revision][path] = old.decode()
+            changed[path] = new.decode()
+        objects.changed(CORE, HOST)
+        objects.files[CORE, NEW].update(changed)
+        release = 'GetBusbar/busbar-release'
+        objects.files[release, SOURCE] = dict(objects.files[OWNER, SOURCE])
+        for repository, job in ((OWNER, 'native-qualification'), (CORE, 'core-conformance'),
+                                (release, 'native-qualification'), (CORE, 'native-qualification')):
+            original = dict(repository=repository, job=job, source=HOST if repository == CORE else SOURCE,
+                            host=HOST, policy=POLICY, sdk=SDK)
+            requested = dict(original, host=NEW, policy=NEW)
+            if repository == CORE:
+                requested['source'] = NEW
+            with self.subTest(repository=repository, job=job):
+                expected = 'run' if repository == CORE and job == 'native-qualification' else 'verify-retained-check'
+                self.assertEqual(plan_reuse(original, requested, objects)['action'], expected)
 
 
 if __name__ == '__main__':

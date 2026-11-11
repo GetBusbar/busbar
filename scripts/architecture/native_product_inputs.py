@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from product_artifacts import plan, regular_under, pairs, require
+from product_artifacts import git, plan, regular_under, pairs, require
 
 
 class ProductInputs(dict):
@@ -18,8 +18,14 @@ def load_product_inputs(stdout, work, policy, vector, revision):
     require(path == work / "cache/ci-product-inputs" / revision / "environment.json",
             "unexpected product input map path")
     require(path.stat().st_size <= 128 * 1024, "product input map exceeds limit")
+    def canonical_git(source, *args):
+        # Confinement reowns candidate storage, including these controller-fetched
+        # bare objects, to the remapped UID. Trust only this exact source for this
+        # read; blob() still checks paths, immutable commits, blob type and bounds.
+        require(Path(source).parent == work / "canonical-inputs", "unexpected canonical owner source")
+        return git(source, "-c", "safe.directory=", "-c", "safe.directory=" + str(source), *args)
     _, expected = plan(policy, vector, lambda row: work / "canonical-inputs" / row["repo"],
-                       work / "target", work / "cache", revision)
+                       work / "target", work / "cache", revision, git_reader=canonical_git)
     values = json.loads(path.read_text(), object_pairs_hook=pairs)
     require(isinstance(values, dict) and values == expected,
             "product input map has missing, unexpected or mismatched bindings")
