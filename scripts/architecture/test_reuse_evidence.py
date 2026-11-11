@@ -10,7 +10,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from reuse_evidence import Archive, Resolver, independent_qualification_job
+from reuse_evidence import (Archive, Resolver, independent_qualification_job,
+                            OwnerRuntime, ReleaseValidator, verify_release_dispatch)
 from input_identity import (encoded, TRIVY_METADATA_CONTRACT_IMAGE,
                             TRIVY_METADATA_CONTRACT_SCANNER)
 
@@ -99,6 +100,29 @@ class EvidenceTests(unittest.TestCase):
     def test_success_preserves_original_selector_when_current_changed(self):
         self.assertTrue(self.verify())
         self.assertEqual(self.calls[0]['original']['policy'], '2' * 40)
+
+    def test_permanent_release_dispatch_uses_actual_immutable_driver_shape(self):
+        from pathlib import Path
+        raw = (Path(__file__).resolve().parent / 'native.py').read_bytes()
+        self.assertEqual(verify_release_dispatch(raw), hashlib.sha256(raw).hexdigest())
+        with self.assertRaisesRegex(ValueError, 'dispatch'):
+            verify_release_dispatch(raw.replace(b'qualify_generator(qualification)', b'qualification.run_unchecked()'))
+
+    def test_complete_release_validator_cannot_accept_another_owner(self):
+        with self.assertRaisesRegex(ValueError, 'release native validator scope differs'):
+            ReleaseValidator(None)(self.original, self.receipt, lambda path: b'', {}, {})
+
+    def test_old_validator_code_is_rejected_before_any_execution(self):
+        runtime = OwnerRuntime.__new__(OwnerRuntime)
+        runtime.policy, runtime.approved = 'b' * 40, {'b' * 40}
+        runtime.ensure = lambda *args: None
+        class Objects:
+            def blob(self, repository, revision, path):
+                return b'approved' if revision == 'b' * 40 else b'unapproved executable code'
+        runtime.objects = Objects()
+        with patch('reuse_evidence.subprocess.run') as process, self.assertRaisesRegex(ValueError, 'validator differs'):
+            runtime.approve_policy('a' * 40)
+        process.assert_not_called()
 
     def test_explicit_mixed_installed_selectors(self):
         resolver = self.resolver()

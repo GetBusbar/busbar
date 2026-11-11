@@ -29,6 +29,18 @@ PREPARATION_SELECTOR = 'scripts/architecture/native_sources.py'
 TRIVY_METADATA_CONTRACT_IMAGE = ('mirror.gcr.io/aquasec/trivy:0.76.2@sha256:'
     '8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb')
 TRIVY_METADATA_CONTRACT_SCANNER = '0860330d2bbc1b2bf47b444ea6db82fa139656fe715f8c7aee9f7543e5fc3011'
+# Exact approved ASTs before/after the core-only 5563 reader repair. These are
+# complete function shapes, including every default, assertion and source check.
+ARTIFACT_READER_SHAPES = {
+    'blob': ('164a5db69e454ec9ab910542ff05f3836b2e2c8eb9b6cd5e0168bf8f4bba6c20',
+             'd0992d045ec6e53e8c0e89a2b0ec76ebca9b2902698aac8b743f21c1dd2a70ad'),
+    'plan': ('5b38eab9226512ede5d32c53e71b97b4d6e41c28445f662b63b717b88aa00f93',
+             '85273bcd222f9c0440fb6b4e5b7833601a3a2c61bc81959c2bbd557b1a765f50'),
+}
+PRODUCT_INPUT_LOAD_SHAPES = ('f848d42dd3fadae923230bba6dfea7158bdec5627deca5ad940577ef570b6bd2',
+                             '8f1767e72c0c5d772cf61994317ee955cb93369de5bf19f69a3e8e87f5b2f41f')
+PRODUCT_INPUT_IMPORT_SHAPES = ('6ccfb6784b3dc9524d5b7f48ea26a4f77cb2e372a5e59224ef0089e0da89ad3c',
+                               'f79e8db3dff2dce838290efffbf59460b06ad2070a4e7722cfb0d962abde141c')
 # Finite adapters for the two approved pure selectors, not a general Python
 # evaluator. Unknown selectors (including new side effects or checks) fail closed.
 LEGACY_STANDALONE_SELECTOR = '''def standalone_products(repository, evaluation_only, vector):
@@ -216,6 +228,80 @@ def core_regression_only(path):
             and value.name.startswith('test_') and value.suffix == '.py')
 
 
+def ast_shape(node):
+    """Version-stable shape for Python 3.11+; positions/comments are not code."""
+    if isinstance(node, ast.AST):
+        return {'node': type(node).__name__, **{name: ast_shape(getattr(node, name))
+                for name in node._fields if not (name == 'type_params' and not getattr(node, name))}}
+    if isinstance(node, list):
+        return [ast_shape(value) for value in node]
+    return node
+
+
+def parsed_source(payload):
+    require(isinstance(payload, bytes), 'immutable controller source bytes required')
+    try:
+        text = payload.decode('utf-8')
+        return text, ast.parse(text)
+    except (UnicodeDecodeError, SyntaxError) as error:
+        raise ValueError('unrecognized controller source') from error
+
+
+def common_source_identity(text, replacements):
+    lines = text.splitlines(keepends=True)
+    for node, label in sorted(replacements, key=lambda row: row[0].lineno, reverse=True):
+        lines[node.lineno - 1:node.end_lineno] = ['<approved-controller-projection:' + label + '>\n']
+    return sha(''.join(lines).encode())
+
+
+def default_artifact_reader_identity(payload):
+    """Prove default plan/blob behavior across the exact approved 5563 repair.
+
+    The new keyword-only git_reader defaults to the unchanged generic git. Only
+    core-native load_product_inputs opts into canonical_git; all other production
+    callers use the default. Complete old/new function ASTs are pinned, so path,
+    revision, type, size, hash and ownership checks cannot be dropped or changed.
+    Every byte outside plan/blob (including generic git) remains significant.
+    This is not permission to project an arbitrary custom-reader call.
+    """
+    text, module = parsed_source(payload)
+    replacements, functions, versions = [], {}, []
+    for name, approved in ARTIFACT_READER_SHAPES.items():
+        nodes = [node for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == name]
+        require(len(nodes) == 1, 'missing or ambiguous artifact reader function')
+        shape = sha(encoded(ast_shape(nodes[0])))
+        require(shape in approved,
+                'unknown artifact reader default or source checks')
+        versions.append(approved.index(shape))
+        replacements.append((nodes[0], name))
+        functions[name] = approved[0]
+    require(len(set(versions)) == 1, 'mixed artifact reader versions are not an approved contract')
+    return {'schema': 'busbar.default-artifact-reader/1',
+            'common_source_sha256': common_source_identity(text, replacements), 'functions': functions}
+
+
+def product_input_source_identity(payload, repository, job):
+    """Keep the shared ProductInputs class; isolate only approved core readback."""
+    require(job in JOBS and job != 'security-scans', 'invalid product input caller')
+    text, module = parsed_source(payload)
+    loads = [node for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and node.name == 'load_product_inputs']
+    imports = [node for node in module.body if isinstance(node, ast.ImportFrom)
+               and node.module == 'product_artifacts']
+    require(len(loads) == len(imports) == 1, 'missing or ambiguous product input reader')
+    load = sha(encoded(ast_shape(loads[0])))
+    imported = sha(encoded(ast_shape(imports[0])))
+    require(load in PRODUCT_INPUT_LOAD_SHAPES and imported in PRODUCT_INPUT_IMPORT_SHAPES
+            and PRODUCT_INPUT_LOAD_SHAPES.index(load) == PRODUCT_INPUT_IMPORT_SHAPES.index(imported),
+            'unknown product input readback or import contract')
+    return {'schema': 'busbar.product-input-reader/1',
+            'common_source_sha256': common_source_identity(text, [(loads[0], 'core-readback'),
+                                                                    (imports[0], 'artifact-imports')]),
+            'load_contract': load if repository == CORE and job == 'native-qualification'
+                                 else 'not-invoked-by-this-protected-job'}
+
+
 def preparation_source_identity(payload, repository, job, vector):
     """Hash the exact common preparation code plus its selected immutable rows.
 
@@ -274,6 +360,19 @@ def prepared_core_tree(objects, revision, request):
                                                 request['repository'], request['job'], vector)
         tree[PREPARATION_SELECTOR] = {'mode': tree[PREPARATION_SELECTOR]['mode'],
                                      'preparation_sha256': sha(encoded(projected))}
+    artifact = 'scripts/architecture/product_artifacts.py'
+    inputs = 'scripts/architecture/native_product_inputs.py'
+    # Core-native uses the newly opted-in reader and must remain fresh. All other
+    # protected jobs keep the original reader; their native.py/caller source and
+    # every other policy input remain hashed, so a new opt-in cannot be hidden.
+    if not (request['repository'] == CORE and request['job'] == 'native-qualification'):
+        if artifact in tree:
+            projected = default_artifact_reader_identity(objects.blob(CORE, revision, artifact))
+            tree[artifact] = {'mode': tree[artifact]['mode'], 'default_reader_sha256': sha(encoded(projected))}
+        if inputs in tree:
+            projected = product_input_source_identity(objects.blob(CORE, revision, inputs),
+                                                       request['repository'], request['job'])
+            tree[inputs] = {'mode': tree[inputs]['mode'], 'caller_inputs_sha256': sha(encoded(projected))}
     return tree
 
 

@@ -1,9 +1,13 @@
 import json
+import os
 from pathlib import Path
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from check import Violation
 from native_product_inputs import ProductInputs, load_product_inputs
+from product_artifacts import blob
 from test_product_artifacts import ArtifactFixture
 
 
@@ -30,6 +34,36 @@ class ProductInputsTests(ArtifactFixture):
         result = self.load()
         self.assertIsInstance(result, ProductInputs)
         self.assertEqual(result, self.values)
+
+    def test_controller_reads_remapped_canonical_bare_objects(self):
+        row = self.vector['products'][0]
+        source = self.canonical / row['repo']
+        checkout = self.root / 'owner-checkout'
+        source.rename(checkout)
+        self.git(self.root, 'clone', '--bare', '--quiet', str(checkout), str(source))
+        # Git's ownership test switch reaches the same check as a controller
+        # reading a bare repository reowned to the remapped candidate UID.
+        with patch.dict(os.environ, {'GIT_TEST_ASSUME_DIFFERENT_OWNER': '1',
+                                    'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}):
+            refusal = subprocess.run(['git', '-C', str(source), 'ls-tree', row['commit'], '--', 'Cargo.lock'],
+                                     capture_output=True)
+            self.assertEqual(refusal.returncode, 128)
+            self.assertIn(b'dubious ownership', refusal.stderr)
+            self.assertEqual(self.load(), self.values)
+            with self.assertRaises(Violation):
+                blob(source, row['commit'], 'Cargo.lock', 4096)
+            lock_hash = row['lock_sha256']
+            row['lock_sha256'] = '0' * 64
+            with self.assertRaisesRegex(Violation, 'lock differs'):
+                self.load()
+            row['lock_sha256'] = lock_hash
+            row['commit'] = '0' * 40
+            with self.assertRaises(Violation):
+                self.load()
+        self.assertEqual(self.git(source, 'config', '--local', '--get-regexp', 'core.bare'), 'core.bare true')
+        setting = subprocess.run(['git', '-C', str(source), 'config', '--local', '--get', 'safe.directory'],
+                                 capture_output=True)
+        self.assertEqual(setting.returncode, 1)
 
     def test_shell_and_undeclared_environment_refuse(self):
         self.path.write_text("export PATH=$(touch /must-not-execute)")

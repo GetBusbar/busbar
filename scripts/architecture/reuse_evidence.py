@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import tomllib
 import urllib.parse
 import urllib.request
 import zipfile
@@ -465,3 +466,657 @@ class MarketingValidator:
         else:
             raise ValueError('full original validator unavailable for this job; run fresh')
         return True
+
+
+# Complete owner runtime and release validation; never installed in candidate CI.
+
+import ast
+import itertools
+import importlib.util
+import xml.etree.ElementTree as ET
+import input_identity as identity
+
+REPOSITORY = "GetBusbar/busbar-release"
+
+def verify_release_dispatch(raw):
+    """Recognize the existing direct native driver branch; no candidate imports."""
+    tree = ast.parse(raw)
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    require('qualify' in functions and 'main' in functions, 'native driver entry points missing')
+    shape = lambda node: ast.dump(node, include_attributes=False)
+    expected_main = ast.parse('def main():\n with interruption_signals():\n  qualify()').body[0]
+    require(shape(functions['main']) == shape(expected_main), 'native main dispatch changed')
+    tries = [node for node in functions['qualify'].body if isinstance(node, ast.Try)]
+    require(len(tries) == 1, 'native qualification control flow changed')
+    starts = [node for node in tries[0].body if isinstance(node, ast.If)
+              and shape(node.test) == shape(ast.parse('args.external_conformance', mode='eval').body)]
+    require(len(starts) == 1, 'native qualification dispatch missing')
+    branch = starts[0]
+    for expression in ('args.external_conformance', 'args.conformance_only',
+                       "qualification.repository == 'GetBusbar/busbar'",
+                       "qualification.repository == 'GetBusbar/busbar-release'"):
+        require(shape(branch.test) == shape(ast.parse(expression, mode='eval').body),
+                'native release dispatch condition changed')
+        if expression.endswith("'GetBusbar/busbar-release'"):
+            expected = ast.parse('from native_plugins import qualify_generator\nqualify_generator(qualification)').body
+            require([shape(node) for node in branch.body] == [shape(node) for node in expected],
+                    'native release qualification dispatch missing')
+        else:
+            require(len(branch.orelse) == 1 and isinstance(branch.orelse[0], ast.If),
+                    'native release dispatch chain changed')
+            branch = branch.orelse[0]
+    return sha(raw)
+
+
+RELEASE_POLICY_CODE = """
+import hashlib, json, sys, tomllib
+from pathlib import Path
+base=Path(sys.argv[1]); sys.path.insert(0,str(base/'scripts/architecture'))
+import admission, native_policy, check, product_artifacts
+assert all(Path(m.__file__).resolve().is_relative_to(base.resolve()) for m in
+           (admission,native_policy,check,product_artifacts))
+data=json.load(sys.stdin)
+admission.validate_protection(data['project_rules'],data['group_rules'],set(data['merge_users']))
+p=tomllib.loads((base/'ci/architecture.toml').read_text())
+repo=data['repository']
+assert repo=='GetBusbar/busbar-release'
+assert hashlib.sha256((base/'scripts/architecture/native.py').read_bytes()).hexdigest()==data['release_dispatch_sha256']
+if data.get('security') is not None:
+ admission.validate_security_scans(data['security'],repo,
+  (base/'ci/security/public-secret-fixtures.json').read_bytes())
+print(json.dumps({'required_external':admission.required_conformance_job(repo,p),
+ 'owner_suites':sorted(native_policy.conformance_rows(repo,p,trusted=base)),
+ 'native_settings':native_policy.native_settings(repo,p)}))
+"""
+
+
+class ReleaseResolver(Resolver):
+    """Only the existing release dispatch supplements original policy membership."""
+    def _policy(self, request, project_rules, group_rules, receipt):
+        if request['repository'] != REPOSITORY:
+            return super()._policy(request, project_rules, group_rules, receipt)
+        require(request['policy'] in self.trusted_policies,
+                'release original policy is not controller approved')
+        require(request['job'] in ('native-qualification', 'security-scans'),
+                'unknown release qualification job')
+        with tempfile.TemporaryDirectory(prefix='original-release-policy-', dir=self.scratch) as name:
+            base = Path(name)
+            hashes = {}
+            paths = set(POLICY_FILES) | {'scripts/architecture/native.py'}
+            security = request['job'] == 'security-scans'
+            if security:
+                paths.add('scripts/security/scan.py')
+                paths.update(path for path in self.objects.tree(CORE, request['policy'])
+                             if path.startswith('ci/security/') and path.count('/') == 2)
+            for path in sorted(paths):
+                raw = self.objects.blob(CORE, request['policy'], path)
+                target = base / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+                hashes[path] = sha(raw)
+            dispatch = verify_release_dispatch((base / 'scripts/architecture/native.py').read_bytes())
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', RELEASE_POLICY_CODE, str(base)],
+                                    input=json.dumps(dict(repository=request['repository'],
+                                        project_rules=project_rules, group_rules=group_rules,
+                                        merge_users=sorted(self.merge_users),
+                                        release_dispatch_sha256=dispatch,
+                                        security=receipt if security else None)),
+                                    capture_output=True, text=True, timeout=60)
+            require(result.returncode == 0, 'immutable original release policy rejected evidence context')
+            info = json.loads(result.stdout)
+            info['files'] = hashes
+            independent_qualification_job((base / 'ci/architecture-pipeline.yml').read_bytes(), request['job'])
+            info['independent_job'] = True
+            if security:
+                info['tools'] = json.loads((base / 'ci/security/tools.json').read_bytes())
+            return info
+
+def require(value, reason):
+    if not value:
+        raise ValueError(reason)
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def summary(raw):
+    return [dict(zip(('passed', 'failed', 'ignored', 'measured', 'filtered_out'), map(int, row)))
+            for row in re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out;', raw.decode())]
+
+
+
+def verify_confinement(parent, bootstrap, policy):
+    boundary = parent['execution_boundary']
+    require(boundary['mode'] == 'docker-confined' and boundary['isolated'] is True
+            and boundary['confinement_configured'] is True
+            and boundary['observer'] == 'protected-controller'
+            and boundary['release_eligible'] is False, 'development confinement differs')
+    rows = boundary['observations']
+    require(rows and all(row['inspected'] is True and row['disposed'] is True
+            and row['network'] == 'none' and row['storage'] and row['user_namespace']
+            and row['configuration_sha256'] == boundary['configuration_sha256']
+            and row.get('swap_bound') and row['state_before_disposal']['Running'] is False
+            and row['state_before_disposal']['OOMKilled'] is False for row in rows),
+            'candidate confinement/disposal observation missing or failed')
+    for row in rows:
+        swap = row['swap_bound']
+        require(swap['effective_swap_bytes'] == 0
+                and swap['requested_memory_swap_bytes'] == row['resources']['memory_bytes']
+                and ((swap['mechanism'] == 'docker-memory-swap-limit'
+                      and swap['observed_memory_swap_bytes'] == row['resources']['memory_bytes'])
+                     or (swap['mechanism'] == 'kernel-zero-swap-capacity'
+                         and swap['after_disposal']['effective_swap_bytes'] == 0)),
+                'candidate zero-swap observation differs')
+    require(bootstrap['schema'] == 'busbar.native-ci-root-bootstrap/1'
+            and bootstrap['policy_revision'] == policy and bootstrap['status'] == 'pass'
+            and bootstrap['runtime_sha256'] == boundary['approved_configuration_sha256']
+            and bootstrap['root_controller'] is True and bootstrap['candidate_privileged'] is False
+            and bootstrap['private_daemon_mount_and_network_namespaces'] is True
+            and bootstrap['candidate_containers_disposed'] is True
+            and bootstrap['storage_disposed'] is True, 'bootstrap confinement/disposal differs')
+    return {'candidate_observations': len(rows), 'all_inspected_and_disposed': True,
+            'candidate_containers_disposed': True, 'storage_disposed': True,
+            'observer': boundary['observer'], 'release_producer_attestation': False}
+
+
+class ReleaseValidator:
+    def __init__(self, objects):
+        self.objects = objects
+
+    def __call__(self, original, receipt, artifact, context, policy):
+        self.validate(original, receipt, artifact, context, policy)
+        return True
+
+    def validate(self, original, receipt, artifact, context, policy):
+        require(original['repository'] == REPOSITORY
+                and original['job'] == 'native-qualification', 'release native validator scope differs')
+        SOURCE, POLICY, SDK = (original[key] for key in ('source', 'policy', 'sdk'))
+        require(original['host'] == POLICY, 'original release host/policy differs')
+        require(context['original'] == original and context['policy'] == policy,
+                'authenticated original context differs')
+        job = context['job']
+        require(job['name'] == 'native-qualification' and job['allow_failure'] is False,
+                'original native job is not mandatory')
+        require(context['project']['id'] == 29
+                and context['project']['path_with_namespace'] == REPOSITORY,
+                'original release project differs')
+        archive_bytes = context['artifact_bytes']
+        require(sha(archive_bytes) == context['artifact_sha256']
+                and sha(context['receipt_bytes']) == context['receipt_sha256'],
+                'authenticated archive/receipt digest differs')
+        ROOT_URL = 'https://github.com/GetBusbar/busbar-release/-/jobs/' + str(job['id'])
+        require(job['id'] == int(receipt['job_id']) and job['status'] == 'success' and job['pipeline']['id'] == int(receipt['pipeline_id'])
+                and job['pipeline']['project_id'] == 29 and job['commit']['id'] == SOURCE
+                and job['pipeline']['sha'] == SOURCE, 'server job identity/status differs')
+        require(len(archive_bytes) == job['artifacts_file']['size'], 'archive byte count differs')
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as zipped:
+            entries = zipped.infolist()
+            names = [entry.filename for entry in entries]
+            require(len(names) == len(set(names)) and len(names) < 10000
+                    and sum(entry.file_size for entry in entries) < 64 * 1024**2, 'archive bounds or uniqueness differ')
+            def read(name):
+                raw = zipped.read('boundary-evidence/' + name)
+                require(raw == artifact(name), 'artifact reader differs from authenticated full archive')
+                return raw
+            receipt_bytes = read('receipt.json')
+            require(receipt_bytes == context['receipt_bytes'] and json.loads(receipt_bytes) == receipt, 'original receipt bytes differ')
+            require(receipt['schema'] == 'busbar.protected-native-admission/1'
+                    and receipt['repository'] == 'GetBusbar/busbar-release'
+                    and receipt['source'] == SOURCE and receipt['policy_revision'] == POLICY
+                    and receipt['sdk_revision'] == SDK and receipt['host_revision'] == POLICY
+                    and receipt['status'] == 'pass' and receipt['source_unchanged'] is True
+                    and str(receipt['job_id']) == str(job['id']) and str(receipt['pipeline_id']) == str(context['pipeline']['id']),
+                    'protected parent identity/status differs')
+            require(receipt['config_uri'] == 'github.com/GetBusbar/busbar-release//ci/architecture-pipeline.yml@GetBusbar/busbar:' + POLICY + '@refs/heads/dev',
+                    'protected configuration binding differs')
+            require(receipt['source_tree'] == self.objects.git(REPOSITORY, 'rev-parse', SOURCE + '^{tree}').decode().strip(), 'source tree differs')
+            require(receipt['policy_sha256'] == sha(self.objects.blob(CORE, POLICY, 'ci/architecture.toml')), 'policy bytes differ')
+            require(json.loads(self.objects.blob(CORE, POLICY, 'scripts/ci-product-pins.json'))['sdk'] == SDK, 'policy SDK differs')
+            source_hash = sha(self.objects.git(REPOSITORY, 'archive', '--format=tar', SOURCE))
+            require(source_hash == receipt['source_archive_sha256'], 'exact release source archive differs')
+            kinds = ('auth', 'secret', 'store', 'hook', 'export', 'plane', 'transport')
+            variants = ('open-source', 'enterprise')
+            stages = ('fmt', 'metadata', 'clippy', 'build', 'native-doors', 'architecture')
+            expected_steps = {'fmt', 'clippy', 'tooling-runtime', 'tooling-doctests', 'render-canonical'}
+            expected_steps.update('-'.join((variant, kind, stage)) for variant, kind, stage in itertools.product(variants, kinds, stages))
+            steps = {step['name']: step for step in receipt['steps']}
+            require(len(steps) == len(receipt['steps']) == 89 and set(steps) == expected_steps, 'stage roster differs')
+            hash_checks = []
+            for name, step in steps.items():
+                require(step['status'] == 'pass' and step['exit_code'] == 0, 'nonpassing stage: ' + name)
+                for stream in ('stdout', 'stderr'):
+                    filename = name + '.' + stream
+                    require(sha(read(filename)) == step[stream + '_sha256'], 'retained log differs: ' + filename)
+                    hash_checks.append(filename)
+            runtime_xml = read('tooling-runtime.xml')
+            require(sha(runtime_xml) == steps['tooling-runtime']['junit_sha256'], 'tooling JUnit digest differs')
+            xml = ET.fromstring(runtime_xml)
+            cases = list(xml.iter('testcase'))
+            require(len(cases) == 1212 and not list(xml.iter('failure')) and not list(xml.iter('error'))
+                    and not list(xml.iter('skipped')), 'executed tooling test outcome differs')
+            runtime_log = read('tooling-runtime.stderr').decode()
+            require(re.search(r'1212 tests run: 1212 passed, 2 skipped', runtime_log), 'runner summary differs')
+            generated = {(row['distribution'], row['kind']): row for row in receipt['generated_plugins']}
+            require(len(generated) == len(receipt['generated_plugins']) == 14
+                    and set(generated) == set(itertools.product(variants, kinds)), 'generated fixture roster differs')
+            fixtures = []
+            for (variant, kind), result in generated.items():
+                label = variant + '-' + kind
+                architecture = json.loads(read(label + '-architecture.json'))
+                require({key: value for key, value in result.items() if key not in ('kind', 'distribution')} == architecture,
+                        'generated architecture artifact differs from parent: ' + label)
+                owner = 'GetBusbar' if variant == 'open-source' else 'BusbarInc'
+                require(architecture['repository'] == owner + '/busbar-' + kind + '-boundary-example'
+                        and re.fullmatch('generated-sha256:[0-9a-f]{64}', architecture['source'])
+                        and architecture['trusted_source_check'] is True and architecture['source_roots'] == 2
+                        and architecture['release_eligible'] is False, 'generated subject/architecture result differs')
+                observations = architecture['candidate_execution']
+                require(observations and all(row['inspected'] is True and row['disposed'] is True
+                    and row['network'] == 'none' and row['configuration_sha256'] == receipt['execution_boundary']['configuration_sha256']
+                    and row['state_before_disposal']['ExitCode'] == 0 and not row['state_before_disposal']['OOMKilled']
+                    for row in observations), 'generated confined execution evidence differs')
+                doors = summary(read(label + '-native-doors.stdout'))
+                require(doors == [{'passed': 3, 'failed': 0, 'ignored': 0, 'measured': 0, 'filtered_out': 0}], 'native-door test roster differs')
+                fixtures.append({'distribution': variant, 'kind': kind, 'repository': architecture['repository'],
+                    'generated_source': architecture['source'], 'architecture_policy_sha256': architecture['policy_sha256'],
+                    'architecture_receipt_sha256': sha(read(label + '-architecture.json')),
+                    'native_door_tests_passed': 3, 'native_door_tests_failed': 0,
+                    'architecture_guard_test_summaries': summary(read(label + '-architecture.stdout')),
+                    'confined_architecture_invocations': len(observations),
+                    'artifact_link': ROOT_URL + '/artifacts/file/boundary-evidence/' + label + '-architecture.json',
+                    'native_doors_link': ROOT_URL + '/artifacts/file/boundary-evidence/' + label + '-native-doors.stdout'})
+            require(summary(read('render-canonical.stdout')) == [{'passed': 1, 'failed': 0, 'ignored': 0, 'measured': 0, 'filtered_out': 0}],
+                    'explicit canonical scaffold test differs')
+            doc = summary(read('tooling-doctests.stdout'))
+            require(doc and all(row['failed'] == 0 for row in doc), 'doctest command outcome differs')
+            require(receipt['execution_boundary']['release_eligible'] is False, 'unexpected release eligibility claim')
+            bootstrap_bytes = read('bootstrap.json')
+            confinement = verify_confinement(receipt, json.loads(bootstrap_bytes), POLICY)
+            result = {'status': 'verified-development-tooling-checkpoint', 'project': 29, 'pipeline': job['pipeline']['id'], 'job': job['id'],
+                'source': SOURCE, 'policy': POLICY, 'host': POLICY, 'sdk': SDK, 'source_unchanged': True,
+                'source_tree': receipt['source_tree'], 'source_archive_sha256': source_hash,
+                'parent_receipt_sha256': sha(receipt_bytes), 'artifact_archive_sha256': sha(archive_bytes),
+                'artifact_archive_bytes': len(archive_bytes), 'artifacts_expire_at': job['artifacts_expire_at'],
+                'finished_at': job['finished_at'], 'duration_seconds': job['duration'],
+                'stage_count': 89, 'all_stages_passed': True, 'retained_step_log_hashes_verified': len(hash_checks),
+                'confinement': confinement, 'bootstrap_sha256': sha(bootstrap_bytes),
+                'tooling_tests': {'executed': 1212, 'passed': 1212, 'failed': 0, 'runner_reported_skipped': 2,
+                                 'junit_sha256': sha(runtime_xml)},
+                'canonical_render_tests_passed': 1, 'native_door_tests_passed': 42,
+                'doctests': {'command_passed': True, 'executed': sum(row['passed'] for row in doc)},
+                'generated_fixtures': fixtures,
+                'links': {'job': ROOT_URL, 'archive_download': ROOT_URL + '/artifacts/download',
+                          'parent_receipt': ROOT_URL + '/artifacts/file/boundary-evidence/receipt.json',
+                          'tooling_junit': ROOT_URL + '/artifacts/file/boundary-evidence/tooling-runtime.xml'},
+                'limits': {'release_eligible': False, 'production_signing': False, 'supported_lifetime_retention_verified': False,
+                           'core_binary_sbom_proof': False, 'current_release_source_qualified': True},
+                'scope': 'Original release native tooling and14 generated Rust scaffold fixtures only; no current-policy equivalence or core binary/SBOM claim.'}
+            return result
+
+
+class CanonicalObjects(identity.GitObjects):
+    """Batch immutable blob reads without Git checkout/filter/candidate execution."""
+    def blob(self, repository, revision, path):
+        key = repository, revision, path
+        if key not in self._blobs:
+            tree = self.tree(repository, revision)
+            identity.require(path in tree, 'required immutable object path missing: ' + path)
+            rows = list(tree.items())
+            for offset in range(0, len(rows), 512):
+                batch = rows[offset:offset + 512]
+                payload = ''.join(row['blob'] + '\n' for _, row in batch).encode()
+                result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null',
+                    '-c', 'core.fsmonitor=false', '-C', str(self.repositories[repository]),
+                    'cat-file', '--batch'], input=payload, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, check=True)
+                cursor = 0
+                for name, entry in batch:
+                    end = result.stdout.index(b'\n', cursor)
+                    oid, kind, size = result.stdout[cursor:end].decode().split()
+                    identity.require(oid == entry['blob'] and kind == 'blob', 'immutable blob response differs')
+                    cursor = end + 1
+                    raw = result.stdout[cursor:cursor + int(size)]
+                    identity.require(len(raw) == int(size) and result.stdout[cursor + int(size):
+                                     cursor + int(size) + 1] == b'\n', 'truncated immutable blob')
+                    self._blobs[repository, revision, name] = raw
+                    cursor += int(size) + 1
+                identity.require(cursor == len(result.stdout), 'unexpected immutable blob response')
+        return self._blobs[key]
+
+
+class CanonicalReads:
+    """Read once per owner session, retaining exact response bytes for its proof.
+
+    This cache is deliberately empty on every construction. Existing disk files
+    are overwritten after canonical reads, never treated as authenticated input.
+    No method can mutate the forge. Live status comes exclusively from D's file.
+    """
+    def __init__(self, api, directory):
+        self.api, self.directory = api, Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.records = {}
+
+    def _read(self, kind, path, fetch):
+        key = kind + ':' + path
+        if key not in self.records:
+            data = fetch()
+            raw = data if kind == 'raw' else identity.encoded(data)
+            target = self.directory / digest(key.encode())
+            target.write_bytes(raw)
+            self.records[key] = dict(path=str(target), sha256=digest(raw), bytes=len(raw))
+        record = self.records[key]
+        raw = Path(record['path']).read_bytes()
+        identity.require(digest(raw) == record['sha256'], 'canonical session response bytes changed')
+        return raw if kind == 'raw' else json.loads(raw)
+
+    def request(self, path, method='GET', body=None):
+        identity.require(method == 'GET' and body is None, 'owner context is read-only')
+        return self._read('json', path, lambda: self.api.request(path))
+
+    json = request
+
+    def all(self, path):
+        return self._read('all', path, lambda: self.api.all(path))
+
+    def raw(self, path):
+        def fetch():
+            identity.require(self.api.server == 'https://github.com', 'canonical forge required')
+            request = urllib.request.Request(self.api.server + '/api/v4/' + path,
+                                            headers={'PRIVATE-TOKEN': self.api.token})
+            with urllib.request.build_opener(NoRedirect).open(request, timeout=60) as response:
+                raw = response.read(1024**3 + 1)
+            identity.require(len(raw) <= 1024**3, 'canonical artifact exceeds bound')
+            return raw
+        return self._read('raw', path, fetch)
+
+
+
+def expected_loader(objects, normalizer):
+    """Build original validation expectations from immutable Git objects only."""
+    def load(original):
+        original = identity.checked_request(original)
+        repository, source, policy, host = (original[key] for key in ('repository', 'source', 'policy', 'host'))
+        identity.require(repository != 'GetBusbar/busbar-release',
+                         'dedicated complete release tooling validator unavailable; fresh required')
+        configuration = tomllib.loads(objects.blob(identity.CORE, policy, 'ci/architecture.toml').decode())
+        source_tree = objects.tree(repository, source)
+        vector = json.loads(objects.blob(identity.CORE, host, 'scripts/ci-product-pins.json'))
+        identity.require(vector['sdk'] == original['sdk'], 'original SDK differs from original host')
+        result = {key: original[key] for key in ('source', 'host', 'sdk')}
+        if repository != identity.CORE:
+            identity.require(repository in configuration['repositories'], 'original owner absent from policy')
+            is_c = configuration['repositories'][repository].get('language') == 'c'
+            result['c'] = is_c
+            if not is_c:
+                identity.require('Cargo.lock' in source_tree, 'original owner lock missing')
+                result['lock'] = digest(objects.blob(repository, source, 'Cargo.lock'))
+            return result
+        identity.require(source == host, 'original core source and host differ')
+        result.update(vector=vector, root_lock=digest(objects.blob(identity.CORE, source, 'Cargo.lock')),
+                      distribution_lock=digest(objects.blob(identity.CORE, source, 'dist/default/Cargo.lock')))
+        suites = objects.blob(identity.CORE, source, 'testing/conformance/suites.tsv').decode()
+        result['conformance_suites'] = [line.split('\t', 1)[0] for line in suites.splitlines()
+                                        if line.strip() and not line.lstrip().startswith('#')]
+        inputs = ('testing/conformance/run.sh', 'testing/conformance/tools.sh',
+                  'testing/conformance/suites.tsv', '.busbar-ref', 'Cargo.toml',
+                  'Cargo.lock', 'rust-toolchain', 'rust-toolchain.toml')
+        result['conformance_inputs'] = {path: digest(objects.blob(identity.CORE, source, path))
+                                        for path in inputs if path in source_tree}
+        coverage_bytes = objects.blob(identity.CORE, source, 'conformance/ci-coverage.json')
+        coverage = json.loads(coverage_bytes)
+        identity.require(coverage['schema'] == 'busbar.conformance.ci-coverage/1', 'original coverage unknown')
+        result['coverage_sha256'] = digest(coverage_bytes)
+        result['release_stages'] = {name: coverage['suites'].get(name, {}).get('stage')
+                                    for name in ('slsa-verifier', 'sigstore')}
+        engineering = {path for path in source_tree if Path(path).parent.as_posix() in
+                       ('scripts/release', 'scripts/security') and path.endswith('.py')}
+        engineering.update(path for path in normalizer.RELEASE_INPUTS if path in source_tree)
+        result['release_engineering_inputs'] = {path: digest(objects.blob(identity.CORE, source, path))
+                                               for path in sorted(engineering)}
+        return result
+    return load
+
+
+class OwnerRuntime:
+    """Portable owner discovery and authentication for the maintained selector.
+
+    Credentials stay in the existing Git credential helper and optional group
+    reader. Only immutable canonical Git objects are materialized; candidate
+    checkouts, hooks, build scripts and candidate-provided proof code never run.
+    """
+    def __init__(self, api, group_api, work_dir, *, policy=None, limit=20):
+        from admission import encoded as urlquote, validate_protection
+        require(api.server == 'https://github.com', 'canonical forge required')
+        require(type(limit) is int and 1 <= limit <= 20, 'discovery limit must be between 1 and 20')
+        self.api, self.limit, self.principals = api, limit, {6, 8}
+        self.work = Path(work_dir).resolve()
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.session = Path(tempfile.mkdtemp(prefix='qualification-', dir=self.work))
+        self.reads = CanonicalReads(api, self.session / 'api')
+        self.groups = CanonicalReads(group_api, self.session / 'groups')
+        self.objects = CanonicalObjects({})
+        self.fetched, self.approved = set(), set()
+        self.projects, self.rows, self.originals, self.observations = {}, [], {}, {}
+        self.live, self.rejections = {}, []
+        core = self.reads.request('projects/' + urlquote(CORE))
+        branch = self.reads.request('projects/' + str(core['id']) + '/repository/branches/dev')
+        require(core.get('path_with_namespace') == CORE and branch.get('protected') is True,
+                'canonical core development branch is not protected')
+        self.host = branch['commit']['id']
+        self.policy = policy or self.host
+        self.ensure(CORE, self.policy)
+        self.ensure(CORE, self.host)
+        self.approved.add(self.policy)
+        configuration = tomllib.loads(self.objects.blob(CORE, self.policy, 'ci/architecture.toml').decode())
+        vector = json.loads(self.objects.blob(CORE, self.host, 'scripts/ci-product-pins.json'))
+        self.sdk = vector['sdk']
+        self.ensure(CORE, self.sdk)
+        names = set(configuration['repositories']) | {CORE, REPOSITORY}
+        self.group_rules = {name: self.groups.all('groups/' + urlquote(name) + '/protected_branches')
+                            for name in {repository.split('/')[0] for repository in names}}
+        for name in sorted(names, key=lambda value: (value != CORE, value != REPOSITORY, value)):
+            identity.checked_request(dict(repository=name, source=self.host, host=self.host,
+                policy=self.policy, sdk=self.sdk, job='native-qualification'))
+            project = self.reads.request('projects/' + urlquote(name))
+            require(project.get('path_with_namespace') == name and type(project.get('id')) is int,
+                    'canonical owner identity differs')
+            require(not name.startswith('BusbarInc/') or project.get('visibility') == 'private',
+                    'private owner visibility differs')
+            base = 'projects/' + str(project['id'])
+            validate_protection(self.reads.all(base + '/protected_branches'),
+                                self.group_rules[name.split('/')[0]], self.principals)
+            head = self.reads.request(base + '/repository/branches/dev')
+            require(head.get('protected') is True, 'owner dev branch is not protected')
+            require(project.get('merge_method') == 'ff'
+                    and project.get('only_allow_merge_if_pipeline_succeeds') is True
+                    and project.get('allow_merge_on_skipped_pipeline') is False
+                    and project.get('ci_pipeline_variables_minimum_override_role') == 'no_one_allowed',
+                    'protected admission settings differ')
+            source = head['commit']['id']
+            require(name != CORE or source == self.host, 'core moved during owner discovery')
+            self.ensure(name, source)
+            self.projects[name] = project
+            self.rows.append(dict(repository=name, source=source, project=project['id'],
+                                  host=self.host, sdk=self.sdk, policy=self.policy))
+        # A changed assembled owner must first be included in the committed
+        # assembly. Otherwise a green old core cannot qualify its new component.
+        heads = {row['repository']: row['source'] for row in self.rows}
+        for pin in [*vector['products'], vector['c_witness']]:
+            require(heads.get('GetBusbar/' + pin['repo']) == pin['commit'],
+                    'canonical owner head differs from assembly pins; refresh the assembly before qualification')
+        self.normalizer, self.normalizer_origin = self.load_normalizer()
+        marketing = MarketingValidator(self.normalizer, expected_loader(self.objects, self.normalizer))
+        release = ReleaseValidator(self.objects)
+        def validate(original, receipt, artifact, context, original_policy):
+            validator = release if original['repository'] == REPOSITORY else marketing
+            return validator(original, receipt, artifact, context, original_policy)
+        self.resolver = ReleaseResolver(self.reads, group_api=self.groups, objects=self.objects,
+            current_policy=self.policy, merge_users=self.principals, owner_users=self.principals,
+            scratch=self.session / 'validators', full_validator=validate,
+            trusted_policies={self.policy}, selector_policies={})
+
+    def ensure(self, repository, revision):
+        require(re.fullmatch(r'(?:GetBusbar|BusbarInc)/[A-Za-z0-9_.-]+', repository or '')
+                and re.fullmatch('[0-9a-f]{40}', revision or ''), 'immutable canonical object required')
+        if repository not in self.objects.repositories:
+            store = self.work / 'objects' / repository
+            store.mkdir(parents=True, exist_ok=True)
+            if not (store / 'HEAD').exists():
+                subprocess.run(['git', 'init', '--bare', '--quiet', str(store)], check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.objects.repositories[repository] = store
+        if (repository, revision) not in self.fetched:
+            result = subprocess.run(['git', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
+                '-C', str(self.objects.repositories[repository]), 'fetch', '--quiet', '--no-tags',
+                '--depth=128', self.api.server + '/' + repository + '.git', revision],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
+            require(result.returncode == 0, 'canonical immutable object fetch failed: ' + repository)
+            require(self.objects.git(repository, 'rev-parse', revision + '^{commit}').decode().strip() == revision,
+                    'canonical fetched commit differs')
+            self.fetched.add((repository, revision))
+
+    def approve_policy(self, revision):
+        """Old executable validators must be approved before subprocess loading."""
+        if revision in self.approved:
+            return
+        self.ensure(CORE, revision)
+        for name in ('admission.py', 'native_policy.py', 'check.py', 'product_artifacts.py'):
+            path = 'scripts/architecture/' + name
+            before, after = (self.objects.blob(CORE, ref, path) for ref in (revision, self.policy))
+            equal = before == after
+            if not equal and name == 'product_artifacts.py':
+                project = getattr(identity, 'default_artifact_reader_identity', None)
+                equal = callable(project) and isinstance(project(before), dict) and project(before) == project(after)
+            require(equal, 'original executable validator differs from approved current policy')
+        result = subprocess.run(['git', '-C', str(self.objects.repositories[CORE]), 'merge-base',
+                                 '--is-ancestor', revision, self.policy],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        require(result.returncode == 0, 'original policy ancestry is unproven within bounded canonical history')
+        self.approved.add(revision)
+
+    def load_normalizer(self):
+        from admission import encoded as urlquote, validate_protection
+        name = 'BusbarInc/marketing'
+        project = self.reads.request('projects/' + urlquote(name))
+        require(project.get('path_with_namespace') == name and project.get('visibility') == 'private',
+                'canonical validation controller identity differs')
+        base = 'projects/' + str(project['id'])
+        groups = self.groups.all('groups/BusbarInc/protected_branches')
+        validate_protection(self.reads.all(base + '/protected_branches'), groups, self.principals)
+        branch = self.reads.request(base + '/repository/branches/dev')
+        require(branch.get('protected') is True, 'validation controller dev is not protected')
+        revision = branch['commit']['id']
+        self.ensure(name, revision)
+        path = 'ci/scripts/collect-native-results.py'
+        raw = self.objects.blob(name, revision, path)
+        target = self.session / 'original-normalizer.py'
+        target.write_bytes(raw)
+        spec = importlib.util.spec_from_file_location('protected_original_normalizer', target)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module, dict(repository=name, source=revision, path=path, sha256=digest(raw))
+
+    def discover(self, rows):
+        """One bounded snapshot; live jobs defer work and never count as passes."""
+        from qualification_selection import LIVE, requirements
+        witnesses = []
+        for row in rows:
+            name, base = row['repository'], 'projects/' + str(row['project'])
+            self.originals[name] = []
+            required = requirements(row, self.objects)
+            listed = self.reads.request(base + '/pipelines?ref=dev&per_page=' + str(self.limit))
+            require(isinstance(listed, list) and len(listed) <= self.limit, 'unbounded pipeline discovery response')
+            selector = re.fullmatch(r'ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})',
+                                    self.projects[name].get('ci_config_path') or '')
+            require(selector is not None, 'owner protected selector is not immutable')
+            self.approve_policy(selector[1])
+            self.resolver.trusted_policies.update(self.approved)
+            self.resolver.selector_policies[name] = selector[1]
+            covered = set()
+            for listed_pipeline in listed:
+                try:
+                    pipeline = self.reads.request(base + '/pipelines/' + str(listed_pipeline['id']))
+                    require(pipeline.get('project_id') == row['project'] and pipeline.get('ref') == 'dev'
+                            and pipeline.get('source') in ('api', 'push')
+                            and (pipeline.get('user') or {}).get('id') in self.principals,
+                            'pipeline is not an authenticated owner execution')
+                    if pipeline['status'] in LIVE:
+                        if pipeline.get('sha') == row['source']:
+                            self.live.setdefault(name, []).append(dict(project=row['project'],
+                                pipeline=pipeline['id'], source=pipeline['sha'], status=pipeline['status'],
+                                policy=None, host=None, sdk=None))
+                        continue
+                    if pipeline['status'] not in ('success', 'failed'):
+                        continue
+                    jobs = self.reads.all(base + '/pipelines/' + str(pipeline['id']) + '/jobs')
+                    native = [job for job in jobs if job.get('name') == 'native-qualification']
+                    native_receipt = None
+                    if len(native) == 1:
+                        try:
+                            native_receipt = json.loads(self.reads.raw(base + '/jobs/' + str(native[0]['id'])
+                                                       + '/artifacts/boundary-evidence/receipt.json'))
+                        except (ValueError, OSError, RuntimeError):
+                            pass
+                    for kind, needed in required.items():
+                        matches = [job for job in jobs if job.get('name') == needed['job']
+                                   and job.get('status') == 'success' and job.get('allow_failure') is False]
+                        if len(matches) != 1:
+                            continue
+                        job = matches[0]
+                        filename = 'security.json' if kind == 'security' else 'receipt.json'
+                        receipt = json.loads(self.reads.raw(base + '/jobs/' + str(job['id'])
+                                                          + '/artifacts/boundary-evidence/' + filename))
+                        if kind == 'security' and not native_receipt:
+                            continue  # Original host/SDK cannot be invented from a current selector.
+                        original = identity.receipt_request(receipt, needed['job'],
+                            host=(native_receipt or {}).get('host_revision'),
+                            sdk=(native_receipt or {}).get('sdk_revision'))
+                        require(original['repository'] == name and original['source'] == pipeline['sha']
+                                and receipt.get('job_id') == str(job['id'])
+                                and receipt.get('pipeline_id') == str(pipeline['id']), 'original receipt locator differs')
+                        for repository, revision in ((name, original['source']), (CORE, original['host']),
+                                                      (CORE, original['sdk'])):
+                            self.ensure(repository, revision)
+                        self.approve_policy(original['policy'])
+                        self.resolver.trusted_policies.update(self.approved)
+                        candidate = dict(request=original, project=row['project'], pipeline=pipeline['id'],
+                                         job=job['id'], receipt=receipt)
+                        self.originals[name].append(candidate)
+                        self.observations[row['project'], pipeline['id'], job['id']] = dict(
+                            project=row['project'], pipeline=pipeline['id'], job=job['id'],
+                            status='success', pipeline_status=pipeline['status'])
+                        if kind == 'security' and original['policy'] == selector[1]:
+                            witnesses.append(candidate)
+                        requested = identity.checked_request({**{key: row[key] for key in
+                            ('repository', 'source', 'host', 'policy', 'sdk')}, 'job': needed['job']})
+                        proposal = identity.plan_reuse(original, requested, self.objects,
+                                                       database=receipt.get('database'))
+                        if (proposal['action'] != 'run' and not
+                                (proposal['action'] == 'verify-component-retention' and needed['suites'])):
+                            covered.add(kind)
+                    if covered == set(required):
+                        break  # Authenticate these candidates below; do not download an owner's unused history.
+                except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+                    self.rejections.append(dict(repository=name, pipeline=listed_pipeline.get('id'), reason=str(error)))
+        self.database = None
+        for candidate in sorted(witnesses, key=lambda value: value['job'], reverse=True):
+            try:
+                self.database = self.resolver.authenticate_database(candidate['request'], candidate['receipt'])
+                break
+            except (ValueError, KeyError, TypeError, OSError, RuntimeError) as error:
+                self.rejections.append(dict(repository=candidate['request']['repository'],
+                                            job=candidate['job'], reason=str(error)))
+        return self
+
+    def observe(self, candidate):
+        return dict(self.observations[candidate['project'], candidate['pipeline'], candidate['job']])
+
+    def finish(self):
+        path = self.session / 'canonical-read-manifest.json'
+        path.write_bytes(identity.encoded(dict(canonical=self.reads.records, groups=self.groups.records)))
+        return dict(schema='busbar.owner-qualification-discovery/1', normalizer=self.normalizer_origin,
+            policy=self.policy, host=self.host, sdk=self.sdk, pipeline_discovery_limit=self.limit,
+            canonical_read_manifest=str(path), canonical_read_manifest_sha256=digest(path.read_bytes()),
+            approved_policies=sorted(self.approved), database_witness=self.resolver.database_witness,
+            rejections=self.rejections, owner_principals=sorted(self.principals))

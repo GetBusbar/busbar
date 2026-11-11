@@ -1,11 +1,28 @@
-"""Owner-side, per-job qualification selection; proof files are never credentials.
+"""Maintained owner command: incremental qualification is the default.
 
-The caller supplies canonical object stores and its authenticated resolver. No
-owner credential or selection authority is made available to candidate jobs.
+Plan from any checkout (read-only; never launches a fleet):
+  python3 -B scripts/architecture/qualification_selection.py --work-dir /path/to/scratch
+
+Launch only the named affected owner after reviewing its plan:
+  python3 -B scripts/architecture/qualification_selection.py --work-dir /path/to/scratch \\
+    --repository GetBusbar/busbar --apply --launch-repository GetBusbar/busbar
+
+The command derives protected canonical heads, policy, assembly inputs and
+bounded historical jobs. It authenticates full original artifacts before reuse.
+Running same-source pipelines remain pending; they are never duplicated. The
+existing pipeline YAML may execute retained kinds inside an affected owner run.
+A deliberate whole-fleet rerun requires --full-fleet --reason TEXT. Do not use
+legacy task selectors or change every project's selector to repair one owner.
+
+Authentication uses the existing Git credential helper and group-protection
+Keychain reader. This command is for an owner workstation, never candidate CI.
+Proof output is provenance, not authority; consumers reauthenticate every use.
 """
 from __future__ import annotations
 
 import json
+import argparse
+import datetime as dt
 from pathlib import Path
 import tomllib
 
@@ -250,4 +267,119 @@ def launch_fresh(api, groups, row):
     if api.request(base + '/repository/branches/dev')['commit']['id'] != row['source']:
         raise ValueError('source moved before launch')
     return api.request(base + '/pipeline', 'POST', {'ref': 'dev'})
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--work-dir', type=Path, required=True, help='Owner scratch/object/proof directory')
+    parser.add_argument('--repository', action='append', help='Plan only these canonical owners; repeatable')
+    parser.add_argument('--policy', help='Explicit immutable policy; default protected canonical core/dev')
+    parser.add_argument('--limit', type=int, default=20, help='At most 20 recent pipelines per owner (default 20)')
+    parser.add_argument('--output', type=Path, help='Default WORK_DIR/selection.json')
+    parser.add_argument('--apply', action='store_true', help='Launch only explicitly named actionable owners')
+    parser.add_argument('--launch-repository', action='append', default=[], help='Exact affected launch set; repeatable')
+    parser.add_argument('--full-fleet', action='store_true', help='Explicitly request fresh work for the complete cohort')
+    parser.add_argument('--reason', help='Required explanation for --full-fleet')
+    parser.add_argument('--group-reader-service', default='busbar-boundary-group-protection-read',
+                        help='Existing Keychain read service; empty uses the operator reader')
+    args = parser.parse_args(argv)
+    if not 1 <= args.limit <= 20:
+        parser.error('--limit must be between 1 and 20')
+    if args.full_fleet and (not args.reason or not args.reason.strip() or args.repository):
+        parser.error('--full-fleet requires --reason and cannot be combined with --repository')
+    if args.reason and not args.full_fleet:
+        parser.error('--reason is only meaningful with --full-fleet')
+    if args.apply and not args.launch_repository and not args.full_fleet:
+        parser.error('--apply requires explicit --launch-repository owners or --full-fleet --reason')
+    return args
+
+
+def incremental_plan(runtime, rows, *, full_fleet=False):
+    """Plan with authenticated evidence, then defer any still-live input owner."""
+    planned = []
+    for row in rows:
+        result = plan_row(row, runtime.originals.get(row['repository'], []), runtime.objects,
+            runtime.resolver, runtime.session / 'proofs', database=runtime.database,
+            observe=runtime.observe)
+        if full_fleet:
+            result['previous_qualifications'] = result['qualifications']
+            result['qualifications'] = {kind: dict(mode='fresh', reason='explicit whole-fleet rerun')
+                                        for kind in result['required']}
+            result['fresh_kinds'] = list(result['required'])
+            result['state'] = 'selected'
+        live = runtime.live.get(row['repository'], [])
+        if live:
+            result['active_pipelines'] = live
+            for kind, entry in result['qualifications'].items():
+                if entry['mode'] == 'fresh':
+                    result['qualifications'][kind] = dict(mode='pending',
+                        origin=dict(live[0]), reason='same-source owner pipeline is active; execution inputs await its receipt')
+            modes = {entry['mode'] for entry in result['qualifications'].values()}
+            result['state'] = 'pending' if 'pending' in modes else 'retained'
+            result['fresh_kinds'] = []
+        planned.append(result)
+    return planned
+
+
+def apply_incremental(args, planned, runtime, save):
+    """The sole mutation boundary. A read-only/default invocation cannot enter it."""
+    if not args.apply:
+        return
+    actionable = {row['repository'] for row in planned if row['state'] == 'selected' and row['fresh_kinds']}
+    requested = actionable if args.full_fleet else set(args.launch_repository)
+    identity.require(requested == actionable, 'explicit launch owners differ from the actionable incremental plan')
+    identity.require(not (len(actionable) == len(runtime.rows) > 1) or args.full_fleet,
+                     'whole-fleet launch requires --full-fleet --reason')
+    def launch(row):
+        from admission import encoded
+        # A second bounded read closes the gap after discovery/authentication.
+        # A concurrently launched owner pipeline stops this invocation instead
+        # of silently POSTing another one or canceling unaffected work.
+        active = runtime.api.request('projects/' + encoded(row['repository'])
+            + '/pipelines?ref=dev&sha=' + row['source'] + '&per_page=20')
+        identity.require(isinstance(active, list) and len(active) <= 20, 'unbounded prelaunch read')
+        identity.require(not any(pipe.get('status') in LIVE for pipe in active),
+                         'same-source pipeline started after planning; refresh the incremental plan')
+        pipe = launch_fresh(runtime.api, runtime.group_rules, row)
+        identity.require(pipe.get('sha') == row['source'], 'new pipeline source differs')
+        row.update(pipeline=pipe['id'], status=pipe['status'])
+        for kind in row['fresh_kinds']:
+            row['qualifications'][kind]['pipeline'] = pipe['id']
+        save()  # Persist every real POST before proceeding to another owner.
+        return pipe
+    execute_plan(planned, launch, fresh_repositories=requested)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    from admission import GitLab, group_protection_reader
+    from reuse_evidence import OwnerRuntime
+    api = GitLab('https://github.com')
+    reader = group_protection_reader(api, args.group_reader_service)
+    runtime = OwnerRuntime(api, reader, args.work_dir, policy=args.policy, limit=args.limit)
+    chosen = set(args.repository or [row['repository'] for row in runtime.rows])
+    identity.require(chosen <= {row['repository'] for row in runtime.rows}, 'unknown requested qualification owner')
+    rows = [row for row in runtime.rows if row['repository'] in chosen]
+    runtime.discover(rows)
+    planned = incremental_plan(runtime, rows, full_fleet=args.full_fleet)
+    report = dict(schema='busbar.owner-incremental-selection/1',
+        at=dt.datetime.now(dt.timezone.utc).isoformat(), host=runtime.host, policy=runtime.policy,
+        sdk=runtime.sdk, rows=planned, owner_context=runtime.finish(), executed=False,
+        full_fleet=args.full_fleet, reason=args.reason,
+        fresh_repositories=[row['repository'] for row in planned if row['state'] == 'selected'])
+    output = args.output or args.work_dir / 'selection.json'
+    output.parent.mkdir(parents=True, exist_ok=True)
+    def save():
+        output.write_bytes(identity.encoded(report))
+    save()
+    apply_incremental(args, planned, runtime, save)
+    report['executed'] = args.apply
+    save()
+    print(json.dumps(dict(output=str(output.resolve()), fresh=report['fresh_repositories'],
+        retained=sum(row['state'] == 'retained' for row in planned),
+        pending=sum(row['state'] == 'pending' for row in planned), executed=args.apply)))
+
+
+if __name__ == '__main__':
+    main()
 

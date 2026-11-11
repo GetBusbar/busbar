@@ -5,11 +5,14 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import io
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import input_identity as identity
-from qualification_selection import execute_plan, plan_cohort, proof_context, launch_fresh
+from qualification_selection import (execute_plan, plan_cohort, proof_context, launch_fresh,
+                                     parse_args, incremental_plan, apply_incremental, canonical_observation)
 from reuse_evidence import Resolver
 from test_input_identity import Objects, CORE, OWNER, SOURCE, HOST, SDK, NEW, NOW, DATABASE
 from test_reuse_evidence import API, archive
@@ -143,6 +146,56 @@ class Selection(unittest.TestCase):
         return plan_cohort(rows or self.rows, self.originals, self.objects, self.resolver,
                            self.temp.name, database=self.database, now=NOW)
 
+    def test_maintained_cli_defaults_to_read_only_and_requires_deliberate_fleet_override(self):
+        args = parse_args(['--work-dir', self.temp.name])
+        self.assertFalse(args.apply)
+        self.assertFalse(args.full_fleet)
+        self.assertEqual(args.limit, 20)
+        for options in (['--apply'], ['--full-fleet'], ['--full-fleet', '--reason', ''],
+                        ['--limit', '21'], ['--factory', '/candidate/factory.py']):
+            with self.subTest(options=options), patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
+                parse_args(['--work-dir', self.temp.name, *options])
+        explicit = parse_args(['--work-dir', self.temp.name, '--full-fleet', '--reason', 'Required policy migration'])
+        self.assertTrue(explicit.full_fleet)
+
+    def runtime(self):
+        return SimpleNamespace(rows=self.rows, originals=self.originals, objects=self.objects,
+            resolver=self.resolver, database=self.database, session=Path(self.temp.name), live={},
+            observe=lambda candidate: canonical_observation(self.resolver, candidate))
+
+    def test_default_maintained_plan_reuses_49_and_cannot_post(self):
+        runtime = self.runtime()
+        # Use an authenticated fixture clock, as the real resolver supplies.
+        real_datetime = __import__('datetime').datetime
+        with patch('input_identity.dt.datetime') as clock:
+            clock.now.return_value = NOW
+            clock.fromisoformat.side_effect = real_datetime.fromisoformat
+            planned = incremental_plan(runtime, self.rows)
+        self.assertEqual([row['repository'] for row in planned if row['fresh_kinds']], [CORE])
+        self.assertEqual(sum(row['state'] == 'retained' for row in planned), 49)
+        apply_incremental(parse_args(['--work-dir', self.temp.name]), planned, runtime,
+                          lambda: self.fail('read-only planning attempted a mutation save'))
+
+    def test_live_same_source_pipeline_blocks_fresh_and_explicit_fleet_duplicates(self):
+        runtime = self.runtime()
+        runtime.live[CORE] = [dict(project=1, pipeline=9999, source=NEW, status='running',
+                                   host=None, policy=None, sdk=None)]
+        planned = incremental_plan(runtime, self.rows[:1], full_fleet=True)
+        self.assertEqual(planned[0]['state'], 'pending')
+        self.assertEqual(planned[0]['fresh_kinds'], [])
+        for entry in planned[0]['qualifications'].values():
+            self.assertEqual(entry['origin']['pipeline'], 9999)
+            self.assertIsNone(entry['origin']['host'])
+            self.assertEqual(entry['mode'], 'pending')
+
+    def test_whole_fleet_apply_cannot_be_disguised_as_normal_affected_selection(self):
+        runtime = self.runtime()
+        planned = [dict(repository=row['repository'], state='selected', fresh_kinds=['native'])
+                   for row in self.rows]
+        args = SimpleNamespace(apply=True, full_fleet=False, launch_repository=self.names)
+        with self.assertRaisesRegex(ValueError, 'whole-fleet launch requires'):
+            apply_incremental(args, planned, runtime, lambda: self.fail('unexpected write'))
+
     def test_regression_only_fix_selects_one_of_fifty_and_persists_original_evidence(self):
         rows = self.plan()
         self.assertEqual([row['repository'] for row in rows if row['state'] == 'selected'], [CORE])
@@ -258,14 +311,16 @@ class Selection(unittest.TestCase):
                     return dict(commit=dict(id=NEW), protected=True)
                 if path == 'projects/GetBusbar%2Fbusbar/pipeline' and method == 'POST':
                     return dict(id=9000, sha=NEW, status='created')
+                if path == 'projects/GetBusbar%2Fbusbar/pipelines?ref=dev&sha=' + NEW + '&per_page=20':
+                    return []
                 raise AssertionError('unexpected API call: ' + path)
 
             def all(inner, path):
                 self.assertEqual(path, 'projects/GetBusbar%2Fbusbar/protected_branches')
                 return ['unchanged-rules']
         with patch('admission.validate_protection') as protection:
-            execute_plan(rows, lambda row: launch_fresh(LaunchAPI(), {'GetBusbar': []}, row),
-                         fresh_repositories=[CORE])
+            apply_incremental(SimpleNamespace(apply=True, full_fleet=False, launch_repository=[CORE]), rows,
+                SimpleNamespace(api=LaunchAPI(), group_rules={'GetBusbar': []}, rows=self.rows), lambda: None)
         protection.assert_called_once_with(['unchanged-rules'], [], {6, 8})
         self.assertEqual([path for path, method, _ in mutations if method == 'POST'],
                          ['projects/GetBusbar%2Fbusbar/pipeline'])

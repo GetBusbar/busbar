@@ -73,19 +73,19 @@ def git(source, *args):
         raise Violation("cannot read exact artifact owner Git source") from error
 
 
-def blob(source, revision, relative, limit):
+def blob(source, revision, relative, limit, *, git_reader=git):
     relative_path(relative)
     require(re.fullmatch(r"[0-9a-f]{40}", revision), "immutable artifact owner revision required")
     source = Path(source)
     require(source.is_dir() and not any(p.is_symlink() for p in (source, *source.parents)),
             "indirect or missing artifact owner source")
-    entry = git(source, "ls-tree", revision, "--", relative).decode().rstrip("\n")
+    entry = git_reader(source, "ls-tree", revision, "--", relative).decode().rstrip("\n")
     fields = entry.split("\t")
     require(len(fields) == 2 and fields[1] == relative, "missing declared owner source")
     mode, kind, oid = fields[0].split()
     require(mode == "100644" and kind == "blob", "owner metadata must be a regular Git blob")
-    require(int(git(source, "cat-file", "-s", oid)) <= limit, "owner metadata exceeds limit")
-    data = git(source, "cat-file", "blob", oid)
+    require(int(git_reader(source, "cat-file", "-s", oid)) <= limit, "owner metadata exceeds limit")
+    data = git_reader(source, "cat-file", "blob", oid)
     require(len(data) <= limit, "owner metadata exceeds limit")
     return data
 
@@ -104,7 +104,7 @@ def declarations(metadata):
     return metadata
 
 
-def plan(policy, vector, sources, target, cache, revision, platform=None):
+def plan(policy, vector, sources, target, cache, revision, platform=None, *, git_reader=git):
     """Read independently from exact canonical Git commits, never candidate JSON."""
     require(isinstance(vector, dict) and isinstance(vector.get("products"), list)
             and 0 < len(vector["products"]) <= 128, "invalid product vector size")
@@ -123,9 +123,10 @@ def plan(policy, vector, sources, target, cache, revision, platform=None):
         wrappers = [entry for entry in entries if entry["name"] == row["package"] and entry["role"] == "wrapper"]
         require(len(wrappers) == 1, "artifact package is not its classified wrapper")
         source = sources(row)
-        lock = blob(source, row["commit"], "Cargo.lock", 16 * 1024 * 1024)
+        lock = blob(source, row["commit"], "Cargo.lock", 16 * 1024 * 1024, git_reader=git_reader)
         require(hashlib.sha256(lock).hexdigest() == row["lock_sha256"], "artifact owner lock differs from vector")
-        manifest = tomllib.loads(blob(source, row["commit"], wrappers[0]["manifest"], 256 * 1024).decode())
+        manifest = tomllib.loads(blob(source, row["commit"], wrappers[0]["manifest"], 256 * 1024,
+                                     git_reader=git_reader).decode())
         require(manifest["package"]["name"] == row["package"], "artifact wrapper package mismatch")
         metadata = declarations(manifest["package"].get("metadata", {}).get("busbar", {}).get("test-artifacts", {}))
         if not metadata:
@@ -145,7 +146,7 @@ def plan(policy, vector, sources, target, cache, revision, platform=None):
         require(paths["cdylib"] not in [item["image"] for item in result],
                 "artifact owners collide on image path")
         if "declares" in metadata or "manifest" in metadata:
-            blob(source, row["commit"], row["declares"], 1024 * 1024)
+            blob(source, row["commit"], row["declares"], 1024 * 1024, git_reader=git_reader)
         for kind, keys in metadata.items():
             for key in keys:
                 require(key not in values, "artifact owners collide on environment key")
