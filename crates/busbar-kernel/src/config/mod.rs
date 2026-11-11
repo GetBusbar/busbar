@@ -908,9 +908,10 @@ pub struct DeployCfg {
     /// The top-level `groups:` block - THE one limit tree. Optional; absent = no groups.
     #[serde(default)]
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
-    /// The top-level `rate_card:` - the ONLY cost source. Per-model entry; ALL-OR-NOTHING:
-    /// absent => token pricing is 0 for every model; present => AUTHORITATIVE and COMPLETE (every
-    /// configured model must have an entry or boot/`--validate` FAIL naming the missing models).
+    /// The top-level `rate_card:` - the ONLY cost source. Plugins report quantities; the host
+    /// prices them by model and declared unit. Absent disables usage-based pricing. Missing
+    /// entries or open-unit rates warn at validation and remain unpriced on a present card;
+    /// explicit zero rates are free. Usage quantities are retained independently of pricing.
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,

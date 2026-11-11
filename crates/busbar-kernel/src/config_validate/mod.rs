@@ -9,6 +9,7 @@ use crate::config::RootCfg;
 use crate::diagnostics::{
     diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
     CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+    CONFIG_RATE_CARD_MISSING,
 };
 use crate::plane_driver::registry::plane_decl_for;
 use busbar_contract::abi::export::CheckPhase;
@@ -1173,6 +1174,7 @@ fn validate_plane_card(
     d: &crate::plane_driver::registry::PlaneDeclaration,
     card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
     flat_card: bool,
+    lanes: &[String],
     errors: &mut Vec<String>,
 ) {
     let own = if d.fallback { "" } else { d.key };
@@ -1180,25 +1182,53 @@ fn validate_plane_card(
         .iter()
         .filter(|(k, _)| split_plane_lane(k).0 == own)
         .collect();
-    let entry = on.iter().any(|(k, _)| !split_plane_lane(k).1.is_empty());
-    let unset = |c: &&str| {
-        !(entry && busbar_contract::records::RESERVED_UNITS.contains(c)
-            || on.iter().any(|(_, r)| r.units.contains_key(*c)))
-    };
     let declared = priced_classes(d);
-    let missing: Vec<&str> = declared.clone().filter(unset).collect();
     let present = if d.fallback {
         flat_card
     } else {
         !on.is_empty()
     };
-    if present && !missing.is_empty() {
-        errors.push(format!(
-            "{}.rate_card does not configure billable unit(s) {} declared by this plane; \
-             add them (0 to make them free)",
-            d.config_section,
-            missing.join(", ")
-        ));
+    // Check every configured lane independently. A rate on a different lane cannot
+    // price this lane's raw counts. Class parents are reporting/cap projections,
+    // not inherited prices.
+    let lanes: std::collections::BTreeSet<&str> = lanes
+        .iter()
+        .map(String::as_str)
+        .chain(on.iter().map(|(key, _)| key.as_str()))
+        .filter(|key| split_plane_lane(key).0 == own && !split_plane_lane(key).1.is_empty())
+        .collect();
+    for key in lanes {
+        let lane = split_plane_lane(key).1;
+        let rate = card.get(key);
+        let missing: Vec<_> = declared
+            .clone()
+            .filter(|class| {
+                !rate.is_some_and(|rate| {
+                    busbar_contract::records::RESERVED_UNITS.contains(class)
+                        || rate.units.contains_key(*class)
+                })
+            })
+            .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let pricing = if present {
+            "these classes remain unpriced"
+        } else {
+            "no rate card is configured for this plane; usage-based pricing is disabled"
+        };
+        diag_warn!(
+            CONFIG_RATE_CARD_MISSING,
+            plane = d.key,
+            section = d.config_section,
+            lane,
+            classes = %missing.join(", "),
+            card_present = present,
+            "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
+             {}. Raw counts remain available. Configure a rate for each class \
+             (0 explicitly makes it free).",
+            d.config_section, lane, missing.join(", "), pricing
+        );
     }
 
     let unknown: std::collections::BTreeSet<&str> = (on.iter())
@@ -1290,34 +1320,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             }
         }
 
-        let flat_card = flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
-        let mut model_names: Vec<&String> = cfg.models.keys().collect();
-        model_names.sort();
-        let missing: Vec<&str> = model_names
-            .iter()
-            .filter(|name| flat_card && !card.contains_key(name.as_str()))
-            .map(|name| name.as_str())
-            .collect();
-        if !missing.is_empty() {
-            let width = missing.iter().map(|m| m.len()).max().unwrap_or(0) + 1;
-            let stub: String = missing
-                .iter()
-                .map(|m| {
-                    format!(
-                        "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
-                        format!("{m}:")
-                    )
-                })
-                .collect();
-            errors.push(format!(
-                "rate_card is present but {} configured model{} no rate entry (rate_card is \
-                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-                 Paste these under rate_card and fill in your rates (micro-units per token):\n\n{stub}",
-                missing.len(),
-                if missing.len() == 1 { " has" } else { "s have" },
-            ));
-        }
-
         for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
             if !cfg.models.contains_key(model) {
                 errors.push(format!(
@@ -1326,44 +1328,22 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 ));
             }
         }
-
-        for d in crate::plane_driver::registry::plane_decls() {
-            validate_plane_card(&d.declaration, card, flat_card, errors);
-        }
     }
 
-    if let Some(card) = &cfg.rate_card {
-        for defs in cfg.plane_defs.values() {
-            let lanes = defs.ledger_lanes();
-            let missing: Vec<&str> = (lanes.iter().map(String::as_str))
-                .filter(|l| {
-                    let plane = split_plane_lane(l).0;
-                    card.keys().any(|k| split_plane_lane(k).0 == plane) && !card.contains_key(*l)
-                })
-                .collect();
-            let Some(d) = missing
-                .first()
-                .and_then(|l| plane_decl_for(split_plane_lane(l).0))
-            else {
-                continue;
-            };
-            let zero = priced_classes(&d.declaration)
-                .map(|c| format!("{c}: 0"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let stub: String = (missing.iter())
-                .map(|l| format!("    {}: {{ units: {{ {zero} }} }}\n", split_plane_lane(l).1))
-                .collect();
-            errors.push(format!(
-                "{section}.rate_card is present but {n} {noun}{s} no rate entry (a present card is \
-                 AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
-                 Paste these under {section}.rate_card and fill in your rates:\n\n{stub}",
-                section = d.config_section,
-                n = missing.len(),
-                noun = d.subject_noun,
-                s = if missing.len() == 1 { " has" } else { "s have" },
-            ));
-        }
+    // Absence is advisory too: installed planes declare the classes, while their
+    // configured definitions enumerate the lanes whose counts can be priced.
+    let empty = std::collections::BTreeMap::new();
+    let card = cfg.rate_card.as_ref().unwrap_or(&empty);
+    let flat_card = cfg.rate_card.is_some()
+        && flat_card_present(card.keys().map(|key| split_plane_lane(key).0));
+    let lanes: Vec<String> = cfg
+        .models
+        .keys()
+        .cloned()
+        .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
+        .collect();
+    for d in crate::plane_driver::registry::plane_decls() {
+        validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
     }
 
     if cfg.per_request_fee < 0 {

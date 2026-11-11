@@ -450,6 +450,17 @@ A provider's `base_url` or `token_url` names a private or loopback address (an R
 
 **What to do:** Add exactly that host to `advanced.allow_destinations` (`busbar --migrate-config` adds the hosts a provider's plane reports), or point the provider at a public address. Turning `block_private_addresses` off also admits it, and every other private address with it.
 
+<a id="config-rate-card-missing"></a>
+### BUSBAR-3026 — Declared billable classes have no configured rate
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `config-rate-card-missing`
+
+A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices.
+
+**What to do:** Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>

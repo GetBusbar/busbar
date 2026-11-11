@@ -694,9 +694,14 @@ per_request_fee: 0
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `rate_card` | map | absent (billing off) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per unit; an omitted `*_utok` tier prices 0. Each `*_utok` rate must be a whole number of nano-units — at most three decimal places (`2.5`, `0.075`, `3.125`); a finer rate (`0.0015`, `0.5005`) is refused at boot/`--validate` naming the model, tier and value, never rounded. ALL-OR-NOTHING at TWO levels: (1) present = every configured model needs an entry, or boot/`--validate` fail with a paste-ready stub of exactly the missing models; (2) present = every billable class the LLM plane declares — the four reserved token tiers (`input`, `output`, `cache_read`, `cache_write`) and all fifteen open classes listed in the upgrade note below (`search_units`, `classifications`, `web_fetch_requests`, `unitemized_tokens`, `images`, `audio_ms` and the nine `guardrail_*` classes) — must be configured on SOME entry, or boot/`--validate` refuse naming the section and every missing class. The four reserved tiers count as configured by the card's mere presence (an omitted `*_utok` field is a configured `0`); the open classes are not reserved, so each needs an explicit `units: { <class>: <rate> }` on at least one entry (`0` makes it free). A `units:` key the plane does not declare is refused too (almost always a typo). With a card present, a request for an arbitrary passthrough model with no rate is also rejected pre-forward. |
+| `rate_card` | map | absent (usage-based pricing off) | Rates keyed by configured model and plugin-declared unit. Startup and `--validate` warn about missing model entries and open-unit rates on each lane. Quantities are still recorded; a missing rate on a present card is unpriced, not free. Configure an explicit `0` for a free unit. Existing `*_utok` fields retain their zero defaults when omitted. Invalid rates, unknown model names and undeclared unit names remain errors. Rates use MICRO-units (1e-6 abstract cost unit); `*_utok` values must be exactly representable in whole nano-units, with at most three decimal places. |
 | `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cost units, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
+
+Plugins report measurements, not prices. The host records each report under the current work's
+identity and computes cost from the ledger and applicable rate card. Unit names are plugin data:
+adding a new measured unit does not require a provider-specific pricing branch in core.
+A missing measurement is unknown; it must not be replaced with zero or a different unit.
 
 The rate numbers are **abstract cost units**: Busbar does pure integer math and never knows what
 currency they represent. Currency, symbols, and FX are display concerns owned by your dashboard.
@@ -722,16 +727,17 @@ The reserved `rate_card` key is also accepted, core-owned, under every non-LLM p
 `tools:`, `agents:`, `streams:`, `decisions:` — one card per plane, resolved independently of the
 flat/`pools` card above and of every other plane's card. Each entry is the same `{ *_utok fields,
 units: {...} }` shape (a non-LLM plane's classes are all OPEN, so only `units:` is meaningful for
-it); the shipped field-by-field grammar and per-plane boot refusals for each are in
+it); the field-by-field grammar for each is documented in
 [mcp.md](mcp.md) (`tools.rate_card`, keyed by tool name — prices `tool_calls` and `bytes`),
 [a2a.md](a2a.md) (`agents.rate_card`, keyed `agent:<id>` — prices `bytes`, the request + response
-body bytes an A2A hop relayed both ways; a present card must carry an entry for every agent under
-`agents:`, and one silent about an agent fails boot and every apply with a paste-ready stub), and
-[voice.md](voice.md) (`streams.rate_card`). The same
-rule applies everywhere: a plane section with no `rate_card` of its own bills that plane's traffic
-at `0` (no refusal); a plane section WITH a card must configure every class the plane declares (the
-generic boot rule above) and REFUSES a hit against a class or lane it left silent, rather than
-billing it `0`. `GET /usage`, `/groups/{name}/usage` and `/keys/{id}/usage` surface that refusal as
+body bytes an A2A hop relayed both ways), and
+[voice.md](voice.md) (`streams.rate_card`). The same rule applies to every plane:
+its plugin declares the units it measures, and the host checks its configured lanes against
+those declarations. Missing rates produce warnings naming the lane and units. A missing card
+disables usage-based pricing for that plane; an incomplete present card leaves the missing
+units unpriced. Neither case discards recorded quantities. An explicit zero rate makes a unit
+free. Spend-budget admission and complete cost calculations still require the relevant rates;
+a warning does not authorize treating an unknown cost as zero. `GET /usage`, `/groups/{name}/usage` and `/keys/{id}/usage` surface that refusal as
 `409 unpriced_class` (`{"error":{"code":"unpriced_class","message":"usage cannot be priced: the
 rate card in force names no price for class \`<class>\` of \`<lane>\`"}}`) instead of a bare `500
 internal`; no figure moves, only the status and code the caller sees change.
@@ -1832,7 +1838,6 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | Groups tree faults | A `parent` that does not exist (paste-ready stub) or a cycle (the path is printed); any acyclic depth is accepted |
 | Malformed group limit | A limit without exactly one metric key, a windowed metric without `per:`, or `concurrent` with a `per:` |
 | Breaker `max_cooldown < base_cooldown` | Cooldown ceiling below the base |
-| Rate card incomplete | `rate_card` present but missing an entry for a configured model (a paste-ready zeroed stub of the missing models is printed), or no entry configures one of the billable classes the plane declares (each missing class is named) |
 | Rate card names an unknown model or class | A `rate_card` key that is not a configured model, or a `units:` key the plane does not declare |
 | `auth.chain` names an unknown module | Every chain entry must be the built-in `keys` or a loaded `kind: auth` plugin |
 | `role_bindings` faults | A binding under a module not in any chain, or a bound `group` that does not exist in `groups:` |

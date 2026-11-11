@@ -307,7 +307,7 @@ class Qualification:
             self.receipt['execution_boundary'] = {
                 'mode': 'docker-confined', 'isolated': False, 'release_eligible': False,
                 'confinement_configured': True,
-                'configuration_sha256': args.confinement_sha256,
+                'approved_configuration_sha256': args.confinement_sha256,
                 'observations': self.execution.observations,
                 'observer': 'protected-controller',
                 'limitation': 'development execution evidence; not a release-producer attestation',
@@ -394,7 +394,14 @@ class Qualification:
     def save(self):
         execution = getattr(self, 'execution', None)
         if execution and 'execution_boundary' in self.receipt:
+            from native_confinement import canonical
+            configuration = hashlib.sha256(canonical(execution.config)).hexdigest()
             rows = execution.observations
+            if any(row.get('configuration_sha256') != configuration for row in rows):
+                raise Violation('execution configuration differs from retained observations')
+            # Approval binds the original input bytes; observations bind the
+            # canonical runtime after measured, protected instrument additions.
+            self.receipt['execution_boundary']['configuration_sha256'] = configuration
             self.receipt['execution_boundary']['isolated'] = bool(rows) and all(
                 row.get('inspected') and row.get('disposed') and row.get('storage')
                 and row.get('user_namespace') for row in rows)
