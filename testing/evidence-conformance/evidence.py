@@ -144,7 +144,13 @@ def build_subject(log, *, oidc=False):
     build_env = (dict(os.environ, CARGO_NET_OFFLINE="true")
                  if "CONFORMANCE_CAPABILITIES" in os.environ or "BUSBAR_CONFORMANCE_INPUTS" in os.environ
                  else None)
-    builds = [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt, "--bin", "busbar"]]
+    # Full signed-history checks run in the functional subject. Optimize only the
+    # signature implementation, preserving dev assertions and every strict check;
+    # unoptimized vector arithmetic can otherwise consume the HTTP test budget.
+    crypto = ["--config", "profile.dev.package.ed25519-dalek.opt-level=3",
+              "--config", "profile.dev.package.curve25519-dalek.opt-level=3"]
+    builds = [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt,
+               "--bin", "busbar", *crypto]]
     if oidc:
         # The OIDC module is a dev-dependency of dist/default (cargo cannot build one alone with
         # `-p`): its repo at the rev dist/default/Cargo.lock pins, its busbar-contract patched to THIS

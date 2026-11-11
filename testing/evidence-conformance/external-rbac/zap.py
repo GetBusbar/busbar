@@ -652,7 +652,30 @@ class ExternalRBAC:
             )["globalVar"]
             if error:
                 raise Refused("credential transport script failed")
-            statuses = self.credentials.finish()
+            try:
+                statuses = self.credentials.finish()
+            except Refused:
+                diagnostic = {
+                    "schema": "busbar.zap-cell-completeness-failure/1",
+                    "label": label[:80],
+                    "operation_index": index,
+                    "method": method[:16],
+                    "declared_path": path[:512],
+                    "callback_errors": len(self.credentials.errors),
+                    "cells": [
+                        {"principal_index": i, "principal": pname[:160],
+                         "expected": 1,
+                         "requests": self.credentials.requests.get(pname, 0),
+                         "responses": self.credentials.responses.get(pname, 0),
+                         "status": self.credentials.statuses.get(pname)}
+                        for i, pname in enumerate(principals)
+                    ][:64],
+                    "scope": "synthetic cell names, callback counts and status codes only",
+                }
+                encoded = json.dumps(diagnostic, ensure_ascii=True)
+                (dest / "cell-completeness-failure.json").write_text(encoded + "\n")
+                print("ZAP_CELL_COMPLETENESS_FAILURE " + encoded, file=sys.stderr, flush=True)
+                raise
             if any(status in (429, 500, 502, 503, 504) for status in statuses.values()):
                 # Preserve the failed synthetic cell in captured CI stderr. Do
                 # not include concrete URLs, headers, bodies or runtime logs:

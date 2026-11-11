@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=d91fd8cf87b36f588d8db74a746353008df150f7#d91fd8cf87b36f588d8db74a746353008df150f7"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=09477d9c4dc3ae6639ac394f00fef42a25e4bdca#09477d9c4dc3ae6639ac394f00fef42a25e4bdca"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -932,7 +932,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=7430f2e565791375447bbf549a69dd8132540d2f#7430f2e565791375447bbf549a69dd8132540d2f"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=af299cdfc62f797e2cf1d299395a4a4362ec6932#af299cdfc62f797e2cf1d299395a4a4362ec6932"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -2568,7 +2568,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=7430f2e565791375447bbf549a69dd8132540d2f#7430f2e565791375447bbf549a69dd8132540d2f"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=af299cdfc62f797e2cf1d299395a4a4362ec6932#af299cdfc62f797e2cf1d299395a4a4362ec6932"
 dependencies = [
  "base64 0.22.1",
  "byteorder",

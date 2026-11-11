@@ -195,5 +195,97 @@ class CompilerWitnessStorage(unittest.TestCase):
                 self.run_fixture(outcome)
 
 
+class SourceMaterialization(unittest.TestCase):
+    def run_fixture(self, failure=None, repository='GetBusbar/busbar'):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory).resolve()
+            checkout, trusted, candidate, scratch = [root / name for name in
+                                                     ('checkout', 'trusted', 'candidate', 'scratch')]
+            crate = checkout / 'crates/core'
+            crate.mkdir(parents=True)
+            source = crate / 'custom-main.rs'
+            source.write_text('include!(concat!(env!("OUT_DIR"), "/generated.rs"));')
+            build_script = crate / 'build.rs'
+            build_script.write_text('fn main() {}')
+            (crate / 'Cargo.toml').write_text('[package]\nname="busbar-core"\n')
+            trusted_test = trusted / 'crates/busbar-contract/tests/architecture_surface.rs'
+            trusted_test.parent.mkdir(parents=True)
+            trusted_test.write_text('// trusted source scan')
+            (trusted / 'Cargo.toml').write_text('[workspace.dependencies]\nsyn="2"\nquote="1"\nproc-macro2="1"\nserde_json="1"\n')
+            output = candidate / 'target/build/core/out'
+            output.mkdir(parents=True)
+            generated = output / 'generated.rs'
+            generated.write_text('fn main() {}')
+            reported_output = output
+            if failure == 'escaping-output':
+                reported_output = trusted
+            elif failure == 'symlink-source':
+                generated.unlink()
+                generated.symlink_to(source)
+            is_core = repository == 'GetBusbar/busbar'
+            entry = {'manifest': 'crates/core/Cargo.toml', 'repository': repository,
+                     'role': 'core' if is_core else 'implementation'}
+            policy = SimpleNamespace(data={'core': {'busbar-core': entry}, 'repositories': {}},
+                                     packages={'busbar-core': entry})
+            metadata = {'packages': [{'id': 'core-id', 'name': 'busbar-core',
+                'manifest_path': str(crate / 'Cargo.toml'),
+                'targets': [{'kind': ['bin'] if is_core else ['lib'], 'src_path': str(source)},
+                            {'kind': ['custom-build'], 'src_path': str(build_script)}]}]}
+            commands = []
+            def materialize(argv, **kwargs):
+                commands.append(argv)
+                if argv[:2] == ['cargo', 'metadata']:
+                    return json.dumps(metadata)
+                expected = (['cargo', 'check', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
+                            if is_core else ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
+                self.assertEqual(argv, expected + ['--message-format=json'])
+                if failure == 'compiler-failure':
+                    raise subprocess.CalledProcessError(1, argv)
+                return json.dumps({'reason': 'build-script-executed', 'package_id': 'core-id',
+                                   'out_dir': str(reported_output)}) + '\n'
+            def source_scan(argv, **kwargs):
+                self.assertEqual(argv[-2:], ['--test', 'architecture_surface'])
+                env = kwargs['env']
+                self.assertEqual(json.loads(Path(env['BUSBAR_ARCHITECTURE_GENERATED_DIRS']).read_text()),
+                                 {str(crate): str(output)})
+                if is_core:
+                    inventory = json.loads(Path(env['BUSBAR_ARCHITECTURE_POLICY_SOURCES']).read_text())
+                    self.assertEqual(set(inventory['roots']), {str(source), str(build_script)})
+                    self.assertEqual(set(inventory['raw_paths']), {str(source), str(build_script)})
+                    self.assertEqual(set(inventory['paths']), {str(source), str(build_script), str(generated)})
+                else:
+                    self.assertNotIn('BUSBAR_ARCHITECTURE_POLICY_SOURCES', env)
+                    self.assertEqual(json.loads(Path(env['BUSBAR_ARCHITECTURE_SOURCES']).read_text()), [str(source)])
+            with patch.object(check, 'EXECUTION', SimpleNamespace(roots={'candidate': candidate})), \
+                    patch.object(check, 'candidate_output', side_effect=materialize), \
+                    patch.object(check, 'candidate_run', side_effect=source_scan) as scan:
+                try:
+                    result = check.check_sources(policy, repository, checkout, metadata, trusted, scratch)
+                finally:
+                    if failure:
+                        scan.assert_not_called()
+                self.assertEqual(result['core_source_files'], 3 if is_core else 0)
+                self.assertTrue(result['trusted_source_check'])
+                scan.assert_called_once()
+
+    def test_core_check_materializes_generated_sources_and_retains_actual_target_inventory(self):
+        self.run_fixture()
+
+    def test_plugin_source_materialization_still_builds_shipping_probe(self):
+        self.run_fixture(repository='GetBusbar/busbar-auth-fixture')
+
+    def test_generated_output_outside_candidate_is_still_rejected(self):
+        with self.assertRaisesRegex(check.Violation, 'escapes its build output'):
+            self.run_fixture('escaping-output')
+
+    def test_indirect_generated_source_is_still_rejected(self):
+        with self.assertRaisesRegex(check.Violation, 'indirect generated source'):
+            self.run_fixture('symlink-source')
+
+    def test_failed_check_cannot_produce_passing_source_receipt(self):
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_fixture('compiler-failure')
+
+
 if __name__ == '__main__':
     unittest.main()

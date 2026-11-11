@@ -347,12 +347,18 @@ class Matrix(unittest.TestCase):
                         run()
 
     def test_transport_failures_retain_cell_without_credentials_or_response_body(self):
-        for status in (429, 500, 502, 503, 504):
+        for status in (None, 429, 500, 502, 503, 504):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as work:
                 runner = zap.ExternalRBAC(work, Path(work) / "reports")
                 runner.credentials = mock.Mock()
                 runner.credentials.url = "http://127.0.0.1:1/private-callback-secret"
                 runner.credentials.finish.return_value = {"full role": status}
+                if status is None:
+                    runner.credentials.finish.side_effect = zap.Refused("missing/duplicate credential transport cells")
+                    runner.credentials.requests = {"full role": 1}
+                    runner.credentials.responses = {}
+                    runner.credentials.statuses = {}
+                    runner.credentials.errors = []
                 principal = mock.Mock(return_value={"authorization": "Bearer private-token"})
                 api_calls = []
 
@@ -372,17 +378,25 @@ class Matrix(unittest.TestCase):
                 runner._rules = mock.Mock(return_value={})
                 captured = io.StringIO()
                 with contextlib.redirect_stderr(captured):
-                    with self.assertRaisesRegex(zap.Refused, "transport, rate-limit or server failure"):
+                    failure = "missing/duplicate credential transport cells" if status is None else "transport, rate-limit or server failure"
+                    with self.assertRaisesRegex(zap.Refused, failure):
                         runner.matrix("subject-full", 1234,
                                       [("GET", "/admin/keys/{id}", "full", "get_key")],
                                       {"full role": (principal, lambda s, v: "admit")},
                                       concrete=lambda p: "/admin/keys/private-concrete-value")
-                record = json.loads((runner.output / "subject-full/transport-failure.json").read_text())
+                filename = "cell-completeness-failure.json" if status is None else "transport-failure.json"
+                record = json.loads((runner.output / "subject-full" / filename).read_text())
                 self.assertEqual(record["declared_path"], "/admin/keys/{id}")
                 self.assertEqual(record["operation_index"], 0)
-                self.assertEqual(record["statuses"], [
-                    {"principal_index": 0, "principal": "full role", "status": status}])
-                self.assertIn("ZAP_TRANSPORT_FAILURE ", captured.getvalue())
+                if status is None:
+                    self.assertEqual(record["cells"], [{"principal_index": 0, "principal": "full role",
+                        "expected": 1, "requests": 1, "responses": 0, "status": None}])
+                    self.assertEqual(record["callback_errors"], 0)
+                    self.assertIn("ZAP_CELL_COMPLETENESS_FAILURE ", captured.getvalue())
+                else:
+                    self.assertEqual(record["statuses"], [
+                        {"principal_index": 0, "principal": "full role", "status": status}])
+                    self.assertIn("ZAP_TRANSPORT_FAILURE ", captured.getvalue())
                 self.assertNotIn("private-", captured.getvalue())
                 self.assertNotIn("writeHTMLreport", api_calls)
                 self.assertFalse(json.loads((runner.output / "subject-full/result.json").read_text())["passed"])

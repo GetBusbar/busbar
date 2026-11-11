@@ -494,12 +494,18 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
              '--manifest-path', str(checkout / 'Cargo.toml')], cwd=checkout, text=True))
         crate_roots = core_target_roots(policy, checkout, source_metadata)
     if roots or repository == 'GetBusbar/busbar':
-        # Resolve generated OUT_DIR includes from this exact candidate build. Never use
-        # a candidate-supplied map or a stale build output selected by filename search.
-        build_command = (['cargo', 'build', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
+        # Resolve generated OUT_DIR includes from this exact candidate invocation.
+        # Checking the real core workspace executes its build scripts and checks
+        # its actual targets; this source scan needs no linked core binaries.
+        # Never use a candidate-supplied map or filename search for stale output.
+        build_command = (['cargo', 'check', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
             if repository == 'GetBusbar/busbar' else
             ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
+        architecture_progress('source-materialization', 'start', cargo_command=build_command[1])
+        started = time.monotonic()
         build = candidate_output(build_command + ['--message-format=json'], cwd=checkout, text=True)
+        architecture_progress('source-materialization', 'finish', cargo_command=build_command[1],
+                              elapsed_seconds=round(time.monotonic() - started, 3))
         for line in build.splitlines():
             row = json.loads(line)
             if row.get('reason') == 'build-script-executed':

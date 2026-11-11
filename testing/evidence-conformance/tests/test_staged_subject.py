@@ -12,6 +12,17 @@ spec.loader.exec_module(evidence)
 
 
 class StagedSubject(unittest.TestCase):
+    def test_signature_optimization_is_scoped_to_functional_host_build(self):
+        with mock.patch.object(evidence, "target_dir", return_value="/unused/target"), \
+                mock.patch.object(evidence, "run", return_value=0) as run:
+            evidence.build_subject("unused")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:3], ["cargo", "build", "--locked"])
+        self.assertEqual(argv[-4:], ["--config", "profile.dev.package.ed25519-dalek.opt-level=3",
+                                    "--config", "profile.dev.package.curve25519-dalek.opt-level=3"])
+        self.assertNotIn("--release", argv)
+        self.assertFalse(any("debug-assertions" in arg or "overflow-checks" in arg for arg in argv))
+
     def test_rbac_fixtures_enable_bounded_local_telemetry_for_declared_operation(self):
         issuer = mock.Mock(url="https://127.0.0.1:4444/jwks")
         with mock.patch.object(evidence.oidf, "sha256_file", return_value="a" * 64):
