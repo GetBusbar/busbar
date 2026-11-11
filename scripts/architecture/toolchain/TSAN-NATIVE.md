@@ -83,16 +83,24 @@ controls qualifies the runtime configuration, not a product revision.
 
 ## Current evidence
 
-The existing x86 worker's GCC controls fail before main with an unexpected
-memory mapping under the default profile. The local ARM64 Docker 29.5.2 narrow
-profile has passed controls and boundary checks, but is a different engine and
-architecture. Diagnostic job 3753 reached the native worker but stopped before
-samples because the original engine check incorrectly compared Ubuntu's build
-identity with the upstream source SHA. That check is corrected as described
-above. The sanitizer controls have not yet passed on the native x86 worker.
-Unit checks validate the policy pins, exact build matching, preservation of
-rejected engine observations, and rejection of broader rules; they do not
-establish native runtime support.
+[Diagnostic job 3763](https://github.com/GetBusbar/busbar/-/jobs/3763)
+(pipeline 1995, trusted policy `9f564fdedb5c851d69656ddbf7e0ebcacfb6aad1`)
+passed the fixed-source controls on runner 32: Linux 7.0.0-1017-gcp x86_64,
+Docker 29.1.3 with Ubuntu build identity `29.1.3-0ubuntu3~24.04.2`, and GCC
+12.2.0. The unchanged baseline reproduced an unexpected-memory-mapping failure
+with exit 66. The dedicated profile produced clean exit 0 and deliberate-race
+exit 66 with a TSan data-race diagnostic. The denial witness passed with UID
+1001, seccomp mode 2, and personality 262144. All eight probe containers were
+inspected and disposed; bootstrap reported candidate-container and storage
+disposal, and all six confinement controls passed.
+
+The retained `acceptance-close/native-diagnostic-9f564fd/tsan-result.json`
+records `native-x86-sanitizer-controls-pass`, `production_activation=false`,
+and `release_eligible=false`. This qualifies the observed runtime controls.
+Actual C plugin qualification through the controller activation added at
+`ec527084ec5112805027641ce7b3b62b92802058` remains pending. The per-job control
+gate remains mandatory; this result does not grant blanket profile activation
+or qualify a product revision.
 
 A compiler-only upgrade is not a demonstrated remedy: LLVM 23.1.0 still attempts
 `personality(ADDR_NO_RANDOMIZE)` when its initial layout is incompatible and

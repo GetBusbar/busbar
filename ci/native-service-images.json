@@ -3,17 +3,17 @@
   "services": {
     "postgres": {
       "reference": "postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b",
-      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-postgres/20261111-2fd8c901081d93ca27ce382132051ec33666f0b9e38358de91168ff49bf7acae/linux-amd64.tar",
-      "archive_sha256": "2fd8c901081d93ca27ce382132051ec33666f0b9e38358de91168ff49bf7acae",
-      "bytes": 160215040,
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-postgres/20261111-ea499044d40b62f96adc5910301233453bb2dec8479e4a347d736e794eb1e169/linux-amd64.tar",
+      "archive_sha256": "ea499044d40b62f96adc5910301233453bb2dec8479e4a347d736e794eb1e169",
+      "bytes": 205803520,
       "manifest_sha256": "670391653713782e51974845b217c56fed4dd8729142299c43c919a8d3e15e00",
       "config_sha256": "8a4b045886180c64f518ca6a4b0791b15fb997f3b3b619bd5ee141914668db55"
     },
     "mysql": {
       "reference": "mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb",
-      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-mysql/20261111-6b5d8ff135c83edda5494f55dcb897f5fcdd6e855b0c3a3c873543f62fb125e5/linux-amd64.tar",
-      "archive_sha256": "6b5d8ff135c83edda5494f55dcb897f5fcdd6e855b0c3a3c873543f62fb125e5",
-      "bytes": 239011840,
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-mysql/20261111-1b84781eb30eb44bcd217e872f76a368bbe4eeceb3cb878ce84b0fd0a0730c98/linux-amd64.tar",
+      "archive_sha256": "1b84781eb30eb44bcd217e872f76a368bbe4eeceb3cb878ce84b0fd0a0730c98",
+      "bytes": 270510080,
       "manifest_sha256": "1d6b6a8fcee8ff758ff151d017f5203cd06792a0e698f0a593c9dfcb14609cf0",
       "config_sha256": "bced325a4ab7aec848f4688371c7433351dcb5dba26fbcc29c67727d898ae5cb"
     },
@@ -35,9 +35,9 @@
     },
     "wiremock": {
       "reference": "wiremock/wiremock:3.9.2@sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176",
-      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-wiremock/20261111-a4e2be62a6516cc92eaf6eb4aa893c6496f9d43cc841439da2c4b472ba5403f5/linux-amd64.tar",
-      "archive_sha256": "a4e2be62a6516cc92eaf6eb4aa893c6496f9d43cc841439da2c4b472ba5403f5",
-      "bytes": 109424640,
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-service-wiremock/20261111-c361bfa03d776903e6ab45db992aa5ade0403b1cb64ba8cd23861783db14e84c/linux-amd64.tar",
+      "archive_sha256": "c361bfa03d776903e6ab45db992aa5ade0403b1cb64ba8cd23861783db14e84c",
+      "bytes": 109434880,
       "manifest_sha256": "c46550f7d42b85cbad77bfc96cf3b15b5968e956e14e0a57785672b6cb42b674",
       "config_sha256": "a04770dadb92bb38d7656aab929747c6b383e2fbe779404c15887e6064df49f7"
     },

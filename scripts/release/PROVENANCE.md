@@ -802,3 +802,35 @@ receive this development classification. Consumers must validate the separate
 controller classification and its bound engineering report while retaining the
 raw failed driver step and unsigned/not-run release rows. Neither a green
 development qualification nor these test fixtures activates a release signer.
+
+
+Native development artifact retention and replay
+-----------------------------------------------
+The core native job's existing final build now runs through development_artifact.py
+capture with the unchanged Cargo recipe. After candidate execution stops, the
+bounded collector retains its Cargo metadata, lock, successful JSON compiler
+stream and build context alongside the existing collected busbar executable.
+The controller packages those exact collected bytes and derives a build closure
+and CycloneDX SBOM from the same build. It does not rerun metadata with a different
+feature/target selection or substitute a lock-only inventory.
+
+boundary-evidence/development-artifact/receipt.json binds the source, immutable
+policy, SDK, complete product vector, binary, archive, compiler inputs, closure
+and SBOM. Its digest is recorded in the parent native receipt. Replay after
+obtaining the parent receipt through the protected exact-source CI collector:
+
+  python3 -I scripts/release/development_artifact.py verify \
+    --directory boundary-evidence/development-artifact \
+    --binary boundary-evidence/busbar --source <core-sha> \
+    --policy <approved-policy-sha> --sdk <sdk-sha> \
+    --receipt-sha256 <development_artifact.sha256-from-parent-receipt>
+
+This evidence is private developer-access CI output, including raw compiler paths.
+Its inventory covers Cargo compilation and build tools, not all operating-system
+packages or an OCI image. The native job currently declares 30-day artifact
+expiration; the receipt binds that CI policy file's digest, but does not pretend
+that a declaration proves the server's actual expiration or lifetime retention.
+The job API's artifacts_expire_at must be retained with a downloaded archive hash
+for an actual retention readback. The existing signed-release monitor remains
+separate. These development receipts explicitly remain unsigned, not release
+eligible, and without supported-lifetime retention verification.
