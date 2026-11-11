@@ -11,10 +11,64 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
 
-from native_service_peers import CAPS, TMPFS, Peers, runtime_controls_probe
+from native_service_peers import CAPS, TMPFS, Peers, elf_dependencies, runtime_controls_probe
 
 
 class PeerControls(unittest.TestCase):
+    def test_elf_dependency_listing_refuses_missing_ambiguous_or_indirect_inputs(self):
+        loader = '\t/lib64/ld-linux-x86-64.so.2 (0x1234)\n'
+        valid = '\tlinux-vdso.so.1 (0xabcd)\n\tlibc.so.6 => /lib/libc.so.6 (0x1234)\n' + loader
+        paths, selected = elf_dependencies(valid)
+        self.assertEqual(paths['libc.so.6'], '/lib/libc.so.6')
+        self.assertEqual(selected, '/lib64/ld-linux-x86-64.so.2')
+        for invalid in ('', 'libc.so.6 => not found\n' + loader,
+                        'libc.so.6 => /lib/../libc.so.6 (0x1234)\n' + loader,
+                        valid + 'libc.so.6 => /other/libc.so.6 (0x1234)\n',
+                        'libc.so.6 => /lib/libc.so.6 (0x1234)\n',
+                        'libc.so.6 => $(touch /tmp/forbidden) (0x1234)\n' + loader):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                elf_dependencies(invalid)
+
+    def test_staged_server_uses_and_records_pinned_elf_closure(self):
+        for host_leak in (False, True):
+            with self.subTest(host_leak=host_leak), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+                fixture = Path(directory)
+                peers = Peers.__new__(Peers)
+                peers.peers = {'valkey': {'name': 'pinned-peer'}}
+                peers.owner = SimpleNamespace(images={'valkey': 'valkey@sha256:pinned'})
+                peers.q = SimpleNamespace(receipt={'service_peers': {'valkey': {'image': 'sha256:image'}}})
+                peers.exec = Mock(return_value=SimpleNamespace(stdout=
+                    'libc.so.6 => /lib/libc.so.6 (0x1234)\n/lib64/ld-linux-x86-64.so.2 (0x1234)\n'))
+                def copy(args):
+                    self.assertEqual(args[:2], ['cp', '-L'])
+                    self.assertTrue(args[2].startswith('pinned-peer:/'))
+                    Path(args[3]).write_bytes(b'fixed image bytes')
+                peers.client = Mock(side_effect=copy)
+                def run(name, args, timeout):
+                    self.assertEqual(name, 'fixture-valkey-closure-check')
+                    self.assertEqual(timeout, 30)
+                    self.assertIn('--inhibit-cache', args)
+                    self.assertIn('--list', args)
+                    output = fixture / 'closure.stdout'
+                    library = '/host/libc.so.6' if host_leak else str(fixture / 'runtime/libc.so.6')
+                    output.write_text('libc.so.6 => ' + library + ' (0x1234)\n'
+                                      + str(fixture / 'runtime/ld-linux-x86-64.so.2') + ' (0x1234)\n')
+                    return output
+                peers.q.run = run
+                if host_leak:
+                    with self.assertRaisesRegex(ValueError, 'outside its pinned runtime'):
+                        peers.stage_server_binary('valkey', '/usr/local/bin/valkey-server', fixture)
+                    self.assertFalse((fixture / 'valkey-server').exists())
+                else:
+                    wrapper = peers.stage_server_binary('valkey', '/usr/local/bin/valkey-server', fixture)
+                    self.assertIn('exec ', wrapper.read_text())
+                    self.assertIn(' "$@"', wrapper.read_text())
+                    self.assertIn('unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT', wrapper.read_text())
+                    receipt = peers.q.receipt['fixture_executables']['valkey']
+                    self.assertEqual(receipt['requested_image'], 'valkey@sha256:pinned')
+                    self.assertEqual(len(receipt['files']), 3)
+                    self.assertTrue(all(len(row['sha256']) == 64 for row in receipt['files'].values()))
+
     def test_readiness_failure_is_bounded_redacted_and_collected_before_disposal(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             peers = Peers.__new__(Peers)

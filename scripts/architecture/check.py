@@ -23,10 +23,12 @@ from urllib.parse import urlsplit
 EXECUTION = None
 
 
-def candidate_run(argv, **kwargs):
+def candidate_run(argv, *, discard_harness_target=False, **kwargs):
     if EXECUTION is None:
         return subprocess.run(argv, **kwargs)
     kwargs.setdefault('cwd', EXECUTION.roots['checkout'])
+    if discard_harness_target:
+        kwargs['discard_harness_target'] = True
     return EXECUTION.run(argv, **kwargs)
 
 
@@ -659,7 +661,9 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
     if not cases or not any(not expected for _, expected in cases):
         raise Violation('compiler witnesses require a positive control')
     for name, expected in cases:
-        result = candidate_run(['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json'], cwd=scratch, text=True, capture_output=True)
+        # Each confined case still gets fresh artifacts. They are no longer needed
+        # once its process exits; retaining all cases exhausts the bounded job disk.
+        result = candidate_run(['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json'], cwd=scratch, text=True, capture_output=True, discard_harness_target=True)
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
         errors = [row['message'] for row in messages if row.get('reason') == 'compiler-message' and row.get('target', {}).get('name') == name and row['message']['level'] == 'error']
         codes = {error['code']['code'] for error in errors if error.get('code')}

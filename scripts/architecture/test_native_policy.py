@@ -1,13 +1,25 @@
 """Controller policy, never candidate omissions, selects required native work."""
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from check import Violation
-from native import evaluation_job, requires_native_oracle
+from native import build_parallelism, evaluation_job, requires_native_oracle
 from native_policy import native_settings
 from admission import required_conformance_job
 
 
 class NativePolicy(unittest.TestCase):
+    def test_build_fanout_uses_candidate_cpu_budget_not_controller_host(self):
+        execution = SimpleNamespace(config={'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}})
+        for host, expected in ((64, 4), (2, 2), (None, 4)):
+            with self.subTest(host=host), patch('native.os.cpu_count', return_value=host):
+                self.assertEqual(build_parallelism(execution), expected)
+        execution.config['resources']['cpus'] = 1
+        with patch('native.os.cpu_count', return_value=64):
+            self.assertEqual(build_parallelism(execution), 1)
+            self.assertEqual(build_parallelism(None), 16)
+
     def test_new_owner_obligations_need_only_trusted_data(self):
         repository = 'GetBusbar/busbar-fixture-owner'
         settings = {'services': ['valkey'], 'server_binary': 'valkey', 'native_oracle': True,

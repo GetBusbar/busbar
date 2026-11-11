@@ -524,9 +524,15 @@ class Execution:
         return [*argv, '--store-path', str(destination)]
 
     @contextmanager
-    def invocation(self, argv, cwd, env):
+    def invocation(self, argv, cwd, env, *, discard_harness_target=False):
         argv = list(map(str, argv))
         require(argv and not argv[0].startswith("-"), "missing candidate executable")
+        if discard_harness_target:
+            require(argv[0] == 'cargo' and '--manifest-path' in argv
+                    and argv.index('--manifest-path') + 1 < len(argv)
+                    and Path(argv[argv.index('--manifest-path') + 1]).resolve().is_relative_to(
+                        self.roots['harness']),
+                    'disposable target requires a trusted harness manifest')
         cwd = Path(cwd).resolve()
         require(
             any(cwd.is_relative_to(root) for root in self.roots.values()),
@@ -615,6 +621,13 @@ class Execution:
                 + ("" if writable else ",readonly"),
             ]
         safe_env = self.cargo_environment(argv, env)
+        disposable_target = None
+        if discard_harness_target:
+            disposable_target = Path(safe_env['CARGO_TARGET_DIR'])
+            require(disposable_target.parent == root['candidate']
+                    and re.fullmatch(r'harness-target-[0-9a-f]{32}', disposable_target.name)
+                    and not disposable_target.is_symlink(),
+                    'invalid disposable harness target')
         cargo_home = None
         if safe_env.get('CARGO_HOME'):
             # Stable dependency paths preserve Cargo target fingerprints. The
@@ -766,6 +779,17 @@ class Execution:
                 "candidate disposal was not confirmed",
             )
             observation["disposed"] = True
+            if disposable_target is not None:
+                # The container is gone before touching candidate-owned artifacts.
+                # Unlink a replaced top-level symlink instead of following it;
+                # rmtree likewise does not follow links inside the original target.
+                if disposable_target.is_symlink():
+                    disposable_target.unlink()
+                elif disposable_target.exists():
+                    shutil.rmtree(disposable_target)
+                observation['harness_target_removed'] = True
+                observation['harness_target_path_sha256'] = hashlib.sha256(
+                    str(disposable_target).encode()).hexdigest()
             if cargo_home is not None:
                 if cargo_home.is_symlink():
                     cargo_home.unlink()
@@ -776,8 +800,9 @@ class Execution:
                 linux_job_isolation.recheck_swap_bound(observation['swap_bound'])
             require(state_error is None, 'candidate process state observation failed')
 
-    def run(self, argv, *, cwd, env=None, **kwargs):
-        with self.invocation(argv, cwd, os.environ if env is None else env) as (
+    def run(self, argv, *, cwd, env=None, discard_harness_target=False, **kwargs):
+        with self.invocation(argv, cwd, os.environ if env is None else env,
+                             discard_harness_target=discard_harness_target) as (
             command,
             client_env,
             _,
