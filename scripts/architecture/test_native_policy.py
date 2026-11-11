@@ -4,21 +4,38 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from check import Violation
-from native import build_parallelism, evaluation_job, requires_native_oracle
+from native import native_scheduling, evaluation_job, requires_native_oracle
 from native_policy import native_settings
 from admission import required_conformance_job
 
 
 class NativePolicy(unittest.TestCase):
-    def test_build_fanout_uses_candidate_cpu_budget_not_controller_host(self):
+    def test_compiler_memory_budget_does_not_reduce_cpu_based_test_concurrency(self):
         execution = SimpleNamespace(config={'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}})
         for host, expected in ((64, 4), (2, 2), (None, 4)):
             with self.subTest(host=host), patch('native.os.cpu_count', return_value=host):
-                self.assertEqual(build_parallelism(execution), expected)
-        execution.config['resources']['cpus'] = 1
+                selected = native_scheduling(execution)
+                self.assertEqual(selected['build_jobs'], 1)
+                self.assertEqual(selected['test_threads'], expected)
+                self.assertEqual(selected['candidate_memory_bytes'], 6 * 1024**3)
+                self.assertEqual(selected['compiler_memory_bytes_per_slot'], 6 * 1024**3)
+                self.assertIn('not-measured-peak-or-fit-guarantee', selected['memory_policy'])
+
+    def test_compiler_fanout_respects_memory_cpu_and_sixteen_job_caps(self):
+        for host, cpus, gib, expected in [(64, 4, 11, 1), (64, 4, 12, 2), (64, 4, 48, 4),
+                (2, 4, 48, 2), (64, 32, 192, 16), (64, 1, 12, 1), (64, 4, 3, 1)]:
+            with self.subTest(host=host, cpus=cpus, gib=gib), patch('native.os.cpu_count', return_value=host):
+                resources = {'cpus': cpus, 'memory_bytes': gib * 1024**3}
+                execution = SimpleNamespace(config={'resources': dict(resources)})
+                self.assertEqual(native_scheduling(execution)['build_jobs'], expected)
+                self.assertEqual(execution.config['resources'], resources)
+
+    def test_unconfined_scheduling_preserves_existing_host_cpu_cap(self):
         with patch('native.os.cpu_count', return_value=64):
-            self.assertEqual(build_parallelism(execution), 1)
-            self.assertEqual(build_parallelism(None), 16)
+            selected = native_scheduling(None)
+            self.assertEqual(selected['build_jobs'], 16)
+            self.assertEqual(selected['test_threads'], 16)
+            self.assertIsNone(selected['candidate_memory_bytes'])
 
     def test_new_owner_obligations_need_only_trusted_data(self):
         repository = 'GetBusbar/busbar-fixture-owner'

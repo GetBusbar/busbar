@@ -649,7 +649,8 @@ pin="(the branch file's BUSBAR_ORACLE_* env)"
 RELEASE_REPO="${BUSBAR_ORACLE_RELEASE_REPO:-}"; RELEASE_REF="${BUSBAR_ORACLE_RELEASE_REF:-none}"
 CRATE="${BUSBAR_ORACLE_CRATE:-busbar-release-oracle}"; BINNAME="${BUSBAR_ORACLE_BIN:-busbar-oracle}"
 
-root="$here/target/oracle/rust/$RELEASE_REF"
+# Generated helpers belong with build output; the product checkout may be mounted read-only.
+root="${CARGO_TARGET_DIR:-$here/target}/oracle/rust/$RELEASE_REF"
 shim_dir="$root/tool"
 mkdir -p "$root"
 

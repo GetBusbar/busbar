@@ -17,6 +17,11 @@ import threading
 
 def relay(left, right):
     try:
+        # Either relay leg may write to TCP. Preserve the native client's prompt
+        # small writes across the Unix capability instead of adding Nagle/delayed
+        # ACK stalls to every database protocol exchange.
+        if right.family in (socket.AF_INET, socket.AF_INET6):
+            right.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         while data := left.recv(65536):
             right.sendall(data)
     except OSError:
