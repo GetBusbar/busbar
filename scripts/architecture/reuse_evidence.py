@@ -859,7 +859,7 @@ def expected_loader(objects, normalizer):
         result['conformance_suites'] = [line.split('\t', 1)[0] for line in suites.splitlines()
                                         if line.strip() and not line.lstrip().startswith('#')]
         inputs = ('testing/conformance/run.sh', 'testing/conformance/tools.sh',
-                  'testing/conformance/suites.tsv', '.busbar-ref', 'Cargo.toml',
+                  'testing/conformance/suites.tsv', 'testing/conformance/capabilities.py', '.busbar-ref', 'Cargo.toml',
                   'Cargo.lock', 'rust-toolchain', 'rust-toolchain.toml')
         result['conformance_inputs'] = {path: digest(objects.blob(identity.CORE, source, path))
                                         for path in inputs if path in source_tree}
