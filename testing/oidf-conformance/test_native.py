@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """Targeted native OIDF staging and process-adapter checks; no complete suite run."""
 import importlib.util
+import http.server
 import io
 import json
 import os
 from pathlib import Path
 import sys
+import ssl
+import subprocess
 import tarfile
 import tempfile
+import threading
 import unittest
+import urllib.error
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -80,6 +85,72 @@ class NativeAdapter(unittest.TestCase):
         self.assertEqual(list(stage.IMAGES.values()), [oidf.SERVER_IMAGE, oidf.NGINX_IMAGE,
                                                       oidf.MONGO_IMAGE, oidf.PYTHON_IMAGE])
         self.assertEqual(stage.WHEELS, oidf.WHEELS)
+
+
+class NativeSuiteTLS(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+        def local_openssl(pki, log, *args):
+            subprocess.run(["openssl", *args], cwd=pki, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        self.openssl = local_openssl
+        local_openssl(self.root, None, "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                      "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out",
+                      "ca.pem", "-days", "1", "-subj", "/CN=fixture CA", "-addext",
+                      "basicConstraints=critical,CA:TRUE", "-addext",
+                      "keyUsage=critical,keyCertSign,cRLSign")
+        with mock.patch.object(oidf, "openssl", side_effect=local_openssl):
+            oidf.mint_native_suite_tls(str(self.root), "fixture.log")
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"verified suite")
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(self.root / "suite.pem", self.root / "suite.key")
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.addCleanup(stop)
+        self.port = server.server_port
+        self.suite = oidf.NativeSuite(str(self.root), str(self.root), "source", "wheels", "log")
+
+    def test_request_verifies_fixture_ca_and_hostname(self):
+        with mock.patch.object(oidf, "SUITE_BASE", f"https://localhost:{self.port}/"):
+            self.assertEqual(self.suite.request("api/runner/available"), b"verified suite")
+
+    def test_request_rejects_wrong_hostname(self):
+        with mock.patch.object(oidf, "SUITE_BASE", f"https://127.0.0.1:{self.port}/"):
+            with self.assertRaisesRegex(urllib.error.URLError, "CERTIFICATE_VERIFY_FAILED"):
+                self.suite.request("api/runner/available")
+
+    def test_request_rejects_untrusted_certificate(self):
+        other = self.root / "other"
+        other.mkdir()
+        self.openssl(other, None, "req", "-x509", "-newkey", "ec", "-pkeyopt",
+                     "ec_paramgen_curve:P-256", "-nodes", "-keyout", "ca.key", "-out",
+                     "ca.pem", "-days", "1", "-subj", "/CN=unrelated CA", "-addext",
+                     "basicConstraints=critical,CA:TRUE")
+        self.suite.pki = str(other)
+        with mock.patch.object(oidf, "SUITE_BASE", f"https://localhost:{self.port}/"):
+            with self.assertRaisesRegex(urllib.error.URLError, "CERTIFICATE_VERIFY_FAILED"):
+                self.suite.request("api/runner/available")
 
 
 class ImageFlattening(unittest.TestCase):

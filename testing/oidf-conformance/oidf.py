@@ -874,6 +874,21 @@ def native_wheels(directory, destination):
             archive.extractall(destination)
 
 
+def mint_native_suite_tls(pki, log):
+    """Give the isolated suite frontend a hostname-valid, per-run certificate."""
+    Path(pki, "suite.ext").write_text(
+        "subjectAltName=DNS:localhost.emobix.co.uk,DNS:localhost\n"
+        "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+        "extendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid,issuer\n")
+    openssl(pki, log, "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-nodes", "-keyout", "suite.key", "-out", "suite.csr",
+            "-subj", "/CN=localhost.emobix.co.uk")
+    openssl(pki, log, "x509", "-req", "-in", "suite.csr", "-CA", "ca.pem",
+            "-CAkey", "ca.key", "-CAcreateserial", "-out", "suite.pem",
+            "-days", "3", "-extfile", "suite.ext")
+
+
 class NativeSuite:
     """The identical official instrument as processes in the candidate's isolated loopback network."""
 
@@ -931,7 +946,10 @@ class NativeSuite:
                     "-Dserver.address=127.0.0.1", f"-Dserver.port={server_port}",
                     "-jar", str(NATIVE_BUNDLE / "server/server/fapi-test-suite.jar"),
                     "-Djdk.tls.maxHandshakeMessageSize=65536"), self.env)
+        mint_native_suite_tls(self.pki, self.log)
         config = (NATIVE_BUNDLE / "nginx/etc/nginx/nginx.conf").read_text()
+        config = config.replace("/etc/ssl/certs/nginx-selfsigned.crt", os.path.join(self.pki, "suite.pem"))
+        config = config.replace("/etc/ssl/private/nginx-selfsigned.key", os.path.join(self.pki, "suite.key"))
         # Preserve the release's proxy headers, TLS/mTLS listeners and policy; relocate only its
         # Docker paths/upstream/listeners to this namespace's measured files and loopback.
         config = config.replace("/etc/nginx/", str(NATIVE_BUNDLE / "nginx/etc/nginx") + "/")
@@ -959,7 +977,7 @@ class NativeSuite:
         raise Refused("native OIDF API did not become ready in 300 seconds", instrument=True)
 
     def request(self, path):
-        ctx = ssl._create_unverified_context()  # release nginx uses its own self-signed fixture cert
+        ctx = ssl.create_default_context(cafile=os.path.join(self.pki, "ca.pem"))
         with urllib.request.urlopen(SUITE_BASE + path, context=ctx, timeout=10) as response:
             return response.read()
 

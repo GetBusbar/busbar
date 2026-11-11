@@ -576,6 +576,9 @@ class Qualification:
                        'admission:' + str(self.trusted / 'ci/native-nextest.toml')]
             selected = 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | (package(busbar-default) & test(/^distribution::admin_cross_plane::/)) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
             features = 'test-harness,transport-webrtc,openapi-schema'
+            final_build = ['build', '--release', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--bin', 'busbar']
+            build_capture = self.work / 'final-build-capture'
+            artifact_tool = self.trusted / 'scripts/release/development_artifact.py'
             commands = [
                 ('root-fmt', ['cargo', 'fmt', '--all', '--check']),
                 ('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check']),
@@ -593,7 +596,7 @@ class Qualification:
                 ('dependency-policy', ['cargo', 'deny', 'check']),
                 ('dependency-vet', ['cargo', 'vet']),
                 ('default-dependency-policy', ['cargo', 'deny', '--manifest-path', 'dist/default/Cargo.toml', 'check']),
-                ('final-binary', ['cargo', 'build', '--release', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--bin', 'busbar']),
+                ('final-binary', ['python3', '-I', str(artifact_tool), 'capture', '--directory', str(build_capture), '--', *final_build]),
             ]
             for name, command in commands:
                 self.run(name, command)
@@ -601,6 +604,22 @@ class Qualification:
             binary = Path(self.env['CARGO_TARGET_DIR']) / 'release/busbar'
             collected = collect_output(self, binary, self.evidence / 'busbar', compiler_output=True)
             self.receipt['binary_sha256'] = digest(collected)
+            artifact_evidence = self.evidence / 'development-artifact'
+            (artifact_evidence / 'build').mkdir(parents=True)
+            for name in ('cargo-metadata.json', 'Cargo.lock', 'cargo-messages.jsonl', 'build-context.json'):
+                collect_output(self, build_capture / name, artifact_evidence / 'build' / name, limit=64 * 1024**2)
+            self.run_controller('development-artifact-evidence', [sys.executable, '-I', str(artifact_tool),
+                'finalize', '--directory', str(artifact_evidence), '--binary', str(collected),
+                '--source', self.receipt['source'], '--policy', self.receipt['policy_revision'], '--sdk', sdk,
+                '--vector', str(host / 'scripts/ci-product-pins.json'), '--package', 'busbar-default',
+                '--compiler-output', str(binary), '--command-json', json.dumps(final_build),
+                '--retention-policy-sha256', digest(self.trusted / 'ci/architecture-pipeline.yml')])
+            self.receipt['development_artifact'] = {
+                'path': 'development-artifact/receipt.json',
+                'sha256': digest(artifact_evidence / 'receipt.json'),
+                'signed': False, 'release_eligible': False,
+                'supported_lifetime_retention_verified': False,
+            }
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
