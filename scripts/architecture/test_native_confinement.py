@@ -100,6 +100,14 @@ class Boundary(Fixture, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlinks"):
             self.execution()
 
+    def test_local_loaded_image_ids_remain_immutable_and_collector_specific(self):
+        self.config['image'] = 'sha256:' + 'a' * 64
+        self.config['collector']['image'] = 'sha256:' + 'b' * 64
+        self.execution()
+        self.config['collector']['image'] = 'python:latest'
+        with self.assertRaisesRegex(ValueError, 'collector'):
+            self.execution()
+
     def test_context_is_digest_bound_and_git_credentials_are_absent(self):
         execution = self.execution()
         path, expected = execution.write_context()
@@ -248,6 +256,7 @@ class Boundary(Fixture, unittest.TestCase):
     def test_conformance_without_migrated_fixture_api_refuses(self):
         q = native.Qualification.__new__(native.Qualification)
         q.execution = self.execution()
+        q.root = self.roots["checkout"]
         with self.assertRaisesRegex(native.Violation, "controller-owned"):
             q.conformance("confined")
         with self.assertRaisesRegex(native.Violation, "fixed-destination"):
