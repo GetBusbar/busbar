@@ -147,6 +147,16 @@ class Bootstrap(unittest.TestCase):
             def fetched(selected, destination, token):
                 self.assertEqual(token, 'fixture-job-token')
                 shutil.copyfile(archive, destination)
+            row['expanded_bytes'] += len(raw)
+            (trusted / 'ci/native-judge-inputs.json').write_text(json.dumps(plan))
+            with patch.object(bootstrap, 'fetch_judge_archive', side_effect=fetched):
+                with self.assertRaisesRegex(ValueError,
+                        r'expanded judge size differs for mcp \(mcp\.tar\.gz\): expected '
+                        + str(row['expanded_bytes']) + ', actual ' + str(len(content))):
+                    bootstrap.stage_judges(trusted, 'GetBusbar/busbar-plane-mcp', 'native-qualification', store, 'fixture-job-token')
+            shutil.rmtree(store / 'judge-inputs')
+            row['expanded_bytes'] = len(content)
+            (trusted / 'ci/native-judge-inputs.json').write_text(json.dumps(plan))
             with patch.object(bootstrap, 'fetch_judge_archive', side_effect=fetched):
                 result = bootstrap.stage_judges(trusted, 'GetBusbar/busbar-plane-mcp', 'native-qualification', store, 'fixture-job-token')
             combined = json.loads(Path(result['manifest']).read_text())

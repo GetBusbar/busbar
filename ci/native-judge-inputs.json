@@ -71,7 +71,7 @@
         "release-engineering"
       ],
       "bytes": 125528242,
-      "expanded_bytes": 313963953,
+      "expanded_bytes": 313905805,
       "portable_manifest_sha256": "694279de756e0d6339b47961aef6e5f484327a5bfe5f5cee4cec783b8b405e00"
     },
     "tls": {
