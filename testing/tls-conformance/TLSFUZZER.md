@@ -76,7 +76,14 @@ plus nginx from the existing pinned index
 `sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951`
 (amd64 manifest `84ed8c0dd296c188bfc24ed506f46589e9285fb0b11cf3a04d91d524d3067e11`).
 nginx uses its bundled musl loader and complete shared-library closure. The same
-image supplies BusyBox `hexdump`, which minimal Bookworm does not include. The good
+image supplies BusyBox `hexdump` and `nslookup`, which minimal Bookworm does not
+include. testssl requires a resolver executable even when scanning localhost.
+The legacy OpenSSL server uses its port-only `-accept` syntax inside the isolated
+network namespace. Bounded fixture and scanner logs are also retained in
+`evidence/diagnostics.json`, matching the native collector's JSON export.
+The shared judge measures testssl's version from the scan banner (or upstream
+pretty JSON), binds the scan and banner with SHA-256, and refuses unknown or
+conflicting versions rather than publishing a hardcoded tool version. The good
 nginx, weak OpenSSL and Busbar listeners all run on candidate loopback. The shared
 release assertions and required weak-server rejection reasons are unchanged.
 These ELF instruments require Linux x86_64; macOS/ARM adapter tests are not an

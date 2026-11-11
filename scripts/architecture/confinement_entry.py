@@ -33,6 +33,16 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
 
+def ignore_cargo_seed_entries(seed_root, directory, names):
+    """Ignore only Cargo's root tools and cache markers when cloning its seed."""
+    if Path(directory) != Path(seed_root):
+        return set()
+    return {
+        name for name in names
+        if name == "bin" or name.startswith((".package-cache", ".global-cache"))
+    }
+
+
 def start(port, path):
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
@@ -91,7 +101,9 @@ def main():
             seed,
             fresh,
             dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns("bin", ".package-cache*", ".global-cache*"),
+            ignore=lambda directory, names: ignore_cargo_seed_entries(
+                seed, directory, names
+            ),
         )
         os.environ["CARGO_HOME"] = str(fresh)
     rows = json.loads(Path("/__busbar_fixture_map.json").read_text())

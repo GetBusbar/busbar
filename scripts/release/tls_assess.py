@@ -9,11 +9,13 @@ terminating TLS itself on a public name with a public-CA certificate. Every resu
 assertion from scripts/release/tls-assert.json.
 
   tls_assess.py run   --host H --version V --image-digest sha256:… --variant ecdsa|rsa --out DIR
-      runs the pinned testssl.sh (TESTSSL=<path>, v3.2.0) with
+      runs the pinned testssl.sh (TESTSSL=<path>; version measured from its scan banner) with
         --wide -p -E -S -P -h -U --ip one --warnings off --color 0 --jsonfile DIR/testssl-<variant>.json
       and then `judge`.
-  tls_assess.py judge --testssl FILE --version V --image-digest D --host H --variant X --out DIR
+  tls_assess.py judge --testssl FILE [--scan-log LOG] --version V --image-digest D --host H --variant X --out DIR
       writes DIR/assertions-<variant>.json and exits 1 if any assertion fails.
+      Flat JSON needs --scan-log with the actual scan banner; pretty JSON carries
+      its own version. Missing, duplicate or conflicting versions are refused.
 
 The judge fails CLOSED. If a scan carries no protocol or cipher rows (a scan that did not happen, or
 a testssl output this parser does not know), every assertion depending on them is `fail`, never
@@ -27,6 +29,7 @@ own test matrix (plan section 7), and `assertions-*.json` records it as `not-run
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -131,10 +134,36 @@ def judge(rows: list, policy: dict, now: dt.datetime) -> list:
     return out
 
 
+def scanner_identity(scan: Path, log: Path | None = None) -> dict:
+    """Measure the scan's upstream version; never label unknown output as a pin."""
+    payload = scan.read_bytes()
+    data = json.loads(payload)
+    versions = []
+    evidence = {"scan_sha256": hashlib.sha256(payload).hexdigest()}
+    if isinstance(data, dict) and "scanResult" in data and "version" in data:
+        match = re.fullmatch(r"(\d+\.\d+\.\d+)(?: [^\r\n]*)?", str(data["version"]))
+        if not match:
+            raise ValueError("unrecognized testssl JSON version")
+        versions.append(match.group(1))
+    if log is not None:
+        output = log.read_bytes()
+        banners = re.findall(r"^\s*testssl\.sh version (\d+\.\d+\.\d+) from \S+[^\r\n]*$",
+                             output.decode("utf-8", errors="replace"), re.M)
+        if len(banners) != 1:
+            raise ValueError("missing or duplicate testssl scan version banner")
+        versions.extend(banners)
+        evidence["scan_log_sha256"] = hashlib.sha256(output).hexdigest()
+    if not versions or len(set(versions)) != 1:
+        raise ValueError("missing or conflicting testssl scan version")
+    return {"tool": "testssl.sh " + versions[0], "tool_evidence": evidence}
+
+
 def cmd_judge(a: dict) -> int:
     policy = json.loads(POLICY.read_text())
     try:
-        rows = load_rows(Path(a["testssl"]))
+        scan = Path(a["testssl"])
+        rows = load_rows(scan)
+        identity = scanner_identity(scan, Path(a["scan-log"]) if a.get("scan-log") else None)
     except (OSError, ValueError) as e:
         print(f"tls-assess: cannot read the scan: {e}")
         return 3
@@ -143,16 +172,21 @@ def cmd_judge(a: dict) -> int:
     out = Path(a["out"])
     out.mkdir(parents=True, exist_ok=True)
     doc = {"version": a["version"], "image_digest": a["image-digest"], "host": a["host"], "variant": a["variant"],
-           "date": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "tool": "testssl.sh 3.2.0", "policy": str(POLICY.name),
+           "date": now.strftime("%Y-%m-%dT%H:%M:%SZ"), **identity, "policy": str(POLICY.name),
            "assertions": res}
     (out / f"assertions-{a['variant']}.json").write_text(json.dumps(doc, indent=2) + "\n")
     # The one file the site reads (signed by ModernCI as a check output): every variant of this
     # image, each assertion named `<variant>/<name>`.
     parts = [json.loads(f.read_text()) for f in sorted(out.glob("assertions-*.json"))]
     parts = [d for d in parts if d["version"] == a["version"] and d["image_digest"] == a["image-digest"]]
+    if any(d.get("tool") != doc["tool"] or not d.get("tool_evidence") for d in parts):
+        (out / "assertions.json").unlink(missing_ok=True)
+        print("tls-assess: cannot aggregate variants with unknown or conflicting scanner versions")
+        return 3
     (out / "assertions.json").write_text(json.dumps({
         "version": a["version"], "image_digest": a["image-digest"], "host": a["host"],
         "date": max(d["date"] for d in parts), "tool": doc["tool"],
+        "tool_evidence": {d["variant"]: d["tool_evidence"] for d in parts},
         "assertions": [dict(r, name=f"{d['variant']}/{r['name']}") for d in parts for r in d["assertions"]],
     }, indent=2) + "\n")
     fails = [r for r in res if r["result"] == "fail"]
@@ -165,18 +199,22 @@ def cmd_judge(a: dict) -> int:
 def cmd_run(a: dict) -> int:
     testssl = os.environ.get("TESTSSL", "")
     if not testssl or not Path(testssl).is_file():
-        print("tls-assess: TESTSSL=<path to the pinned testssl.sh 3.2.0> is required; cannot run")
+        print("tls-assess: TESTSSL=<path to the pinned testssl.sh> is required; cannot run")
         return 3
     out = Path(a["out"])
     out.mkdir(parents=True, exist_ok=True)
     js = out / f"testssl-{a['variant']}.json"
     js.unlink(missing_ok=True)
-    subprocess.run([testssl, "--wide", "-p", "-E", "-S", "-P", "-h", "-U", "--ip", "one", "--warnings", "off",
-                    "--color", "0", "--jsonfile", str(js), f"https://{a['host']}"])
+    scan_log = out / f"testssl-{a['variant']}.log"
+    with scan_log.open("wb") as output:
+        subprocess.run([testssl, "--wide", "-p", "-E", "-S", "-P", "-h", "-U", "--ip", "one", "--warnings", "off",
+                        "--color", "0", "--jsonfile", str(js), f"https://{a['host']}"],
+                       stdout=output, stderr=subprocess.STDOUT)
+    print(scan_log.read_text(errors="replace"), end="")
     if not js.is_file():
         print("tls-assess: testssl wrote no JSON; the scan did not happen")
         return 3
-    return cmd_judge({**a, "testssl": str(js)})
+    return cmd_judge({**a, "testssl": str(js), "scan-log": str(scan_log)})
 
 
 def main(argv: list) -> int:

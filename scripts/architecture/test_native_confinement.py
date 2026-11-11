@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import check
+from confinement_entry import ignore_cargo_seed_entries
 import linux_job_isolation
 import native
 from native_confinement import Execution, digest
@@ -77,6 +78,37 @@ class Boundary(Fixture, unittest.TestCase):
             mocked = patch.object(linux_job_isolation, name, return_value={})
             mocked.start()
             self.addCleanup(mocked.stop)
+
+    def test_private_cargo_seed_keeps_nested_registry_bin_sources(self):
+        seed = self.base / "cargo-seed"
+        root_bin = seed / "bin"
+        marker = seed / ".package-cache"
+        nested_bin = (
+            seed / "registry/src/index.crates.io-abc/tikv-jemalloc-sys/jemalloc/bin"
+        )
+        root_bin.mkdir(parents=True)
+        nested_bin.mkdir(parents=True)
+        (root_bin / "cargo-subcommand").write_text("image-owned tool")
+        marker.write_text("image cache marker")
+        source = nested_bin / "jemalloc-config.in"
+        source.write_text("registry package source")
+        copied = self.base / "cargo-home-invocation"
+
+        import shutil
+
+        shutil.copytree(
+            seed,
+            copied,
+            ignore=lambda directory, names: ignore_cargo_seed_entries(
+                seed, directory, names
+            ),
+        )
+
+        self.assertFalse((copied / "bin").exists())
+        self.assertFalse((copied / ".package-cache").exists())
+        self.assertEqual(
+            (copied / source.relative_to(seed)).read_text(), "registry package source"
+        )
 
     def test_requires_pinned_client_image_nonroot_and_private_roots(self):
         for key, value in [
