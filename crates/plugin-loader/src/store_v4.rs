@@ -441,7 +441,7 @@ impl PersistenceBackend for LoadedPersistence {
             }
             self.submit(ScanRequest {
                 items: presized(
-                    request.max_items,
+                    request.max_items.min(INITIAL_SCAN_ITEMS),
                     self.limits,
                     wire::ScanRow {
                         key: wire::Bytes {
@@ -602,6 +602,9 @@ fn grow<T: Copy>(
 }
 /// Initial byte budget per read address or scan; larger answers take the Short retry.
 const INITIAL_VALUE_BYTES: usize = 4096;
+/// Empty/small pages need few descriptors; Short grows this retained array for larger answers.
+/// The original selector's max_items remains the page admission limit.
+const INITIAL_SCAN_ITEMS: usize = 16;
 
 /// Zeroed output bytes sized up front, capped by the output byte limit.
 fn presized_bytes(want: usize, limits: Limits) -> zeroize::Zeroizing<Vec<u8>> {

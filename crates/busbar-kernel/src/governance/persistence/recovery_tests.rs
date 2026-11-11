@@ -62,10 +62,12 @@ fn set_root_epoch(backend: &Backend, epoch: u64) {
     );
 }
 type ReadHook = Arc<dyn Fn(&Backend, &Read) + Send + Sync>;
+type ScanHook = Arc<dyn Fn(Arc<Scan>) -> Call<'static, Page> + Send + Sync>;
 
 #[derive(Default)]
 struct Backend {
     after_read: Mutex<Option<ReadHook>>,
+    scan_hook: Mutex<Option<ScanHook>>,
     state: Mutex<State>,
     lose_reply: AtomicBool,
     hang: AtomicBool,
@@ -104,6 +106,9 @@ impl PersistenceBackend for Backend {
         })
     }
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
+        if let Some(hook) = self.scan_hook.lock().unwrap().clone() {
+            return hook(request);
+        }
         Box::pin(async move {
             let state = self.state.lock().unwrap();
             let mut rows = Vec::new();
@@ -971,4 +976,155 @@ async fn history_record_cache_never_publishes_an_incomplete_native_proof() {
     assert!(history.records.records.is_empty());
     assert_eq!(history.records.bytes, 0);
     assert!(history.proofs.is_empty());
+}
+
+/// Two pages per independent namespace, with different generations in each bucket.
+fn recovery_scan_page(request: &Scan) -> Page {
+    let bucket = (0..=u8::MAX)
+        .find(|bucket| partition::namespace(RECOVERY, &[&[*bucket]]) == request.namespace)
+        .unwrap();
+    assert_eq!(request.dataset, DatasetId([1; 16]));
+    assert_eq!(request.prefix, RECOVERY.0);
+    assert!(!request.allow_change);
+    assert_eq!(request.max_items, 4);
+    assert_eq!(request.max_bytes, 128 * 1024);
+    let generation = 100 + u64::from(bucket);
+    let mut operation = [0; 16];
+    operation[0] = bucket;
+    let next = if let Some(after) = &request.after {
+        assert_eq!(*after, address(&operation).key);
+        assert_eq!(request.generation, Some(generation));
+        operation[15] = 1;
+        None
+    } else {
+        assert_eq!(request.generation, None);
+        Some(address(&operation).key)
+    };
+    let head = Head {
+        version: 1,
+        node: 1,
+        sequence: u64::from(bucket) + 1,
+        revision: u64::from(operation[15]),
+        event_digest: [bucket; 32],
+    };
+    Page {
+        generation,
+        rows: vec![(
+            address(&operation),
+            Secret::new(serde_json::to_vec(&head).unwrap()),
+        )],
+        next,
+    }
+}
+
+#[tokio::test]
+async fn heads_overlap_four_buckets_with_serial_pages_and_sorted_complete_results() {
+    #[derive(Default)]
+    struct Trace {
+        active: BTreeSet<[u8; 16]>,
+        maximum: usize,
+        visits: BTreeMap<[u8; 16], usize>,
+    }
+    let trace = Arc::new(Mutex::new(Trace::default()));
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let backend = Arc::new(Backend::default());
+    *backend.scan_hook.lock().unwrap() = Some(Arc::new({
+        let trace = trace.clone();
+        let permits = permits.clone();
+        move |request| {
+            let trace = trace.clone();
+            let permits = permits.clone();
+            Box::pin(async move {
+                {
+                    let mut trace = trace.lock().unwrap();
+                    assert!(
+                        trace.active.insert(request.namespace.0),
+                        "overlapping pages in one bucket"
+                    );
+                    *trace.visits.entry(request.namespace.0).or_default() += 1;
+                    trace.maximum = trace.maximum.max(trace.active.len());
+                    assert!(trace.maximum <= 4);
+                }
+                // Keep bucket zero pending while other buckets complete out of order.
+                if request.namespace == partition::namespace(RECOVERY, &[&[0]]) {
+                    permits.acquire().await.unwrap().forget();
+                } else {
+                    tokio::task::yield_now().await;
+                }
+                let page = recovery_scan_page(&request);
+                assert!(trace.lock().unwrap().active.remove(&request.namespace.0));
+                Ok(page)
+            })
+        }
+    }));
+    let store = attach(backend, 1).await;
+    let mut scanning = Box::pin(heads(&store));
+    assert!(futures::poll!(&mut scanning).is_pending());
+    assert_eq!(trace.lock().unwrap().active.len(), 4);
+    // Drive later buckets to completion while the first is still pending.
+    for _ in 0..512 {
+        assert!(futures::poll!(&mut scanning).is_pending());
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(trace.lock().unwrap().visits.len(), 256);
+    permits.add_permits(2);
+    let result = scanning.await.unwrap();
+    assert_eq!(result.len(), 512);
+    for (index, (operation, head)) in result.iter().enumerate() {
+        assert_eq!(operation[0] as usize, index / 2);
+        assert_eq!(operation[15] as usize, index % 2);
+        assert_eq!(head.sequence as usize, index / 2 + 1);
+        assert_eq!(head.revision as usize, index % 2);
+    }
+    let trace = trace.lock().unwrap();
+    assert_eq!(trace.maximum, 4);
+    assert!(trace.active.is_empty());
+    assert!(trace.visits.values().all(|pages| *pages == 2));
+}
+
+#[tokio::test]
+async fn heads_refuse_invalid_or_failed_pages_without_partial_results() {
+    for fault in 0..10 {
+        let backend = Arc::new(Backend::default());
+        *backend.scan_hook.lock().unwrap() = Some(Arc::new(move |request| {
+            Box::pin(async move {
+                let mut page = recovery_scan_page(&request);
+                if request.namespace == partition::namespace(RECOVERY, &[&[2]])
+                    && request.after.is_some()
+                {
+                    match fault {
+                        0 => page.generation += 1,
+                        1 => page.next = request.after.clone(),
+                        2 => page.rows[0].0.namespace = [0; 16],
+                        3 => page.rows[0].0.key.pop().map(|_| ()).unwrap(),
+                        4 => page.rows[0].0.key[0] ^= 1,
+                        5 => page.rows[0].0.key[16] ^= 1,
+                        6..=8 => {
+                            let mut head: Head =
+                                serde_json::from_slice(page.rows[0].1.expose(&crate::seal::lend()))
+                                    .unwrap();
+                            match fault {
+                                6 => head.version = 2,
+                                7 => head.node = 0,
+                                _ => head.sequence = 0,
+                            }
+                            page.rows[0].1 = Secret::new(serde_json::to_vec(&head).unwrap());
+                        }
+                        _ => return Err(Failure::Unknown),
+                    }
+                }
+                Ok(page)
+            })
+        }));
+        let store = attach(backend, 1).await;
+        let error = heads(&store).await.unwrap_err();
+        if fault == 9 {
+            assert!(matches!(error, RecoveryError::Unavailable(_)));
+        } else {
+            assert!(
+                matches!(error, RecoveryError::Invalid(_)),
+                "fault {fault}: {error:?}"
+            );
+        }
+    }
 }

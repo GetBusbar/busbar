@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import tomllib
 from urllib.parse import urlsplit
 
@@ -622,6 +623,24 @@ def check_c(policy, repository, checkout, sdk, scratch):
     return {'source_roots': len(sources), 'c_header_revision': revision, 'c_exports': sorted(exported)}
 
 
+def architecture_progress(stage, event, **details):
+    # The parent retains stderr even if its bounded controller timeout interrupts
+    # this process before the final receipt can be written.
+    print('architecture-progress: ' + json.dumps(dict(stage=stage, event=event, **details)),
+          file=sys.stderr, flush=True)
+
+
+def compiler_check_jobs():
+    if EXECUTION is None:
+        return None  # Preserve the caller's local scheduling policy.
+    resources = EXECUTION.config['resources']
+    # These compiler checks completed all 52 cases under the 4 CPU / 6 GiB
+    # boundary before optimized-build scheduling was reduced to one job. Keep
+    # that conservative global policy for builds; only this check may use CPUs.
+    # Smaller memory boundaries have no such execution evidence.
+    return min(4, resources['cpus']) if resources['memory_bytes'] >= 6 * 1024**3 else 1
+
+
 def check_compiler_witnesses(policy, candidate, trusted, scratch):
     """Compile approved positive/negative SDK examples against the candidate APIs.
     Unlike a bare compile_fail result, require the intended rustc error category."""
@@ -660,15 +679,30 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
             cases.append((name, expected))
     if not cases or not any(not expected for _, expected in cases):
         raise Violation('compiler witnesses require a positive control')
+    jobs = compiler_check_jobs()
     for name, expected in cases:
         # Each confined case still gets fresh artifacts. They are no longer needed
         # once its process exits; retaining all cases exhausts the bounded job disk.
-        result = candidate_run(['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json'], cwd=scratch, text=True, capture_output=True, discard_harness_target=True)
+        command = ['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json']
+        if jobs is not None:
+            command += ['--jobs', str(jobs)]
+        architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),
+                              expected=expected, build_jobs=jobs)
+        started = time.monotonic()
+        result = candidate_run(command, cwd=scratch, text=True, capture_output=True, discard_harness_target=True)
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
         errors = [row['message'] for row in messages if row.get('reason') == 'compiler-message' and row.get('target', {}).get('name') == name and row['message']['level'] == 'error']
         codes = {error['code']['code'] for error in errors if error.get('code')}
-        (harness / (name + '.log')).write_text(result.stderr + '\n' + '\n'.join(e.get('rendered', '') for e in errors))
-        if (not expected and result.returncode != 0) or (expected and (result.returncode == 0 or not set(expected).intersection(codes))):
+        log = result.stderr + '\n' + '\n'.join(e.get('rendered', '') for e in errors)
+        (harness / (name + '.log')).write_text(log)
+        passed = ((not expected and result.returncode == 0) or
+                  (bool(expected) and result.returncode != 0 and bool(set(expected).intersection(codes))))
+        architecture_progress('compiler-witnesses', 'finish', case=name, total=len(cases),
+                              expected=expected, received=sorted(codes), build_jobs=jobs,
+                              passed=passed, exit_code=result.returncode,
+                              elapsed_seconds=round(time.monotonic() - started, 3),
+                              log_sha256=hashlib.sha256(log.encode()).hexdigest())
+        if not passed:
             raise Violation(f'{name}: expected {expected or "successful positive control"}, received {sorted(codes)}; see {harness / (name + ".log")}')
     return {'compiler_witnesses': len(cases), 'production_features': True}
 
@@ -762,15 +796,21 @@ def main():
             raise Violation('C verification requires the pinned SDK checkout')
         receipt = check_c(policy, args.repository, checkout, args.sdk.resolve(), args.scratch.resolve())
     else:
+        architecture_progress('shipping-graph', 'start')
         entries = check_declared(policy, args.repository, checkout)
         metadata = resolve_shipping(checkout, entries, args.scratch.resolve())
         receipt = check_graph(metadata, policy, args.repository, checkout)
+        architecture_progress('shipping-graph', 'finish')
         if args.repository == 'GetBusbar/busbar':
+            architecture_progress('assembly-graph', 'start')
             receipt['dependency_vector'] = check_vector(policy, checkout, entries)
             assembled = resolve_shipping(checkout, entries, args.scratch.resolve(), assembly=True)
             receipt['assembly'] = check_graph(assembled, policy, args.repository, checkout)
+            architecture_progress('assembly-graph', 'finish')
             receipt.update(check_compiler_witnesses(policy, checkout, args.trusted.resolve(), args.scratch.resolve()))
+        architecture_progress('source-check', 'start')
         receipt.update(check_sources(policy, args.repository, checkout, metadata, args.trusted.resolve(), args.scratch.resolve()))
+        architecture_progress('source-check', 'finish')
     source = generated_revision(checkout) if generated_source else source_revision(checkout)
     if generated_source and source != generated_source:
         raise Violation('generated architecture source changed during qualification')

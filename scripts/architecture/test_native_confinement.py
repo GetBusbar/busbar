@@ -476,8 +476,9 @@ class Boundary(Fixture, unittest.TestCase):
 
 
 class SwapCustody(Fixture, unittest.TestCase):
-    def invoke(self, swap_limit, observed_swap, kernel_results):
+    def invoke(self, swap_limit, observed_swap, kernel_results, *, mount_targets=(), observed_hosts=None):
         execution = self.execution()
+        execution.conformance_mounts = [(self.control, Path(target)) for target in mount_targets]
         calls, created = [], []
         memory = self.config['resources']['memory_bytes']
         def client(argv, **kwargs):
@@ -502,7 +503,9 @@ class SwapCustody(Fixture, unittest.TestCase):
                         'NetworkMode':'none','ReadonlyRootfs':True,'Privileged':False,'PidMode':'',
                         'IpcMode':'private','CgroupnsMode':'private','Runtime':'runc','CapDrop':['ALL'],
                         'CapAdd':[],'PidsLimit':256,'Memory':memory,'MemorySwap':observed_swap,
-                        'NanoCpus':2*10**9,'Devices':[],'DeviceRequests':[],'ExtraHosts':[],
+                        'NanoCpus':2*10**9,'Devices':[],'DeviceRequests':[],
+                        'ExtraHosts': observed_hosts if observed_hosts is not None else
+                            [created[i+1] for i,value in enumerate(created) if value == '--add-host'],
                         'ShmSize':64*1024**2,'Tmpfs':{'/tmp':'rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777'},
                         'SecurityOpt':['no-new-privileges']}}])
             return subprocess.CompletedProcess(argv,0,stdout=payload,stderr='')
@@ -518,9 +521,40 @@ class SwapCustody(Fixture, unittest.TestCase):
             except ValueError as failure:
                 error = str(failure)
         self.assertIn('--memory-swap='+str(memory),created)
+        self.assertIn('--network=none',created)
+        self.assertEqual(execution.observations[-1]['fixture_hosts'],
+                         [created[i+1] for i,value in enumerate(created) if value == '--add-host'])
         self.assertTrue(execution.observations[-1]['disposed'])
         self.assertEqual(calls[-2:],['rm','container'])
         return yielded,error,execution.observations[-1],kernel.call_count
+
+    def test_a2a_public_dns_fixture_requires_exact_admitted_mount(self):
+        for targets, expected in (
+            ([], []),
+            (['/opt/busbar-conformance/a2a-tools-other'], []),
+            (['/opt/busbar-conformance/a2a-tools'],
+             ['example.com:104.20.23.154', 'example.com:172.66.147.243']),
+            (['/opt/busbar-conformance/oidf', '/opt/busbar-conformance/a2a-tools'],
+             ['localhost.emobix.co.uk:127.0.0.1', 'busbar.oidf.test:127.0.0.1',
+              'example.com:104.20.23.154', 'example.com:172.66.147.243']),
+        ):
+            with self.subTest(targets=targets):
+                yielded,error,observation,_ = self.invoke(
+                    True,self.config['resources']['memory_bytes'],[],mount_targets=targets)
+                self.assertTrue(yielded,error)
+                self.assertEqual(observation['fixture_hosts'],expected)
+                self.assertEqual(observation['network'],'none')
+
+    def test_a2a_dns_fixture_inspection_rejects_missing_or_altered_hosts(self):
+        for hosts in ([], ['example.com:127.0.0.1'],
+                      ['example.com:104.20.23.154', 'example.com:172.66.147.243',
+                       'unexpected.example:127.0.0.1']):
+            with self.subTest(hosts=hosts):
+                yielded,error,_,_ = self.invoke(
+                    True,self.config['resources']['memory_bytes'],[],
+                    mount_targets=['/opt/busbar-conformance/a2a-tools'],observed_hosts=hosts)
+                self.assertFalse(yielded)
+                self.assertIn('runtime weakened candidate isolation',error)
 
     def test_supported_swap_limit_requires_exact_protected_bound(self):
         yielded,error,observation,calls = self.invoke(True,self.config['resources']['memory_bytes'],[])

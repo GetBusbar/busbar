@@ -580,6 +580,12 @@ class Execution:
         fixture_hosts = (['localhost.emobix.co.uk:127.0.0.1', 'busbar.oidf.test:127.0.0.1']
                          if any(target == Path('/opt/busbar-conformance/oidf')
                                 for _, target in self.conformance_mounts) else [])
+        if any(target == Path('/opt/busbar-conformance/a2a-tools')
+               for _, target in self.conformance_mounts):
+            # The pinned TCK uses example.com for push-config CRUD, not delivery.
+            # Freeze its public DNS answers observed 2026-11-11 for the offline
+            # destination judge; network=none still prevents external delivery.
+            fixture_hosts += ['example.com:104.20.23.154', 'example.com:172.66.147.243']
         args = [
             "create",
             "--name",

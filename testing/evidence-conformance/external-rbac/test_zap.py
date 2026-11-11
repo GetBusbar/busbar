@@ -1,4 +1,6 @@
 from collections import Counter
+import contextlib
+import io
 import hashlib
 import json
 from pathlib import Path
@@ -343,6 +345,47 @@ class Matrix(unittest.TestCase):
                 else:
                     with self.assertRaises(zap.Refused):
                         run()
+
+    def test_transport_failures_retain_cell_without_credentials_or_response_body(self):
+        for status in (429, 500, 502, 503, 504):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as work:
+                runner = zap.ExternalRBAC(work, Path(work) / "reports")
+                runner.credentials = mock.Mock()
+                runner.credentials.url = "http://127.0.0.1:1/private-callback-secret"
+                runner.credentials.finish.return_value = {"full role": status}
+                principal = mock.Mock(return_value={"authorization": "Bearer private-token"})
+                api_calls = []
+
+                def api(component, kind, action, **params):
+                    api_calls.append(action)
+                    if action == "newContext":
+                        return {"contextId": "1"}
+                    if action == "newUser":
+                        return {"userId": "1"}
+                    if action == "getScanProgress":
+                        return {"getScanProgress": "100"}
+                    if action == "globalVar":
+                        return {"globalVar": ""}
+                    return {"Result": "OK"}
+
+                runner.api = api
+                runner._rules = mock.Mock(return_value={})
+                captured = io.StringIO()
+                with contextlib.redirect_stderr(captured):
+                    with self.assertRaisesRegex(zap.Refused, "transport, rate-limit or server failure"):
+                        runner.matrix("subject-full", 1234,
+                                      [("GET", "/admin/keys/{id}", "full", "get_key")],
+                                      {"full role": (principal, lambda s, v: "admit")},
+                                      concrete=lambda p: "/admin/keys/private-concrete-value")
+                record = json.loads((runner.output / "subject-full/transport-failure.json").read_text())
+                self.assertEqual(record["declared_path"], "/admin/keys/{id}")
+                self.assertEqual(record["operation_index"], 0)
+                self.assertEqual(record["statuses"], [
+                    {"principal_index": 0, "principal": "full role", "status": status}])
+                self.assertIn("ZAP_TRANSPORT_FAILURE ", captured.getvalue())
+                self.assertNotIn("private-", captured.getvalue())
+                self.assertNotIn("writeHTMLreport", api_calls)
+                self.assertFalse(json.loads((runner.output / "subject-full/result.json").read_text())["passed"])
 
     def test_unknown_or_missing_report_cell_fails_matrix(self):
         # The exact accounting implementation is exercised with realistic upstream HTML

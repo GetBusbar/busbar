@@ -92,6 +92,10 @@ The fixed roster is ten legs. A duplicate, missing or unsuccessful leg prevents
 completion. Each matrix declares full expected operation and cell counts; partial
 artifacts stay red and are retained when execution fails. HTTP 429 and 5xx
 transport/server failures never count as a successful denial or control failure.
+A rejected transport status also emits bounded `ZAP_TRANSPORT_FAILURE` JSON to
+captured stderr with the synthetic operation, declared path and principal status
+codes. Concrete URLs, credentials, response bodies and post-startup runtime logs
+are excluded.
 The upstream authorization detector is configured for 401/403; isolation contexts
 add 404 because the route is absent on that listener. The original internal
 checks still distinguish exact statuses, body content and dispatch effects.

@@ -206,6 +206,8 @@ mod linked {
         max_items: u64,
         capacity: usize,
         pointer: usize,
+        item_capacity: usize,
+        item_pointer: usize,
         ticket: busbar_contract::abi::mechanism::ticket::Ticket,
     }
     static SCANS: Mutex<Vec<ScanCrossing>> = Mutex::new(Vec::new());
@@ -316,13 +318,15 @@ mod linked {
                             max_items: input.max_items,
                             capacity: input.rows.bytes.cap,
                             pointer: input.rows.bytes.ptr as usize,
+                            item_capacity: input.rows.items_cap,
+                            item_pointer: input.rows.items as usize,
                             ticket: input.head.ticket,
                         });
                         *out = blank();
                         if source.prefix == b"oversized" {
                             out.needed_bytes = u64::MAX;
                             outcome = Outcome::Failed;
-                        } else if source.prefix == b"large"
+                        } else if matches!(source.prefix.as_slice(), b"large" | b"many")
                             && input.head.flags & busbar_contract::abi::mechanism::call::FLAG_RESUME
                                 == 0
                         {
@@ -343,6 +347,19 @@ mod linked {
                                     busbar_contract::Secret::new(vec![42; 8192]),
                                 ));
                                 page.next = Some(b"large-key".to_vec());
+                            }
+                            if source.prefix == b"many" {
+                                page.generation = 7;
+                                for index in 0..33u8 {
+                                    page.rows.push((
+                                        owned::Address {
+                                            namespace: input.namespace,
+                                            key: [b"many-".as_slice(), &[index]].concat(),
+                                        },
+                                        busbar_contract::Secret::new(vec![index]),
+                                    ));
+                                }
+                                page.next = Some(page.rows.last().unwrap().0.key.clone());
                             }
                             // The SDK decoder owns copies of the selector spans.
                             let rebound = sdk::scan(&source, input.head, input.rows);
@@ -495,6 +512,11 @@ mod linked {
         let empty_calls = std::mem::take(&mut *SCANS.lock().unwrap());
         assert_eq!(empty_calls.len(), 1);
         assert!(
+            empty_calls[0].item_capacity <= 16,
+            "empty scan allocated {} descriptors",
+            empty_calls[0].item_capacity
+        );
+        assert!(
             empty_calls[0].capacity <= 4096,
             "empty scan allocated {} bytes",
             empty_calls[0].capacity
@@ -514,6 +536,8 @@ mod linked {
                 "pending loan stays allocated"
             );
             assert_eq!(pair[0].capacity, pair[1].capacity);
+            assert_eq!(pair[0].item_pointer, pair[1].item_pointer);
+            assert_eq!(pair[0].item_capacity, pair[1].item_capacity);
         }
         for call in empty_calls.iter().chain(&calls) {
             assert_eq!(call.max_bytes, PAGE_LIMIT as u64);
@@ -525,6 +549,34 @@ mod linked {
                 call.ticket, calls[0].ticket,
                 "growth retains the same ticket"
             );
+        }
+        let page = backend.scan(scan(b"many")).await.unwrap();
+        assert_eq!(page.generation, 7);
+        assert_eq!(page.rows.len(), 33);
+        for (index, (address, value)) in page.rows.iter().enumerate() {
+            assert_eq!(address.key, [b"many-".as_slice(), &[index as u8]].concat());
+            assert_eq!(*value, busbar_contract::Secret::new(vec![index as u8]));
+        }
+        assert_eq!(page.next.as_ref(), Some(&page.rows.last().unwrap().0.key));
+        let calls = std::mem::take(&mut *SCANS.lock().unwrap());
+        assert_eq!(
+            calls.len(),
+            4,
+            "pending/descriptor short then pending/ready"
+        );
+        assert_eq!(calls[0].item_capacity, 16);
+        assert_eq!(calls[2].item_capacity, 33);
+        for pair in calls.as_chunks::<2>().0 {
+            assert_eq!(pair[0].pointer, pair[1].pointer);
+            assert_eq!(pair[0].item_pointer, pair[1].item_pointer);
+            assert_eq!(pair[0].item_capacity, pair[1].item_capacity);
+        }
+        for call in &calls {
+            assert_eq!(call.prefix, b"many");
+            assert_eq!(call.capacity, 4096, "descriptor growth does not grow bytes");
+            assert_eq!(call.max_bytes, PAGE_LIMIT as u64);
+            assert_eq!(call.max_items, 4096);
+            assert_eq!(call.ticket, calls[0].ticket);
         }
         assert_eq!(
             backend.scan(scan(b"oversized")).await.unwrap_err(),
