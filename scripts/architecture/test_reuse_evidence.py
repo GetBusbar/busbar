@@ -13,7 +13,7 @@ from unittest.mock import patch
 import zipfile
 
 from reuse_evidence import (Archive, Resolver, independent_qualification_job,
-                            OwnerRuntime, ReleaseValidator, verify_release_dispatch)
+                            OwnerRuntime, ReleaseValidator, verify_release_dispatch, expected_loader)
 from input_identity import (encoded, TRIVY_METADATA_CONTRACT_IMAGE,
                             TRIVY_METADATA_CONTRACT_SCANNER)
 
@@ -295,6 +295,24 @@ class EvidenceTests(unittest.TestCase):
 
 
 class NormalizerLayoutTests(unittest.TestCase):
+    def test_original_conformance_inputs_include_capability_validator(self):
+        source, sdk = 'a' * 40, 'b' * 40
+        files = {'ci/architecture.toml': b'[repositories]\n',
+                 'scripts/ci-product-pins.json': json.dumps({'sdk': sdk}).encode(),
+                 'Cargo.lock': b'root-lock', 'dist/default/Cargo.lock': b'product-lock',
+                 'testing/conformance/suites.tsv': b'h2\tfixture\n',
+                 'testing/conformance/capabilities.py': b'capability-validation',
+                 'conformance/ci-coverage.json': b'{"schema":"busbar.conformance.ci-coverage/1","suites":{}}'}
+        objects = SimpleNamespace(tree=lambda *args: files, blob=lambda repo, ref, path: files[path])
+        request = dict(repository='GetBusbar/busbar', source=source, host=source,
+                       policy=source, sdk=sdk, job='core-conformance')
+        load = expected_loader(objects, SimpleNamespace(RELEASE_INPUTS=()))
+        path = 'testing/conformance/capabilities.py'
+        self.assertEqual(load(request)['conformance_inputs'][path], hashlib.sha256(files[path]).hexdigest())
+        previous = load(request)['conformance_inputs']
+        files[path] += b'-changed'
+        self.assertNotEqual(load(request)['conformance_inputs'], previous)
+
     def test_authenticated_validator_keeps_same_revision_relative_helper(self):
         revision = 'a' * 40
         source = b'''import importlib.util
