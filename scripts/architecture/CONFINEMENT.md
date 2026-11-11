@@ -149,3 +149,36 @@ external-suite support. TSan failed before test bodies on the observed x86 host
 both inside and outside the container; it is not a sanitizer pass or exemption.
 Independent controller observations describe development execution; production
 release eligibility still requires the separately protected release evidence flow.
+
+Controller service peers use their exact catalogue image digests in the separate
+remapped daemon. Each peer has `network=none`, private PID/IPC namespaces, a
+read-only image root, 1 GiB memory, 256 PIDs, one CPU, 64 MiB `/tmp` and shared
+memory bounds, and a 1 MiB rotating log cap. Image bootstrap/data directories
+are copied without following links into the same bounded job filesystem;
+image numeric ownership is mapped into subordinate identities. The protected
+controller verifies the requested settings and actual kernel identity maps.
+Peers retain only the capabilities needed by their pinned bootstrap (OpenLDAP
+also needs KILL to stop its temporary daemon within its private PID namespace).
+Candidate containers continue to drop all capabilities.
+
+No peer publishes a host port or joins a bridge. The controller captures an open
+FD for the running peer's network namespace and exposes one fixed loopback port
+through its Unix socket capability. A small trusted relay enters only that pinned
+network namespace, drops to the mapped nonroot identity, and copies opaque bytes.
+There is no destination address or Docker command in the candidate protocol.
+Relay processes and sockets close before peer containers and namespace FDs are
+disposed. Imported service images are checked against the approved digest and
+full image configuration/root-filesystem layer identities across Docker's
+containerd and legacy image-ID representations.
+
+Conformance capability rows are generated only after the locked per-job seed
+and a real fixed-source Python/PyYAML/Cargo/Node preflight. Known suites additionally
+require their verified public instrument bundles. `available` means the isolated
+suite may execute; its actual verdict remains independent. Release engineering
+controls require their own offline bundle and never substitute for production
+release subjects or attestations.
+
+Each invocation recreates its private Cargo cache at a stable per-job path and
+preserves seed mtimes. The controller removes that cache only after disposal is
+confirmed. This resets dependency bytes while retaining legitimate target-cache
+fingerprints between runtime preparation and nextest.

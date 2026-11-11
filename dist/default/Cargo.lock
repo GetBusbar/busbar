@@ -932,7 +932,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-postgres"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=78a083caf33f1e1590c7b6fc9da05eacf152d913#78a083caf33f1e1590c7b6fc9da05eacf152d913"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=43ae020133b83805c216b32995c09d71c1dbc17b#43ae020133b83805c216b32995c09d71c1dbc17b"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -2568,7 +2568,7 @@ checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 [[package]]
 name = "postgres-protocol"
 version = "0.6.12"
-source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=78a083caf33f1e1590c7b6fc9da05eacf152d913#78a083caf33f1e1590c7b6fc9da05eacf152d913"
+source = "git+https://github.com/GetBusbar/busbar-store-postgres?rev=43ae020133b83805c216b32995c09d71c1dbc17b#43ae020133b83805c216b32995c09d71c1dbc17b"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
@@ -4435,4 +4435,4 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 [[patch.unused]]
 name = "mysql_common"
 version = "0.35.5"
-source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=b9f4ca8e786f4afe0ddb69f2d82eb497f2f0a556#b9f4ca8e786f4afe0ddb69f2d82eb497f2f0a556"
+source = "git+https://github.com/GetBusbar/busbar-store-mysql?rev=0ee3acdef14055dfbbb44da8c4029c42d19107f5#0ee3acdef14055dfbbb44da8c4029c42d19107f5"

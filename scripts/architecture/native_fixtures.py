@@ -30,6 +30,7 @@ class Services:
         self.run_controller = getattr(qualification, 'run_controller', qualification.run)
         self.execution = getattr(qualification, 'execution', None)
         self.proxy = None
+        self.peers = None
         if self.execution is not None:
             from native_fixture_proxy import Fixtures
             self.proxy = Fixtures(self.execution)
@@ -97,8 +98,10 @@ class Services:
             if self.execution and migration and migration not in getattr(self.q, 'staged_fixtures', {}):
                 raise RuntimeError('confined migration witness requires its typed, pinned 1.5.5 fixture input')
             if self.execution and self.requested:
-                raise RuntimeError('confined service fixtures require qualified network-none controller routing')
-            for service in self.requested:
+                from native_service_peers import Peers
+                self.peers = Peers(self)
+                self.peers.provision(self.requested)
+            for service in ([] if self.execution else self.requested):
                 if service in ('postgres', 'mysql', 'valkey'):
                     self.stores.append(service)
                     self.run_controller('fixture-' + service, ['bash', str(self.store_script), 'up', service], timeout=300)
@@ -178,6 +181,8 @@ class Services:
     def close(self):
         if self.proxy:
             self.proxy.close()
+        if self.peers:
+            self.peers.close()
         failed = []
         for name in self.names:
             result = subprocess.run(['docker', 'rm', '--force', name], env=self.controller_env, capture_output=True)

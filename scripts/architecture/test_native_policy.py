@@ -25,7 +25,8 @@ class NativePolicy(unittest.TestCase):
                          {'prepare_runtime': '../private.sh'}, {'prepare_runtime': 'testing/native/../private.sh'},
                          {'prepare_runtime': 'testing/conformance/run.sh'}, {'prepare_runtime': 'testing/native/run.py'},
                          {'external_conformance': '../private.sh'}, {'external_conformance': '/private.sh'},
-                         {'server_binary': 'valkey'}, {'migration_fixture': 'arbitrary'}, {'native_oracle': 'false'}]:
+                         {'server_binary': 'valkey'}, {'migration_fixture': 'arbitrary'}, {'native_oracle': 'false'},
+                         {'required_conformance': 'false'}]:
             policy = {'repositories': {'fixture': {'native': settings}}}
             with self.subTest(settings=settings), self.assertRaises(Violation):
                 native_settings('fixture', policy)

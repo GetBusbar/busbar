@@ -66,6 +66,8 @@ def main():
     missing = [name for name in names if not os.environ.get(name)]
     try:
         if missing:
+            if len(missing) != len(names):
+                raise ValueError("incomplete supplied release evidence")
             result["reason"] = "release inputs not supplied: " + ", ".join(missing)
         else:
             artifact, bundle, receipt_path = [Path(os.environ[n]) for n in names[:3]]

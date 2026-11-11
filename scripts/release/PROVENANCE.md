@@ -774,3 +774,31 @@ requirements above are unchanged: the approved local protected-main signing
 configuration and its exact config SHA, numeric project identity, audience and
 actual validated claims must be established before activation. A GitHub mirror,
 GitHub Actions identity, or decoded-but-unverified JWT cannot fill those inputs.
+
+
+Development qualification and release readiness
+----------------------------------------------
+The protected core controller uses ci-coverage.json's QA artifact-attestation and
+main Sigstore stages. Only push/API pipelines on dev, or same-project merge
+requests targeting dev, can receive busbar.development-conformance/1. It binds
+the controller CI context, source and policy revision, raw invocation digest,
+coverage digest and a fresh busbar.release-engineering/1 report. The report must
+run all 60 pinned release engineering and stage regression checks with no skips,
+using the protected offline Cosign/cryptography bundle. These include an actual
+small locked Cargo build and Cosign offline positive/tamper controls; synthetic
+keys and disabled log checks in those fixtures establish no production signing.
+
+The common conformance wrapper stays unchanged. Its invocation exit1 and
+slsa-verifier not-run verdict remain raw evidence. The controller permits only
+the exact unattempted QA subject-absence reason, after every other required suite
+passes. Failed signatures, attempted checks, incomplete evidence, collection
+errors and engineering failures remain fatal. This legacy suite verifies a
+ModernCI check-output attestation with Cosign; it is not upstream slsa-verifier
+or proof of a SLSA level. Its currently unshipped producer binding remains visible.
+
+Development observes absent Sigstore inputs as not-run; partially supplied or
+malformed inputs fail. QA/main API evaluations require Sigstore inputs and never
+receive this development classification. Consumers must validate the separate
+controller classification and its bound engineering report while retaining the
+raw failed driver step and unsigned/not-run release rows. Neither a green
+development qualification nor these test fixtures activates a release signer.

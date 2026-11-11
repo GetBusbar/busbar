@@ -334,7 +334,7 @@
     {
       "repo": "busbar-store-mysql",
       "url": "https://github.com/GetBusbar/busbar-store-mysql",
-      "commit": "b9f4ca8e786f4afe0ddb69f2d82eb497f2f0a556",
+      "commit": "0ee3acdef14055dfbbb44da8c4029c42d19107f5",
       "package": "busbar-store-mysql-plugin",
       "kind": "store",
       "alias": "mysql",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "78a083caf33f1e1590c7b6fc9da05eacf152d913",
+      "commit": "43ae020133b83805c216b32995c09d71c1dbc17b",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "159ef598e7e51c692b8e737fe18892d5f130b1f4",
+      "commit": "ef0875359f35ec0f8f2b638951f4feb06232ca29",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",

@@ -603,7 +603,9 @@ class Execution:
         safe_env = self.cargo_environment(argv, env)
         cargo_home = None
         if safe_env.get('CARGO_HOME'):
-            cargo_home = root['candidate'] / ('cargo-home-' + uuid.uuid4().hex)
+            # Stable dependency paths preserve Cargo target fingerprints. The
+            # contents remain fresh for every invocation and are removed below.
+            cargo_home = root['candidate'] / 'cargo-home-invocation'
             cargo_home.mkdir(mode=0o700)
             safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = str(cargo_home)
         isolation = self.config['isolation']
