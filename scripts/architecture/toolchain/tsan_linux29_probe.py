@@ -17,6 +17,31 @@ from native_confinement import Execution, digest, require
 PINS = json.loads(Path(__file__).with_name("tsan-linux29-pins.json").read_text())
 
 
+def observe_engine(execution, work):
+    result = execution._client(
+        ["version", "--format", "{{json .Server}}"],
+        capture_output=True,
+        text=True,
+    )
+    # Preserve the actual daemon response before parsing or checking its identity.
+    (work / "engine.json").write_text(json.dumps({
+        "exit_code": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }, indent=2) + "\n")
+    require(result.returncode == 0, "could not observe Docker engine identity")
+    return json.loads(result.stdout)
+
+
+def verify_engine(version):
+    require(
+        version.get("Version") == PINS["engine_version"]
+        and version.get("GitCommit") == PINS["engine_build_git_commit"],
+        "daemon differs from pinned Ubuntu engine build: "
+        + json.dumps({key: version.get(key) for key in ("Version", "GitCommit")}),
+    )
+
+
 def derive(raw):
     require(
         hashlib.sha256(raw).hexdigest() == PINS["baseline_sha256"],
@@ -132,22 +157,12 @@ def probe(config_path, config_sha256, baseline_path, work):
         profile_record["profile_sha256"],
         baseline,
     )
-    version = json.loads(
-        original._client(
-            ["version", "--format", "{{json .Server}}"], capture_output=True, text=True
-        ).stdout
-    )
-    require(
-        version["Version"] == PINS["engine_version"]
-        and PINS["engine_git_commit"].startswith(version["GitCommit"]),
-        "local daemon no longer matches the pinned baseline engine",
-    )
     rows = {}
     report = {
         "schema": "busbar.native-tsan-probe/1",
         "scope": "fixed-source native x86 runtime controls only",
         "image": config["image"],
-        "engine": version,
+        "engine": None,
         "profile": profile_record,
         "production_activation": False,
         "release_eligible": False,
@@ -176,6 +191,8 @@ def probe(config_path, config_sha256, baseline_path, work):
         return result
 
     try:
+        report["engine"] = observe_engine(original, work)
+        verify_engine(report["engine"])
         host = run(original, "platform", ["uname", "-smr"], success=True)
         require(
             host.stdout.startswith("Linux ")
