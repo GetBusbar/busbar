@@ -270,7 +270,7 @@
       "repo": "GetBusbar/busbar-transport-webrtc",
       "script": "testing/conformance/webrtc-browser.sh",
       "script_sha256": "69084a6d8a18803c34e9b1a948f6c28ad65950e4d7293b1a3ea1e92766e677e3",
-      "source_commit": "b19e847ecbfb676a1a90a63c5133ceb1925e5f57",
+      "source_commit": "1add2f76299942fbf1337effc902614edf7a4063",
       "stage": "qa"
     },
     "ws": {
@@ -279,8 +279,8 @@
       "core_pin": "fba670826c3133d31cba0871d7ff44cbc11543fe",
       "repo": "GetBusbar/busbar-transport-ws",
       "script": "testing/conformance/ws.sh",
-      "script_sha256": "9c4cedd51b589cc6a8e8637785c7c8565e60c12f5ca16f8ea24bbfb6fa47bdc5",
-      "source_commit": "2f952ef1f81799e84bc835dad5ab881cc8b1f597",
+      "script_sha256": "d6261fbcf28d1d0bec55a4c9d727ebda15fa416b1ea619396630d5168213d289",
+      "source_commit": "3000cf9262cc4888ffa4e8b52bc8d8a00e4e91cb",
       "stage": "qa"
     }
   }

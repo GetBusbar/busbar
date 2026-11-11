@@ -15,6 +15,57 @@ from native_service_peers import CAPS, TMPFS, Peers, runtime_controls_probe
 
 
 class PeerControls(unittest.TestCase):
+    def test_readiness_failure_is_bounded_redacted_and_collected_before_disposal(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            peers = Peers.__new__(Peers)
+            peers.q = SimpleNamespace(evidence=Path(directory))
+            peers.peers = {'openldap': {'name': 'fixed-peer'}}
+            peers.client = Mock(return_value=SimpleNamespace(returncode=0,
+                stdout='x' * 40000 + ' adminpassword busbar-fixture busbar', stderr='adminpassword'))
+            result = SimpleNamespace(returncode=1, stdout='', stderr='adminpassword')
+            with self.assertRaisesRegex(RuntimeError, 'openldap fixture failed bounded readiness'):
+                peers.readiness_failure('openldap', 'failed bounded readiness', result)
+            payload = (Path(directory) / 'fixture-openldap-readiness.json').read_text()
+            record = json.loads(payload)
+            self.assertEqual(record['last_readiness']['returncode'], 1)
+            for secret in ('adminpassword', 'busbar-fixture'):
+                self.assertNotIn(secret, payload)
+            self.assertLessEqual(len(record['logs']['stdout']), 16384)
+            self.assertLessEqual(len(record['state']['stdout']), 4096)
+            self.assertEqual(record['bootstrap_marker']['returncode'], 0)
+            for call in peers.client.call_args_list:
+                self.assertEqual(call.kwargs, {'check': False, 'timeout': 5})
+                self.assertNotIn('rm', call.args[0])
+            self.assertEqual(peers.client.call_args_list[0].args[0],
+                             ['inspect', '--format', '{{json .State}}', 'fixed-peer'])
+
+    def test_diagnostic_errors_preserve_readiness_failure_without_command_secrets(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            peers = Peers.__new__(Peers)
+            peers.q = SimpleNamespace(evidence=Path(directory))
+            peers.peers = {'mysql': {'name': 'fixed-peer'}}
+            peers.client = Mock(side_effect=subprocess.TimeoutExpired(['secret'], 5))
+            with self.assertRaisesRegex(RuntimeError, 'mysql fixture exited during readiness'):
+                peers.readiness_failure('mysql', 'exited during readiness')
+            payload = (Path(directory) / 'fixture-mysql-readiness.json').read_text()
+            self.assertNotIn('secret', payload)
+            self.assertEqual(json.loads(payload)['logs']['collection_error'], 'TimeoutExpired')
+
+    def test_wait_retains_last_error_without_changing_readiness_criterion(self):
+        peers = Peers.__new__(Peers)
+        peers.peers = {'mysql': {'name': 'fixed-peer'}}
+        failed = SimpleNamespace(returncode=1, stdout='', stderr='connection refused')
+        peers.exec = Mock(return_value=failed)
+        peers.readiness_failure = Mock(side_effect=RuntimeError('readiness failed'))
+        with patch('time.monotonic', side_effect=[0, 120]):
+            with self.assertRaisesRegex(RuntimeError, 'readiness failed'):
+                peers.wait('mysql', ['fixed-probe'])
+        peers.readiness_failure.assert_called_once_with('mysql', 'failed bounded readiness', failed)
+        peers.exec = Mock(return_value=SimpleNamespace(returncode=0))
+        peers.readiness_failure.reset_mock()
+        peers.wait('mysql', ['fixed-probe'])
+        peers.readiness_failure.assert_not_called()
+
     def fixture(self):
         peers=Peers.__new__(Peers)
         peers.execution=SimpleNamespace(config={'isolation':{}})
