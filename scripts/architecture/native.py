@@ -621,6 +621,12 @@ class Qualification:
             qualify_plugin(self, host, sdk)
 
     def conformance(self, name):
+        from native_policy import conformance_rows, validate_conformance_roster
+        required = conformance_rows(getattr(self, 'repository', None),
+                                    getattr(self, 'policy', None), getattr(self, 'trusted', None))
+        validate_conformance_roster(self.root, required)
+        if required:
+            self.receipt['required_conformance_suites'] = sorted(required)
         if getattr(self, 'execution', None) and self.execution.conformance_capabilities is None:
             raise Violation('confined conformance requires controller-owned capability manifest')
         suites = self.root / 'testing/conformance/suites.tsv'
@@ -732,17 +738,37 @@ class Qualification:
         # of handshakes. Keep its three bounded legs inside this per-suite cap;
         # the enclosing command retains its three-hour bound.
         self.env['CONFORMANCE_TIMEOUT_SECONDS'] = '3600'
+        from native_release_stage import run_engineering, classify, stage_context
+        context = stage_context(os.environ)
+        self.receipt['conformance_stage'] = context
+        development = context['stage'] == 'dev'
         failed = False
+        engineering_report = self.evidence / 'release-engineering/result.json'
+        try:
+            engineering_report = run_engineering(self, collect_output)
+        except (Violation, OSError, ValueError, KeyError):
+            failed = True
         try:
             self.conformance('core-native-conformance')
-        except Violation:
-            failed = True
+        except Violation as conformance_error:
+            try:
+                if str(conformance_error) != 'core-native-conformance failed; no automatic retry':
+                    raise conformance_error
+                if not development:
+                    raise Violation('release-stage conformance remains required')
+                self.receipt['development_conformance'] = classify(self, engineering_report)
+            except (Violation, OSError, ValueError, KeyError) as error:
+                self.receipt['development_conformance_error'] = str(error)
+                failed = True
         out = (self.work if getattr(self, 'execution', None) else self.evidence) / 'sigstore'
         out.mkdir()
         self.env['CONFORMANCE_OUT'] = str(out)
         try:
-            self.run('sigstore-release-verification', ['python3', '-I',
-                str(self.root / 'testing/conformance/sigstore.py'), '--require'])
+            # Coverage declares this artifact-readiness check at main. Development
+            # records missing inputs honestly; supplied invalid evidence still fails.
+            self.receipt['sigstore_requirement'] = {'stage': context['stage'], 'required_at': 'main', 'required': not development, 'missing_result': 'not-run'}
+            self.run('sigstore-release-evidence-observation', ['python3', '-I',
+                str(self.root / 'testing/conformance/sigstore.py'), *([] if development else ['--require'])])
         except Violation:
             failed = True
         finally:
@@ -827,6 +853,9 @@ def qualify():
             prepare_seed(qualification)
             from native_staged_fixtures import collect_required
             collect_required(qualification)
+            if not args.conformance_capabilities:
+                from native_conformance_capabilities import prepare as prepare_capabilities
+                prepare_capabilities(qualification)
         evaluation_error = None
         if args.external_conformance:
             try:

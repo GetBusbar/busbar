@@ -185,11 +185,11 @@
     },
     "sigstore": {
       "check": "main/certify-sigstore",
-      "command": "python3 -I testing/conformance/sigstore.py",
+      "command": "python3 -I testing/conformance/sigstore.py --require",
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/conformance/sigstore.py",
-      "script_sha256": "3abbcb5afcaadca1979c6a5e280b67d15df583e23345f76223dd60fcac02cf4e",
+      "script_sha256": "719dd993b2a2c5510f0e1b93b3678d3a912a6102df1b97beb0e477244d202c18",
       "source_commit": "checkout",
       "stage": "main"
     },
@@ -199,7 +199,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/conformance/slsa-verifier.sh",
-      "script_sha256": "4cd29bd69df6ad2fcc283e500edcbe95210c1701c8e66c219c93f21af83161e8",
+      "script_sha256": "aaf894d6e5f559762cbb733b075247050d708b402562ac5fc6c474771275aab2",
       "source_commit": "checkout",
       "stage": "qa"
     },

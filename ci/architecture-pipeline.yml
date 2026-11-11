@@ -106,14 +106,10 @@ core-conformance:
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
 
-# External endpoint judges retain failures and unmet prerequisites. Both their
-# receipt and the native qualification receipt are required for publication.
-external-conformance:
-  extends: native-qualification
-  tags: [busbar-conformance]
-  rules:
-    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions"'
-    - when: never
+# LLM's eight spec/voice suites and decisions' Jev suite run inside required
+# native-qualification. Their protected ci-coverage roster cannot be omitted.
+# Neither owner provides the former external-openai.sh/external-jev.sh endpoint
+# entrypoints; no separate external endpoint certification is claimed.
 
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness.

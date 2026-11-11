@@ -84,7 +84,7 @@ def main():
         # Each invocation starts from the immutable image cache. Cargo can acquire
         # its locks without letting an earlier candidate poison a trusted harness.
         fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
-        if (fresh.parent != Path(os.environ['HOME']).parent or not fresh.name.startswith('cargo-home-')
+        if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
                 or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
             raise RuntimeError('private Cargo cache was not prepared by the controller')
         shutil.copytree(

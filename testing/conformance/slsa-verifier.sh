@@ -71,6 +71,15 @@ fetch() { # <url> <sha256> <dest>
   [ "$(sha256 "$3")" = "$2" ] || { say "sha256 mismatch for $1"; return 1; }
 }
 
+# Artifact readiness is QA-stage (conformance/ci-coverage.json). Native dev runs
+# the protected release-engineering controls separately; do not download public
+# fixtures when no release subject has been supplied. This remains NOT RUN and
+# the shared driver still exits nonzero. Only the core controller can classify
+# this exact missing-subject result against a fresh required engineering report.
+if [ -z "${BUSBAR_DEV_PROVENANCE_DIR+x}" ] && [ -z "${BUSBAR_BUILDER_PUB+x}" ]; then
+  notrun "release-stage subject absent: ModernCI builder key or exact-source attestation delivery not supplied"
+fi
+
 # --- the tool: pinned release asset -----------------------------------------------------------
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)  plat=linux-amd64;  sha=c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644 ;;

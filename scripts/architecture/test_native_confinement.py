@@ -212,6 +212,25 @@ class Boundary(Fixture, unittest.TestCase):
             self.assertNotIn("start", calls)
             self.assertEqual(execution.observations[-1]["disposed"], daemon_available)
 
+    def test_private_cargo_cache_resets_at_stable_dependency_path(self):
+        self.config['environment']['CARGO_HOME'] = '/opt/seed'
+        execution = self.execution()
+        paths = []
+        def client(argv, **kwargs):
+            if argv[0] == 'create':
+                paths.extend(value.split('=', 1)[1] for value in argv
+                             if value.startswith('BUSBAR_INVOCATION_CARGO_HOME='))
+            payload = (json.dumps([{'HostConfig': {'NetworkMode': 'bridge'}}]) if argv[0] == 'inspect'
+                       else json.dumps({'SecurityOptions': ['name=userns']}) if argv[0] == 'info' else '')
+            return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr='')
+        with patch.object(execution, '_client', side_effect=client):
+            for _ in range(2):
+                with self.assertRaisesRegex(ValueError, 'weakened'):
+                    with execution.invocation(['python3', '-c', 'pass'], self.roots['checkout'], {}):
+                        self.fail('weakened runtime executed')
+                self.assertFalse((self.roots['candidate'] / 'cargo-home-invocation').exists())
+        self.assertEqual(paths, [str(self.roots['candidate'] / 'cargo-home-invocation')] * 2)
+
     def test_harness_lock_and_artifacts_are_separate_from_readonly_sources(self):
         execution = self.execution()
         manifest = self.roots["harness"] / "Cargo.toml"

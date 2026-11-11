@@ -310,6 +310,12 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
             raise ValueError('native receipt mismatch: ' + key)
     if not receipt.get('steps') or any(step.get('status') != 'pass' or step.get('exit_code') != 0 for step in receipt['steps']):
         raise ValueError('native receipt contains missing or nonpassing checks')
+    from native_policy import conformance_rows
+    owner_suites = conformance_rows(project['path_with_namespace'])
+    if owner_suites:
+        selections = [step for step in receipt['steps'] if step.get('name') == 'plugin-native-conformance']
+        if len(selections) != 1 or receipt.get('required_conformance_suites') != sorted(owner_suites):
+            raise ValueError('native receipt omits required owner conformance suites or execution')
     required = required_conformance_job(project['path_with_namespace'])
     if required:
         evaluations = [job for job in jobs if job['name'] == required]

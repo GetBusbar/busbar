@@ -76,16 +76,26 @@ class Admission(unittest.TestCase):
                 self.conformance = receipt
                 self.validate()
 
-    def test_external_endpoint_jobs_are_required_for_both_planes(self):
+    def test_owner_conformance_is_required_inside_native_job_for_both_planes(self):
+        from native_policy import conformance_rows
         for repository in ('GetBusbar/busbar-plane-llm', 'GetBusbar/busbar-plane-decisions'):
             with self.subTest(repository=repository):
-                self.assertEqual(required_conformance_job(repository), 'external-conformance')
+                self.assertIsNone(required_conformance_job(repository))
                 self.project['path_with_namespace'] = repository
                 self.receipt['repository'] = repository
-                self.conformance['repository'] = repository
                 self.security['repository'] = repository
-                self.jobs[1]['name'] = 'external-conformance'
+                self.jobs = [job for job in self.jobs if job['name'] != 'core-conformance']
+                self.conformance = None
+                self.receipt['steps'] = [dict(name='plugin-native-conformance', status='pass', exit_code=0)]
+                self.receipt['required_conformance_suites'] = sorted(conformance_rows(repository))
                 self.validate()
+                self.receipt['required_conformance_suites'] = []
+                with self.assertRaisesRegex(ValueError, 'omits required owner conformance'):
+                    self.validate()
+                self.receipt['required_conformance_suites'] = sorted(conformance_rows(repository))
+                self.receipt['steps'] = [dict(name='architecture', status='pass', exit_code=0)]
+                with self.assertRaisesRegex(ValueError, 'omits required owner conformance'):
+                    self.validate()
         self.assertIsNone(required_conformance_job('GetBusbar/busbar-store-memory'))
 
     def test_nonpassing_pipeline_never_admits(self):

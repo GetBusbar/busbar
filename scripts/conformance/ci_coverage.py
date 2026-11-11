@@ -51,7 +51,7 @@ def generate(archive_roots):
         suite, repo = entry["id"], entry["repo"]
         if repo == "GetBusbar/busbar":
             stage = "main" if suite == "sigstore" else "qa"
-            command = "python3 -I testing/conformance/sigstore.py" if suite == "sigstore" else core_roster.get(suite)
+            command = "python3 -I testing/conformance/sigstore.py --require" if suite == "sigstore" else core_roster.get(suite)
             if not command:
                 raise ValueError(f"{suite}: no core execution command")
             script = script_path(command)
@@ -107,7 +107,7 @@ def validate(data):
             raise ValueError(f"{name}: wrong CI check or SDK binding")
         if row["repo"] == "GetBusbar/busbar":
             expected_stage = "main" if name == "sigstore" else "qa"
-            expected_command = "python3 -I testing/conformance/sigstore.py" if name == "sigstore" else core_commands.get(name)
+            expected_command = "python3 -I testing/conformance/sigstore.py --require" if name == "sigstore" else core_commands.get(name)
             if row["stage"] != expected_stage or row["command"] != expected_command:
                 raise ValueError(f"{name}: CI stage or roster command does not match the declared execution")
             if hashlib.sha256((ROOT / row["script"]).read_bytes()).hexdigest() != row["script_sha256"]:

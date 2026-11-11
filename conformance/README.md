@@ -22,6 +22,23 @@ checks; core's `certification-coverage` check verifies that every registered sui
 source script and QA/main execution stage. `ci-coverage.json` records those bindings at the exact
 product pins; regenerate it with `scripts/conformance/ci_coverage.py --write --archive-root DIR`.
 
+Native qualification also requires all eight LLM/spec-and-audio suites and the decisions
+Jev suite. The protected policy selects their existing `ci-coverage.json` rows; removing a
+suite or changing its command in the candidate roster fails qualification. Admission requires
+the same roster and a passing `plugin-native-conformance` step in the current native receipt.
+LLM tests recorded candidate wire against pinned provider specifications with positive and
+negative controls. Jev uses its own reference relay and served candidate checks. These results
+do not establish provider certification or independent Jev certification.
+
+The separate `external-conformance` job formerly named `external-openai.sh` and
+`external-jev.sh`, although neither entrypoint exists in current owner sources or their available
+Git history.
+Core commit `600544b622abfbf930349bc84a508fa4289f284a` introduced those references;
+`f199d3eb20664ebb4a849473c7acf7c7c9df5316` moved them into policy without adding implementations.
+The stale job routing is removed; the nine implemented suites remain mandatory in native CI.
+Future external endpoint profiles still require an explicit protected entrypoint and a confined
+fixed-destination broker. They cannot inherit a pass from the offline specification checks.
+
 The release-only Sigstore keyless check runs on main against the approved artifact, its bundle,
 and an exact certificate identity and OIDC issuer. Missing release evidence is `not-run`, never a
 passing certification. Its optional `--require` mode refuses missing evidence when a release policy
