@@ -367,13 +367,13 @@
     {
       "repo": "busbar-hook-complexity",
       "url": "https://github.com/GetBusbar/busbar-hook-complexity",
-      "commit": "09b728db54c0a41b1b32590369bcadc04a47c756",
+      "commit": "b6173c26a2f1d5dc2a50cb80f5aa692a5bebc91e",
       "package": "busbar-hook-complexity-plugin",
       "kind": "hook",
       "alias": "complexity",
       "image": "libbusbar_hook_complexity_plugin.so",
       "declares": "hook-complexity/declares.json",
-      "lock_sha256": "9772df1bb5c6120115491f583fc41e78d073fb5fae777927e809d38eb86b0b00"
+      "lock_sha256": "02a2cf9a590de9f0bde57d29536f9f0b1ff2094fb27a963cdd708980ccfbda9e"
     }
   ],
   "c_witness": {

@@ -196,7 +196,8 @@ class CompilerWitnessStorage(unittest.TestCase):
 
 
 class SourceMaterialization(unittest.TestCase):
-    def run_fixture(self, failure=None, repository='GetBusbar/busbar'):
+    def run_fixture(self, failure=None, repository='GetBusbar/busbar', cpus=4, memory_gib=6,
+                    expected_jobs=4):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             root = Path(directory).resolve()
             checkout, trusted, candidate, scratch = [root / name for name in
@@ -238,6 +239,8 @@ class SourceMaterialization(unittest.TestCase):
                     return json.dumps(metadata)
                 expected = (['cargo', 'check', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
                             if is_core else ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
+                if is_core:
+                    expected += ['--jobs', str(expected_jobs)]
                 self.assertEqual(argv, expected + ['--message-format=json'])
                 if failure == 'compiler-failure':
                     raise subprocess.CalledProcessError(1, argv)
@@ -256,9 +259,12 @@ class SourceMaterialization(unittest.TestCase):
                 else:
                     self.assertNotIn('BUSBAR_ARCHITECTURE_POLICY_SOURCES', env)
                     self.assertEqual(json.loads(Path(env['BUSBAR_ARCHITECTURE_SOURCES']).read_text()), [str(source)])
-            with patch.object(check, 'EXECUTION', SimpleNamespace(roots={'candidate': candidate})), \
+            execution = SimpleNamespace(roots={'candidate': candidate}, config={'resources': {
+                'cpus': cpus, 'memory_bytes': memory_gib * 1024**3}})
+            with patch.object(check, 'EXECUTION', execution), \
                     patch.object(check, 'candidate_output', side_effect=materialize), \
-                    patch.object(check, 'candidate_run', side_effect=source_scan) as scan:
+                    patch.object(check, 'candidate_run', side_effect=source_scan) as scan, \
+                    patch('check.print') as progress:
                 try:
                     result = check.check_sources(policy, repository, checkout, metadata, trusted, scratch)
                 finally:
@@ -267,9 +273,18 @@ class SourceMaterialization(unittest.TestCase):
                 self.assertEqual(result['core_source_files'], 3 if is_core else 0)
                 self.assertTrue(result['trusted_source_check'])
                 scan.assert_called_once()
+                rows = [json.loads(call.args[0].split(': ', 1)[1]) for call in progress.call_args_list]
+                self.assertEqual([row['event'] for row in rows], ['start', 'finish'])
+                self.assertTrue(all(row['build_jobs'] == (expected_jobs if is_core else None)
+                                    for row in rows))
 
     def test_core_check_materializes_generated_sources_and_retains_actual_target_inventory(self):
         self.run_fixture()
+
+    def test_core_check_jobs_respect_cpu_and_memory_boundaries(self):
+        for cpus, memory_gib, expected in [(2, 6, 2), (16, 6, 4), (4, 3, 1)]:
+            with self.subTest(cpus=cpus, memory_gib=memory_gib):
+                self.run_fixture(cpus=cpus, memory_gib=memory_gib, expected_jobs=expected)
 
     def test_plugin_source_materialization_still_builds_shipping_probe(self):
         self.run_fixture(repository='GetBusbar/busbar-auth-fixture')

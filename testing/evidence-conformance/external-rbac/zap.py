@@ -243,7 +243,9 @@ class ExternalRBAC:
         ):
             raise Refused("private credential workspace overlaps published output")
         self.output.mkdir(parents=True, exist_ok=False)
-        self.deadline = time.monotonic() + timeout
+        self.started = time.monotonic()
+        self.deadline = self.started + timeout
+        self.operation = None
         self.proc = None
         self.credentials = None
         self.stream = None
@@ -263,12 +265,35 @@ class ExternalRBAC:
         req = urllib.request.Request(
             f"{self.base}/JSON/{component}/{kind}/{action}/", data=payload
         )
+        started = time.monotonic()
+        request_timeout = min(30, self.remaining())
         try:
             with urllib.request.urlopen(
-                req, timeout=min(30, self.remaining())
+                req, timeout=request_timeout
             ) as response:
                 result = json.load(response)
-        except (urllib.error.URLError, ValueError) as error:
+        except (OSError, ValueError) as error:
+            now = time.monotonic()
+            diagnostic = {
+                "schema": "busbar.zap-api-failure/1",
+                "operation": self.operation,
+                "component": component,
+                "kind": kind,
+                "action": action,
+                "error_class": type(error).__name__,
+                "startup_probe": self.credentials is None and
+                    (component, kind, action) == ("core", "view", "version"),
+                "request_timeout_seconds": request_timeout,
+                "request_elapsed_seconds": round(now - started, 3),
+                "runner_elapsed_seconds": round(now - self.started, 3),
+                "remaining_seconds": round(max(0, self.deadline - now), 3),
+                "deadline_exhausted": now >= self.deadline,
+                "completed_legs": [r["label"] for r in self.receipts],
+                "scope": "declared operation, API action and timing only; no parameters or error text",
+            }
+            encoded = json.dumps(diagnostic, ensure_ascii=True)
+            (self.output / "api-failure.json").write_text(encoded + "\n")
+            print("ZAP_API_FAILURE " + encoded, file=sys.stderr, flush=True)
             raise Refused(f"ZAP API transport failed: {type(error).__name__}") from None
         if isinstance(result, dict) and "code" in result:
             raise Refused(f"ZAP API refused {component}/{action}: {result['code']}")
@@ -383,7 +408,7 @@ class ExternalRBAC:
                 varKey="busbar.callback",
                 varValue=self.credentials.url,
             )
-            for name, kind in [("transport", "httpsender"), ("rules", "standalone")]:
+            for name, kind in [("transport", "httpsender"), ("rules", "standalone"), ("reset", "standalone")]:
                 self.api(
                     "script",
                     "action",
@@ -440,6 +465,36 @@ class ExternalRBAC:
         ):
             raise Refused("upstream access-rule input setup incomplete")
         return ready
+
+    def _reset_contexts(self):
+        # ZAP 2.17's headless newSession skips View.discardContexts. Invoke the
+        # same public factory lifecycle hooks before context IDs are reused;
+        # otherwise users and access rules accumulate in extension caches.
+        self.api("script", "action", "setGlobalVar", varKey="busbar.reset.ready", varValue="")
+        self.api("script", "action", "runStandAloneScript", scriptName="busbar.reset")
+        reset = json.loads(self.api("script", "view", "globalVar",
+                                    varKey="busbar.reset.ready")["globalVar"])
+        required = {
+            "org.zaproxy.zap.extension.authentication.ExtensionAuthentication",
+            "org.zaproxy.zap.extension.users.ExtensionUserManagement",
+            "org.zaproxy.zap.extension.forceduser.ExtensionForcedUser",
+            "org.zaproxy.zap.extension.sessions.ExtensionSessionManagement",
+            "org.zaproxy.zap.extension.authorization.ExtensionAuthorization",
+            "org.zaproxy.zap.extension.accessControl.ExtensionAccessControl",
+        }
+        factories = reset["factories"]
+        if not required <= set(factories) or len(factories) != len(set(factories)):
+            raise Refused("upstream context lifecycle reset incomplete")
+
+    def _check_users(self, cid, users):
+        rows = self.api("users", "view", "usersList", contextId=cid)["usersList"]
+        expected = {u["name"]: u["id"] for u in users}
+        if (len(set(expected.values())) != len(users) or len(rows) != len(users)
+                or {r["name"]: int(r["id"]) for r in rows} != expected
+                or any(r["enabled"] != "true" or int(r["contextId"]) != cid
+                       or json.loads(r["credentials"]) != {
+                           "type": "ManualAuthenticationCredentials", "sessionName": ""} for r in rows)):
+            raise Refused("fresh context principal roster/state differs from fixture")
 
     def matrix(
         self,
@@ -499,6 +554,14 @@ class ExternalRBAC:
         required_bad_scope = required_bad_expiry = False
         unexpected_illegal = []
         for index, (method, path, scope, verb) in enumerate(ops):
+            self.operation = {
+                "label": label[:80],
+                "operation_index": index,
+                "method": method[:16],
+                "declared_path": path[:512],
+                "expected_operations": len(ops),
+                "expected_principals": len(principals),
+            }
             self.remaining()
             uri = f"http://127.0.0.1:{int(port)}" + concrete(path)
             key = (method, uri)
@@ -506,6 +569,7 @@ class ExternalRBAC:
                 raise Refused("duplicate declared method/URI operation")
             seen.add(key)
             body = "" if method in ("GET", "DELETE") else "{}"
+            self._reset_contexts()
             self.api("core", "action", "newSession", name="", overwrite="true")
             self.api(
                 "script",
@@ -581,6 +645,7 @@ class ExternalRBAC:
                         "expect": want,
                     }
                 )
+            self._check_users(cid, users)
             users.sort(key=lambda u: u["id"])
             self.api(
                 "core",
@@ -774,6 +839,7 @@ class ExternalRBAC:
         }
         (dest / "result.json").write_text(json.dumps(receipt, indent=2) + "\n")
         self.receipts.append(receipt)
+        self.operation = None
         if not ok:
             raise Refused(
                 "upstream AccessControl rejected matrix or failed to detect deliberate violations"
