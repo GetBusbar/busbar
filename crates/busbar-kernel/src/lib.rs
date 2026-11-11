@@ -155,6 +155,7 @@ pub mod hook_child;
 pub mod hooks;
 pub mod host_chains;
 pub mod host_disk;
+pub mod host_measurement;
 pub mod host_outbound;
 pub mod host_records;
 #[allow(dead_code)]

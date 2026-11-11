@@ -11,7 +11,7 @@
 //! THE FORMAT. Deterministic, little-endian, no padding, and never a pointer:
 //!
 //! ```text
-//! magic            8 bytes  "BBSTMT03" (the rendering's own version; "BBSTMT02" omitted need
+//! magic            8 bytes  "BBSTMT04" ("BBSTMT03" omitted common units; "BBSTMT02" omitted need
 //!                           retention policy; "BBSTMT01" stated the tail's size alone)
 //! mechanism        u32      MECHANISM_VERSION the rendering was made under
 //! kind             u32
@@ -39,6 +39,7 @@
 //! trust_from       str
 //! answers          list of str
 //! claims           list of str
+//! measurement_classes list of { class str, family str }, at most 64
 //!
 //! str   = u32 length, then the bytes
 //! list  = u32 count, then each item
@@ -71,7 +72,10 @@ pub use tail::{
 };
 
 /// The rendering's first eight bytes.
-pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT03";
+pub const RENDERING_MAGIC: &[u8; 8] = b"BBSTMT04";
+
+/// The rendering before common unit declarations were signed.
+pub const RENDERING_MAGIC_WITHOUT_MEASUREMENTS: &[u8; 8] = b"BBSTMT03";
 
 /// The rendering before a need's response-header retention policy was rendered: its signed facts
 pub const RENDERING_MAGIC_WITHOUT_NEED_RETENTION: &[u8; 8] = b"BBSTMT02";
@@ -280,6 +284,35 @@ pub unsafe fn render(st: &Statement) -> Result<Vec<u8>, RenderError> {
             o.str(*c, "claim")?;
         }
     }
+    // SAFETY: same signed Statement storage contract as above.
+    if st.measurement_classes_len > crate::abi::measurement::MAX_MEASUREMENT_CLASSES {
+        return Err(RenderError::Tail(super::check::fault(
+            super::check::Rule::OverMax,
+            "statement.measurement_classes",
+        )));
+    }
+    super::check::listed(
+        st.measurement_classes,
+        st.measurement_classes_len,
+        "statement.measurement_classes",
+    )
+    .map_err(RenderError::Tail)?;
+    super::check::bounded(
+        st.measurement_classes,
+        st.measurement_classes_len,
+        "statement.measurement_classes",
+    )
+    .map_err(RenderError::Tail)?;
+    let classes = unsafe { items(st.measurement_classes, st.measurement_classes_len) };
+    unsafe { crate::abi::measurement::check_declarations(classes) }.map_err(RenderError::Tail)?;
+    o.len(classes.len(), "measurement_classes")?;
+    for class in classes {
+        // SAFETY: validated live strings under the caller's contract.
+        unsafe {
+            o.str(class.class, "measurement_class.class")?;
+            o.str(class.family, "measurement_class.family")?;
+        }
+    }
     Ok(o.0)
 }
 
@@ -336,6 +369,15 @@ pub struct ReadNeed {
     pub deny_response_headers: Vec<String>,
 }
 
+/// One immutable common unit declaration, read from the signed rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadMeasurementClass {
+    /// Raw class name.
+    pub class: String,
+    /// Unit family, never a price or attribution selector.
+    pub family: String,
+}
+
 /// A Statement read back from its rendering: every fact the rendering carries, owned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Read {
@@ -384,6 +426,8 @@ pub struct Read {
     pub answers: Vec<String>,
     /// The URL schemes it claims.
     pub claims: Vec<String>,
+    /// Signed common raw unit declarations, bounded at 64.
+    pub measurement_classes: Vec<ReadMeasurementClass>,
 }
 
 impl Read {
@@ -462,6 +506,12 @@ impl In<'_> {
 pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let mut i = In { b: bytes, at: 0 };
     let magic = i.take(RENDERING_MAGIC.len(), "the magic")?;
+    if magic == RENDERING_MAGIC_WITHOUT_MEASUREMENTS {
+        return Err(Unreadable {
+            at: 0,
+            what: "a rendering with common measurement declarations; repack the plugin",
+        });
+    }
     if magic == RENDERING_MAGIC_WITHOUT_NEED_RETENTION {
         return Err(Unreadable {
             at: 0,
@@ -481,6 +531,12 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         });
     }
     let mechanism_version = i.u32("mechanism")?;
+    if mechanism_version != MECHANISM_VERSION {
+        return Err(Unreadable {
+            at: 8,
+            what: "the current mechanism version; repack the plugin",
+        });
+    }
     let kind = i.u32("kind")?;
     let kind_abi = i.u32("kind_abi")?;
     let max_inflight = i.u32("max_inflight")?;
@@ -544,6 +600,30 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
     let trust_from = i.str("trust_from")?;
     let answers = i.strs("answers")?;
     let claims = i.strs("claims")?;
+    let n = i.count("measurement_classes")?;
+    if n > crate::abi::measurement::MAX_MEASUREMENT_CLASSES {
+        return Err(Unreadable {
+            at: i.at,
+            what: "at most 64 measurement classes",
+        });
+    }
+    let mut measurement_classes = Vec::with_capacity(n);
+    for _ in 0..n {
+        let class = i.str("measurement_class.class")?;
+        let family = i.str("measurement_class.family")?;
+        if !crate::abi::measurement::valid_name(class.as_bytes())
+            || !crate::abi::measurement::valid_name(family.as_bytes())
+            || measurement_classes
+                .iter()
+                .any(|prior: &ReadMeasurementClass| prior.class == class)
+        {
+            return Err(Unreadable {
+                at: i.at,
+                what: "distinct valid measurement classes and families",
+            });
+        }
+        measurement_classes.push(ReadMeasurementClass { class, family });
+    }
     if i.at != bytes.len() {
         return Err(Unreadable {
             at: i.at,
@@ -573,6 +653,7 @@ pub fn read(bytes: &[u8]) -> Result<Read, Unreadable> {
         trust_from,
         answers,
         claims,
+        measurement_classes,
     })
 }
 

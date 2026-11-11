@@ -210,6 +210,7 @@ impl std::fmt::Debug for Bind {
 /// }
 /// ```
 pub struct Recall {
+    measurement: Option<super::measurement::Reservation>,
     instance: usize,
 
     slot: u32,
@@ -650,6 +651,68 @@ impl Drop for PolicyReply {
 }
 
 impl Instance {
+    unsafe fn capture_measurements(
+        &self,
+        s: u32,
+        raw: RawOutcome,
+        input: *const InHead,
+        out: *const OutHead,
+        out_size: u32,
+    ) -> Result<(), super::measurement::Refusal> {
+        // SAFETY: these are the host-owned callback frames, still live on the FFI worker.
+        let head = unsafe { &*out };
+        let batch = &head.envelope.measurements;
+        if raw == RawOutcome::of(Outcome::Failed) {
+            // SAFETY: caller owns the full checked frames; kind checks bound their output ranges.
+            let answer = unsafe {
+                Answer::new(
+                    s,
+                    Outcome::Failed,
+                    input,
+                    (*input).size as usize,
+                    out,
+                    out_size as usize,
+                )
+            }
+            .with_context(self.context.as_deref())
+            .with_operations(&self.operations);
+            if (self.check)(&answer).is_ok() && (self.short)(&answer) {
+                // A SHORT reply applies no work: it cannot carry billable measurements.
+                if batch.counts_len != 0 {
+                    return Err(super::measurement::Refusal::Malformed);
+                }
+                let revision = super::measurement::active(self.instance)
+                    .as_ref()
+                    .map_or(0, super::measurement::Reservation::revision);
+                // An empty cursor echo is valid but must not advance host custody on SHORT.
+                // SAFETY: the length is zero; the checker only validates the header/cursor.
+                return unsafe {
+                    busbar_contract::abi::measurement::check_batch(
+                        batch,
+                        self.measurement_binding.classes.len(),
+                        revision,
+                    )
+                }
+                .map_err(|_| super::measurement::Refusal::Malformed);
+            }
+        }
+        // SAFETY: all envelope ranges remain valid until the next plugin callback.
+        unsafe { super::measurement::capture(&self.measurement_binding, batch) }
+    }
+
+    pub(crate) fn reserve_measurements(
+        &self,
+        context: Option<&super::measurement::Context>,
+        slot: u32,
+    ) -> Result<Option<super::measurement::Reservation>, super::measurement::Refusal> {
+        super::measurement::reserve(
+            &self.measurement_binding,
+            &self.measurement_authority,
+            context,
+            slot,
+        )
+    }
+
     pub(crate) fn let_go_held(&self) {
         if let Some(route) = self.wake.route.get().and_then(std::sync::Weak::upgrade) {
             if let Some(served) = route.services() {
@@ -707,6 +770,8 @@ struct FamilyShape {
 /// THE INSTANCE, kind-erased: what every crossing needs. Shared across workers.
 #[doc(hidden)]
 pub struct Instance {
+    pub(crate) measurement_binding: super::measurement::Binding,
+    measurement_authority: super::measurement::AuthoritySlot,
     pub(crate) instance: InstanceId,
 
     needs: Box<[ReadNeed]>,
@@ -1508,6 +1573,19 @@ impl Instance {
         if (!self.is_open() && !self.store_prepared()) || self.faulted.load(Ordering::Acquire) {
             return;
         }
+        let inherited = super::measurement::active(self.instance);
+        let owned = inherited.is_none();
+        let measurement = match inherited
+            .map(Some)
+            .map(Ok)
+            .unwrap_or_else(|| self.reserve_measurements(None, slot::RELEASE))
+        {
+            Ok(measurement) => measurement,
+            Err(_) => {
+                self.faulted.store(true, Ordering::Release);
+                return;
+            }
+        };
         let mut input = ReleaseIn {
             head: InHead {
                 size: size_of::<ReleaseIn>() as u32,
@@ -1518,14 +1596,19 @@ impl Instance {
         let mut out = super::out_head();
         // SAFETY: the host's own `release` frame (`ReleaseIn` leads with its head, the `out` is
         // the head), live and unaliased for the call.
-        let released = unsafe {
+        let released = super::measurement::with_reservation(measurement.clone(), || unsafe {
             self.cross(
                 slot::RELEASE,
                 (&raw mut input).cast::<InHead>(),
                 &raw mut out,
                 size_of::<OutHead>() as u32,
             )
-        };
+        });
+        if owned {
+            if let Some(measurement) = &measurement {
+                measurement.released();
+            }
+        }
         if released.outcome != Outcome::Ready {
             tracing::warn!(
                 plugin = %self.name,
@@ -1609,6 +1692,20 @@ impl Instance {
         out: *mut OutHead,
         out_size: u32,
     ) -> Crossed {
+        let measurement = super::measurement::active(self.instance);
+        if !self.measurement_binding.classes.is_empty()
+            && !measurement
+                .as_ref()
+                .is_some_and(super::measurement::Reservation::may_invoke)
+        {
+            return Crossed::host(Outcome::Refused);
+        }
+        // SAFETY: the host owns the checked input head. Plugins never select the cursor.
+        unsafe {
+            (*input).measurement_revision = measurement
+                .as_ref()
+                .map_or(0, super::measurement::Reservation::revision);
+        }
         let instance_free = self.instance_free(s);
         // SAFETY: the caller owns a frame whose leading input head is live throughout the call.
         let ticket = unsafe { (*input).ticket };
@@ -1863,6 +1960,7 @@ impl Instance {
             let runtime = tokio::runtime::Handle::try_current().ok();
             let framing = super::framing_context::current();
             let read_only_route = super::access::read_only_route();
+            let measurement_context = super::measurement::current_context();
             let (input, output): (*const c_void, *mut c_void) =
                 (input.cast_const().cast(), out.cast());
             let routed = crate::ffi_thread::on_plugin_thread(|| {
@@ -1875,7 +1973,29 @@ impl Instance {
                 let _authority_phase = super::access::enter_kind(self.kind, s);
                 super::export_bindings::crossing(binding.clone(), || {
                     with_crossing(Some(self), || {
-                        let raw = enter_lifecycle((self.op_name)(s), op, instance, input, output);
+                        let raw = super::measurement::with_context(measurement_context, || {
+                            super::measurement::with_reservation(measurement.clone(), || {
+                                enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                            })
+                        });
+                        let captured =
+                            super::measurement::with_reservation(measurement.clone(), || {
+                                // SAFETY: callback just returned; its envelope is still live on this FFI thread.
+                                unsafe {
+                                    self.capture_measurements(
+                                        s,
+                                        raw,
+                                        input.cast(),
+                                        output.cast(),
+                                        out_size,
+                                    )
+                                }
+                            });
+                        let raw = if captured.is_err() {
+                            RawOutcome::of(Outcome::Fault)
+                        } else {
+                            raw
+                        };
 
                         let readable = if self.faulted.load(Ordering::Acquire) {
                             false
@@ -1927,7 +2047,18 @@ impl Instance {
                     op(instance, input.cast_const().cast(), out.cast())
                 })
             });
-            (raw, None)
+            // SAFETY: callback just returned and no other plugin callback intervened.
+            let captured = unsafe {
+                self.capture_measurements(s, raw, input.cast_const(), out.cast_const(), out_size)
+            };
+            (
+                if captured.is_err() {
+                    RawOutcome::of(Outcome::Fault)
+                } else {
+                    raw
+                },
+                None,
+            )
         };
         if self.store_bootstrap(s) {
             // SAFETY: the checked host output allocation contains BootstrapOut.
@@ -2554,13 +2685,12 @@ impl<K: Kind> Plugin<K> {
             v
         };
         let st = v.statement;
-        // SAFETY: validation bounded every retained Statement list. The exact rendered
-        // declaration was authenticated before binding, for linked and dropped images alike.
-        let stated = unsafe { busbar_contract::abi::mechanism::rendering::render(&st) }
-            .map_err(|e| LoadError::Rendering(e.to_string()))?;
+        // Admission retained the authenticated declaration bytes; never reread plugin pointers
+        // for measurement class identity after that comparison.
+        let stated = &v.rendering;
         let mut statement_digest = [0; 32];
         statement_digest
-            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &stated).as_ref());
+            .copy_from_slice(ring::digest::digest(&ring::digest::SHA256, stated).as_ref());
         let families = (0..st.families_len)
             .map(|i| {
                 // SAFETY: `validate` checked `families` holds `families_len` entries.
@@ -2666,6 +2796,11 @@ impl<K: Kind> Plugin<K> {
             })
             .collect::<Result<_, _>>()?;
         let reference_fields = super::load::reference_fields(&st)?.into_boxed_slice();
+        if bind.instance.is_empty() || bind.instance.chars().any(char::is_control) {
+            return Err(LoadError::BadStatement(
+                "host instance namespace is empty or contains control characters".into(),
+            ));
+        }
         let caller = bind
             .dispatcher
             .bind_caller(Arc::clone(&bind.instance), v.kind)?;
@@ -2674,6 +2809,15 @@ impl<K: Kind> Plugin<K> {
                 "caller binding does not match the validated descriptor".into(),
             ));
         }
+        let classes = busbar_contract::abi::mechanism::rendering::read(stated)
+            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?
+            .measurement_classes;
+        let measurement_binding = super::measurement::Binding {
+            caller: caller.clone(),
+            instance,
+            statement_digest,
+            classes: classes.into(),
+        };
         let _ = wake.caller.set(caller);
         let context = v.context;
         let _ = wake
@@ -2681,6 +2825,8 @@ impl<K: Kind> Plugin<K> {
             .set(K::credential_kinds(context.as_deref()));
         let plugin = Self {
             inner: Arc::new(Instance {
+                measurement_binding,
+                measurement_authority: bind.dispatcher.measurements(),
                 instance,
                 needs: declared_needs,
                 secret_refs,
@@ -2740,7 +2886,11 @@ impl<K: Kind> Plugin<K> {
             .wake
             .instance
             .set(Arc::downgrade(&plugin.inner));
-        bind.dispatcher.adopt(&plugin.inner);
+        if !bind.dispatcher.adopt(&plugin.inner) && bind.dispatcher.is_live() {
+            return Err(LoadError::BadStatement(
+                "host measurement configuration refused the instance binding".into(),
+            ));
+        }
         unbound.0 = None;
         unbound.1 = None;
         Ok(plugin)
@@ -2790,6 +2940,10 @@ impl<K: Kind> Plugin<K> {
 
     /// Exact authenticated declaration retained at bind, including the kind tail,
     /// layouts and conditional record inventory. This is Rust-only host metadata.
+    pub fn measurement_binding(&self) -> &super::measurement::Binding {
+        &self.inner.measurement_binding
+    }
+
     pub fn statement_digest(&self) -> [u8; 32] {
         self.inner.statement_digest
     }
@@ -2950,7 +3104,7 @@ impl<K: Kind> Plugin<K> {
     }
 
     pub fn call<I: InFrame, O: OutFrame>(&self, s: u32, frame: &mut Frame<I, O>) -> Called {
-        self.call_on(s, frame, Ticket::NONE, false)
+        self.call_on(s, frame, Ticket::NONE, false, None)
     }
 
     pub fn recall<I: InFrame, O: OutFrame>(
@@ -2969,11 +3123,13 @@ impl<K: Kind> Plugin<K> {
             },
             None => None,
         };
-        let called = if token.ticket.is_none() {
-            self.call_on(s, frame, token.ticket, false)
-        } else {
-            self.call_inline(token.ticket, true, s, frame)
-        };
+        let called = super::measurement::with_reservation(token.measurement.clone(), || {
+            if token.ticket.is_none() {
+                self.call_on(s, frame, token.ticket, false, token.measurement.clone())
+            } else {
+                self.call_inline(token.ticket, true, s, frame)
+            }
+        });
         if called.recall.is_some() {
             return Called::from(Crossed::host(Outcome::Fault));
         }
@@ -2999,9 +3155,30 @@ impl<K: Kind> Plugin<K> {
                 return Called::from(Crossed::host(Outcome::Refused));
             }
         }
-        let called = self.call_on(s, frame, ticket, resume);
+        let context = super::measurement::current_context();
+        let retained = inline
+            .as_ref()
+            .and_then(|tickets| tickets.measurement(ticket));
+        let measurement = match retained
+            .map(Some)
+            .map(Ok)
+            .unwrap_or_else(|| self.inner.reserve_measurements(context.as_ref(), s))
+        {
+            Ok(measurement) => measurement,
+            Err(_) => return Called::from(Crossed::host(Outcome::Refused)),
+        };
+        let called = super::measurement::with_reservation(measurement.clone(), || {
+            self.call_on(s, frame, ticket, resume, measurement.clone())
+        });
         if let Some(tickets) = &inline {
-            tickets.ended(ticket, s, called.recall.is_some());
+            let kept = if called.recall.is_some() {
+                measurement
+            } else if called.outcome == Outcome::Pending {
+                measurement.as_ref().map(|r| r.refreshed())
+            } else {
+                None
+            };
+            tickets.ended(ticket, s, called.recall.is_some(), kept);
         }
         called
     }
@@ -3016,6 +3193,7 @@ impl<K: Kind> Plugin<K> {
         frame: &mut Frame<I, O>,
         ticket: Ticket,
         resume: bool,
+        retained_measurement: Option<super::measurement::Reservation>,
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
@@ -3035,6 +3213,15 @@ impl<K: Kind> Plugin<K> {
         if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
             return Called::from(Crossed::host(o));
         }
+        let context = super::measurement::current_context();
+        let measurement = match retained_measurement
+            .map(Some)
+            .map(Ok)
+            .unwrap_or_else(|| inst.reserve_measurements(context.as_ref(), s))
+        {
+            Ok(measurement) => measurement,
+            Err(_) => return Called::from(Crossed::host(Outcome::Refused)),
+        };
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
             return Called::from(Crossed::host(Outcome::Refused));
@@ -3076,13 +3263,24 @@ impl<K: Kind> Plugin<K> {
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
             head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
-            inst.cross(s, i, o, out_size)
+            let context = measurement
+                .as_ref()
+                .map_or_else(|| context.clone(), |r| r.context());
+            super::measurement::with_context(context, || {
+                super::measurement::with_reservation(measurement.clone(), || {
+                    inst.cross(s, i, o, out_size)
+                })
+            })
         });
         inst.release(units);
         if lifecycle {
             inst.leave_lifecycle();
         }
+        if let Some(measurement) = &measurement {
+            measurement.released();
+        }
         let token = crossed.short.then(|| Recall {
+            measurement,
             instance: self.instance_id(),
             slot: s,
             ticket,

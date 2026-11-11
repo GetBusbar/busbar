@@ -62,9 +62,9 @@ pub use host::{
     standing_over, CostHandle, EngineHost, EngineHostImpl, GovHandle, LiveHostFactory, MeterPin,
 };
 pub use money::{
-    EndPost, FeeRefund, ObservationPolicy, ObservationRuntimeError, ParentMoney, PlaneMoney,
-    ReservedRequestLineage, ReturnedTicketReservation, SpentTicketReservation, TicketReservation,
-    UnitEnd, UnitMoney,
+    EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
+    ObservationRuntimeError, ParentMoney, PlaneMoney, ReservedRequestLineage,
+    ReturnedTicketReservation, SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;

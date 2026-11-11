@@ -18,12 +18,34 @@ use std::sync::{Arc, Mutex};
 pub(super) fn is_checkpoint_record(record: &Record) -> bool {
     JournalRecord::decode(&record.body).is_ok_and(|record| {
         record.class == RecordClass::Checkpoint
-            && BodyReader::new(&record.body).text() == Some("unit.accrued")
+            && matches!(
+                BodyReader::new(&record.body).text(),
+                Some("unit.accrued" | "measurement.accrued")
+            )
     })
 }
 struct AuditAdapter {
     book: Arc<Mutex<Durability>>,
     evidence: Arc<UnitCheckpointEvidence>,
+}
+
+/// Persistence of measurement custody is housekeeping, not another billable Store operation.
+/// Scope each actual future so direct recovery calls and the periodic flusher agree.
+struct CheckpointCustody(StoreUnitCheckpoints);
+#[async_trait::async_trait]
+impl UnitCheckpointSink for CheckpointCustody {
+    async fn persist(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+        crate::root::measurements::maintenance(self.0.persist(snapshot)).await
+    }
+    async fn remove(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+        crate::root::measurements::maintenance(self.0.remove(snapshot)).await
+    }
+    async fn replay(&self) -> RecordStoreResult<Vec<UnitCheckpoint>> {
+        crate::root::measurements::maintenance(self.0.replay()).await
+    }
+    async fn recover_audit(&self, snapshot: &UnitCheckpoint) -> RecordStoreResult<()> {
+        crate::root::measurements::maintenance(self.0.recover_audit(snapshot)).await
+    }
 }
 #[async_trait::async_trait]
 impl UnitCheckpointAudit for AuditAdapter {
@@ -59,7 +81,9 @@ pub(crate) fn unit_checkpoint_sink(
         book: book.clone(),
         evidence: evidence.clone(),
     });
-    Ok(Arc::new(StoreUnitCheckpoints::new(evidence, audit)))
+    Ok(Arc::new(CheckpointCustody(StoreUnitCheckpoints::new(
+        evidence, audit,
+    ))))
 }
 #[cfg(test)]
 #[path = "unit_checkpoint_tests.rs"]

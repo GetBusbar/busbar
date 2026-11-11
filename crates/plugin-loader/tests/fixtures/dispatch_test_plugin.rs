@@ -708,6 +708,7 @@ unsafe fn answer(me: &Inst, arg: &[u8], out: *mut c_void) -> RawOutcome {
         .unwrap_or(0);
     let head = unsafe { &mut *out.cast::<OutHead>() };
     head.envelope = Envelope {
+        measurements: busbar_contract::abi::measurement::MeasurementBatch::ZERO,
         metrics: &METRICS.0 as *const MetricEntry,
         metrics_len: METRICS.0.len(),
         diags: &DIAGS.0 as *const Diag,

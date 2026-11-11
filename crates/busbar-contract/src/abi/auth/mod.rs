@@ -36,7 +36,7 @@ pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
 pub const ABI_VERSION: u32 = 3;
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x00c89280c6692621;
+pub const LAYOUT_FINGERPRINT: u64 = 0x6438f190d7b44e09;
 
 /// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[

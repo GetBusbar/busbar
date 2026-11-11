@@ -181,6 +181,7 @@ fn table() -> &'static SecretOps {
 
 fn in_head<T>(op: u32, ticket: Ticket) -> InHead {
     InHead {
+        measurement_revision: 0,
         size: size_of::<T>() as u32,
         op,
         flags: 0,
@@ -214,6 +215,7 @@ fn prefilled_head(size: usize) -> OutHead {
         lease: 0xBBBB,
         error: super::abi_str(""),
         envelope: crate::abi::mechanism::call::Envelope {
+            measurements: crate::abi::measurement::MeasurementBatch::ZERO,
             metrics: ptr::null(),
             metrics_len: 0,
             diags: ptr::null(),

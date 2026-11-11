@@ -4,6 +4,7 @@
 //! ABI-LAYOUT GOLDEN GATE.
 
 use busbar_contract::abi::host::conn::{ConnCtx, ConnSlots, WireOpenDesc, WirePiece};
+use busbar_contract::abi::measurement;
 use busbar_contract::abi::shared::{DeclStr, WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
 
@@ -288,7 +289,8 @@ fn compute_layout() -> String {
             deadline_ns,
             trace_id,
             parent_span_id,
-            extensions
+            extensions,
+            measurement_revision
         ]
     );
     record!(
@@ -304,7 +306,11 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, MechDiag, [id_idx, severity, _reserved, text]);
-    record!(s, MechEnvelope, [metrics, metrics_len, diags, diags_len]);
+    record!(
+        s,
+        MechEnvelope,
+        [metrics, metrics_len, diags, diags_len, measurements]
+    );
     record!(
         s,
         MechOutHead,
@@ -362,7 +368,9 @@ fn compute_layout() -> String {
             answers,
             answers_len,
             claims,
-            claims_len
+            claims_len,
+            measurement_classes,
+            measurement_classes_len
         ]
     );
     record!(s, MechMarkWord, [class, _reserved, word]);
@@ -906,7 +914,12 @@ fn compute_layout() -> String {
     );
     record!(s, pkind::DialectAuth, [dialect, flags, style, params]);
     record!(s, pkind::OpClass, [op, name]);
-    record!(s, pkind::BillableClass, [class, family]);
+    record!(s, measurement::BillableClass, [class, family]);
+    record!(
+        s,
+        measurement::MeasurementBatch,
+        [revision, counts, counts_len]
+    );
     record!(s, pkind::ClassParent, [child, parent]);
     record!(s, pkind::RouteCost, [class, _reserved, weight]);
     record!(s, pkind::RecordChain, [kind, framing, flags, _reserved]);
@@ -1017,7 +1030,7 @@ fn compute_layout() -> String {
     );
     record!(s, pkind::PlaneOpenOut, [open, snapshot]);
     record!(s, pkind::PlaneRefreshOut, [head, snapshot]);
-    record!(s, pkind::UnitCount, [class, source, amount]);
+    record!(s, measurement::UnitCount, [class, source, amount]);
     record!(s, pkind::OutField, [name, value]);
     record!(s, pkind::RecordWrite, [kind, op, key, value]);
     record!(

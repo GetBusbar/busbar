@@ -28,6 +28,7 @@ pub mod keyset;
 pub mod linked;
 pub mod listener;
 pub(crate) mod loader;
+pub(crate) mod measurements;
 pub mod migration_secrets;
 pub mod migration_table;
 pub mod model_egress;

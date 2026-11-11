@@ -1266,6 +1266,9 @@ fn validate_plane_fees(
 }
 
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
+    if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
+        errors.push(error);
+    }
     if let Some(card) = &cfg.rate_card {
         for (key, r) in card {
             let (plane, lane) = split_plane_lane(key);
@@ -1342,6 +1345,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         .cloned()
         .chain(cfg.plane_defs.values().flat_map(|defs| defs.ledger_lanes()))
         .collect();
+    for lane in &lanes {
+        if lane.contains(busbar_kernel_ledger::cost::MEASUREMENT_LANE_PREFIX) {
+            errors.push(
+                "legacy lane names must not contain the reserved common measurement prefix".into(),
+            );
+        }
+    }
     for d in crate::plane_driver::registry::plane_decls() {
         validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
     }

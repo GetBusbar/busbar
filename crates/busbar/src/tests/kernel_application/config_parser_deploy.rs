@@ -30,6 +30,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         hooks: Default::default(),
         groups: Default::default(),
         rate_card: None,
+        plugin_rate_cards: Default::default(),
         per_request_fee: 0,
         plane_rate_cards: Default::default(),
         plane_fees: Default::default(),

@@ -5502,11 +5502,26 @@ impl DataRoutes {
             .admission
             .as_ref()
             .map_or_else(|| node.mint(), |admission| admission.unit_key());
+        let arrived = node.arrived();
+        let scope = match super::measurements::RequestScope::new(
+            &served.money,
+            unit,
+            &door.principal,
+            door.key.as_deref(),
+            arrived,
+        ) {
+            Ok(scope) => scope,
+            Err(error) => {
+                tracing::error!(?error, "request measurement attribution unavailable");
+                let _ = verdict.send(Err(None));
+                return;
+            }
+        };
+        super::measurements::request(scope, async {
         let carrier_end = CarrierEnd {
             unit: unit.get(),
             ended: attach.ended.take(),
         };
-        let arrived = node.arrived();
         self.frames_lock().insert(unit.get(), Arc::clone(&door.app));
         let _frame = UnitFrame {
             routes: &self,
@@ -5628,6 +5643,7 @@ impl DataRoutes {
         // terminal confirmation, then release it on failure as well: a real
         // disconnect is resource cleanup, never a durable-success assertion.
         drop(carrier_end);
+        }).await;
     }
 
     async fn open_datagram(
@@ -6091,6 +6107,19 @@ impl DataRoutes {
         let node = self.post.node();
         let unit = admission.map_or_else(|| node.mint(), |admission| admission.unit_key());
         let arrived = node.arrived();
+        let measurement_scope = match super::measurements::RequestScope::new(
+            &served.money,
+            unit,
+            &principal,
+            key.as_deref(),
+            arrived,
+        ) {
+            Ok(scope) => scope,
+            Err(error) => {
+                tracing::error!(?error, "request measurement attribution unavailable");
+                return None;
+            }
+        };
 
         self.frames_lock().insert(unit.get(), Arc::clone(&app));
         let _frame = UnitFrame {
@@ -6152,8 +6181,9 @@ impl DataRoutes {
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &held.facts));
 
-        let ended = node
-            .drive_borrowed(
+        let ended = super::measurements::request(
+            measurement_scope,
+            node.drive_borrowed(
                 unit,
                 arrived,
                 &principal,
@@ -6164,8 +6194,9 @@ impl DataRoutes {
                 nesting.as_ref().map(|n| &n.parent),
                 live.facts.audit_kind,
                 admission,
-            )
-            .await;
+            ),
+        )
+        .await;
 
         let downgraded = steps.downgraded();
 

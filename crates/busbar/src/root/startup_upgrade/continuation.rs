@@ -119,6 +119,12 @@ impl std::error::Error for PreparationFailure {}
 /// The exact application-building segment shared by normal and upgraded startup.
 /// Call through StartupContinuation so cancellation retains this future.
 pub async fn prepare(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
+    // The retained future may be polled by a task other than its creator. Scope its execution,
+    // including appbuild's Secret/Store work before BookPreparation installs measurement custody.
+    crate::root::measurements::maintenance(prepare_inner(input)).await
+}
+
+async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<PreparationFailure>> {
     let Preparation {
         startup,
         config,
@@ -397,7 +403,9 @@ impl StartupContinuation {
             state.validating = Some(Box::pin(async move {
                 let mut candidate = candidate.lock().await;
                 loop {
-                    match validate(&mut candidate, &binding).await {
+                    match crate::root::measurements::maintenance(validate(&mut candidate, &binding))
+                        .await
+                    {
                         Err(ValidationError::Retryable(_)) => {
                             // The same validator and serving candidate retain custody while
                             // their typed native owners resolve the original operations.

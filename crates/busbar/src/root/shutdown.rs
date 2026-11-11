@@ -67,18 +67,30 @@ pub async fn tail(
         // A failed driver must release its retained ownership and let independent
         // owners drain. Tokio task failure remains an explicit shutdown failure.
         let checkpoint_owner = gov.clone();
-        match tokio::spawn(async move { checkpoint_owner.flush_unit_checkpoints().await }).await {
+        match tokio::spawn(super::measurements::maintenance(async move {
+            checkpoint_owner.flush_unit_checkpoints().await
+        }))
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(error)) => failures.push(format!("unit checkpoints remain unresolved: {error}")),
             Err(error) => failures.push(format!("unit checkpoint driver failed: {error}")),
         }
         let budget_owner = gov.clone();
-        match tokio::spawn(async move { budget_owner.flush_budgets_final().await }).await {
+        match tokio::spawn(super::measurements::maintenance(async move {
+            budget_owner.flush_budgets_final().await
+        }))
+        .await
+        {
             Ok(flushed) => tracing::info!(flushed, "budget shutdown flush completed"),
             Err(error) => failures.push(format!("budget final driver failed: {error}")),
         }
         let metering_owner = gov.clone();
-        match tokio::spawn(async move { metering_owner.flush_metering_final().await }).await {
+        match tokio::spawn(super::measurements::maintenance(async move {
+            metering_owner.flush_metering_final().await
+        }))
+        .await
+        {
             Ok(flushed) => tracing::info!(flushed, "metering shutdown flush completed"),
             Err(error) => failures.push(format!("metering final driver failed: {error}")),
         }

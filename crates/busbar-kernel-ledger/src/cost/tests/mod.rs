@@ -22,6 +22,7 @@ mod derive_tests;
 mod fee_lane_tests;
 mod history_tests;
 mod identity_tests;
+mod measurement_tests;
 mod posting_tests;
 mod rate_tests;
 mod scale_tests;

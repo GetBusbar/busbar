@@ -481,6 +481,8 @@ pub struct InHead {
     pub parent_span_id: u64,
     /// The extensions blob every op carries (the shared mechanism); absent unless a pending field exists.
     pub extensions: Blob,
+    /// Host supplied measurement cursor; zero disables reporting. This is not an authority token.
+    pub measurement_revision: u64,
 }
 
 /// One per-call metric: an INDEX into the families the plugin's Statement declared, range-checked
@@ -571,6 +573,8 @@ pub struct Envelope {
     pub diags: *const Diag,
     /// How many.
     pub diags_len: usize,
+    /// Exact cumulative usage, separately validated from lossy telemetry.
+    pub measurements: crate::abi::measurement::MeasurementBatch,
 }
 
 impl Envelope {
@@ -580,6 +584,7 @@ impl Envelope {
         metrics_len: 0,
         diags: std::ptr::null(),
         diags_len: 0,
+        measurements: crate::abi::measurement::MeasurementBatch::ZERO,
     };
 }
 

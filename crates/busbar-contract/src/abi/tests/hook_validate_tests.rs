@@ -19,6 +19,7 @@ fn head(outcome: Outcome) -> OutHead {
             len: 0,
         },
         envelope: Envelope {
+            measurements: crate::abi::measurement::MeasurementBatch::ZERO,
             metrics: std::ptr::null(),
             metrics_len: 0,
             diags: std::ptr::null(),

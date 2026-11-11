@@ -47,6 +47,8 @@ pub struct RootSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_card: Option<BTreeMap<String, RateEntryCfg>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_rate_cards: Option<super::PluginRateCards>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_request_fee: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreCfg>,
@@ -82,6 +84,8 @@ impl RootSettings {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             rate_card: &'a Option<BTreeMap<String, RateEntryCfg>>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
+            plugin_rate_cards: &'a Option<super::PluginRateCards>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
             per_request_fee: &'a Option<i64>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             store: Option<F2>,
@@ -103,6 +107,7 @@ impl RootSettings {
             admin_tls: self.admin_tls.as_ref().map(|value| value.authoring(seal)),
             admin_require_mtls: &self.admin_require_mtls,
             rate_card: &self.rate_card,
+            plugin_rate_cards: &self.plugin_rate_cards,
             per_request_fee: &self.per_request_fee,
             store: self.store.as_ref().map(|value| value.authoring(seal)),
             security: &self.security,
@@ -123,6 +128,7 @@ impl RootSettings {
             admin_tls,
             admin_require_mtls,
             rate_card,
+            plugin_rate_cards,
             per_request_fee,
             store,
             security,
@@ -137,6 +143,7 @@ impl RootSettings {
             && admin_tls.is_none()
             && admin_require_mtls.is_none()
             && rate_card.is_none()
+            && plugin_rate_cards.is_none()
             && per_request_fee.is_none()
             && store.is_none()
             && security.is_none()
@@ -154,6 +161,7 @@ impl RootSettings {
             admin_tls,
             admin_require_mtls,
             rate_card,
+            plugin_rate_cards,
             per_request_fee,
             store,
             security,
@@ -180,6 +188,9 @@ impl RootSettings {
         }
         if rate_card.is_some() {
             deploy.rate_card = rate_card.clone();
+        }
+        if let Some(cards) = plugin_rate_cards {
+            deploy.plugin_rate_cards = cards.clone();
         }
         if let Some(v) = per_request_fee {
             deploy.per_request_fee = *v;

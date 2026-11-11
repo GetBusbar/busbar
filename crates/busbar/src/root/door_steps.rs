@@ -2872,7 +2872,9 @@ impl OutboundAuths {
 
                     if installed {
                         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                            runtime.spawn(Arc::clone(&instance).ticks());
+                            runtime.spawn(crate::root::measurements::background(
+                                Arc::clone(&instance).ticks(),
+                            ));
                         }
                     }
                     instance
@@ -3827,7 +3829,7 @@ mod refresher {
 
                 let scope = busbar_contract::config_time::ConfigScope::config_time();
                 for per in due {
-                    per.refresh(&scope);
+                    crate::root::measurements::configuration_refresh(|| per.refresh(&scope));
                 }
                 kept = book
                     .kept

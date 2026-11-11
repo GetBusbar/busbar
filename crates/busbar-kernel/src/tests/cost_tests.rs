@@ -10,6 +10,54 @@ use busbar_contract::records::{
 use busbar_kernel_ledger::cost::{whole, Money, MoneyError, Tally, STANDARD_TIER_BP};
 use std::collections::BTreeMap;
 
+#[test]
+fn common_measurements_price_exactly_without_enabling_legacy_card() {
+    use busbar_kernel_ledger::cost::{measurement_lane, ClassPrice, UnitRate};
+    let rates = BTreeMap::from([(
+        "hook".into(),
+        BTreeMap::from([(
+            "policy".into(),
+            BTreeMap::from([
+                ("input".into(), UnitRate::parse_micros("0.125").unwrap()),
+                ("calls".into(), UnitRate::from_nanos(0)),
+            ]),
+        )]),
+    )]);
+    let model = resolve_card_fee(None, 0).with_measurement_rates(&rates);
+    assert!(
+        !model.pricing_enabled(),
+        "legacy absent card remains disabled"
+    );
+    assert_eq!(
+        model
+            .card()
+            .lane_pricing("legacy-model")
+            .class_price("input"),
+        ClassPrice::Nanos(0),
+    );
+    let lane = measurement_lane("hook", "policy");
+    assert_eq!(
+        model.card().lane_pricing(&lane).class_price("input"),
+        ClassPrice::Nanos(125)
+    );
+    assert_eq!(
+        model.card().lane_pricing(&lane).class_price("calls"),
+        ClassPrice::Nanos(0)
+    );
+    assert_eq!(
+        model.card().lane_pricing(&lane).class_price("images"),
+        ClassPrice::Unpriced
+    );
+    assert_eq!(
+        model
+            .card()
+            .lane_pricing(&measurement_lane("auth", "policy"))
+            .class_price("input"),
+        ClassPrice::Unpriced,
+        "same instance label in a different kind cannot borrow a price",
+    );
+}
+
 fn bucket_money<'a>(
     model: &CostModel,
     rows: impl IntoIterator<Item = (&'a str, &'a BTreeMap<String, u64>)>,

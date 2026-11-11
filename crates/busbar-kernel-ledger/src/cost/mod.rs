@@ -90,10 +90,11 @@ pub use posting::{
 };
 pub use project::MeteredRow;
 pub use rate::{
-    compose_plane_cards, flat_card_present, nano_rate, plane_fee_lane, representable_nano_rate,
-    split_plane_lane, CellPrices, ClassPrice, LaneClass, LanePricing, LaneRates, PlaneFees,
-    RateCard, TierRates, CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
-    PER_REQUEST, PER_SESSION,
+    compose_plane_cards, flat_card_present, measurement_lane, nano_rate, plane_fee_lane,
+    representable_nano_rate, split_measurement_lane, split_plane_lane, CellPrices, ClassPrice,
+    LaneClass, LanePricing, LaneRates, PlaneFees, RateCard, TierRates, CLASS_CACHE_READ,
+    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT, MEASUREMENT_LANE_PREFIX, PER_REQUEST,
+    PER_SESSION,
 };
 pub use rollup::{budget_remaining, sum_spend};
 pub use unit_rate::UnitRate;

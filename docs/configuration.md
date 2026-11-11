@@ -661,7 +661,8 @@ other limit's.
 
 ### `rate_card` and `per_request_fee`
 
-The ONLY cost source. Every billable class a plane declares is the ledger (the four reserved LLM
+Host-owned rate cards are the cost source, including `plugin_rate_cards` for common measurements.
+Every billable class a plane declares is the ledger (the four reserved LLM
 token tiers, plus any OPEN class a plane counts — a rerank's `search_units`, an A2A hop's `bytes`).
 Every count a provider reports is a ledger line under its class (owner ruling LEDGER-100): beside
 its tokens the LLM plane ledgers `search_units` (rerank search units, Anthropic web searches),
@@ -720,6 +721,45 @@ configure 0 to make it free, or a rate in range
 
 — rather than booting and refusing on the first hit. Configure an explicit `0`, or a rate inside
 the representable range.
+
+#### Common plugin measurement rates (`plugin_rate_cards`)
+
+Every plugin kind may declare billable unit classes and report counts. Core prices those
+counts by the **actual host-bound configured instance namespace**, independently of the
+plugin's module name and of any plane-specific rate card:
+
+```yaml
+plugin_rate_cards:
+  hook:
+    request-check:
+      calls: "0.125"
+      bytes: 0
+  export:
+    request-log:
+      records: 2
+```
+
+The map keys are plugin kind (`plane`, `transport`, `auth`, `store`, `secret`, `hook`,
+`export`), configured namespace, then declared class. Values use the existing exact
+`UnitRate` grammar: integer micro-units or a quoted decimal with at most three places.
+Bare floating-point values, negative or overflowing rates, invalid kind/namespace names,
+and classes not declared by that bound instance are errors. Each instance may declare at
+most 64 classes. A namespace names the host binding, never an inferred provider or module.
+
+Missing cards and missing declared-class rates warn at startup. Counts remain available
+and explicitly **unpriced**, even if legacy plane pricing is disabled. Only an explicit
+`0` makes a common class free; legacy token-tier defaults do not apply here, including
+when a plugin declares a class named `input` or `output`.
+
+Request work retains its original principal and rate-card revision; autonomous background
+work uses the host's system identity. Lifecycle, bootstrap recovery and accounting's own
+Store writes are host maintenance, with reporting disabled to prevent recursive charging.
+Periodic background work begins after accounting recovery is ready.
+
+These rates use the existing transactional rate-card history and Store recovery. A change
+becomes active only after persistence succeeds, and earlier usage retains its earlier
+rates. `PUT /config/settings` accepts `plugin_rate_cards`; supplying the map replaces it
+whole, `{}` clears it, and omitting it preserves the previous overlay.
 
 #### Per-plane rate cards (`tools.rate_card`, `agents.rate_card`, `streams.rate_card`, `decisions.rate_card`)
 

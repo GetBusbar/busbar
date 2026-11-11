@@ -626,6 +626,7 @@ impl fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 pub(crate) struct Validated {
+    pub(crate) rendering: Vec<u8>,
     pub(crate) kind: KindCode,
     pub(crate) statement: Statement,
     pub(crate) slots: Box<[Op]>,
@@ -853,10 +854,29 @@ pub(crate) fn prepare_linked<K: Kind>(row: &LinkedRow) -> Result<AdmittedImage<K
 fn admitted<K: Kind>(door: RawDoorFn, stated: &[u8]) -> Result<Validated, LoadError> {
     check_facts::<K>(stated)?;
     let v = validate::<K>(door)?;
-    // SAFETY: `validate` ran `check_statement` on this Statement.
-    let own = unsafe { render(&v.statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;
-    if own != stated {
+    if v.rendering != stated {
         return Err(LoadError::StatementMismatch);
+    }
+    if let Some(plane) = v
+        .context
+        .as_deref()
+        .and_then(|context| context.downcast_ref::<super::kinds::plane::PlaneFacts>())
+    {
+        // The complete rendering comparison above authenticates both the common list and
+        // the validated legacy plane tail. One raw class has exactly one reporting owner.
+        let common = read(stated)
+            .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
+        if let Some(class) = common.measurement_classes.iter().find(|class| {
+            plane
+                .served
+                .billable_classes
+                .contains(&class.class.as_str())
+        }) {
+            return Err(LoadError::BadStatement(format!(
+                "measurement class '{}' is also declared by the legacy plane billing tail",
+                class.class
+            )));
+        }
     }
     Ok(v)
 }
@@ -927,7 +947,12 @@ pub(crate) fn validate_door<K: Kind>(p: *const Door) -> Result<Validated, LoadEr
     let statement = statement_with_layout(&door, Some(K::LAYOUT_FINGERPRINT))?;
     let (slots, operations) = table::<K>(door.ops, |i| K::optional_by_statement(i, &statement))?;
     let context = K::context(&statement).map_err(LoadError::KindTail)?;
+    // SAFETY: statement_with_layout checked every bounded declaration. Retain the exact bytes
+    // now: bind must not reread mutable native pointers after authentication.
+    let rendering =
+        unsafe { render(&statement) }.map_err(|e| LoadError::Rendering(e.to_string()))?;
     Ok(Validated {
+        rendering,
         kind,
         statement,
         slots,

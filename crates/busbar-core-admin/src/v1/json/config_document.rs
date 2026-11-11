@@ -344,6 +344,7 @@ fn shadowed_path(doc: &OverlayDoc, patch: &DocumentPatch) -> Result<Option<Strin
             admin_tls,
             admin_require_mtls,
             rate_card,
+            plugin_rate_cards,
             per_request_fee,
             store
         );

@@ -595,7 +595,10 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
         'a,
         Result<Box<dyn busbar_kernel::rate_apply::PreparedRates>, String>,
     > {
-        busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin)
+        Box::pin(async move {
+            super::measurements::validate_rates(&card.plugin_rate_cards)?;
+            busbar_kernel::rate_apply::RateApply::prepare(&*ROOT_CARD, card, rates, origin).await
+        })
     }
     fn rates_applied(&self, rates: &busbar_kernel::rate_apply::RawRates<'_>) {
         match ROOT_CARD.apply_rates(rates, busbar_kernel::store::now_ms()) {
@@ -608,6 +611,7 @@ impl busbar_kernel::rate_apply::RateApply for CardRepricer {
     }
     fn card_applied(&self, card: &busbar_kernel::config::card::CardFields, origin: &str) {
         ROOT_CARD.card_applied(card, origin);
+        super::measurements::confirmed_rates(&card.plugin_rate_cards);
     }
 }
 impl busbar_kernel::rate_apply::RateApply for RootHistory {
@@ -882,6 +886,13 @@ pub(crate) fn cells_onto(
     let mut composed = base.composed().unwrap_or_default();
     for (lane, class, nanos) in cells {
         let entry = composed.entry(lane.clone()).or_default();
+        if busbar_kernel_ledger::cost::split_measurement_lane(lane).is_some() {
+            entry.units.insert(
+                class.clone(),
+                busbar_kernel_ledger::cost::UnitRate::from_nanos(*nanos),
+            );
+            continue;
+        }
         match class.as_str() {
             busbar_kernel_ledger::cost::CLASS_INPUT => entry.input_utok = micro_of(*nanos),
             busbar_kernel_ledger::cost::CLASS_OUTPUT => entry.output_utok = micro_of(*nanos),
@@ -892,15 +903,17 @@ pub(crate) fn cells_onto(
                 entry.cache_write_utok = micro_of(*nanos);
             }
             other => {
-                let text = format!("{}.{:03}", nanos / 1000, nanos % 1000);
-                if let Ok(rate) = busbar_kernel_ledger::cost::UnitRate::parse_micros(&text) {
-                    entry.units.insert(other.to_string(), rate);
-                }
+                entry.units.insert(
+                    other.to_string(),
+                    busbar_kernel_ledger::cost::UnitRate::from_nanos(*nanos),
+                );
             }
         }
     }
-    let present =
-        base.rate_card.is_some() || !base.plane_rate_cards.is_empty() || !cells.is_empty();
+    let present = base.rate_card.is_some()
+        || !base.plane_rate_cards.is_empty()
+        || !base.plugin_rate_cards.is_empty()
+        || !cells.is_empty();
     busbar_kernel::config::card::CardFields::from_composed(
         present.then_some(&composed),
         fee.unwrap_or(base.per_request_fee),

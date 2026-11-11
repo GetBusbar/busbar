@@ -16,7 +16,7 @@ use busbar_contract::abi::{auth, export, hook, plane, secret, store, transport};
 fn current_abi_generations_are_explicit() {
     assert_eq!(busbar_contract::abi::ABI_MAJOR, 1);
     assert_eq!(busbar_contract::abi::ABI_MINOR, 0);
-    assert_eq!(MECHANISM_VERSION, 3);
+    assert_eq!(MECHANISM_VERSION, 4);
     assert_eq!(store::ABI_VERSION, 3);
     assert_eq!(secret::ABI_VERSION, 2);
     assert_eq!(auth::ABI_VERSION, 3);
@@ -28,7 +28,7 @@ fn current_abi_generations_are_explicit() {
     assert_eq!(store::v4::ABI_VERSION, 3);
     // The public Store kind exposes the current primitive table directly.
     assert_eq!(store::v4::LAYOUT_FINGERPRINT, store::LAYOUT_FINGERPRINT);
-    assert_eq!(store::LAYOUT_FINGERPRINT, 0x9c169c7bbc780b53);
+    assert_eq!(store::LAYOUT_FINGERPRINT, 0xd66505223254d413);
 }
 
 #[test]

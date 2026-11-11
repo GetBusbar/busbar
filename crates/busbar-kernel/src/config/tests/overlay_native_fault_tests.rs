@@ -453,3 +453,49 @@ async fn normal_confirmed_commit_advances_its_reopened_candidate_carrier() {
         .unwrap();
     assert_eq!(fee(&candidate).await, Some(3));
 }
+
+#[tokio::test]
+async fn measurement_rates_survive_reopen_and_refused_publication_keeps_prior_card() {
+    let (backend, core, overlay) = fixture().await;
+    let settings = |rate| RootSettings {
+        plugin_rate_cards: Some(std::collections::BTreeMap::from([(
+            "hook".into(),
+            std::collections::BTreeMap::from([(
+                "gate".into(),
+                std::collections::BTreeMap::from([(
+                    "calls".into(),
+                    busbar_kernel_ledger::cost::UnitRate::from_nanos(rate),
+                )]),
+            )]),
+        )])),
+        ..RootSettings::default()
+    };
+    persist_root_async(Some(&overlay), &settings(125))
+        .await
+        .unwrap();
+    backend.publication.store(REFUSE, Ordering::SeqCst);
+    assert!(persist_root_async(Some(&overlay), &settings(500))
+        .await
+        .is_err());
+    let reopened = OverlayStore::from_core(core).unwrap();
+    let stored = reopened
+        .read_required_async()
+        .await
+        .unwrap()
+        .unwrap()
+        .root
+        .unwrap();
+    assert_eq!(stored.plugin_rate_cards, settings(125).plugin_rate_cards);
+    backend.publication.store(NORMAL, Ordering::SeqCst);
+    persist_root_async(Some(&reopened), &settings(500))
+        .await
+        .unwrap();
+    let stored = reopened
+        .read_required_async()
+        .await
+        .unwrap()
+        .unwrap()
+        .root
+        .unwrap();
+    assert_eq!(stored.plugin_rate_cards, settings(500).plugin_rate_cards);
+}

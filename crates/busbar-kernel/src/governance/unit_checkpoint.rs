@@ -41,10 +41,17 @@ pub struct UnitCheckpoint {
     pub ended: bool,
     pub terminal: Option<Vec<RecoveryEvent>>,
     pub audit: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<crate::host_measurement::MeasurementEvidence>,
 }
 
 impl UnitCheckpoint {
     pub fn validate(&self) -> RecordStoreResult<()> {
+        if let Some(evidence) = &self.measurement {
+            evidence
+                .validate(self)
+                .map_err(|_| error("invalid host measurement origin"))?;
+        }
         if self.principal.is_empty()
             || self
                 .units
@@ -207,6 +214,14 @@ impl GovState {
             .unwrap_or_else(|p| p.into_inner())
             .is_empty()
             || self.unit_checkpoints.flushing.try_lock().is_err()
+    }
+
+    pub(crate) fn unit_checkpoint_pending(&self, id: &[u8; 16]) -> bool {
+        self.unit_checkpoints
+            .pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(id)
     }
 
     pub fn unit_checkpoints_enabled(&self) -> bool {

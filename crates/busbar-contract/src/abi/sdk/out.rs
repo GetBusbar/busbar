@@ -192,6 +192,7 @@ pub const NO_REASON_BUFFER: &str =
 /// with [`Out::metric`] and [`Out::diag`], with the texts the diagnostics point into.
 #[derive(Default)]
 pub(crate) struct Report {
+    measurements: Vec<crate::abi::measurement::UnitCount>,
     metrics: Vec<MetricEntry>,
     diags: Vec<Diag>,
     texts: Vec<Box<str>>,
@@ -204,10 +205,11 @@ unsafe impl Send for Report {}
 
 impl Report {
     pub(crate) fn has_envelope(&self) -> bool {
-        !self.metrics.is_empty() || !self.diags.is_empty()
+        !self.measurements.is_empty() || !self.metrics.is_empty() || !self.diags.is_empty()
     }
 
     fn clear(&mut self) {
+        self.measurements.clear();
         self.metrics.clear();
         self.diags.clear();
         self.texts.clear();
@@ -980,6 +982,35 @@ impl<'a, T: AbiOut> Out<'a, T> {
             ptr: text.as_ptr(),
             len: text.len(),
         };
+    }
+
+    /// Copy a complete cumulative report into the instance's retained reply storage. Every kind
+    /// can report facts. The host independently validates the revision and signed class indexes.
+    /// `input` is this invocation's input head; pending and short retries retain its cursor.
+    /// This setter replaces the prior batch, and never keeps a pointer into the caller's slice.
+    pub fn measurements(
+        &mut self,
+        input: &crate::abi::mechanism::call::InHead,
+        counts: &[crate::abi::measurement::UnitCount],
+    ) -> Result<(), crate::abi::mechanism::check::Fault> {
+        use crate::abi::measurement::{check_counts, MeasurementBatch, MAX_MEASUREMENT_CLASSES};
+        use crate::abi::mechanism::check::{fault, Rule};
+        if input.measurement_revision == 0 {
+            return Err(fault(Rule::Foreign, "measurements.revision"));
+        }
+        check_counts(counts, MAX_MEASUREMENT_CLASSES)?;
+        let Some(mut r) = self.report() else {
+            return Err(fault(Rule::Missing, "measurements.retention"));
+        };
+        r.measurements.clear();
+        r.measurements.extend_from_slice(counts);
+        self.head().envelope.measurements = MeasurementBatch {
+            revision: input.measurement_revision,
+            counts: r.measurements.as_ptr(),
+            counts_len: r.measurements.len(),
+        };
+        self.hand_back(r);
+        Ok(())
     }
 
     /// REPORT one metric in the reply's envelope: `value` for the family at `family_idx` in the

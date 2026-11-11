@@ -481,6 +481,10 @@
           "optional": true,
           "type": "i64"
         },
+        "plugin_rate_cards": {
+          "optional": true,
+          "type": "PluginRateCards"
+        },
         "plugins": {
           "optional": true,
           "type": "PluginsCfg"
@@ -2140,6 +2144,10 @@
         "per_request_fee": {
           "optional": true,
           "type": "i64"
+        },
+        "plugin_rate_cards": {
+          "optional": true,
+          "type": "PluginRateCards"
         },
         "rate_card": {
           "optional": true,

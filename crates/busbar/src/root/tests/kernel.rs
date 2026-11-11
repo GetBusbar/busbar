@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn measurement_card_history_keeps_exact_open_classes_and_legacy_absence() {
+    use busbar_kernel::config::card::CardFields;
+    use busbar_kernel_ledger::cost::{measurement_lane, UnitRate};
+    let lane = measurement_lane("store", "primary");
+    let nanos = (1_u64 << 53) + 1;
+    let fields = cells_onto(
+        &CardFields::default(),
+        &[(lane.clone(), "input".into(), nanos)],
+        None,
+    );
+    assert!(fields.rate_card.is_none());
+    assert!(fields.plane_rate_cards.is_empty());
+    assert_eq!(
+        fields.plugin_rate_cards["store"]["primary"]["input"],
+        UnitRate::from_nanos(nanos)
+    );
+    assert_eq!(
+        cells_onto(&fields, &[], None),
+        fields,
+        "empty correction retains common rates"
+    );
+    let rates = fields.rates();
+    let raw = rates.raw();
+    let card = super::card_from_raw(&raw);
+    assert!(!card.pricing_enabled());
+    let form = super::CardForm::of(&raw, &card);
+    assert_eq!(form.to_fields(), fields);
+    assert_eq!(
+        form.card().lane_pricing(&lane).class_price("input"),
+        busbar_kernel_ledger::cost::ClassPrice::Nanos(nanos),
+    );
+}
+
+#[test]
 fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() {
     let holder = RootHistory::default();
     assert!(

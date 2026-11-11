@@ -2316,6 +2316,7 @@ fn merge_root_settings(
         admin_tls,
         admin_require_mtls,
         rate_card,
+        plugin_rate_cards,
         per_request_fee,
         store,
         security,
@@ -2342,6 +2343,9 @@ fn merge_root_settings(
     }
     if rate_card.is_some() {
         base.rate_card = rate_card;
+    }
+    if plugin_rate_cards.is_some() {
+        base.plugin_rate_cards = plugin_rate_cards;
     }
     if per_request_fee.is_some() {
         base.per_request_fee = per_request_fee;
@@ -2373,6 +2377,7 @@ fn reload_to_apply_fields(req: &busbar_kernel::config::overlay::RootSettings) ->
         store,
 
         rate_card: _,
+        plugin_rate_cards: _,
         per_request_fee: _,
         security: _,
         health: _,

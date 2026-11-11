@@ -13,7 +13,7 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 pub const ABI_VERSION: u32 = 2;
 
 /// The secret kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x7195caed69bcfcbd;
+pub const LAYOUT_FINGERPRINT: u64 = 0x305714fde3324815;
 
 /// The secret kind's shapes, in fold order: every `#[repr(C)]` struct crossing its table, each
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
