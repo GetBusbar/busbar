@@ -5,14 +5,18 @@ unsupported fixtures or failed disposal refuse; there is no host fallback.
 """
 
 from contextlib import contextmanager
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+import copy
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
+import threading
 import uuid
 
 import linux_job_isolation
@@ -224,6 +228,10 @@ class Execution:
         self.conformance_inputs_manifest = None
         self.dependency_seed = None
         self.dependency_seed_sha256 = None
+        self.resource_slice = None
+        self.compiler_readonly = False
+        self.prepared_git = None
+        self.readonly_candidate_inputs = None
 
     @classmethod
     def from_context(cls, path, expected):
@@ -269,6 +277,8 @@ class Execution:
 
     def sanitize_git(self):
         """Expose source history without GitLab clone credentials, hooks or host config."""
+        if self.prepared_git is not None:
+            return checked_directory(self.prepared_git)
         source = self.roots["checkout"] / ".git"
         require(
             source.is_dir() and not source.is_symlink(),
@@ -431,9 +441,8 @@ class Execution:
                 env["GIT_CONFIG_KEY_" + str(index)],
                 env["GIT_CONFIG_VALUE_" + str(index)],
             )
-            prefix = (
-                "url." + (self.roots["candidate"] / "canonical-inputs").as_uri() + "/"
-            )
+            inputs = self.readonly_candidate_inputs or self.roots['candidate']
+            prefix = "url." + (inputs / "canonical-inputs").as_uri() + "/"
             require(
                 key.startswith(prefix)
                 and key.endswith(".insteadOf")
@@ -449,7 +458,7 @@ class Execution:
         # safe.directory value or a wildcard supplied by candidate code.
         git_roots = [self.roots['checkout'], self.roots['trusted']]
         for relative in ('host', 'sdk', 'c-witness'):
-            path = self.roots['candidate'] / relative
+            path = (self.readonly_candidate_inputs or self.roots['candidate']) / relative
             if path.exists():
                 git_roots.append(checked_directory(path))
         for path in git_roots:
@@ -541,15 +550,22 @@ class Execution:
         argv = self.prepare_command(argv, cwd)
         name = "busbar-candidate-" + uuid.uuid4().hex
         root = self.roots
+        resources = self.resource_slice or self.config['resources']
+        if self.resource_slice is not None:
+            require(self.compiler_readonly and set(resources) == set(self.config['resources'])
+                    and all(type(value) is int and value > 0
+                            and value * 2 <= self.config['resources'][key]
+                            for key, value in resources.items()),
+                    'compiler slices exceed the aggregate resource budget')
         target = root["checkout"] / "target"
-        target.mkdir(exist_ok=True)
-        checked_directory(target)
+        if not self.compiler_readonly:
+            target.mkdir(exist_ok=True)
+            checked_directory(target)
         mounts = [
             (root["checkout"], root["checkout"], False),
             (root["candidate"], root["candidate"], True),
             (root["trusted"], root["trusted"], False),
             (root["harness"], root["harness"], False),
-            (target, target, True),
             (self.sanitize_git(), root["checkout"] / ".git", False),
             (self.fixture_directory, Path("/__busbar_fixtures"), False),
             (self.fixture_map, Path("/__busbar_fixture_map.json"), False),
@@ -559,12 +575,14 @@ class Execution:
                 False,
             ),
         ]
+        if not self.compiler_readonly:
+            mounts.append((target, target, True))
         for relative in ("canonical-inputs", "host", "sdk", "c-witness"):
-            path = root["candidate"] / relative
+            path = (self.readonly_candidate_inputs or root['candidate']) / relative
             if path.exists():
                 mounts.append((checked_directory(path), path, False))
         nested_target = root["checkout"] / "dist/default/target"
-        if nested_target.parent.is_dir():
+        if nested_target.parent.is_dir() and not self.compiler_readonly:
             nested_target.mkdir(exist_ok=True)
             checked_directory(nested_target)
             mounts.append((nested_target, nested_target, True))
@@ -601,10 +619,10 @@ class Execution:
             "--security-opt=no-new-privileges",
             "--ipc=private",
             "--cgroupns=private",
-            "--pids-limit=" + str(self.config["resources"]["pids"]),
-            "--memory=" + str(self.config["resources"]["memory_bytes"]),
-            "--memory-swap=" + str(self.config["resources"]["memory_bytes"]),
-            "--cpus=" + str(self.config["resources"]["cpus"]),
+            "--pids-limit=" + str(resources["pids"]),
+            "--memory=" + str(resources["memory_bytes"]),
+            "--memory-swap=" + str(resources["memory_bytes"]),
+            "--cpus=" + str(resources["cpus"]),
             "--init",
             "--workdir",
             str(cwd),
@@ -673,12 +691,15 @@ class Execution:
             "working_directory": str(cwd),
             "docker_client_sha256": self.config['docker_sha256'],
             "configuration_sha256": hashlib.sha256(canonical(self.config)).hexdigest(),
-            "resources": dict(self.config['resources']),
+            "resources": dict(resources),
             "dependency_seed_sha256": self.dependency_seed_sha256,
             "storage": storage,
             "user_namespace": user_namespace,
             "fixture_hosts": fixture_hosts,
         }
+        if self.resource_slice is not None:
+            observation['aggregate_resources'] = dict(self.config['resources'])
+            observation['compiler_pool_width'] = 2
         self.observations.append(observation)
         try:
             result = self._client(args, capture_output=True, text=True)
@@ -700,9 +721,9 @@ class Execution:
                 == f"{self.config['uid']}:{self.config['gid']}"
                 and host["CapDrop"] == ["ALL"]
                 and not host.get("CapAdd")
-                and host["PidsLimit"] == self.config["resources"]["pids"]
-                and host["Memory"] == self.config["resources"]["memory_bytes"]
-                and host["NanoCpus"] == self.config["resources"]["cpus"] * 10**9
+                and host["PidsLimit"] == resources["pids"]
+                and host["Memory"] == resources["memory_bytes"]
+                and host["NanoCpus"] == resources["cpus"] * 10**9
                 and not host.get("Devices")
                 and not host.get("DeviceRequests")
                 and (host.get('ExtraHosts') or []) == fixture_hosts
@@ -711,7 +732,7 @@ class Execution:
                 "runtime weakened candidate isolation",
             )
             swap_bound = linux_job_isolation.validate_swap_bound(
-                daemon, host, self.config['resources']['memory_bytes'])
+                daemon, host, resources['memory_bytes'])
             expected_mounts = {(str(src), str(dst), rw) for src, dst, rw in mounts}
             actual_mounts = {
                 (m["Source"], m["Destination"], m["RW"])
@@ -822,3 +843,138 @@ class Execution:
             _,
         ):
             return subprocess.check_output(command, env=client_env, **kwargs)
+
+    def compiler_pool(self):
+        return CompilerPool(self)
+
+
+class CompilerPool:
+    """Two compiler isolates sharing only readonly inputs and an aggregate quota.
+
+    Each case owns its Execution, observations, home, lockfile, cache and target.
+    The caller must validate its result inside the callback so failure cancels
+    other work before another case starts. No successful receipt survives error.
+    """
+    def __init__(self, execution):
+        resources = execution.config['resources']
+        require(resources['cpus'] >= 4 and resources['memory_bytes'] >= 6 * 1024**3
+                and resources['pids'] >= 2, 'compiler pool requires the measured resource budget')
+        self.execution = execution
+        # Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
+        # runners. Container memory includes its tmpfs and shared memory charges.
+        self.resources = {'cpus': 2, 'memory_bytes': 3 * 1024**3,
+                          'pids': resources['pids'] // 2}
+        self.cancel = threading.Event()
+        self.observations = {}
+        self.lock = threading.Lock()
+        self.used = False
+
+    def run(self, execution, argv, *, cwd, env=None):
+        if self.cancel.is_set():
+            raise CancelledError('compiler pool cancelled')
+        env = dict(os.environ if env is None else env, TMPDIR='/tmp',
+                   BUSBAR_TEST_TMP_ROOT='/tmp/tests', XDG_CACHE_HOME='/tmp/cache',
+                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS='2')
+        with execution.invocation(argv, cwd, env,
+                                  discard_harness_target=True) as (command, environment, _):
+            if self.cancel.is_set():
+                raise CancelledError('compiler pool cancelled')
+            with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as process:
+                try:
+                    while True:
+                        if self.cancel.is_set():
+                            raise CancelledError('compiler pool cancelled')
+                        try:
+                            stdout, stderr = process.communicate(timeout=0.2)
+                            return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+                        except subprocess.TimeoutExpired:
+                            continue
+                finally:
+                    # Killing the attach client alone does not kill a container.
+                    # invocation's finally removes it and confirms absence next.
+                    if process.poll() is None:
+                        process.kill()
+                        process.communicate()
+
+    def map(self, function, cases):
+        require(threading.current_thread() is threading.main_thread(),
+                'compiler pool must be supervised by the controller main thread')
+        require(not self.used, 'compiler pool cannot be reused')
+        self.used = True
+        parent = self.execution
+        prepared_git = parent.sanitize_git()
+        pending_signal = []
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+
+        def interrupted(signum, _frame):
+            pending_signal.append(signum)
+            self.cancel.set()
+
+        def invoke_case(index, case):
+            if self.cancel.is_set():
+                raise CancelledError('compiler pool cancelled')
+            base = parent.roots['candidate'].parent / ('compiler-isolate-' + uuid.uuid4().hex)
+            base.mkdir(mode=0o755)
+            candidate, control = base / 'candidate', base / 'control'
+            candidate.mkdir(mode=0o755)
+            control.mkdir(mode=0o700)
+            child = copy.copy(parent)
+            child.roots = dict(parent.roots, candidate=candidate)
+            child.control = control
+            child.observations = []
+            child.resource_slice = dict(self.resources)
+            child.compiler_readonly = True
+            child.prepared_git = prepared_git
+            child.readonly_candidate_inputs = parent.roots['candidate']
+            # Compiler checks receive no service capabilities or mutable parent
+            # candidate mount. Their source is the readonly core checkout.
+            child.fixture_directory = control / 'fixture-sockets'
+            child.fixture_directory.mkdir(mode=0o755)
+            child.fixture_map = control / 'fixture-map.json'
+            child.fixture_map.write_text('[]\n')
+            try:
+                return function(child, case)
+            except BaseException:
+                self.cancel.set()
+                raise
+            finally:
+                for row in child.observations:
+                    row['compiler_case_index'] = index
+                with self.lock:
+                    self.observations[index] = child.observations
+                # Never delete artifacts while a container could still hold
+                # them. A failed disposal retains the entire private root.
+                if all(row.get('disposed') for row in child.observations):
+                    shutil.rmtree(base)
+
+        def invoke(index, case):
+            try:
+                return invoke_case(index, case)
+            except BaseException:
+                # Allocation and post-disposal cleanup failures cancel work too.
+                self.cancel.set()
+                raise
+
+        try:
+            for sig in handlers:
+                signal.signal(sig, interrupted)
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='compiler') as executor:
+                futures = [executor.submit(invoke, index, case) for index, case in enumerate(cases)]
+                results, errors = [], []
+                for future in futures:
+                    try:
+                        results.append(future.result())
+                    except BaseException as error:
+                        self.cancel.set()
+                        errors.append(error)
+                if pending_signal:
+                    raise InterruptedError('compiler pool interrupted by signal ' + str(pending_signal[0]))
+                if errors:
+                    raise next((error for error in errors if not isinstance(error, CancelledError)), errors[0])
+                return results
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+            for index in sorted(self.observations):
+                parent.observations.extend(self.observations[index])

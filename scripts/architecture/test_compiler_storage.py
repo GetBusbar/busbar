@@ -95,7 +95,8 @@ class HarnessStorage(Fixture, unittest.TestCase):
     def test_process_error_still_reclaims_after_confirmed_disposal(self):
         with patch('native_confinement.subprocess.run', side_effect=subprocess.CalledProcessError(1, self.argv)):
             with self.assertRaises(subprocess.CalledProcessError):
-                self.execution_instance.run(self.argv, cwd=self.roots['checkout'],
+                # Outer CI Git mappings belong to its candidate, not this fixture.
+                self.execution_instance.run(self.argv, cwd=self.roots['checkout'], env={},
                                             discard_harness_target=True, check=True)
         self.assertFalse(self.targets[-1].exists())
 

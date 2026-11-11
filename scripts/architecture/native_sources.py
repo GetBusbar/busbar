@@ -17,6 +17,18 @@ import tomllib
 SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
 
 
+def standalone_products(repository, evaluation_only, vector):
+    """Only core native qualification invokes ci-product-inputs.sh.
+
+    Plugin/conformance subjects build the host distribution using its lock;
+    release scaffolds use their candidate and SDK graphs. Neither builds each
+    standalone product with that product's independent workspace lockfile.
+    """
+    if type(evaluation_only) is not bool:
+        raise ValueError('standalone product selection requires the controller job mode')
+    return vector['products'] if repository == 'GetBusbar/busbar' and not evaluation_only else []
+
+
 def lock_inputs(text, policy):
     allowed = {'GetBusbar/busbar'} | {name for name, row in policy['repositories'].items() if not row['private']}
     sources = defaultdict(set)
@@ -98,7 +110,8 @@ def prepare(q, host):
             fetched[repository].add(revision)
     for repository, revisions in sorted(sources.items()):
         fetch(repository, revisions)
-    for repository, revisions in product_inputs(parent, vector, q.policy.data).items():
+    standalone = standalone_products(q.repository, q.evaluation_only, vector)
+    for repository, revisions in product_inputs(parent, {'products': standalone}, q.policy.data).items():
         sources[repository].update(revisions)
         fetch(repository, revisions)
     settings = []

@@ -49,7 +49,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "4112187b51641bb4be799aee453a98670389c9e8e03c1be185d2884d804c1a8a",
+      "script_sha256": "2d50e59ca97f44770cc9c8d7b978726f9c6aba4bce9b6341ca7507582fff431d",
       "source_commit": "checkout",
       "stage": "qa"
     },
@@ -140,7 +140,7 @@
       "repo": "GetBusbar/busbar-plane-mcp",
       "script": "testing/conformance/mcp.sh",
       "script_sha256": "0487bb5ae418b146cedb934abf1a91f6870556ca8bd5e6365d91148950f4115a",
-      "source_commit": "271de40854301ad49ad9d0d4e0407b0bbab9bc4f",
+      "source_commit": "5ab33610974e38b67908601d18a562ed46aa1b0c",
       "stage": "qa"
     },
     "oidf-oauth2": {
@@ -149,7 +149,7 @@
       "core_pin": "checkout",
       "repo": "GetBusbar/busbar",
       "script": "testing/oidf-conformance/oidf.py",
-      "script_sha256": "4112187b51641bb4be799aee453a98670389c9e8e03c1be185d2884d804c1a8a",
+      "script_sha256": "2d50e59ca97f44770cc9c8d7b978726f9c6aba4bce9b6341ca7507582fff431d",
       "source_commit": "checkout",
       "stage": "qa"
     },

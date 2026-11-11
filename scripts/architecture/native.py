@@ -411,6 +411,26 @@ class Qualification:
         Path(self.env['TMPDIR']).mkdir(mode=0o700)
         self.save()
 
+    @contextmanager
+    def preparation(self, name):
+        """Retain controller preparation cost separately from qualification checks."""
+        row = {'name': name, 'started_at': now(), 'status': 'running'}
+        self.receipt.setdefault('preparation', []).append(row)
+        started = time.monotonic()
+        self.save()
+        print(json.dumps({'native_preparation': row}), flush=True)
+        try:
+            yield
+        except BaseException:
+            row['status'] = 'fail'
+            raise
+        else:
+            row['status'] = 'pass'
+        finally:
+            row.update(finished_at=now(), elapsed_seconds=round(time.monotonic() - started, 3))
+            self.save()
+            print(json.dumps({'native_preparation': row}), flush=True)
+
     def save(self):
         execution = getattr(self, 'execution', None)
         if execution and 'execution_boundary' in self.receipt:
@@ -559,8 +579,9 @@ class Qualification:
             self.execution.observations.extend(observed['candidate_execution'])
             self.save()
 
-    def core(self):
-        self.architecture()
+    def core_regressions(self):
+        # Fixed controller tests need neither fetched subject dependencies nor
+        # compiler witnesses. Fail here before paying either preparation cost.
         self.run_controller('architecture-regressions', [sys.executable, '-m', 'unittest', 'discover',
             '-s', str(self.trusted / 'scripts/architecture'), '-p', 'test_*.py'], cwd=self.trusted)
         self.run_controller('toolchain-regressions', [sys.executable, '-m', 'unittest', 'discover',
@@ -569,6 +590,9 @@ class Qualification:
                 ('conformance-capability-regressions', 'testing/conformance/test_capabilities.py'),
                 ('conformance-confined-tools-regressions', 'testing/h2-conformance/test_confined_tools.py')):
             self.run_controller(name, [sys.executable, '-B', '-I', str(self.trusted / relative)], cwd=self.trusted)
+
+    def core(self):
+        self.architecture()
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
         self.sdk()
@@ -893,19 +917,28 @@ def qualify():
     try:
         with deferred_interruptions():
             qualification = Qualification(args)
+        # Constructor validation establishes the immutable controller, exact
+        # candidate and execution boundary before any regression command runs.
+        if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only:
+            qualification.core_regressions()
         if requires_native_oracle(qualification.repository, args.external_conformance, qualification.policy):
             from native_oracle import prepare as prepare_oracle
-            prepare_oracle(qualification)
+            with qualification.preparation('oracle-inputs'):
+                prepare_oracle(qualification)
         from native_sources import prepare
-        prepare(qualification, qualification.host())
+        with qualification.preparation('canonical-inputs'):
+            prepare(qualification, qualification.host())
         if qualification.execution is not None:
             from native_seed import prepare as prepare_seed
-            prepare_seed(qualification)
+            with qualification.preparation('dependency-seed'):
+                prepare_seed(qualification)
             from native_staged_fixtures import collect_required
-            collect_required(qualification)
+            with qualification.preparation('staged-fixtures'):
+                collect_required(qualification)
             if not args.conformance_capabilities:
                 from native_conformance_capabilities import prepare as prepare_capabilities
-                prepare_capabilities(qualification)
+                with qualification.preparation('conformance-capabilities'):
+                    prepare_capabilities(qualification)
         evaluation_error = None
         if args.external_conformance:
             try:

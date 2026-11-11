@@ -66,6 +66,31 @@ def manifest_snapshot(source, destination, *, revision=None):
         target.write_bytes(read(relative) if relative.name in ('Cargo.toml', 'Cargo.lock') else b'')
 
 
+def lock_inputs(q, host, sdk, canonical, vector):
+    """Keep all subject closures; add standalone locks only for their actual caller."""
+    from native_sources import standalone_products
+    locks = {}
+    inputs = {}
+    for label, directory, relative in (
+            ('candidate', q.root, 'Cargo.lock'), ('host', host, 'Cargo.lock'),
+            ('distribution', host, 'dist/default/Cargo.lock'), ('sdk', sdk, 'Cargo.lock')):
+        path = directory / relative
+        if path.is_file():
+            locks[label] = path.read_bytes()
+            inputs[label] = (directory, None, str(Path(relative).parent))
+    for product in standalone_products(q.repository, q.evaluation_only, vector):
+        data = subprocess.check_output(['git', '-C', str(canonical / product['repo']),
+                                        'show', product['commit'] + ':Cargo.lock'])
+        if hashlib.sha256(data).hexdigest() != product['lock_sha256']:
+            raise Violation('job seed product lock differs from admitted vector')
+        label = 'product-' + product['repo']
+        locks[label] = data
+        inputs[label] = (canonical / product['repo'], product['commit'], '.')
+    if not locks:
+        raise Violation('job dependency seed has no exact locks')
+    return locks, inputs
+
+
 def prepare(q):
     execution = q.execution
     if execution is None:
@@ -79,31 +104,10 @@ def prepare(q):
     context.mkdir()
     output.mkdir()
     (context / 'seed-payload').mkdir()
-    locks = {}
-    inputs = {}
-    host = q.host()
-    sdk = q.sdk()
-    for label, directory, relative in (
-            ('candidate', q.root, 'Cargo.lock'), ('host', host, 'Cargo.lock'),
-            ('distribution', host, 'dist/default/Cargo.lock'), ('sdk', sdk, 'Cargo.lock')):
-        path = directory / relative
-        if path.is_file():
-            locks[label] = path.read_bytes()
-            inputs[label] = (directory, None, str(Path(relative).parent))
-    # The native commands build exactly this assembled public host vector. Each
-    # standalone product has its own lock, already independently bound by it.
+    host, sdk = q.host(), q.sdk()
     vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
     canonical = q.work / 'canonical-inputs'
-    for product in vector['products']:
-        data = subprocess.check_output(['git', '-C', str(canonical / product['repo']),
-                                        'show', product['commit'] + ':Cargo.lock'])
-        if hashlib.sha256(data).hexdigest() != product['lock_sha256']:
-            raise Violation('job seed product lock differs from admitted vector')
-        label = 'product-' + product['repo']
-        locks[label] = data
-        inputs[label] = (canonical / product['repo'], product['commit'], '.')
-    if not locks:
-        raise Violation('job dependency seed has no exact locks')
+    locks, inputs = lock_inputs(q, host, sdk, canonical, vector)
     git_revisions = {}
     recipe = {'schema': 'busbar.native-seed-recipe/1', 'rust': '1.98.0',
               'vector_sha256': hashlib.sha256((host / 'scripts/ci-product-pins.json').read_bytes()).hexdigest(),
