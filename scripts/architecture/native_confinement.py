@@ -444,6 +444,19 @@ class Execution:
             )
             result["GIT_CONFIG_KEY_" + str(index)] = key
             result["GIT_CONFIG_VALUE_" + str(index)] = value
+        # Git rejects these controller-owned repositories under the remapped UID.
+        # Trust only exact, read-only source mounts chosen here, never an ambient
+        # safe.directory value or a wildcard supplied by candidate code.
+        git_roots = [self.roots['checkout'], self.roots['trusted']]
+        for relative in ('host', 'sdk', 'c-witness'):
+            path = self.roots['candidate'] / relative
+            if path.exists():
+                git_roots.append(checked_directory(path))
+        for path in git_roots:
+            result['GIT_CONFIG_KEY_' + str(count)] = 'safe.directory'
+            result['GIT_CONFIG_VALUE_' + str(count)] = str(path)
+            count += 1
+        result['GIT_CONFIG_COUNT'] = str(count)
         result.update(self.config["environment"])
         if self.conformance_inputs_manifest is not None:
             result['BUSBAR_CONFORMANCE_INPUTS'] = '/__busbar_conformance_inputs.json'

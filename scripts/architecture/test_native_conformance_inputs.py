@@ -42,6 +42,56 @@ class Instruments(Fixture, unittest.TestCase):
         self.assertEqual(Execution.from_context(path, expected).conformance_mounts,
                          self.q.execution.conformance_mounts)
 
+    def python_runtime(self):
+        self.q.execution.config['python'] = '/usr/bin/python3'
+        self.plan['bundles']['python-runtime'] = self.plan['bundles'].pop('example')
+        identity = {'schema': 'busbar.native-python-runtime/1', 'platform': 'linux/amd64',
+            'python_version': '3.11.2', 'base_python': '/usr/bin/python3',
+            'image_manifest_sha256': self.q.execution.config['image'].split('sha256:')[-1],
+            'image_config_sha256': 'b' * 64,
+            'executable_sha256': hashlib.sha256(b'pinned Python executable').hexdigest()}
+        (self.source / 'bin').mkdir()
+        (self.source / 'bin/python3').write_bytes(b'pinned Python executable')
+        (self.source / 'identity.json').write_text(json.dumps(identity))
+        (self.source / 'pyvenv.cfg').write_text(
+            'home = /usr/bin\ninclude-system-site-packages = false\nversion = 3.11.2\n')
+        self.plan['bundles']['python-runtime']['files'] = {
+            str(path.relative_to(self.source)): {
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                'executable': path.name == 'python3'}
+            for path in self.source.rglob('*') if path.is_file()}
+
+    def test_python_runtime_uses_bound_readonly_path_and_preserves_controller_python(self):
+        self.python_runtime()
+        controller_python = self.q.execution.config['python']
+        original_path = self.q.execution.config['environment']['PATH']
+        self.intake()
+        self.assertEqual(self.q.execution.environment({'PATH': '/candidate/forged'})['PATH'],
+            '/opt/busbar-conformance/python-runtime/bin:' + original_path)
+        self.assertEqual(self.q.execution.config['python'], controller_python)
+        path, expected = self.q.execution.write_context()
+        from native_confinement import Execution, canonical
+        execution = Execution.from_context(path, expected)
+        binding = self.q.receipt['conformance_inputs']['python_runtime']
+        self.assertEqual(binding['configuration_sha256'],
+                         hashlib.sha256(canonical(execution.config)).hexdigest())
+        self.assertEqual(execution.config['environment'], self.q.execution.config['environment'])
+
+    def test_python_runtime_rejects_other_image_abi(self):
+        self.python_runtime()
+        self.q.execution.config['image'] = 'sha256:' + 'c' * 64
+        with self.assertRaisesRegex(Violation, 'selected image ABI'):
+            self.intake()
+
+    def test_python_runtime_rejects_system_site_packages(self):
+        self.python_runtime()
+        path = self.source / 'pyvenv.cfg'
+        path.write_text(path.read_text().replace('false', 'true'))
+        self.plan['bundles']['python-runtime']['files']['pyvenv.cfg']['sha256'] = (
+            hashlib.sha256(path.read_bytes()).hexdigest())
+        with self.assertRaisesRegex(Violation, 'closed standard virtual environment'):
+            self.intake()
+
     def test_portable_archive_roundtrip_rebinds_only_under_protected_package(self):
         manifest = self.control / 'input-plan.json'
         manifest.write_text(json.dumps(self.plan))

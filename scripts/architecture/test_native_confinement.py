@@ -147,6 +147,43 @@ class Boundary(Fixture, unittest.TestCase):
                 }
             )
 
+    def test_git_ownership_exceptions_are_exact_controller_mounts(self):
+        execution = self.execution()
+        host = self.roots['candidate'] / 'host'
+        host.mkdir()
+        result = execution.environment({})
+        settings = [(result['GIT_CONFIG_KEY_' + str(index)],
+                     result['GIT_CONFIG_VALUE_' + str(index)])
+                    for index in range(int(result['GIT_CONFIG_COUNT']))]
+        self.assertEqual(settings, [('safe.directory', str(path)) for path in
+                                    (self.roots['checkout'], self.roots['trusted'], host)])
+        self.assertEqual(result['GIT_CONFIG_GLOBAL'], '/dev/null')
+        self.assertEqual(result['GIT_CONFIG_NOSYSTEM'], '1')
+        for value in ('*', str(self.control), str(self.roots['candidate'])):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'Git setting'):
+                execution.environment({'GIT_CONFIG_COUNT': '1',
+                    'GIT_CONFIG_KEY_0': 'safe.directory', 'GIT_CONFIG_VALUE_0': value})
+
+    def test_git_reads_registered_root_but_rejects_other_owner_repository(self):
+        execution = self.execution()
+        other = self.base / 'unregistered'
+        other.mkdir()
+        for path in (self.roots['trusted'], other):
+            subprocess.run(['git', 'init', '-q', str(path)], check=True)
+        env = execution.environment({})
+        # Git's own deterministic ownership witness exercises the real safe.directory
+        # handling without changing host users or relying on shared-filesystem chown.
+        env['GIT_TEST_ASSUME_DIFFERENT_OWNER'] = 'true'
+        for path, permitted in ((self.roots['trusted'], True), (other, False)):
+            result = subprocess.run(['git', '-C', str(path), 'rev-parse', '--show-toplevel'],
+                                    env=env, capture_output=True, text=True)
+            if permitted:
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(Path(result.stdout.strip()), path)
+            else:
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('dubious ownership', result.stderr)
+
     def test_product_bindings_require_explicit_validation_and_cannot_be_overridden(self):
         from native_product_inputs import ProductInputs
 
