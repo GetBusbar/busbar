@@ -1,14 +1,14 @@
 {
   "owners": {
     "a2a": {
-      "archive_sha256": "2ce6f172243632271c18c0ec8469059f92bc49b846317769f8367ca435efb25d",
-      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-a2a/20261110-2ce6f172243632271c18c0ec8469059f92bc49b846317769f8367ca435efb25d/a2a.tar.gz",
+      "archive_sha256": "6761f036d9b19432921f3529dbc059ac3e85351eea7f108f18aebf06bcd371f4",
+      "archive_url": "https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-a2a/20261111-6761f036d9b19432921f3529dbc059ac3e85351eea7f108f18aebf06bcd371f4/a2a.tar.gz",
       "bundles": [
         "a2a-tools"
       ],
-      "bytes": 551803200,
+      "bytes": 551803070,
       "expanded_bytes": 1678077692,
-      "portable_manifest_sha256": "3b9c0444660f4ed5d8743c6f9f50b4599c881e182575695c05387a11b053d51b"
+      "portable_manifest_sha256": "81d36b8342f976e6cf60ad1719c3185c626c5c1e351fa2a95000d746c8f71c8c"
     },
     "core": {
       "archive_sha256": "4712b47c1d100f58b0bd6510d6ad6ffc3fe480f625a98f0e66a0c0358e1cd868",

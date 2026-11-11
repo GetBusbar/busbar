@@ -591,6 +591,7 @@ class Execution:
             "--cgroupns=private",
             "--pids-limit=" + str(self.config["resources"]["pids"]),
             "--memory=" + str(self.config["resources"]["memory_bytes"]),
+            "--memory-swap=" + str(self.config["resources"]["memory_bytes"]),
             "--cpus=" + str(self.config["resources"]["cpus"]),
             "--init",
             "--workdir",
@@ -690,6 +691,8 @@ class Execution:
                 and host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777'},
                 "runtime weakened candidate isolation",
             )
+            swap_bound = linux_job_isolation.validate_swap_bound(
+                daemon, host, self.config['resources']['memory_bytes'])
             expected_mounts = {(str(src), str(dst), rw) for src, dst, rw in mounts}
             actual_mounts = {
                 (m["Source"], m["Destination"], m["RW"])
@@ -715,6 +718,7 @@ class Execution:
                 inspected=True,
                 mounts_sha256=hashlib.sha256(canonical(sorted(expected_mounts))).hexdigest(),
                 security_options=host['SecurityOpt'],
+                swap_bound=swap_bound,
             )
             yield [
                 *self.docker,
@@ -768,6 +772,8 @@ class Execution:
                 elif cargo_home.exists():
                     shutil.rmtree(cargo_home)
                 observation['private_cargo_cache_removed'] = True
+            if 'swap_bound' in observation:
+                linux_job_isolation.recheck_swap_bound(observation['swap_bound'])
             require(state_error is None, 'candidate process state observation failed')
 
     def run(self, argv, *, cwd, env=None, **kwargs):

@@ -469,6 +469,8 @@ def collector_mount_witness(config, store, evidence):
 
 
 def diagnostic_steps(trusted, config, config_path, store, evidence):
+    from native_service_peers import runtime_controls_probe
+    runtime_controls_probe(config, evidence)
     collector_mount_witness(config, store, evidence)
     env = dict(BASE_ENV, HOME=str(evidence), TMPDIR=str(store),
                BUSBAR_CONFINEMENT_TEST_CONFIG=str(config_path))

@@ -1,6 +1,8 @@
 """Direct regressions for the protected no-network service peer interface."""
 import copy
 import io
+import json
+import subprocess
 import os
 import tarfile
 import tempfile
@@ -9,14 +11,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
 
-from native_service_peers import CAPS, TMPFS, Peers
+from native_service_peers import CAPS, TMPFS, Peers, runtime_controls_probe
 
 
 class PeerControls(unittest.TestCase):
-    def test_weakened_peer_network_resources_and_mounts_are_refused(self):
+    def fixture(self):
         peers=Peers.__new__(Peers)
         peers.execution=SimpleNamespace(config={'isolation':{}})
-        peers.daemon={}
+        peers.daemon={'SwapLimit':True}
         host={'Runtime':'runc','NetworkMode':'none','Privileged':False,'ReadonlyRootfs':True,'PidMode':'',
               'IpcMode':'private','CgroupnsMode':'private','CapDrop':['ALL'],
               'CapAdd':['CAP_'+cap for cap in CAPS],'SecurityOpt':['no-new-privileges'],
@@ -26,6 +28,10 @@ class PeerControls(unittest.TestCase):
         image={'Id':'sha256:'+'a'*64}
         actual={'Image':image['Id'],'HostConfig':host,
                 'Mounts':[{'Type':'bind','Source':'/job/data','Destination':'/data','RW':True}]}
+        return peers, image, actual
+
+    def test_weakened_peer_network_resources_and_mounts_are_refused(self):
+        peers, image, actual = self.fixture()
         with patch('linux_job_isolation.validate_userns'):
             peers.verify(actual,image,[(Path('/job/data'),'/data')])
             for key,value in [('NetworkMode','bridge'),('Privileged',True),('ReadonlyRootfs',False),
@@ -34,9 +40,129 @@ class PeerControls(unittest.TestCase):
                 with self.subTest(key=key):
                     altered=copy.deepcopy(actual);altered['HostConfig'][key]=value
                     with self.assertRaises(ValueError):peers.verify(altered,image,[(Path('/job/data'),'/data')])
+            altered=copy.deepcopy(actual)
+            altered['HostConfig']['PidMode']='private'
+            altered['Config']={'Env':['PRIVATE_TOKEN=must-never-appear']}
+            with self.assertRaisesRegex(ValueError, 'protected request:') as failure:
+                peers.verify(altered,image,[(Path('/job/data'),'/data')])
+            self.assertIn('"PidMode":{"observed":"private","requested":""}', str(failure.exception))
+            self.assertNotIn('PRIVATE_TOKEN', str(failure.exception))
+            altered['HostConfig']['Runtime']='x'*10000
+            with self.assertRaises(ValueError) as failure:
+                peers.verify(altered,image,[(Path('/job/data'),'/data')])
+            self.assertLessEqual(len(str(failure.exception)), 4160)
             altered=copy.deepcopy(actual);altered['Mounts'].append(
                 {'Type':'bind','Source':'/var/run/docker.sock','Destination':'/socket','RW':True})
             with self.assertRaisesRegex(ValueError,'mounts'):peers.verify(altered,image,[(Path('/job/data'),'/data')])
+
+    def test_control_probe_collects_both_flag_sets_and_disposes_without_starting(self):
+        for refuses in (False, True):
+            with self.subTest(refuses=refuses), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+                calls=[]
+                def run(command, **kwargs):
+                    args=command[3:];calls.append(args)
+                    payload=({'ServerVersion':'29.1.3'} if args[0]=='info' else
+                        [{'Id':'sha256:'+'a'*64,'Config':{}}] if args[0]=='image' else
+                        [{'Image':'sha256:'+'a'*64,'HostConfig':{},'Config':{'Env':['SECRET=excluded']}}]
+                        if args[0]=='inspect' else '')
+                    return subprocess.CompletedProcess(command,0,
+                        stdout=json.dumps(payload) if payload else '',stderr='')
+                config={'docker':'/fixed/docker','docker_host':'unix:///private',
+                        'image':'sha256:'+'a'*64,'runtime':'runc'}
+                with patch('subprocess.run',side_effect=run), \
+                        patch.object(Peers,'control_values',return_value=({'PidMode':''},{'PidMode':'private'})), \
+                        patch.object(Peers,'verify',return_value={},side_effect=ValueError('protected mismatch') if refuses else None):
+                    if refuses:
+                        with self.assertRaisesRegex(ValueError,'probe refused'):
+                            runtime_controls_probe(config,Path(directory))
+                    else:
+                        runtime_controls_probe(config,Path(directory))
+                report=json.loads((Path(directory)/'fixture-controls-probe.json').read_text())
+                self.assertEqual(len(report['cases']),2)
+                self.assertTrue(all(case['disposed'] for case in report['cases']))
+                self.assertEqual([case['status'] for case in report['cases']],
+                                 ['refused' if refuses else 'pass']*2)
+                self.assertNotIn('SECRET',json.dumps(report))
+                self.assertNotIn('start',[call[0] for call in calls])
+                self.assertNotIn('pull',[call[0] for call in calls])
+                creates=[call for call in calls if call[0]=='create']
+                self.assertEqual(len(creates),2)
+                for call in creates:
+                    self.assertIn('--network=none',call)
+                    self.assertIn('--pull=never',call)
+                    self.assertIn('--read-only',call)
+                self.assertNotIn('KILL',creates[0])
+                self.assertIn('KILL',creates[1])
+                self.assertIn('busbar-ldap.example.org:127.0.0.1',creates[1])
+                self.assertEqual([call[0] for call in calls].count('rm'),2)
+                self.assertEqual([call[0] for call in calls].count('ps'),2)
+
+    def test_unaccounted_swap_requires_independent_zero_capacity_proof(self):
+        peers, image, actual = self.fixture()
+        actual['HostConfig']['MemorySwap'] = -1
+        header=b'Filename\tType\tSize\tUsed\tPriority\n'
+        def evidence(swaps=header, total=b'SwapTotal: 0 kB\n'):
+            return lambda path, *args, **kwargs: io.BytesIO(swaps if str(path)=='/proc/swaps' else total)
+        with patch('linux_job_isolation.validate_userns'):
+            for advertised in (None, True, 0):
+                peers.daemon={'SwapLimit':advertised}
+                with self.subTest(advertised=advertised), patch('linux_job_isolation.kernel_no_swap') as proof:
+                    with self.assertRaisesRegex(ValueError,'MemorySwap'):
+                        peers.verify(actual,image,[(Path('/job/data'),'/data')])
+                    proof.assert_not_called()
+            peers.daemon={'SwapLimit':False}
+            with patch.object(Path,'open',evidence()):
+                proof=peers.verify(actual,image,[(Path('/job/data'),'/data')])
+            self.assertEqual(proof['observed_memory_swap_bytes'],-1)
+            self.assertEqual(proof['requested_memory_swap_bytes'],1073741824)
+            self.assertEqual(proof['effective_swap_bytes'],0)
+            self.assertEqual(proof['mechanism'],'kernel-zero-swap-capacity')
+            for swaps,total in [(header+b'/swap file 1024 0 -2\n',b'SwapTotal: 0 kB\n'),
+                                (header,b'SwapTotal: 1024 kB\n'),(b'',b'SwapTotal: 0 kB\n'),
+                                (header,b'SwapTotal: 0 kB\nSwapTotal: 0 kB\n'),
+                                (header,b'SwapTotal: 0 MB\n'),(header,b'MemTotal: 8192 kB\n')]:
+                with self.subTest(swaps=swaps,total=total), patch.object(Path,'open',evidence(swaps,total)):
+                    with self.assertRaisesRegex(ValueError,'kernel has swap capacity or invalid evidence'):
+                        peers.verify(actual,image,[(Path('/job/data'),'/data')])
+            with patch.object(Path,'open',side_effect=PermissionError('unreadable kernel proof')):
+                with self.assertRaises(PermissionError):
+                    peers.verify(actual,image,[(Path('/job/data'),'/data')])
+            # Echoed request bytes alone do not establish kernel enforcement.
+            actual['HostConfig']['MemorySwap']=1073741824
+            for daemon in ({}, {'SwapLimit':None}, {'SwapLimit':0}, {'SwapLimit':1}):
+                peers.daemon=daemon
+                with self.subTest(daemon=daemon), patch('linux_job_isolation.kernel_no_swap') as proof:
+                    with self.assertRaisesRegex(ValueError,'SwapLimit'):
+                        peers.verify(actual,image,[(Path('/job/data'),'/data')])
+                    proof.assert_not_called()
+            peers.daemon={'SwapLimit':False}
+            with patch.object(Path,'open',evidence(header,b'SwapTotal: 1024 kB\n')):
+                with self.assertRaisesRegex(ValueError,'kernel has swap capacity'):
+                    peers.verify(actual,image,[(Path('/job/data'),'/data')])
+            with patch.object(Path,'open',evidence()):
+                proof=peers.verify(actual,image,[(Path('/job/data'),'/data')])
+            self.assertEqual(proof['observed_memory_swap_bytes'],1073741824)
+            self.assertEqual(proof['mechanism'],'kernel-zero-swap-capacity')
+            actual['HostConfig']['Memory']=0
+            with patch.object(Path,'open',evidence()):
+                with self.assertRaisesRegex(ValueError,'Memory'):
+                    peers.verify(actual,image,[(Path('/job/data'),'/data')])
+
+    def test_zero_swap_is_rechecked_after_all_peers_are_disposed(self):
+        peers=Peers.__new__(Peers)
+        peers.names=['first','second'];peers.namespaces=[]
+        proofs=[{'mechanism':'kernel-zero-swap-capacity'} for _ in range(2)]
+        peers.q=SimpleNamespace(receipt={'service_peers':{
+            str(index):{'swap_bound':proof} for index,proof in enumerate(proofs)}})
+        peers.client=Mock(return_value=SimpleNamespace(returncode=0))
+        def changed():
+            self.assertEqual(peers.names,[])
+            self.assertTrue(all(value['disposed'] for value in peers.q.receipt['service_peers'].values()))
+            raise ValueError('host swap capacity changed')
+        with patch('linux_job_isolation.kernel_no_swap',side_effect=changed):
+            with self.assertRaisesRegex(ValueError,'host swap capacity changed'):
+                peers.close()
+        self.assertEqual(peers.client.call_count,2)
 
     def copy_peer(self):
         peers=Peers.__new__(Peers)

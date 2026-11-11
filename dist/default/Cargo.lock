@@ -324,7 +324,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=84881b795f513d8d081218f5987a0ef0631367c3#84881b795f513d8d081218f5987a0ef0631367c3"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=810280c73d8fad2cbc36d9ab3c8129ab3eb1a2a2#810280c73d8fad2cbc36d9ab3c8129ab3eb1a2a2"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -340,7 +340,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=84881b795f513d8d081218f5987a0ef0631367c3#84881b795f513d8d081218f5987a0ef0631367c3"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=810280c73d8fad2cbc36d9ab3c8129ab3eb1a2a2#810280c73d8fad2cbc36d9ab3c8129ab3eb1a2a2"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -632,7 +632,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=1976e448484d7556df39838d46efc2b314fbd4a9#1976e448484d7556df39838d46efc2b314fbd4a9"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=66c2fe0a3dbb07ef10b73fe3d135574be3ca9d12#66c2fe0a3dbb07ef10b73fe3d135574be3ca9d12"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -800,7 +800,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=b1f6abaadaffae4b2c481a42d812d0d3172ee3b4#b1f6abaadaffae4b2c481a42d812d0d3172ee3b4"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=a82106326ecfcbb89b7d30780ebab5b5dffe021c#a82106326ecfcbb89b7d30780ebab5b5dffe021c"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -822,7 +822,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=8095a11e0ed90bcdbe8a4e7fd02395f7fd234a72#8095a11e0ed90bcdbe8a4e7fd02395f7fd234a72"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=1f7d2662f295045825c607a00c863e87db936a4f#1f7d2662f295045825c607a00c863e87db936a4f"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -833,7 +833,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-llm"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=e9a89221e3fd17e582383d2d3e8547359d2b86fe#e9a89221e3fd17e582383d2d3e8547359d2b86fe"
+source = "git+https://github.com/GetBusbar/busbar-plane-llm?rev=e496b4a9e157cc78323dc919d7c39715116d6693#e496b4a9e157cc78323dc919d7c39715116d6693"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -848,7 +848,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-mcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=ed78cf8b044ae2ac406dffc1b3793cdee730db87#ed78cf8b044ae2ac406dffc1b3793cdee730db87"
+source = "git+https://github.com/GetBusbar/busbar-plane-mcp?rev=7a515d2ba5ab0886bcfbdbe1d191cc9faa347c0d#7a515d2ba5ab0886bcfbdbe1d191cc9faa347c0d"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -901,7 +901,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=147f2e5d6aba6864d804480c6cb30cf62cb8b75f#147f2e5d6aba6864d804480c6cb30cf62cb8b75f"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=56cc557f96b59813855ed7b96b1214b9214885f2#56cc557f96b59813855ed7b96b1214b9214885f2"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -910,7 +910,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=0e1244b2985f4e437a08bc74a6b379e62ccbc689#0e1244b2985f4e437a08bc74a6b379e62ccbc689"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=17638285ffd764f676ab50e56a908f77cea3dc52#17638285ffd764f676ab50e56a908f77cea3dc52"
 dependencies = [
  "busbar-contract",
  "libc",
@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "busbar-store-sqlite"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=cd1b0266ce49c8cf9156343439ca83941dbf17c7#cd1b0266ce49c8cf9156343439ca83941dbf17c7"
+source = "git+https://github.com/GetBusbar/busbar-store-sqlite?rev=834590db24e76959bd349d0acba4d51617e42a2d#834590db24e76959bd349d0acba4d51617e42a2d"
 dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
@@ -1022,7 +1022,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=038599672e857cb0da502aafd8a168319f67d18c#038599672e857cb0da502aafd8a168319f67d18c"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=b19e847ecbfb676a1a90a63c5133ceb1925e5f57#b19e847ecbfb676a1a90a63c5133ceb1925e5f57"
 dependencies = [
  "aes",
  "busbar-contract",
@@ -2088,9 +2088,9 @@ dependencies = [
 
 [[package]]
 name = "libsqlite3-sys"
-version = "0.38.2"
+version = "0.39.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+checksum = "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
 dependencies = [
  "cc",
  "pkg-config",
@@ -3148,9 +3148,9 @@ dependencies = [
 
 [[package]]
 name = "rusqlite"
-version = "0.40.2"
+version = "0.41.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+checksum = "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
 dependencies = [
  "bitflags",
  "fallible-iterator 0.3.0",
