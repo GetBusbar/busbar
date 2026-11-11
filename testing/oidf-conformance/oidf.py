@@ -546,13 +546,13 @@ def contract_patches(manifest, contract):
             for arg in ("--config", f'patch.{json.dumps(url)}.busbar-contract.path={json.dumps(contract)}')]
 
 
-def subject_builds(checkout):
+def subject_builds(checkout, target):
     """The two builds the subject needs: the binary busbar SHIPS (the distribution workspace,
     dist/default: core plus its compiled-in transports and planes; the root workspace's `busbar` is
     core alone, which has no listener), and the plugin packer from the root workspace."""
     return [
         ["cargo", "build", "--locked", "--manifest-path", os.path.join(checkout, "dist", "default", "Cargo.toml"),
-         "--bin", "busbar"],
+         "--target-dir", os.path.join(target, "dist-default"), "--bin", "busbar"],
         ["cargo", "build", "--locked", "-p", "busbar-plugin-loader", "--features", "pack",
          "--bin", "busbar-plugin-pack"],
     ]
@@ -560,12 +560,14 @@ def subject_builds(checkout):
 
 def build_subject(checkout, target, work, log):
     env = cargo_env(target)
-    for argv in subject_builds(checkout):
+    # TLS/H2 check this same locked distribution in dist-default. Reuse its
+    # target, but always let Cargo check the current inputs before readback.
+    for argv in subject_builds(checkout, target):
         rc = run(argv, log, cwd=checkout, env=env)
         if rc != 0:
             raise Refused(f"`{' '.join(argv)}` exited {rc}: {tail(log, 6)}")
-    debug = os.path.join(target, "debug")
-    busbar, pack = os.path.join(debug, "busbar"), os.path.join(debug, "busbar-plugin-pack")
+    busbar = os.path.join(target, "dist-default", "debug", "busbar")
+    pack = os.path.join(target, "debug", "busbar-plugin-pack")
 
     # busbar's OIDC module, from its own repo at the rev busbar SHIPS (oidc_pin), its busbar-contract
     # patched to THIS checkout (what the distribution workspace does for its dev edge), so the module

@@ -653,7 +653,22 @@ def compiler_check_jobs():
     return min(4, resources['cpus']) if resources['memory_bytes'] >= 6 * 1024**3 else 1
 
 
-def check_compiler_witnesses(policy, candidate, trusted, scratch):
+def compiler_witness_parallel():
+    """Select only the disk-backed aggregate budget exercised by job 5374."""
+    if EXECUTION is None:
+        return False
+    resources = EXECUTION.config['resources']
+    storage = EXECUTION.config['isolation']
+    # Four representative controls preserved their verdicts with two 2 CPU /
+    # 3 GiB isolates: 237.007s serial -> 209.916s parallel. CPU increased 4.2%;
+    # this is a latency improvement, not a reduction in compiler work. Keep
+    # smaller and unmeasured storage boundaries on the existing serial path.
+    return (resources['cpus'] >= 4 and resources['memory_bytes'] >= 6 * 1024**3
+            and resources['pids'] >= 1024 and storage['storage_kind'] == 'loop-ext4'
+            and storage['storage_bytes'] >= 24 * 1024**3)
+
+
+def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=False):
     """Compile approved positive/negative SDK examples against the candidate APIs.
     Unlike a bare compile_fail result, require the intended rustc error category."""
     harness = scratch / 'compiler-witnesses'
@@ -698,8 +713,13 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
             cases.append((name, expected, needs_loader))
     if not cases or not any(not expected for _, expected, _ in cases):
         raise Violation('compiler witnesses require a positive control')
-    jobs = compiler_check_jobs()
-    for name, expected, needs_loader in cases:
+    if parallel and EXECUTION is None:
+        raise Violation('parallel compiler witnesses require confinement')
+    pool = EXECUTION.compiler_pool() if parallel else None
+    jobs = 2 if pool else compiler_check_jobs()
+
+    def compile_case(execution, case):
+        name, expected, needs_loader = case
         # Each confined case still gets fresh artifacts. They are no longer needed
         # once its process exits; retaining all cases exhausts the bounded job disk.
         command = ['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json']
@@ -710,7 +730,9 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
         architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),
                               expected=expected, build_jobs=jobs)
         started = time.monotonic()
-        result = candidate_run(command, cwd=scratch, text=True, capture_output=True, discard_harness_target=True)
+        result = (pool.run(execution, command, cwd=scratch) if pool else
+                  candidate_run(command, cwd=scratch, text=True, capture_output=True,
+                                discard_harness_target=True))
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
         errors = [row['message'] for row in messages if row.get('reason') == 'compiler-message' and row.get('target', {}).get('name') == name and row['message']['level'] == 'error']
         codes = {error['code']['code'] for error in errors if error.get('code')}
@@ -725,6 +747,11 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
                               log_sha256=hashlib.sha256(log.encode()).hexdigest())
         if not passed:
             raise Violation(f'{name}: expected {expected or "successful positive control"}, received {sorted(codes)}; see {harness / (name + ".log")}')
+    if pool:
+        pool.map(compile_case, cases)
+    else:
+        for case in cases:
+            compile_case(EXECUTION, case)
     return {'compiler_witnesses': len(cases), 'production_features': True}
 
 
@@ -828,7 +855,8 @@ def main():
             assembled = resolve_shipping(checkout, entries, args.scratch.resolve(), assembly=True)
             receipt['assembly'] = check_graph(assembled, policy, args.repository, checkout)
             architecture_progress('assembly-graph', 'finish')
-            receipt.update(check_compiler_witnesses(policy, checkout, args.trusted.resolve(), args.scratch.resolve()))
+            receipt.update(check_compiler_witnesses(policy, checkout, args.trusted.resolve(),
+                                                   args.scratch.resolve(), parallel=compiler_witness_parallel()))
         architecture_progress('source-check', 'start')
         receipt.update(check_sources(policy, args.repository, checkout, metadata, args.trusted.resolve(), args.scratch.resolve()))
         architecture_progress('source-check', 'finish')

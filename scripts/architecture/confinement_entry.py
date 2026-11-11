@@ -48,6 +48,41 @@ def ignore_cargo_seed_entries(seed_root, directory, names):
     }
 
 
+def readonly_format_command(argv):
+    """The controller's finite formatting commands need no writable Cargo cache."""
+    return list(argv) in (
+        ["cargo", "fmt", "--all"],
+        ["cargo", "fmt", "--all", "--check"],
+        ["cargo", "fmt", "--manifest-path", "dist/default/Cargo.toml", "--all", "--check"],
+    )
+
+
+def prepare_cargo_home(argv):
+    seed = os.environ.get("CARGO_HOME")
+    if not seed:
+        return
+    # Keep the prepared directory and its normal controller disposal even when
+    # formatting can read the immutable seed directly. All compilation and
+    # candidate test commands still get independent writable source copies.
+    fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
+    if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
+            or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
+        raise RuntimeError('private Cargo cache was not prepared by the controller')
+    if readonly_format_command(argv):
+        # The image root and controller-mounted job seed are both read-only.
+        # Check the actual filesystem, not permissions a candidate could chmod.
+        if not os.statvfs(seed).f_flag & os.ST_RDONLY:
+            raise RuntimeError('formatting requires a read-only Cargo seed')
+        return
+    shutil.copytree(
+        seed,
+        fresh,
+        dirs_exist_ok=True,
+        ignore=lambda directory, names: ignore_cargo_seed_entries(seed, directory, names),
+    )
+    os.environ["CARGO_HOME"] = str(fresh)
+
+
 def start(port, path):
     class Handler(socketserver.BaseRequestHandler):
         def handle(self):
@@ -94,23 +129,9 @@ def main():
     import subprocess
 
     verify_boundary()
-    seed = os.environ.get("CARGO_HOME")
-    if seed:
-        # Each invocation starts from the immutable image cache. Cargo can acquire
-        # its locks without letting an earlier candidate poison a trusted harness.
-        fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
-        if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
-                or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
-            raise RuntimeError('private Cargo cache was not prepared by the controller')
-        shutil.copytree(
-            seed,
-            fresh,
-            dirs_exist_ok=True,
-            ignore=lambda directory, names: ignore_cargo_seed_entries(
-                seed, directory, names
-            ),
-        )
-        os.environ["CARGO_HOME"] = str(fresh)
+    if sys.argv[1:2] != ["--"] or len(sys.argv) < 3:
+        raise ValueError("missing candidate command")
+    prepare_cargo_home(sys.argv[2:])
     rows = json.loads(Path("/__busbar_fixture_map.json").read_text())
     servers = []
     for row in rows:
@@ -124,8 +145,6 @@ def main():
             raise ValueError("invalid fixture capability")
         servers.append(start(row["port"], "/__busbar_fixtures/" + row["socket"]))
     # Keep the proxy supervisor alive; Docker's init reaps descendant processes.
-    if sys.argv[1:2] != ["--"] or len(sys.argv) < 3:
-        raise ValueError("missing candidate command")
     try:
         return subprocess.call(sys.argv[2:], env=os.environ)
     finally:

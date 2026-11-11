@@ -180,11 +180,81 @@ class Subject(unittest.TestCase):
     def test_the_subject_is_the_shipped_binary(self):
         # The root workspace's `busbar` is core alone (no transport, so no listener); the binary busbar
         # ships is the distribution's, dist/default.
-        argv = oidf.subject_builds("/c")[0]
+        argv = oidf.subject_builds("/c", "/target")[0]
         self.assertIn("--manifest-path", argv)
         self.assertEqual(argv[argv.index("--manifest-path") + 1], "/c/dist/default/Cargo.toml")
         self.assertEqual(argv[argv.index("--bin") + 1], "busbar")
         self.assertIn("--locked", argv)
+        self.assertEqual(argv[argv.index("--target-dir") + 1], "/target/dist-default")
+
+    def test_subject_readback_requires_current_locked_build_in_tls_h2_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, target, work = [root / name for name in ("source", "target", "work")]
+            (source / "dist/default").mkdir(parents=True)
+            (source / "dist/default/Cargo.lock").write_text(LOCK)
+            work.mkdir()
+            wrong_binary = target / "debug/busbar"
+            binary = target / "dist-default/debug/busbar"
+            for path in (wrong_binary, binary):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("stale artifact from another build")
+            calls = []
+
+            def run(argv, log, **kwargs):
+                calls.append(argv)
+                if argv[0] != "cargo":
+                    return 0
+                env = kwargs["env"]
+                self.assertEqual(env["RUSTUP_TOOLCHAIN"], "1.98.0")
+                self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "0")
+                self.assertEqual(env["CARGO_BUILD_JOBS"], "1")
+                self.assertEqual(env["CARGO_NET_OFFLINE"], "true")
+                self.assertEqual(env["CARGO_TARGET_DIR"], str(target))
+                if len(calls) == 1:
+                    self.assertEqual(argv, ["cargo", "build", "--locked", "--manifest-path",
+                        str(source / "dist/default/Cargo.toml"), "--target-dir",
+                        str(target / "dist-default"), "--bin", "busbar"])
+                    self.assertEqual(kwargs["cwd"], str(source))
+                    binary.write_text("current locked distribution")
+                return 0
+
+            def stage(pin, destination):
+                self.assertEqual(pin, {"url": URL, "rev": REV, "version": "1.6.0"})
+                (Path(destination) / "Cargo.toml").write_text(
+                    '[dependencies]\nbusbar-contract = { git = "https://github.com/GetBusbar/busbar" }\n')
+                return True
+
+            with mock.patch.dict(oidf.os.environ, {"RUSTUP_TOOLCHAIN": "1.98.0",
+                    "CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_BUILD_JOBS": "1"}), \
+                    mock.patch.object(oidf, "native_mode", return_value=True), \
+                    mock.patch.object(oidf, "run", side_effect=run), \
+                    mock.patch.object(oidf, "staged_oidc_source", side_effect=stage):
+                actual, plugins = oidf.build_subject(str(source), str(target), str(work), "log")
+            self.assertEqual(actual, str(binary))
+            self.assertEqual(Path(actual).read_text(), "current locked distribution")
+            self.assertEqual(wrong_binary.read_text(), "stale artifact from another build")
+            self.assertEqual(plugins, str(work / "plugins"))
+            self.assertEqual(calls[1], ["cargo", "build", "--locked", "-p", "busbar-plugin-loader",
+                                       "--features", "pack", "--bin", "busbar-plugin-pack"])
+            self.assertEqual(calls[2][-2:], ["--target-dir", str(target / "oidf-oidc-plugin")])
+            self.assertEqual(calls[3][0], str(target / "debug/busbar-plugin-pack"))
+            self.assertEqual(len(calls), 4)
+
+    def test_existing_binary_cannot_bypass_failed_locked_rebuild(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "dist-default/debug/busbar"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("stale artifact")
+            log = root / "build.log"
+            log.write_text("current locked source refused")
+            with mock.patch.object(oidf, "run", return_value=101) as run, \
+                    mock.patch.object(oidf, "staged_oidc_source") as stage:
+                with self.assertRaisesRegex(oidf.Refused, "current locked source refused"):
+                    oidf.build_subject("/current-checkout", str(root), str(root / "work"), str(log))
+            run.assert_called_once()
+            stage.assert_not_called()
 
     def test_a_subject_that_did_not_boot_is_not_reported_as_unbuilt(self):
         record = {"control": {"ok": True}, "subject_error": "busbar exited during boot (2): x"}
