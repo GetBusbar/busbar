@@ -108,7 +108,10 @@ private loopback Python callback for the existing fixture's fresh header set for
 that exact method/URI/named principal. This preserves fresh JWT subjects/rate
 buckets. The absent-credential principal receives no Authorization header. Each
 request and response is counted; unknown principals, wrong operations, duplicate
-callbacks or missing responses fail. No authentication bypass or fake token
+callbacks or missing responses fail. A bounded `ZAP_CELL_COMPLETENESS_FAILURE`
+stderr record preserves the declared operation and each synthetic principal's
+expected/request/response counts and status. Callback secrets, concrete URLs,
+headers, bodies and exception text are excluded. No authentication bypass or fake token
 verification is injected into Busbar.
 
 Published output under `CONFORMANCE_OUT/external-rbac/` contains the exact full

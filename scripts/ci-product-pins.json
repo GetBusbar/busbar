@@ -92,7 +92,7 @@
     {
       "repo": "busbar-plane-llm",
       "url": "https://github.com/GetBusbar/busbar-plane-llm",
-      "commit": "d91fd8cf87b36f588d8db74a746353008df150f7",
+      "commit": "09477d9c4dc3ae6639ac394f00fef42a25e4bdca",
       "package": "busbar-plane-llm-plugin",
       "kind": "plane",
       "alias": "llm",
@@ -345,7 +345,7 @@
     {
       "repo": "busbar-store-postgres",
       "url": "https://github.com/GetBusbar/busbar-store-postgres",
-      "commit": "7430f2e565791375447bbf549a69dd8132540d2f",
+      "commit": "af299cdfc62f797e2cf1d299395a4a4362ec6932",
       "package": "busbar-store-postgres-plugin",
       "kind": "store",
       "alias": "postgres",
@@ -356,7 +356,7 @@
     {
       "repo": "busbar-store-valkey",
       "url": "https://github.com/GetBusbar/busbar-store-valkey",
-      "commit": "76678fb8791291ae887cac0b12da138e4676bb79",
+      "commit": "d09f1dd9f6eaf03b7dc4fa9c733e4e4b70d0fc1b",
       "package": "busbar-store-valkey-plugin",
       "kind": "store",
       "alias": "valkey",
