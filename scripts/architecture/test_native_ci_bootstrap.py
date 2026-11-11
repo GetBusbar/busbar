@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import tarfile
 import tempfile
@@ -33,6 +34,15 @@ class Bootstrap(unittest.TestCase):
                 bootstrap.ci_environment(self.environment() | {key: value})
         with self.assertRaises(ValueError):
             bootstrap.approved_revision(selected | {'CI_CONFIG_REF_URI': selected['CI_CONFIG_REF_URI'].replace('b' * 40, 'dev')})
+
+    def test_plugin_host_binding_cannot_float_or_disappear(self):
+        env = self.environment() | {'CI_PROJECT_PATH': 'GetBusbar/busbar-plane-mcp', 'CI_JOB_NAME': 'native-qualification'}
+        with self.assertRaisesRegex(ValueError, 'immutable host'):
+            bootstrap.ci_environment(env)
+        with self.assertRaisesRegex(ValueError, 'immutable'):
+            bootstrap.ci_environment(env | {'BUSBAR_ADMISSION_CORE_REVISION': 'dev'})
+        bound = bootstrap.ci_environment(env | {'BUSBAR_ADMISSION_CORE_REVISION': 'c' * 40})
+        self.assertEqual(bound['BUSBAR_ADMISSION_CORE_REVISION'], 'c' * 40)
 
     def test_privilege_is_only_the_verified_fixed_controller_entry(self):
         argv = bootstrap.entry_command(Path('/trusted/native_ci_bootstrap.py'), 'a' * 64,
@@ -65,6 +75,58 @@ class Bootstrap(unittest.TestCase):
         request = urllib.request.Request(bootstrap.PACKAGE, headers={'JOB-TOKEN': 'fixture-token'})
         with self.assertRaisesRegex(ValueError, 'origin'):
             bootstrap.SameOrigin().redirect_request(request, None, 302, '', {}, 'https://other.invalid/archive')
+
+    def test_published_judge_plan_selects_only_each_job_required_owners(self):
+        plan = json.loads((Path(__file__).parents[2] / 'ci/native-judge-inputs.json').read_text())
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance'), ['core', 'tls', 'oidf'])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'native-qualification'), [])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-llm', 'external-conformance'), [])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-decisions', 'native-qualification'), [])
+        row = dict(plan['owners']['mcp'])
+        for bad in (row['archive_url'].replace('/projects/3/', '/projects/4/'),
+                    row['archive_url'].replace('github.com', 'other.invalid'),
+                    row['archive_url'] + '?token=secret'):
+            with self.subTest(url=bad), self.assertRaises(ValueError):
+                bootstrap.verify_judge_record('mcp', dict(row, archive_url=bad))
+
+    def test_judge_staging_binds_verified_archive_and_keeps_it_outside_candidate_roots(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            trusted, store = root / 'trusted', root / 'store'
+            (trusted / 'ci').mkdir(parents=True)
+            store.mkdir()
+            content = b'fixed external instrument'
+            manifest = {'schema': 'busbar.native-conformance-inputs/1', 'bundles': {
+                'mcp-tools': {'path': 'bundles/mcp-tools', 'files': {
+                    'tool': {'sha256': hashlib.sha256(content).hexdigest(), 'executable': False}},
+                    'provenance': [{'uri': 'https://example.invalid/pinned', 'sha256': hashlib.sha256(content).hexdigest()}]}}}
+            raw = (json.dumps(manifest, sort_keys=True) + '\n').encode()
+            archive = root / 'input.tar.gz'
+            with tarfile.open(archive, 'w:gz') as output:
+                for name, data in [('manifest.json', raw), ('bundles/mcp-tools/tool', content)]:
+                    item = tarfile.TarInfo(name)
+                    item.size, item.mode = len(data), 0o444
+                    output.addfile(item, io.BytesIO(data))
+            checksum = bootstrap.digest(archive)
+            row = {'archive_url': 'https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-mcp/20261111-' + checksum + '/mcp.tar.gz',
+                'archive_sha256': checksum, 'portable_manifest_sha256': hashlib.sha256(raw).hexdigest(),
+                'bytes': archive.stat().st_size, 'expanded_bytes': len(content), 'bundles': ['mcp-tools']}
+            plan = {'schema': 'busbar.native-judge-inputs/1', 'owners': {'mcp': row},
+                    'repositories': {'GetBusbar/busbar-plane-mcp': ['mcp']}}
+            (trusted / 'ci/native-judge-inputs.json').write_text(json.dumps(plan))
+            def fetched(selected, destination, token):
+                self.assertEqual(token, 'fixture-job-token')
+                shutil.copyfile(archive, destination)
+            with patch.object(bootstrap, 'fetch_judge_archive', side_effect=fetched):
+                result = bootstrap.stage_judges(trusted, 'GetBusbar/busbar-plane-mcp', 'native-qualification', store, 'fixture-job-token')
+            combined = json.loads(Path(result['manifest']).read_text())
+            bundle = Path(combined['bundles']['mcp-tools']['path'])
+            self.assertTrue(bundle.is_relative_to(store / 'judge-inputs'))
+            self.assertEqual((bundle / 'tool').read_bytes(), content)
+            self.assertFalse((store / 'judge-inputs/mcp.tar.gz').exists())
+            self.assertEqual(result['sha256'], bootstrap.digest(result['manifest']))
+            self.assertEqual(result['suite_verdict'], 'not implied by input staging')
 
     def test_registry_serves_pinned_blobs_and_has_no_filesystem_or_proxy_route(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:

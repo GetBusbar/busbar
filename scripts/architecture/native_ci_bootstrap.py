@@ -41,7 +41,7 @@ ROOT = Path('/srv/busbar-native-ci')
 CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_JOB_NAME '
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
-    'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN').split())
+    'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
 JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
 HOST_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
 BASE_ENV = {'PATH': HOST_PATH,
@@ -80,6 +80,10 @@ def ci_environment(env):
             'invalid CI project')
     require(re.fullmatch(r'[0-9a-f]{40}', result.get('CI_COMMIT_SHA', '')), 'invalid source revision')
     require(result.get('CI_JOB_TOKEN'), 'controller job token is missing')
+    host = result.get('BUSBAR_ADMISSION_CORE_REVISION')
+    require(host is None or re.fullmatch(r'[0-9a-f]{40}', host), 'protected host revision must be immutable')
+    require(result['CI_PROJECT_PATH'] == 'GetBusbar/busbar' or host is not None,
+            'plugin qualification requires its protected immutable host revision')
     return result
 
 
@@ -349,6 +353,102 @@ def daemon_main(control):
                     process.wait(timeout=10)
 
 
+def judge_selection(plan, repository, job):
+    require(isinstance(plan, dict) and set(plan) == {'schema', 'owners', 'repositories'}
+            and plan['schema'] == 'busbar.native-judge-inputs/1'
+            and isinstance(plan['owners'], dict) and len(plan['owners']) <= 16
+            and isinstance(plan['repositories'], dict), 'invalid protected judge input plan')
+    if job == 'external-conformance' or (repository == 'GetBusbar/busbar' and job != 'core-conformance'):
+        return []
+    selected = plan['repositories'].get(repository, [])
+    require(isinstance(selected, list) and len(selected) == len(set(selected))
+            and all(isinstance(owner, str) and owner in plan['owners'] for owner in selected),
+            'unapproved judge owner selection')
+    total = 0
+    seen = set()
+    for owner in selected:
+        row = plan['owners'][owner]
+        verify_judge_record(owner, row)
+        total += row['expanded_bytes']
+        require(not seen.intersection(row['bundles']), 'duplicate judge bundle name')
+        seen.update(row['bundles'])
+    require(total <= 4 * 1024**3, 'selected judge inputs exceed the aggregate byte budget')
+    return selected
+
+
+def verify_judge_record(owner, row):
+    require(re.fullmatch(r'[a-z][a-z0-9-]{0,31}', owner)
+            and isinstance(row, dict) and set(row) == {'archive_url', 'archive_sha256',
+                'portable_manifest_sha256', 'bundles', 'bytes', 'expanded_bytes'},
+            'invalid protected judge archive')
+    for key in ('archive_sha256', 'portable_manifest_sha256'):
+        require(isinstance(row[key], str) and re.fullmatch(r'[0-9a-f]{64}', row[key]),
+                'invalid protected judge digest')
+    require(type(row['bytes']) is int and 0 < row['bytes'] <= 2 * 1024**3
+            and type(row['expanded_bytes']) is int and 0 < row['expanded_bytes'] <= 4 * 1024**3,
+            'invalid protected judge size')
+    require(isinstance(row['bundles'], list) and 0 < len(row['bundles']) <= 32
+            and all(isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name) for name in row['bundles'])
+            and len(row['bundles']) == len(set(row['bundles'])), 'invalid protected judge bundle names')
+    prefix = 'https://github.com/api/v4/projects/3/packages/generic/busbar-native-conformance-' + owner
+    require(re.fullmatch(re.escape(prefix) + r'/[0-9]{8}-' + row['archive_sha256']
+                        + '/' + re.escape(owner) + r'\.tar\.gz', row['archive_url']),
+            'judge package is outside its credential origin or immutable package identity')
+
+
+def fetch_judge_archive(row, destination, token):
+    opener = urllib.request.build_opener(SameOrigin())
+    request = urllib.request.Request(row['archive_url'], headers={'JOB-TOKEN': token})
+    with opener.open(request, timeout=90) as source, destination.open('xb') as output:
+        remaining = row['bytes']
+        while chunk := source.read(min(1024**2, remaining + 1)):
+            remaining -= len(chunk)
+            require(remaining >= 0, 'judge archive exceeds its protected byte count')
+            output.write(chunk)
+    require(destination.stat().st_size == row['bytes'] and digest(destination) == row['archive_sha256'],
+            'judge archive differs from the protected input plan')
+
+
+def stage_judges(trusted, repository, job, store, token):
+    from native_conformance_inputs import unpack
+    plan_path = trusted / 'ci/native-judge-inputs.json'
+    plan = json.loads(plan_path.read_text())
+    owners = judge_selection(plan, repository, job)
+    if not owners:
+        return None
+    private = store / 'judge-inputs'
+    private.mkdir(mode=0o700)
+    merged = {'schema': 'busbar.native-conformance-inputs/1', 'bundles': {}}
+    retained = []
+    for owner in owners:
+        row = plan['owners'][owner]
+        archive = private / (owner + '.tar.gz')
+        fetch_judge_archive(row, archive, token)
+        result = unpack(archive, row['archive_sha256'], row['portable_manifest_sha256'], private / owner)
+        archive.unlink()
+        portable_path = Path(result['manifest'])
+        portable = json.loads(portable_path.read_text())
+        require(set(portable) == {'schema', 'bundles'} and portable['schema'] == merged['schema']
+                and sorted(portable['bundles']) == sorted(row['bundles']), 'published judge bundle set differs')
+        actual_bytes = 0
+        for name, bundle in portable['bundles'].items():
+            require(name not in merged['bundles'] and bundle.get('path') == 'bundles/' + name,
+                    'portable judge path or ownership differs')
+            source = portable_path.parent / 'bundles' / name
+            actual_bytes += sum(path.stat().st_size for path in source.rglob('*') if path.is_file())
+            merged['bundles'][name] = dict(bundle, path=str(source))
+        require(actual_bytes == row['expanded_bytes'], 'expanded judge size differs from the protected input plan')
+        retained.append({'owner': owner, 'archive_sha256': row['archive_sha256'],
+                         'portable_manifest_sha256': row['portable_manifest_sha256'],
+                         'expanded_bytes': actual_bytes, 'bundles': row['bundles']})
+    manifest = private / 'combined.json'
+    manifest.write_text(json.dumps(merged, sort_keys=True) + '\n')
+    manifest.chmod(0o444)
+    return {'manifest': str(manifest), 'sha256': digest(manifest),
+            'protected_plan_sha256': digest(plan_path), 'archives': retained,
+            'suite_verdict': 'not implied by input staging'}
+
+
 def collector_mount_witness(config, store, evidence):
     import linux_job_isolation
     output = store / 'collector-witness'
@@ -508,6 +608,10 @@ def root_main():
                     command = ['/usr/bin/python3', '-B', str(trusted / 'scripts/architecture/native.py'),
                         '--trusted', str(trusted), '--checkout', str(checkout), '--work', str(work),
                         '--confinement', str(config_path), '--confinement-sha256', digest(config_path)]
+                    judges = stage_judges(trusted, env['CI_PROJECT_PATH'], env['CI_JOB_NAME'], store, env['CI_JOB_TOKEN'])
+                    if judges is not None:
+                        command.extend(['--conformance-inputs', judges['manifest'], '--conformance-inputs-sha256', judges['sha256']])
+                        receipt['judge_inputs'] = judges
                     if env['CI_JOB_NAME'] == 'core-conformance':
                         command.append('--conformance-only')
                     elif env['CI_JOB_NAME'] == 'external-conformance':
