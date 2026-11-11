@@ -279,6 +279,9 @@ class Qualification:
             self.work.mkdir(mode=0o700)
             self.harness = self.control / 'harness'
             self.harness.mkdir(mode=0o700)
+            # Controller-owned source is bind-mounted read-only, but the
+            # remapped compiler must be able to traverse its mount root.
+            self.harness.chmod(0o755)
             self.execution = Execution(json.loads(args.confinement.read_text()),
                 {'checkout': self.root, 'candidate': self.work, 'trusted': self.trusted, 'harness': self.harness}, self.control)
         elif getattr(args, 'confinement_sha256', None):

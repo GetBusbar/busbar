@@ -3,6 +3,7 @@
 
 import argparse
 import copy
+import errno
 import hashlib
 import json
 from pathlib import Path
@@ -15,6 +16,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from native_confinement import Execution, digest, require
 
 PINS = json.loads(Path(__file__).with_name("tsan-linux29-pins.json").read_text())
+
+BASELINE_PERSONALITY_CONTROL = """import ctypes,errno,json
+libc=ctypes.CDLL(None,use_errno=True)
+libc.personality.argtypes=[ctypes.c_ulong]
+libc.personality.restype=ctypes.c_int
+before=libc.personality(0xffffffff)
+ctypes.set_errno(0)
+result=libc.personality(262144)
+error=ctypes.get_errno()
+after=libc.personality(0xffffffff)
+if (before,result,error,after)!=(0,-1,errno.EPERM,0):
+ raise RuntimeError('baseline personality denial differs: '+repr((before,result,error,after)))
+print(json.dumps({'argument':262144,'before':before,'result':result,'errno':error,'after':after}))
+"""
+
+
+def verify_baseline_personality(result):
+    require(result.returncode == 0, "baseline personality control did not exit successfully")
+    require(
+        json.loads(result.stdout) == {
+            "argument": 262144, "before": 0, "result": -1,
+            "errno": errno.EPERM, "after": 0,
+        },
+        "baseline did not deny the exact personality operation with EPERM",
+    )
 
 
 def observe_engine(execution, work):
@@ -258,15 +284,17 @@ int main(void) {
             "race_free_sha256": digest(clean),
             "race_sha256": digest(race),
         }
-        blocked = run(original, "baseline-tsan", [str(clean)])
-        require(
-            blocked.returncode != 0
-            and (
-                "personality" in blocked.stderr
-                or "unexpected memory mapping" in blocked.stderr
-            ),
-            "baseline did not reproduce the actual TSan personality obstruction",
+        # Randomized TSan startup may fault before producing a diagnostic, or
+        # obtain a compatible layout. Retain this attempt without treating it
+        # as a policy assertion or a sanitizer pass. Test the syscall directly.
+        run(original, "baseline-tsan", [str(clean)])
+        report["baseline_tsan_role"] = "diagnostic-only"
+        denied_personality = run(
+            original, "baseline-personality-denial",
+            [config["python"], "-I", "-c", BASELINE_PERSONALITY_CONTROL],
         )
+        verify_baseline_personality(denied_personality)
+        report["baseline_personality_denied"] = True
         good = run(sanitizer, "sanitizer-race-free", ["setarch", "--addr-no-randomize", str(clean)])
         bad = run(sanitizer, "sanitizer-deliberate-race", ["setarch", "--addr-no-randomize", str(race)])
         require(
