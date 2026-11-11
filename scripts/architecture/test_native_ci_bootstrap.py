@@ -72,6 +72,17 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(diagnostic['isolation']['storage_kind'], 'tmpfs')
         self.assertNotIn('storage_image', diagnostic['isolation'])
 
+    def test_job_parent_allows_remapped_traversal_without_listing_or_writes(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            path = Path(directory)
+            private = path / 'private'
+            private.mkdir(mode=0o700)
+            with patch.object(bootstrap, 'root_directory', return_value=path) as protected:
+                self.assertEqual(bootstrap.job_directory(path), path)
+            protected.assert_called_once_with(path, fresh=True)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o711)
+            self.assertEqual(private.stat().st_mode & 0o777, 0o700)
+
     def test_credential_redirect_cannot_leave_the_package_origin(self):
         request = urllib.request.Request(bootstrap.PACKAGE, headers={'JOB-TOKEN': 'fixture-token'})
         with self.assertRaisesRegex(ValueError, 'origin'):
@@ -79,7 +90,7 @@ class Bootstrap(unittest.TestCase):
 
     def test_published_judge_plan_selects_only_each_job_required_owners(self):
         plan = json.loads((Path(__file__).parents[2] / 'ci/native-judge-inputs.json').read_text())
-        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance'), ['core', 'tls', 'oidf'])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance'), ['core', 'tls', 'oidf', 'release-engineering'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-llm', 'external-conformance'), [])
