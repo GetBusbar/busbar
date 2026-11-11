@@ -1022,7 +1022,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=b19e847ecbfb676a1a90a63c5133ceb1925e5f57#b19e847ecbfb676a1a90a63c5133ceb1925e5f57"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=1add2f76299942fbf1337effc902614edf7a4063#1add2f76299942fbf1337effc902614edf7a4063"
 dependencies = [
  "aes",
  "busbar-contract",
@@ -1034,7 +1034,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=2f952ef1f81799e84bc835dad5ab881cc8b1f597#2f952ef1f81799e84bc835dad5ab881cc8b1f597"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=3000cf9262cc4888ffa4e8b52bc8d8a00e4e91cb#3000cf9262cc4888ffa4e8b52bc8d8a00e4e91cb"
 dependencies = [
  "busbar-contract",
  "httpdate",

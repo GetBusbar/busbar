@@ -17,6 +17,9 @@ class StartupFailure(unittest.TestCase):
     def runner(self, root, code):
         runtime = root / "runtime"
         runtime.mkdir()
+        (runtime / "xml").mkdir()
+        (runtime / "xml/config.xml").write_text("<config><default>retained</default></config>")
+        (runtime / "xml/config.xml").chmod(0o444)
         java = root / "java"
         java.write_text(
             "#!" + sys.executable + "\n"
@@ -59,6 +62,39 @@ class StartupFailure(unittest.TestCase):
             self.assertIn("ZAP_STARTUP_FAILURE ", captured.getvalue())
             self.assertFalse(runner.work.exists())
             self.assertEqual(runner.proc.returncode, 23)
+
+    def test_readonly_runtime_default_becomes_private_writable_home_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner, bootstrap = self.runner(
+                root,
+                "import pathlib, shutil, stat, xml.etree.ElementTree as ET\n"
+                "home=pathlib.Path(sys.argv[sys.argv.index('-dir')+1])\n"
+                "home.mkdir(exist_ok=True)\n"
+                "config=home/'config.xml'\n"
+                "if not config.exists(): shutil.copy2(pathlib.Path.cwd()/'xml/config.xml', config)\n"
+                "if stat.S_IMODE(config.stat().st_mode) != 0o600: sys.exit(67)\n"
+                "if stat.S_IMODE(home.stat().st_mode) != 0o700: sys.exit(68)\n"
+                "tree=ET.parse(config)\n"
+                "if tree.findtext('version') != '20017000': sys.exit(69)\n"
+                "if tree.findtext('default') != 'retained': sys.exit(70)\n"
+                "tree.getroot().set('saved', 'true')\n"
+                "tree.write(config)\n"
+                "print('private config save succeeded', flush=True)\n"
+                "sys.exit(23)\n",
+            )
+            source = root / "runtime/xml/config.xml"
+            original = source.read_bytes()
+            with mock.patch.object(zap, "bootstrap", bootstrap), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(zap.Refused, "exited during startup"):
+                    runner.__enter__()
+            diagnostic = json.loads((runner.output / "startup-failure.json").read_text())
+            self.assertEqual(diagnostic["exit_code"], 23)
+            self.assertIn("private config save succeeded", diagnostic["tail"])
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(source.stat().st_mode & 0o777, 0o444)
+            self.assertFalse(runner.work.exists())
 
     def test_deadline_diagnostic_is_bounded_and_child_is_reaped(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 
 HERE = Path(__file__).resolve().parent
@@ -284,6 +285,20 @@ class ExternalRBAC:
             self.key = secrets.token_hex(24)
             self.base = f"http://127.0.0.1:{port()}"
             home = self.work / "home"
+            home.mkdir(mode=0o700)
+            # ZAP's Files.copy preserves the staged default's 0444 mode, then
+            # its first config save fails. Seed only the private mutable copy.
+            # This is ZAP 2.17.0's default initialization: same XML defaults and
+            # VERSION_TAG, with no access-control or scanner policy changes.
+            config = ET.parse(runtime / "xml/config.xml")
+            version_tag = config.find("version")
+            if version_tag is None:
+                version_tag = ET.SubElement(config.getroot(), "version")
+            version_tag.text = "20017000"
+            config_path = home / "config.xml"
+            with config_path.open("xb") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                config.write(stream, encoding="utf-8", xml_declaration=True)
             args = [
                 java,
                 "-Xmx512m",

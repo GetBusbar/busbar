@@ -40,6 +40,11 @@ actual downloaded ZAP/AccessControl/Common Library bytes. Temurin archive digest
 come from its official release checksum assets. Full CI verifies every selected
 artifact before extracting or executing it. All runtime and addon updates are
 explicitly disabled; ZAP runs headless with a private home and 512 MiB Java heap.
+The adapter seeds its private `0700` home with a `0600` copy of the pinned XML
+configuration and ZAP 2.17.0's config version (`20017000`). ZAP's default file-copy
+path otherwise preserves the staged instrument's read-only mode and fails on its
+first save. The instrument remains read-only; the private copy has the same
+default settings and is deleted with the session.
 
 ## Method-sensitive upstream behavior
 

@@ -327,14 +327,55 @@ class Peers:
     def exec(self, service, args, **kwargs):
         return self.client(['exec', self.peers[service]['name'], *args], **kwargs)
 
+    def readiness_failure(self, service, reason, result=None):
+        # Only fixed fixture diagnostics, never Config.Env or process arguments.
+        # Collect before disposal and preserve the original failure if a probe fails.
+        secrets = [value for values in ENV.values() for key, value in values.items()
+                   if any(word in key for word in ('PASSWORD', 'TOKEN'))]
+        def bounded(value, limit=4096):
+            value = value or ''
+            if isinstance(value, bytes):
+                value = value.decode('utf-8', errors='replace')
+            for secret in sorted(set(secrets), key=len, reverse=True):
+                value = value.replace(secret, '[REDACTED]')
+            return value[-limit:]
+        record = {'schema': 'busbar.native-fixture-readiness/1', 'service': service,
+                  'reason': reason}
+        if result is not None:
+            record['last_readiness'] = {'returncode': result.returncode,
+                'stdout': bounded(result.stdout), 'stderr': bounded(result.stderr)}
+        name = self.peers[service]['name']
+        probes = {'state': ['inspect', '--format', '{{json .State}}', name],
+                  'logs': ['logs', '--tail', '100', name],
+                  'processes': ['exec', name, 'ps', '-eo', 'pid,ppid,state,comm']}
+        if service == 'openldap':
+            probes['bootstrap_marker'] = ['exec', name, 'test', '-f',
+                                          '/container/run/state/slapd-first-start-done']
+        for key, args in probes.items():
+            try:
+                value = self.client(args, check=False, timeout=5)
+                record[key] = {'returncode': value.returncode,
+                              'stdout': bounded(value.stdout, 16384 if key == 'logs' else 4096),
+                              'stderr': bounded(value.stderr, 16384 if key == 'logs' else 4096)}
+            except Exception as error:
+                # Exception strings can contain the command/environment. Its type
+                # is sufficient to distinguish timeout and collection failure.
+                record[key] = {'collection_error': type(error).__name__}
+        (self.q.evidence / ('fixture-' + service + '-readiness.json')).write_text(
+            json.dumps(record, indent=2) + '\n')
+        raise RuntimeError(service + ' fixture ' + reason)
+
     def wait(self, service, command, timeout=120):
         deadline = time.monotonic() + timeout
-        while self.exec(service, command, check=False).returncode:
+        while True:
+            result = self.exec(service, command, check=False)
+            if not result.returncode:
+                return
             if time.monotonic() >= deadline:
-                raise RuntimeError(service + ' fixture failed bounded readiness')
+                self.readiness_failure(service, 'failed bounded readiness', result)
             state = json.loads(self.client(['inspect', self.peers[service]['name']]).stdout)[0]['State']
             if not state['Running']:
-                raise RuntimeError(service + ' fixture exited during readiness')
+                self.readiness_failure(service, 'exited during readiness', result)
             time.sleep(.5)
 
     def http_ready(self, service, path):

@@ -203,7 +203,7 @@ def entry_command(helper, expected, image, name):
     return [DOCKER, '--host', 'unix:///var/run/docker.sock', 'run', '--name', name,
         '--pull=never', '--rm', '--interactive', '--privileged', '--userns=host',
         '--pid=host', '--network=none', '--entrypoint', '/usr/bin/nsenter', image,
-        '--target', '1', '--mount', '--net', '--uts', '--ipc', '--root', '--wd',
+        '--target', '1', '--mount', '--net', '--uts', '--ipc', '--cgroup', '--root', '--wd',
         '--no-fork', '/usr/bin/python3', '-I', '-B', '-c', code]
 
 
@@ -507,9 +507,19 @@ def diagnostic(trusted, config, config_path, store, evidence):
         (evidence / 'diagnostic-storage.json').write_text(json.dumps(record, indent=2) + '\n')
 
 
+def require_host_controller():
+    require(os.geteuid() == 0, 'controller must execute as host root')
+    # The administrator bridge starts in Docker's private cgroup namespace.
+    # Keeping it after entering host mounts makes sibling service cgroups appear
+    # parent-relative to runc exec. Only the controller joins the host namespace;
+    # candidates and fixture peers retain their private cgroup namespaces.
+    for kind in ('mnt', 'cgroup'):
+        require(os.stat('/proc/self/ns/' + kind).st_ino == os.stat('/proc/1/ns/' + kind).st_ino,
+                'controller must execute in the host ' + kind + ' namespace')
+
+
 def root_main():
-    require(os.geteuid() == 0 and os.stat('/proc/self/ns/mnt').st_ino == os.stat('/proc/1/ns/mnt').st_ino,
-            'controller must execute as host root')
+    require_host_controller()
     payload = json.loads(sys.stdin.read(1024**2))
     require(set(payload) == {'environment', 'trusted', 'checkout', 'work', 'archive', 'revision', 'image'},
             'unknown root bootstrap input')

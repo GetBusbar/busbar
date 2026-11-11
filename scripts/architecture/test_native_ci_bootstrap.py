@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import urllib.error
@@ -58,6 +59,23 @@ class Bootstrap(unittest.TestCase):
         self.assertIn('"--root"', code)
         self.assertNotIn('CI_JOB_TOKEN', ' '.join(argv))
         self.assertNotIn('candidate', ' '.join(argv))
+        self.assertIn('--cgroup', argv[argv.index('/usr/bin/nsenter') + 1:])
+
+    def test_controller_refuses_a_private_mount_or_cgroup_namespace(self):
+        for changed in ('mnt', 'cgroup'):
+            def namespace(path):
+                inode = 2 if path == '/proc/self/ns/' + changed else 1
+                return SimpleNamespace(st_ino=inode)
+            with self.subTest(namespace=changed), patch.object(bootstrap.os, 'geteuid', return_value=0), \
+                    patch.object(bootstrap.os, 'stat', side_effect=namespace):
+                with self.assertRaisesRegex(ValueError, 'host ' + changed + ' namespace'):
+                    bootstrap.require_host_controller()
+        with patch.object(bootstrap.os, 'geteuid', return_value=0), \
+                patch.object(bootstrap.os, 'stat', return_value=SimpleNamespace(st_ino=1)):
+            bootstrap.require_host_controller()
+        with patch.object(bootstrap.os, 'geteuid', return_value=1001):
+            with self.assertRaisesRegex(ValueError, 'host root'):
+                bootstrap.require_host_controller()
 
     def test_verified_entry_recovers_a_removed_inherited_working_directory(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
