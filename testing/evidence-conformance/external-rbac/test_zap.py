@@ -1,4 +1,5 @@
 from collections import Counter
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -7,6 +8,41 @@ from unittest import mock
 
 import zap
 from test_report import html
+
+
+class StagedBootstrap(unittest.TestCase):
+    def test_staged_runtime_is_used_without_downloads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            staged = root / "staged"
+            (staged / "runtime/plugin").mkdir(parents=True)
+            (staged / "runtime/zap-2.17.0.jar").write_bytes(b"runtime")
+            (staged / "java/bin").mkdir(parents=True)
+            java = staged / "java/bin/java"
+            java.write_text("fixture")
+            java.chmod(0o700)
+            (staged / "runtime/plugin/fixture.zap").write_bytes(b"addon")
+            lock = {"bundled_plugins": {"fixture.zap": hashlib.sha256(b"addon").hexdigest()}, "addons": []}
+            with mock.patch.object(zap, "STAGED", staged), mock.patch.object(zap, "LOCK", lock), \
+                    mock.patch.dict(zap.os.environ, CONFORMANCE_CAPABILITIES="manifest"), \
+                    mock.patch.object(zap, "download") as download:
+                runtime, executable = zap.bootstrap(root / "work")
+                self.assertEqual(runtime, staged / "runtime")
+                self.assertEqual(executable, java)
+                download.assert_not_called()
+                (staged / "runtime/plugin/fixture.zap").write_bytes(b"modified")
+                with self.assertRaisesRegex(zap.Refused, "digest mismatch"):
+                    zap.bootstrap(root / "tampered-work")
+                download.assert_not_called()
+
+    def test_missing_staged_runtime_never_falls_back_to_download(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(zap, "STAGED", Path(directory) / "absent"), \
+                mock.patch.dict(zap.os.environ, BUSBAR_CONFORMANCE_INPUTS="manifest"), \
+                mock.patch.object(zap, "download") as download:
+            with self.assertRaisesRegex(zap.Refused, "controller has not staged"):
+                zap.bootstrap(Path(directory) / "work")
+            download.assert_not_called()
 
 
 class Credentials(unittest.TestCase):

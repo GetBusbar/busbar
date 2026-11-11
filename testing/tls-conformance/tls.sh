@@ -19,8 +19,8 @@
 #                        (testssl --add-ca), so "trusted" means the served chain is well formed and
 #                        verifies to that anchor; the public-CA chain is the released-image assessment's.
 # All three always run. `pass` only when all three hold; a subject that cannot be built or booted is
-# `fail` (armed). Writes $CONFORMANCE_OUT/verdict.json and the assertion evidence beside it. Needs docker
-# (Linux: --network host), python3, no host openssl (certificates come from the pinned image).
+# `fail` (armed). Writes $CONFORMANCE_OUT/verdict.json and the assertion evidence beside it. Needs the native worker's read-only testssl instrument bundle, bash, python3 and OpenSSL 3.
+# Every server runs as a process inside the candidate network namespace; no Docker access.
 set -uo pipefail
 : "${CONFORMANCE_OUT:?}"
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,14 +31,27 @@ say() { printf 'tls: %s\n' "$*" >&2; }
 TESTSSL_IMAGE='drwetter/testssl.sh@sha256:6f84a73a128117eddf45fb5196f6e6c6428e9a167b7dd6a022482b66ffc85c82'
 TESTSSL_VER=3.2.4
 NGINX_IMAGE='nginx@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951'
-OLD_OPENSSL=/home/testssl/bin/openssl.Linux.x86_64   # OpenSSL 1.0.2-bad, shipped in the testssl.sh image
-PR_1713=refs/pull/1713/head
+INSTRUMENT=/opt/busbar-conformance/testssl
+OLD_OPENSSL="$INSTRUMENT/bin/openssl.Linux.x86_64" # Exact static OpenSSL 1.0.2-bad from pinned image
+NGINX="$INSTRUMENT/nginx/nginx"
+NGINX_LOADER="$INSTRUMENT/nginx/lib/ld-musl-x86_64.so.1"
 
 W="$(mktemp -d "${TMPDIR:-/tmp}/tls-conf.XXXXXX")"
-cids=(); pids=()
+fixture_pids=(); pids=()
 cleanup() {
   local p i failed=0
-  for c in "${cids[@]+"${cids[@]}"}"; do docker rm -f "$c" >/dev/null 2>&1 || true; done
+  for p in "${fixture_pids[@]+"${fixture_pids[@]}"}"; do
+    kill "$p" 2>/dev/null || true
+    for ((i=0; i<50; i++)); do
+      kill -0 "$p" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$p" 2>/dev/null; then
+      kill -KILL "$p" 2>/dev/null || true
+      failed=1
+    fi
+    wait "$p" 2>/dev/null || true
+  done
   for p in "${pids[@]+"${pids[@]}"}"; do
     if kill -0 "$p" 2>/dev/null; then
       if ! kill "$p" 2>/dev/null && kill -0 "$p" 2>/dev/null; then
@@ -60,7 +73,7 @@ cleanup() {
     fi
     wait "$p" || { say "TLS subject supervisor $p exited unsuccessfully"; failed=1; }
   done
-  cids=(); pids=()
+  fixture_pids=(); pids=()
   rm -rf "$W"
   return "$failed"
 }
@@ -83,81 +96,44 @@ PY
   exit $?
 }
 
-command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || { why+=("docker is unavailable, so testssl.sh could not run"); final; }
-
-# ── the judge: ONE home per fact (scripts/release/tls_assess.py + tls-assert.json) ────────────────────
+if [ "$(uname -s)/$(uname -m)" != Linux/x86_64 ]; then
+  why+=("the pinned native TLS instruments require Linux x86_64"); final
+fi
+for tool in "$INSTRUMENT/testssl.sh" "$OLD_OPENSSL" "$NGINX" "$NGINX_LOADER" "$INSTRUMENT/nginx/busybox"; do
+  [ -f "$tool" ] && [ ! -L "$tool" ] && [ -x "$tool" ] || { why+=("missing admitted native TLS instrument: $tool"); final; }
+done
+# The shared release judge must be in the admitted source; candidates never fetch code.
 J="$repo/scripts/release"
 if [ ! -f "$J/tls_assess.py" ] || [ ! -f "$J/tls-assert.json" ]; then
-  # PR #1713 has not landed in this tree: take its two files from the PR ref at run time. Never copied
-  # into this repo (a second copy would be a second home); once #1713 is in, this branch is not taken.
-  J="$W/judge"; mkdir -p "$J"
-  jerr=""
-  for remote in origin "https://github.com/GetBusbar/busbar"; do
-    jerr="$jerr [$remote: $(git -C "$repo" fetch -q "$remote" "$PR_1713" 2>&1 | tail -1)]"
-    if git -C "$repo" show FETCH_HEAD:scripts/release/tls_assess.py >"$J/tls_assess.py" 2>/dev/null \
-       && git -C "$repo" show FETCH_HEAD:scripts/release/tls-assert.json >"$J/tls-assert.json" 2>/dev/null; then
-      say "judge: scripts/release/{tls_assess.py,tls-assert.json} are not in this tree; taken from $PR_1713 via $remote"; jerr=""; break
-    fi
-  done
-  if [ -n "$jerr" ]; then  # the repo is public: the PR's branch over plain https
-    RAW=https://raw.githubusercontent.com/GetBusbar/busbar/lane-release-publish-gate/scripts/release
-    if curl -fsSL --retry 2 -o "$J/tls_assess.py" "$RAW/tls_assess.py" && curl -fsSL --retry 2 -o "$J/tls-assert.json" "$RAW/tls-assert.json"; then
-      say "judge: taken from the lane-release-publish-gate branch (PR #1713) over https"; jerr=""
-    fi
-  fi
-  if [ -n "$jerr" ]; then
-    why+=("the shared TLS judge (scripts/release/tls_assess.py, tls-assert.json from PR #1713) is neither in this tree nor fetchable from $PR_1713:$jerr"); final
-  fi
+  why+=("the shared TLS judge is absent from admitted source"); final
 fi
-
-docker pull -q "$TESTSSL_IMAGE" >/dev/null 2>&1 || docker image inspect "$TESTSSL_IMAGE" >/dev/null 2>&1 || { why+=("the pinned testssl.sh image could not be pulled"); final; }
-
-# ── testssl as tls_assess.py wants it: one executable, the JSON path on the host ──────────────────────
-# tls_assess.py calls $TESTSSL <its flags> --jsonfile <host path> https://<host>; this runs the pinned
-# image on the host network, mounts the JSON's directory, and adds $TLS_CA as the trust anchor.
 cat >"$W/testssl" <<'SH'
 #!/usr/bin/env bash
-args=(); mounts=()
-while [ $# -gt 0 ]; do
-  if [ "$1" = "--jsonfile" ]; then
-    d="$(dirname "$2")"; mounts=(-v "$d:/out"); args+=(--jsonfile "/out/$(basename "$2")"); shift 2
-  elif [ "$1" = "--ip" ] && [ -n "${TLS_CONNECT_IP:-}" ]; then
-    # Override the connection address only; the URL still supplies localhost for SNI and trust.
-    args+=(--ip "$TLS_CONNECT_IP"); shift 2
-  else args+=("$1"); shift; fi
-done
-exec docker run --rm --network host --user "$(id -u):$(id -g)" -e HOME=/tmp "${mounts[@]}" \
-  -v "$TLS_CA:/ca.pem:ro" "$TLS_IMAGE" --add-ca /ca.pem "${args[@]}"
+exec bash /opt/busbar-conformance/testssl/testssl.sh --add-ca "$TLS_CA" "$@"
 SH
-chmod +x "$W/testssl"
-export TESTSSL="$W/testssl" TLS_IMAGE="$TESTSSL_IMAGE"
+cat >"$W/hexdump" <<'SH'
+#!/usr/bin/env bash
+exec /opt/busbar-conformance/testssl/nginx/lib/ld-musl-x86_64.so.1 \
+  --library-path /opt/busbar-conformance/testssl/nginx/lib \
+  /opt/busbar-conformance/testssl/nginx/busybox hexdump "$@"
+SH
+chmod +x "$W/testssl" "$W/hexdump"
+export TESTSSL="$W/testssl" PATH="$W:$PATH"
 
 free_port() { python3 -I -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
 wait_port() { for _ in $(seq 1 60); do (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && return 0; sleep 1; done; return 1; }
-# mkcert <dir> <rsa-bits|ec>: a self-signed certificate for localhost, minted by the pinned image's openssl.
+# Certificate generation does not judge posture; the pinned testssl scanner does.
 mkcert() {
   mkdir -p "$1"; local k='ec -pkeyopt ec_paramgen_curve:prime256v1'; [ "$2" != ec ] && k="rsa:$2"
   # shellcheck disable=SC2086
-  docker run --rm --user "$(id -u):$(id -g)" -v "$1:/w" --entrypoint openssl "$TESTSSL_IMAGE" req -x509 -newkey $k -nodes -days 90 \
+  openssl req -x509 -newkey $k -nodes -days 90 \
     -subj /CN=localhost -addext subjectAltName=DNS:localhost -addext crlDistributionPoints=URI:http://localhost/ref.crl \
-    -keyout /w/key.pem -out /w/cert.pem >"$1/mkcert.log" 2>&1 && chmod 644 "$1/key.pem"
+    -keyout "$1/key.pem" -out "$1/cert.pem" >"$1/mkcert.log" 2>&1
 }
 # assess <name> <port> <ca> <digest of the artifact served>: run the judge; its stdout in $W/<name>.log;
 # the exit is the judge's.
 assess() {
-  local connect_ip=""
-  if [ "$1" = subject ] && [ "$(uname -s)" = Darwin ]; then
-    # Docker's host network is the Linux VM on macOS. Only the native subject needs the
-    # VM-to-Mac route; both container controls must keep using the VM's loopback.
-    connect_ip="$(docker run --rm --network host --entrypoint sh "$TLS_IMAGE" -c '
-      for host in host.docker.internal host.lima.internal; do
-        ip=$(getent ahostsv4 "$host" | awk "NR == 1 {print \$1; exit}")
-        if [ -n "$ip" ]; then printf "%s\n" "$ip"; exit 0; fi
-      done
-      exit 1
-    ')" || { say "the Docker VM could not resolve its macOS host for the native TLS subject"; return 1; }
-  fi
-  TLS_CONNECT_IP="$connect_ip" TLS_CA="$3" python3 -I "$J/tls_assess.py" run --host "localhost:$2" --version "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)" \
+  TLS_CA="$3" python3 -I "$J/tls_assess.py" run --host "localhost:$2" --version "$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)" \
     --image-digest "$4" --variant "$1" --out "$W/out" >"$W/$1.log" 2>&1
   local rc=$?; sed "s/^/tls[$1]: /" "$W/$1.log" >&2; return $rc
 }
@@ -167,15 +143,21 @@ say "=== leg 1: control (nginx, modern TLS config)"
 mkcert "$W/nginx" ec
 port="$(free_port)"
 cat >"$W/nginx/nginx.conf" <<CONF
-pid /tmp/nginx.pid;
+pid $W/nginx/nginx.pid;
+error_log stderr warn;
 events {}
 http {
-  access_log off; error_log /dev/stderr warn;
+  access_log off; error_log stderr warn;
+  client_body_temp_path $W/nginx/client;
+  proxy_temp_path $W/nginx/proxy;
+  fastcgi_temp_path $W/nginx/fastcgi;
+  uwsgi_temp_path $W/nginx/uwsgi;
+  scgi_temp_path $W/nginx/scgi;
   server {
     listen 127.0.0.1:$port ssl;
     server_name localhost;
-    ssl_certificate /etc/nginx/tls/cert.pem;
-    ssl_certificate_key /etc/nginx/tls/key.pem;
+    ssl_certificate $W/nginx/cert.pem;
+    ssl_certificate_key $W/nginx/key.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
     ssl_prefer_server_ciphers off;
@@ -184,7 +166,9 @@ http {
   }
 }
 CONF
-if [ -s "$W/nginx/cert.pem" ] && cid="$(docker run -d --rm --network host -v "$W/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" -v "$W/nginx:/etc/nginx/tls:ro" "$NGINX_IMAGE")" && cids+=("$cid") && wait_port "$port"; then
+"$NGINX_LOADER" --library-path "$INSTRUMENT/nginx/lib" "$NGINX" -p "$W/nginx/" -c "$W/nginx/nginx.conf" -g 'daemon off; master_process off;' >"$W/nginx.log" 2>&1 &
+fixture_pids+=($!)
+if [ -s "$W/nginx/cert.pem" ] && wait_port "$port"; then
   assess control "$port" "$W/nginx/cert.pem" "sha256:${NGINX_IMAGE##*sha256:}" || why+=("the control leg failed: a known-good nginx did not meet the assertions: $(grep -E '^FAIL' "$W/control.log" | head -5 | tr '\n' '|')")
 else why+=("the control server (nginx) could not be started"); fi
 
@@ -192,16 +176,17 @@ else why+=("the control server (nginx) could not be started"); fi
 say "=== leg 2: negative control (old OpenSSL s_server: SSLv3/TLS1.0, 3DES/RC4/export, RSA 1024)"
 mkcert "$W/weak" 1024
 port="$(free_port)"
-if [ -s "$W/weak/cert.pem" ] && cid="$(docker run -d --network host --user "$(id -u):$(id -g)" -e OPENSSL_CONF=/dev/null -v "$W/weak:/w:ro" --entrypoint "$OLD_OPENSSL" "$TESTSSL_IMAGE" \
-     s_server -accept "$port" -cert /w/cert.pem -key /w/key.pem -www \
-     -cipher 'DES-CBC3-SHA:RC4-SHA:RC4-MD5:AES128-SHA:EXP-RC4-MD5:EXP-DES-CBC-SHA:ECDHE-RSA-AES128-SHA')" && cids+=("$cid") && wait_port "$port"; then
+OPENSSL_CONF=/dev/null "$OLD_OPENSSL" s_server -accept "127.0.0.1:$port" -cert "$W/weak/cert.pem" -key "$W/weak/key.pem" -www \
+  -cipher 'DES-CBC3-SHA:RC4-SHA:RC4-MD5:AES128-SHA:EXP-RC4-MD5:EXP-DES-CBC-SHA:ECDHE-RSA-AES128-SHA' >"$W/weak-server.log" 2>&1 &
+fixture_pids+=($!)
+if [ -s "$W/weak/cert.pem" ] && wait_port "$port"; then
   if assess weak "$port" "$W/weak/cert.pem" "sha256:${TESTSSL_IMAGE##*sha256:}"; then why+=("negative control: the deliberately weak server met every assertion")
   else
     for a in min_protocol ciphers_allowed key_size; do
       grep -q "^FAIL.* $a:" "$W/weak.log" || why+=("negative control: the weak server was refused, but not by $a")
     done
   fi
-else why+=("the weak server could not be started, so the negative control did not run: $(tail -c 300 "$W/weak/mkcert.log" 2>/dev/null | tr '\n' ' ')$([ -n "${cid:-}" ] && docker logs "$cid" 2>&1 | tail -3 | tr '\n' ' ')"); fi
+else why+=("the weak server could not be started, so the negative control did not run: $(tail -c 300 "$W/weak/mkcert.log" 2>/dev/null | tr '\n' ' ')$(tail -c 300 "$W/weak-server.log" 2>/dev/null | tr '\n' ' ')"); fi
 
 # ── leg 3: SUBJECT ──────────────────────────────────────────────────────────────────────────────────
 say "=== leg 3: subject (dist/default busbar's production TLS listener)"
