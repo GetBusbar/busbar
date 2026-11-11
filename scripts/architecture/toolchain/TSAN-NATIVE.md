@@ -9,9 +9,25 @@ The separate local ARM experiment remains in `SANITIZER-LOCAL.md`.
 The engine source is Moby commit
 `fbf3ed25f893e6ce21336f1101590e40a13934f4`, which vendors
 `github.com/moby/profiles/seccomp@v0.1.0`. The baseline and derived policy hashes
-are pinned in `tsan-linux29-pins.json`. The only added rule permits
+are pinned in `tsan-linux29-pins.json`. The worker uses Ubuntu's exact
+`docker.io` build `29.1.3-0ubuntu3~24.04.2`. Ubuntu's `debian/rules` sets
+`DOCKER_GITCOMMIT := $(DEB_VERSION)`, so the daemon reports that package version
+as `GitCommit`, rather than the upstream source SHA. The probe checks exact
+`Version=29.1.3` and `GitCommit=29.1.3-0ubuntu3~24.04.2`; other package builds,
+suffixes, empty commits, and upstream SHA prefixes are rejected.
+
+The official Ubuntu source archives were downloaded and their SHA-256 values
+checked against the package's `.dsc`. The archived
+`engine/vendor/github.com/moby/profiles/seccomp/default.json` and
+`default_linux.go` match the upstream pinned hashes byte for byte. None of the
+six patches in `debian/patches/series` modifies the seccomp package. Source
+archive URLs and hashes are retained in the pins file. The source commit and
+binary build identity remain distinct, independently pinned fields.
+See [Ubuntu's package record](https://packages.ubuntu.com/noble/docker.io).
+
+The only added rule permits
 `personality(262144)` (`PER_LINUX | ADDR_NO_RANDOMIZE`). The probe checks the
-engine version and commit, baseline bytes, exact policy delta, and actual
+engine version and exact build identity, baseline bytes, exact policy delta, and actual
 container configuration. Compilation uses the unchanged baseline. Only the two
 instrumented controls and the denial witness use the dedicated profile.
 
@@ -40,6 +56,9 @@ exiting 0 with personality 262144, a deliberately racing control exiting 66
 with a TSan data-race diagnostic, and the boundary-denial witness. It retains
 compiler/platform output, exact commands, binary and policy hashes, container
 observations, and disposal evidence. No failed attempt is retried or hidden.
+`engine.json` retains the raw daemon response before parsing or checking its
+identity. An identity mismatch also produces a failed `result.json` containing
+the observed engine, while cleaning up the probe source/build roots.
 `release_eligible` and `production_activation` remain false: passing these
 controls qualifies the runtime configuration, not a product revision.
 
@@ -48,9 +67,13 @@ controls qualifies the runtime configuration, not a product revision.
 The existing x86 worker's GCC controls fail before main with an unexpected
 memory mapping under the default profile. The local ARM64 Docker 29.5.2 narrow
 profile has passed controls and boundary checks, but is a different engine and
-architecture. This Docker 29.1.3 probe and profile have not yet run on the native
-x86 worker. Unit checks validate the policy pins and rejection of broader rules;
-they do not establish native runtime support.
+architecture. Diagnostic job 3753 reached the native worker but stopped before
+samples because the original engine check incorrectly compared Ubuntu's build
+identity with the upstream source SHA. That check is corrected as described
+above. The sanitizer controls have not yet passed on the native x86 worker.
+Unit checks validate the policy pins, exact build matching, preservation of
+rejected engine observations, and rejection of broader rules; they do not
+establish native runtime support.
 
 A compiler-only upgrade is not a demonstrated remedy: LLVM 23.1.0 still attempts
 `personality(ADDR_NO_RANDOMIZE)` when its initial layout is incompatible and

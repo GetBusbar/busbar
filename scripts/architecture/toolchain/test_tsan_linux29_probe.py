@@ -1,11 +1,47 @@
 """The CI sanitizer delta has fixed bytes and never broadens other syscalls."""
 import copy
+import json
+import subprocess
 import unittest
+from unittest.mock import MagicMock
 
 import tsan_linux29_probe as probe
 
 
 class ProfileTests(unittest.TestCase):
+    def test_exact_verified_ubuntu_build_is_required(self):
+        observed = {"Version": "29.1.3", "GitCommit": "29.1.3-0ubuntu3~24.04.2"}
+        probe.verify_engine(observed)
+        for key, value in [
+            ("Version", "29.1.4"),
+            ("GitCommit", "29.1.3-0ubuntu3~24.04.1"),
+            ("GitCommit", "fbf3ed2"),
+            ("GitCommit", ""),
+            ("GitCommit", "29.1.3-0ubuntu3~24.04.2-modified"),
+        ]:
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                probe.verify_engine({**observed, key: value})
+
+    def test_engine_response_is_retained_before_identity_rejection(self):
+        actual = {"Version": "29.1.3", "GitCommit": "unexpected-build"}
+        execution, work = MagicMock(), MagicMock()
+        execution._client.return_value = subprocess.CompletedProcess(
+            [], 0, json.dumps(actual), ""
+        )
+        observed = probe.observe_engine(execution, work)
+        with self.assertRaisesRegex(ValueError, "unexpected-build"):
+            probe.verify_engine(observed)
+        work.__truediv__.assert_called_once_with("engine.json")
+        retained = json.loads(work.__truediv__.return_value.write_text.call_args.args[0])
+        self.assertEqual(json.loads(retained["stdout"]), actual)
+
+    def test_invalid_engine_response_is_also_retained(self):
+        execution, work = MagicMock(), MagicMock()
+        execution._client.return_value = subprocess.CompletedProcess([], 0, "invalid", "")
+        with self.assertRaises(json.JSONDecodeError):
+            probe.observe_engine(execution, work)
+        work.__truediv__.return_value.write_text.assert_called_once()
+
     def test_engine_pin_is_distinct_from_local_arm_policy(self):
         self.assertEqual(probe.PINS["engine_version"], "29.1.3")
         self.assertEqual(probe.PINS["allowed_personality"], 262144)
