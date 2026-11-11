@@ -75,6 +75,7 @@ import secrets
 import shutil
 import socket
 import ssl
+import stat
 import subprocess
 import sys
 import threading
@@ -355,7 +356,16 @@ def staged_oidc_source(pin, destination):
         if (identity["rev"] != pin["rev"]
                 or source_repo(identity["url"]) != source_repo(pin["url"])):
             raise ValueError("source revision differs from distribution lock")
+        destination = Path(destination)
+        source_path, build_path = OIDC_BUNDLE.resolve(), destination.resolve()
+        if build_path.is_relative_to(source_path) or source_path.is_relative_to(build_path):
+            raise ValueError("build copy must not overlap the measured OIDC source")
         shutil.copytree(OIDC_BUNDLE, destination, dirs_exist_ok=True)
+        # copytree preserves the measured input's read-only modes. Cargo must be able to update
+        # its private lockfile/build tree; change only this copy, preserving executable bits.
+        for path in (destination, *destination.rglob("*")):
+            mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(mode | stat.S_IWUSR | (stat.S_IXUSR if path.is_dir() else 0))
     except (OSError, ValueError, KeyError) as error:
         raise Refused(f"invalid staged OIDC source: {error}", instrument=True) from error
     return True
@@ -909,7 +919,21 @@ class NativeSuite:
                                                   stdin=subprocess.DEVNULL, stdout=log, stderr=log))
 
     def java(self, binary, *args):
-        return native_command("server", "opt/java/openjdk/bin/" + binary, *args)
+        command = native_command("server", "opt/java/openjdk/bin/" + binary, *args)
+        # The Linux JDK launcher derives application home from /proc/self/exe. Invoking the
+        # image loader in server/lib64 makes amd64 keytool/java infer the wrong JDK home.
+        # Keep that exact loader and library closure, but place a private loader copy in a
+        # JDK-shaped run directory. All JDK resources still resolve to the measured input.
+        home = Path(self.work) / "java-runtime"
+        loader = home / "bin" / Path(command[0]).name
+        if not loader.exists():
+            loader.parent.mkdir(parents=True, exist_ok=True)
+            for resource in Path(self.java_home).iterdir():
+                if resource.name != "bin":
+                    (home / resource.name).symlink_to(resource, target_is_directory=resource.is_dir())
+            shutil.copyfile(command[0], loader)
+            loader.chmod(0o500)
+        return [str(loader), *command[1:]]
 
     def start(self):
         try:
@@ -931,7 +955,8 @@ class NativeSuite:
                            "-storepass", "changeit", "-alias", "busbar-oidf-ca",
                            "-file", os.path.join(self.pki, "ca.pem")), self.log, env=self.env)
         if rc:
-            raise Refused("native suite JVM trust store could not be prepared", instrument=True)
+            raise Refused(f"native suite JVM trust store could not be prepared (exit {rc}): {tail(self.log, 4)}",
+                          instrument=True)
         db = os.path.join(self.work, "mongodb")
         os.makedirs(db)
         mongo_port, server_port = free_port(), free_port()
