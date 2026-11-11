@@ -465,7 +465,6 @@ dependencies = [
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
- "tokio-tungstenite",
  "tower",
  "tracing",
  "tracing-log",
@@ -2573,17 +2572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2949,18 +2937,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-tungstenite"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f72a05e828585856dacd553fba484c242c46e391fb0e58917c942ee9202915c"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite",
-]
-
-[[package]]
 name = "tokio-util"
 version = "0.7.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3094,12 +3070,8 @@ version = "0.29.0"
 source = "git+https://github.com/MattJackson/tungstenite-rs?rev=893a21f1f98011a2665840231330c473836c9a0a#893a21f1f98011a2665840231330c473836c9a0a"
 dependencies = [
  "bytes",
- "data-encoding",
- "http",
- "httparse",
  "log",
  "rand 0.9.4",
- "sha1",
  "thiserror",
 ]
 

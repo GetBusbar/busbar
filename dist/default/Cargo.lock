@@ -645,7 +645,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-complexity"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=09b728db54c0a41b1b32590369bcadc04a47c756#09b728db54c0a41b1b32590369bcadc04a47c756"
+source = "git+https://github.com/GetBusbar/busbar-hook-complexity?rev=b6173c26a2f1d5dc2a50cb80f5aa692a5bebc91e#b6173c26a2f1d5dc2a50cb80f5aa692a5bebc91e"
 dependencies = [
  "busbar-contract",
  "serde",

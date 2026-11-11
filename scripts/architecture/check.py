@@ -501,11 +501,17 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         build_command = (['cargo', 'check', '--workspace', '--manifest-path', str(checkout / 'Cargo.toml')]
             if repository == 'GetBusbar/busbar' else
             ['cargo', 'build', '--manifest-path', str(scratch / 'shipping-probe/Cargo.toml')])
-        architecture_progress('source-materialization', 'start', cargo_command=build_command[1])
+        # The global one-job limit protects optimized builds. This workspace
+        # check, like the witnesses, can use the existing bounded check budget.
+        jobs = compiler_check_jobs() if build_command[1] == 'check' else None
+        if jobs is not None:
+            build_command += ['--jobs', str(jobs)]
+        architecture_progress('source-materialization', 'start', cargo_command=build_command[1],
+                              build_jobs=jobs)
         started = time.monotonic()
         build = candidate_output(build_command + ['--message-format=json'], cwd=checkout, text=True)
         architecture_progress('source-materialization', 'finish', cargo_command=build_command[1],
-                              elapsed_seconds=round(time.monotonic() - started, 3))
+                              elapsed_seconds=round(time.monotonic() - started, 3), build_jobs=jobs)
         for line in build.splitlines():
             row = json.loads(line)
             if row.get('reason') == 'build-script-executed':
@@ -642,7 +648,7 @@ def compiler_check_jobs():
     resources = EXECUTION.config['resources']
     # These compiler checks completed all 52 cases under the 4 CPU / 6 GiB
     # boundary before optimized-build scheduling was reduced to one job. Keep
-    # that conservative global policy for builds; only this check may use CPUs.
+    # that conservative global policy for builds; only checks may use CPUs.
     # Smaller memory boundaries have no such execution evidence.
     return min(4, resources['cpus']) if resources['memory_bytes'] >= 6 * 1024**3 else 1
 
@@ -655,7 +661,8 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
     lines = ['[workspace]', '[package]', 'name="architecture-compiler-witnesses"', 'version="0.0.0"', 'edition="2021"', '[dependencies]']
     for name in ('busbar-contract', 'busbar-plugin-loader'):
         directory = (candidate / policy.data['core'][name]['manifest']).parent
-        lines.append(f'{name}={{path={inline(str(directory))}}}')
+        optional = ', optional=true' if name == 'busbar-plugin-loader' else ''
+        lines.append(f'{name}={{path={inline(str(directory))}{optional}}}')
     root = read(candidate / 'Cargo.toml')
     for source, table in root.get('patch', {}).items():
         lines.append(f'[patch.{inline(source)}]')
@@ -666,6 +673,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
             lines.append(f'{inline(name)}={inline(cfg)}')
     (harness / 'Cargo.toml').write_text('\n'.join(lines) + '\n')
     cases = []
+    contract_root = Path(policy.data['core']['busbar-contract']['manifest']).parent
     for row in policy.data['compiler_witnesses']:
         source = (trusted / row['source']).read_text()
         docs = '\n'.join(re.sub(r'^\s*//[/!] ?', '', line) for line in source.splitlines() if re.match(r'^\s*//[/!]', line))
@@ -682,14 +690,21 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
                 raise Violation('negative witness must name its expected compiler error')
             name = f'witness_{len(cases):02}'
             (harness / 'examples' / (name + '.rs')).write_text(code)
-            cases.append((name, expected))
-    if not cases or not any(not expected for _, expected in cases):
+            # Contract-only witnesses need no loader build. Keep the loader for
+            # every other source owner and any explicit reference, including
+            # forbidden/private imports whose intended error needs its presence.
+            needs_loader = (not Path(row['source']).is_relative_to(contract_root)
+                            or 'busbar_plugin_loader' in code)
+            cases.append((name, expected, needs_loader))
+    if not cases or not any(not expected for _, expected, _ in cases):
         raise Violation('compiler witnesses require a positive control')
     jobs = compiler_check_jobs()
-    for name, expected in cases:
+    for name, expected, needs_loader in cases:
         # Each confined case still gets fresh artifacts. They are no longer needed
         # once its process exits; retaining all cases exhausts the bounded job disk.
         command = ['cargo', 'check', '--manifest-path', str(harness / 'Cargo.toml'), '--example', name, '--message-format=json']
+        if needs_loader:
+            command += ['--features', 'busbar-plugin-loader']
         if jobs is not None:
             command += ['--jobs', str(jobs)]
         architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),

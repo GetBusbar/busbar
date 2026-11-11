@@ -11,6 +11,19 @@ from unittest import mock
 import zap
 from test_report import html
 
+FACTORIES = ["org.zaproxy.zap.extension.authentication.ExtensionAuthentication",
+             "org.zaproxy.zap.extension.users.ExtensionUserManagement",
+             "org.zaproxy.zap.extension.forceduser.ExtensionForcedUser",
+             "org.zaproxy.zap.extension.sessions.ExtensionSessionManagement",
+             "org.zaproxy.zap.extension.authorization.ExtensionAuthorization",
+             "org.zaproxy.zap.extension.accessControl.ExtensionAccessControl"]
+
+
+def user_rows(names):
+    return [{"name": name, "id": str(i + 1), "contextId": "1", "enabled": "true",
+             "credentials": json.dumps({"type": "ManualAuthenticationCredentials", "sessionName": ""})}
+            for i, name in enumerate(names)]
+
 
 class StagedBootstrap(unittest.TestCase):
     def test_staged_runtime_is_used_without_downloads(self):
@@ -172,6 +185,106 @@ class Inputs(unittest.TestCase):
 
 
 class Matrix(unittest.TestCase):
+    def test_reset_requires_all_factory_hooks_and_propagates_failure(self):
+        for factories in (FACTORIES, FACTORIES[:-1], FACTORIES + FACTORIES[:1]):
+            with self.subTest(factories=factories), tempfile.TemporaryDirectory() as work:
+                runner = zap.ExternalRBAC(work, Path(work) / "reports")
+                runner.api = mock.Mock(return_value={"globalVar": json.dumps({"factories": factories})})
+                if factories == FACTORIES:
+                    runner._reset_contexts()
+                else:
+                    with self.assertRaises(zap.Refused):
+                        runner._reset_contexts()
+                runner.api = mock.Mock(side_effect=zap.Refused("reset failed"))
+                with self.assertRaisesRegex(zap.Refused, "reset failed"):
+                    runner._reset_contexts()
+
+    def test_fresh_principal_readback_refuses_stale_or_changed_state(self):
+        users = [{"name": "reader", "id": 1}, {"name": "full", "id": 2}]
+        for change in (None, "stale", "disabled", "context", "credential", "identity"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as work:
+                rows = user_rows(["reader", "full"])
+                if change == "stale":
+                    rows.append(dict(rows[0]))
+                elif change == "disabled":
+                    rows[0]["enabled"] = "false"
+                elif change == "context":
+                    rows[0]["contextId"] = "2"
+                elif change == "credential":
+                    rows[0]["credentials"] = json.dumps({"type": "ManualAuthenticationCredentials", "sessionName": "prior-user"})
+                elif change == "identity":
+                    rows[0]["id"] = "3"
+                runner = zap.ExternalRBAC(work, Path(work) / "reports")
+                runner.api = mock.Mock(return_value={"usersList": rows})
+                if change is None:
+                    runner._check_users(1, users)
+                else:
+                    with self.assertRaises(zap.Refused):
+                        runner._check_users(1, users)
+
+    def test_startup_version_probe_is_identified_as_retryable_startup(self):
+        with tempfile.TemporaryDirectory() as work:
+            runner = zap.ExternalRBAC(work, Path(work) / "reports")
+            runner.key, runner.base = "private-key", "http://127.0.0.1:1234"
+            with mock.patch.object(zap.urllib.request, "urlopen", side_effect=zap.urllib.error.URLError("private-text")), \
+                    contextlib.redirect_stderr(io.StringIO()), self.assertRaises(zap.Refused):
+                runner.api("core", "view", "version")
+            record = json.loads((runner.output / "api-failure.json").read_text())
+            self.assertTrue(record["startup_probe"])
+            self.assertIsNone(record["operation"])
+            self.assertNotIn("private-", json.dumps(record))
+
+    def test_api_timeout_distinguishes_call_limit_from_runner_deadline(self):
+        for before, after, timeout, exhausted in (
+            (100, 130, 30, False),
+            (999.75, 1000, 0.25, True),
+        ):
+            with self.subTest(exhausted=exhausted), tempfile.TemporaryDirectory() as work, \
+                    mock.patch.object(zap.time, "monotonic", return_value=100) as clock:
+                runner = zap.ExternalRBAC(work, Path(work) / "reports")
+                runner.key = "private-api-key"
+                runner.base = "http://127.0.0.1:1234"
+                runner.credentials = mock.Mock(url="private-callback-url")
+                runner.receipts = [{"label": "subject-full"}]
+                runner._reset_contexts = mock.Mock()
+                clock.return_value = before
+
+                def urlopen(request, *, timeout):
+                    if request.full_url.endswith("/setAuthenticationMethod/"):
+                        self.assertEqual(timeout, min(30, 1000 - before))
+                        clock.return_value = after
+                        raise TimeoutError("private-error-secret")
+                    return io.BytesIO(b'{"contextId": "1"}')
+
+                captured = io.StringIO()
+                with mock.patch.object(zap.urllib.request, "urlopen", side_effect=urlopen), \
+                        contextlib.redirect_stderr(captured), \
+                        self.assertRaisesRegex(zap.Refused, "ZAP API transport failed: TimeoutError"):
+                    runner.matrix(
+                        "subject-capped", 1234,
+                        [("GET", "/admin/keys/{id}", "read-only", "get_key")],
+                        {"reader": (mock.Mock(), lambda s, v: "admit")},
+                        concrete=lambda p: "/admin/keys/private-concrete-value",
+                    )
+                record = json.loads((runner.output / "api-failure.json").read_text())
+                self.assertEqual(record["action"], "setAuthenticationMethod")
+                self.assertEqual(record["component"], "authentication")
+                self.assertFalse(record["startup_probe"])
+                self.assertEqual(record["operation"], {
+                    "label": "subject-capped", "operation_index": 0, "method": "GET",
+                    "declared_path": "/admin/keys/{id}", "expected_operations": 1,
+                    "expected_principals": 1,
+                })
+                self.assertEqual(record["request_timeout_seconds"], timeout)
+                self.assertEqual(record["deadline_exhausted"], exhausted)
+                self.assertEqual(record["remaining_seconds"], 1000 - after)
+                self.assertEqual(record["completed_legs"], ["subject-full"])
+                self.assertIn("ZAP_API_FAILURE ", captured.getvalue())
+                self.assertNotIn("private-", captured.getvalue())
+                self.assertNotIn("private-", json.dumps(record))
+                self.assertFalse(json.loads((runner.output / "subject-capped/result.json").read_text())["passed"])
+                runner.credentials.begin.assert_not_called()
+
     def test_operation_sessions_and_all_users_are_required(self):
         with tempfile.TemporaryDirectory() as work:
             runner = zap.ExternalRBAC(work, Path(work) / "reports")
@@ -187,6 +300,8 @@ class Matrix(unittest.TestCase):
 
             def api(component, kind, action, **params):
                 calls.append((component, action, params))
+                if action == "usersList":
+                    return {"usersList": user_rows(names)}
                 if action == "newContext":
                     state["name"] = params["contextName"]
                     return {"contextId": "1"}
@@ -195,6 +310,8 @@ class Matrix(unittest.TestCase):
                 if action == "setGlobalVar" and params["varKey"] == "busbar.operation":
                     state["operation"] = json.loads(params["varValue"])
                 if action == "globalVar":
+                    if params["varKey"] == "busbar.reset.ready":
+                        return {"globalVar": json.dumps({"factories": FACTORIES})}
                     if params["varKey"] == "busbar.rules.ready":
                         op = state["operation"]
                         return {
@@ -234,6 +351,8 @@ class Matrix(unittest.TestCase):
             self.assertTrue(receipt["passed"])
             self.assertEqual(receipt["actual_cells"], 2)
             self.assertEqual(sum(a == "newSession" for _, a, _ in calls), 2)
+            self.assertEqual(sum(a == "runStandAloneScript" and p.get("scriptName") == "busbar.reset"
+                                 for _, a, p in calls), 2)
             self.assertEqual(sum(a == "scan" for _, a, _ in calls), 2)
             self.assertEqual(
                 len(list((runner.output / "control-full").glob("*.html"))), 2
@@ -269,6 +388,8 @@ class Matrix(unittest.TestCase):
                 state = {}
 
                 def api(component, kind, action, **params):
+                    if action == "usersList":
+                        return {"usersList": user_rows(principals)}
                     if action == "newContext":
                         return {"contextId": "1"}
                     if action == "newUser":
@@ -281,6 +402,8 @@ class Matrix(unittest.TestCase):
                     ):
                         state.update(json.loads(params["varValue"]))
                     if action == "globalVar":
+                        if params["varKey"] == "busbar.reset.ready":
+                            return {"globalVar": json.dumps({"factories": FACTORIES})}
                         if params["varKey"] == "busbar.rules.ready":
                             return {
                                 "globalVar": json.dumps(
@@ -364,6 +487,8 @@ class Matrix(unittest.TestCase):
 
                 def api(component, kind, action, **params):
                     api_calls.append(action)
+                    if action == "usersList":
+                        return {"usersList": user_rows(["full role"])}
                     if action == "newContext":
                         return {"contextId": "1"}
                     if action == "newUser":
@@ -371,6 +496,8 @@ class Matrix(unittest.TestCase):
                     if action == "getScanProgress":
                         return {"getScanProgress": "100"}
                     if action == "globalVar":
+                        if params["varKey"] == "busbar.reset.ready":
+                            return {"globalVar": json.dumps({"factories": FACTORIES})}
                         return {"globalVar": ""}
                     return {"Result": "OK"}
 
