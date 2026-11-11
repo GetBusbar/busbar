@@ -257,7 +257,7 @@ def published_dev_target(repository, source):
     """Requalification must bind to the current published dev, never an arbitrary ref."""
     remote = os.environ['CI_SERVER_URL'].rstrip('/') + '/' + repository + '.git'
     lines = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'],
-                                    env=fetch_environment(), text=True).splitlines()
+                                    env=fetch_environment(), text=True, cwd='/').splitlines()
     if len(lines) != 1 or lines[0].split() != [source, 'refs/heads/dev']:
         raise Violation('published dev moved; qualify its current revision')
     return source
@@ -348,7 +348,8 @@ class Qualification:
                     or os.environ['CI_MERGE_REQUEST_SOURCE_PROJECT_ID'] != os.environ['CI_PROJECT_ID']):
                 raise Violation('qualification requires a same-project candidate targeting dev')
             remote = os.environ['CI_SERVER_URL'].rstrip('/') + '/' + self.repository + '.git'
-            line = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'], env=fetch_environment(), text=True)
+            line = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'],
+                                           env=fetch_environment(), text=True, cwd='/')
             target = line.split()[0]
             if not re.fullmatch('[0-9a-f]{40}', target):
                 raise Violation('target branch revision is unavailable')

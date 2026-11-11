@@ -194,14 +194,16 @@ def load_tool_image(archive, endpoint, env, source_image=None):
 
 def entry_command(helper, expected, image, name):
     # No candidate entrypoint, shell, arbitrary command, environment or writable
-    # source mount. nsenter changes to the actual host root before host Python runs.
-    code = ('import hashlib,pathlib,runpy,sys; p=pathlib.Path(' + repr(str(helper)) + '); '
+    # source mount. Bare --wd selects target PID 1's cwd; --wd=/ would open
+    # the old container root before namespace entry, leaving Git without a
+    # reachable cwd after --root. Python also enters the retained host root.
+    code = ('import hashlib,os,pathlib,runpy,sys; os.chdir("/"); p=pathlib.Path(' + repr(str(helper)) + '); '
             'assert hashlib.sha256(p.read_bytes()).hexdigest()==' + repr(expected) + '; '
             'sys.argv=[str(p),"--root"]; runpy.run_path(str(p),run_name="__main__")')
     return [DOCKER, '--host', 'unix:///var/run/docker.sock', 'run', '--name', name,
         '--pull=never', '--rm', '--interactive', '--privileged', '--userns=host',
         '--pid=host', '--network=none', '--entrypoint', '/usr/bin/nsenter', image,
-        '--target', '1', '--mount', '--net', '--uts', '--ipc', '--root', '--wd=/',
+        '--target', '1', '--mount', '--net', '--uts', '--ipc', '--root', '--wd',
         '--no-fork', '/usr/bin/python3', '-I', '-B', '-c', code]
 
 
@@ -621,7 +623,7 @@ def root_main():
                     elif env['CI_JOB_NAME'] == 'external-conformance':
                         command.append('--external-conformance')
                     try:
-                        run(command, env=dict(os.environ))
+                        run(command, env=dict(os.environ), cwd=trusted)
                     finally:
                         if (checkout / 'boundary-evidence').is_dir():
                             shutil.copytree(checkout / 'boundary-evidence', evidence, dirs_exist_ok=True)

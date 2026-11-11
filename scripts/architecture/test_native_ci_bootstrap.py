@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 import tarfile
 import tempfile
@@ -57,6 +58,22 @@ class Bootstrap(unittest.TestCase):
         self.assertIn('"--root"', code)
         self.assertNotIn('CI_JOB_TOKEN', ' '.join(argv))
         self.assertNotIn('candidate', ' '.join(argv))
+
+    def test_verified_entry_recovers_a_removed_inherited_working_directory(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory).resolve()
+            helper = root / 'fixed-controller.py'
+            helper.write_text('import os,sys; assert sys.argv[1:] == ["--root"]; print(os.getcwd())\n')
+            command = bootstrap.entry_command(helper, bootstrap.digest(helper), 'sha256:' + 'a' * 64, 'fixture')
+            self.assertIn('--wd', command)
+            self.assertNotIn('--wd=/', command)
+            inherited = root / 'removed'
+            inherited.mkdir()
+            launcher = 'import os,sys; os.chdir(sys.argv[1]); os.rmdir(sys.argv[1]); exec(sys.argv[2])'
+            result = subprocess.run([sys.executable, '-I', '-B', '-c', launcher,
+                                     str(inherited), command[-1]], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), '/')
 
     def test_candidate_and_collector_identities_endpoints_and_storage_are_distinct(self):
         root = Path('/srv/busbar-native-ci/job-19')
