@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -668,12 +669,61 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch):
     return {'compiler_witnesses': len(cases), 'production_features': True}
 
 
+def generated_revision(checkout):
+    """Bound the exact controller-registered generated source, without Git fallback."""
+    from native_confinement import checked_directory
+    checkout = checked_directory(checkout)
+    inventory, total = [], 0
+    for count, path in enumerate(checkout.rglob('*'), start=1):
+        if count > 10000:
+            raise Violation('generated architecture source exceeds entry count')
+        info = path.lstat()
+        relative = path.relative_to(checkout)
+        if (not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or '.git' in relative.parts):
+            raise Violation('generated architecture source contains indirect or Git control files')
+        row = {'path': relative.as_posix(), 'permissions': stat.S_IMODE(info.st_mode),
+               'kind': 'directory', 'size': 0, 'sha256': None}
+        if stat.S_ISREG(info.st_mode):
+            total += info.st_size
+            if info.st_nlink != 1 or info.st_size > 16 * 1024**2 or total > 128 * 1024**2:
+                raise Violation('generated architecture source exceeds collection bounds')
+            payload = path.read_bytes()
+            if len(payload) != info.st_size:
+                raise Violation('generated architecture source changed while fingerprinting')
+            row.update(kind='file', size=info.st_size, sha256=hashlib.sha256(payload).hexdigest())
+        inventory.append(row)
+    encoded = json.dumps(sorted(inventory, key=lambda row: row['path']),
+                         sort_keys=True, separators=(',', ':')).encode()
+    return 'generated-sha256:' + hashlib.sha256(encoded).hexdigest()
+
+
+def validate_execution_paths(args, execution, context):
+    checkout = execution.roots['checkout']
+    generated = context.get('architecture_checkout')
+    if generated is not None:
+        if not isinstance(generated, dict) or set(generated) != {'path', 'source'}:
+            raise Violation('invalid generated architecture checkout context')
+        checkout = Path(generated['path'])
+        if (not checkout.is_absolute() or checkout != checkout.resolve()
+                or checkout not in execution.extra_readonly
+                or not checkout.is_relative_to(execution.roots['candidate'] / 'generated')
+                or generated_revision(checkout) != generated['source']):
+            raise Violation('generated architecture checkout differs from protected context')
+    if (args.checkout.resolve() != checkout
+            or args.trusted.resolve() != execution.roots['trusted']
+            or not args.scratch.resolve().is_relative_to(execution.roots['harness'])
+            or not args.output.resolve().is_relative_to(execution.control)
+            or any(args.output.resolve().is_relative_to(p) for p in execution.roots.values())):
+        raise Violation('architecture controller paths differ from confined execution context')
+    return generated['source'] if generated else None
+
+
 def source_revision(checkout):
     result = subprocess.run(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True, capture_output=True)
     if result.returncode:
         # The native generator job retains its own source/SDK revisions and content hashes.
-        files = sorted(p for p in checkout.rglob('*') if p.is_file())
-        return 'generated-sha256:' + hashlib.sha256(b''.join(str(p.relative_to(checkout)).encode() + b'\0' + p.read_bytes() for p in files)).hexdigest()
+        return generated_revision(checkout)
     return result.stdout.strip()
 
 
@@ -691,15 +741,11 @@ def main():
     parser.add_argument('--execution-context-sha256')
     args = parser.parse_args()
     EXECUTION = None
+    generated_source = None
     if args.execution_context:
         from native_confinement import Execution
         EXECUTION = Execution.from_context(args.execution_context, args.execution_context_sha256)
-        if (args.checkout.resolve() != EXECUTION.roots['checkout']
-                or args.trusted.resolve() != EXECUTION.roots['trusted']
-                or not args.scratch.resolve().is_relative_to(EXECUTION.roots['harness'])
-                or not args.output.resolve().is_relative_to(EXECUTION.control)
-                or any(args.output.resolve().is_relative_to(p) for p in EXECUTION.roots.values())):
-            raise Violation('architecture controller paths differ from confined execution context')
+        generated_source = validate_execution_paths(args, EXECUTION, json.loads(args.execution_context.read_text()))
     elif args.execution_context_sha256:
         raise Violation('execution context digest requires its context')
     policy = Policy(read(args.policy))
@@ -721,7 +767,10 @@ def main():
             receipt['assembly'] = check_graph(assembled, policy, args.repository, checkout)
             receipt.update(check_compiler_witnesses(policy, checkout, args.trusted.resolve(), args.scratch.resolve()))
         receipt.update(check_sources(policy, args.repository, checkout, metadata, args.trusted.resolve(), args.scratch.resolve()))
-    receipt.update(repository=args.repository, policy_sha256=hashlib.sha256(args.policy.read_bytes()).hexdigest(), source=source_revision(checkout))
+    source = generated_revision(checkout) if generated_source else source_revision(checkout)
+    if generated_source and source != generated_source:
+        raise Violation('generated architecture source changed during qualification')
+    receipt.update(repository=args.repository, policy_sha256=hashlib.sha256(args.policy.read_bytes()).hexdigest(), source=source)
     if EXECUTION:
         receipt['candidate_execution'] = EXECUTION.observations
         receipt['release_eligible'] = False

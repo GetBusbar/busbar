@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
-import subprocess
 import sys
 
 from native import collect_output, digest, git
@@ -90,6 +88,23 @@ def prepare_runtime(q):
         q.run('plugin-runtime-prepare', ['bash', '-euo', 'pipefail', str(command)])
 
 
+def generated_architecture_context(execution, checkout, label):
+    """Select one already registered readonly tree without changing execution roots."""
+    from check import generated_revision, Violation
+    checkout = Path(checkout).resolve()
+    if (checkout not in execution.extra_readonly
+            or not checkout.is_relative_to(execution.roots['candidate'] / 'generated')):
+        raise Violation('generated architecture checkout is not registered readonly')
+    parent, expected = execution.write_context()
+    if digest(parent) != expected:
+        raise Violation('parent execution context changed')
+    context = json.loads(parent.read_text())
+    context['architecture_checkout'] = {'path': str(checkout), 'source': generated_revision(checkout)}
+    path = execution.control / ('generated-' + label + '-execution-context.json')
+    path.write_text(json.dumps(context, sort_keys=True) + '\n')
+    return path, digest(path)
+
+
 def qualify_generator(q):
     """One generator, with all fourteen kind/distribution combinations checked by
     the same trusted role graph, source guard and native door fixtures."""
@@ -146,7 +161,7 @@ dev_allows = ["busbar-contract", "busbar-plugin-loader"]
                 '--policy', str(policy_file), '--repository', repo, '--checkout', str(root),
                 '--trusted', str(q.trusted), '--scratch', str(scratch), '--output', str(output)]
             if q.execution is not None:
-                context, expected = q.execution.write_context()
+                context, expected = generated_architecture_context(q.execution, root, label)
                 command += ['--execution-context', str(context), '--execution-context-sha256', expected]
             q.run_controller(label + '-architecture', command)
             result = json.loads(output.read_text())

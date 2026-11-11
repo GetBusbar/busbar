@@ -87,12 +87,12 @@ fn a_1_5_5_rate_card_without_units_migrates_to_one_that_bills_the_same() {
     let stderr = String::from_utf8_lossy(&raw.stderr);
     assert_eq!(
         raw.status.code(),
-        Some(1),
-        "refused as written; stderr:\n{stderr}"
+        Some(0),
+        "missing rates warn without refusing validation; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("does not configure billable unit(s)"),
-        "refused for its unpriced units; stderr:\n{stderr}"
+        stderr.contains("has no configured rate") && stderr.contains("classes remain unpriced"),
+        "unpriced units are reported without being made free; stderr:\n{stderr}"
     );
 
     let (migrated, summary, _) = migrate_and_validate("rate_card.yaml");

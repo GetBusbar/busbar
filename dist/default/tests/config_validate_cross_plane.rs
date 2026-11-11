@@ -70,7 +70,7 @@ fn the_agents_section_enumerates_every_secret_reference_its_plane_declares() {
 }
 
 #[test]
-fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
+fn a_plane_card_silent_about_a_declared_class_does_not_refuse_boot() {
     linked::install();
     let planes: Vec<_> = linked::planes()
         .iter()
@@ -123,18 +123,12 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             busbar_kernel::config_validate::validate(&cfg)
         };
 
-        let errs = validated(section(Some(priced)))
-            .expect_err("billing ON with a declared class unpriced must refuse (#77(5))");
-        let want = format!(
-            "{}.rate_card does not configure billable unit(s) {unpriced} declared by this plane; \
-             add them (0 to make them free)",
-            d.config_section
-        );
-        assert!(
-            errs.contains(&want),
-            "{}: the refusal names the unpriced class: {errs:?}",
-            d.key
-        );
+        validated(section(Some(priced))).unwrap_or_else(|errors| {
+            panic!(
+                "{}: missing rate for {unpriced} is advisory, not a boot refusal: {errors:?}",
+                d.key
+            )
+        });
 
         let card_refusals = |r: Result<(), Vec<String>>| -> Vec<String> {
             r.err()

@@ -210,6 +210,17 @@ summary = "A model has a `rate_card` entry present but every tier (input, output
 action = "If the model is intentionally free, ignore this. Otherwise fill in the model's `rate_card` rates (micro-units per token) so its usage prices and counts against any `budget:` limit."
 
 [[diagnostic]]
+name = "CONFIG_RATE_CARD_MISSING"
+doc = "A configured lane lacks rates for declared billable classes; startup continues with a warning."
+code = 3026
+class = "Config"
+slug = "config-rate-card-missing"
+title = "Declared billable classes have no configured rate"
+severity = "Actionable"
+summary = "A plugin declares billable classes for a configured lane, but that lane lacks one or more rates. Startup continues and raw counts remain available. With a present card, missing classes remain unpriced; a rate on another lane does not price them. With no card for the plane, usage-based pricing is disabled. An explicit zero rate is a configured free class, not a missing rate. Class-parent relationships are reporting and cap projections, not inherited prices."
+action = "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup."
+
+[[diagnostic]]
 name = "CONFIG_PROVIDER_DESTINATION_REFUSED"
 doc = "A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade)."
 code = 3025

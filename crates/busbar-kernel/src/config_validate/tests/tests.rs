@@ -1278,11 +1278,13 @@ fn validate_cost_metadata(
     declarations: &[&crate::plane_driver::registry::PlaneDeclaration],
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
+    let empty = std::collections::BTreeMap::new();
+    let card = cfg.rate_card.as_ref().unwrap_or(&empty);
+    let flat =
+        cfg.rate_card.is_some() && flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
+    let lanes = cfg.models.keys().cloned().collect::<Vec<_>>();
     for declaration in declarations {
-        if let Some(card) = &cfg.rate_card {
-            let flat = flat_card_present(card.keys().map(|k| split_plane_lane(k).0));
-            validate_plane_card(declaration, card, flat, &mut errors);
-        }
+        validate_plane_card(declaration, card, flat, &lanes, &mut errors);
         if let Some(fees) = cfg.plane_fees.get(declaration.key) {
             validate_plane_fees(declaration, fees, &mut errors);
         }
@@ -1292,6 +1294,33 @@ fn validate_cost_metadata(
     } else {
         Err(errors)
     }
+}
+
+fn capture_rate_warnings<T>(run: impl FnOnce() -> T) -> (T, String) {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let buffer = Buffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::WARN)
+        .finish();
+    let result = tracing::subscriber::with_default(subscriber, run);
+    let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    (result, text)
 }
 
 static CLASS_PLANE: crate::plane_driver::registry::PlaneDeclaration =
@@ -1357,77 +1386,184 @@ fn plane_card(
 }
 
 #[test]
-fn a_card_missing_a_declared_class_fails_validation_naming_every_missing_class() {
-    let declarations = &[&FLAT_PLANE];
+fn a_card_missing_a_declared_class_warns_without_refusing_startup() {
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(card_yaml("m: { input_utok: 3 }\n"));
-    let errs = validate_cost_metadata(&cfg, declarations)
-        .expect_err("a card silent about declared classes must refuse");
-    let want = "pools.rate_card does not configure billable unit(s) search_units, images declared \
-                by this plane; add them (0 to make them free)";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
-
-    cfg.rate_card = Some(card_yaml("m: { input_utok: 3, units: { images: 7 } }\n"));
-    let errs =
-        validate_cost_metadata(&cfg, declarations).expect_err("search_units is still unconfigured");
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
+    assert!(result.is_ok(), "{result:?}");
     assert!(
-        errs.iter()
-            .any(|e| e.contains("billable unit(s) search_units declared")),
-        "{errs:?}"
+        warnings.contains("WARN") && warnings.contains("BUSBAR-3026"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("lane 'm' billable class(es) search_units, images"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("these classes remain unpriced"),
+        "{warnings}"
     );
 }
 
 #[test]
 fn a_card_configuring_every_declared_class_passes_with_explicit_zero() {
-    let declarations = &[&FLAT_PLANE];
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(card_yaml(
-        "m: { input_utok: 3, units: { search_units: 0 } }\nn: { units: { images: 0 } }\n",
+        "m: { input_utok: 3, units: { search_units: 0, images: 0 } }\n",
     ));
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
+    assert!(result.is_ok(), "{result:?}");
+    assert!(!warnings.contains("BUSBAR-3026"), "{warnings}");
+}
+
+#[test]
+fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
+    let mut card = plane_card("class-plane", "a", "units: { calls: 10, bytes: 0 }");
+    card.extend(plane_card("class-plane", "b", "units: { calls: 0 }"));
+    let lanes = [
+        format!("class-plane{PLANE_LANE_SEP}a"),
+        format!("class-plane{PLANE_LANE_SEP}b"),
+        format!("class-plane{PLANE_LANE_SEP}c"),
+    ];
+    let mut errors = Vec::new();
+    let (_, warnings) = capture_rate_warnings(|| {
+        validate_plane_card(&CLASS_PLANE, &card, false, &lanes, &mut errors)
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(!warnings.contains("lane 'a'"), "{warnings}");
     assert!(
-        validate_cost_metadata(&cfg, declarations).is_ok(),
-        "{:?}",
-        validate_cost_metadata(&cfg, declarations)
+        warnings.contains("lane 'b' billable class(es) bytes"),
+        "{warnings}"
+    );
+    assert!(
+        warnings.contains("lane 'c' billable class(es) calls, bytes"),
+        "{warnings}"
+    );
+
+    let (_, warnings) = capture_rate_warnings(|| {
+        validate_plane_card(
+            &CLASS_PLANE,
+            &Default::default(),
+            false,
+            &lanes,
+            &mut errors,
+        )
+    });
+    assert!(errors.is_empty(), "{errors:?}");
+    for lane in ["a", "b", "c"] {
+        assert!(
+            warnings.contains(&format!("lane '{lane}' billable class(es) calls, bytes")),
+            "{warnings}"
+        );
+    }
+    assert!(
+        warnings
+            .contains("no rate card is configured for this plane; usage-based pricing is disabled"),
+        "{warnings}"
     );
 }
 
 #[test]
-fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
-    let declarations = &[&CLASS_PLANE];
-    let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
-    cfg.rate_card = Some(plane_card(
-        "class-plane",
-        "srv_read",
-        "units: { calls: 10 }",
+fn missing_model_entries_warn_while_unknown_models_and_invalid_rates_still_fail() {
+    let mut cfg = make_root_cfg(
+        HashMap::new(),
+        [
+            (
+                "a".into(),
+                serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap(),
+            ),
+            (
+                "b".into(),
+                serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap(),
+            ),
+        ]
+        .into(),
+        HashMap::new(),
+    );
+    cfg.rate_card = Some(card_yaml(
+        "a: { input_utok: 1, units: { search_units: 0, images: 0 } }",
     ));
-    let errs =
-        validate_cost_metadata(&cfg, declarations).expect_err("bytes is declared and unconfigured");
-    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
-                add them (0 to make them free)";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
-
-    cfg.rate_card = Some(plane_card("class-plane", "", "{}"));
-    let errs = validate_cost_metadata(&cfg, declarations)
-        .expect_err("an empty present card configures nothing");
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
+    assert!(result.is_ok(), "{result:?}");
+    assert!(warnings.contains("lane 'b' billable class(es) input, output, cache_read, cache_write, search_units, images"), "{warnings}");
+    let mut errors = Vec::new();
+    validate_cost_model(&cfg, &mut errors);
     assert!(
-        errs.iter()
-            .any(|e| e.contains("billable unit(s) calls, bytes declared")),
-        "{errs:?}"
+        errors.is_empty(),
+        "missing model rate must not refuse: {errors:?}"
     );
-
-    let full = "units: { calls: 10, bytes: 0 }";
-    cfg.rate_card = Some(plane_card("class-plane", "srv_read", full));
+    cfg.rate_card = Some(card_yaml("typo: { input_utok: -1, output_utok: 0.0001 }"));
+    validate_cost_model(&cfg, &mut errors);
     assert!(
-        validate_cost_metadata(&cfg, declarations).is_ok(),
-        "{:?}",
-        validate_cost_metadata(&cfg, declarations)
+        errors
+            .iter()
+            .any(|error| error.contains("not defined under models")),
+        "{errors:?}"
     );
-
-    cfg.rate_card = None;
     assert!(
-        validate_cost_metadata(&cfg, declarations).is_ok(),
-        "no card = billing off, no refusal"
+        errors
+            .iter()
+            .any(|error| error.contains("finite, non-negative")),
+        "{errors:?}"
     );
+    assert!(
+        errors.iter().any(|error| error.contains("cannot hold")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn parent_classes_do_not_supply_prices_for_raw_child_counts() {
+    const CLASSES: &[crate::plane_driver::registry::BillableClass] =
+        &[bc("measure", "count"), bc("detail", "count")];
+    let declaration = crate::plane_driver::registry::PlaneDeclaration {
+        billable_classes: CLASSES,
+        class_parents: &[busbar_contract::plane::ClassParent {
+            child: "detail",
+            parent: "measure",
+        }],
+        ..CLASS_PLANE
+    };
+    let card = plane_card("class-plane", "a", "units: { measure: 0 }");
+    let mut errors = Vec::new();
+    let (_, warnings) =
+        capture_rate_warnings(|| validate_plane_card(&declaration, &card, false, &[], &mut errors));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        warnings.contains("lane 'a' billable class(es) detail"),
+        "{warnings}"
+    );
+}
+
+#[test]
+fn missing_rate_diagnostic_matches_published_docs() {
+    use crate::diagnostics::{render_json_for, render_markdown_for};
+    let diagnostic = &CONFIG_RATE_CARD_MISSING;
+    assert_eq!(
+        diagnostic.severity,
+        crate::diagnostics::Severity::Actionable
+    );
+    let published: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics.json"
+    )))
+    .unwrap();
+    let rendered: Vec<serde_json::Value> =
+        serde_json::from_str(&render_json_for(&[diagnostic])).unwrap();
+    assert_eq!(
+        published
+            .iter()
+            .find(|entry| entry["number"] == diagnostic.code)
+            .unwrap(),
+        &rendered[0]
+    );
+    let rendered = render_markdown_for(&[diagnostic]);
+    let entry = &rendered[rendered.find("<a id=").unwrap()..];
+    assert!(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/diagnostics.md"
+    ))
+    .contains(entry));
 }
 
 static DOOR_FEE_PLANE: crate::plane_driver::registry::PlaneDeclaration =
@@ -1463,11 +1599,13 @@ fn a_door_planes_fee_unit_is_no_class_its_card_must_price() {
         "srv_read",
         "units: { calls: 2 }",
     ));
-    let errs =
-        validate_cost_metadata(&cfg, declarations).expect_err("bytes is declared and unpriced");
-    let want = "tools.rate_card does not configure billable unit(s) bytes declared by this plane; \
-                add them (0 to make them free)";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, declarations));
+    assert!(result.is_ok(), "{result:?}");
+    assert!(warnings.contains("billable class(es) bytes"), "{warnings}");
+    assert!(
+        !warnings.contains("billable class(es) per_request"),
+        "{warnings}"
+    );
 
     cfg.rate_card = Some(plane_card(
         "door-fee-plane",
@@ -1498,11 +1636,12 @@ fn a_dropped_in_planes_declared_classes_are_honoured() {
     let declarations = &[dropped];
     let mut cfg = make_root_cfg(HashMap::new(), HashMap::new(), HashMap::new());
     cfg.rate_card = Some(plane_card("dropped-plane", "a", "units: { frames: 1 }"));
-    let errs = validate_cost_metadata(&cfg, declarations)
-        .expect_err("widgets is declared by the dropped-in plane");
-    let want = "agents.rate_card does not configure billable unit(s) widgets declared by this \
-                plane; add them (0 to make them free)";
-    assert!(errs.iter().any(|e| e == want), "{errs:?}");
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, declarations));
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        warnings.contains("lane 'a' billable class(es) widgets"),
+        "{warnings}"
+    );
 
     let full = "units: { frames: 1, widgets: 0 }";
     cfg.rate_card = Some(plane_card("dropped-plane", "a", full));

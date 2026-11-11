@@ -2,10 +2,15 @@
 
 import hashlib
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+
+import native
+import linux_job_isolation
 
 from check import Violation
 from native_conformance_inputs import stage, pack, unpack
@@ -76,6 +81,46 @@ class Instruments(Fixture, unittest.TestCase):
         self.assertEqual(binding['configuration_sha256'],
                          hashlib.sha256(canonical(execution.config)).hexdigest())
         self.assertEqual(execution.config['environment'], self.q.execution.config['environment'])
+
+    def test_parent_child_and_bundle_digests_agree_without_losing_approved_input(self):
+        self.python_runtime()
+        # The approved input's formatting deliberately differs from canonical
+        # serialization, so raw approval and active execution are distinct pins.
+        approved = hashlib.sha256(json.dumps(self.q.execution.config, indent=3).encode()).hexdigest()
+        self.q.receipt['execution_boundary'] = {
+            'approved_configuration_sha256': approved, 'configuration_sha256': approved, 'observations': []}
+        self.q.evidence = self.control / 'evidence'
+        self.q.evidence.mkdir()
+        self.intake()
+        path, expected = self.q.execution.write_context()
+        from native_confinement import Execution
+        child = Execution.from_context(path, expected)
+
+        def client(argv, **kwargs):
+            return subprocess.CompletedProcess(argv, 1 if argv[0] == 'create' else 0,
+                stdout=json.dumps({'SecurityOptions': ['name=userns']}) if argv[0] == 'info' else '',
+                stderr='intentional create refusal')
+
+        with patch.object(linux_job_isolation, 'prepare_writable', return_value={}), \
+                patch.object(linux_job_isolation, 'validate_userns', return_value={}), \
+                patch.object(child, '_client', side_effect=client):
+            with self.assertRaisesRegex(ValueError, 'creation failed'):
+                with child.invocation(['python3', '-c', 'pass'], self.q.root, {}):
+                    self.fail('refused container must never execute')
+        self.assertEqual(len(child.observations), 1)
+        self.q.execution.observations.extend(child.observations)
+        self.q.receipt['execution_boundary']['observations'] = self.q.execution.observations
+        native.Qualification.save(self.q)
+        receipt = json.loads((self.q.evidence / 'receipt.json').read_text())
+        parent = receipt['execution_boundary']
+        self.assertEqual(parent['approved_configuration_sha256'], approved)
+        self.assertNotEqual(parent['configuration_sha256'], approved)
+        self.assertEqual(parent['configuration_sha256'], child.observations[0]['configuration_sha256'])
+        self.assertEqual(parent['configuration_sha256'],
+                         receipt['conformance_inputs']['python_runtime']['configuration_sha256'])
+        self.q.execution.config['resources']['pids'] += 1
+        with self.assertRaisesRegex(Violation, 'retained observations'):
+            native.Qualification.save(self.q)
 
     def test_python_runtime_rejects_other_image_abi(self):
         self.python_runtime()
