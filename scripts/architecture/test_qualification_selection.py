@@ -35,8 +35,6 @@ class Selection(unittest.TestCase):
         coverage = json.loads(core['conformance/ci-coverage.json'])
         coverage['suites']['owner']['command'] = 'bash testing/conformance/owner.sh'
         core['conformance/ci-coverage.json'] = json.dumps(coverage)
-        core['ci/security/tools.json'] = json.dumps(dict(database_max_age_hours=72,
-            semgrep='semgrep@sha256:' + 'd' * 64, trivy='trivy@sha256:' + 'e' * 64))
         core['scripts/architecture/test_cleanup.py'] = 'original standalone test'
         self.objects.files[CORE, NEW] = dict(core)
         self.objects.files[CORE, NEW]['scripts/architecture/test_cleanup.py'] = 'fixed standalone test'
@@ -96,7 +94,7 @@ class Selection(unittest.TestCase):
 
     def policy(self, request, *args):
         files = {path: digest(self.objects.blob(CORE, request['policy'], path))
-                 for path in ('ci/architecture.toml', 'ci/security/tools.json')}
+                 for path in ('ci/architecture.toml', 'ci/security/tools.json', 'scripts/security/scan.py')}
         return dict(files=files, tools=json.loads(self.objects.blob(CORE, request['policy'],
             'ci/security/tools.json')), owner_suites=['owner'] if request['repository'] == OWNER else [],
             required_external='core-conformance' if request['repository'] == CORE else None,
