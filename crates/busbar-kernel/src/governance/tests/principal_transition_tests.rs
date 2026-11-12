@@ -1281,9 +1281,10 @@ fn principal_domain_metadata_is_strict_non_secret_and_only_tracks_identity_field
         .is_err());
     }
     let mut unresolved = settings.clone();
-    unresolved["issuer"] = json!({"env":"ISSUER"});
+    unresolved["issuer"] = json!({"module":"fixture-source","settings":{"slot":"ISSUER"}});
     assert!(fingerprint(&unresolved).is_err());
-    unresolved["issuer"] = json!({"nested":[{"env":"ISSUER"}]});
+    unresolved["issuer"] =
+        json!({"nested":[{"module":"fixture-source","settings":{"slot":"ISSUER"}}]});
     assert!(fingerprint(&unresolved).is_err());
 }
 

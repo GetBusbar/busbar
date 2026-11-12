@@ -125,7 +125,8 @@ pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 GRANT_NEED=$(python3 - "$WORK/unsigned.tar.gz" <<'EOF'
 import json, struct, sys, tarfile
 FIRST_PARTY = {1: "provider"}   # loopback-allowed is the operator's to grant (81e3062956, OWNER 2026-10-24)
-RENDERING_MAGIC = b"BBSTMT03"  # busbar-contract's current rendering, including need retention
+RENDERING_MAGIC = b"BBSTMT04"  # busbar-contract's current rendering, including need retention and measurement classes
+MAX_MEASUREMENT_CLASSES = 64   # busbar_contract::abi::measurement::MAX_MEASUREMENT_CLASSES
 with tarfile.open(sys.argv[1]) as t:
     m = json.load(t.extractfile("manifest.json"))
 st = m.get("statement")
@@ -170,6 +171,10 @@ for _ in range(count()):
     strs(); u64(); u32(); strs()                # kept headers, timeout_ms, keep_mode, denied headers
     needs.append((klass, transport))
 string(); string(); strs(); strs()               # target_from, trust_from, answers, claims
+classes = count()                                # measurement_classes: { class, family }, at most 64
+if classes > MAX_MEASUREMENT_CLASSES:
+    sys.exit(f"manifest statement is not a Statement rendering: more than {MAX_MEASUREMENT_CLASSES} measurement classes")
+for _ in range(classes): string(); string()
 if at != len(b):
     sys.exit(f"manifest statement is not a Statement rendering: trailing bytes at {at}")
 for klass, transport in needs:

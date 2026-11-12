@@ -547,5 +547,27 @@ class RetentionPipeline(unittest.TestCase):
         for job in ('native-qualification', 'security-scans', 'core-conformance'):
             self.assertTrue(independent_qualification_job(YAML.encode(), job))
 
+
+class CoreJudgeInputs(unittest.TestCase):
+    def test_core_judge_oidc_source_matches_distribution_lock(self):
+        # The core archive's oidc-source bundle is refused by oidf.py when its
+        # source-identity rev differs from dist/default/Cargo.lock. Fail here,
+        # before the conformance run, when a re-pin leaves the archive stale.
+        # Republishing the archive means recording its staged OIDC rev below.
+        import importlib.util
+        import json
+        staged_oidc_rev = {
+            'b548d9e3623df2cbdbd495c41dd6ff2f078c641315cd6b61f07a565a12853024':
+                '6c89d7c55ff8b14bf3907978afbaadf690677257',
+        }
+        plan = json.loads((ROOT / 'ci/native-judge-inputs.json').read_text())
+        archive = plan['owners']['core']['archive_sha256']
+        self.assertIn(archive, staged_oidc_rev, 'record the OIDC rev staged by the new core judge archive')
+        spec = importlib.util.spec_from_file_location('oidf_lock', ROOT / 'testing/oidf-conformance/oidf.py')
+        oidf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(oidf)
+        self.assertEqual(staged_oidc_rev[archive], oidf.oidc_pin(str(ROOT))['rev'],
+                         'core judge archive stages a stale oidc-source; republish it for the locked OIDC rev')
+
 if __name__ == '__main__':
     unittest.main()

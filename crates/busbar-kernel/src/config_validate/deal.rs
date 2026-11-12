@@ -238,9 +238,10 @@ pub struct Section {
     /// Where it sits in the operator's file: one path per root key it was dealt from.
     pub at: Vec<Vec<String>>,
 
-    /// The blob that crosses: `{verb: section}` for every stated verb the document writes, reserved
-    /// sub-keys stripped; an instance's own `settings`.
-    pub settings: Value,
+    /// The blob that crosses, encoded and held in guarded custody: `{verb: section}` for every
+    /// stated verb the document writes, reserved sub-keys stripped and bound to the filled-value
+    /// ledger ([`crate::config::filled::plane_bound`]); an instance's own `settings`, as written.
+    pub settings: busbar_contract::Secret<Vec<u8>>,
     /// The reserved sub-keys read off, each at its path, for the kernel.
     pub reserved: Vec<(Vec<String>, Value)>,
 }
@@ -267,44 +268,60 @@ impl Document {
         &mut self.value
     }
 
-    #[must_use]
-    pub fn deal(&self, seat: Seat<'_>) -> Option<Section> {
-        match seat {
+    /// Deal one seat's section out of the document, encoded for the kind boundary. `None` when
+    /// the document writes nothing for the seat; an error when a plane's sections cannot be bound
+    /// or encoded, which refuses rather than lending a partial blob.
+    pub fn deal(&self, seat: Seat<'_>) -> Result<Option<Section>, String> {
+        let (at, settings, reserved) = match seat {
             Seat::Verbs(verbs) => {
-                let mut section = Section {
-                    at: Vec::new(),
-                    settings: Value::Object(Map::new()),
-                    reserved: Vec::new(),
-                };
+                let mut at = Vec::new();
+                let mut reserved = Vec::new();
+                let mut settings = Value::Object(Map::new());
                 for verb in verbs {
                     let Some(v) = self.value.get(verb).filter(|v| !v.is_null()) else {
                         continue;
                     };
-                    let stripped = strip(verb, v.clone(), &mut section.reserved);
-                    section.settings[verb.as_str()] = stripped;
-                    section.at.push(vec![verb.clone()]);
+                    let stripped = strip(verb, v.clone(), &mut reserved);
+                    settings[verb.as_str()] = stripped;
+                    at.push(vec![verb.clone()]);
                 }
-                (!section.at.is_empty()).then_some(section)
+                if at.is_empty() {
+                    return Ok(None);
+                }
+                let settings = crate::config::filled::plane_bound(&[], settings)?;
+                (at, settings, reserved)
             }
             Seat::Instance(kind, instance) => {
-                let key = kind.root_key()?;
+                let Some(key) = kind.root_key() else {
+                    return Ok(None);
+                };
                 let entry = match kind {
-                    Kind::Transport | Kind::Plane => return None,
+                    Kind::Transport | Kind::Plane => return Ok(None),
                     Kind::Store => vec![key],
                     _ => vec![key, instance],
                 };
-                let at = self.walk(&entry)?;
+                let Some(at) = self.walk(&entry) else {
+                    return Ok(None);
+                };
                 let (path, settings) = match at.get("settings") {
                     Some(s) => ([&entry[..], &["settings"][..]].concat(), s.clone()),
                     None => (entry, Value::Object(Map::new())),
                 };
-                Some(Section {
-                    at: vec![path.into_iter().map(str::to_owned).collect()],
+                (
+                    vec![path.into_iter().map(str::to_owned).collect()],
                     settings,
-                    reserved: Vec::new(),
-                })
+                    Vec::new(),
+                )
             }
-        }
+        };
+        let settings = busbar_contract::plugin_settings::ResolvedSettings::from(settings)
+            .encode()
+            .map_err(|e| e.to_string())?;
+        Ok(Some(Section {
+            at,
+            settings,
+            reserved,
+        }))
     }
 
     fn walk(&self, path: &[&str]) -> Option<&Value> {

@@ -708,15 +708,15 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     let providers: std::collections::HashMap<String, crate::config::providers::ResolvedProvider> = [
         (
             "eng-a".to_string(),
-            provider("protocol: one\nbase_url: http://a\napi_key: {env: A}\nerror_map: {'429': rate_limited}\n"),
+            provider("protocol: one\nbase_url: http://a\napi_key: {module: fixture-source, settings: {slot: A}}\nerror_map: {'429': rate_limited}\n"),
         ),
         (
             "eng-b".to_string(),
-            provider("protocol: two\nbase_url: http://b\napi_key: {env: B}\nerror_map: {}\n"),
+            provider("protocol: two\nbase_url: http://b\napi_key: {module: fixture-source, settings: {slot: B}}\nerror_map: {}\n"),
         ),
         (
             "unused".to_string(),
-            provider("protocol: one\nbase_url: http://u\napi_key: {env: U}\nerror_map: {}\n"),
+            provider("protocol: one\nbase_url: http://u\napi_key: {module: fixture-source, settings: {slot: U}}\nerror_map: {}\n"),
         ),
     ]
     .into_iter()

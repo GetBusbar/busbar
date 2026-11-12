@@ -25,11 +25,7 @@ impl Migrate for Stub {
                 needs.push(MigrateNeed::AllowDestination(host.to_string()));
             }
         }
-        Migrated {
-            settings,
-            report,
-            needs,
-        }
+        Migrated::new(settings, report, needs)
     }
 }
 
@@ -113,8 +109,10 @@ fn host_answer_preserves_arbitrary_json_and_redacts_debug() {
         serde_json::json!({"PRIVATE-KEY-CANARY": "PRIVATE-MIGRATION-CANARY"}),
     ] {
         let owner = Migrated::unchanged(settings.clone());
-        let wire = serde_json::to_vec(&owner).unwrap();
-        let held = read_answer(Outcome::Ready, &wire).unwrap();
+        let wire = owner.wire().unwrap();
+        let held =
+            read_answer(Outcome::Ready, wire.expose(&crate::plugin::TestKernelSeal)).unwrap();
+        assert!(!format!("{owner:?}").contains("CANARY"));
         let encoded = held.encode().unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(

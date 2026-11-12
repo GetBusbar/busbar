@@ -33,6 +33,7 @@ use std::ffi::c_void;
 use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::abi::mechanism::call::{AbiStr, OutHead, Outcome};
 use crate::abi::mechanism::lifecycle::ValidateIn;
@@ -93,28 +94,86 @@ pub enum MigrateNeed {
 
 /// A plugin's migrated settings section: the new section, a report line per change, and the needs
 /// it raises against core's keys. The answer `migrate` writes, as one JSON object.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// The section is held in the same wiping, opaque custody as the host's [`MigrationAnswer`]:
+/// the owner finishes editing its `serde_json::Value` and then seals it here with
+/// [`Migrated::new`] or [`Migrated::unchanged`]. Nothing reads or serializes the sealed section
+/// except the `migrate` slot's own wire encoder; a test holding the dev-only kernel seal reads it
+/// back through [`MigrationAnswer::from`] and [`MigrationAnswer::authoring`]. `Debug` names no
+/// setting.
+///
+/// ```compile_fail
+/// fn inspect(answer: busbar_contract::abi::sdk::migrate::Migrated) {
+///     let _ = answer.settings;
+/// }
+/// ```
+/// ```compile_fail
+/// fn serialize(answer: busbar_contract::abi::sdk::migrate::Migrated) {
+///     let _ = serde_json::to_value(answer);
+/// }
+/// ```
+/// ```compile_fail
+/// let _: busbar_contract::abi::sdk::migrate::Migrated = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Clone, PartialEq)]
 pub struct Migrated {
     /// The settings section as it reads now. Core writes it in place of the old one.
-    pub settings: serde_json::Value,
+    settings: crate::plugin_settings::Tree,
     /// One line per change, each saying what changed and why. Core prints each under the plugin's
-    /// name.
-    #[serde(default)]
+    /// name. Report lines must not contain secret values.
     pub report: Vec<String>,
     /// What the plugin needs of keys core owns.
-    #[serde(default)]
     pub needs: Vec<MigrateNeed>,
 }
 
+impl Default for Migrated {
+    /// A `null` section, nothing to report, nothing needed.
+    fn default() -> Self {
+        Self::unchanged(serde_json::Value::Null)
+    }
+}
+
+impl std::fmt::Debug for Migrated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Migrated")
+            .field("settings", &"[REDACTED]")
+            .field("report", &self.report)
+            .field("needs", &self.needs)
+            .finish()
+    }
+}
+
 impl Migrated {
+    /// Seal the owner's migrated `settings` with its report lines and needs.
+    #[must_use]
+    pub fn new(settings: serde_json::Value, report: Vec<String>, needs: Vec<MigrateNeed>) -> Self {
+        Self {
+            settings: crate::plugin_settings::Tree(settings),
+            report,
+            needs,
+        }
+    }
+
     /// `settings` unchanged: nothing to report, nothing needed.
     #[must_use]
     pub fn unchanged(settings: serde_json::Value) -> Self {
-        Self {
-            settings,
-            ..Self::default()
+        Self::new(settings, Vec::new(), Vec::new())
+    }
+
+    /// The `migrate` slot's answer bytes, `{"settings": .., "report": [..], "needs": [..]}`,
+    /// written into guarded custody.
+    pub(crate) fn wire(&self) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            settings: &'a serde_json::Value,
+            report: &'a [String],
+            needs: &'a [MigrateNeed],
         }
+        crate::plugin_settings::encode_guarded(&Wire {
+            settings: &self.settings.0,
+            report: &self.report,
+            needs: &self.needs,
+        })
     }
 }
 
@@ -157,7 +216,7 @@ impl std::fmt::Debug for MigrationAnswer {
 impl From<Migrated> for MigrationAnswer {
     fn from(migrated: Migrated) -> Self {
         Self {
-            settings: crate::plugin_settings::Tree(migrated.settings),
+            settings: migrated.settings,
             report: migrated.report,
             needs: migrated.needs,
         }
@@ -434,8 +493,11 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                 })
                 .and_then(|answer| serde_json::to_vec(&answer).map_err(|_| CredentialRefusal));
             match result {
-                Ok(bytes) => (Outcome::Ready, bytes),
-                Err(_) => (Outcome::Refused, b"credential migration refused".to_vec()),
+                Ok(bytes) => (Outcome::Ready, Zeroizing::new(bytes)),
+                Err(_) => (
+                    Outcome::Refused,
+                    Zeroizing::new(b"credential migration refused".to_vec()),
+                ),
             }
         } else {
             match parse(settings) {
@@ -446,12 +508,17 @@ impl<M: Migrate> RawSlot for Migrator<M> {
                     } else {
                         M::migrate(section, &from)
                     };
-                    match serde_json::to_vec(&migrated) {
-                        Ok(bytes) => (Outcome::Ready, bytes),
-                        Err(e) => (Outcome::Refused, format!("migrate: {e}").into_bytes()),
+                    match migrated.wire() {
+                        Ok(mut bytes) => {
+                            (Outcome::Ready, Zeroizing::new(std::mem::take(&mut bytes.0)))
+                        }
+                        Err(e) => (
+                            Outcome::Refused,
+                            Zeroizing::new(format!("migrate: {e}").into_bytes()),
+                        ),
                     }
                 }
-                Err(e) => (Outcome::Refused, e.into_bytes()),
+                Err(e) => (Outcome::Refused, Zeroizing::new(e.into_bytes())),
             }
         };
 
