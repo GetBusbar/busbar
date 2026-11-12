@@ -57,14 +57,18 @@ const CI_KEYS: [&str; 16] = [
     "CI_JOB_TOKEN",
     "BUSBAR_ADMISSION_CORE_REVISION",
 ];
-const JOBS: [&str; 5] = [
+const JOBS: [&str; 4] = [
     "native-qualification",
     "core-conformance",
     "external-conformance",
     "native-isolation-diagnostic",
-    // Core dev push producer of trusted plugin dependency units (native::depcache).
-    "plugin-dependency-units",
 ];
+
+/// Core dev push producer of trusted plugin dependency units (native::depcache):
+/// only the server-assigned `parallel` instance names "plugin-dependency-units K/8".
+fn dependency_units_job(name: &str) -> bool {
+    crate::native::depcache::producer_shard(name).is_some()
+}
 
 /// Verifies the copied controller in a root-only directory before executing it.
 pub const ENTRY_SCRIPT: &str = "set -eu
@@ -117,7 +121,7 @@ pub fn ci_environment(env: &Env) -> Result<Env> {
         require(positive_integer(get(key)), "invalid CI identity")?;
     }
     require(
-        JOBS.contains(&get("CI_JOB_NAME")),
+        JOBS.contains(&get("CI_JOB_NAME")) || dependency_units_job(get("CI_JOB_NAME")),
         "unrecognized protected bootstrap job",
     )?;
     let project = get("CI_PROJECT_PATH");
@@ -1444,7 +1448,7 @@ impl Root {
             );
         }
         // The dependency-unit producer starts no service peer.
-        let services = if self.env["CI_JOB_NAME"] == "plugin-dependency-units" {
+        let services = if dependency_units_job(&self.env["CI_JOB_NAME"]) {
             Value::Object(Vec::new())
         } else {
             inputs::stage_services(
@@ -1747,6 +1751,13 @@ mod tests {
         }
         let selected = ci_environment(&env).unwrap();
         assert_eq!(approved_revision(&selected).unwrap(), "b".repeat(40));
+        for index in 1..=8 {
+            let name = format!("plugin-dependency-units {index}/8");
+            assert!(
+                ci_environment(&with("CI_JOB_NAME", &name)).is_ok(),
+                "{name}"
+            );
+        }
         assert!(
             !selected.contains_key("LD_PRELOAD")
                 && !selected.contains_key("PYTHONPATH")
@@ -1754,6 +1765,8 @@ mod tests {
         );
         for (key, value) in [
             ("CI_JOB_NAME", "candidate-command"),
+            ("CI_JOB_NAME", "plugin-dependency-units"),
+            ("CI_JOB_NAME", "plugin-dependency-units 9/8"),
             ("CI_SERVER_URL", "https://attacker.invalid"),
             ("CI_JOB_ID", "../escape"),
             ("CI_JOB_ID", "019"),

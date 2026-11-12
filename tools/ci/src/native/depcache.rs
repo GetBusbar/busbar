@@ -33,6 +33,34 @@ pub const SCHEMA: &str = "busbar.plugin-dependency-units/1";
 pub const PACKAGE: &str = "busbar-plugin-dependency-units";
 pub const PROJECT_API: &str = "https://git.getbusbar.dev/api/v4/projects/3";
 pub const PRODUCER_JOB: &str = "plugin-dependency-units";
+/// The producer runs as GitLab `parallel: PRODUCER_SHARDS`; the server names each
+/// instance "plugin-dependency-units K/N". Every product belongs to exactly one
+/// shard by a stable digest of its repository name (the same assignment as the
+/// Python controller), so one product is only ever built by one shard index, and
+/// each shard index has its own resource_group: consecutive dev pushes never
+/// write one package file twice.
+pub const PRODUCER_SHARDS: u64 = 8;
+
+/// 0-based shard of a server-named producer job, or None for any other job.
+pub fn producer_shard(job_name: &str) -> Option<u64> {
+    let rest = job_name.strip_prefix(PRODUCER_JOB)?.strip_prefix(' ')?;
+    let (index, total) = rest.split_once('/')?;
+    if total != PRODUCER_SHARDS.to_string()
+        || index.starts_with('0')
+        || !index.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let index: u64 = index.parse().ok()?;
+    (1..=PRODUCER_SHARDS).contains(&index).then(|| index - 1)
+}
+
+/// `int(sha256(repo).hexdigest(), 16) % PRODUCER_SHARDS`; the shard count
+/// divides 256, so only the final digest byte decides it.
+pub fn product_shard(repo: &str) -> u64 {
+    let digest = sha256::hex(repo.as_bytes());
+    u64::from_str_radix(&digest[62..], 16).expect("sha256 hex") % PRODUCER_SHARDS
+}
 /// Cargo fingerprints the absolute source path of every registry and Git unit;
 /// every confined invocation's private Cargo home is mounted at this one path.
 pub const CARGO_HOME_PATH: &str = confine::INVOCATION_CARGO_HOME;
@@ -1216,13 +1244,14 @@ fn produce_product(q: &mut Q, product: &Value, registry: &mut dyn Registry) -> R
     Ok(row)
 }
 
-/// Core dev push only: publish missing dependency units for every pinned product.
+/// Core dev push only: publish missing dependency units for this shard's pinned products.
 /// The YAML rule admits only core's dev push pipelines; GitLab restricts pushes
 /// to protected dev; consumers re-check the writing pipeline's ref.
 pub fn produce(q: &mut Q) -> R<()> {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let shard = producer_shard(&env("CI_JOB_NAME"));
     if !(q.repository == "GetBusbar/busbar"
-        && env("CI_JOB_NAME") == PRODUCER_JOB
+        && shard.is_some()
         && env("CI_PIPELINE_SOURCE") == "push"
         && env("CI_COMMIT_BRANCH") == "dev"
         && q.execution.is_some())
@@ -1239,8 +1268,19 @@ pub fn produce(q: &mut Q) -> R<()> {
     };
     let vector = sp::read_json(&q.root.join("scripts/ci-product-pins.json"))?;
     let mut rows = Vec::new();
+    q.receipt.set(
+        "dependency_units_shard",
+        object([
+            ("index", shard.unwrap_or_default().into()),
+            ("total", PRODUCER_SHARDS.into()),
+        ]),
+    );
     for product in vector.at("products").as_array().unwrap_or(&[]).to_vec() {
-        let repository = format!("GetBusbar/{}", product.at("repo").as_str().unwrap_or(""));
+        let repo = product.at("repo").as_str().unwrap_or("");
+        if Some(product_shard(repo)) != shard {
+            continue;
+        }
+        let repository = format!("GetBusbar/{repo}");
         let entry = q.policy.at("repositories").at(&repository);
         if *entry == Value::Null || entry.at("language").as_str() == Some("c") {
             continue;

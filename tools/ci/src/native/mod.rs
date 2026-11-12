@@ -2435,7 +2435,8 @@ fn source_checks(q: &mut Q) -> R<()> {
 /// Core's dependency-unit producer job (server-set job name; the bootstrap admits
 /// only known job names) publishes plugin dependency units instead of qualifying.
 pub fn dependency_units_producer(repository: &str) -> bool {
-    repository == CORE && std::env::var("CI_JOB_NAME").is_ok_and(|j| j == depcache::PRODUCER_JOB)
+    repository == CORE
+        && std::env::var("CI_JOB_NAME").is_ok_and(|j| depcache::producer_shard(&j).is_some())
 }
 
 fn body(args: &Args, slot: &mut Option<Q>) -> R<()> {
