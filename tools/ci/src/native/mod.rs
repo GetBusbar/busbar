@@ -76,12 +76,43 @@ pub fn native_scheduling(cpus: usize, resources: Option<&Value>) -> Value {
     ])
 }
 
-const OPTIMIZED_STEPS: [&str; 3] = ["product-inputs", "bounded-loom", "final-binary"];
+const OPTIMIZED_STEPS: [&str; 2] = ["bounded-loom", "final-binary"];
 
-/// Optimized builds keep the conservative slot budget; unoptimized ones use the CPUs.
+const UNOPTIMIZED_CARGO_COMMANDS: [&str; 6] =
+    ["check", "clippy", "test", "nextest", "build", "doc"];
+
+/// Controller-named core wrapper steps whose every compiler invocation is a
+/// dev-profile `cargo build`: product-inputs runs the trusted
+/// scripts/ci-product-inputs.sh (plugin cdylibs land in target/debug), and core
+/// conformance runs the digest-pinned testing/conformance/run.sh, whose suites
+/// build dist/default, the packer and the OIDC plugin unoptimized. Matched by
+/// step name and the exact trusted script name, never by candidate input.
+const UNOPTIMIZED_WRAPPER_STEPS: [(&str, &str); 2] = [
+    ("product-inputs", "scripts/ci-product-inputs.sh"),
+    ("core-native-conformance", "testing/conformance/run.sh"),
+];
+
+/// Only a visible unoptimized cargo command gets the wider budget. Wrapper
+/// scripts may build optimized binaries inside (a plugin's runtime preparation
+/// runs its LTO release build), so they keep the conservative slot budget like
+/// every optimized step, except the named core wrappers above.
 pub fn step_build_jobs(name: &str, argv: &[String], scheduling: &Value) -> Value {
+    let mut unoptimized = argv.len() >= 2
+        && argv[0] == "cargo"
+        && UNOPTIMIZED_CARGO_COMMANDS.contains(&argv[1].as_str())
+        && !argv.iter().any(|a| a == "--release")
+        && !argv.iter().any(|a| a.starts_with("--profile"));
+    if let Some((_, script)) = UNOPTIMIZED_WRAPPER_STEPS
+        .iter()
+        .find(|(step, _)| *step == name)
+        && argv.len() == 2
+        && argv[0] == "bash"
+        && argv[1].ends_with(&format!("/{script}"))
+    {
+        unoptimized = true;
+    }
     if OPTIMIZED_STEPS.contains(&name)
-        || argv.iter().any(|a| a == "--release")
+        || !unoptimized
         || scheduling.get("unoptimized_build_jobs").is_none()
     {
         return scheduling.at("build_jobs").clone();
@@ -2580,9 +2611,50 @@ mod tests {
             step_build_jobs("final-binary", &argv, &scheduling).as_int(),
             Some(1)
         );
-        let release = sp::strings(&["cargo", "test", "--release"]);
+        let jobs = |name: &str, argv: &[&str]| {
+            step_build_jobs(name, &sp::strings(argv), &scheduling).as_int()
+        };
+        assert_eq!(jobs("root-runtime", &["cargo", "nextest", "run"]), Some(3));
         assert_eq!(
-            step_build_jobs("x", &release, &scheduling).as_int(),
+            jobs(
+                "product-inputs",
+                &["bash", "/t/scripts/ci-product-inputs.sh"]
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            jobs(
+                "core-native-conformance",
+                &["bash", "/c/testing/conformance/run.sh"]
+            ),
+            Some(3)
+        );
+        for (name, argv) in [
+            ("final-binary", &["python3", "x"][..]),
+            ("product-inputs", &["bash", "x"]),
+            (
+                "product-inputs",
+                &["bash", "-c", "/t/scripts/ci-product-inputs.sh"],
+            ),
+            ("core-native-conformance", &["bash", "/c/other.sh"]),
+            (
+                "plugin-conformance",
+                &["bash", "/c/testing/conformance/run.sh"],
+            ),
+            (
+                "plugin-runtime-prepare",
+                &["bash", "-euo", "pipefail", "prepare.sh"],
+            ),
+            ("profiled", &["cargo", "build", "--profile", "dist"]),
+            ("bounded-loom", &["cargo", "test", "--release"]),
+            ("x", &["cargo", "test", "--release"]),
+            ("other", &["cargo", "build", "--release"]),
+        ] {
+            assert_eq!(jobs(name, argv), Some(1), "{name}");
+        }
+        let legacy = crate::json::parse(br#"{"build_jobs": 1}"#).unwrap();
+        assert_eq!(
+            step_build_jobs("root-clippy", &[], &legacy).as_int(),
             Some(1)
         );
         let unconfined = native_scheduling(64, None);
