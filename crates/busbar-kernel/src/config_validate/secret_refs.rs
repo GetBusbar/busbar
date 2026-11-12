@@ -498,6 +498,14 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         ),
     ),
     (
+        "Keyed",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` one-field witness inside `busbar_contract::secret_ref::context`'s \
+             `no_inline_scalar_literal_is_ever_echoed` (731504ef39), proving a keyed inline literal \
+             is refused without echo; a test fixture, never part of `RootCfg`.",
+        ),
+    ),
+    (
         "Entry",
         SecretBearing::NotInResolvedConfig(
             "the `#[cfg(test)]` neutral source fixture's table row in \
