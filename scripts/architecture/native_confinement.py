@@ -23,6 +23,11 @@ import linux_job_isolation
 
 # Same value as native_dep_cache.CARGO_HOME_PATH and confinement_entry; tests pin it.
 INVOCATION_CARGO_HOME = '/__busbar_cargo_home'
+# Fixed in-container mount points of the two job-specific writable roots
+# (use_fixed_paths). Their host paths contain the CI job id; Cargo fingerprints
+# and the compile-target key contain the paths a compiler sees, so these make
+# both identical across jobs, as INVOCATION_CARGO_HOME does for Cargo home.
+FIXED_ROOTS = {'checkout': '/__busbar_checkout', 'candidate': '/__busbar_candidate'}
 
 
 def require(value, message):
@@ -238,6 +243,33 @@ class Execution:
         self.compiler_readonly = False
         self.prepared_git = None
         self.readonly_candidate_inputs = None
+        # {host root: container root} once use_fixed_paths() is called.
+        self.fixed_paths = {}
+
+    def use_fixed_paths(self):
+        """Mount checkout and candidate at FIXED_ROOTS for every later invocation.
+
+        Arguments, working directory, environment values and mount destinations
+        under those roots are rewritten to the container paths; text a candidate
+        invocation returns through check_output is rewritten back. The controller
+        keeps using host paths for everything it reads itself.
+        """
+        self.fixed_paths = {str(self.roots[name]): FIXED_ROOTS[name] for name in FIXED_ROOTS}
+
+    def container_path(self, value):
+        """The path (or path-bearing text) a candidate invocation sees for a host value."""
+        text = str(value)
+        for host, container in self.fixed_paths.items():
+            if text == host or text.startswith(host + '/'):
+                return container + text[len(host):]
+            text = text.replace(host + '/', container + '/')
+        return text
+
+    def host_text(self, text):
+        """Inverse of container_path for text a candidate invocation printed."""
+        for host, container in self.fixed_paths.items():
+            text = re.sub(re.escape(container) + r'(?=/|$|\s)', host.replace('\\', '\\\\'), text)
+        return text
 
     @classmethod
     def from_context(cls, path, expected):
@@ -643,7 +675,7 @@ class Execution:
             "--cpus=" + str(resources["cpus"]),
             "--init",
             "--workdir",
-            str(cwd),
+            self.container_path(cwd),
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777",
             "--shm-size=64m",
@@ -674,6 +706,10 @@ class Execution:
                 # Still private, writable and removed below; only the copy of
                 # the job seed it would never read is skipped.
                 safe_env['BUSBAR_INVOCATION_CARGO_HOME_EMPTY'] = '1'
+        if self.fixed_paths:
+            mounts = [(source, Path(self.container_path(destination)), writable)
+                      for source, destination, writable in mounts]
+            safe_env = {key: self.container_path(value) for key, value in safe_env.items()}
         for source, destination, writable in mounts:
             require(
                 "," not in str(source) and "," not in str(destination),
@@ -703,7 +739,7 @@ class Execution:
             "-B",
             "/__busbar_entry.py",
             "--",
-            *argv,
+            *[self.container_path(arg) for arg in argv],
         ]
         observation = {
             "name": name,
@@ -713,7 +749,7 @@ class Execution:
             "disposed": False,
             "command_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
             "environment_sha256": hashlib.sha256(canonical(safe_env)).hexdigest(),
-            "working_directory": str(cwd),
+            "working_directory": self.container_path(cwd),
             "docker_client_sha256": self.config['docker_sha256'],
             "configuration_sha256": hashlib.sha256(canonical(self.config)).hexdigest(),
             "resources": dict(resources),
@@ -867,7 +903,10 @@ class Execution:
             client_env,
             _,
         ):
-            return subprocess.check_output(command, env=client_env, **kwargs)
+            output = subprocess.check_output(command, env=client_env, **kwargs)
+            if self.fixed_paths and isinstance(output, str):
+                output = self.host_text(output)
+            return output
 
     def compiler_pool(self):
         return CompilerPool(self)

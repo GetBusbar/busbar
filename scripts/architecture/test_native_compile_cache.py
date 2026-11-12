@@ -104,7 +104,7 @@ class Stamping(unittest.TestCase):
 
 
 class Archive(unittest.TestCase):
-    def test_executables_survive_pack_unpack_install(self):
+    def test_executables_survive_pack_unpack_settle(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             target = base / 'target'
@@ -114,13 +114,12 @@ class Archive(unittest.TestCase):
             files = cache.pack(target, base / 'a.tar.gz')
             self.assertEqual(files['debug/build/x-1/build-script-build'][1], True)
             self.assertEqual(files['debug/deps/liba.rlib'][1], False)
-            seed = cache.unpack(base / 'a.tar.gz', base / 'seed', files)
+            restored_target = cache.unpack(base / 'a.tar.gz', base / 'job-target', files)
             restored = time.time() - 60
-            installed = cache.install(seed, base / 'job-target', restored,
-                                      {name for name, row in files.items() if row[1]})
-            self.assertTrue(os.access(installed / 'debug/build/x-1/build-script-build', os.X_OK))
-            self.assertFalse(os.access(installed / 'debug/deps/liba.rlib', os.X_OK))
-            self.assertEqual(int(os.stat(installed / 'debug/deps/liba.rlib').st_mtime), int(restored))
+            cache.settle(restored_target, restored, {name for name, row in files.items() if row[1]})
+            self.assertTrue(os.access(restored_target / 'debug/build/x-1/build-script-build', os.X_OK))
+            self.assertFalse(os.access(restored_target / 'debug/deps/liba.rlib', os.X_OK))
+            self.assertEqual(int(os.stat(restored_target / 'debug/deps/liba.rlib').st_mtime), int(restored))
 
     def test_tampered_archive_entry_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -132,36 +131,44 @@ class Archive(unittest.TestCase):
                 cache.unpack(base / 'a.tar.gz', base / 'seed', files)
 
 
+BUILD_RECIPE = {'commands': [['cargo', 'build', '--release']], 'rustc_wrapper': ''}
+CLIPPY_RECIPE = {'commands': [['cargo', 'clippy', '--', '-D', 'warnings']], 'linter': 'cargo clippy'}
+
+
 class Identity(unittest.TestCase):
     ENV = {'RUSTUP_TOOLCHAIN': '1.98.0', 'CARGO_INCREMENTAL': '0'}
 
-    def value(self, **env):
-        return key(cache.identity('core-build', 'sha256:' + 'a' * 64, '/c', '/t', dict(self.ENV, **env)))
+    def value(self, job='core-build', recipe=BUILD_RECIPE, **env):
+        return key(cache.identity(job, 'sha256:' + 'a' * 64, '/__busbar_checkout', '/__busbar_candidate/target',
+                                  dict(self.ENV, **env), recipe))
 
-    def test_compiler_identity_and_lint_arguments_are_keyed(self):
+    def test_compiler_identity_recipe_and_lint_arguments_are_keyed(self):
         plain = self.value()
-        linted = self.value(RUSTC_WRAPPER='clippy-driver', CLIPPY_ARGS='-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__')
-        self.assertNotEqual(plain, linted)
-        self.assertNotEqual(linted, self.value(RUSTC_WRAPPER='clippy-driver', CLIPPY_ARGS=''))
-        self.assertNotEqual(plain, key(cache.identity('native-qualification', 'sha256:' + 'a' * 64, '/c', '/t', self.ENV)))
+        self.assertNotEqual(plain, self.value(RUSTC_WRAPPER='clippy-driver'))
+        self.assertNotEqual(plain, self.value(CLIPPY_ARGS='-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__'))
+        # The lint-only job never shares the certified build's key.
+        self.assertNotEqual(plain, self.value('core-clippy', CLIPPY_RECIPE))
+        self.assertNotEqual(self.value('core-clippy', CLIPPY_RECIPE),
+                            self.value('core-clippy', {'commands': [['cargo', 'clippy', '--', '-W', 'x']]}))
         self.assertNotEqual(plain, self.value(RUSTUP_TOOLCHAIN='1.99.0'))
 
-    def test_only_protected_dev_and_qa_pipelines_produce(self):
-        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev'}), 'dev')
-        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'schedule', 'CI_COMMIT_BRANCH': 'dev'}), 'dev')
-        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'qa',
-                                              'CI_COMMIT_REF_PROTECTED': 'true'}), 'qa')
+    def test_only_protected_tier_pipelines_produce(self):
+        protected = {'CI_COMMIT_REF_PROTECTED': 'true'}
+        self.assertEqual(cache.producer_kind(dict(protected, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='dev')), 'dev')
+        self.assertEqual(cache.producer_kind(dict(protected, CI_PIPELINE_SOURCE='schedule', CI_COMMIT_BRANCH='dev')), 'qa')
+        self.assertEqual(cache.producer_kind(dict(protected, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa')), 'qa')
         for env in ({'CI_PIPELINE_SOURCE': 'merge_request_event', 'CI_COMMIT_BRANCH': 'dev'},
-                    {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': 'dev'},
+                    dict(protected, CI_PIPELINE_SOURCE='api', CI_COMMIT_BRANCH='dev'),
                     {'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'qa'},
-                    {'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'feature'}):
+                    {'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev'},
+                    dict(protected, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='feature')):
             self.assertIsNone(cache.producer_kind(env), env)
 
 
 class Provenance(unittest.TestCase):
     MANIFEST = {'producer': {'pipeline_id': 7, 'commit': 'c' * 40, 'ref': 'dev', 'source': 'push', 'protected': True},
-                'archive': {'name': 'target-' + 'd' * 64 + '.tar.gz', 'sha256': 'd' * 64}}
-    ROW = {'package_id': 3, 'file_name': 'manifest-' + 'c' * 40 + '.json'}
+                'archive': {'name': 'target-7-' + 'd' * 64 + '.tar.gz', 'sha256': 'd' * 64}}
+    ROW = {'package_id': 3, 'file_name': 'manifest-' + 'c' * 40 + '-7.json'}
 
     class Registry:
         def __init__(self, files):
@@ -176,121 +183,237 @@ class Provenance(unittest.TestCase):
                 {'file_name': self.MANIFEST['archive']['name'], 'pipelines': [pipeline], 'file_sha256': 'd' * 64}]
 
     def test_protected_dev_push_producer_is_accepted(self):
-        self.assertEqual(cache.provenance(self.Registry(self.files()), 'v', self.ROW, self.MANIFEST)['pipeline_id'], 7)
+        self.assertEqual(cache.provenance(self.Registry(self.files()), self.ROW, self.MANIFEST)['pipeline_id'], 7)
 
     def test_other_writers_are_misses(self):
         for changes in ({'id': 8}, {'ref': 'feature'}, {'source': 'merge_request_event'}, {'sha': 'e' * 40}):
             with self.subTest(changes=changes), self.assertRaises(Unavailable):
-                cache.provenance(self.Registry(self.files(**changes)), 'v', self.ROW, self.MANIFEST)
+                cache.provenance(self.Registry(self.files(**changes)), self.ROW, self.MANIFEST)
         manifest = json.loads(json.dumps(self.MANIFEST))
         manifest['producer']['ref'] = 'feature'
         with self.assertRaises(Unavailable):
-            cache.provenance(self.Registry(self.files(ref='feature')), 'v', self.ROW, manifest)
+            cache.provenance(self.Registry(self.files(ref='feature')), self.ROW, manifest)
         duplicated = self.files() + self.files()[:1]
         with self.assertRaises(Unavailable):
-            cache.provenance(self.Registry(duplicated), 'v', self.ROW, self.MANIFEST)
+            cache.provenance(self.Registry(duplicated), self.ROW, self.MANIFEST)
+        renamed = dict(self.ROW, file_name='manifest-' + 'c' * 40 + '-8.json')
+        with self.assertRaisesRegex(Unavailable, 'name'):
+            cache.provenance(self.Registry(self.files()), renamed, self.MANIFEST)
+
+
+class Registry:
+    """In-memory generic package registry: newest file first, per-file pipelines."""
+
+    package = cache.PACKAGE
+
+    def __init__(self):
+        self.files, self.uploads, self.deleted, self.next_id = [], [], [], 1
+        self.pipeline = None
+
+    def read(self, version, name, limit):
+        for row in self.files:
+            if (row['version'], row['file_name']) == (version, name):
+                return row['data']
+        raise FileNotFoundError(name)
+
+    def upload(self, version, name, path):
+        self.files.insert(0, {'version': version, 'file_name': name, 'data': Path(path).read_bytes(),
+                              'id': self.next_id, 'pipelines': [dict(self.pipeline)]})
+        self.next_id += 1
+        self.uploads.append(name)
+
+    def download(self, version, name, destination, size, digest):
+        Path(destination).write_bytes(self.read(version, name, size))
+
+    def json(self, path):
+        import hashlib
+        import urllib.parse
+        if path.startswith('/packages?'):
+            version = urllib.parse.parse_qs(path.split('?', 1)[1])['package_version'][0]
+            return [{'id': 9, 'name': cache.PACKAGE, 'version': version}] if any(
+                row['version'] == version for row in self.files) else []
+        if '&page=' in path and '&page=1&' not in path:
+            return []
+        return [{'file_name': row['file_name'], 'id': row['id'], 'pipelines': row['pipelines'],
+                 'file_sha256': hashlib.sha256(row['data']).hexdigest()} for row in self.files]
+
+    def delete_package_file(self, package_id, file_id):
+        row = next(row for row in self.files if row['id'] == file_id)
+        self.files.remove(row)
+        self.deleted.append(row['file_name'])
 
 
 class RoundTrip(unittest.TestCase):
-    """A protected dev push publishes; a later merge request restores and stamps."""
+    """Producer and consumer jobs on realistic, job-specific host paths."""
 
-    class Registry:
-        def __init__(self):
-            self.files, self.uploads = {}, []
-            self.pipeline = {'id': 70, 'ref': 'dev', 'source': 'push', 'sha': 'c' * 40}
+    PRODUCED = 1_700_000_000_000_000_000
 
-        def read(self, version, name, limit):
-            if (version, name) not in self.files:
-                raise FileNotFoundError(name)
-            return self.files[(version, name)]
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.base = Path(self.dir.name)
+        self.registry = Registry()
+        self.sources = {'Cargo.toml': b'[workspace]\n', 'crates/a/src/lib.rs': b'a\n', 'crates/b/src/lib.rs': b'b\n'}
 
-        def upload(self, version, name, path):
-            self.files[(version, name)] = Path(path).read_bytes()
-            self.uploads.append(name)
+    def tearDown(self):
+        self.dir.cleanup()
 
-        def download(self, version, name, destination, size, digest):
-            Path(destination).write_bytes(self.files[(version, name)])
+    def job(self, job_id, *, branch='dev', source='push', pipeline=None, commit='c' * 40, name='core-build',
+            sources=None, recipe=BUILD_RECIPE):
+        """A job laid out as the bootstrap does: /srv/.../job-<id>/store/{checkout, boundary-<p>-<id>/candidate}."""
+        from native_confinement import Execution
+        store = self.base / ('job-' + str(job_id)) / 'store'
+        root, candidate = store / 'checkout', store / ('boundary-3-' + str(job_id)) / 'candidate'
+        tree(root, sources or self.sources)
+        for directory, names, files in os.walk(root):
+            for item in names + files:
+                os.utime(Path(directory) / item, ns=(self.PRODUCED,) * 2)
+        os.utime(root, ns=(self.PRODUCED,) * 2)
+        (candidate / 'target').mkdir(parents=True)
+        execution = object.__new__(Execution)
+        execution.roots = {'checkout': root, 'candidate': candidate}
+        execution.config = {'image': 'sha256:' + 'a' * 64}
+        execution.fixed_paths = {}
+        execution.use_fixed_paths()
 
-        def json(self, path):
-            if path.startswith('/packages?'):
-                version = path.split('package_version=', 1)[1]
-                return [{'id': 9, 'name': cache.PACKAGE, 'version': version}]
-            rows = []
-            for (_, name), data in reversed(list(self.files.items())):
-                import hashlib
-                rows.append({'file_name': name, 'pipelines': [self.pipeline],
-                             'file_sha256': hashlib.sha256(data).hexdigest()})
-            return rows
-
-    def q(self, base, env):
         class Q:
             pass
         q = Q()
         q.repository, q.receipt, q.save = 'GetBusbar/busbar', {'commit_ref_protected': True}, lambda: None
-        q.execution = type('E', (), {'config': {'image': 'sha256:' + 'a' * 64}})()
-        q.root, q.control = base / 'checkout', base / 'control'
-        q.control.mkdir(parents=True)
-        q.env = dict(env, CARGO_TARGET_DIR=str(base / 'target'))
+        q.execution, q.root, q.control = execution, root, store.parent / 'control'
+        q.control.mkdir()
+        q.env = {'RUSTUP_TOOLCHAIN': '1.98.0', 'RUSTC_WRAPPER': '', 'CARGO_TARGET_DIR': str(candidate / 'target')}
+        pipeline = pipeline or job_id * 10
+        ci = {'CI_JOB_NAME': name, 'CI_PIPELINE_SOURCE': source, 'CI_COMMIT_BRANCH': branch,
+              'CI_COMMIT_REF_PROTECTED': 'true', 'CI_COMMIT_SHA': commit, 'CI_PIPELINE_ID': str(pipeline),
+              'CI_JOB_ID': str(job_id)}
+        self.registry.pipeline = {'id': pipeline, 'ref': branch, 'source': source, 'sha': commit}
+        q.ci, q.recipe = ci, recipe
         return q
 
-    def test_publish_then_restore_reuses_unchanged_units_by_content(self):
-        registry = self.Registry()
-        env = {'RUSTUP_TOOLCHAIN': '1.98.0'}
-        ci = {'CI_JOB_NAME': 'core-build', 'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev',
-              'CI_COMMIT_SHA': 'c' * 40, 'CI_PIPELINE_ID': '70', 'CI_JOB_ID': '71'}
-        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two, \
-                patch.dict(os.environ, ci):
-            producer = self.q(Path(one), env)
-            consumer = self.q(Path(two), env)
-            # Both jobs see the same absolute paths, as the bootstrap lays them out.
-            consumer.root, consumer.env['CARGO_TARGET_DIR'] = producer.root, producer.env['CARGO_TARGET_DIR']
-            tree(producer.root, {'Cargo.toml': b'[workspace]\n', 'crates/a/src/lib.rs': b'a\n',
-                                 'crates/b/src/lib.rs': b'b\n'})
-            for directory, names, files in os.walk(producer.root):
-                for name in names + files:
-                    os.utime(Path(directory) / name, ns=(1_700_000_000_000_000_000,) * 2)
-            os.utime(producer.root, ns=(1_700_000_000_000_000_000,) * 2)
-            target = Path(producer.env['CARGO_TARGET_DIR'])
+    def build(self, q, restored=None):
+        target = Path(q.env['CARGO_TARGET_DIR'])
+        if not (target / 'debug/deps/liba.rlib').exists():
             tree(target, {'debug/deps/liba.rlib': b'a-unit', 'debug/build/x/build-script-build': b'#!'})
             os.chmod(target / 'debug/build/x/build-script-build', 0o755)
-            record = cache.produce(producer, None, registry)
-            self.assertEqual(record['status'], 'published', record)
-            self.assertEqual(record['generation'], 0)
-            self.assertTrue(registry.uploads[0].startswith('target-'))
-            self.assertEqual(registry.uploads[1], 'manifest-' + 'c' * 40 + '.json')
-            # A later merge request: one changed file, an empty target, read-only use.
-            import shutil
-            shutil.rmtree(target)
-            (producer.root / 'crates/b/src/lib.rs').write_bytes(b'b changed\n')
-            with patch.dict(os.environ, CI_PIPELINE_SOURCE='merge_request_event', CI_COMMIT_BRANCH=''):
-                manifest = cache.restore(consumer, registry)
-                self.assertEqual(consumer.receipt['compile_target']['status'], 'hit', consumer.receipt)
-                self.assertEqual(cache.produce(consumer, manifest, registry)['status'], 'skipped')
-            self.assertEqual((target / 'debug/deps/liba.rlib').read_bytes(), b'a-unit')
-            self.assertTrue(os.access(target / 'debug/build/x/build-script-build', os.X_OK))
-            self.assertEqual(os.stat(producer.root / 'crates/a/src/lib.rs').st_mtime_ns, 1_700_000_000_000_000_000)
-            self.assertGreater(os.stat(producer.root / 'crates/b/src/lib.rs').st_mtime,
-                               os.stat(target / 'debug/deps/liba.rlib').st_mtime)
-            self.assertEqual(len(registry.uploads), 2)
+        with patch.dict(os.environ, q.ci):
+            return cache.produce(q, restored, q.recipe, self.registry)
 
-    def test_exhausted_generation_or_foreign_writer_is_a_cold_start(self):
-        registry = self.Registry()
-        ci = {'CI_JOB_NAME': 'core-build', 'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev',
-              'CI_COMMIT_SHA': 'c' * 40, 'CI_PIPELINE_ID': '70', 'CI_JOB_ID': '71'}
-        with tempfile.TemporaryDirectory() as one, patch.dict(os.environ, ci):
-            q = self.q(Path(one), {})
-            tree(q.root, {'Cargo.toml': b'x'})
-            os.utime(q.root / 'Cargo.toml', ns=(1_700_000_000_000_000_000,) * 2)
-            os.utime(q.root, ns=(1_700_000_000_000_000_000,) * 2)
-            tree(Path(q.env['CARGO_TARGET_DIR']), {'debug/deps/liba.rlib': b'a'})
-            cache.produce(q, {'generation': cache.MAX_GENERATIONS - 1}, registry)
-            import shutil
-            shutil.rmtree(q.env['CARGO_TARGET_DIR'])
-            self.assertIsNone(cache.restore(q, registry))
-            self.assertIn('generation', ' '.join(q.receipt['compile_target']['reasons']))
-            registry.pipeline = dict(registry.pipeline, ref='feature')
-            self.assertIsNone(cache.restore(q, registry))
-            self.assertFalse((Path(q.env['CARGO_TARGET_DIR']) / 'debug').exists())
+    def restore(self, q):
+        with patch.dict(os.environ, q.ci):
+            return cache.restore(q, q.recipe, self.registry)
+
+    def test_a_later_job_with_another_job_id_and_host_path_hits(self):
+        producer = self.job(101)
+        self.assertIsNone(self.restore(producer))
+        record = self.build(producer)
+        self.assertEqual(record['status'], 'published', record)
+        self.assertEqual(record['generation'], 0)
+        self.assertEqual(self.registry.uploads[1], 'manifest-' + 'c' * 40 + '-1010.json')
+        # The key holds container paths only: no host path or job id.
+        manifest = json.loads(self.registry.read(record['key'], self.registry.uploads[1], 1 << 30))
+        self.assertEqual((manifest['identity']['checkout'], manifest['identity']['target_dir']),
+                         ('/__busbar_checkout', '/__busbar_candidate/target'))
+        self.assertNotIn('job-101', json.dumps(manifest['identity']))
+        # A merge request job on a different host path, one changed file.
+        changed = dict(self.sources, **{'crates/b/src/lib.rs': b'b changed\n'})
+        consumer = self.job(202, source='merge_request_event', branch='', commit='e' * 40, sources=changed)
+        self.assertNotEqual(consumer.root, producer.root)
+        restored = self.restore(consumer)
+        self.assertEqual(consumer.receipt['compile_target']['status'], 'hit', consumer.receipt)
+        self.assertEqual(consumer.receipt['compile_target']['key'], record['key'])
+        target = Path(consumer.env['CARGO_TARGET_DIR'])
+        self.assertEqual((target / 'debug/deps/liba.rlib').read_bytes(), b'a-unit')
+        self.assertTrue(os.access(target / 'debug/build/x/build-script-build', os.X_OK))
+        self.assertEqual(os.stat(consumer.root / 'crates/a/src/lib.rs').st_mtime_ns, self.PRODUCED)
+        self.assertGreater(os.stat(consumer.root / 'crates/b/src/lib.rs').st_mtime,
+                           os.stat(target / 'debug/deps/liba.rlib').st_mtime)
+        # Merge requests never write.
+        consumer.receipt['commit_ref_protected'] = False
+        self.assertEqual(self.build(consumer, restored)['status'], 'skipped')
+        self.assertEqual(len(self.registry.uploads), 2)
+
+    def test_the_build_and_the_lint_job_never_share_entries(self):
+        build = self.job(101)
+        self.restore(build)
+        self.assertEqual(self.build(build)['status'], 'published')
+        lint = self.job(102, name='core-clippy', recipe=CLIPPY_RECIPE)
+        self.assertIsNone(self.restore(lint))
+        self.assertEqual(lint.receipt['compile_target']['reasons'], [])
+
+    def test_same_commit_is_not_published_twice_and_dev_and_qa_names_differ(self):
+        dev = self.job(101)
+        self.restore(dev)
+        self.assertEqual(self.build(dev)['status'], 'published')
+        qa = self.job(102, branch='qa', pipeline=2020)
+        self.restore(qa)
+        self.assertEqual(self.build(qa)['status'], 'present')
+        self.assertEqual(len(self.registry.uploads), 2)
+        self.assertNotEqual(cache.manifest_name('c' * 40, 1010), cache.manifest_name('c' * 40, 2020))
+
+    def test_retention_keeps_the_newest_entries_of_a_key(self):
+        for index in range(cache.RETAIN + 2):
+            q = self.job(100 + index, commit=format(index, 'x') * 40)
+            restored = self.restore(q)
+            record = self.build(q, restored)
+            self.assertEqual(record['status'], 'published', record)
+        manifests = [row['file_name'] for row in self.registry.files if row['file_name'].startswith('manifest-')]
+        self.assertEqual(len(manifests), cache.RETAIN)
+        self.assertEqual(len(self.registry.files), 2 * cache.RETAIN)
+        self.assertEqual(len(self.registry.deleted), 4)
+        # An upload in flight (archive without manifest yet) is never touched.
+        self.registry.pipeline = {'id': 1, 'ref': 'dev', 'source': 'push', 'sha': 'f' * 40}
+        archive = self.base / 'inflight'
+        archive.write_bytes(b'x')
+        version = self.registry.files[0]['version']
+        self.registry.upload(version, cache.archive_name(1, '0' * 64), archive)
+        cache.retain(self.registry, version)
+        self.assertIn(cache.archive_name(1, '0' * 64), [row['file_name'] for row in self.registry.files])
+
+    def test_retention_never_prunes_the_dependency_unit_package(self):
+        import native_dep_cache
+        other = Registry()
+        other.package = native_dep_cache.PACKAGE
+        with self.assertRaises(Unavailable):
+            cache.retain(other, 'v')
+        with self.assertRaisesRegex(Unavailable, 'never pruned'):
+            native_dep_cache.Registry('token').delete_package_file(1, 2)
+
+    def test_an_exhausted_newest_entry_starts_cold_without_falling_back(self):
+        q = self.job(101)
+        self.restore(q)
+        self.build(q)  # generation 0, older
+        q = self.job(102, commit='e' * 40)
+        self.restore(q)
+        self.build(q, {'generation': cache.MAX_GENERATIONS - 1})  # newest at the cap
+        consumer = self.job(103, commit='f' * 40)
+        self.assertIsNone(self.restore(consumer))
+        self.assertEqual(consumer.receipt['compile_target']['reasons'], ['compile target generation chain is exhausted'])
+        self.assertFalse((Path(consumer.env['CARGO_TARGET_DIR']) / 'debug').exists())
+
+    def test_a_changed_build_environment_after_restore_never_publishes(self):
+        q = self.job(101)
+        self.restore(q)
+        q.env['RUSTC_WRAPPER'] = 'clippy-driver'
+        record = self.build(q)
+        self.assertEqual(record['status'], 'failed')
+        self.assertIn('changed after', record['reason'])
+        self.assertEqual(self.registry.uploads, [])
+
+    def test_without_fixed_roots_there_is_no_cache(self):
+        q = self.job(101)
+        q.execution.fixed_paths = {}
+        self.assertIsNone(self.restore(q))
+        self.assertEqual(q.receipt['compile_target']['status'], 'fallback')
+        self.assertIn('fixed', q.receipt['compile_target']['reason'])
+
+    def test_foreign_writer_is_a_cold_start(self):
+        q = self.job(101)
+        self.restore(q)
+        self.build(q)
+        for row in self.registry.files:
+            row['pipelines'] = [dict(row['pipelines'][0], ref='feature')]
+        consumer = self.job(102, commit='e' * 40)
+        self.assertIsNone(self.restore(consumer))
 
 
 class Producer(unittest.TestCase):
@@ -302,7 +425,7 @@ class Producer(unittest.TestCase):
             def save(self):
                 pass
         with patch.dict(os.environ, {'CI_PIPELINE_SOURCE': 'merge_request_event', 'CI_COMMIT_BRANCH': ''}):
-            self.assertEqual(cache.produce(Q(), registry=object())['status'], 'skipped')
+            self.assertEqual(cache.produce(Q(), None, BUILD_RECIPE, registry=object())['status'], 'skipped')
 
 
 if __name__ == '__main__':

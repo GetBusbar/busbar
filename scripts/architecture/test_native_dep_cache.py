@@ -426,7 +426,8 @@ class ProducerShards(unittest.TestCase):
         job = yaml.split('\nplugin-dependency-units:\n', 1)[1].split('\n\n', 1)[0]
         self.assertIn(f'\n  parallel: {cache.PRODUCER_SHARDS}\n', job)
         self.assertIn('\n  resource_group: plugin-dependency-units-$CI_NODE_INDEX\n', job)
-        self.assertIn("re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME'])", yaml)
+        # One definition: the YAML names no job pattern; the bootstrap uses the module's.
+        self.assertNotIn('plugin-dependency-units [1-8]', yaml)
         for name in ('plugin-dependency-units 1/8', 'plugin-dependency-units 8/8', 'plugin-dependency-units',
                      'plugin-dependency-units 9/8', 'plugin-dependency-units 1/7'):
             with self.subTest(name=name):
@@ -441,17 +442,21 @@ class ProducerShards(unittest.TestCase):
             (root / 'scripts').mkdir()
             (root / 'scripts/ci-product-pins.json').write_text(json.dumps({'products': products}))
             q = SimpleNamespace(repository='GetBusbar/busbar', execution=SimpleNamespace(config={'image': IMAGE}),
-                                receipt={}, root=root, save=lambda: None,
+                                receipt={'commit_ref_protected': True}, root=root, save=lambda: None,
                                 policy=SimpleNamespace(data={'repositories': {
                                     'GetBusbar/' + p['repo']: {'language': 'rust'} for p in products}}))
             original = cache.produce_product
             cache.produce_product = lambda q, product, *a, **k: seen.append(product['repo']) or {}
             env = {'CI_JOB_NAME': 'plugin-dependency-units 3/8', 'CI_PIPELINE_SOURCE': 'push',
-                   'CI_COMMIT_BRANCH': 'dev'}
+                   'CI_COMMIT_BRANCH': 'dev', 'CI_COMMIT_REF_PROTECTED': 'true'}
             try:
                 with unittest.mock.patch.dict(os.environ, env):
                     cache.produce(q, registry=object())
                 with unittest.mock.patch.dict(os.environ, env | {'CI_JOB_NAME': 'plugin-dependency-units'}):
+                    with self.assertRaisesRegex(Exception, 'protected core dev push producer'):
+                        cache.produce(q, registry=object())
+                # An unprotected dev ref never produces.
+                with unittest.mock.patch.dict(os.environ, env | {'CI_COMMIT_REF_PROTECTED': 'false'}):
                     with self.assertRaisesRegex(Exception, 'protected core dev push producer'):
                         cache.produce(q, registry=object())
             finally:
@@ -467,7 +472,7 @@ class ProducerShards(unittest.TestCase):
             (root / 'scripts').mkdir()
             (root / 'scripts/ci-product-pins.json').write_text(json.dumps({'products': products}))
             q = SimpleNamespace(repository='GetBusbar/busbar', execution=SimpleNamespace(config={'image': IMAGE}),
-                                receipt={}, root=root, save=lambda: None,
+                                receipt={'commit_ref_protected': True}, root=root, save=lambda: None,
                                 policy=SimpleNamespace(data={'repositories': {
                                     'GetBusbar/' + p['repo']: {'language': 'rust'} for p in products}}))
             mine = [p['repo'] for p in products if cache.product_shard(p['repo']) == 2]
@@ -478,7 +483,7 @@ class ProducerShards(unittest.TestCase):
                     raise RuntimeError('dubious ownership')
                 return {'repo': product['repo'], 'status': 'published'}
             env = {'CI_JOB_NAME': 'plugin-dependency-units 3/8', 'CI_PIPELINE_SOURCE': 'push',
-                   'CI_COMMIT_BRANCH': 'dev'}
+                   'CI_COMMIT_BRANCH': 'dev', 'CI_COMMIT_REF_PROTECTED': 'true'}
             with unittest.mock.patch.object(cache, 'produce_product', build), \
                     unittest.mock.patch.dict(os.environ, env):
                 with self.assertRaisesRegex(Exception, 'dependency units failed for ' + mine[0]):
@@ -489,7 +494,9 @@ class ProducerShards(unittest.TestCase):
     def test_producer_kinds_are_exact(self):
         good = {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': cache.PINNED_REF, 'CI_COMMIT_REF_PROTECTED': 'true'}
         self.assertEqual(cache.producer_kind(good), 'pinned')
-        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev'}), 'dev')
+        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev',
+                                              'CI_COMMIT_REF_PROTECTED': 'true'}), 'dev')
+        self.assertIsNone(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev'}))
         for env in (dict(good, CI_COMMIT_REF_PROTECTED='false'), dict(good, CI_COMMIT_BRANCH='dev'),
                     dict(good, CI_COMMIT_BRANCH=cache.PINNED_REF + '/x'), dict(good, CI_PIPELINE_SOURCE='push'),
                     dict(good, CI_PIPELINE_SOURCE='schedule'), {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': 'dev'},
@@ -551,7 +558,12 @@ class PipelineRules(unittest.TestCase):
 
         def splice(match):
             return sets[match[1]].rstrip('\n')
-        return re.sub(r'^    - !reference \[\.rules, ([a-z-]+)\]$', splice, text, flags=re.M)
+        # GitLab resolves nested references (a set may reference another set).
+        while True:
+            spliced = re.sub(r'^    - !reference \[\.rules, ([a-z-]+)\]$', splice, text, flags=re.M)
+            if spliced == text:
+                return text
+            text = spliced
 
     def jobs(self, env):
         text = self.text()
@@ -593,19 +605,24 @@ class PipelineRules(unittest.TestCase):
 
     def test_dev_pipelines_keep_their_jobs(self):
         env = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='dev', CI_COMMIT_REF_PROTECTED='true')
-        self.assertEqual(self.jobs(env), {'core-build', 'core-conformance', 'plugin-dependency-units', 'website-dev'})
-        self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='api')), {'core-build', 'core-conformance'})
+        dev = {'core-build', 'core-clippy', 'core-conformance'}
+        self.assertEqual(self.jobs(env), dev | {'plugin-dependency-units', 'website-dev'})
+        self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='api')), dev)
         self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')), {'security-scans'})
+        # The dependency-unit producer needs the server's protected-ref marker.
+        self.assertEqual(self.jobs(dict(env, CI_COMMIT_REF_PROTECTED='false')), dev | {'website-dev'})
 
     def test_core_tiers(self):
         mr = dict(self.CORE, CI_PIPELINE_SOURCE='merge_request_event', CI_MERGE_REQUEST_TARGET_BRANCH_NAME='dev',
                   CI_COMMIT_REF_PROTECTED='false')
         self.assertTrue(self.workflow(mr))
-        self.assertEqual(self.jobs(mr), {'core-build', 'core-conformance'})
+        self.assertEqual(self.jobs(mr), {'core-build', 'core-clippy', 'core-conformance'})
         qa = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa', CI_COMMIT_REF_PROTECTED='true')
-        everything = {'core-build', 'core-conformance', 'native-qualification', 'security-scans'}
+        everything = {'core-build', 'core-clippy', 'core-conformance', 'core-conformance-debug',
+                      'native-qualification', 'security-scans'}
         self.assertTrue(self.workflow(qa))
-        self.assertEqual(self.jobs(qa), everything)
+        # Only a qa push retains the certified evidence for main.
+        self.assertEqual(self.jobs(qa), everything | {'qa-certification'})
         nightly = dict(self.CORE, CI_PIPELINE_SOURCE='schedule', CI_COMMIT_BRANCH='dev',
                        CI_COMMIT_REF_PROTECTED='true', CI_PIPELINE_SCHEDULE_DESCRIPTION='qa-nightly')
         self.assertEqual(self.jobs(nightly), everything)

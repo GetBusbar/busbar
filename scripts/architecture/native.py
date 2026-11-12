@@ -118,22 +118,26 @@ def validate_test_report(path):
         raise Violation('native test report is not passing: ' + str(error)) from error
 
 
-def evaluation_job(repository, conformance_only, external_conformance, policy=None):
-    if conformance_only and external_conformance:
-        raise Violation('evaluation modes are mutually exclusive')
+# Core conformance jobs: the certified release binary (DEV and QA), and in QA the
+# debug-assertion dev-profile build of the same source (testing/conformance/subject_build.py).
+CONFORMANCE_JOB = 'core-conformance'
+DEBUG_CONFORMANCE_JOB = 'core-conformance-debug'
+# Core's lint-only job (DEV and QA), parallel to core-build; it never touches the certified bytes.
+CLIPPY_JOB = 'core-clippy'
+
+
+def evaluation_job(repository, conformance_only, debug_subject=False):
+    if debug_subject and not conformance_only:
+        raise Violation('the debug-assertion subject is a conformance mode')
     if conformance_only and repository == 'GetBusbar/busbar':
-        return 'core-conformance'
-    if external_conformance and native_settings(repository, policy).get('external_conformance'):
-        return 'external-conformance'
-    if conformance_only or external_conformance:
+        return DEBUG_CONFORMANCE_JOB if debug_subject else CONFORMANCE_JOB
+    if conformance_only:
         raise Violation('no trusted evaluation command for this repository')
     return None
 
 
-def requires_native_oracle(repository, external_conformance, policy=None):
-    # The independent endpoint job builds and judges its own actual subject.
-    # Native admission still requires the signed shipping oracle, unchanged.
-    return native_settings(repository, policy).get('native_oracle', False) and not external_conformance
+def requires_native_oracle(repository, policy=None):
+    return native_settings(repository, policy).get('native_oracle', False)
 
 
 class Interrupted(BaseException):
@@ -359,13 +363,19 @@ CORE_POLICY_COMMANDS = (
     ('default-dependency-vet', ['cargo', 'vet'], 'dist/default'),
 )
 
-# Pipelines a core job may qualify: (source, branch). The dev tier runs on dev
-# merge requests (handled separately) and these; QA adds its own pair below.
-PROTECTED_REF_PIPELINES = {('push', 'dev'), ('api', 'dev'), ('push', 'qa'), ('schedule', 'dev')}
+# Pipelines a job may qualify besides dev merge requests: (source, branch), the one
+# definition in native_release_stage (dev and qa tiers; plugins use dev only).
+from native_release_stage import PROTECTED_PIPELINES
+PROTECTED_REF_PIPELINES = frozenset(PROTECTED_PIPELINES)
 
-CORE_LINT_COMMANDS = (
+# The core-clippy job (DEV and QA tiers): lint-only, incremental through the compile
+# target cache, in parallel with core-build. One target dir for both workspaces.
+CORE_CLIPPY_COMMANDS = (
     ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
     ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
+)
+# QA native qualification adds the remaining lint configuration.
+CORE_LINT_COMMANDS = (
     ('root-clippy-nodefault', ['cargo', 'clippy', '--workspace', '--all-targets', '--no-default-features', '--locked', '--', '-D', 'warnings']),
 )
 
@@ -398,6 +408,9 @@ def qa_test_commands(nextest):
         ('default-without-harness', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml',
                                      '--bin', 'busbar', '--features', WITHOUT_HARNESS_FEATURES,
                                      '-E', WITHOUT_HARNESS_TESTS, *nextest]),
+        # The shipped configuration: dist/default's default features only.
+        ('default-shipped-features', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml',
+                                      '--workspace', *nextest]),
         # The txn_loom models are `#[cfg(all(test, feature = "loom-model"))]`
         # unit tests of the kernel library: `--lib` runs exactly them.
         ('bounded-loom', ['cargo', 'test', '--release', '--locked', '-p', 'busbar-kernel', '--features', 'loom-model',
@@ -408,12 +421,15 @@ def qa_test_commands(nextest):
 class Qualification:
     def __init__(self, args):
         self.conformance_only = args.conformance_only
-        self.external_conformance = getattr(args, 'external_conformance', False)
-        self.evaluation_only = self.conformance_only or self.external_conformance
+        # QA only: judge the debug-assertion dev build instead of the certified binary.
+        self.debug_subject = getattr(args, 'debug_subject', False) is True
+        self.evaluation_only = self.conformance_only
         # Core dev push producer of trusted plugin dependency units (native_dep_cache).
         self.dependency_units_producer = getattr(args, 'dependency_units', False) is True
         # Dev tier: fmt, dependency policy and the one certified product build (native_certified).
         self.core_build_job = getattr(args, 'core_build', False) is True
+        # Dev and QA tiers: the lint-only clippy job.
+        self.core_clippy_job = getattr(args, 'core_clippy', False) is True
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.control = self.work
         self.execution = None
@@ -467,7 +483,7 @@ class Qualification:
         elif getattr(args, 'conformance_capabilities', None) or getattr(args, 'conformance_capabilities_sha256', None):
             raise Violation('conformance capabilities require confined execution')
         if self.evaluation_only:
-            expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance, self.policy)
+            expected_job = evaluation_job(self.repository, self.conformance_only, self.debug_subject)
             if (os.environ.get('CI_JOB_NAME') != expected_job
                     or os.environ.get('CI_PIPELINE_SOURCE') not in ('api', 'merge_request_event', 'push', 'schedule')):
                 raise Violation('conformance requires its trusted job and pipeline source')
@@ -478,6 +494,12 @@ class Qualification:
             if os.environ.get('CI_JOB_NAME') != JOB or self.repository != 'GetBusbar/busbar':
                 raise Violation('the certified build runs only as core\'s core-build job')
             self.receipt['schema'] = SCHEMA
+        if self.debug_subject and not self.conformance_only:
+            raise Violation('the debug-assertion subject is a conformance mode')
+        if self.core_clippy_job:
+            if os.environ.get('CI_JOB_NAME') != CLIPPY_JOB or self.repository != 'GetBusbar/busbar':
+                raise Violation("lint-only clippy runs only as core's core-clippy job")
+            self.receipt['schema'] = 'busbar.core-clippy/1'
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
         tools_path = getattr(args, 'conformance_inputs', None)
@@ -534,8 +556,8 @@ class Qualification:
         # and optimization settings are unchanged; archive admission still hashes the
         # actual complete library used by every runtime and custody witness.
         self.receipt['native_scheduling'] = native_scheduling(self.execution)
-        # Every job starts from an empty target directory, so incremental
-        # query caches are written and never read. Disabling them changes no
+        # Incremental query caches are off: the compile-target cache restores
+        # Cargo units, not rustc's incremental state. Disabling them changes no
         # profile setting that affects program behaviour (release is already
         # non-incremental); it only drops that disk and memory traffic.
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
@@ -761,12 +783,20 @@ class Qualification:
         self.save()
 
     def core_compilation(self):
-        # Type-check and lint every target, tests included, before the compiler
-        # witnesses and product preparation. These are the same clippy steps
-        # that previously ran last, so the work moves earlier rather than being
-        # added; a compile or lint error now fails in minutes.
+        # QA's remaining lint configuration (no default features), before the
+        # compiler witnesses and product preparation; the all-features lints of
+        # both workspaces are the core-clippy job of the same pipeline.
         for name, command in CORE_LINT_COMMANDS:
             self.run(name, command)
+
+    def core_clippy(self):
+        """Dev and QA tiers: lint-only clippy of both workspaces, `-D warnings`."""
+        # The same identity fields admission requires of every dev-tier receipt.
+        self.receipt['sdk_revision'] = json.loads((self.host() / 'scripts/ci-product-pins.json').read_text())['sdk']
+        for name, command in CORE_CLIPPY_COMMANDS:
+            self.run(name, command)
+        self.receipt['checks'] = {'clippy': {name: 'pass' for name, _ in CORE_CLIPPY_COMMANDS}}
+        self.save()
 
     def core(self):
         if getattr(self, 'dependency_units_producer', False):
@@ -825,7 +855,7 @@ class Qualification:
                 self.run(name, command)
             # The QA tier certifies this pipeline's core-build binary: same bytes, no second build.
             import native_certified
-            binary, staged = native_certified.stage(self)
+            binary, _ = native_certified.stage(self)
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
@@ -841,6 +871,21 @@ class Qualification:
         for name, command, cwd in CORE_POLICY_COMMANDS:
             self.run(name, command, cwd=self.root / cwd if cwd else None)
         native_certified.build(self)
+        self.receipt['checks'] = {
+            'fmt': {'root-fmt': 'pass', 'default-fmt': 'pass'},
+            'deny': {'dependency-policy': 'pass', 'default-dependency-policy': 'pass'},
+            'vet': {'dependency-vet': 'pass', 'default-dependency-vet': 'pass'},
+            'build': {native_certified.STEP: 'pass'}}
+        self.save()
+
+    def compile_recipe(self):
+        """The compile-target recipe of this job, or None where the cache does not apply."""
+        if getattr(self, 'core_build_job', False):
+            from native_certified import BUILD
+            return {'commands': [['cargo', *BUILD]], 'rustc_wrapper': ''}
+        if getattr(self, 'core_clippy_job', False):
+            return {'commands': [command for _, command in CORE_CLIPPY_COMMANDS], 'linter': 'cargo clippy'}
+        return None
 
     def plugin(self):
         host = self.host()
@@ -874,8 +919,9 @@ class Qualification:
         if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
             if getattr(self, 'execution', None):
                 controls = ['testing/conformance/run.sh', 'testing/conformance/capabilities.py']
-                if self.env.get('BUSBAR_CONFORMANCE_SUBJECT'):
-                    # Every suite resolves its subject here: it must judge the staged binary.
+                if self.env.get('BUSBAR_CONFORMANCE_SUBJECT') or getattr(self, 'debug_subject', False):
+                    # Every suite resolves its subject here: the staged binary, or (QA
+                    # debug subject) the approved dev-profile build recipe.
                     controls.append('testing/conformance/subject_build.py')
                 for relative in controls:
                     path = self.root / relative
@@ -977,16 +1023,22 @@ class Qualification:
         self.receipt['conformance_diagnostics'] = retained
 
     def core_conformance(self):
-        """Evaluate required core suites, retaining failures and release-input gaps."""
+        """Evaluate required core suites, retaining failures and release-input gaps.
+
+        dev (unchanged) and qa judge unsigned artifacts: every suite must pass
+        except the signed-release ones (slsa-verifier, sigstore), whose inputs
+        exist only after main signs; they are recorded honestly as not-run. Any
+        other stage requires every suite and the Sigstore evidence.
+        """
         self.sdk()
         # The full applicable upstream mTLS signature roster contains thousands
         # of handshakes. Keep its three bounded legs inside this per-suite cap;
         # the enclosing command retains its three-hour bound.
         self.env['CONFORMANCE_TIMEOUT_SECONDS'] = '3600'
-        from native_release_stage import run_engineering, classify, stage_context
+        from native_release_stage import UNSIGNED_STAGES, run_engineering, classify, stage_context
         context = stage_context(os.environ)
         self.receipt['conformance_stage'] = context
-        development = context['stage'] == 'dev'
+        unsigned = context['stage'] in UNSIGNED_STAGES
         failed = False
         engineering_report = self.evidence / 'release-engineering/result.json'
         try:
@@ -994,21 +1046,36 @@ class Qualification:
         except (Violation, OSError, ValueError, KeyError):
             failed = True
         import native_certified
-        # Conformance judges this pipeline's certified core-build binary, never a build of its own.
-        binary, staged = native_certified.stage(self)
-        self.env.update(BUSBAR_CONFORMANCE_SUBJECT=str(binary), BUSBAR_CONFORMANCE_SUBJECT_SHA256=staged['sha256'])
+        if getattr(self, 'debug_subject', False):
+            # QA's debug-assertion subject: subject_build.py builds the dev-profile
+            # dist/default `busbar` (debug assertions and overflow checks on).
+            if context['stage'] != 'qa':
+                raise Violation('the debug-assertion conformance subject runs in the QA tier only')
+            binary = staged = None
+            self.receipt['conformance_subject'] = {'kind': 'debug-assertions', 'profile': 'dev',
+                                                   'builder': 'testing/conformance/subject_build.py'}
+        else:
+            # Conformance judges this pipeline's certified core-build binary, never a build of its own.
+            binary, staged = native_certified.stage(self)
+            self.env.update(BUSBAR_CONFORMANCE_SUBJECT=str(binary), BUSBAR_CONFORMANCE_SUBJECT_SHA256=staged['sha256'])
+            self.receipt['conformance_subject'] = {'kind': 'certified-release', 'sha256': staged['sha256']}
         try:
             try:
                 self.conformance('core-native-conformance')
             finally:
-                native_certified.verify_unchanged(binary, staged)
+                if binary is not None:
+                    native_certified.verify_unchanged(binary, staged)
+                self.receipt['conformance_results'] = conformance_results(
+                    self.evidence / 'conformance', context['stage'], staged)
+                self.save()
         except Violation as conformance_error:
             try:
                 if str(conformance_error) != 'core-native-conformance failed; no automatic retry':
                     raise conformance_error
-                if not development:
+                if not unsigned:
                     raise Violation('release-stage conformance remains required')
-                self.receipt['development_conformance'] = classify(self, engineering_report)
+                key = 'development_conformance' if context['stage'] == 'dev' else 'qa_conformance'
+                self.receipt[key] = classify(self, engineering_report)
             except (Violation, OSError, ValueError, KeyError) as error:
                 self.receipt['development_conformance_error'] = str(error)
                 failed = True
@@ -1016,11 +1083,11 @@ class Qualification:
         out.mkdir()
         self.env['CONFORMANCE_OUT'] = str(out)
         try:
-            # Coverage declares this artifact-readiness check at main. Development
-            # records missing inputs honestly; supplied invalid evidence still fails.
-            self.receipt['sigstore_requirement'] = {'stage': context['stage'], 'required_at': 'main', 'required': not development, 'missing_result': 'not-run'}
+            # Coverage declares this signing check at main. Unsigned stages record
+            # missing inputs honestly; supplied invalid evidence still fails.
+            self.receipt['sigstore_requirement'] = {'stage': context['stage'], 'required_at': 'main', 'required': not unsigned, 'missing_result': 'not-run'}
             self.run('sigstore-release-evidence-observation', ['python3', '-I',
-                str(self.root / 'testing/conformance/sigstore.py'), *([] if development else ['--require'])])
+                str(self.root / 'testing/conformance/sigstore.py'), *([] if unsigned else ['--require'])])
         except Violation:
             failed = True
         finally:
@@ -1032,35 +1099,6 @@ class Qualification:
         if failed:
             raise Violation('one or more conformance evaluations did not pass; inspect actual verdicts')
 
-    def external_endpoint_conformance(self):
-        """Retain external judges' results without granting native admission."""
-        if getattr(self, 'execution', None):
-            raise Violation('external judges require a fixed-destination confined network broker')
-        sdk = self.sdk()
-        self.receipt['sdk_revision'] = git(sdk, 'rev-parse', 'HEAD')
-        self.architecture(sdk)
-        self.env['BUSBAR_PIN'] = self.receipt['host_revision']
-        self.env['CONFORMANCE_OUT'] = str(self.evidence / 'external')
-        from product_artifacts import regular_under
-        script = native_settings(self.repository, getattr(self, 'policy', None)).get('external_conformance')
-        if script is None:
-            raise Violation('no required external evaluation entry point')
-        command = regular_under(self.root / script, self.root)
-        try:
-            self.run('external-endpoint-conformance', ['bash', str(command)], timeout=10800)
-        finally:
-            output = self.evidence / 'external'
-            files = {}
-            for path in sorted(output.rglob('*')):
-                if path.is_symlink():
-                    raise Violation('indirect external evaluation evidence')
-                if path.is_file():
-                    files[str(path.relative_to(output))] = digest(path)
-            self.receipt['external_evidence'] = files
-            self.save()
-            if 'evaluation.json' not in files:
-                raise Violation('external judge produced no evaluation record')
-
     def finish(self, status, error=None):
         self.receipt.update(status=status, finished_at=now())
         if error:
@@ -1070,6 +1108,22 @@ class Qualification:
         if destination.exists():
             raise Violation('candidate supplied the evidence output directory')
         shutil.copytree(self.evidence, destination)
+
+
+def conformance_results(directory, stage, staged):
+    """Per-suite verdicts of this run, naming the subject they judged."""
+    suites = {}
+    for path in sorted((Path(directory) / 'verdicts').glob('*.json')):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            verdict = json.loads(path.read_text())
+        except ValueError:
+            verdict = {}
+        suites[path.stem] = {'status': verdict.get('status'), 'armed': verdict.get('armed'),
+                             'sha256': digest(path)}
+    return {'stage': stage, 'subject_sha256': staged['sha256'] if staged else None,
+            'subject': 'certified-release' if staged else 'debug-assertions', 'suites': suites}
 
 
 def qualify():
@@ -1085,13 +1139,16 @@ def qualify():
     parser.add_argument('--conformance-inputs-sha256')
     parser.add_argument('--fixture-inputs', type=Path)
     parser.add_argument('--fixture-inputs-sha256')
+    parser.add_argument('--debug-subject', action='store_true',
+                        help='QA core-conformance-debug: judge the debug-assertion dev build')
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--conformance-only', action='store_true')
-    modes.add_argument('--external-conformance', action='store_true')
     modes.add_argument('--dependency-units', action='store_true',
                        help='Protected core producer pipelines only: publish pinned plugin dependency units')
     modes.add_argument('--core-build', action='store_true',
                        help="Core's dev tier: fmt, dependency policy and the one certified product build")
+    modes.add_argument('--core-clippy', action='store_true',
+                       help="Core's dev tier: lint-only clippy of both workspaces")
     args = parser.parse_args()
     producer = getattr(args, 'dependency_units', False)
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
@@ -1103,15 +1160,17 @@ def qualify():
         # Constructor validation establishes the immutable controller, exact
         # candidate and execution boundary before any regression command runs.
         build_only = getattr(qualification, 'core_build_job', False)
+        clippy_only = getattr(qualification, 'core_clippy_job', False)
+        dev_tier_job = build_only or clippy_only
         if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only \
-                and not producer and not build_only:
+                and not producer and not dev_tier_job:
             qualification.core_regressions()
         if build_only:
             # Needs only sources and the pinned toolchain: fail in seconds, before preparation.
             qualification.core_formatting()
             qualification.core_lock_alignment()
-        if not producer and not build_only and requires_native_oracle(
-                qualification.repository, args.external_conformance, qualification.policy):
+        if not producer and not dev_tier_job and requires_native_oracle(
+                qualification.repository, qualification.policy):
             from native_oracle import prepare as prepare_oracle
             with qualification.preparation('oracle-inputs'):
                 prepare_oracle(qualification)
@@ -1122,7 +1181,7 @@ def qualify():
             from native_seed import prepare as prepare_seed
             with qualification.preparation('dependency-seed'):
                 prepare_seed(qualification)
-        if qualification.execution is not None and not build_only:
+        if qualification.execution is not None and not dev_tier_job:
             from native_staged_fixtures import collect_required
             with qualification.preparation('staged-fixtures'):
                 collect_required(qualification)
@@ -1131,19 +1190,19 @@ def qualify():
                 with qualification.preparation('conformance-capabilities'):
                     prepare_capabilities(qualification)
         compile_target = cached_target = None
-        if qualification.repository == 'GetBusbar/busbar' and qualification.execution is not None \
-                and not producer:
-            # Trusted Cargo target of the newest protected dev/qa run of this job.
+        recipe = qualification.compile_recipe()
+        if recipe is not None and qualification.repository == 'GetBusbar/busbar' \
+                and qualification.execution is not None:
+            # From here on every candidate invocation sees the checkout and the
+            # job directory at fixed paths, so units and the cache key are portable.
+            qualification.execution.use_fixed_paths()
+            # Trusted Cargo target of the newest protected run of this job; the
+            # build environment is final here (no step changes it afterwards).
             import native_compile_cache as compile_target
             with qualification.preparation('compile-target'):
-                cached_target = compile_target.restore(qualification)
+                cached_target = compile_target.restore(qualification, recipe)
         evaluation_error = None
-        if args.external_conformance:
-            try:
-                qualification.external_endpoint_conformance()
-            except Violation as error:
-                evaluation_error = error
-        elif args.conformance_only:
+        if args.conformance_only:
             try:
                 qualification.core_conformance()
             except Violation as error:
@@ -1151,6 +1210,8 @@ def qualify():
         elif qualification.repository == 'GetBusbar/busbar':
             if build_only:
                 qualification.core_build()
+            elif clippy_only:
+                qualification.core_clippy()
             else:
                 qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
@@ -1174,7 +1235,7 @@ def qualify():
             raise evaluation_error
         if compile_target is not None:
             with qualification.preparation('compile-target-producer'):
-                compile_target.produce(qualification, cached_target)
+                compile_target.produce(qualification, cached_target, recipe)
         qualification.finish('pass')
     except BaseException as error:
         if qualification is not None:

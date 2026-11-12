@@ -385,6 +385,15 @@ class Registry:
             except urllib.error.HTTPError as error:
                 raise Unavailable(f'package upload refused (HTTP {error.code})') from None
 
+    def delete_package_file(self, package_id, file_id):
+        """Delete one file of a cache package. The dependency-unit package is never pruned."""
+        if self.package == PACKAGE:
+            raise Unavailable('the dependency-unit package is never pruned')
+        if type(package_id) is not int or type(file_id) is not int:
+            raise Unavailable('package file identity is not an integer')
+        with self._open(f'{self.api}/packages/{package_id}/package_files/{file_id}', method='DELETE'):
+            pass
+
 
 def provenance(registry, version, manifest):
     """Only files written once by one of core's two protected producer pipelines.
@@ -635,10 +644,15 @@ def produce_product(q, product, policy, registry, *, image, upload=True, pinned=
 
 
 def producer_kind(env=None):
-    """'dev' (protected dev push), 'pinned' (owner API pipeline on protected PINNED_REF) or None."""
+    """'dev' (protected dev push), 'pinned' (owner API pipeline on protected PINNED_REF) or None.
+
+    Both require the server's CI_COMMIT_REF_PROTECTED == 'true', as every other
+    trusted cache producer does (native_release_stage.protected_tier).
+    """
+    from native_release_stage import protected_tier
     env = os.environ if env is None else env
     source, branch = env.get('CI_PIPELINE_SOURCE'), env.get('CI_COMMIT_BRANCH')
-    if source == 'push' and branch == 'dev':
+    if source == 'push' and protected_tier(env) == 'dev':
         return 'dev'
     if source == 'api' and branch == PINNED_REF and env.get('CI_COMMIT_REF_PROTECTED') == 'true':
         return 'pinned'
@@ -655,8 +669,9 @@ def produce(q, registry=None):
     """
     shard = producer_shard(os.environ.get('CI_JOB_NAME'))
     kind = producer_kind()
-    if kind == 'pinned' and not (isinstance(q.receipt.get('target_revision'), str)
-                                 and q.receipt.get('commit_ref_protected') is True):
+    if kind is not None and q.receipt.get('commit_ref_protected') is not True:
+        kind = None
+    if kind == 'pinned' and not isinstance(q.receipt.get('target_revision'), str):
         kind = None
     if not (q.repository == 'GetBusbar/busbar' and shard is not None and kind is not None
             and q.execution is not None):
@@ -688,7 +703,8 @@ def produce(q, registry=None):
     import native_product_images
     shard_products = [p for p in vector['products'] if product_shard(p['repo']) == shard]
     try:
-        native_product_images.produce(q, shard_products)
+        native_product_images.produce(q, shard_products,
+                                      pinned_commit=os.environ['CI_COMMIT_SHA'] if kind == 'pinned' else None)
     except Exception as error:  # images are an optimisation; never block units
         q.receipt['product_images_produced'] = [{'status': 'failed', 'reason': str(error)[:500]}]
         q.save()

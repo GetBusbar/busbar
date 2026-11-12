@@ -240,8 +240,9 @@ class PreparationTiming(unittest.TestCase):
         with self.assertRaisesRegex(native.Violation, 'stop after witnesses'):
             q.core()
         names = [name for name, _ in events]
-        self.assertEqual(names, ['root-clippy', 'default-clippy', 'root-clippy-nodefault', 'architecture'])
-        for name, argv in events[:3]:
+        # The all-features lints of both workspaces are the core-clippy job.
+        self.assertEqual(names, ['root-clippy-nodefault', 'architecture'])
+        for name, argv in events[:1]:
             self.assertEqual(argv[:2], ['cargo', 'clippy'])
             self.assertIn('--all-targets', argv)
             self.assertEqual(argv[-2:], ['-D', 'warnings'])
@@ -250,11 +251,11 @@ class PreparationTiming(unittest.TestCase):
         import native
         q = native.Qualification.__new__(native.Qualification)
         def run(name, argv):
-            if name == 'root-clippy':
+            if name == 'root-clippy-nodefault':
                 raise native.Violation(name + ' failed; no automatic retry')
         q.run = Mock(side_effect=run)
         q.architecture = Mock()
-        with self.assertRaisesRegex(native.Violation, 'root-clippy'):
+        with self.assertRaisesRegex(native.Violation, 'root-clippy-nodefault'):
             q.core()
         q.architecture.assert_not_called()
         self.assertEqual(q.run.call_count, 1)

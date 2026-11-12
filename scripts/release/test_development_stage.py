@@ -190,6 +190,64 @@ class StageClassification(unittest.TestCase):
             stages.classify(self.q, self.report)
 
 
+class QaStage(unittest.TestCase):
+    """QA certifies unsigned bytes: strict suites, signing evidence deferred to main."""
+
+    def test_protected_qa_push_and_dev_schedule_are_the_qa_stage(self):
+        qa = {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "qa", "CI_COMMIT_REF_PROTECTED": "true"}
+        nightly = {"CI_PIPELINE_SOURCE": "schedule", "CI_COMMIT_BRANCH": "dev", "CI_COMMIT_REF_PROTECTED": "true"}
+        self.assertEqual(stages.stage_context(qa)["stage"], "qa")
+        self.assertEqual(stages.stage_context(nightly)["stage"], "qa")
+        for env in (dict(qa, CI_COMMIT_REF_PROTECTED="false"), dict(nightly, CI_COMMIT_REF_PROTECTED="false"),
+                    dict(qa, CI_COMMIT_BRANCH="main")):
+            self.assertEqual(stages.stage_context(env)["stage"], "release")
+        # dev semantics are unchanged, protected or not.
+        for protected in ("true", "false"):
+            self.assertEqual(stages.stage_context({"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "dev",
+                                                   "CI_COMMIT_REF_PROTECTED": protected})["stage"], "dev")
+        self.assertEqual(stages.UNSIGNED_STAGES, ("dev", "qa"))
+
+    def test_one_definition_of_protected_tier_pipelines(self):
+        self.assertEqual(stages.protected_tier({"CI_PIPELINE_SOURCE": "api", "CI_COMMIT_BRANCH": "dev",
+                                                "CI_COMMIT_REF_PROTECTED": "true"}), "dev")
+        self.assertIsNone(stages.cache_producer({"CI_PIPELINE_SOURCE": "api", "CI_COMMIT_BRANCH": "dev",
+                                                 "CI_COMMIT_REF_PROTECTED": "true"}))
+        self.assertIsNone(stages.protected_tier({"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "dev"}))
+        import native
+        self.assertEqual(native.PROTECTED_REF_PIPELINES, frozenset(stages.PROTECTED_PIPELINES))
+
+    def test_debug_assertion_subject_runs_in_qa_only_and_never_stages_the_release_binary(self):
+        import native
+        import native_certified
+
+        for env, allowed in (({"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "qa",
+                               "CI_COMMIT_REF_PROTECTED": "true"}, True),
+                              ({"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "dev"}, False)):
+            with self.subTest(env=env), tempfile.TemporaryDirectory() as temporary:
+                q = native.Qualification.__new__(native.Qualification)
+                q.root = q.evidence = Path(temporary)
+                q.env, q.receipt, q.debug_subject = {}, {"steps": []}, True
+                q.sdk, q.save = (lambda: q.root), (lambda: None)
+                q.conformance = lambda name: q.receipt["steps"].append({"name": name})
+                q.run = lambda name, argv: q.receipt["steps"].append({"name": name, "argv": argv})
+                with patch.dict(os.environ, env, clear=True), patch.object(
+                        stages, "run_engineering", return_value=q.evidence / "report"), patch.object(
+                        native_certified, "stage", side_effect=AssertionError("staged release binary")):
+                    if allowed:
+                        q.core_conformance()
+                        self.assertEqual(q.receipt["conformance_subject"]["kind"], "debug-assertions")
+                        self.assertNotIn("BUSBAR_CONFORMANCE_SUBJECT", q.env)
+                        self.assertIsNone(q.receipt["conformance_results"]["subject_sha256"])
+                    else:
+                        with self.assertRaisesRegex(stages.Violation, "QA tier only"):
+                            q.core_conformance()
+
+    def test_release_stage_classification_is_refused(self):
+        q = SimpleNamespace(receipt={"conformance_stage": {"stage": "release"}})
+        with self.assertRaisesRegex(stages.Violation, "release-stage"):
+            stages.classify(q, Path("unused"))
+
+
 class TrustedStage(unittest.TestCase):
     def test_only_dev_branch_or_same_project_dev_mr_qualifies(self):
         for pipeline in ("push", "api"):
@@ -224,12 +282,17 @@ class TrustedStage(unittest.TestCase):
     def test_controller_requires_missing_release_inputs_on_qa_and_main(self):
         import native
 
-        for branch, raw_failure in (
-            ("dev", True),
-            ("qa", True),
-            ("main", True),
-            ("dev", False),
+        import native_certified
+
+        protected_qa = {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_REF_PROTECTED": "true"}
+        for branch, raw_failure, env in (
+            ("dev", True, {"CI_PIPELINE_SOURCE": "api"}),
+            ("qa", True, {"CI_PIPELINE_SOURCE": "api"}),
+            ("main", True, {"CI_PIPELINE_SOURCE": "api"}),
+            ("dev", False, {"CI_PIPELINE_SOURCE": "api"}),
+            ("qa-push", True, protected_qa),
         ):
+            unsigned = branch in ("dev", "qa-push")
             with self.subTest(
                 branch=branch
             ), tempfile.TemporaryDirectory() as temporary:
@@ -261,16 +324,21 @@ class TrustedStage(unittest.TestCase):
                         raise stages.Violation("release missing")
 
                 q.conformance, q.run = conformance, run
+                staged = {"sha256": "c" * 64}
                 with patch.dict(
                     os.environ,
-                    {"CI_PIPELINE_SOURCE": "api", "CI_COMMIT_BRANCH": branch},
+                    dict(env, CI_COMMIT_BRANCH=branch.removesuffix("-push")),
                     clear=True,
+                ), patch.object(
+                    native_certified, "stage", return_value=(None, staged)
+                ), patch.object(
+                    native_certified, "verify_unchanged"
                 ), patch.object(
                     stages, "run_engineering", return_value=q.evidence / "report"
                 ), patch.object(
                     stages, "classify", return_value={"status": "pass"}
                 ) as classify:
-                    if branch == "dev" and raw_failure:
+                    if unsigned and raw_failure:
                         q.core_conformance()
                         classify.assert_called_once()
                     else:
@@ -279,8 +347,12 @@ class TrustedStage(unittest.TestCase):
                         classify.assert_not_called()
                 self.assertEqual(q.receipt["steps"][0]["exit_code"], 1)
                 self.assertEqual(
-                    "--require" in q.receipt["steps"][-1]["argv"], branch != "dev"
+                    "--require" in q.receipt["steps"][-1]["argv"], not unsigned
                 )
+                if unsigned and raw_failure:
+                    key = "development_conformance" if branch == "dev" else "qa_conformance"
+                    self.assertEqual(q.receipt[key], {"status": "pass"})
+                    self.assertEqual(q.receipt["conformance_subject"]["sha256"], "c" * 64)
 
 
 class SigstoreStage(unittest.TestCase):

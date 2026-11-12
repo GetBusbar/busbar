@@ -12,7 +12,7 @@ def native_settings(repository, policy=None):
     assembly = data.get('assembly', {})
     entry = assembly if repository == assembly.get('repository') else data['repositories'].get(repository, {})
     settings = entry.get('native', {})
-    allowed = {'services', 'migration_fixture', 'server_binary', 'external_conformance', 'native_oracle', 'prepare_runtime', 'required_conformance'}
+    allowed = {'services', 'migration_fixture', 'server_binary', 'native_oracle', 'prepare_runtime', 'required_conformance'}
     if not isinstance(settings, dict) or set(settings) - allowed:
         raise Violation('unknown native capability policy fields')
     services = settings.get('services', [])
@@ -29,11 +29,6 @@ def native_settings(repository, policy=None):
         raise Violation('native oracle requirement must be boolean')
     if type(settings.get('required_conformance', False)) is not bool:
         raise Violation('native conformance requirement must be boolean')
-    if 'external_conformance' in settings:
-        from product_artifacts import relative_path
-        path = relative_path(settings['external_conformance'])
-        if not path.startswith('testing/conformance/') or not path.endswith('.sh'):
-            raise Violation('external evaluation must name an owner conformance script')
     if 'prepare_runtime' in settings:
         from product_artifacts import relative_path
         path = relative_path(settings['prepare_runtime'])

@@ -82,10 +82,14 @@ POLICY_FILES = ('scripts/architecture/admission.py', 'scripts/architecture/nativ
 
 LEGACY_STAGES = re.compile(r'^stages: \[qualify, website\]$', re.M)
 TIERED_STAGES = re.compile(r'^stages: \[build, qualify, website, release\]$', re.M)
-# Core's DEV tier: the certified build, then conformance of exactly its bytes.
-CORE_DEV_JOBS = ('core-build', 'core-conformance')
-TIERED_JOBS = {'core-build': 'build', 'core-conformance': 'qualify',
+# Core's DEV tier: the certified build and the lint-only clippy job, then
+# conformance of exactly the build's bytes.
+CORE_DEV_JOBS = ('core-build', 'core-clippy', 'core-conformance')
+TIERED_JOBS = {'core-build': 'build', 'core-clippy': 'build', 'core-conformance': 'qualify',
                'native-qualification': 'qualify', 'security-scans': 'qualify'}
+# Approved build-stage job sets: core-build alone (before the lint-only job
+# split out of it), or core-build in parallel with core-clippy.
+BUILD_STAGE_SETS = (['core-build'], ['core-build', 'core-clippy'])
 
 
 def pipeline_blocks(text):
@@ -121,9 +125,10 @@ def independent_qualification_job(raw, job):
     """Recognize only the approved job inheritance grammars.
 
     single: one qualify stage, jobs extend native-qualification.
-    tiered: every job extends the shared .controller template; core-build alone
-    occupies the build stage, so a qualify job's prerequisite is exactly a
-    successful core-build of the same pipeline (core) or nothing (plugins).
+    tiered: every job extends the shared .controller template; core-build (and,
+    in newer policies, core-clippy) occupies the build stage, so a qualify job's
+    prerequisites are exactly those successful jobs of the same pipeline (core)
+    or nothing (plugins).
     Unknown DAG/include/default syntax fails closed, requiring fresh execution or
     an explicit controller implementation of that new prerequisite contract.
     """
@@ -154,8 +159,8 @@ def independent_qualification_job(raw, job):
         if stage:
             stages[name] = stage[0]
     require(stages.get(job) == TIERED_JOBS[job], 'job prerequisite stage changed')
-    prerequisites = [name for name, stage in stages.items() if stage == 'build']
-    require(prerequisites == ['core-build'], 'build-stage prerequisite set changed')
+    prerequisites = sorted(name for name, stage in stages.items() if stage == 'build')
+    require(prerequisites in BUILD_STAGE_SETS, 'build-stage prerequisite set changed')
     for name in {job, *prerequisites}:
         block = blocks[name]
         require(re.findall(r'^  extends: (.*)$', block, re.M) == ['.controller'],
@@ -191,8 +196,8 @@ print(json.dumps({'required_external':admission.required_conformance_job(repo,p)
 
 RECEIPT_SCHEMAS = {'native-qualification': 'busbar.protected-native-admission/1',
                    'core-build': 'busbar.core-build/1',
-                   'core-conformance': 'busbar.protected-conformance/1',
-                   'external-conformance': 'busbar.protected-conformance/1'}
+                   'core-clippy': 'busbar.core-clippy/1',
+                   'core-conformance': 'busbar.protected-conformance/1'}
 
 
 def dev_required_jobs(repository, tier, required_external=None):
@@ -207,15 +212,15 @@ def dev_required_jobs(repository, tier, required_external=None):
 
 def validate_core_build(original, receipt, artifact, context, policy):
     """Complete core-build validation: the retained binary is the certified record's bytes."""
-    from native_certified import BUILD, LINT_ARGS, LINTER, SCHEMA
+    from native_certified import BUILD, SCHEMA
     require(original['repository'] == CORE and original['job'] == 'core-build'
             and receipt.get('schema') == SCHEMA, 'core-build validator scope differs')
     record = receipt.get('certified_binary')
     require(isinstance(record, dict) and re.fullmatch('[0-9a-f]{64}', str(record.get('sha256')))
             and receipt.get('binary_sha256') == record['sha256']
-            and record.get('command') == ['cargo', *BUILD] and record.get('rustc_wrapper') == LINTER
-            and record.get('clippy_args') == LINT_ARGS and record.get('path') == 'busbar',
-            'original core-build certifies no binary')
+            and record.get('command') == ['cargo', *BUILD] and record.get('rustc_wrapper') == ''
+            and record.get('clippy_args') == [] and record.get('path') == 'busbar',
+            'original core-build certifies no plain release binary')
     binary = artifact('busbar')
     require(digest(binary) == record['sha256'] and len(binary) == record.get('bytes'),
             'original certified binary differs from its receipt')
@@ -223,6 +228,18 @@ def validate_core_build(original, receipt, artifact, context, policy):
     require(digest(artifact('development-artifact/receipt.json'))
             == record.get('development_artifact_receipt_sha256') == development.get('sha256'),
             'original development artifact receipt differs')
+    return True
+
+
+def validate_core_clippy(original, receipt, artifact, context, policy):
+    """Complete core-clippy validation: both workspaces linted, every check passed."""
+    from admission import CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS
+    require(original['repository'] == CORE and original['job'] == 'core-clippy'
+            and receipt.get('schema') == CORE_CLIPPY_SCHEMA, 'core-clippy validator scope differs')
+    steps = receipt.get('steps') or []
+    require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps)
+            and set(CORE_CLIPPY_STEPS) <= {s.get('name') for s in steps},
+            'original core-clippy checks did not pass')
     return True
 
 
@@ -617,13 +634,17 @@ def verify_release_dispatch(raw):
     require(shape(functions['main']) == shape(expected_main), 'native main dispatch changed')
     tries = [node for node in functions['qualify'].body if isinstance(node, ast.Try)]
     require(len(tries) == 1, 'native qualification control flow changed')
-    starts = [node for node in tries[0].body if isinstance(node, ast.If)
-              and shape(node.test) == shape(ast.parse('args.external_conformance', mode='eval').body)]
-    require(len(starts) == 1, 'native qualification dispatch missing')
-    branch = starts[0]
-    for expression in ('args.external_conformance', 'args.conformance_only',
-                       "qualification.repository == 'GetBusbar/busbar'",
-                       "qualification.repository == 'GetBusbar/busbar-release'"):
+    # Older controllers led the chain with a since-removed external-conformance branch.
+    chain = ['args.conformance_only', "qualification.repository == 'GetBusbar/busbar'",
+             "qualification.repository == 'GetBusbar/busbar-release'"]
+    heads = [node for node in tries[0].body if isinstance(node, ast.If)
+             and shape(node.test) in (shape(ast.parse(e, mode='eval').body)
+                                      for e in ('args.external_conformance', chain[0]))]
+    require(len(heads) == 1, 'native qualification dispatch missing')
+    branch = heads[0]
+    if shape(branch.test) == shape(ast.parse('args.external_conformance', mode='eval').body):
+        chain.insert(0, 'args.external_conformance')
+    for expression in chain:
         require(shape(branch.test) == shape(ast.parse(expression, mode='eval').body),
                 'native release dispatch condition changed')
         if expression.endswith("'GetBusbar/busbar-release'"):
@@ -1079,7 +1100,8 @@ class OwnerRuntime:
         release = ReleaseValidator(self.objects)
         def validate(original, receipt, artifact, context, original_policy):
             validator = (release if original['repository'] == REPOSITORY else
-                         validate_core_build if original['job'] == 'core-build' else marketing)
+                         validate_core_build if original['job'] == 'core-build' else
+                         validate_core_clippy if original['job'] == 'core-clippy' else marketing)
             return validator(original, receipt, artifact, context, original_policy)
         self.resolver = ReleaseResolver(self.reads, group_api=self.groups, objects=self.objects,
             current_policy=self.policy, merge_users=self.principals, owner_users=self.principals,

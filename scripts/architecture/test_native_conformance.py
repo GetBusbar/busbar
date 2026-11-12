@@ -105,41 +105,18 @@ raise SystemExit(1)
         with self.assertRaisesRegex(native.Violation, 'indirect conformance diagnostic'):
             self.q.copy_conformance()
 
-    def test_external_failed_judge_keeps_hashed_output_without_admission(self):
-        self.q.repository = 'GetBusbar/busbar-plane-llm'
-        self.q.policy = {'repositories': {self.q.repository: {'native': {
-            'external_conformance': 'testing/conformance/external-fixture.sh'}}}}
-        self.q.receipt['host_revision'] = 'a' * 40
-        self.q.sdk = lambda: self.root
-        self.q.architecture = lambda sdk: None
-        entry = self.root / native.native_settings(self.q.repository, self.q.policy)['external_conformance']
-        entry.write_text('''mkdir "$CONFORMANCE_OUT"
-printf '{"status":"not-run","reason":"real model unavailable"}' > "$CONFORMANCE_OUT/evaluation.json"
-printf 'upstream cases: 300 not run\n' > "$CONFORMANCE_OUT/results.txt"
-exit 1
-''')
-        with patch.object(native, 'git', return_value='b' * 40):
-            with self.assertRaisesRegex(native.Violation, 'failed; no automatic retry'):
-                self.q.external_endpoint_conformance()
-        self.assertEqual(self.q.receipt['steps'][-1]['exit_code'], 1)
-        self.assertEqual(self.q.receipt['external_evidence'], {
-            name: native.digest(self.q.evidence / 'external' / name)
-            for name in ('evaluation.json', 'results.txt')})
-        self.assertEqual(self.q.env['BUSBAR_PIN'], 'a' * 40)
-
-    def test_external_job_cannot_substitute_for_other_repositories_or_modes(self):
-        self.assertTrue(native.requires_native_oracle('GetBusbar/busbar-plane-llm', False))
-        self.assertFalse(native.requires_native_oracle('GetBusbar/busbar-plane-llm', True))
-        self.assertIsNone(native.evaluation_job('GetBusbar/busbar-plane-llm', False, False))
-        for repository, core, external in [
+    def test_conformance_modes_are_core_only(self):
+        self.assertTrue(native.requires_native_oracle('GetBusbar/busbar-plane-llm'))
+        self.assertIsNone(native.evaluation_job('GetBusbar/busbar-plane-llm', False))
+        self.assertEqual(native.evaluation_job('GetBusbar/busbar', True), 'core-conformance')
+        self.assertEqual(native.evaluation_job('GetBusbar/busbar', True, True), 'core-conformance-debug')
+        for repository, conformance, debug in [
                 ('GetBusbar/busbar', False, True),
-                ('GetBusbar/busbar-plane-llm', False, True),
-                ('GetBusbar/busbar-plane-decisions', False, True),
                 ('GetBusbar/busbar-plane-llm', True, False),
                 ('GetBusbar/busbar-plane-llm', True, True),
                 ('GetBusbar/private-plugin', False, True)]:
-            with self.assertRaises(native.Violation):
-                native.evaluation_job(repository, core, external)
+            with self.subTest(repository=repository, debug=debug), self.assertRaises(native.Violation):
+                native.evaluation_job(repository, conformance, debug)
 
 
 if __name__ == '__main__':

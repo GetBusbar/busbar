@@ -339,8 +339,8 @@ BINARY, DEVELOPMENT = b'certified-binary', b'{"development": true}'
 
 
 class TieredCoreSelection(SelectionFixture, unittest.TestCase):
-    """Core's tiered policy: dev evidence is core-build + core-conformance of its bytes."""
-    CORE_JOBS = ('core-build', 'core-conformance')
+    """Core's tiered policy: dev evidence is core-build, core-clippy and conformance of the bytes."""
+    CORE_JOBS = ('core-build', 'core-clippy', 'core-conformance')
     TIER = 'tiered'
 
     def setUp(self):
@@ -356,7 +356,7 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
         from native_certified import BUILD
         files, receipt = super().fixture(dict(request, job='core-conformance'), pipeline, job)
         record = dict(sha256=digest(BINARY), bytes=len(BINARY), path='busbar', command=['cargo', *BUILD],
-                      rustc_wrapper='clippy-driver', clippy_args=['-D', 'warnings'], profile_use=None,
+                      rustc_wrapper='', clippy_args=[], profile_use=None,
                       development_artifact_receipt_sha256=digest(DEVELOPMENT))
         if request['job'] == 'core-build':
             self.build_jobs[pipeline] = job
@@ -366,6 +366,14 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
             files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
                      for name in CORE_BUILD_STEPS for stream in ('stdout', 'stderr')}
             files.update({'busbar': BINARY, 'development-artifact/receipt.json': DEVELOPMENT})
+        elif request['job'] == 'core-clippy':
+            from admission import CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS
+            receipt.update(schema=CORE_CLIPPY_SCHEMA,
+                           steps=[dict(receipt['steps'][0], name=name) for name in CORE_CLIPPY_STEPS])
+            for key in ('required_conformance_suites', 'binary_sha256', 'certified_binary'):
+                receipt.pop(key, None)
+            files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
+                     for name in CORE_CLIPPY_STEPS for stream in ('stdout', 'stderr')}
         else:
             receipt.update(binary_sha256=record['sha256'], certified_binary=dict(
                 sha256=record['sha256'], bytes=len(BINARY), core_build_job_id=self.build_jobs[pipeline],
@@ -376,6 +384,9 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
         if original['job'] == 'core-build':
             from reuse_evidence import validate_core_build
             self.assertTrue(validate_core_build(original, receipt, artifact, context, policy))
+        if original['job'] == 'core-clippy':
+            from reuse_evidence import validate_core_clippy
+            return validate_core_clippy(original, receipt, artifact, context, policy)
         return super().validate(original, receipt, artifact, context, policy)
 
     def core_row(self, **inputs):
@@ -383,30 +394,31 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
 
     def test_identical_inputs_retain_both_dev_tier_jobs_and_launch_nothing(self):
         row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
-        self.assertEqual(set(row['required']), {'build', 'conformance'})
+        self.assertEqual(set(row['required']), {'build', 'clippy', 'conformance'})
         self.assertEqual(row['state'], 'retained')
         self.assertEqual(row['fresh_kinds'], [])
-        for kind in ('build', 'conformance'):
+        for kind in ('build', 'clippy', 'conformance'):
             self.assertEqual(row['qualifications'][kind]['scope'], 'execution-equivalent')
             self.assertEqual(row['qualifications'][kind]['origin']['pipeline'], 100)
 
     def test_changed_source_rebuilds_the_certified_binary(self):
-        # Only a regression test changed: conformance may be retained, the build never is.
+        # Only a regression test changed: conformance may be retained, the build
+        # and the lints (which cover tests too) never are.
         row = self.plan(self.core_row())[0]
         self.assertEqual(row['state'], 'selected')
-        self.assertEqual(row['fresh_kinds'], ['build'])
+        self.assertEqual(row['fresh_kinds'], ['build', 'clippy'])
         self.assertEqual(row['qualifications']['conformance']['scope'], 'retained-check')
 
     def test_forged_binary_or_conformance_of_other_bytes_is_never_retained(self):
         base = 'projects/1/jobs/'
-        build, conformance = (self.originals[CORE][index]['job'] for index in (0, 1))
+        build, conformance = (self.originals[CORE][index]['job'] for index in (0, 2))
         members = dict(zipfile_members(self.raw[base + str(build) + '/artifacts']), busbar=b'other bytes')
         self.raw[base + str(build) + '/artifacts'] = archive(members)
         row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
         self.assertEqual(row['qualifications']['build']['mode'], 'fresh')
         self.assertEqual(row['qualifications']['conformance']['mode'], 'retained')
         self.setUp()
-        candidate = self.originals[CORE][1]
+        candidate = self.originals[CORE][2]
         candidate['receipt']['certified_binary']['sha256'] = '0' * 64
         receipt_bytes = identity.encoded(candidate['receipt'])
         members = dict(zipfile_members(self.raw[base + str(conformance) + '/artifacts']),
