@@ -38,83 +38,8 @@ native-qualification:
       set -eu
       # Bootstrap from the server-selected top-level configuration, not a variable
       # or script supplied by the candidate. Pipeline variable overrides are disabled.
-      python3 -I -B - <<'PY'
-      import base64, os, pathlib, re, shutil, subprocess
-      uri = os.environ['CI_CONFIG_REF_URI']
-      # GitLab identifies the consumer project/ref around the full external
-      # configuration setting. The trusted revision is the SHA after its colon.
-      match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + '/' + re.escape(os.environ['CI_PROJECT_PATH']) + r'//ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})@refs/heads/[^\s]+', uri)
-      if not match:
-          raise SystemExit('CI configuration must select the approved immutable core revision: ' + uri)
-      base = pathlib.Path(os.environ['BUSBAR_NATIVE_SCRATCH']).resolve()
-      work = base / ('boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID'])
-      work.mkdir(parents=True, exist_ok=False)
-      trusted = work / 'trusted'
-      trusted.mkdir()
-      env = dict(os.environ)
-      auth = base64.b64encode(('gitlab-ci-token:' + env['CI_JOB_TOKEN']).encode()).decode()
-      server = env['CI_SERVER_URL'].rstrip('/')
-      env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.' + server + '/.extraheader', GIT_CONFIG_VALUE_0='Authorization: Basic ' + auth, GIT_TERMINAL_PROMPT='0')
-      try:
-          subprocess.run(['git', '-C', str(trusted), 'init', '-q'], check=True)
-          subprocess.run(['git', '-C', str(trusted), 'fetch', '--depth', '1', server + '/GetBusbar/busbar.git', match[1]], env=env, check=True)
-          subprocess.run(['git', '-C', str(trusted), 'checkout', '--detach', 'FETCH_HEAD'], check=True)
-          actual = subprocess.check_output(['git', '-C', str(trusted), 'rev-parse', 'HEAD'], text=True).strip()
-          if actual != match[1]:
-              raise SystemExit('trusted policy checkout mismatch')
-          command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/native_ci_bootstrap.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
-          if os.environ['CI_JOB_NAME'] in ('native-qualification', 'core-conformance'):
-              # Decide before any bootstrap download: exit 0 only after the trusted
-              # module authenticated an equal-input successful original and wrote
-              # boundary-evidence/retained.json naming it. Anything else runs fresh.
-              retained = pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/retained.json'
-              decision = subprocess.run(['python3', '-I', '-B', str(trusted / 'scripts/architecture/ci_retention.py'), '--policy', match[1], '--checkout', os.environ['CI_PROJECT_DIR'], '--output', str(retained)])
-              if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():
-                  command = None
-              elif retained.exists() or retained.is_symlink():
-                  raise SystemExit('retention decision left evidence without retaining')
-          if os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
-              raise SystemExit('unrecognized trusted native job')
-          if command is not None:
-              subprocess.run(command, check=True)
-      finally:
-          shutil.rmtree(work, ignore_errors=True)
-      PY
-  artifacts:
-    when: always
-    access: developer
-    expire_in: 30 days
-    paths: [boundary-evidence/]
-
-# Fixed-source runtime witnesses execute on an exclusive existing native worker.
-# This API-only core diagnostic neither qualifies candidate code nor publishes it.
-native-isolation-diagnostic:
-  extends: native-qualification
-  timeout: 30m
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
-    - when: never
-
-# Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
-# max_use_count=1, no shared cache). This job never executes candidate processes.
-# Keep that lifecycle contract when changing the runner behind this tag.
-security-scans:
-  extends: native-qualification
-  tags: [busbar-native-admission]
-  timeout: 1h
-  # Security always runs fresh, including the dev schedule; its own database
-  # age/content checks decide freshness. It never invalidates native/conformance.
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
-      when: never
-    - when: on_success
-  # POSIX sh only: fetch the server-selected policy, then the policy's
-  # tools/ci/security-scans.sh runs the digest-pinned busbar-ci controller.
-  script:
-    - |
-      set -eu
-      # Bootstrap from the server-selected top-level configuration, not a variable
-      # or script supplied by the candidate. Pipeline variable overrides are disabled.
+      # POSIX sh only. Every trusted job runs the one busbar-ci controller that
+      # the verified policy checkout pins (tools/ci/controller.pin); see controller.sh.
       uri=$CI_CONFIG_REF_URI
       # GitLab identifies the consumer project/ref around the full external
       # configuration setting. The trusted revision is the SHA after its colon:
@@ -144,12 +69,19 @@ security-scans:
         printf '%s\n' "CI configuration must select the approved immutable core revision: $uri" >&2
         exit 1
       }
+      case $CI_JOB_NAME in
+        (security-scans|native-qualification|core-conformance|external-conformance|native-isolation-diagnostic) ;;
+        (*) echo 'unrecognized trusted native job' >&2; exit 1 ;;
+      esac
       test -n "${BUSBAR_NATIVE_SCRATCH+set}" || exit 1
       mkdir -p -- "${BUSBAR_NATIVE_SCRATCH:-.}"
       base=$(cd -P -- "${BUSBAR_NATIVE_SCRATCH:-.}" && pwd -P)
       work="$base/boundary-$CI_PROJECT_ID-$CI_JOB_ID"
       mkdir -- "$work"
+      # Cleanup on every exit path, including cancellation signals.
       trap 'rm -rf -- "$work"' EXIT
+      trap 'exit 143' TERM
+      trap 'exit 130' INT
       trusted="$work/trusted"
       mkdir -- "$trusted"
       server=$CI_SERVER_URL
@@ -166,8 +98,44 @@ security-scans:
         echo 'trusted policy checkout mismatch' >&2
         exit 1
       fi
-      test "$CI_JOB_NAME" = security-scans || { echo 'unrecognized trusted security job' >&2; exit 1; }
-      sh "$trusted/tools/ci/security-scans.sh" "$trusted" "$work" || exit 1
+      # The pinned controller runs from the job staging root. native-bootstrap
+      # makes the retention decision before any bootstrap download.
+      controller() { sh "$trusted/tools/ci/controller.sh" "$trusted" "$work" "$@"; }
+      case $CI_JOB_NAME in
+        (security-scans)
+          controller security-scans --trusted "$trusted" --checkout "$CI_PROJECT_DIR" --work "$work" \
+            --output "$CI_PROJECT_DIR/boundary-evidence/security.json" ;;
+        (*)
+          controller native-bootstrap --trusted "$trusted" --checkout "$CI_PROJECT_DIR" --work "$work" ;;
+      esac
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 30 days
+    paths: [boundary-evidence/]
+
+# Fixed-source runtime witnesses execute on an exclusive existing native worker.
+# This API-only core diagnostic neither qualifies candidate code nor publishes it.
+native-isolation-diagnostic:
+  extends: native-qualification
+  timeout: 30m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
+    - when: never
+
+# Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
+# max_use_count=1, no shared cache). This job never executes candidate processes.
+# Keep that lifecycle contract when changing the runner behind this tag.
+security-scans:
+  extends: native-qualification
+  tags: [busbar-native-admission]
+  timeout: 1h
+  # Security always runs fresh, including the dev schedule; its own database
+  # age/content checks decide freshness. It never invalidates native/conformance.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
+      when: never
+    - when: on_success
   artifacts:
     when: always
     access: developer

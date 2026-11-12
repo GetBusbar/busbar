@@ -6,7 +6,7 @@
 //! evidence mount. This is the behaviour of the former `scripts/security/scan.py`
 //! (receipt schema `busbar.security-scans/1`), byte for byte.
 use crate::isotime::aware_utc_micros;
-use crate::json::{self, Json, ParseError};
+use crate::json::{self, ParseError, Value};
 use crate::sha256::{self, Sha256};
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,14 +46,14 @@ fn require(ok: bool, message: &'static str) -> Result<()> {
 fn os<T>(value: std::io::Result<T>) -> Result<T> {
     value.map_err(|_| Fail::Abort("filesystem or process operation failed"))
 }
-fn parse(data: &[u8]) -> Result<Json> {
-    json::parse(data).map_err(|error| match error {
-        ParseError::Invalid => Fail::Refuse("invalid JSON"),
+fn parse(data: &[u8]) -> Result<Value> {
+    json::parse_cpython(data).map_err(|error| match error {
+        ParseError::Invalid(_) => Fail::Refuse("invalid JSON"),
         ParseError::TooDeep => Fail::Abort("JSON nesting exceeds recursion limit"),
     })
 }
 /// `json.loads(path.read_text())`: text decoding keeps a BOM, which JSON refuses.
-fn read_text_json(path: &Path) -> Result<Json> {
+fn read_text_json(path: &Path) -> Result<Value> {
     let data = os(fs::read(path))?;
     require(!data.starts_with(b"\xef\xbb\xbf"), "invalid JSON")?;
     parse(&data)
@@ -63,10 +63,10 @@ fn read_text(path: &Path) -> Result<String> {
     let text = String::from_utf8(os(fs::read(path))?).map_err(|_| Fail::Refuse("invalid UTF-8"))?;
     Ok(text.replace("\r\n", "\n").replace('\r', "\n"))
 }
-fn key<'a>(value: &'a Json, name: &str) -> Result<&'a Json> {
+fn key<'a>(value: &'a Value, name: &str) -> Result<&'a Value> {
     value.get(name).ok_or(Fail::Refuse("missing key"))
 }
-fn key_str<'a>(value: &'a Json, name: &str) -> Result<&'a str> {
+fn key_str<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
     key(value, name)?
         .as_str()
         .ok_or(Fail::Refuse("non-string value"))
@@ -278,7 +278,7 @@ fn git_text(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Export Git blobs, ignoring export-ignore/filter attributes and worktree bytes.
-pub fn export_source(checkout: &Path, revision: &str, destination: &Path) -> Result<Vec<Json>> {
+pub fn export_source(checkout: &Path, revision: &str, destination: &Path) -> Result<Vec<Value>> {
     require(hex_lower(revision, 40), "immutable source required")?;
     os(fs::create_dir(destination))?;
     let mut rows = Vec::new();
@@ -313,17 +313,17 @@ pub fn export_source(checkout: &Path, revision: &str, destination: &Path) -> Res
         }
         // Symlinks become their literal target text; no host file can be followed.
         os(fs::write(&target, &data))?;
-        rows.push(Json::obj([
-            ("path", Json::str(path)),
-            ("mode", Json::str(*mode)),
-            ("sha256", Json::str(sha256::hex(&data))),
+        rows.push(json::object([
+            ("path", Value::str(path)),
+            ("mode", Value::str(*mode)),
+            ("sha256", Value::str(sha256::hex(&data))),
         ]));
     }
     require(!rows.is_empty(), "empty source tree")?;
     Ok(rows)
 }
 
-fn findings<'a>(row: &'a Json, field: &str) -> Result<&'a [Json]> {
+fn findings<'a>(row: &'a Value, field: &str) -> Result<&'a [Value]> {
     // `row.get(field) or []`, then it must be a list.
     match row.get(field) {
         Some(value) if value.truthy() => value
@@ -332,7 +332,7 @@ fn findings<'a>(row: &'a Json, field: &str) -> Result<&'a [Json]> {
         _ => Ok(&[]),
     }
 }
-fn results(report: &Json) -> Result<&[Json]> {
+fn results(report: &Value) -> Result<&[Value]> {
     match report.get("Results") {
         None => Ok(&[]),
         Some(value) => value
@@ -342,14 +342,14 @@ fn results(report: &Json) -> Result<&[Json]> {
 }
 
 /// Validate scanner completion and count findings, including public fixtures.
-pub fn inspect_report(kind: &str, report: &Json) -> Result<usize> {
+pub fn inspect_report(kind: &str, report: &Value) -> Result<usize> {
     require(
         report.as_object().is_some(),
         "scanner report is not an object",
     )?;
     if kind == "sast" {
-        let results = report.get("results").and_then(Json::as_array);
-        let errors = report.get("errors").and_then(Json::as_array);
+        let results = report.get("results").and_then(Value::as_array);
+        let errors = report.get("errors").and_then(Value::as_array);
         let (Some(results), Some(errors)) = (results, errors) else {
             return Err(Fail::Refuse("invalid SAST report"));
         };
@@ -361,7 +361,7 @@ pub fn inspect_report(kind: &str, report: &Json) -> Result<usize> {
             None => None,
             Some(paths) => {
                 require(paths.as_object().is_some(), "SAST scanned no files")?;
-                paths.get("scanned").and_then(Json::as_array)
+                paths.get("scanned").and_then(Value::as_array)
             }
         };
         require(
@@ -387,7 +387,7 @@ pub fn inspect_report(kind: &str, report: &Json) -> Result<usize> {
     Ok(count)
 }
 
-fn location(value: Option<&Json>, paths: &BTreeSet<String>) -> Option<String> {
+fn location(value: Option<&Value>, paths: &BTreeSet<String>) -> Option<String> {
     let value = value?.as_str()?;
     let value = value.strip_prefix("/input/").unwrap_or(value);
     (location_pattern(value)
@@ -395,7 +395,7 @@ fn location(value: Option<&Json>, paths: &BTreeSet<String>) -> Option<String> {
         && !value.split('/').any(|p| matches!(p, "" | "." | "..")))
     .then(|| value.to_owned())
 }
-fn severity(value: Option<&Json>) -> Option<&str> {
+fn severity(value: Option<&Value>) -> Option<&str> {
     let value = value?.as_str()?;
     matches!(
         value,
@@ -414,11 +414,11 @@ fn python_space(c: char) -> bool {
 /// Paths must name exported source files; artifact-only targets are omitted.
 pub fn finding_diagnostics(
     kind: &str,
-    report: &Json,
+    report: &Value,
     source_paths: &BTreeSet<String>,
     rule_ids: &[String],
-) -> Result<Vec<Json>> {
-    let mut pairs: Vec<(Option<&Json>, &Json)> = Vec::new();
+) -> Result<Vec<Value>> {
+    let mut pairs: Vec<(Option<&Value>, &Value)> = Vec::new();
     match kind {
         "sast" => {
             let results = key(report, "results")?
@@ -441,11 +441,11 @@ pub fn finding_diagnostics(
         if diagnostics.len() == DIAGNOSTIC_LIMIT {
             continue;
         }
-        let mut item = Json::Obj(BTreeMap::new());
+        let mut item = Value::Object(Vec::new());
         let (path, level) = if kind == "sast" {
             if let Some(check) = finding
                 .get("check_id")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .filter(|s| check_id_pattern(s))
             {
                 // Semgrep may prefix IDs with the config path. Emit only the
@@ -460,7 +460,7 @@ pub fn finding_diagnostics(
                     })
                     .collect();
                 if let [rule] = rules.as_slice() {
-                    item.insert("rule_id", Json::str(rule.as_str()));
+                    item.set("rule_id", Value::str(rule.as_str()));
                 }
             }
             let path = location(finding.get("path"), source_paths);
@@ -469,38 +469,38 @@ pub fn finding_diagnostics(
                 .get("start")
                 .filter(|s| s.as_object().is_some())
                 .and_then(|s| s.get("line"))
-                .and_then(Json::as_int)
+                .and_then(Value::as_int)
                 .filter(|n| *n > 0 && *n <= 10_000_000);
             if let (Some(_), Some(n)) = (&path, line) {
-                item.insert("line", Json::int(n));
+                item.set("line", Value::int(n));
             }
             let extra = finding.get("extra").filter(|e| e.as_object().is_some());
             (path, extra.and_then(|e| severity(e.get("severity"))))
         } else {
             if let Some(id) = finding
                 .get("VulnerabilityID")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .filter(|s| advisory(s))
             {
-                item.insert("vulnerability_id", Json::str(id));
+                item.set("vulnerability_id", Value::str(id));
             }
             if let Some(name) = finding
                 .get("PkgName")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .filter(|s| package(s))
             {
-                item.insert("package", Json::str(name));
+                item.set("package", Value::str(name));
             }
             if let Some(installed) = finding
                 .get("InstalledVersion")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .filter(|s| version(s))
             {
-                item.insert("installed_version", Json::str(installed));
+                item.set("installed_version", Value::str(installed));
             }
             if let Some(fixed) = finding
                 .get("FixedVersion")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .filter(|s| s.chars().count() <= 256)
             {
                 let versions: Vec<_> = fixed
@@ -511,9 +511,9 @@ pub fn finding_diagnostics(
                     && versions.len() <= 8
                     && versions.iter().all(|v| version(v))
                 {
-                    item.insert(
+                    item.set(
                         "fixed_versions",
-                        Json::Arr(versions.into_iter().map(Json::str).collect()),
+                        Value::Array(versions.into_iter().map(Value::str).collect()),
                     );
                 }
             }
@@ -523,10 +523,10 @@ pub fn finding_diagnostics(
             )
         };
         if let Some(path) = path {
-            item.insert("path", Json::str(path));
+            item.set("path", Value::str(path));
         }
         if let Some(level) = level {
-            item.insert("severity", Json::str(level));
+            item.set("severity", Value::str(level));
         }
         diagnostics.push(item);
     }
@@ -546,27 +546,24 @@ const FIXTURE_FIELDS: [&str; 9] = [
     "provenance",
 ];
 
-fn policy_entries(data: &[u8]) -> Result<Vec<Json>> {
+fn policy_entries(data: &[u8]) -> Result<Vec<Value>> {
     let policy = parse(data)?;
-    let valid = policy.as_object().is_some_and(|map| {
-        map.len() == 2 && map.contains_key("schema") && map.contains_key("fixtures")
-    }) && policy.get("schema").and_then(Json::as_str) == Some(FIXTURE_SCHEMA)
-        && policy.get("fixtures").and_then(Json::as_array).is_some();
+    let valid = policy.has_keys(&["schema", "fixtures"])
+        && policy.get("schema").and_then(Value::as_str) == Some(FIXTURE_SCHEMA)
+        && policy.get("fixtures").and_then(Value::as_array).is_some();
     require(valid, "invalid trusted fixture policy")?;
-    let mut entries: Vec<Json> = Vec::new();
+    let mut entries: Vec<Value> = Vec::new();
     for entry in policy
         .get("fixtures")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .unwrap_or_default()
     {
-        let fields_ok = entry.as_object().is_some_and(|map| {
-            map.len() == FIXTURE_FIELDS.len() && FIXTURE_FIELDS.iter().all(|k| map.contains_key(*k))
-        });
+        let fields_ok = entry.has_keys(&FIXTURE_FIELDS);
         require(fields_ok, "invalid trusted fixture entry")?;
         require(
             entry
                 .get("path")
-                .and_then(Json::as_str)
+                .and_then(Value::as_str)
                 .is_some_and(canonical_relative),
             "noncanonical scanner source path",
         )?;
@@ -576,25 +573,27 @@ fn policy_entries(data: &[u8]) -> Result<Vec<Json>> {
             .all(|k| {
                 entry
                     .get(k)
-                    .and_then(Json::as_str)
+                    .and_then(Value::as_str)
                     .is_some_and(|s| !s.is_empty())
             });
         let lines = match (entry.get("start_line"), entry.get("end_line")) {
-            (Some(Json::Int(start)), Some(Json::Int(end))) => {
+            (Some(Value::Number(start)), Some(Value::Number(end)))
+                if entry.at("start_line").is_int() && entry.at("end_line").is_int() =>
+            {
                 int_cmp(start, "0") == CmpOrdering::Greater
                     && int_cmp(start, end) != CmpOrdering::Greater
             }
             _ => false,
         };
-        let id = entry.get("id").and_then(Json::as_str);
+        let id = entry.get("id").and_then(Value::as_str);
         let duplicate = entries
             .iter()
-            .any(|e| e.get("id").and_then(Json::as_str) == id);
+            .any(|e| e.get("id").and_then(Value::as_str) == id);
         require(
             strings
                 && entry
                     .get("source_sha256")
-                    .and_then(Json::as_str)
+                    .and_then(Value::as_str)
                     .is_some_and(|s| hex_lower(s, 64))
                 && lines
                 && !duplicate,
@@ -641,14 +640,14 @@ fn is_file(path: &Path) -> Result<bool> {
 /// The policy bytes come from the immutable trusted checkout; source rows are
 /// the controller's Git-blob inventory, never candidate metadata.
 pub fn classify(
-    report: &Json,
+    report: &Value,
     repository: &str,
     source: &Path,
-    source_rows: &[Json],
+    source_rows: &[Value],
     policy: &[u8],
-) -> Result<Json> {
+) -> Result<Value> {
     let entries = policy_entries(policy)?;
-    let inventory: BTreeMap<&str, &Json> = source_rows
+    let inventory: BTreeMap<&str, &Value> = source_rows
         .iter()
         .filter_map(|row| Some((row.get("path")?.as_str()?, row)))
         .collect();
@@ -662,7 +661,7 @@ pub fn classify(
         }
         let name = result
             .get("Target")
-            .and_then(Json::as_str)
+            .and_then(Value::as_str)
             .filter(|n| canonical_relative(n));
         let name = name.ok_or(Fail::Refuse("noncanonical scanner source path"))?;
         let mut path = source.to_path_buf();
@@ -674,7 +673,7 @@ pub fn classify(
         let row = inventory.get(name);
         let regular = row.is_some_and(|row| {
             matches!(
-                row.get("mode").and_then(Json::as_str),
+                row.get("mode").and_then(Value::as_str),
                 Some("100644" | "100755")
             )
         });
@@ -684,7 +683,7 @@ pub fn classify(
         )?;
         let file_sha256 = sha256::hex(&os(fs::read(&path))?);
         require(
-            row.and_then(|r| r.get("sha256")).and_then(Json::as_str) == Some(file_sha256.as_str()),
+            row.and_then(|r| r.get("sha256")).and_then(Value::as_str) == Some(file_sha256.as_str()),
             "scanner source changed after export",
         )?;
         for finding in secrets {
@@ -692,18 +691,18 @@ pub fn classify(
             total += 1;
             require(finding.as_object().is_some(), "invalid scanner finding")?;
             let (start, end) = (finding.get("StartLine"), finding.get("EndLine"));
-            let matching: Vec<&Json> = entries
+            let matching: Vec<&Value> = entries
                 .iter()
                 .filter(|entry| {
-                    entry.get("repository").and_then(Json::as_str) == Some(repository)
-                        && entry.get("path").and_then(Json::as_str) == Some(name)
-                        && entry.get("source_sha256").and_then(Json::as_str)
+                    entry.get("repository").and_then(Value::as_str) == Some(repository)
+                        && entry.get("path").and_then(Value::as_str) == Some(name)
+                        && entry.get("source_sha256").and_then(Value::as_str)
                             == Some(file_sha256.as_str())
                         && finding
                             .get("RuleID")
                             .is_some_and(|rule| entry.get("rule_id") == Some(rule))
-                        && start.is_some_and(Json::is_int)
-                        && end.is_some_and(Json::is_int)
+                        && start.is_some_and(Value::is_int)
+                        && end.is_some_and(Value::is_int)
                         && entry.get("start_line") == start
                         && entry.get("end_line") == end
                 })
@@ -711,41 +710,44 @@ pub fn classify(
             if let [entry] = matching.as_slice() {
                 let id = entry
                     .get("id")
-                    .and_then(Json::as_str)
+                    .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned();
                 if used.insert(id) {
                     let mut approval = (*entry).clone();
-                    approval.insert("finding_index", Json::int(index as i128));
+                    approval.set("finding_index", Value::int(index as i128));
                     approved.push(approval);
                 }
             }
         }
     }
-    Ok(Json::obj([
+    Ok(json::object([
         (
             "classification_policy_sha256",
-            Json::str(sha256::hex(policy)),
+            Value::str(sha256::hex(policy)),
         ),
         (
             "classified_public_fixtures",
-            Json::int(approved.len() as i128),
+            Value::int(approved.len() as i128),
         ),
         (
             "unresolved_findings",
-            Json::int((total - approved.len()) as i128),
+            Value::int((total - approved.len()) as i128),
         ),
-        ("public_fixture_classifications", Json::Arr(approved)),
+        ("public_fixture_classifications", Value::Array(approved)),
     ]))
 }
 
 /// `dt.timedelta(hours=value)` in microseconds; None where Python raises.
-fn hours_micros(value: &Json) -> Option<i128> {
+fn hours_micros(value: &Value) -> Option<i128> {
     const LIMIT_DAYS: i128 = 999_999_999;
     let micros = match value {
-        Json::Bool(b) => i128::from(*b) * 3_600_000_000,
-        Json::Int(_) => value.as_int()?.checked_mul(3_600_000_000)?,
-        Json::Float(f) if f.is_finite() => (f * 3.6e9).round_ties_even() as i128,
+        Value::Bool(b) => i128::from(*b) * 3_600_000_000,
+        Value::Number(_) if value.is_int() => value.as_int()?.checked_mul(3_600_000_000)?,
+        Value::Number(_) => {
+            let f = value.as_float().filter(|f| f.is_finite())?;
+            (f * 3.6e9).round_ties_even() as i128
+        }
         _ => return None,
     };
     (micros.div_euclid(86_400_000_000) <= LIMIT_DAYS
@@ -760,7 +762,7 @@ pub fn now_micros() -> i128 {
         .unwrap_or_default()
 }
 
-pub fn database_identity(cache: &Path, max_age: &Json, now: i128) -> Result<Json> {
+pub fn database_identity(cache: &Path, max_age: &Value, now: i128) -> Result<Value> {
     let metadata_path = cache.join("db/metadata.json");
     let metadata = read_text_json(&metadata_path)?;
     let updated_text = key_str(&metadata, "UpdatedAt")?;
@@ -769,10 +771,10 @@ pub fn database_identity(cache: &Path, max_age: &Json, now: i128) -> Result<Json
     let age = now - updated;
     let fresh = age >= 0 && hours_micros(max_age).is_some_and(|limit| age <= limit);
     require(fresh, "vulnerability database is stale or future-dated")?;
-    Ok(Json::obj([
-        ("updated_at", Json::str(updated_text)),
-        ("sha256", Json::str(digest(&cache.join("db/trivy.db"))?)),
-        ("metadata_sha256", Json::str(digest(&metadata_path)?)),
+    Ok(json::object([
+        ("updated_at", Value::str(updated_text)),
+        ("sha256", Value::str(digest(&cache.join("db/trivy.db"))?)),
+        ("metadata_sha256", Value::str(digest(&metadata_path)?)),
     ]))
 }
 
@@ -784,14 +786,14 @@ unsafe extern "C" {
 pub struct Scanner {
     pub policy: PathBuf,
     work: PathBuf,
-    tools: Json,
+    tools: Value,
     home: PathBuf,
     path_env: std::ffi::OsString,
     pub docker_host: String,
     cache: PathBuf,
-    pub steps: Vec<Json>,
+    pub steps: Vec<Value>,
     pub repository: String,
-    pub source_rows: Vec<Json>,
+    pub source_rows: Vec<Value>,
 }
 
 impl Scanner {
@@ -951,7 +953,7 @@ impl Scanner {
         require(found, "scanner image digest differs from policy")
     }
 
-    pub fn prepare(&self) -> Result<Json> {
+    pub fn prepare(&self) -> Result<Value> {
         for tool in ["trivy", "semgrep"] {
             self.prepare_image(tool)?;
         }
@@ -1015,17 +1017,17 @@ impl Scanner {
             (self.cache.as_path(), "/cache", false),
         ];
         let captured = self.container(tool, argv, &mounts, "none")?;
-        let mut row = Json::obj([
-            ("name", Json::str(name)),
-            ("tool_image", Json::str(self.image(tool)?)),
-            ("exit_code", Json::int(captured.code)),
-            ("status", Json::str("fail")),
-            ("report_sha256", Json::str(sha256::hex(&captured.stdout))),
-            ("stderr_sha256", Json::str(captured.stderr_sha256.as_str())),
+        let mut row = json::object([
+            ("name", Value::str(name)),
+            ("tool_image", Value::str(self.image(tool)?)),
+            ("exit_code", Value::int(captured.code)),
+            ("status", Value::str("fail")),
+            ("report_sha256", Value::str(sha256::hex(&captured.stdout))),
+            ("stderr_sha256", Value::str(captured.stderr_sha256.as_str())),
         ]);
         let outcome = self.assess(name, source, &captured.stdout, captured.code, &mut row);
         if outcome.is_ok() {
-            row.insert("status", Json::str("pass"));
+            row.set("status", Value::str("pass"));
         }
         self.steps.push(row);
         match outcome {
@@ -1041,11 +1043,11 @@ impl Scanner {
         source: &Path,
         data: &[u8],
         code: i32,
-        row: &mut Json,
+        row: &mut Value,
     ) -> Result<()> {
         let report = parse(data)?;
         let count = inspect_report(kind, &report)?;
-        row.insert("findings", Json::int(count as i128)); // Raw count, including classified public fixtures.
+        row.set("findings", Value::int(count as i128)); // Raw count, including classified public fixtures.
         if matches!(kind, "dependencies" | "sast") {
             // This first-party policy uses one plain ID per line. Unknown or
             // differently formatted IDs are safely omitted from diagnostics.
@@ -1060,11 +1062,11 @@ impl Scanner {
                 .filter_map(|r| r.get("path")?.as_str().map(str::to_owned))
                 .collect();
             let diagnostics = finding_diagnostics(kind, &report, &paths, &rule_ids)?;
-            row.insert(
+            row.set(
                 "diagnostics_omitted",
-                Json::int((count - diagnostics.len()) as i128),
+                Value::int((count - diagnostics.len()) as i128),
             );
-            row.insert("diagnostics", Json::Arr(diagnostics));
+            row.set("diagnostics", Value::Array(diagnostics));
         }
         if kind == "secrets" {
             let private = self.work.join("private-scanner-reports");
@@ -1096,7 +1098,7 @@ impl Scanner {
                 &policy,
             )?;
             for (name, value) in classification.as_object().into_iter().flatten() {
-                row.insert(name, value.clone());
+                row.set(name, value.clone());
             }
             let unresolved = row
                 .get("unresolved_findings")
@@ -1170,7 +1172,7 @@ fn neutralize_semgrepignore(root: &Path) -> Result<()> {
     os(fs::write(root.join(".semgrepignore"), b""))
 }
 
-pub fn run_source(trusted: &Path, checkout: &Path, work: &Path, output: &Path) -> Result<Json> {
+pub fn run_source(trusted: &Path, checkout: &Path, work: &Path, output: &Path) -> Result<Value> {
     require(
         std::env::var("CI_JOB_NAME").ok().as_deref() == Some("security-scans"),
         "dedicated security-scans CI job required",
@@ -1181,27 +1183,27 @@ pub fn run_source(trusted: &Path, checkout: &Path, work: &Path, output: &Path) -
     )?;
     let source = environment("CI_COMMIT_SHA")?;
     let policy = git_text(trusted, &["rev-parse", "HEAD"])?;
-    let mut receipt = Json::obj([
-        ("schema", Json::str("busbar.security-scans/1")),
-        ("status", Json::str("fail")),
-        ("repository", Json::str(environment("CI_PROJECT_PATH")?)),
-        ("source", Json::str(source.as_str())),
-        ("policy_revision", Json::str(policy)),
-        ("pipeline_id", Json::str(environment("CI_PIPELINE_ID")?)),
-        ("job_id", Json::str(environment("CI_JOB_ID")?)),
-        ("steps", Json::Arr(Vec::new())),
+    let mut receipt = json::object([
+        ("schema", Value::str("busbar.security-scans/1")),
+        ("status", Value::str("fail")),
+        ("repository", Value::str(environment("CI_PROJECT_PATH")?)),
+        ("source", Value::str(source.as_str())),
+        ("policy_revision", Value::str(policy)),
+        ("pipeline_id", Value::str(environment("CI_PIPELINE_ID")?)),
+        ("job_id", Value::str(environment("CI_JOB_ID")?)),
+        ("steps", Value::Array(Vec::new())),
     ]);
     let mut scanner: Option<Scanner> = None;
     let outcome = (|| -> Result<()> {
         let snapshot = work.join("scan-source");
         let rows = export_source(checkout, &source, &snapshot)?;
-        receipt.insert(
+        receipt.set(
             "source_files_sha256",
-            Json::str(sha256::hex(&json::encoded(&Json::Arr(rows.clone())))),
+            Value::str(sha256::hex(&json::encoded(&Value::Array(rows.clone())))),
         );
-        receipt.insert(
+        receipt.set(
             "source_tree",
-            Json::str(git_text(
+            Value::str(git_text(
                 checkout,
                 &["rev-parse", &format!("{source}^{{tree}}")],
             )?),
@@ -1217,11 +1219,11 @@ pub fn run_source(trusted: &Path, checkout: &Path, work: &Path, output: &Path) -
                     .file_name()
                     .and_then(|n| n.to_str())
                     .ok_or(Fail::Refuse("invalid policy file name"))?;
-                files.insert(name.to_owned(), Json::str(digest(&path)?));
+                files.insert(name.to_owned(), Value::str(digest(&path)?));
             }
         }
-        receipt.insert("policy_files", Json::Obj(files));
-        receipt.insert("database", scanner.prepare()?);
+        receipt.set("policy_files", Value::Object(files.into_iter().collect()));
+        receipt.set("database", scanner.prepare()?);
         let mut failed = false;
         for (name, scanners) in [("secrets", "secret"), ("dependencies", "vuln")] {
             let args = scanner.trivy("filesystem", scanners, &["/input"]);
@@ -1257,11 +1259,11 @@ pub fn run_source(trusted: &Path, checkout: &Path, work: &Path, output: &Path) -
             Err(abort) => return Err(abort),
         }
         require(!failed, "security scans refused")?;
-        receipt.insert("status", Json::str("pass"));
+        receipt.set("status", Value::str("pass"));
         Ok(())
     })();
     if let Some(scanner) = &scanner {
-        receipt.insert("steps", Json::Arr(scanner.steps.clone()));
+        receipt.set("steps", Value::Array(scanner.steps.clone()));
     }
     if let Some(parent) = output.parent() {
         os(fs::create_dir_all(parent))?;
@@ -1331,7 +1333,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                database_identity(&root, &Json::int(72), now).is_err(),
+                database_identity(&root, &Value::int(72), now).is_err(),
                 "{stamp}"
             );
         }
@@ -1340,9 +1342,9 @@ mod tests {
             "{\"UpdatedAt\":\"2026-11-07T00:00:00Z\"}",
         )
         .unwrap();
-        let identity = database_identity(&root, &Json::int(72), now).unwrap();
+        let identity = database_identity(&root, &Value::int(72), now).unwrap();
         assert_eq!(
-            identity.get("sha256").and_then(Json::as_str),
+            identity.get("sha256").and_then(Value::as_str),
             Some(sha256::hex(b"fixture database").as_str())
         );
         fs::remove_dir_all(root).unwrap();

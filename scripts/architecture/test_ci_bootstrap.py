@@ -1,5 +1,9 @@
-"""Exercise the actual trusted YAML parser against GitLab's observed wire value."""
-import ast
+"""Exercise the actual trusted YAML bootstrap and controller delivery.
+
+Every trusted job (native/conformance/diagnostic and security-scans) shares one
+POSIX sh script that selects the immutable policy, fetches it, and runs the one
+pinned busbar-ci controller through tools/ci/controller.sh.
+"""
 import hashlib
 import os
 from pathlib import Path
@@ -9,21 +13,62 @@ import subprocess
 import tempfile
 import textwrap
 import unittest
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
+YAML = (ROOT / 'ci/architecture-pipeline.yml').read_text()
+JOBS = ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic',
+        'security-scans')
+
+
+def script():
+    block = YAML.split('\nnative-qualification:\n', 1)[1].split('\n  script:\n    - |\n', 1)[1]
+    return textwrap.dedent(block.split('\n  artifacts:\n', 1)[0])
+
+
+def job_block(name):
+    return YAML.split('\n' + name + ':\n', 1)[1].split('\n\n', 1)[0]
+
+
+def former_python_parser(uri, server_host, project):
+    """The exact expression of the former in-YAML Python bootstrap (reference)."""
+    return re.fullmatch(r'(?:https://)?' + re.escape(server_host) + '/' + re.escape(project)
+                        + r'//ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})@refs/heads/[^\s]+', uri)
+
+
+def source_digest(directory, image):
+    """controller.sh's build-input digest: sha256sum lines in byte order, then the image."""
+    directory = Path(directory)
+    files = [directory / name for name in ('Cargo.toml', 'Cargo.lock', 'build-controller.sh')]
+    files += [path for path in (directory / 'src').rglob('*') if path.is_file()]
+    names = sorted((path.relative_to(directory).as_posix() for path in files), key=str.encode)
+    listing = ''.join(hashlib.sha256((directory / name).read_bytes()).hexdigest() + '  ' + name + '\n'
+                      for name in names) + 'image=' + image + '\n'
+    return hashlib.sha256(listing.encode()).hexdigest()
+
+
+def read_pin(path=ROOT / 'tools/ci/controller.pin'):
+    return dict(line.split('=', 1) for line in Path(path).read_text().splitlines())
+
+
+SHELLS = [shell for shell in ('/bin/sh', '/bin/dash', '/bin/bash') if Path(shell).exists()]
+
+
+def select(shell, uri, project, server_host='git.example.test'):
+    selection = script().split('case $CI_JOB_NAME in', 1)[0]
+    env = dict(PATH='/usr/bin:/bin', CI_CONFIG_REF_URI=uri, CI_SERVER_HOST=server_host,
+               CI_PROJECT_PATH=project, LANG='en_US.UTF-8')
+    result = subprocess.run([shell, '-c', selection + 'printf "%s" "$revision"\n'], env=env,
+                            capture_output=True, timeout=10)
+    assert result.returncode in (0, 1), result
+    if result.returncode:
+        assert b'must select the approved immutable core revision' in result.stderr, result.stderr
+        return None
+    return result.stdout.decode()
 
 
 class ConfigReference(unittest.TestCase):
     def match(self, uri, project='GetBusbar/busbar-auth-admin-tokens'):
-        yaml = (Path(__file__).parents[2] / 'ci/architecture-pipeline.yml').read_text()
-        source = textwrap.dedent(yaml.split("      python3 -I -B - <<'PY'\n", 1)[1].split('\n      PY', 1)[0])
-        assignment = next(node for node in ast.parse(source).body
-                          if isinstance(node, ast.Assign)
-                          and any(isinstance(target, ast.Name) and target.id == 'match' for target in node.targets))
-        expression = compile(ast.Expression(assignment.value), '<actual-ci-parser>', 'eval')
-        with patch.dict(os.environ, CI_SERVER_HOST='git.example.test', CI_PROJECT_PATH=project):
-            return eval(expression, {'os': os, 're': re, 'uri': uri})
+        return select('/bin/sh', uri, project)
 
     def uri(self, project='GetBusbar/busbar-auth-admin-tokens', revision='a' * 40):
         return ('git.example.test/' + project + '//ci/architecture-pipeline.yml'
@@ -32,58 +77,29 @@ class ConfigReference(unittest.TestCase):
     def test_installed_gitlab_core_and_consumer_references(self):
         for project in ('GetBusbar/busbar', 'GetBusbar/busbar-release', 'BusbarInc/busbar-auth-scim'):
             with self.subTest(project=project):
-                match = self.match(self.uri(project), project)
-                self.assertIsNotNone(match)
-                self.assertEqual(match[1], 'a' * 40)
+                self.assertEqual(self.match(self.uri(project), project), 'a' * 40)
+                self.assertEqual(self.match('https://' + self.uri(project), project), 'a' * 40)
 
     def test_current_dev_reference(self):
         uri = self.uri().replace('@refs/heads/corefix-boundary-hardening', '@refs/heads/dev')
-        self.assertEqual(self.match(uri)[1], 'a' * 40)
+        self.assertEqual(self.match(uri), 'a' * 40)
 
     def test_untrusted_or_movable_configuration_is_rejected(self):
         uri = self.uri()
-        for bad in (self.uri(revision='dev'), self.uri(revision='a' * 39),
+        for bad in (self.uri(revision='dev'), self.uri(revision='a' * 39), self.uri(revision='A' * 40),
                     uri.replace('@GetBusbar/busbar:', '@BusbarInc/other:'),
                     uri.replace('git.example.test/', 'other.example/'),
                     uri.replace('/busbar-auth-admin-tokens//', '/other//'),
                     uri.replace('/ci/architecture-pipeline.yml', '/candidate.yml'),
-                    uri.replace('@refs/heads/', '@refs/tags/'), uri + '\n'):
+                    uri.replace('@refs/heads/', '@refs/tags/'),
+                    uri.replace('@refs/heads/corefix-boundary-hardening', '@refs/heads/'),
+                    uri + '\n', uri + ' x', uri + '\tx', 'http://' + uri, 'prefix' + uri):
             with self.subTest(uri=bad):
                 self.assertIsNone(self.match(bad))
 
-
-def job_block(name):
-    text = (ROOT / 'ci/architecture-pipeline.yml').read_text()
-    return text.split('\n' + name + ':\n', 1)[1].split('\n\n', 1)[0]
-
-
-def security_script():
-    block = job_block('security-scans')
-    script = block.split('  script:\n    - |\n', 1)[1].split('\n  artifacts:', 1)[0]
-    return '\n'.join(line[6:] for line in script.splitlines()) + '\n'
-
-
-class SecurityBootstrap(unittest.TestCase):
-    """security-scans runs no Python: POSIX sh selects and fetches the policy."""
-
-    SHELLS = [shell for shell in ('/bin/sh', '/bin/dash', '/bin/bash') if Path(shell).exists()]
-
-    def select(self, shell, uri, project):
-        selection = security_script().split('test -n "${BUSBAR_NATIVE_SCRATCH+set}"', 1)[0]
-        env = dict(PATH='/usr/bin:/bin', CI_CONFIG_REF_URI=uri, CI_SERVER_HOST='git.example.test',
-                   CI_PROJECT_PATH=project, LANG='en_US.UTF-8')
-        result = subprocess.run([shell, '-c', selection + 'printf "%s" "$revision"\n'], env=env,
-                                capture_output=True, timeout=10)
-        self.assertIn(result.returncode, (0, 1))
-        if result.returncode:
-            self.assertIn(b'must select the approved immutable core revision', result.stderr)
-            return None
-        return result.stdout.decode()
-
-    def test_shell_selection_equals_the_python_bootstrap_parser(self):
-        reference = ConfigReference()
+    def test_shell_selection_equals_the_former_python_parser(self):
         project = 'GetBusbar/busbar-auth-admin-tokens'
-        base = reference.uri(project)
+        base = self.uri(project)
         uris = [base, 'https://' + base, 'https://https://' + base, 'http://' + base,
                 base.replace('corefix-boundary-hardening', 'dev'), base.replace('corefix-boundary-hardening', ''),
                 base.replace('a' * 40, 'A' * 40), base.replace('a' * 40, 'a' * 41), base.replace('a' * 40, 'dev'),
@@ -91,30 +107,127 @@ class SecurityBootstrap(unittest.TestCase):
                 base.replace('//ci/', '/ci/'), base.replace('@refs/heads/', '@refs/tags/'), 'x' + base,
                 base + '@refs/heads/x', base + '/café', base + '*', base + '[x]', base + '$(id)'] + [
                 base + space for space in (' x', '\t', '\n', '\r', '\x0b', '\x0c', '\x1c', '\x1f', '\x85',
-                                           '\xa0', ' ', ' ', ' ', ' ', ' ', ' ',
-                                           ' ', '　')]
-        for shell in self.SHELLS:
+                                           '\xa0', ' ', ' ', ' ', ' ', ' ', ' ',
+                                           ' ', ' ', '　')]
+        for shell in SHELLS:
             for uri in uris:
                 with self.subTest(shell=shell, uri=uri):
-                    match = reference.match(uri, project)
-                    self.assertEqual(self.select(shell, uri, project), match and match[1])
+                    match = former_python_parser(uri, 'git.example.test', project)
+                    self.assertEqual(select(shell, uri, project), match and match[1])
 
-    def test_job_has_its_own_python_free_script_and_one_controller_entry(self):
-        block = job_block('security-scans')
-        script = security_script()
-        self.assertIn('  extends: native-qualification\n', block)
-        self.assertNotRegex(block.lower(), r'python|\.py\b|<<')
-        self.assertEqual(script.count('sh "$trusted/tools/ci/security-scans.sh" "$trusted" "$work" || exit 1'), 1)
-        self.assertEqual(re.findall(r'.*CI_JOB_TOKEN.*', script),
+
+class Bootstrap(unittest.TestCase):
+    """Every trusted job runs no operational Python of its own in the YAML."""
+
+    def test_yaml_runs_no_python_and_every_job_shares_the_one_script(self):
+        source = script()
+        self.assertNotRegex(source.lower(), r'python|\.py\b|<<')
+        # The only Python-named text left in the pipeline is an environment setting.
+        self.assertEqual(re.findall(r'(?i).*python.*', YAML), ['    PYTHONDONTWRITEBYTECODE: "1"'])
+        self.assertNotRegex(YAML, r'\.py\b')
+        self.assertNotIn('native_ci_bootstrap', YAML)
+        self.assertNotIn('scripts/security', YAML)
+        self.assertEqual(YAML.count('  script:\n'), 1)
+        for job in ('core-conformance', 'native-isolation-diagnostic', 'security-scans'):
+            with self.subTest(job=job):
+                self.assertIn('  extends: native-qualification\n', job_block(job))
+        self.assertEqual(source.count('sh "$trusted/tools/ci/controller.sh" "$trusted" "$work" "$@"'), 1)
+        self.assertEqual(len(re.findall(r'(?m)^ *controller [a-z-]+ ', source)), 2)
+
+    def test_ordering_credential_and_cleanup(self):
+        source = script()
+        # Cleanup on every exit path, including cancellation signals.
+        self.assertLess(source.index("trap 'rm -rf -- \"$work\"' EXIT"), source.index('mkdir -- "$trusted"'))
+        self.assertLess(source.index("trap 'rm -rf -- \"$work\"' EXIT"), source.index('git -C "$trusted" init -q'))
+        self.assertIn("trap 'exit 143' TERM", source)
+        self.assertIn("trap 'exit 130' INT", source)
+        # The credential is a Git header in the one fetch command's environment only.
+        self.assertEqual(re.findall(r'.*CI_JOB_TOKEN.*', source),
                          ["auth=$(printf 'gitlab-ci-token:%s' \"$CI_JOB_TOKEN\" | base64 | tr -d '\\n')"])
-        # The credential exists only in the one fetch command's environment.
-        self.assertEqual(len(re.findall(r'\$auth\b', script)), 1)
-        self.assertLess(script.index('git -C "$trusted" fetch --depth 1'), script.index('unset auth'))
-        self.assertLess(script.index("trap 'rm -rf -- \"$work\"' EXIT"), script.index('git -C "$trusted" init -q'))
-        self.assertLess(script.index('!= "$revision"'), script.index('tools/ci/security-scans.sh'))
-        native = job_block('native-qualification')
-        self.assertNotIn('security', native)
-        self.assertNotIn('scripts/security', (ROOT / 'ci/architecture-pipeline.yml').read_text())
+        self.assertEqual(len(re.findall(r'\$auth\b', source)), 1)
+        self.assertLess(source.index('git -C "$trusted" fetch --depth 1'), source.index('unset auth'))
+        self.assertIn('if test "$(git -C "$trusted" rev-parse HEAD)" != "$revision"; then', source)
+        verified = source.index('!= "$revision"; then')
+        self.assertLess(source.index('git -C "$trusted" checkout --detach FETCH_HEAD'), verified)
+        self.assertLess(verified, source.index('controller security-scans'))
+        self.assertLess(verified, source.index('controller native-bootstrap'))
+        self.assertLess(source.index("(*) echo 'unrecognized trusted native job'"), source.index('mkdir -- "$work"'))
+
+
+@unittest.skipUnless(shutil.which('sh'), 'POSIX sh required')
+class Dispatch(unittest.TestCase):
+    """Run the actual YAML script with a stub Git and controller for each job."""
+
+    REVISION = 'b' * 40
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        self.log = self.root / 'log'
+        self.log.mkdir()
+        (self.bin / 'git').write_text(textwrap.dedent('''\
+            #!/bin/sh
+            printf '%s\\n' "$*" >> "$LOG/git"
+            case "$3" in
+              rev-parse) printf '%s\\n' "$FAKE_HEAD" ;;
+              checkout) mkdir -p "$2/tools/ci" && printf '%s\\n' \\
+                'printf "%s\\n" "$@" > "$LOG/controller"; exit "${FAKE_EXIT:-0}"' > "$2/tools/ci/controller.sh" ;;
+            esac
+            '''))
+        (self.bin / 'git').chmod(0o755)
+
+    def run_job(self, job, head=REVISION, **env):
+        uri = ('git.example.test/GetBusbar/busbar//ci/architecture-pipeline.yml@GetBusbar/busbar:'
+               + self.REVISION + '@refs/heads/dev')
+        environ = dict(PATH=str(self.bin) + ':/usr/bin:/bin', LOG=str(self.log), FAKE_HEAD=head,
+                       CI_CONFIG_REF_URI=uri, CI_SERVER_HOST='git.example.test', CI_PROJECT_PATH='GetBusbar/busbar',
+                       CI_SERVER_URL='https://git.example.test/', CI_JOB_TOKEN='glcbt-CANARY', CI_JOB_NAME=job,
+                       CI_PROJECT_ID='3', CI_JOB_ID='77', CI_PROJECT_DIR=str(self.root / 'project'),
+                       BUSBAR_NATIVE_SCRATCH=str(self.root / 'scratch'))
+        environ.update(env)
+        for path in self.log.iterdir():
+            path.unlink()
+        return subprocess.run(['sh', '-c', script()], env=environ, capture_output=True, text=True, timeout=30)
+
+    def test_each_job_runs_exactly_its_controller_command(self):
+        work = str(self.root / 'scratch/boundary-3-77')
+        trusted = work + '/trusted'
+        for job in JOBS:
+            with self.subTest(job=job):
+                result = self.run_job(job)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = (self.log / 'controller').read_text().splitlines()
+                self.assertEqual(arguments[:2], [trusted, work])
+                if job == 'security-scans':
+                    self.assertEqual(arguments[2:], [
+                        'security-scans', '--trusted', trusted, '--checkout', str(self.root / 'project'),
+                        '--work', work, '--output', str(self.root / 'project/boundary-evidence/security.json')])
+                else:
+                    self.assertEqual(arguments[2:], ['native-bootstrap', '--trusted', trusted, '--checkout',
+                                                     str(self.root / 'project'), '--work', work])
+                self.assertFalse(Path(work).exists(), 'staging root removed on exit')
+                git = (self.log / 'git').read_text()
+                self.assertIn('fetch --depth 1 https://git.example.test/GetBusbar/busbar.git ' + self.REVISION, git)
+                self.assertNotIn('glcbt-CANARY', git + result.stdout + result.stderr)
+
+    def test_unknown_job_mismatched_checkout_and_controller_failure_fail(self):
+        result = self.run_job('candidate-job')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('unrecognized trusted native job', result.stderr)
+        self.assertFalse((self.log / 'git').exists())
+        result = self.run_job('native-qualification', head='c' * 40)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('trusted policy checkout mismatch', result.stderr)
+        self.assertFalse((self.log / 'controller').exists())
+        self.assertEqual(self.run_job('security-scans', FAKE_EXIT='1').returncode, 1)
+        self.assertFalse((self.root / 'scratch/boundary-3-77').exists())
+
+
+class ControllerCrate(unittest.TestCase):
+    """One std-only crate, one pin, one delivery path for every job."""
 
     def test_controller_is_a_separate_dependency_free_workspace(self):
         import tomllib
@@ -123,26 +236,89 @@ class SecurityBootstrap(unittest.TestCase):
         manifest = tomllib.loads((ROOT / 'tools/ci/Cargo.toml').read_text())
         self.assertEqual((manifest['package']['name'], manifest['workspace'], manifest['dependencies']),
                          ('busbar-ci', {}, {}))
+        self.assertEqual(set(manifest), {'package', 'workspace', 'dependencies', 'profile'})
+        self.assertEqual(set(manifest['profile']), {'release'})
+        self.assertNotIn('panic', manifest['profile']['release'])
+        text = (ROOT / 'tools/ci/Cargo.toml').read_text()
+        self.assertRegex(text, r'(?m)^\[dependencies\]\n(?:#.*\n|\s*\n)*(?:\[|\Z)')
         lock = tomllib.loads((ROOT / 'tools/ci/Cargo.lock').read_text())
         self.assertEqual(lock['package'], [{'name': 'busbar-ci', 'version': manifest['package']['version']}])
-        # Executable entry points never start Python (Rust comments may cite scan.py history).
+        self.assertEqual(sorted(path.name for path in (ROOT / 'tools/ci').iterdir()
+                                if path.name != 'target'),
+                         ['Cargo.lock', 'Cargo.toml', 'build-controller.sh', 'controller.pin', 'controller.sh', 'src'])
+
+    def test_only_the_native_step_runner_paths_start_python(self):
         for path in (ROOT / 'tools/ci').rglob('*'):
-            if path.is_file() and path.suffix in ('.sh', '.toml', '.lock', '.pin'):
+            if 'target' in path.relative_to(ROOT / 'tools/ci').parts or not path.is_file():
+                continue
+            if path.suffix in ('.sh', '.toml', '.lock', '.pin'):
                 self.assertNotIn(b'python', path.read_bytes().lower(), path)
-            if path.suffix == '.rs':
-                self.assertNotRegex(path.read_text(), r'Command::new\("(?!git"|docker"|sleep"|sh")', path)
-        pin = dict(line.split('=', 1) for line in (ROOT / 'tools/ci/controller.pin').read_text().splitlines())
-        self.assertEqual(set(pin), {'image', 'sha256', 'bytes', 'package'})
-        self.assertRegex(pin['image'], r'^mirror\.gcr\.io/library/rust:[0-9.]+-alpine@sha256:[0-9a-f]{64}$')
+            if path.suffix == '.rs' and path.name != 'bootstrap.rs':
+                code = path.read_text().split('#[cfg(test)]', 1)[0]
+                self.assertNotIn('/usr/bin/python3', code, path)
+                self.assertNotRegex(code, r'"python3?"', path)
+        security = (ROOT / 'tools/ci/src/security.rs').read_text()
+        self.assertNotRegex(security, r'Command::new\("(?!git"|docker"|sleep"|sh")')
+        bootstrap = (ROOT / 'tools/ci/src/bootstrap.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
+        # Fixed trusted Python modules invoked by the controller: the native step
+        # runner, the API-only diagnostic witnesses and the retention decision.
+        self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', bootstrap))),
+                         ['ci_retention.py', 'native.py', 'native_isolation_diagnostic.py'])
+
+    def test_pin_names_one_reproducible_binary_by_digest(self):
+        manifest = (ROOT / 'tools/ci/Cargo.toml').read_text()
+        version = re.search(r'(?m)^version = "([^"]+)"$', manifest)[1]
+        pin = read_pin()
+        self.assertEqual(list(pin), ['image', 'source', 'sha256', 'bytes', 'package'])
+        self.assertRegex(pin['image'], r'^mirror\.gcr\.io/library/rust:1\.98\.0-alpine@sha256:[0-9a-f]{64}$')
+        self.assertRegex(pin['source'], r'^[0-9a-f]{64}$')
         self.assertRegex(pin['sha256'], r'^[0-9a-f]{64}$')
+        self.assertRegex(pin['bytes'], r'^[1-9][0-9]*$')
         self.assertEqual(pin['package'], 'https://git.getbusbar.dev/api/v4/projects/3/packages/generic/'
-                         'busbar-ci-controller/' + manifest['package']['version'] + '-' + pin['sha256'][:16]
-                         + '/busbar-ci')
+                         'busbar-ci-controller/' + version + '-' + pin['sha256'][:16] + '/busbar-ci')
+
+    def test_pin_is_not_stale(self):
+        """Any change to the controller's build inputs must repin (sha256, bytes, source).
+
+        Rebuild with build-controller.sh, upload the binary to the new package path,
+        then record the digests. A stale pin is also refused at run time.
+        """
+        pin = read_pin()
+        self.assertEqual(source_digest(ROOT / 'tools/ci', pin['image']), pin['source'],
+                         'tools/ci changed since controller.pin was recorded: rebuild and repin')
+
+    def test_source_digest_changes_with_every_build_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            copy = Path(temporary) / 'ci'
+            shutil.copytree(ROOT / 'tools/ci', copy, ignore=shutil.ignore_patterns('target'))
+            image = read_pin()['image']
+            original = source_digest(copy, image)
+            self.assertNotEqual(source_digest(copy, image.replace('a', 'b', 1)), original)
+            for name in ('Cargo.toml', 'Cargo.lock', 'build-controller.sh', 'src/main.rs'):
+                with self.subTest(name=name):
+                    path = copy / name
+                    raw = path.read_bytes()
+                    path.write_bytes(raw + b'\n')
+                    self.assertNotEqual(source_digest(copy, image), original)
+                    path.write_bytes(raw)
+            (copy / 'src/added.rs').write_text('')
+            self.assertNotEqual(source_digest(copy, image), original)
+            (copy / 'src/added.rs').unlink()
+            (copy / 'controller.sh').write_text('changed')
+            self.assertEqual(source_digest(copy, image), original)
+
+    def test_reproducible_offline_build(self):
+        build = (ROOT / 'tools/ci/build-controller.sh').read_text()
+        for needle in ('--network=none', '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                       '--pull=never', 'build --release --locked --offline --target x86_64-unknown-linux-musl',
+                       '-e SOURCE_DATE_EPOCH=0', 'env -i ', 'type=bind,src=$src,dst=/src,readonly',
+                       'test -z "$(find "$src" -type l -print)"'):
+            self.assertIn(needle, build)
 
 
 @unittest.skipUnless(shutil.which('sh'), 'POSIX sh required')
 class ControllerAcquisition(unittest.TestCase):
-    """tools/ci/security-scans.sh: pinned fetch, offline rebuild fallback, no token leak."""
+    """tools/ci/controller.sh: pinned fetch, offline rebuild fallback, stale-pin refusal, no token leak."""
 
     TOKEN = 'glcbt-CANARY-job-token'
 
@@ -159,8 +335,6 @@ class ControllerAcquisition(unittest.TestCase):
         self.bin.mkdir()
         self.controller = ('#!/bin/sh\nprintf "%s\\n" "$@" > ' + str(self.log / 'controller.args') + '\n'
                            'env > ' + str(self.log / 'controller.env') + '\nexit "${FAKE_CONTROLLER_EXIT:-0}"\n')
-        payload = self.controller.encode()
-        self.pin(hashlib.sha256(payload).hexdigest(), len(payload))
         self.tool('curl', 'cat > "$LOG/curl.stdin"; printf "%s\\n" "$@" > "$LOG/curl.args"\n'
                   '[ -n "${FAKE_CURL_FAIL:-}" ] && exit 22\n'
                   'while [ $# -gt 1 ]; do [ "$1" = --output ] && out=$2; shift; done\n'
@@ -170,53 +344,65 @@ class ControllerAcquisition(unittest.TestCase):
         (self.trusted / 'tools/ci/build-controller.sh').write_text(
             '#!/bin/sh\nset -eu\nprintf "%s\\n" "$@" > "$LOG/build.args"\nmkdir "$2"\n'
             'printf "%s" "$FAKE_BUILT" > "$2/busbar-ci"\n')
+        payload = self.controller.encode()
+        self.pin(hashlib.sha256(payload).hexdigest(), len(payload))
         self.work = self.root / 'work'
         self.work.mkdir()
 
-    def pin(self, digest, size):
+    def pin(self, digest, size, source=None):
         package = ('https://git.getbusbar.dev/api/v4/projects/3/packages/generic/busbar-ci-controller/'
                    '0.1.0-' + digest[:16] + '/busbar-ci')
-        lines = [line for line in (self.trusted / 'tools/ci/controller.pin').read_text().splitlines()
-                 if line.startswith('image=')]
+        image = read_pin()['image']
+        source = source or source_digest(self.trusted / 'tools/ci', image)
         (self.trusted / 'tools/ci/controller.pin').write_text('\n'.join(
-            lines + ['sha256=' + digest, 'bytes=' + str(size), 'package=' + package]) + '\n')
+            ['image=' + image, 'source=' + source, 'sha256=' + digest, 'bytes=' + str(size),
+             'package=' + package]) + '\n')
 
     def tool(self, name, body):
         (self.bin / name).write_text('#!/bin/sh\nLOG=' + str(self.log) + '\n' + body)
         (self.bin / name).chmod(0o755)
 
-    def run_script(self, **env):
+    def reset(self):
+        shutil.rmtree(self.work)
+        self.work.mkdir()
+        for path in self.log.iterdir():
+            path.unlink()
+
+    def run_script(self, *arguments, **env):
         environ = dict(PATH=str(self.bin) + ':/usr/bin:/bin', CI_JOB_TOKEN=self.TOKEN, LOG=str(self.log),
-                       CI_PROJECT_DIR=str(self.root / 'project'), FAKE_PAYLOAD=self.controller,
-                       FAKE_BUILT=self.controller)
+                       FAKE_PAYLOAD=self.controller, FAKE_BUILT=self.controller)
         environ.update(env)
-        return subprocess.run(['sh', str(self.trusted / 'tools/ci/security-scans.sh'), str(self.trusted),
-                               str(self.work)], env=environ, capture_output=True, text=True, timeout=30)
+        arguments = arguments or ('native-bootstrap', '--trusted', str(self.trusted))
+        return subprocess.run(['sh', str(self.trusted / 'tools/ci/controller.sh'), str(self.trusted),
+                               str(self.work), *arguments], env=environ, capture_output=True, text=True, timeout=30)
 
     def leaked(self):
         return [path.name for path in self.log.iterdir() if path.name != 'curl.stdin'
                 and path.name != 'controller.env' and self.TOKEN in path.read_text()]
 
-    def test_pinned_download_runs_the_controller_with_fixed_arguments(self):
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('fetched by pinned digest', result.stdout)
-        self.assertEqual((self.log / 'controller.args').read_text().splitlines(), [
-            'security-scans', '--trusted', str(self.trusted), '--checkout', str(self.root / 'project'),
-            '--work', str(self.work), '--output', str(self.root / 'project/boundary-evidence/security.json')])
-        self.assertEqual((self.log / 'curl.stdin').read_text(), 'header = "JOB-TOKEN: ' + self.TOKEN + '"\n')
-        self.assertIn('--proto', (self.log / 'curl.args').read_text())
-        self.assertFalse((self.log / 'build.args').exists())
-        self.assertEqual(self.leaked(), [])
-        self.assertNotIn(self.TOKEN, result.stdout + result.stderr)
+    def test_pinned_download_runs_the_controller_with_exact_arguments(self):
+        for arguments in (('security-scans', '--trusted', 'T', '--output', 'a b'),
+                          ('native-bootstrap', '--trusted', 'T', '--work', 'W')):
+            with self.subTest(arguments=arguments):
+                self.reset()
+                result = self.run_script(*arguments)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('fetched by pinned digest', result.stdout)
+                self.assertEqual((self.log / 'controller.args').read_text().splitlines(), list(arguments))
+                self.assertEqual((self.log / 'curl.stdin').read_text(), 'header = "JOB-TOKEN: ' + self.TOKEN + '"\n')
+                curl = (self.log / 'curl.args').read_text().splitlines()
+                self.assertIn('=https', curl)
+                self.assertEqual(curl[-1], read_pin(self.trusted / 'tools/ci/controller.pin')['package'])
+                self.assertFalse((self.log / 'build.args').exists())
+                self.assertTrue((self.work / 'controller/busbar-ci').is_file())
+                self.assertEqual(self.leaked(), [])
+                self.assertNotIn(self.TOKEN, result.stdout + result.stderr)
 
     def test_unavailable_or_mismatched_download_rebuilds_offline_from_trusted_source(self):
-        for env in ({'FAKE_CURL_FAIL': '1'}, {'FAKE_PAYLOAD': 'tampered'}):
+        for env in ({'FAKE_CURL_FAIL': '1'}, {'FAKE_PAYLOAD': 'tampered'},
+                    {'FAKE_PAYLOAD': self.controller + ' '}):
             with self.subTest(env=env):
-                shutil.rmtree(self.work)
-                self.work.mkdir()
-                for path in self.log.iterdir():
-                    path.unlink()
+                self.reset()
                 result = self.run_script(**env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('building it from trusted source', result.stdout)
@@ -226,16 +412,33 @@ class ControllerAcquisition(unittest.TestCase):
                 self.assertFalse((self.work / 'controller/busbar-ci').exists())
                 self.assertEqual(self.leaked(), [])
 
+    def test_stale_pin_is_never_fetched_and_rebuilds_from_source(self):
+        payload = self.controller.encode()
+        self.pin(hashlib.sha256(payload).hexdigest(), len(payload), source='0' * 64)
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('controller pin is stale', result.stdout)
+        self.assertFalse((self.log / 'curl.args').exists())
+        self.assertTrue((self.log / 'build.args').exists())
+        self.assertTrue((self.log / 'controller.args').exists())
+
     def test_controller_failure_and_malformed_pin_fail_the_job(self):
         self.assertEqual(self.run_script(FAKE_CONTROLLER_EXIT='1').returncode, 1)
-        shutil.rmtree(self.work)
-        self.work.mkdir()
-        for path in self.log.iterdir():
-            path.unlink()
-        self.pin('not-a-digest', 1)
+        for digest, source in (('not-a-digest', None), ('a' * 64, 'short')):
+            with self.subTest(digest=digest, source=source):
+                self.reset()
+                self.pin(digest, 1, source)
+                result = self.run_script()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((self.log / 'curl.args').exists())
+                self.assertFalse((self.log / 'controller.args').exists())
+
+    def test_linked_source_is_refused(self):
+        (self.trusted / 'tools/ci/src/link.rs').symlink_to('/etc/hosts')
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.log / 'curl.args').exists())
+        self.assertFalse((self.log / 'controller.args').exists())
 
 
 if __name__ == '__main__':

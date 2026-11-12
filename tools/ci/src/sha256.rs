@@ -1,4 +1,7 @@
-//! FIPS 180-4 SHA-256 (std only, so the controller builds without a registry).
+//! FIPS 180-4 SHA-256 (std-only).
+use std::io::Read;
+use std::path::Path;
+
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -10,32 +13,37 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
+#[derive(Clone)]
 pub struct Sha256 {
     state: [u32; 8],
     buffer: [u8; 64],
-    used: usize,
+    filled: usize,
     length: u64,
 }
 
 impl Default for Sha256 {
     fn default() -> Self {
-        Self {
+        Self::new()
+    }
+}
+
+impl Sha256 {
+    pub fn new() -> Self {
+        Sha256 {
             state: [
                 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
                 0x5be0cd19,
             ],
             buffer: [0; 64],
-            used: 0,
+            filled: 0,
             length: 0,
         }
     }
-}
 
-impl Sha256 {
-    fn block(&mut self, block: &[u8; 64]) {
+    fn compress(state: &mut [u32; 8], block: &[u8]) {
         let mut w = [0u32; 64];
-        for (i, chunk) in block.as_chunks::<4>().0.iter().enumerate() {
-            w[i] = u32::from_be_bytes(*chunk);
+        for (i, word) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*word);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -45,18 +53,18 @@ impl Sha256 {
                 .wrapping_add(w[i - 7])
                 .wrapping_add(s1);
         }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = *state;
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let choice = (e & f) ^ (!e & g);
+            let ch = (e & f) ^ (!e & g);
             let t1 = h
                 .wrapping_add(s1)
-                .wrapping_add(choice)
+                .wrapping_add(ch)
                 .wrapping_add(K[i])
                 .wrapping_add(w[i]);
             let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let majority = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(majority);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
             h = g;
             g = f;
             f = e;
@@ -66,30 +74,37 @@ impl Sha256 {
             b = a;
             a = t1.wrapping_add(t2);
         }
-        for (state, value) in self.state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
-            *state = state.wrapping_add(value);
+        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
+            *slot = slot.wrapping_add(value);
         }
     }
 
     pub fn update(&mut self, mut data: &[u8]) {
         self.length = self.length.wrapping_add(data.len() as u64);
-        while !data.is_empty() {
-            let take = (64 - self.used).min(data.len());
-            self.buffer[self.used..self.used + take].copy_from_slice(&data[..take]);
-            self.used += take;
+        if self.filled > 0 {
+            let take = (64 - self.filled).min(data.len());
+            self.buffer[self.filled..self.filled + take].copy_from_slice(&data[..take]);
+            self.filled += take;
             data = &data[take..];
-            if self.used == 64 {
-                let block = self.buffer;
-                self.block(&block);
-                self.used = 0;
+            if self.filled < 64 {
+                return;
             }
+            let block = self.buffer;
+            Self::compress(&mut self.state, &block);
+            self.filled = 0;
         }
+        let (blocks, rest) = data.as_chunks::<64>();
+        for block in blocks {
+            Self::compress(&mut self.state, block);
+        }
+        self.buffer[..rest.len()].copy_from_slice(rest);
+        self.filled = rest.len();
     }
 
     pub fn hex(mut self) -> String {
         let bits = self.length.wrapping_mul(8);
         self.update(&[0x80]);
-        while self.used != 56 {
+        while self.filled != 56 {
             self.update(&[0]);
         }
         self.update(&bits.to_be_bytes());
@@ -101,9 +116,22 @@ impl Sha256 {
 }
 
 pub fn hex(data: &[u8]) -> String {
-    let mut sha = Sha256::default();
-    sha.update(data);
-    sha.hex()
+    let mut hash = Sha256::new();
+    hash.update(data);
+    hash.hex()
+}
+
+pub fn file(path: &Path) -> Result<String, String> {
+    let mut source = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let n = source.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(hash.hex());
+        }
+        hash.update(&buffer[..n]);
+    }
 }
 
 #[cfg(test)]
@@ -122,12 +150,13 @@ mod tests {
             super::hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
-        let mut sha = super::Sha256::default();
-        for _ in 0..1000 {
-            sha.update(&[b'a'; 1000]);
+        let mut split = super::Sha256::new();
+        let million = vec![b'a'; 1_000_000];
+        for chunk in million.chunks(997) {
+            split.update(chunk);
         }
         assert_eq!(
-            sha.hex(),
+            split.hex(),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
     }
