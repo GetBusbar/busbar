@@ -215,3 +215,17 @@ fn error_pages_a_wrapped_coded_message_promotes_the_inner_code() {
     assert_eq!(plain.code(), super::CLI_VALIDATE_CONFIG_INVALID.code);
     assert_eq!(plain.detail(), "config.yaml: not found");
 }
+
+/// A list detail keeps the code and the link on its head line; each item keeps its own.
+#[test]
+fn error_pages_a_list_message_links_its_head_line() {
+    let item = busbar_contract::section::reserved_name("pool", "hooks", "pools").to_string();
+    let m = super::BOOT_FATAL_ERROR.coded(format!("config errors:\n  - {item}"));
+    let text = m.to_string();
+    let (head, rest) = text.split_once('\n').expect("two lines");
+    assert_eq!(
+        head,
+        super::BOOT_FATAL_ERROR.coded("config errors").to_string()
+    );
+    assert_eq!(rest, format!("  - {item}"));
+}
