@@ -563,8 +563,9 @@ def subject_builds(checkout, target):
     """The two builds the subject needs: the binary busbar SHIPS (the distribution workspace,
     dist/default: core plus its compiled-in transports and planes; the root workspace's `busbar` is
     core alone, which has no listener), and the plugin packer from the root workspace. Both are the
-    shared builds of testing/conformance/subject_build.py, so a suite that ran earlier left them fresh."""
-    return [subject_build.busbar_argv(checkout, target), subject_build.pack_argv(target)]
+    shared builds of testing/conformance/subject_build.py, so a suite that ran earlier left them fresh.
+    A staged certified subject replaces the first build."""
+    return subject_build.subject_argvs(checkout, target)
 
 
 def timed_build(argv, log, announce=None, **kwargs):

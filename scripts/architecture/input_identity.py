@@ -20,7 +20,13 @@ import tomllib
 
 
 CORE = 'GetBusbar/busbar'
-JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'security-scans'}
+JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-conformance', 'security-scans'}
+
+
+def requires_changed_source_checks(request):
+    """Security, core-native, the certified core build and core lints rerun on any changed source."""
+    return request['job'] == 'security-scans' or (
+        request['repository'] == CORE and request['job'] in ('native-qualification', 'core-build', 'core-clippy'))
 FIELDS = {'repository', 'source', 'policy', 'host', 'sdk', 'job'}
 SCHEMA = 'busbar.protected-input-reuse/1'
 REUSE_CONTROLLERS = {'scripts/architecture/input_identity.py', 'scripts/architecture/reuse_evidence.py',
@@ -395,9 +401,8 @@ def retained_check_identity(request, objects):
     of execution at the new commit or byte-equivalent produced artifacts.
     """
     request = checked_request(request)
-    require(request['job'] != 'security-scans' and not
-            (request['repository'] == CORE and request['job'] == 'native-qualification'),
-            'core-native and security require their actual changed source checks')
+    require(not requires_changed_source_checks(request),
+            'core-native, core-build and security require their actual changed source checks')
 
     def core_tree(revision):
         return {name: row for name, row in prepared_core_tree(objects, revision, request).items()
@@ -599,8 +604,7 @@ def plan_reuse(original, requested, objects, *, database=None, now=None):
         after = compute_identity(requested, objects, database=database, now=now)
         if before == after:
             result.update(action='verify-execution-reuse', reason='execution inputs equal')
-        elif (requested['job'] != 'security-scans' and not
-              (requested['repository'] == CORE and requested['job'] == 'native-qualification')
+        elif (not requires_changed_source_checks(requested)
               and retained_check_identity(original, objects) == retained_check_identity(requested, objects)):
             result.update(action='verify-retained-check', reason='executed inputs and selected preparation unchanged; original check retained',
                           requires_fresh_assembly=requested['host'])

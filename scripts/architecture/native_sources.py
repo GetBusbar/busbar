@@ -7,14 +7,21 @@ trusted collector; Cargo receives only credential-free local Git URL mappings.
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
+from pathlib import Path
 import subprocess
 import tomllib
 
 
 SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
+# Each forge fetch is latency-bound (several HTTP round trips, tiny packs).
+# Bounded concurrency keeps one job from monopolizing the forge.
+FETCH_WORKERS = 8
+FETCH_TIMEOUT = 300
+CORE = 'GetBusbar/busbar'
 
 
 def standalone_products(repository, evaluation_only, vector):
@@ -86,42 +93,124 @@ def product_inputs(parent, vector, policy):
     return sources
 
 
-def prepare(q, host):
-    from native import fetch_environment, git
+def subject_locks(candidate, host, sdk):
+    """Exact subject closures that every confined job's dependency seed covers.
+
+    The dependency seed (native_seed.lock_inputs) reads exactly these locks and
+    resolves their first-party Git sources from canonical-inputs, so a plugin
+    job consumes no other canonical revision.
+    """
+    return (('candidate', candidate, 'Cargo.lock'), ('host', host, 'Cargo.lock'),
+            ('distribution', host, 'dist/default/Cargo.lock'), ('sdk', sdk, 'Cargo.lock'))
+
+
+def plugin_job(q):
+    return (q.repository not in (CORE, 'GetBusbar/busbar-release')
+            and q.repository in q.policy.data['repositories'])
+
+
+def required_sources(q, host, vector):
+    """First-party revisions this job's consumers read from canonical-inputs.
+
+    Plugin jobs build only their own workspace against the seeded subject
+    closures; they never build the SDK's distribution or standalone products,
+    so only the subject locks contribute. Core jobs read the same subject
+    closures (dependency seed, Cargo's Git mappings, the OIDF suite's shipped
+    OIDC pin in the distribution lock) plus every vector product commit
+    (product-inputs and the standalone product seeds). Neither ever reads the
+    SDK checkout's own distribution lock or core's HEAD from canonical-inputs:
+    a lock cannot name its own commit, and core's host is its checkout. The
+    release job keeps the full historical set.
+    """
+    if plugin_job(q) or q.repository == CORE:
+        sources = defaultdict(set)
+        for _, root, relative in subject_locks(q.root, host, q.sdk()):
+            lock = root / relative
+            if lock.is_file():
+                for repository, revisions in lock_inputs(lock.read_text(), q.policy.data).items():
+                    sources[repository].update(revisions)
+        sources[CORE].add(vector['sdk'])
+        if q.repository == CORE:
+            for product in vector['products']:
+                sources['GetBusbar/' + product['repo']].add(product['commit'])
+        return sources
+    from native import git
     sources = inputs(host, q.root, q.policy.data)
     for repository, revisions in inputs(q.sdk(), q.root, q.policy.data).items():
         sources[repository].update(revisions)
-    vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
-    sources['GetBusbar/busbar'].update((vector['sdk'], git(host, 'rev-parse', 'HEAD')))
+    sources[CORE].update((vector['sdk'], git(host, 'rev-parse', 'HEAD')))
     for product in vector['products']:
         sources['GetBusbar/' + product['repo']].add(product['commit'])
+    return sources
+
+
+def local_core_stores(q, host):
+    """Controller-fetched core checkouts already verified at an exact revision.
+
+    Only trusted stores under the controller work root qualify: the plugin host
+    and SDK checkouts. A core job's host is its runner checkout, never reused.
+    """
+    from native import git
+    stores = {}
+    work = q.work.resolve()
+    for root in (host, q.sdk()):
+        root = Path(root).resolve()
+        if root.parent == work and root.name in ('host', 'sdk'):
+            stores.setdefault(git(root, 'rev-parse', 'HEAD'), root)
+    return stores
+
+
+def prepare(q, host):
+    from native import fetch_environment, git
+    vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
+    sources = required_sources(q, host, vector)
     # All listed products are public; private candidates never enter a public map.
-    allowed = {'GetBusbar/busbar'} | {name for name, row in q.policy.data['repositories'].items() if not row['private']}
-    if set(sources) - allowed:
+    allowed = {CORE} | {name for name, row in q.policy.data['repositories'].items() if not row['private']}
+    listed = {'GetBusbar/' + product['repo'] for product in vector['products']}
+    if (set(sources) | listed) - allowed:
         raise ValueError('unclassified or private repository in public product inputs')
     parent = q.work / 'canonical-inputs'
     parent.mkdir()
     env = fetch_environment()
     server = env['CI_SERVER_URL'].rstrip('/')
+    local = local_core_stores(q, host)
     fetched = defaultdict(set)
-    def fetch(repository, revisions):
-        if any(not re.fullmatch('[0-9a-f]{40}', revision) for revision in revisions):
-            raise ValueError('immutable source revision required')
+    def fetch_one(repository, revisions):
         cache = parent / repository.rsplit('/', 1)[1]
         if not cache.exists():
             subprocess.run(['git', 'init', '--bare', '--quiet', str(cache)], check=True)
-        for revision in sorted(revisions - fetched[repository]):
-            subprocess.run(['git', '-C', str(cache), 'fetch', '--quiet', '--depth', '1',
-                server + '/' + repository + '.git', revision + ':refs/heads/input-' + revision], env=env, check=True)
+        # Group by source: one shallow fetch carries every exact revision.
+        remotes = defaultdict(list)
+        for revision in revisions:
+            store = local.get(revision) if repository == CORE else None
+            remotes[str(store) if store else server + '/' + repository + '.git'].append(revision)
+        for remote, wanted in sorted(remotes.items()):
+            subprocess.run(['git', '-C', str(cache), 'fetch', '--quiet', '--no-tags', '--depth', '1', remote,
+                *[revision + ':refs/heads/input-' + revision for revision in wanted]],
+                env=env, check=True, timeout=FETCH_TIMEOUT)
+        for revision in revisions:
             if git(cache, 'rev-parse', 'refs/heads/input-' + revision) != revision:
                 raise ValueError('canonical input revision mismatch')
-            fetched[repository].add(revision)
-    for repository, revisions in sorted(sources.items()):
-        fetch(repository, revisions)
+        return repository, revisions
+    def fetch(selected):
+        pending = {}
+        for repository, revisions in sorted(selected.items()):
+            if any(not re.fullmatch('[0-9a-f]{40}', revision) for revision in revisions):
+                raise ValueError('immutable source revision required')
+            missing = sorted(set(revisions) - fetched[repository])
+            if missing:
+                pending[repository] = missing
+        if not pending:
+            return
+        with ThreadPoolExecutor(max_workers=min(FETCH_WORKERS, len(pending))) as pool:
+            for repository, revisions in pool.map(lambda item: fetch_one(*item), sorted(pending.items())):
+                fetched[repository].update(revisions)
+    fetch(sources)
     standalone = standalone_products(q.repository, q.evaluation_only, vector)
-    for repository, revisions in product_inputs(parent, {'products': standalone}, q.policy.data).items():
+    products = product_inputs(parent, {'products': standalone}, q.policy.data)
+    for repository, revisions in products.items():
         sources[repository].update(revisions)
-        fetch(repository, revisions)
+    fetch(products)
     settings = []
     for repository in sorted(sources):
         cache = parent / repository.rsplit('/', 1)[1]

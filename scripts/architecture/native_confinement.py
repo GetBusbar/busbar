@@ -21,6 +21,14 @@ import uuid
 
 import linux_job_isolation
 
+# Same value as native_dep_cache.CARGO_HOME_PATH and confinement_entry; tests pin it.
+INVOCATION_CARGO_HOME = '/__busbar_cargo_home'
+# Fixed in-container mount points of the two job-specific writable roots
+# (use_fixed_paths). Their host paths contain the CI job id; Cargo fingerprints
+# and the compile-target key contain the paths a compiler sees, so these make
+# both identical across jobs, as INVOCATION_CARGO_HOME does for Cargo home.
+FIXED_ROOTS = {'checkout': '/__busbar_checkout', 'candidate': '/__busbar_candidate'}
+
 
 def require(value, message):
     if not value:
@@ -228,10 +236,40 @@ class Execution:
         self.conformance_inputs_manifest = None
         self.dependency_seed = None
         self.dependency_seed_sha256 = None
+        # Controller-owned trusted prebuilt product images (native_product_images),
+        # mounted read-only for the product-inputs step only.
+        self.product_images = None
         self.resource_slice = None
         self.compiler_readonly = False
         self.prepared_git = None
         self.readonly_candidate_inputs = None
+        # {host root: container root} once use_fixed_paths() is called.
+        self.fixed_paths = {}
+
+    def use_fixed_paths(self):
+        """Mount checkout and candidate at FIXED_ROOTS for every later invocation.
+
+        Arguments, working directory, environment values and mount destinations
+        under those roots are rewritten to the container paths; text a candidate
+        invocation returns through check_output is rewritten back. The controller
+        keeps using host paths for everything it reads itself.
+        """
+        self.fixed_paths = {str(self.roots[name]): FIXED_ROOTS[name] for name in FIXED_ROOTS}
+
+    def container_path(self, value):
+        """The path (or path-bearing text) a candidate invocation sees for a host value."""
+        text = str(value)
+        for host, container in self.fixed_paths.items():
+            if text == host or text.startswith(host + '/'):
+                return container + text[len(host):]
+            text = text.replace(host + '/', container + '/')
+        return text
+
+    def host_text(self, text):
+        """Inverse of container_path for text a candidate invocation printed."""
+        for host, container in self.fixed_paths.items():
+            text = re.sub(re.escape(container) + r'(?=/|$|\s)', host.replace('\\', '\\\\'), text)
+        return text
 
     @classmethod
     def from_context(cls, path, expected):
@@ -382,6 +420,7 @@ class Execution:
             "CARGO_TARGET_DIR",
             "CARGO_BUILD_JOBS",
             "CARGO_TERM_COLOR",
+            "CARGO_INCREMENTAL",
             "CARGO_PROFILE_DEV_DEBUG",
             "CARGO_PROFILE_TEST_DEBUG",
             "CARGO_NET_GIT_FETCH_WITH_CLI",
@@ -419,6 +458,10 @@ class Execution:
                 "BUSBAR_C_ABI_LIBRARY",
                 "BUSBAR_PLUGIN_CDYLIB",
                 "BUSBAR_BIN",
+                "BUSBAR_CONFORMANCE_SUBJECT",
+                "BUSBAR_CONFORMANCE_SUBJECT_SHA256",
+                "CLIPPY_ARGS",
+                "CARGO_ENCODED_RUSTFLAGS",
                 "TSAN_OPTIONS",
             }
         )
@@ -533,9 +576,14 @@ class Execution:
         return [*argv, '--store-path', str(destination)]
 
     @contextmanager
-    def invocation(self, argv, cwd, env, *, discard_harness_target=False):
+    def invocation(self, argv, cwd, env, *, discard_harness_target=False, vendored_sources=False):
         argv = list(map(str, argv))
         require(argv and not argv[0].startswith("-"), "missing candidate executable")
+        # A vendored-source compiler check reads every dependency from the
+        # controller's read-only vendor directory, never from the job seed.
+        require(not vendored_sources or (discard_harness_target and argv[:2] == ['cargo', 'check']
+                                         and '--config' in argv),
+                'an empty Cargo cache requires a vendored harness compiler check')
         if discard_harness_target:
             require(argv[0] == 'cargo' and '--manifest-path' in argv
                     and argv.index('--manifest-path') + 1 < len(argv)
@@ -554,7 +602,7 @@ class Execution:
         if self.resource_slice is not None:
             require(self.compiler_readonly and set(resources) == set(self.config['resources'])
                     and all(type(value) is int and value > 0
-                            and value * 2 <= self.config['resources'][key]
+                            and value * COMPILER_POOL_WIDTH <= self.config['resources'][key]
                             for key, value in resources.items()),
                     'compiler slices exceed the aggregate resource budget')
         target = root["checkout"] / "target"
@@ -595,6 +643,8 @@ class Execution:
                            Path('/__busbar_conformance_capabilities.json'), False))
         if self.dependency_seed is not None:
             mounts.append((self.dependency_seed, Path('/__busbar_job_seed'), False))
+        if getattr(self, 'product_images', None) is not None:
+            mounts.append((checked_directory(self.product_images), Path('/__busbar_product_images'), False))
         fixture_hosts = (['localhost.emobix.co.uk:127.0.0.1', 'busbar.oidf.test:127.0.0.1']
                          if any(target == Path('/opt/busbar-conformance/oidf')
                                 for _, target in self.conformance_mounts) else [])
@@ -625,7 +675,7 @@ class Execution:
             "--cpus=" + str(resources["cpus"]),
             "--init",
             "--workdir",
-            str(cwd),
+            self.container_path(cwd),
             "--tmpfs",
             "/tmp:rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777",
             "--shm-size=64m",
@@ -634,16 +684,6 @@ class Execution:
         ]
         for alias in fixture_hosts:
             args += ['--add-host', alias]
-        for source, destination, writable in mounts:
-            require(
-                "," not in str(source) and "," not in str(destination),
-                "unsupported bind path",
-            )
-            args += [
-                "--mount",
-                f"type=bind,src={source},dst={destination}"
-                + ("" if writable else ",readonly"),
-            ]
         safe_env = self.cargo_environment(argv, env)
         disposable_target = None
         if discard_harness_target:
@@ -656,9 +696,30 @@ class Execution:
         if safe_env.get('CARGO_HOME'):
             # Stable dependency paths preserve Cargo target fingerprints. The
             # contents remain fresh for every invocation and are removed below.
+            # One fixed in-container path, independent of the job directory, so
+            # registry/Git unit fingerprints are portable between jobs.
             cargo_home = root['candidate'] / 'cargo-home-invocation'
             cargo_home.mkdir(mode=0o700)
-            safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = str(cargo_home)
+            mounts.append((cargo_home, Path(INVOCATION_CARGO_HOME), True))
+            safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = INVOCATION_CARGO_HOME
+            if vendored_sources:
+                # Still private, writable and removed below; only the copy of
+                # the job seed it would never read is skipped.
+                safe_env['BUSBAR_INVOCATION_CARGO_HOME_EMPTY'] = '1'
+        if self.fixed_paths:
+            mounts = [(source, Path(self.container_path(destination)), writable)
+                      for source, destination, writable in mounts]
+            safe_env = {key: self.container_path(value) for key, value in safe_env.items()}
+        for source, destination, writable in mounts:
+            require(
+                "," not in str(source) and "," not in str(destination),
+                "unsupported bind path",
+            )
+            args += [
+                "--mount",
+                f"type=bind,src={source},dst={destination}"
+                + ("" if writable else ",readonly"),
+            ]
         isolation = self.config['isolation']
         storage = linux_job_isolation.prepare_writable(isolation, [src for src, _, writable in mounts if writable],
                                    self.config['uid'], self.config['gid'])
@@ -678,7 +739,7 @@ class Execution:
             "-B",
             "/__busbar_entry.py",
             "--",
-            *argv,
+            *[self.container_path(arg) for arg in argv],
         ]
         observation = {
             "name": name,
@@ -688,7 +749,7 @@ class Execution:
             "disposed": False,
             "command_sha256": hashlib.sha256(canonical(argv)).hexdigest(),
             "environment_sha256": hashlib.sha256(canonical(safe_env)).hexdigest(),
-            "working_directory": str(cwd),
+            "working_directory": self.container_path(cwd),
             "docker_client_sha256": self.config['docker_sha256'],
             "configuration_sha256": hashlib.sha256(canonical(self.config)).hexdigest(),
             "resources": dict(resources),
@@ -699,7 +760,7 @@ class Execution:
         }
         if self.resource_slice is not None:
             observation['aggregate_resources'] = dict(self.config['resources'])
-            observation['compiler_pool_width'] = 2
+            observation['compiler_pool_width'] = COMPILER_POOL_WIDTH
         self.observations.append(observation)
         try:
             result = self._client(args, capture_output=True, text=True)
@@ -842,14 +903,24 @@ class Execution:
             client_env,
             _,
         ):
-            return subprocess.check_output(command, env=client_env, **kwargs)
+            output = subprocess.check_output(command, env=client_env, **kwargs)
+            if self.fixed_paths and isinstance(output, str):
+                output = self.host_text(output)
+            return output
 
     def compiler_pool(self):
         return CompilerPool(self)
 
 
+# Job 6131: each seeded witness case ran 20-30 s inside its container with
+# 2 CPUs, of which one rustc checks the case's own crate; the remainder was
+# the private copy of the whole job Cargo seed, which vendored cases never read.
+# Four 1 CPU / 1.5 GiB isolates keep the same 4 CPU / 6 GiB aggregate.
+COMPILER_POOL_WIDTH = 4
+
+
 class CompilerPool:
-    """Two compiler isolates sharing only readonly inputs and an aggregate quota.
+    """Compiler isolates sharing only readonly inputs and an aggregate quota.
 
     Each case owns its Execution, observations, home, lockfile, cache and target.
     The caller must validate its result inside the callback so failure cancels
@@ -862,21 +933,23 @@ class CompilerPool:
         self.execution = execution
         # Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
         # runners. Container memory includes its tmpfs and shared memory charges.
-        self.resources = {'cpus': 2, 'memory_bytes': 3 * 1024**3,
-                          'pids': resources['pids'] // 2}
+        width = COMPILER_POOL_WIDTH
+        self.resources = {'cpus': 4 // width, 'memory_bytes': 6 * 1024**3 // width,
+                          'pids': resources['pids'] // width}
+        self.jobs = self.resources['cpus']
         self.cancel = threading.Event()
         self.observations = {}
         self.lock = threading.Lock()
         self.used = False
 
-    def run(self, execution, argv, *, cwd, env=None):
+    def run(self, execution, argv, *, cwd, env=None, vendored_sources=False):
         if self.cancel.is_set():
             raise CancelledError('compiler pool cancelled')
         env = dict(os.environ if env is None else env, TMPDIR='/tmp',
                    BUSBAR_TEST_TMP_ROOT='/tmp/tests', XDG_CACHE_HOME='/tmp/cache',
-                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS='2')
-        with execution.invocation(argv, cwd, env,
-                                  discard_harness_target=True) as (command, environment, _):
+                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS=str(self.jobs))
+        with execution.invocation(argv, cwd, env, discard_harness_target=True,
+                                  vendored_sources=vendored_sources) as (command, environment, _):
             if self.cancel.is_set():
                 raise CancelledError('compiler pool cancelled')
             with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
@@ -959,7 +1032,7 @@ class CompilerPool:
         try:
             for sig in handlers:
                 signal.signal(sig, interrupted)
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='compiler') as executor:
+            with ThreadPoolExecutor(max_workers=COMPILER_POOL_WIDTH, thread_name_prefix='compiler') as executor:
                 futures = [executor.submit(invoke, index, case) for index, case in enumerate(cases)]
                 results, errors = [], []
                 for future in futures:

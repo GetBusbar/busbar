@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from check import Violation
-from native import published_dev_target
+from native import current_dev, is_ancestor, published_dev_target
 
 
 class PublishedDevTests(unittest.TestCase):
@@ -59,3 +59,31 @@ class PublishedDevTests(unittest.TestCase):
                        ('a' * 40 + '\trefs/heads/dev\n') * 2]:
             with self.subTest(output=output), self.assertRaises(Violation):
                 self.invoke(output)
+
+    def test_pinned_producer_commit_must_already_be_on_current_dev(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory).resolve()
+            env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+                       GIT_AUTHOR_NAME='F', GIT_AUTHOR_EMAIL='f@example.invalid',
+                       GIT_COMMITTER_NAME='F', GIT_COMMITTER_EMAIL='f@example.invalid')
+            upstream = root / 'GetBusbar' / 'busbar.git'
+            upstream.mkdir(parents=True)
+            def commit(path, message):
+                subprocess.run(['git', '-C', str(path), 'commit', '-q', '--allow-empty', '-m', message], env=env, check=True)
+                return subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
+            subprocess.run(['git', 'init', '-q', '-b', 'dev', str(upstream)], check=True)
+            old = commit(upstream, 'old')
+            subprocess.run(['git', 'clone', '-q', '--branch', 'dev', str(upstream), str(root / 'checkout')], env=env, check=True)
+            subprocess.run(['git', '-C', str(upstream), 'checkout', '-q', '-b', 'side'], check=True)
+            side = commit(upstream, 'side')
+            subprocess.run(['git', '-C', str(upstream), 'checkout', '-q', 'dev'], check=True)
+            head = commit(upstream, 'head')
+            subprocess.run(['git', '-C', str(root / 'checkout'), 'fetch', '-q', 'origin', 'side'], env=env, check=True)
+            with patch.dict('os.environ', {'CI_SERVER_URL': root.as_uri()}), \
+                 patch('native.fetch_environment', return_value=env):
+                target = current_dev(root / 'checkout', 'GetBusbar/busbar')
+            self.assertEqual(target, head)
+            self.assertTrue(is_ancestor(root / 'checkout', old, target))
+            self.assertTrue(is_ancestor(root / 'checkout', head, target))
+            self.assertFalse(is_ancestor(root / 'checkout', side, target))
+            self.assertFalse(is_ancestor(root / 'checkout', 'f' * 40, target))

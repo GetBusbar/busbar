@@ -176,6 +176,70 @@ def checkout_product(row, source):
     require(hashlib.sha256(lock.read_bytes()).hexdigest() == row["lock_sha256"], "product lock mismatch")
 
 
+# Exactly the one dev-profile command that builds a product's test image. The
+# trusted image producer (native_product_images) runs this same function, so a
+# restored image comes from the same argv, toolchain and Cargo configuration.
+CARGO = ("cargo", "+1.98.0", "build", "--locked")
+# Controller-owned, read-only: trusted prebuilt images and their digests. Only
+# the protected controller mounts it, and only for the product-inputs step.
+PREBUILT = Path("/__busbar_product_images")
+
+
+def image_argv(item, target):
+    row, source = item["product"], item["checkout"]
+    args = [*CARGO, "--manifest-path", str(source / "Cargo.toml"), "-p", row["package"],
+            "--lib", "--target-dir", str(target)]
+    if item["dropped_in"]:
+        args += ["--features", "dropped-in"]
+    return args
+
+
+def prebuilt_images(root=PREBUILT):
+    """The controller's verified index, or nothing: absence always builds."""
+    index = root / "index.json"
+    if not index.is_file() or index.is_symlink():
+        return {}
+    data = json.loads(index.read_text(), object_pairs_hook=pairs)
+    require(isinstance(data, dict) and len(data) <= 128, "invalid prebuilt image index")
+    return data
+
+
+def install_prebuilt(entry, row, destination, root=PREBUILT):
+    """Copy one trusted image to the exact path Cargo would have written."""
+    require(entry.get("commit") == row["commit"] and entry.get("image") == row["image"]
+            and entry.get("lock_sha256") == row["lock_sha256"]
+            and destination.name == row["image"], "prebuilt image differs from its pin")
+    relative = relative_path(entry["file"])
+    source = regular_under(root / relative, root)
+    data = source.read_bytes()
+    require(hashlib.sha256(data).hexdigest() == entry["sha256"], "prebuilt image digest differs")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    require(not destination.is_symlink() and not destination.parent.is_symlink(), "indirect artifact output")
+    temporary = destination.with_name(destination.name + ".prebuilt")
+    temporary.unlink(missing_ok=True)
+    temporary.write_bytes(data)
+    temporary.chmod(0o755)
+    os.replace(temporary, destination)
+    print("product-inputs: " + row["repo"] + ": trusted prebuilt image sha256=" + entry["sha256"],
+          file=sys.stderr, flush=True)
+
+
+def build_image(root, target, cache, policy, repo):
+    """Trusted producer only: build exactly one product's image, nothing else."""
+    vector = json.loads((root / "scripts/ci-product-pins.json").read_text(), object_pairs_hook=pairs)
+    vector_revisions(policy, vector)
+    revision = git(root, "rev-parse", "HEAD").decode().strip()
+    canonical = cache.parent / "canonical-inputs"
+    require(canonical.is_dir(), "image production requires the trusted canonical inputs")
+    products, _ = plan(policy, vector, lambda row: canonical / row["repo"], target, cache, revision)
+    selected = [item for item in products if item["product"]["repo"] == repo]
+    require(len(selected) == 1, "product declares no test image")
+    item = selected[0]
+    checkout_product(item["product"], item["checkout"])
+    subprocess.run(image_argv(item, target), check=True, stdout=sys.stderr)
+    return regular_under(item["image"], target)
+
+
 def build(root, target, cache, policy):
     vector = json.loads((root / "scripts/ci-product-pins.json").read_text(), object_pairs_hook=pairs)
     vector_revisions(policy, vector)
@@ -191,18 +255,18 @@ def build(root, target, cache, policy):
             checkout_product(row, work / "sources" / (row["repo"] + "-" + row["commit"]))
         sources = lambda row: work / "sources" / (row["repo"] + "-" + row["commit"])
     products, values = plan(policy, vector, sources, target, cache, revision)
-    cargo = ["cargo", "+1.98.0", "build", "--locked"]
+    prebuilt = prebuilt_images()
     if any("manifest" in item["metadata"] for item in products):
-        subprocess.run([*cargo, "-p", "busbar-plugin-loader", "--features", "pack", "--bin",
+        # The packer is candidate code: always built here, never prebuilt.
+        subprocess.run([*CARGO, "-p", "busbar-plugin-loader", "--features", "pack", "--bin",
                         "busbar-plugin-pack", "--target-dir", str(target)], cwd=root, check=True, stdout=sys.stderr)
     for item in products:
         row, source = item["product"], item["checkout"]
         checkout_product(row, source)
-        args = [*cargo, "--manifest-path", str(source / "Cargo.toml"), "-p", row["package"],
-                "--lib", "--target-dir", str(target)]
-        if item["dropped_in"]:
-            args += ["--features", "dropped-in"]
-        subprocess.run(args, check=True, stdout=sys.stderr)
+        if row["repo"] in prebuilt:
+            install_prebuilt(prebuilt[row["repo"]], row, Path(item["image"]))
+        else:
+            subprocess.run(image_argv(item, target), check=True, stdout=sys.stderr)
         regular_under(item["image"], target)
         if "declares" in item["metadata"] or "manifest" in item["metadata"]:
             regular_under(source / row["declares"], source)
@@ -241,8 +305,13 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--cache", required=True, type=Path)
+    parser.add_argument("--image-only", help="trusted image producer: build only this product repo")
     args = parser.parse_args()
     policy = Policy(read(Path(__file__).resolve().parents[2] / "ci/architecture.toml"))
+    if args.image_only:
+        print(build_image(args.root.resolve(), args.target.absolute(), args.cache.absolute(), policy,
+                          args.image_only))
+        return
     print(build(args.root.resolve(), args.target.absolute(), args.cache.absolute(), policy))
 
 

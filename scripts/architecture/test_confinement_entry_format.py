@@ -32,6 +32,9 @@ class FormatSeed(unittest.TestCase):
         })
         env.start()
         self.addCleanup(env.stop)
+        fixed = patch.object(entry, "INVOCATION_CARGO_HOME", self.fresh)
+        fixed.start()
+        self.addCleanup(fixed.stop)
 
     def test_only_exact_controller_format_forms_select_readonly_seed(self):
         for argv in (
@@ -90,6 +93,32 @@ class FormatSeed(unittest.TestCase):
                 self.assertEqual((self.seed / "source.rs").read_text(), "immutable dependency")
                 shutil.rmtree(self.fresh)
                 self.fresh.mkdir()
+
+    def test_vendored_check_gets_an_empty_private_home_without_the_seed(self):
+        os.environ["BUSBAR_INVOCATION_CARGO_HOME_EMPTY"] = "1"
+        with patch.object(entry.shutil, "copytree") as copy:
+            entry.prepare_cargo_home(["cargo", "check", "--example", "witness_00"])
+        copy.assert_not_called()
+        self.assertEqual(os.environ["CARGO_HOME"], str(self.fresh))
+        self.assertNotIn("BUSBAR_INVOCATION_CARGO_HOME_EMPTY", os.environ)
+        self.assertEqual(list(self.fresh.iterdir()), [])
+
+    def test_empty_home_flag_is_exact_and_never_reaches_the_command(self):
+        for value in ("0", "", "true"):
+            with self.subTest(value=value):
+                os.environ.update(CARGO_HOME=str(self.seed), BUSBAR_INVOCATION_CARGO_HOME=str(self.fresh),
+                                  BUSBAR_INVOCATION_CARGO_HOME_EMPTY=value)
+                entry.prepare_cargo_home(["cargo", "build"])
+                self.assertEqual((self.fresh / "source.rs").read_text(), "immutable dependency")
+                self.assertNotIn("BUSBAR_INVOCATION_CARGO_HOME_EMPTY", os.environ)
+                shutil.rmtree(self.fresh)
+                self.fresh.mkdir()
+
+    def test_private_home_must_be_the_fixed_controller_mount(self):
+        os.environ["BUSBAR_INVOCATION_CARGO_HOME"] = str(self.root / "elsewhere")
+        (self.root / "elsewhere").mkdir()
+        with self.assertRaisesRegex(RuntimeError, "prepared by the controller"):
+            entry.prepare_cargo_home(["cargo", "build"])
 
     def test_fast_path_still_rejects_indirect_or_nonempty_private_home(self):
         for indirect in (False, True):

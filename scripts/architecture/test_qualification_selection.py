@@ -22,7 +22,10 @@ def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-class Selection(unittest.TestCase):
+class SelectionFixture:
+    CORE_JOBS = ('native-qualification', 'security-scans', 'core-conformance')
+    TIER = 'single'
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='selection-tests-', dir=os.environ.get('TMPDIR'))
         self.addCleanup(self.temp.cleanup)
@@ -65,7 +68,7 @@ class Selection(unittest.TestCase):
                                                            for branch in ('dev', 'qa', 'main')]
             self.api_rows[base + '/pipelines/' + str(pipeline)] = dict(id=pipeline, project_id=project,
                 sha=source, ref='dev', source='api', status='success', user={'id': 6})
-            jobs = ['native-qualification', 'security-scans'] + (['core-conformance'] if name == CORE else [])
+            jobs = list(self.CORE_JOBS) if name == CORE else ['native-qualification', 'security-scans']
             self.originals[name] = []
             job_rows = []
             for offset, jobname in enumerate(jobs):
@@ -101,7 +104,7 @@ class Selection(unittest.TestCase):
         return dict(files=files, tools=json.loads(self.objects.blob(CORE, request['policy'],
             'ci/security/tools.json')), owner_suites=['owner'] if request['repository'] == OWNER else [],
             required_external='core-conformance' if request['repository'] == CORE else None,
-            independent_job=True)
+            independent_job=True, tier=self.TIER)
 
     def fixture(self, request, pipeline, job):
         security = request['job'] == 'security-scans'
@@ -146,6 +149,13 @@ class Selection(unittest.TestCase):
         return plan_cohort(rows or self.rows, self.originals, self.objects, self.resolver,
                            self.temp.name, database=self.database, now=NOW)
 
+    def runtime(self):
+        return SimpleNamespace(rows=self.rows, originals=self.originals, objects=self.objects,
+            resolver=self.resolver, database=self.database, session=Path(self.temp.name), live={},
+            observe=lambda candidate: canonical_observation(self.resolver, candidate))
+
+
+class Selection(SelectionFixture, unittest.TestCase):
     def test_maintained_cli_defaults_to_read_only_and_requires_deliberate_fleet_override(self):
         args = parse_args(['--work-dir', self.temp.name])
         self.assertFalse(args.apply)
@@ -157,11 +167,6 @@ class Selection(unittest.TestCase):
                 parse_args(['--work-dir', self.temp.name, *options])
         explicit = parse_args(['--work-dir', self.temp.name, '--full-fleet', '--reason', 'Required policy migration'])
         self.assertTrue(explicit.full_fleet)
-
-    def runtime(self):
-        return SimpleNamespace(rows=self.rows, originals=self.originals, objects=self.objects,
-            resolver=self.resolver, database=self.database, session=Path(self.temp.name), live={},
-            observe=lambda candidate: canonical_observation(self.resolver, candidate))
 
     def test_default_maintained_plan_reuses_49_and_cannot_post(self):
         runtime = self.runtime()
@@ -327,6 +332,114 @@ class Selection(unittest.TestCase):
         self.assertFalse(any('/cancel' in path for path, _, _ in mutations))
         self.assertEqual(project['merge_method'], 'ff')
         self.assertEqual(project['ci_pipeline_variables_minimum_override_role'], 'no_one_allowed')
+
+
+TIERED_PIPELINE = (Path(__file__).resolve().parents[2] / 'ci/architecture-pipeline.yml').read_text()
+BINARY, DEVELOPMENT = b'certified-binary', b'{"development": true}'
+
+
+class TieredCoreSelection(SelectionFixture, unittest.TestCase):
+    """Core's tiered policy: dev evidence is core-build, core-clippy and conformance of the bytes."""
+    CORE_JOBS = ('core-build', 'core-clippy', 'core-conformance')
+    TIER = 'tiered'
+
+    def setUp(self):
+        self.build_jobs = {}
+        super().setUp()
+
+    def fixture(self, request, pipeline, job):
+        if request['repository'] != CORE:
+            return super().fixture(request, pipeline, job)
+        for revision in (HOST, NEW):
+            self.objects.files[CORE, revision]['ci/architecture-pipeline.yml'] = TIERED_PIPELINE
+        from admission import CORE_BUILD_STEPS
+        from native_certified import BUILD
+        files, receipt = super().fixture(dict(request, job='core-conformance'), pipeline, job)
+        record = dict(sha256=digest(BINARY), bytes=len(BINARY), path='busbar', command=['cargo', *BUILD],
+                      rustc_wrapper='', clippy_args=[], profile_use=None,
+                      development_artifact_receipt_sha256=digest(DEVELOPMENT))
+        if request['job'] == 'core-build':
+            self.build_jobs[pipeline] = job
+            receipt.update(schema='busbar.core-build/1', certified_binary=record, binary_sha256=record['sha256'],
+                development_artifact=dict(sha256=record['development_artifact_receipt_sha256']),
+                steps=[dict(receipt['steps'][0], name=name) for name in CORE_BUILD_STEPS])
+            files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
+                     for name in CORE_BUILD_STEPS for stream in ('stdout', 'stderr')}
+            files.update({'busbar': BINARY, 'development-artifact/receipt.json': DEVELOPMENT})
+        elif request['job'] == 'core-clippy':
+            from admission import CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS
+            receipt.update(schema=CORE_CLIPPY_SCHEMA,
+                           steps=[dict(receipt['steps'][0], name=name) for name in CORE_CLIPPY_STEPS])
+            for key in ('required_conformance_suites', 'binary_sha256', 'certified_binary'):
+                receipt.pop(key, None)
+            files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
+                     for name in CORE_CLIPPY_STEPS for stream in ('stdout', 'stderr')}
+        else:
+            receipt.update(binary_sha256=record['sha256'], certified_binary=dict(
+                sha256=record['sha256'], bytes=len(BINARY), core_build_job_id=self.build_jobs[pipeline],
+                pipeline_id=pipeline))
+        return files, receipt
+
+    def validate(self, original, receipt, artifact, context, policy):
+        if original['job'] == 'core-build':
+            from reuse_evidence import validate_core_build
+            self.assertTrue(validate_core_build(original, receipt, artifact, context, policy))
+        if original['job'] == 'core-clippy':
+            from reuse_evidence import validate_core_clippy
+            return validate_core_clippy(original, receipt, artifact, context, policy)
+        return super().validate(original, receipt, artifact, context, policy)
+
+    def core_row(self, **inputs):
+        return [dict(self.rows[0], **inputs)]
+
+    def test_identical_inputs_retain_both_dev_tier_jobs_and_launch_nothing(self):
+        row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
+        self.assertEqual(set(row['required']), {'build', 'clippy', 'conformance'})
+        self.assertEqual(row['state'], 'retained')
+        self.assertEqual(row['fresh_kinds'], [])
+        for kind in ('build', 'clippy', 'conformance'):
+            self.assertEqual(row['qualifications'][kind]['scope'], 'execution-equivalent')
+            self.assertEqual(row['qualifications'][kind]['origin']['pipeline'], 100)
+
+    def test_changed_source_rebuilds_the_certified_binary(self):
+        # Only a regression test changed: conformance may be retained, the build
+        # and the lints (which cover tests too) never are.
+        row = self.plan(self.core_row())[0]
+        self.assertEqual(row['state'], 'selected')
+        self.assertEqual(row['fresh_kinds'], ['build', 'clippy'])
+        self.assertEqual(row['qualifications']['conformance']['scope'], 'retained-check')
+
+    def test_forged_binary_or_conformance_of_other_bytes_is_never_retained(self):
+        base = 'projects/1/jobs/'
+        build, conformance = (self.originals[CORE][index]['job'] for index in (0, 2))
+        members = dict(zipfile_members(self.raw[base + str(build) + '/artifacts']), busbar=b'other bytes')
+        self.raw[base + str(build) + '/artifacts'] = archive(members)
+        row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
+        self.assertEqual(row['qualifications']['build']['mode'], 'fresh')
+        self.assertEqual(row['qualifications']['conformance']['mode'], 'retained')
+        self.setUp()
+        candidate = self.originals[CORE][2]
+        candidate['receipt']['certified_binary']['sha256'] = '0' * 64
+        receipt_bytes = identity.encoded(candidate['receipt'])
+        members = dict(zipfile_members(self.raw[base + str(conformance) + '/artifacts']),
+                       **{'receipt.json': receipt_bytes})
+        self.raw[base + str(conformance) + '/artifacts'] = archive(members)
+        self.raw[base + str(conformance) + '/artifacts/boundary-evidence/receipt.json'] = receipt_bytes
+        row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
+        self.assertEqual(row['qualifications']['build']['mode'], 'retained')
+        self.assertEqual(row['qualifications']['conformance']['mode'], 'fresh')
+        self.assertIn('certified core-build', row['qualifications']['conformance']['reason'])
+
+    def test_qa_tier_jobs_are_not_dev_requirements(self):
+        row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
+        self.assertNotIn('native', row['required'])
+        self.assertNotIn('security', row['required'])
+
+
+def zipfile_members(raw):
+    import zipfile
+    with zipfile.ZipFile(io.BytesIO(raw)) as source:
+        return {name.removeprefix('boundary-evidence/'): source.read(name) for name in source.namelist()}
 
 
 if __name__ == '__main__':

@@ -342,22 +342,23 @@ class Pipeline(unittest.TestCase):
         self.text = (REPO / 'ci/architecture-pipeline.yml').read_text()
         self.blocks = dict(re.findall(r'^([a-z][a-z-]*):\n((?:(?: .*)?\n)*)', self.text, re.M))
 
-    def test_schedule_runs_security_only(self):
+    def test_schedule_runs_security_and_only_the_named_qa_schedule_runs_core_qa(self):
         self.assertIn("- if: '$CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_BRANCH == \"dev\"'",
                       self.blocks['workflow'])
-        never = "    - if: '$CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n"
-        for job in ('native-qualification', 'core-conformance'):
-            self.assertIn(never, self.blocks[job], job)
-        self.assertNotIn('"schedule"', self.blocks['security-scans'])
-        self.assertIn('  rules:\n', self.blocks['security-scans'])
+        shared = self.text.split('\n.rules:\n', 1)[1].split('\n\n', 1)[0]
+        schedules = [line for line in shared.splitlines() if '"schedule"' in line]
+        self.assertEqual(len(schedules), 1)
+        self.assertIn('$CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"', schedules[0])
+        self.assertIn('"schedule"', self.blocks['security-scans'])
         website = self.blocks['website-dev']
         self.assertNotIn('"schedule"', website)
         self.assertEqual(re.findall(r'CI_PIPELINE_SOURCE == "(\w+)"', website), ['push', 'push'])
 
-    def test_retention_decides_before_bootstrap_for_expensive_kinds_only(self):
-        script = self.blocks['native-qualification']
+    def test_retention_decides_before_bootstrap_for_plugin_native_only(self):
+        script = self.text.split('\n.controller:\n', 1)[1].split('\n  artifacts:\n', 1)[0]
         decision = script.index("scripts/architecture/ci_retention.py")
-        self.assertLess(script.index("in ('native-qualification', 'core-conformance'):"), decision)
+        self.assertLess(script.index("if os.environ['CI_JOB_NAME'] == 'native-qualification' and "
+                                     "os.environ['CI_PROJECT_PATH'] != 'GetBusbar/busbar':"), decision)
         self.assertLess(decision, script.index('if command is not None:\n              subprocess.run(command'))
         self.assertIn("if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():\n"
                       "                  command = None", script)
@@ -365,10 +366,16 @@ class Pipeline(unittest.TestCase):
         self.assertNotRegex(self.text, r'(?m)^\s*(needs|dependencies|include|default):')
         self.assertNotRegex(self.text, r'\$(BUSBAR_)?(SKIP|RETAIN)')
 
-    def test_owner_workstation_grammar_still_accepts_the_graph(self):
-        from reuse_evidence import independent_qualification_job
-        for job in ('native-qualification', 'security-scans', 'core-conformance'):
+    def test_owner_workstation_grammar_accepts_the_tiered_graph(self):
+        # reuse_evidence recognizes the tiered graph: core-build alone in the build
+        # stage, every qualify job's only prerequisite is that build.
+        from reuse_evidence import independent_qualification_job, pipeline_tier
+        self.assertEqual(pipeline_tier(self.text.encode()), 'tiered')
+        for job in ('core-build', 'core-conformance', 'native-qualification', 'security-scans'):
             self.assertTrue(independent_qualification_job(self.text.encode(), job))
+        for job in ('website-dev', 'release-certification', 'plugin-dependency-units'):
+            with self.assertRaises(ValueError):
+                independent_qualification_job(self.text.encode(), job)
 
 
 class RepositoryProof(unittest.TestCase):

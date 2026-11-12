@@ -284,11 +284,12 @@ class Boundary(Fixture, unittest.TestCase):
     def test_private_cargo_cache_resets_at_stable_dependency_path(self):
         self.config['environment']['CARGO_HOME'] = '/opt/seed'
         execution = self.execution()
-        paths = []
+        paths, mounts = [], []
         def client(argv, **kwargs):
             if argv[0] == 'create':
                 paths.extend(value.split('=', 1)[1] for value in argv
                              if value.startswith('BUSBAR_INVOCATION_CARGO_HOME='))
+                mounts.extend(value for value in argv if value.endswith('dst=/__busbar_cargo_home'))
             payload = (json.dumps([{'HostConfig': {'NetworkMode': 'bridge'}}]) if argv[0] == 'inspect'
                        else json.dumps({'SecurityOptions': ['name=userns']}) if argv[0] == 'info' else '')
             return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr='')
@@ -298,7 +299,38 @@ class Boundary(Fixture, unittest.TestCase):
                     with execution.invocation(['python3', '-c', 'pass'], self.roots['checkout'], {}):
                         self.fail('weakened runtime executed')
                 self.assertFalse((self.roots['candidate'] / 'cargo-home-invocation').exists())
-        self.assertEqual(paths, [str(self.roots['candidate'] / 'cargo-home-invocation')] * 2)
+        # One job-independent in-container path keeps dependency fingerprints portable.
+        self.assertEqual(paths, ['/__busbar_cargo_home'] * 2)
+        self.assertEqual(mounts, ['type=bind,src=' + str(self.roots['candidate'] / 'cargo-home-invocation')
+                                  + ',dst=/__busbar_cargo_home'] * 2)
+
+    def test_empty_cargo_home_only_for_vendored_harness_checks(self):
+        self.config['environment']['CARGO_HOME'] = '/opt/seed'
+        execution = self.execution()
+        manifest = self.roots["harness"] / "Cargo.toml"
+        manifest.write_text("[workspace]\n")
+        vendored = ['cargo', 'check', '--manifest-path', str(manifest), '--config', '/v.toml']
+        for argv, discard in ((vendored, False), (vendored[:4], True),
+                              (['cargo', 'build', *vendored[2:]], True)):
+            with self.subTest(argv=argv, discard=discard):
+                with self.assertRaisesRegex(ValueError, 'vendored harness compiler check'):
+                    with execution.invocation(argv, self.roots['checkout'], {},
+                                              discard_harness_target=discard, vendored_sources=True):
+                        self.fail('unvendored command skipped the seed copy')
+        flags = []
+        def client(argv, **kwargs):
+            if argv[0] == 'create':
+                flags.append([value for value in argv if value.startswith('BUSBAR_INVOCATION_CARGO_HOME_EMPTY=')])
+            payload = (json.dumps([{'HostConfig': {'NetworkMode': 'bridge'}}]) if argv[0] == 'inspect'
+                       else json.dumps({'SecurityOptions': ['name=userns']}) if argv[0] == 'info' else '')
+            return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr='')
+        with patch.object(execution, '_client', side_effect=client):
+            for flag in (True, False):
+                with self.assertRaisesRegex(ValueError, 'weakened'):
+                    with execution.invocation(vendored, self.roots['checkout'], {},
+                                              discard_harness_target=True, vendored_sources=flag):
+                        self.fail('weakened runtime executed')
+        self.assertEqual(flags, [['BUSBAR_INVOCATION_CARGO_HOME_EMPTY=1'], []])
 
     def test_harness_lock_and_artifacts_are_separate_from_readonly_sources(self):
         execution = self.execution()
@@ -347,8 +379,6 @@ class Boundary(Fixture, unittest.TestCase):
         q.root = self.roots["checkout"]
         with self.assertRaisesRegex(native.Violation, "controller-owned"):
             q.conformance("confined")
-        with self.assertRaisesRegex(native.Violation, "fixed-destination"):
-            q.external_endpoint_conformance()
 
     def test_artifact_intake_rejects_symlinks_fifos_and_oversized_files(self):
         q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
@@ -768,6 +798,39 @@ else:raise AssertionError('metadata network available')
                 timeout=30,
             )
         self.assertTrue(execution.observations[-1]["disposed"])
+
+
+
+class FixedRoots(unittest.TestCase):
+    """Job-specific writable roots appear at fixed in-container paths once enabled."""
+
+    def execution(self, job):
+        import native_confinement
+        execution = object.__new__(native_confinement.Execution)
+        store = Path("/srv/busbar-native-ci/job-" + job + "/store")
+        execution.roots = {"checkout": store / "checkout",
+                           "candidate": store / ("boundary-3-" + job) / "candidate"}
+        execution.fixed_paths = {}
+        return execution
+
+    def test_paths_are_identical_across_jobs_and_round_trip(self):
+        seen = []
+        for job in ("101", "202"):
+            execution = self.execution(job)
+            candidate = execution.roots["candidate"]
+            self.assertEqual(execution.container_path(candidate / "target"), str(candidate / "target"))
+            execution.use_fixed_paths()
+            values = [execution.container_path(execution.roots["checkout"]),
+                      execution.container_path(candidate / "target/release/busbar"),
+                      execution.container_path("url." + (candidate / "canonical-inputs").as_uri() + "/.insteadOf"),
+                      execution.container_path("/srv/busbar-native-ci/job-" + job + "/trusted/x")]
+            seen.append(values[:3])
+            self.assertEqual(values[3], "/srv/busbar-native-ci/job-" + job + "/trusted/x")
+            self.assertEqual(execution.host_text("/__busbar_checkout/dist/default\n"),
+                             str(execution.roots["checkout"]) + "/dist/default\n")
+        self.assertEqual(seen[0], seen[1])
+        self.assertEqual(seen[0], ["/__busbar_checkout", "/__busbar_candidate/target/release/busbar",
+                                   "url.file:///__busbar_candidate/canonical-inputs/.insteadOf"])
 
 
 if __name__ == "__main__":
