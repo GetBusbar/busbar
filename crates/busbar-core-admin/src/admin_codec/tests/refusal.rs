@@ -7,7 +7,13 @@ use super::*;
 fn envelope_shape_matches_the_1_5_5_error_contract() {
     let rendered = envelope_of("forbidden", "insufficient scope");
     let parsed: serde_json::Value = serde_json::from_str(&rendered).expect("valid json");
-    assert_eq!(parsed.as_object().expect("an object").len(), 1);
+    assert_eq!(parsed.as_object().expect("an object").len(), 2);
+    assert_eq!(
+        parsed["code"],
+        busbar_kernel::diagnostics::ADMIN_FORBIDDEN
+            .banner()
+            .to_string()
+    );
     let error = parsed
         .get("error")
         .expect("error key")
@@ -23,7 +29,10 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
 fn the_envelope_is_the_frozen_bytes_and_not_merely_the_frozen_document() {
     assert_eq!(
         envelope_of("not_found", "not_found"),
-        r#"{"error":{"code":"not_found","message":"not_found"}}"#
+        format!(
+            r#"{{"code":"{}","error":{{"code":"not_found","message":"not_found"}}}}"#,
+            busbar_kernel::diagnostics::ADMIN_NOT_FOUND.banner()
+        )
     );
 }
 

@@ -101,9 +101,10 @@ fn a_provider_1_5_5_admitted_ungoverned_gains_the_ungoverned_binding_and_a_warni
         "{:?}",
         out.warnings
     );
-    assert!(out
-        .yaml
-        .contains("# WARNING(migrate): auth.role_bindings.corp"));
+    let code = busbar_kernel::diagnostics::MIGRATE_UNGOVERNED_BINDING_ADDED.banner();
+    assert!(out.yaml.contains(&format!(
+        "# WARNING(migrate): {code}: auth.role_bindings.corp"
+    )));
 
     let again = migrate_config(&out.yaml).expect("migrates again");
     assert!(
