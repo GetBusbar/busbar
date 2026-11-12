@@ -331,6 +331,22 @@ def published_dev_target(repository, source):
     return source
 
 
+def current_dev(root, repository):
+    """Fetch the published dev revision into root and return it."""
+    remote = os.environ['CI_SERVER_URL'].rstrip('/') + '/' + repository + '.git'
+    line = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'],
+                                   env=fetch_environment(), text=True, cwd='/')
+    target = (line.split() or [''])[0]
+    if not re.fullmatch('[0-9a-f]{40}', target):
+        raise Violation('target branch revision is unavailable')
+    subprocess.run(['git', '-C', str(root), 'fetch', '--no-tags', remote, target], env=fetch_environment(), check=True)
+    return target
+
+
+def is_ancestor(root, ancestor, descendant):
+    return subprocess.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', ancestor, descendant]).returncode == 0
+
+
 CORE_LINT_COMMANDS = (
     ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
     ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
@@ -427,20 +443,24 @@ class Qualification:
             if (os.environ['CI_MERGE_REQUEST_TARGET_BRANCH_NAME'] != 'dev'
                     or os.environ['CI_MERGE_REQUEST_SOURCE_PROJECT_ID'] != os.environ['CI_PROJECT_ID']):
                 raise Violation('qualification requires a same-project candidate targeting dev')
-            remote = os.environ['CI_SERVER_URL'].rstrip('/') + '/' + self.repository + '.git'
-            line = subprocess.check_output(['git', 'ls-remote', remote, 'refs/heads/dev'],
-                                           env=fetch_environment(), text=True, cwd='/')
-            target = line.split()[0]
-            if not re.fullmatch('[0-9a-f]{40}', target):
-                raise Violation('target branch revision is unavailable')
-            subprocess.run(['git', '-C', str(self.root), 'fetch', '--no-tags', remote, target], env=fetch_environment(), check=True)
-            if subprocess.run(['git', '-C', str(self.root), 'merge-base', '--is-ancestor', target, self.receipt['source']]).returncode:
+            target = current_dev(self.root, self.repository)
+            if not is_ancestor(self.root, target, self.receipt['source']):
                 raise Violation('candidate must be rebased on current dev and qualified again')
             self.receipt['target_revision'] = target
         elif os.environ['CI_PIPELINE_SOURCE'] in ('push', 'api') and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
             self.receipt['target_revision'] = (published_dev_target(self.repository, self.receipt['source'])
                 if os.environ['CI_PIPELINE_SOURCE'] == 'api' else self.receipt['source'])
             # Server-provided; consumers require a protected dev ref for push/api credit.
+            self.receipt['commit_ref_protected'] = os.environ.get('CI_COMMIT_REF_PROTECTED') == 'true'
+        elif self.dependency_units_producer and self.repository == 'GetBusbar/busbar':
+            from native_dep_cache import producer_kind
+            if producer_kind() != 'pinned':
+                raise Violation('dependency units are produced only by a protected core producer pipeline')
+            # The owner-run producer ref may only name a commit already on dev.
+            target = current_dev(self.root, self.repository)
+            if not is_ancestor(self.root, self.receipt['source'], target):
+                raise Violation('dependency producer commit is not on current core dev')
+            self.receipt['target_revision'] = target
             self.receipt['commit_ref_protected'] = os.environ.get('CI_COMMIT_REF_PROTECTED') == 'true'
         elif self.evaluation_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
             self.receipt['target_revision'] = None
@@ -1010,7 +1030,7 @@ def qualify():
     modes.add_argument('--conformance-only', action='store_true')
     modes.add_argument('--external-conformance', action='store_true')
     modes.add_argument('--dependency-units', action='store_true',
-                       help='Protected core dev push only: publish pinned plugin dependency units')
+                       help='Protected core producer pipelines only: publish pinned plugin dependency units')
     args = parser.parse_args()
     producer = getattr(args, 'dependency_units', False)
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):

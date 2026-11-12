@@ -1,6 +1,8 @@
 """Trusted prebuilt plugin dependency units: produced once, restored read-only.
 
-Producer: core's protected dev push pipeline, after core qualification. For each
+Producer: core's protected dev push pipeline, after core qualification, or an
+owner API pipeline on the protected PINNED_REF branch (a commit already on dev),
+which runs only the producer and keys its files to that exact core commit. For each
 product pinned in core's scripts/ci-product-pins.json it snapshots the product's
 manifest graph and Cargo.lock at the pinned commit, replaces every Rust source
 with an inert stub, and runs the exact plugin step commands in the ordinary
@@ -44,6 +46,11 @@ PRODUCER_JOB = 'plugin-dependency-units'
 # built by one shard index, and each shard index has its own resource_group:
 # consecutive dev pushes never write one package file twice.
 PRODUCER_SHARDS = 8
+# Owner-run producer ref. Branch protection admits only owners; the controller
+# requires its commit to be an ancestor-or-equal of current core dev. Its files
+# carry that commit in their identity, so a consumer accepts them only while it
+# qualifies against exactly that core host revision.
+PINNED_REF = 'ci/dep-cache'
 PRODUCER_JOB_NAME = re.compile(re.escape(PRODUCER_JOB) + r' ([1-9][0-9]*)/' + str(PRODUCER_SHARDS))
 # Cargo fingerprints the absolute source path of every registry and Git unit.
 # Every confined invocation gets its private Cargo home at this one path, in the
@@ -94,9 +101,14 @@ def plugin_commands(wrapper):
     ]
 
 
-def identity(repository, lock_sha256, image, env, target='x86_64-unknown-linux-gnu', wrapper=None):
-    """Everything outside the manifests that decides a dependency unit's bytes."""
-    return {
+def identity(repository, lock_sha256, image, env, target='x86_64-unknown-linux-gnu', wrapper=None,
+             pinned_commit=None):
+    """Everything outside the manifests that decides a dependency unit's bytes.
+
+    A pinned-ref producer adds its exact core commit, so its files never share a
+    key with the dev push producer's and match only consumers on that host.
+    """
+    value = {
         'schema': SCHEMA,
         'repository': repository,
         'lock_sha256': lock_sha256,
@@ -107,6 +119,9 @@ def identity(repository, lock_sha256, image, env, target='x86_64-unknown-linux-g
         'commands_sha256': sha256_bytes(canonical(plugin_commands(wrapper or '<wrapper>'))),
         'wrapper': wrapper,
     }
+    if pinned_commit is not None:
+        value['pinned_producer'] = {'ref': PINNED_REF, 'commit': pinned_commit}
+    return value
 
 
 def key(value):
@@ -361,9 +376,13 @@ class Registry:
 
 
 def provenance(registry, version, manifest):
-    """Only files written once by core's protected dev push producer pipeline.
+    """Only files written once by one of core's two protected producer pipelines.
 
-    A personal-token or other-pipeline upload, a duplicate file, or an API that
+    A dev-key file must come from a protected dev push whose commit matches the
+    manifest. A pinned-key file (identity carries pinned_producer, already equal
+    to the consumer's host revision) must come from an API pipeline on exactly
+    PINNED_REF at that commit, whose controller recorded a protected ref. A
+    personal-token or other-pipeline upload, a duplicate file, or an API that
     will not answer is a miss: build from scratch.
     """
     query = urllib.parse.urlencode({'package_type': 'generic', 'package_name': PACKAGE,
@@ -373,6 +392,14 @@ def provenance(registry, version, manifest):
     if len(packages) != 1:
         raise Unavailable('dependency package is absent or ambiguous')
     producer = manifest['producer']
+    pinned = manifest['identity'].get('pinned_producer')
+    if pinned is not None:
+        if (pinned != {'ref': PINNED_REF, 'commit': producer['commit']} or producer.get('ref') != PINNED_REF
+                or producer.get('source') != 'api' or producer.get('protected') is not True):
+            raise Unavailable('pinned dependency producer is not the protected owner pipeline')
+        ref, sources = PINNED_REF, (None, 'api')
+    else:
+        ref, sources = 'dev', (None, 'push')
     files = registry.json(f"/packages/{packages[0]['id']}/package_files?per_page=100")
     expected = {MANIFEST: None, manifest['archive']['name']: manifest['archive']['sha256']}
     for name, digest in expected.items():
@@ -383,13 +410,14 @@ def provenance(registry, version, manifest):
         if [p.get('id') for p in pipelines] != [producer['pipeline_id']]:
             raise Unavailable('dependency package file was not written by its producer pipeline')
         pipeline = pipelines[0]
-        if pipeline.get('ref') != 'dev' or pipeline.get('sha') != producer['commit'] \
-                or pipeline.get('source') not in (None, 'push'):
-            raise Unavailable('dependency producer pipeline is not a protected dev push')
+        if pipeline.get('ref') != ref or pipeline.get('sha') != producer['commit'] \
+                or pipeline.get('source') not in sources:
+            raise Unavailable('dependency producer pipeline is not a protected '
+                              + ('pinned API pipeline' if pinned is not None else 'dev push'))
         if digest is not None and rows[0].get('file_sha256') != digest:
             raise Unavailable('registry digest differs from the dependency manifest')
     return {'package_id': packages[0]['id'], 'pipeline_id': producer['pipeline_id'],
-            'commit': producer['commit']}
+            'commit': producer['commit'], 'ref': ref}
 
 
 # --- Consumer ------------------------------------------------------------------------
@@ -427,7 +455,18 @@ def restore(q, registry=None):
         try:
             manifest = json.loads(registry.read(version, MANIFEST, MAX_MANIFEST_BYTES))
         except FileNotFoundError:
-            return None
+            # Only on a dev-key miss: the owner-run producer's files for exactly
+            # the core host revision this job qualifies against.
+            host = q.receipt.get('host_revision')
+            if not (isinstance(host, str) and re.fullmatch('[0-9a-f]{40}', host)):
+                return None
+            wanted = dict(wanted, pinned_producer={'ref': PINNED_REF, 'commit': host})
+            version = key(wanted)
+            record['pinned_key'] = version
+            try:
+                manifest = json.loads(registry.read(version, MANIFEST, MAX_MANIFEST_BYTES))
+            except FileNotFoundError:
+                return None
         if manifest.get('schema') != SCHEMA or manifest.get('key') != version or manifest.get('identity') != wanted:
             raise Unavailable('dependency manifest identity differs')
         archive = manifest['archive']
@@ -504,7 +543,7 @@ def product_shard(repo):
     return int(hashlib.sha256(repo.encode()).hexdigest(), 16) % PRODUCER_SHARDS
 
 
-def produce_product(q, product, policy, registry, *, image, upload=True):
+def produce_product(q, product, policy, registry, *, image, upload=True, pinned=False):
     """Build one pinned product's dependency units from its stubbed manifest graph."""
     from check import resolve_shipping
     import check
@@ -512,7 +551,8 @@ def produce_product(q, product, policy, registry, *, image, upload=True):
     wrapper = wrapper_package(policy, repository)
     if wrapper != product['package']:
         raise Unavailable('pinned product package differs from policy')
-    wanted = identity(repository, product['lock_sha256'], image, q.env, wrapper=wrapper)
+    wanted = identity(repository, product['lock_sha256'], image, q.env, wrapper=wrapper,
+                      pinned_commit=os.environ['CI_COMMIT_SHA'] if pinned else None)
     version = key(wanted)
     row = {'repo': product['repo'], 'commit': product['commit'], 'key': version}
     try:
@@ -565,7 +605,10 @@ def produce_product(q, product, policy, registry, *, image, upload=True):
                             'lock_sha256': product['lock_sha256'],
                             'manifest_graph_sha256': graph_sha256},
                 'producer': {'pipeline_id': int(os.environ['CI_PIPELINE_ID']), 'job_id': int(os.environ['CI_JOB_ID']),
-                             'commit': os.environ['CI_COMMIT_SHA'], 'ref': os.environ.get('CI_COMMIT_BRANCH')}}
+                             'commit': os.environ['CI_COMMIT_SHA'], 'ref': os.environ.get('CI_COMMIT_BRANCH'),
+                             'source': os.environ.get('CI_PIPELINE_SOURCE'),
+                             'protected': os.environ.get('CI_COMMIT_REF_PROTECTED') == 'true',
+                             'dev_revision': q.receipt.get('target_revision')}}
     manifest_path = owned.parent / (product['repo'] + '.manifest.json')
     manifest_path.write_bytes(canonical(manifest))
     row.update(status='built', archive_bytes=archive['bytes'], files=len(files))
@@ -579,15 +622,31 @@ def produce_product(q, product, policy, registry, *, image, upload=True):
     return row
 
 
-def produce(q, registry=None):
-    """Core dev push only: publish missing dependency units for this shard's pinned products.
+def producer_kind(env=None):
+    """'dev' (protected dev push), 'pinned' (owner API pipeline on protected PINNED_REF) or None."""
+    env = os.environ if env is None else env
+    source, branch = env.get('CI_PIPELINE_SOURCE'), env.get('CI_COMMIT_BRANCH')
+    if source == 'push' and branch == 'dev':
+        return 'dev'
+    if source == 'api' and branch == PINNED_REF and env.get('CI_COMMIT_REF_PROTECTED') == 'true':
+        return 'pinned'
+    return None
 
-    The YAML rule admits only core's dev push pipelines and GitLab restricts
-    pushes to protected dev; consumers re-check the writing pipeline's ref.
+
+def produce(q, registry=None):
+    """Publish missing dependency units for this shard's pinned products.
+
+    The YAML rules admit only core's dev push pipelines and owner API pipelines
+    on protected PINNED_REF. A pinned run also needs the constructor's proof that
+    its commit is an ancestor-or-equal of current dev (receipt target_revision);
+    consumers re-check the writing pipeline's ref, source and commit.
     """
     shard = producer_shard(os.environ.get('CI_JOB_NAME'))
-    if not (q.repository == 'GetBusbar/busbar' and shard is not None
-            and os.environ.get('CI_PIPELINE_SOURCE') == 'push' and os.environ.get('CI_COMMIT_BRANCH') == 'dev'
+    kind = producer_kind()
+    if kind == 'pinned' and not (isinstance(q.receipt.get('target_revision'), str)
+                                 and q.receipt.get('commit_ref_protected') is True):
+        kind = None
+    if not (q.repository == 'GetBusbar/busbar' and shard is not None and kind is not None
             and q.execution is not None):
         from check import Violation
         raise Violation('dependency units are produced only by the protected core dev push producer')
@@ -598,6 +657,7 @@ def produce(q, registry=None):
     rows = []
     q.receipt['dependency_units_produced'] = rows
     q.receipt['dependency_units_shard'] = {'index': shard, 'total': PRODUCER_SHARDS}
+    q.receipt['dependency_units_producer_kind'] = kind
     for product in vector['products']:
         repository = 'GetBusbar/' + product['repo']
         if product_shard(product['repo']) != shard:
@@ -606,7 +666,8 @@ def produce(q, registry=None):
                 q.policy.data['repositories'][repository].get('language') == 'c':
             continue
         try:
-            rows.append(produce_product(q, product, q.policy, registry, image=q.execution.config['image']))
+            rows.append(produce_product(q, product, q.policy, registry, image=q.execution.config['image'],
+                                        pinned=kind == 'pinned'))
         except Exception as error:  # one product's failure must not block the others
             rows.append({'repo': product['repo'], 'status': 'failed', 'reason': str(error)[:500]})
         q.save()
