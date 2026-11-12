@@ -216,6 +216,41 @@ class EvidenceTests(unittest.TestCase):
         with patch.dict(witness, {'scanner_sha256': '0' * 64}), self.assertRaises(ValueError):
             resolver.validate_original(original, receipt_bytes, artifact_bytes)
 
+    def test_compiled_scanner_security_compares_complete_database_identity(self):
+        # Policies running tools/ci's compiled scanner keep metadata bytes in the
+        # comparison: the scan.py semantic projection never extends to them.
+        original = dict(self.original, job='security-scans')
+        database = dict(updated_at='2026-11-11T13:00:00Z', sha256='8' * 64,
+                        metadata_sha256='9' * 64)
+        receipt_bytes = json.dumps(dict(job_id='12', database=database)).encode()
+        artifact_bytes = archive({'security.json': receipt_bytes})
+        tools = dict(trivy=TRIVY_METADATA_CONTRACT_IMAGE, database_max_age_hours=72)
+        files = {'scripts/security/scan.py': TRIVY_METADATA_CONTRACT_SCANNER,
+                 'tools/ci/src/security.rs': '7' * 64}
+        context = dict(receipt_bytes=receipt_bytes, artifact_bytes=artifact_bytes,
+                       policy=dict(tools=tools, files=files))
+        resolver = self.resolver()
+        resolver.now = lambda: dt.datetime(2026, 11, 11, 20, tzinfo=dt.timezone.utc)
+        resolver._security = lambda request, receipt, context: receipt['database']
+        key = json.dumps(original, sort_keys=True), '12'
+        for metadata, accepted in (('9' * 64, True), ('a' * 64, False)):
+            with self.subTest(metadata=metadata):
+                resolver.database_witness = dict(database=dict(database, metadata_sha256=metadata),
+                    tools=tools, scanner_sha256=TRIVY_METADATA_CONTRACT_SCANNER,
+                    compiled_scanner_sha256='7' * 64)
+                resolver._authenticated[key] = context
+                if accepted:
+                    self.assertTrue(resolver.validate_original(original, receipt_bytes, artifact_bytes))
+                else:
+                    with self.assertRaisesRegex(ValueError, 'differs from authenticated fresh witness'):
+                        resolver.validate_original(original, receipt_bytes, artifact_bytes)
+        # A Python-scanner witness never matches a compiled-scanner original.
+        resolver.database_witness = dict(database=database, tools=tools,
+                                         scanner_sha256=TRIVY_METADATA_CONTRACT_SCANNER)
+        resolver._authenticated[key] = context
+        with self.assertRaises(ValueError):
+            resolver.validate_original(original, receipt_bytes, artifact_bytes)
+
     def test_wrong_job_policy_source_and_optional_job_refuse(self):
         for key, value in [('name', 'other'), ('allow_failure', True),
                            ('commit', {'id': '9' * 40}), ('runner', None)]:

@@ -400,6 +400,25 @@ class Reuse(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'scanner.*contract'):
                     compute_identity(self.requested, objects, database=DATABASE, now=NOW)
 
+    def test_compiled_scanner_policy_keeps_complete_database_identity_and_binds_its_source(self):
+        # A policy that runs tools/ci's compiled scanner gets no scan.py projection:
+        # metadata bytes stay in the identity, so distinct downloads never alias.
+        self.original['job'] = self.requested['job'] = 'security-scans'
+        for revision in (POLICY, HOST, SDK):
+            self.objects.files[CORE, revision]['tools/ci/src/security.rs'] = 'compiled scanner'
+        identity = compute_identity(self.requested, self.objects, database=DATABASE, now=NOW)
+        self.assertEqual(identity['database'], DATABASE)
+        witness = dict(DATABASE, metadata_sha256='e' * 64)
+        args = self.kwargs() | {'database': witness}
+        with self.assertRaisesRegex(ValueError, 'advisory database changed'):
+            make_proof(self.original, self.requested, self.objects, **args)
+        proof = self.proof()
+        verify_reuse(proof, self.requested, self.objects, **self.kwargs())
+        self.objects.changed(CORE, POLICY, 'tools/ci/src/security.rs', 'changed scanner')
+        self.assertNotEqual(compute_identity(dict(self.requested, policy=NEW), self.objects,
+                                             database=DATABASE, now=NOW)['policy_inputs_sha256'],
+                            identity['policy_inputs_sha256'])
+
     def test_security_changed_database_stale_database_or_changed_source_refuses(self):
         self.original['job'] = self.requested['job'] = 'security-scans'
         proof = self.proof()
