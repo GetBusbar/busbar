@@ -38,6 +38,13 @@ SCHEMA = 'busbar.plugin-dependency-units/1'
 PACKAGE = 'busbar-plugin-dependency-units'
 PROJECT_API = 'https://github.com/api/v4/projects/3'
 PRODUCER_JOB = 'plugin-dependency-units'
+# The producer runs as GitLab `parallel: PRODUCER_SHARDS`; the server names each
+# instance "plugin-dependency-units K/N". Every product belongs to exactly one
+# shard by a stable digest of its repository name, so one product is only ever
+# built by one shard index, and each shard index has its own resource_group:
+# consecutive dev pushes never write one package file twice.
+PRODUCER_SHARDS = 8
+PRODUCER_JOB_NAME = re.compile(re.escape(PRODUCER_JOB) + r' ([1-9][0-9]*)/' + str(PRODUCER_SHARDS))
 # Cargo fingerprints the absolute source path of every registry and Git unit.
 # Every confined invocation gets its private Cargo home at this one path, in the
 # producer and in every consumer job, so dependency fingerprints are portable.
@@ -485,6 +492,18 @@ def account(q):
 
 # --- Producer ------------------------------------------------------------------------
 
+def producer_shard(job_name):
+    """0-based shard of a server-named producer job, or None for any other job."""
+    match = PRODUCER_JOB_NAME.fullmatch(job_name or '')
+    if match is None or not 1 <= int(match[1]) <= PRODUCER_SHARDS:
+        return None
+    return int(match[1]) - 1
+
+
+def product_shard(repo):
+    return int(hashlib.sha256(repo.encode()).hexdigest(), 16) % PRODUCER_SHARDS
+
+
 def produce_product(q, product, policy, registry, *, image, upload=True):
     """Build one pinned product's dependency units from its stubbed manifest graph."""
     from check import resolve_shipping
@@ -561,12 +580,13 @@ def produce_product(q, product, policy, registry, *, image, upload=True):
 
 
 def produce(q, registry=None):
-    """Core dev push only: publish missing dependency units for every pinned product.
+    """Core dev push only: publish missing dependency units for this shard's pinned products.
 
     The YAML rule admits only core's dev push pipelines and GitLab restricts
     pushes to protected dev; consumers re-check the writing pipeline's ref.
     """
-    if not (q.repository == 'GetBusbar/busbar' and os.environ.get('CI_JOB_NAME') == PRODUCER_JOB
+    shard = producer_shard(os.environ.get('CI_JOB_NAME'))
+    if not (q.repository == 'GetBusbar/busbar' and shard is not None
             and os.environ.get('CI_PIPELINE_SOURCE') == 'push' and os.environ.get('CI_COMMIT_BRANCH') == 'dev'
             and q.execution is not None):
         from check import Violation
@@ -577,8 +597,11 @@ def produce(q, registry=None):
     vector = json.loads((q.root / 'scripts/ci-product-pins.json').read_text())
     rows = []
     q.receipt['dependency_units_produced'] = rows
+    q.receipt['dependency_units_shard'] = {'index': shard, 'total': PRODUCER_SHARDS}
     for product in vector['products']:
         repository = 'GetBusbar/' + product['repo']
+        if product_shard(product['repo']) != shard:
+            continue
         if repository not in q.policy.data['repositories'] or \
                 q.policy.data['repositories'][repository].get('language') == 'c':
             continue

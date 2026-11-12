@@ -40,8 +40,14 @@ CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
-JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic',
-        'plugin-dependency-units'}
+JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
+# Server-assigned names of the `parallel: 8` dependency-unit producer
+# (native_dep_cache.PRODUCER_JOB_NAME; tests pin that the two agree).
+DEPENDENCY_UNITS_JOB = re.compile(r'plugin-dependency-units [1-8]/8')
+
+
+def dependency_units_job(name):
+    return DEPENDENCY_UNITS_JOB.fullmatch(name or '') is not None
 HOST_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
 BASE_ENV = {'PATH': HOST_PATH,
             'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -74,7 +80,8 @@ def ci_environment(env):
             and result.get('CI_SERVER_HOST') == 'github.com', 'unexpected CI authority')
     for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_ID'):
         require(re.fullmatch(r'[1-9][0-9]*', result.get(key, '')), 'invalid CI identity')
-    require(result.get('CI_JOB_NAME') in JOBS, 'unrecognized protected bootstrap job')
+    require(result.get('CI_JOB_NAME') in JOBS or dependency_units_job(result.get('CI_JOB_NAME')),
+            'unrecognized protected bootstrap job')
     require(re.fullmatch(r'(?:GetBusbar|BusbarInc)/[A-Za-z0-9_.-]+', result.get('CI_PROJECT_PATH', '')),
             'invalid CI project')
     require(re.fullmatch(r'[0-9a-f]{40}', result.get('CI_COMMIT_SHA', '')), 'invalid source revision')
@@ -617,7 +624,7 @@ def root_main():
                 else:
                     import native_service_inputs
                     # The dependency-unit producer starts no service peer.
-                    receipt['service_inputs'] = {} if env['CI_JOB_NAME'] == 'plugin-dependency-units' else \
+                    receipt['service_inputs'] = {} if dependency_units_job(env['CI_JOB_NAME']) else \
                         native_service_inputs.stage(trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
                     capacity = os.statvfs(control)
                     require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
@@ -637,7 +644,7 @@ def root_main():
                         command.append('--conformance-only')
                     elif env['CI_JOB_NAME'] == 'external-conformance':
                         command.append('--external-conformance')
-                    elif env['CI_JOB_NAME'] == 'plugin-dependency-units':
+                    elif dependency_units_job(env['CI_JOB_NAME']):
                         command.append('--dependency-units')
                     try:
                         run(command, env=dict(os.environ), cwd=trusted)

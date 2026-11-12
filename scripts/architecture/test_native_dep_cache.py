@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+import unittest.mock
 
 import confinement_entry
 import native_confinement
@@ -297,6 +298,71 @@ class Portability(unittest.TestCase):
         self.assertEqual(cache.rebuilt_dependency_units(text, {'busbar-x'}),
                          ['serde v1.0.0', 'busbar-contract v1.6.0'])
 
+
+
+class ProducerShards(unittest.TestCase):
+    ROOT = Path(__file__).resolve().parents[2]
+
+    def test_only_server_named_parallel_instances_are_producers(self):
+        for index in range(1, cache.PRODUCER_SHARDS + 1):
+            self.assertEqual(cache.producer_shard(f'plugin-dependency-units {index}/{cache.PRODUCER_SHARDS}'),
+                             index - 1)
+        for name in (None, '', 'plugin-dependency-units', 'plugin-dependency-units 0/8',
+                     'plugin-dependency-units 9/8', 'plugin-dependency-units 1/4',
+                     'plugin-dependency-units 1/8 ', 'native-qualification', 'plugin-dependency-units: [1]'):
+            with self.subTest(name=name):
+                self.assertIsNone(cache.producer_shard(name))
+
+    def test_every_pinned_product_has_exactly_one_stable_shard(self):
+        products = json.loads((self.ROOT / 'scripts/ci-product-pins.json').read_text())['products']
+        shards = {}
+        for product in products:
+            shard = cache.product_shard(product['repo'])
+            self.assertIn(shard, range(cache.PRODUCER_SHARDS))
+            self.assertEqual(shard, cache.product_shard(product['repo']))
+            shards.setdefault(shard, []).append(product['repo'])
+        self.assertEqual(sum(map(len, shards.values())), len(products))
+        # A first fill stays bounded: no instance owns more than six products.
+        self.assertLessEqual(max(map(len, shards.values())), 6)
+
+    def test_pipeline_bootstrap_and_module_agree_on_producer_names(self):
+        import native_ci_bootstrap
+        yaml = (self.ROOT / 'ci/architecture-pipeline.yml').read_text()
+        job = yaml.split('\nplugin-dependency-units:\n', 1)[1].split('\n\n', 1)[0]
+        self.assertIn(f'\n  parallel: {cache.PRODUCER_SHARDS}\n', job)
+        self.assertIn('\n  resource_group: plugin-dependency-units-$CI_NODE_INDEX\n', job)
+        self.assertIn("re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME'])", yaml)
+        for name in ('plugin-dependency-units 1/8', 'plugin-dependency-units 8/8', 'plugin-dependency-units',
+                     'plugin-dependency-units 9/8', 'plugin-dependency-units 1/7'):
+            with self.subTest(name=name):
+                self.assertEqual(native_ci_bootstrap.dependency_units_job(name),
+                                 cache.producer_shard(name) is not None)
+
+    def test_producer_builds_only_its_own_shard(self):
+        products = [{'repo': 'busbar-plane-%02d' % index} for index in range(24)]
+        seen = []
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/ci-product-pins.json').write_text(json.dumps({'products': products}))
+            q = SimpleNamespace(repository='GetBusbar/busbar', execution=SimpleNamespace(config={'image': IMAGE}),
+                                receipt={}, root=root, save=lambda: None,
+                                policy=SimpleNamespace(data={'repositories': {
+                                    'GetBusbar/' + p['repo']: {'language': 'rust'} for p in products}}))
+            original = cache.produce_product
+            cache.produce_product = lambda q, product, *a, **k: seen.append(product['repo']) or {}
+            env = {'CI_JOB_NAME': 'plugin-dependency-units 3/8', 'CI_PIPELINE_SOURCE': 'push',
+                   'CI_COMMIT_BRANCH': 'dev'}
+            try:
+                with unittest.mock.patch.dict(os.environ, env):
+                    cache.produce(q, registry=object())
+                with unittest.mock.patch.dict(os.environ, env | {'CI_JOB_NAME': 'plugin-dependency-units'}):
+                    with self.assertRaisesRegex(Exception, 'protected core dev push producer'):
+                        cache.produce(q, registry=object())
+            finally:
+                cache.produce_product = original
+        self.assertEqual(seen, [p['repo'] for p in products if cache.product_shard(p['repo']) == 2])
+        self.assertEqual(q.receipt['dependency_units_shard'], {'index': 2, 'total': cache.PRODUCER_SHARDS})
 
 if __name__ == '__main__':
     unittest.main()
