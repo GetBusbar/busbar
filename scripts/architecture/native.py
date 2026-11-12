@@ -738,7 +738,12 @@ class Qualification:
                 ('selected-default', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', selected, *nextest]),
                 ('selected-errors', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', 'test(keys_error_surface_is_byte_stable) | test(every_admin_error_surface_answers_its_declared_status)', *nextest]),
                 ('timing-admin', ['cargo', 'nextest', 'run', '--locked', '-p', 'busbar-kernel', '-p', 'busbar-core-admin', '--features', 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema', '-E', 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))', *nextest]),
-                ('bounded-loom', ['cargo', 'test', '--release', '--locked', '-p', 'busbar-kernel', '--features', 'loom-model', 'txn_loom']),
+                # The txn_loom models are `#[cfg(all(test, feature = "loom-model"))]`
+                # unit tests of the kernel library. Listing both ways selects the
+                # same two tests in the same library test binary; the 27 kernel
+                # integration tests and 3 doctests match none, so `--lib` runs
+                # every test this step ran without 27 extra fat-LTO test links.
+                ('bounded-loom', ['cargo', 'test', '--release', '--locked', '-p', 'busbar-kernel', '--features', 'loom-model', '--lib', 'txn_loom']),
                 ('dependency-policy', ['cargo', 'deny', 'check']),
                 ('dependency-vet', ['cargo', 'vet']),
                 ('default-dependency-policy', ['cargo', 'deny', '--manifest-path', 'dist/default/Cargo.toml', 'check']),
