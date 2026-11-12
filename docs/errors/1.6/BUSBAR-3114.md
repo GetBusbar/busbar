@@ -32,13 +32,13 @@ auth:
 Busbar reports:
 
 ```text
-BUSBAR-3114: role_bindings.oidc.engineers names group 'eng', which does not exist.
+BUSBAR-3114: role_bindings.oidc.engineers names group 'eng', which does not exist. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3114
 Paste this under groups and set its limits:
 
   eng:
     limits:
       - { requests: 0, per: minute }
-. See https://getbusbar.com/docs/1.6/errors/BUSBAR-3114
+
 ```
 
 ---

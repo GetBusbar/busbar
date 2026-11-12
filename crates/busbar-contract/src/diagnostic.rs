@@ -288,14 +288,24 @@ impl Coded {
 }
 
 impl fmt::Display for Coded {
+    /// One line: `BUSBAR-NNNN: <detail>. See <link>`. A multi-line detail is a head and a list
+    /// (`config errors:` then `  - <item>` lines, each item carrying its own code): the head line
+    /// takes the code and the link, its trailing `:` or `.` dropped, and the rest follows unchanged.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (head, rest) = match self.detail.split_once('\n') {
+            Some((head, rest)) => (head.trim_end_matches([':', '.']), Some(rest)),
+            None => (self.detail.as_str(), None),
+        };
         write!(
             f,
-            "{}: {}. See {}",
+            "{}: {head}. See {}",
             Banner(self.code),
-            self.detail,
             DocsUrl(self.code)
-        )
+        )?;
+        match rest {
+            Some(rest) => write!(f, "\n{rest}"),
+            None => Ok(()),
+        }
     }
 }
 
