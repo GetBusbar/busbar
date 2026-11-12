@@ -1373,7 +1373,7 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
 
     let mut t = tail();
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    t.flags = TAIL_AUTHENTICATED_ROUTE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -2090,7 +2090,10 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
     t.flags = TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    // 814fcc22bc made bit 4 (`TAIL_AUTHENTICATED_ROUTE`) known; the first unknown bit is past it.
+    t.flags = TAIL_HOOKS_GATED | TAIL_AUTHENTICATED_ROUTE;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_AUTHENTICATED_ROUTE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
@@ -2100,7 +2103,7 @@ fn a_tail_may_take_a_credential_refusal_as_a_piece() {
     let mut t = tail();
     t.flags = TAIL_REFUSED_PIECE | TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_REFUSED_PIECE << 1;
+    t.flags = TAIL_AUTHENTICATED_ROUTE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
@@ -3447,7 +3450,7 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     o.pool = s("a, b");
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
-    o.route = ROUTE_SCOPE_LOCAL + 1;
+    o.route = ROUTE_AUTHENTICATED + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route")

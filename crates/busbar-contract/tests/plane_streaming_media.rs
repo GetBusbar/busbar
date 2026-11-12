@@ -49,10 +49,18 @@ fn streaming_media_are_signed_and_old_tail_allocations_render_an_empty_list() {
 
     // The historical fixture pins the old allocation's payload. Rendering uses
     // the current mechanism header even when the tail has its historical size.
+    // The fixture is a BBSTMT03 rendering; BBSTMT04 (fba670826c) appends the
+    // measurement-class list, empty here, after the unchanged payload.
     let mut historical = include_bytes!("fixtures/plane-before-streaming.bbstmt").to_vec();
+    assert_eq!(
+        &historical[..8],
+        rendering::RENDERING_MAGIC_WITHOUT_MEASUREMENTS
+    );
     assert_eq!(&historical[8..12], &2_u32.to_le_bytes());
+    historical[..8].copy_from_slice(rendering::RENDERING_MAGIC);
     historical[8..12]
         .copy_from_slice(&busbar_contract::abi::mechanism::MECHANISM_VERSION.to_le_bytes());
+    historical.extend_from_slice(&0_u32.to_le_bytes());
     assert_eq!(legacy_bytes, historical);
     let legacy = rendering::read(&legacy_bytes).unwrap();
     let empty = PlaneTail {
