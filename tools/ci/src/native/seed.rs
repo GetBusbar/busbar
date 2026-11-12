@@ -99,9 +99,37 @@ fn need_value(ok: bool, message: &str) -> R<()> {
     sp::need_value(ok, message)
 }
 
-/// `manifest_snapshot(source, destination, revision)`: Cargo's graph without
-/// executing or staging candidate source code.
-pub fn manifest_snapshot(source: &Path, destination: &Path, revision: Option<&str>) -> R<()> {
+/// Git reading a canonical checkout owned by the fetch identity, not the
+/// controller: trust exactly this checkout (clearing any inherited list),
+/// nothing wider.
+pub fn trusted_git(source: &Path) -> Vec<String> {
+    let text = sp::text(source);
+    sp::strings(&[
+        "git",
+        "-c",
+        "safe.directory=",
+        "-c",
+        &format!("safe.directory={text}"),
+        "-C",
+        &text,
+    ])
+}
+
+fn trusted_git_args(source: &Path, args: &[&str]) -> Vec<String> {
+    let mut argv = trusted_git(source);
+    argv.extend(args.iter().map(|a| (*a).to_owned()));
+    argv
+}
+
+/// `manifest_snapshot(source, destination, revision, keep_patched)`: Cargo's
+/// graph without executing or staging candidate source code. Returns the root
+/// manifest's `[patch.*]` path directories whose real bytes were kept.
+pub fn manifest_snapshot(
+    source: &Path,
+    destination: &Path,
+    revision: Option<&str>,
+    keep_patched: bool,
+) -> R<Vec<PathBuf>> {
     sp::mkdirs(destination, false)?;
     let mut paths: Vec<PathBuf> = Vec::new();
     match revision {
@@ -136,15 +164,10 @@ pub fn manifest_snapshot(source: &Path, destination: &Path, revision: Option<&st
             walk(source, source, &mut paths)?;
         }
         Some(revision) => {
-            let output = sp::check_output(Spec::new(sp::strings(&[
-                "git",
-                "-C",
-                &sp::text(source),
-                "ls-tree",
-                "-r",
-                "-z",
-                revision,
-            ])))?;
+            let output = sp::check_output(Spec::new(trusted_git_args(
+                source,
+                &["ls-tree", "-r", "-z", revision],
+            )))?;
             for row in output.split(|b| *b == 0).filter(|r| !r.is_empty()) {
                 let tab = row.iter().position(|b| *b == b'\t').ok_or_else(|| {
                     value_error("not enough values to unpack (expected 2, got 1)")
@@ -171,6 +194,20 @@ pub fn manifest_snapshot(source: &Path, destination: &Path, revision: Option<&st
             }
         }
     }
+    let read = |relative: &Path| -> R<Vec<u8>> {
+        match revision {
+            None => sp::read(&source.join(relative)),
+            Some(revision) => sp::check_output(Spec::new(trusted_git_args(
+                source,
+                &["show", &format!("{revision}:{}", sp::text(relative))],
+            ))),
+        }
+    };
+    let kept = if keep_patched {
+        patched_paths(&read(Path::new("Cargo.toml"))?)?
+    } else {
+        Vec::new()
+    };
     for relative in paths {
         if relative.is_absolute() || relative.components().any(|c| c.as_os_str() == "..") {
             return Err(violation("manifest graph path escapes source"));
@@ -180,23 +217,58 @@ pub fn manifest_snapshot(source: &Path, destination: &Path, revision: Option<&st
             sp::mkdirs(parent, true)?;
         }
         let name = relative.file_name().unwrap_or_default();
-        let data = if name == "Cargo.toml" || name == "Cargo.lock" {
-            match revision {
-                None => sp::read(&source.join(&relative))?,
-                Some(revision) => sp::check_output(Spec::new(sp::strings(&[
-                    "git",
-                    "-C",
-                    &sp::text(source),
-                    "show",
-                    &format!("{revision}:{}", sp::text(&relative)),
-                ])))?,
-            }
-        } else {
-            Vec::new()
-        };
+        // Non-manifest bytes cannot affect dependency collection. Empty files
+        // preserve explicit target/build/readme names. A [patch] path crate
+        // replaces a registry crate that registry code compiles against, so the
+        // producer needs its real source.
+        let real = name == "Cargo.toml"
+            || name == "Cargo.lock"
+            || kept.iter().any(|prefix| relative.starts_with(prefix));
+        let data = if real { read(&relative)? } else { Vec::new() };
         sp::write(&target, data)?;
     }
-    Ok(())
+    Ok(kept)
+}
+
+/// Relative directories of the root manifest's `[patch.*]` path entries.
+pub fn patched_paths(manifest: &[u8]) -> R<Vec<PathBuf>> {
+    use std::path::Component;
+    let escapes = || violation("patched path escapes the manifest graph");
+    let document = crate::product::toml(manifest)?;
+    let mut kept = Vec::new();
+    let Some(patch) = document.get("patch") else {
+        return Ok(kept);
+    };
+    let tables = patch
+        .as_object()
+        .ok_or_else(|| value_error("[patch] must be a table"))?;
+    for (_, table) in tables {
+        let entries = table
+            .as_object()
+            .ok_or_else(|| value_error("[patch] source must be a table"))?;
+        for (_, entry) in entries {
+            let Some(path) = entry.get("path") else {
+                continue;
+            };
+            let path = path
+                .as_str()
+                .ok_or_else(|| value_error("[patch] path must be a string"))?;
+            let mut normal = PathBuf::new();
+            for component in Path::new(path).components() {
+                match component {
+                    Component::Normal(part) => normal.push(part),
+                    Component::CurDir => {}
+                    _ => return Err(escapes()),
+                }
+            }
+            let first = normal.components().next().map(|c| c.as_os_str().to_owned());
+            if first.is_none_or(|f| f == ".git" || f == ".cargo") {
+                return Err(escapes());
+            }
+            kept.push(normal);
+        }
+    }
+    Ok(kept)
 }
 
 struct LockInput {
@@ -240,13 +312,10 @@ fn lock_inputs(
     for product in super::sources::standalone_products(&q.repository, q.evaluation_only, vector)? {
         let repo = sp::at_str(&product, "repo")?;
         let commit = sp::at_str(&product, "commit")?;
-        let data = sp::check_output(Spec::new(sp::strings(&[
-            "git",
-            "-C",
-            &sp::text(&canonical.join(repo)),
-            "show",
-            &format!("{commit}:Cargo.lock"),
-        ])))?;
+        let data = sp::check_output(Spec::new(trusted_git_args(
+            &canonical.join(repo),
+            &["show", &format!("{commit}:Cargo.lock")],
+        )))?;
         need(
             sha256::hex(&data) == sp::at_str(&product, "lock_sha256")?,
             "job seed product lock differs from admitted vector",
@@ -292,7 +361,12 @@ pub fn prepare(q: &mut Q) -> R<()> {
         let lock = crate::product::toml(&input.data)?;
         let rows = packages(&lock)?;
         let destination = context.join("locks").join(index.to_string());
-        manifest_snapshot(&input.source, &destination, input.revision.as_deref())?;
+        manifest_snapshot(
+            &input.source,
+            &destination,
+            input.revision.as_deref(),
+            false,
+        )?;
         let name = if input.relative == "." {
             index.to_string()
         } else {
@@ -673,6 +747,60 @@ mod tests {
     }
 
     #[test]
+    fn seed_git_reads_trust_exactly_the_canonical_checkout() {
+        // Canonical inputs are owned by the fetch identity, not the controller:
+        // clear any inherited safe.directory list, then trust only this checkout.
+        assert_eq!(
+            trusted_git(Path::new("/srv/canonical/busbar-plane-mcp")),
+            sp::strings(&[
+                "git",
+                "-c",
+                "safe.directory=",
+                "-c",
+                "safe.directory=/srv/canonical/busbar-plane-mcp",
+                "-C",
+                "/srv/canonical/busbar-plane-mcp",
+            ])
+        );
+        let base =
+            sp::resolve(&std::env::temp_dir()).join(format!("busbar-ci-seed-{}", sp::uuid_hex()));
+        let source = base.join("source");
+        std::fs::create_dir_all(source.join("src")).unwrap();
+        std::fs::write(source.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        std::fs::write(source.join("src/lib.rs"), "secret code").unwrap();
+        let git = |args: &[&str]| {
+            let mut argv = trusted_git(&source);
+            argv.extend(args.iter().map(|a| (*a).to_owned()));
+            sp::check_output(Spec::new(argv)).unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "-m",
+            "x",
+        ]);
+        let head = String::from_utf8(git(&["rev-parse", "HEAD"])).unwrap();
+        std::fs::write(source.join("Cargo.toml"), "worktree only").unwrap();
+        manifest_snapshot(&source, &base.join("out"), Some(head.trim()), false).unwrap();
+        assert_eq!(
+            std::fs::read(base.join("out/Cargo.toml")).unwrap(),
+            b"[package]\nname = \"x\"\n"
+        );
+        assert_eq!(std::fs::read(base.join("out/src/lib.rs")).unwrap(), b"");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn manifest_snapshot_keeps_only_graph_bytes() {
         let base =
             sp::resolve(&std::env::temp_dir()).join(format!("busbar-ci-seed-{}", sp::uuid_hex()));
@@ -682,7 +810,7 @@ mod tests {
         std::fs::write(source.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
         std::fs::write(source.join("src/lib.rs"), "secret code").unwrap();
         std::fs::write(source.join("target/debug/out"), "x").unwrap();
-        manifest_snapshot(&source, &base.join("out"), None).unwrap();
+        manifest_snapshot(&source, &base.join("out"), None, false).unwrap();
         assert_eq!(
             std::fs::read(base.join("out/Cargo.toml")).unwrap(),
             b"[package]\nname = \"x\"\n"
@@ -691,7 +819,7 @@ mod tests {
         assert!(!base.join("out/target").exists());
         std::os::unix::fs::symlink("/etc/passwd", source.join("link")).unwrap();
         assert_eq!(
-            manifest_snapshot(&source, &base.join("out2"), None)
+            manifest_snapshot(&source, &base.join("out2"), None, false)
                 .unwrap_err()
                 .message,
             "indirect manifest graph input"
