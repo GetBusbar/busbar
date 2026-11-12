@@ -59,9 +59,20 @@ def native_scheduling(execution):
 OPTIMIZED_STEPS = frozenset({'product-inputs', 'bounded-loom', 'final-binary'})
 
 
+UNOPTIMIZED_CARGO_COMMANDS = frozenset({'check', 'clippy', 'test', 'nextest', 'build', 'doc'})
+
+
 def step_build_jobs(name, argv, scheduling):
-    """Optimized builds keep the conservative slot budget; unoptimized ones use the CPUs."""
-    if name in OPTIMIZED_STEPS or '--release' in argv or 'unoptimized_build_jobs' not in scheduling:
+    """Only a visible unoptimized cargo command gets the wider budget.
+
+    Wrapper scripts (bash/python drivers) may build optimized binaries inside,
+    as a plugin's runtime preparation does with its LTO release build, so they
+    keep the conservative slot budget like every optimized step.
+    """
+    argv = [str(arg) for arg in argv]
+    unoptimized = (len(argv) >= 2 and argv[0] == 'cargo' and argv[1] in UNOPTIMIZED_CARGO_COMMANDS
+                   and '--release' not in argv and not any(a.startswith('--profile') for a in argv))
+    if name in OPTIMIZED_STEPS or not unoptimized or 'unoptimized_build_jobs' not in scheduling:
         return scheduling['build_jobs']
     return scheduling['unoptimized_build_jobs']
 
