@@ -231,8 +231,13 @@ def core_regression_only(path):
 def ast_shape(node):
     """Version-stable shape for Python 3.11+; positions/comments are not code."""
     if isinstance(node, ast.AST):
-        return {'node': type(node).__name__, **{name: ast_shape(getattr(node, name))
+        shape = {'node': type(node).__name__, **{name: ast_shape(getattr(node, name))
                 for name in node._fields if not (name == 'type_params' and not getattr(node, name))}}
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            # Before Python 3.15 imports were always eager. Preserve the 3.15
+            # approved hashes without discarding a nonzero lazy-import flag.
+            shape.setdefault('is_lazy', 0)
+        return shape
     if isinstance(node, list):
         return [ast_shape(value) for value in node]
     return node
