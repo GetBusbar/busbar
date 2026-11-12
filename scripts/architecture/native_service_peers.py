@@ -467,8 +467,11 @@ class Peers:
             time.sleep(.5)
 
     def provision(self, requested):
-        for service in requested:
-            peer = self.start(service)
+        # Start every peer before waiting on any: database initialisation and
+        # JVM/LDAP boot then overlap instead of running back to back. Each
+        # peer keeps its own bounded readiness check, in the same order.
+        peers = [(service, self.start(service)) for service in requested]
+        for service, peer in peers:
             port = peer['port']
             if service == 'postgres':
                 self.wait(service, ['pg_isready', '-U', 'busbar'])
