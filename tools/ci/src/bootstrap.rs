@@ -39,7 +39,7 @@ const ROOT: &str = "/srv/busbar-native-ci";
 const STAGING: &str = "/var/lib/busbar-native";
 const BUILDS: &str = "/home/fleeting/builds";
 const ENTRY_PREFIX: &str = "/run/busbar-ci-root.";
-const CI_KEYS: [&str; 16] = [
+const CI_KEYS: [&str; 17] = [
     "CI_JOB_ID",
     "CI_PIPELINE_ID",
     "CI_PROJECT_ID",
@@ -49,6 +49,7 @@ const CI_KEYS: [&str; 16] = [
     "CI_PIPELINE_SOURCE",
     "CI_COMMIT_SHA",
     "CI_COMMIT_BRANCH",
+    "CI_COMMIT_REF_PROTECTED",
     "CI_CONFIG_REF_URI",
     "CI_SERVER_HOST",
     "CI_SERVER_URL",
@@ -145,6 +146,13 @@ pub fn ci_environment(env: &Env) -> Result<Env> {
         "protected host revision must be immutable",
     )?;
     require(
+        matches!(
+            result.get("CI_COMMIT_REF_PROTECTED").map(String::as_str),
+            None | Some("true" | "false")
+        ),
+        "invalid ref protection",
+    )?;
+    require(
         project == "GetBusbar/busbar" || host.is_some(),
         "plugin qualification requires its protected immutable host revision",
     )?;
@@ -226,6 +234,124 @@ pub fn verify_trusted(path: &Path, revision: &str) -> Result<()> {
         "untracked controller source",
     )?;
     Ok(())
+}
+
+/// One `native_preparation` timing row for a bootstrap sub-phase.
+fn phase_row(name: &str, started_at: &str, elapsed: Duration, status: &str) -> Value {
+    object([
+        ("name", format!("bootstrap.{name}").into()),
+        ("started_at", started_at.into()),
+        ("status", status.into()),
+        ("finished_at", crate::retention::utc_now().into()),
+        (
+            "elapsed_seconds",
+            crate::native::sp::round_float(elapsed.as_secs_f64(), 3),
+        ),
+    ])
+}
+
+/// One JSON timing line per bootstrap sub-phase, in the native_preparation style.
+fn emit_phase(name: &str, started_at: &str, elapsed: Duration, status: &str) {
+    let line = json::dumps(
+        &object([(
+            "native_preparation",
+            phase_row(name, started_at, elapsed, status),
+        )]),
+        false,
+    );
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+fn timed_with<T>(
+    name: &str,
+    sink: &mut dyn FnMut(Value),
+    body: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let (started, clock) = (crate::retention::utc_now(), Instant::now());
+    let result = body();
+    let status = if result.is_ok() { "pass" } else { "fail" };
+    sink(phase_row(name, &started, clock.elapsed(), status));
+    result
+}
+
+/// Time one bootstrap sub-phase; a failing phase is reported, then propagated.
+fn timed<T>(name: &str, body: impl FnOnce() -> Result<T>) -> Result<T> {
+    timed_with(
+        name,
+        &mut |row| {
+            let line = json::dumps(&object([("native_preparation", row)]), false);
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{line}");
+            let _ = out.flush();
+        },
+        body,
+    )
+}
+
+/// Run two independent steps in threads; fail closed.
+///
+/// Both branches are always joined before returning, so neither is left running
+/// over partial state. If either failed, the first failure (in argument order)
+/// is returned and the caller must treat the whole step as failed.
+fn concurrently<A: Send, B: Send>(
+    first: impl FnOnce() -> Result<A> + Send,
+    second: impl FnOnce() -> Result<B> + Send,
+) -> Result<(A, B)> {
+    let (a, b) = std::thread::scope(|scope| {
+        let a = scope.spawn(first);
+        let b = scope.spawn(second);
+        (a.join(), b.join())
+    });
+    let a = a.map_err(|_| "concurrent bootstrap step panicked".to_owned())?;
+    let b = b.map_err(|_| "concurrent bootstrap step panicked".to_owned())?;
+    Ok((a?, b?))
+}
+
+/// Identity check of an already-present tool image from the daemon's own
+/// record; `None` when the daemon lacks it. The same Id/platform/RootFS/Config
+/// comparison as a load applies: a present image that differs is refused.
+fn tool_image_identity(
+    inspected: Option<&Value>,
+    image: &str,
+    metadata: &images::ToolMetadata,
+    allowed: &[String],
+) -> Result<Option<String>> {
+    require(
+        allowed.iter().any(|a| a == image),
+        "unverified image selected for inspection",
+    )?;
+    let Some(inspected) = inspected else {
+        return Ok(None);
+    };
+    images::verify_loaded(inspected.index(0), &metadata.config, allowed, "tool").map(Some)
+}
+
+/// `docker image inspect` that distinguishes an absent image (`None`).
+fn inspect_tool_image(
+    endpoint: &str,
+    image: &str,
+    metadata: &images::ToolMetadata,
+    env: &[(String, String)],
+) -> Result<Option<String>> {
+    require(
+        allowed_ids(metadata).iter().any(|a| a == image),
+        "unverified image selected for inspection",
+    )?;
+    let options = Options {
+        env: env.to_vec(),
+        capture: true,
+        timeout: Some(Duration::from_secs(120)),
+        ..Default::default()
+    };
+    let output = proc::run(&docker(endpoint, &["image", "inspect", image]), &options)?;
+    let inspected = if output.status.success() {
+        Some(json::parse(&output.stdout)?)
+    } else {
+        None
+    };
+    tool_image_identity(inspected.as_ref(), image, metadata, &allowed_ids(metadata))
 }
 
 fn docker(host: &str, args: &[&str]) -> Vec<String> {
@@ -441,11 +567,21 @@ fn outer(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let archive = work.join("public-tools.tar");
-    fetch::fetch(PACKAGE, &token, &archive, ARCHIVE_BYTES, ARCHIVE_SHA256)?;
+    // The one and only pass over these bytes in the unprivileged bootstrap.
+    let (started, clock) = (crate::retention::utc_now(), Instant::now());
+    let hashing = fetch::fetch_timed(PACKAGE, &token, &archive, ARCHIVE_BYTES, ARCHIVE_SHA256)?;
+    let total = clock.elapsed();
     io(
         fs::set_permissions(&archive, fs::Permissions::from_mode(0o444)),
         &archive,
     )?;
+    emit_phase(
+        "tool_archive_download",
+        &started,
+        total.saturating_sub(hashing),
+        "pass",
+    );
+    emit_phase("tool_archive_hash", &started, hashing, "pass");
     let name = format!("busbar-root-controller-{}", env["CI_JOB_ID"]);
     let mut client_env = base_env();
     client_env.push(("HOME".into(), path_text(&work)));
@@ -457,7 +593,9 @@ fn outer(args: &[String]) -> Result<()> {
         &docker_config,
     )?;
     let result = (|| -> Result<()> {
-        let image = load_tool_image(&archive, HOST_DOCKER, &client_env, &token)?;
+        let image = timed("host_image_load", || {
+            load_tool_image(&archive, HOST_DOCKER, &client_env, &token)
+        })?;
         let environment = Value::Object(
             env.iter()
                 .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
@@ -992,7 +1130,9 @@ struct Root {
     trusted: PathBuf,
     revision: String,
     image: String,
-    metadata: images::ToolMetadata,
+    /// Written by the unprivileged bootstrap; read once, digest and metadata
+    /// from the same bytes (no copy), and never used for anything else.
+    archive: PathBuf,
     self_binary: PathBuf,
 }
 
@@ -1086,13 +1226,6 @@ fn root(payload: Value, self_binary: PathBuf) -> Result<()> {
         sha256::file(Path::new(DOCKER))? == DOCKER_SHA256,
         "administrator bootstrap inputs changed",
     )?;
-    // Digest and metadata come from one pass over the same bytes: no 939 MB copy.
-    let metadata = images::verified_tool_metadata(
-        &work.join("public-tools.tar"),
-        ARCHIVE_SHA256,
-        ARCHIVE_BYTES,
-        MANIFEST,
-    )?;
     let control = job_directory(&Path::new(ROOT).join(format!("job-{}", env["CI_JOB_ID"])))?;
     let mut controller_env: BTreeMap<String, String> = base_env().into_iter().collect();
     controller_env.extend(env.clone());
@@ -1110,13 +1243,15 @@ fn root(payload: Value, self_binary: PathBuf) -> Result<()> {
         &home,
     )?;
     let trusted = control.join("trusted");
-    copy_tree(&original_trusted, &trusted, true, false)?;
-    // Published source is mounted read-only in candidate invocations.
-    io(
-        fs::set_permissions(&trusted, fs::Permissions::from_mode(0o755)),
-        &trusted,
-    )?;
-    verify_trusted(&trusted, &revision)?;
+    timed("trusted_tree_copy", || {
+        copy_tree(&original_trusted, &trusted, true, false)?;
+        // Published source is mounted read-only in candidate invocations.
+        io(
+            fs::set_permissions(&trusted, fs::Permissions::from_mode(0o755)),
+            &trusted,
+        )?;
+        verify_trusted(&trusted, &revision)
+    })?;
     let state = Root {
         env,
         controller_env: controller_env.into_iter().collect(),
@@ -1125,7 +1260,7 @@ fn root(payload: Value, self_binary: PathBuf) -> Result<()> {
         trusted,
         revision,
         image,
-        metadata,
+        archive: work.join("public-tools.tar"),
         self_binary,
     };
     state.run()
@@ -1253,8 +1388,41 @@ impl Root {
                 capacity(&self.control)?.into(),
             );
             let isolation_config = config.at("isolation").clone();
-            receipt.set("storage", isolation::prepare(&isolation_config)?);
-            *mounted = true;
+            // Disk-bound filesystem creation overlaps the one hashing pass over
+            // the tool archive; both must succeed before anything uses either.
+            // A mounted-but-incomplete state is disposed here, never carried forward.
+            let created = std::sync::atomic::AtomicBool::new(false);
+            let overlapped = concurrently(
+                || {
+                    timed("filesystem_create", || {
+                        let storage = isolation::prepare(&isolation_config)?;
+                        created.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(storage)
+                    })
+                },
+                || {
+                    timed("tool_archive_root_hash", || {
+                        images::verified_tool_metadata(
+                            &self.archive,
+                            ARCHIVE_SHA256,
+                            ARCHIVE_BYTES,
+                            MANIFEST,
+                        )
+                    })
+                },
+            );
+            *mounted = created.load(std::sync::atomic::Ordering::SeqCst);
+            let (storage, metadata) = match overlapped {
+                Ok(both) => both,
+                Err(error) => {
+                    if *mounted {
+                        isolation::dispose(&isolation_config)?;
+                        *mounted = false;
+                    }
+                    return Err(error);
+                }
+            };
+            receipt.set("storage", storage);
             let store = PathBuf::from(isolation_config.at("storage_root").as_str().unwrap());
             // Both candidate daemon and its containerd inherit this mounted root.
             let log_path = evidence.join("bootstrap-daemon.log");
@@ -1293,6 +1461,7 @@ impl Root {
                 receipt,
                 supervisor,
                 &store,
+                &metadata,
                 &mut workload_started,
             );
             *success = inner.is_ok();
@@ -1352,10 +1521,12 @@ impl Root {
         receipt: &mut Value,
         supervisor: &mut Option<Child>,
         store: &Path,
+        metadata: &images::ToolMetadata,
         workload_started: &mut bool,
     ) -> Result<()> {
         let token = self.env["CI_JOB_TOKEN"].clone();
         let env = base_env();
+        let (daemon_started, daemon_clock) = (crate::retention::utc_now(), Instant::now());
         let info = wait_ready(
             Duration::from_secs(60),
             Duration::from_millis(250),
@@ -1380,19 +1551,41 @@ impl Root {
                 .and_then(|o| json::parse(&o.stdout).ok())
             },
         )?;
+        emit_phase(
+            "private_daemon_start",
+            &daemon_started,
+            daemon_clock.elapsed(),
+            "pass",
+        );
         isolation::validate_userns(config.at("isolation"), &info)?;
-        let candidate = load_private_image(endpoint, &self.image, &self.metadata, &token)?;
+        let checkout = store.join("checkout");
+        let diagnostic = self.env["CI_JOB_NAME"] == "native-isolation-diagnostic";
+        // The checkout copy only needs the mounted store, not the daemon.
+        // Both branches are joined; either failing fails the job.
+        let (candidate, ()) = concurrently(
+            || {
+                timed("private_image_load", || {
+                    load_private_image(endpoint, &self.image, metadata, &token)
+                })
+            },
+            || {
+                if diagnostic {
+                    return Ok(());
+                }
+                timed("checkout_copy", || {
+                    copy_tree(&self.original_checkout, &checkout, true, false)
+                })
+            },
+        )?;
         config.set("image", candidate.as_str().into());
         // The administrator entry already imported and verified this image on
-        // the host daemon; re-verify its execution identity instead of a third
-        // 939 MB import.
-        let host = docker_json(HOST_DOCKER, &["image", "inspect", &self.image], &env)?;
-        let collector = images::verify_loaded(
-            host.index(0),
-            &self.metadata.config,
-            &allowed_ids(&self.metadata),
-            "tool",
-        )?;
+        // the host daemon; re-verify its execution identity by inspection
+        // instead of a third 939 MB import. The private load above exported it
+        // from the host daemon, so an absent image fails closed.
+        let collector = timed("collector_image_check", || {
+            inspect_tool_image(HOST_DOCKER, &self.image, metadata, &env)?
+                .ok_or_else(|| "administrator tool image is absent from the host daemon".into())
+        })?;
         require(
             collector == self.image,
             "administrator image identity changed",
@@ -1464,8 +1657,6 @@ impl Root {
             capacity(&self.control)? >= reserve,
             "service image imports would consume the protected host disk reserve",
         )?;
-        let checkout = store.join("checkout");
-        copy_tree(&self.original_checkout, &checkout, true, false)?;
         let work = store.join(format!(
             "boundary-{}-{}",
             self.env["CI_PROJECT_ID"], self.env["CI_JOB_ID"]
@@ -1809,6 +2000,164 @@ mod tests {
             assert!(revision(&bad, "GetBusbar/busbar").is_err(), "{bad}");
         }
         assert!(revision(&good, "GetBusbar/other").is_err());
+    }
+
+    #[test]
+    fn collector_inspects_present_image_and_refuses_mismatch_or_absence() {
+        let config = json::parse(
+            br#"{"architecture": "amd64", "os": "linux", "config": {"Cmd": ["fixed"]},
+                 "rootfs": {"type": "layers", "diff_ids": ["sha256:aaaa"]}}"#,
+        )
+        .unwrap();
+        let metadata = images::ToolMetadata {
+            config,
+            config_sha256: "c".repeat(64),
+        };
+        let manifest = format!("sha256:{}", "d".repeat(64));
+        let allowed = vec![manifest.clone(), format!("sha256:{}", "c".repeat(64))];
+        let mut actual = json::parse(
+            format!(
+                r#"[{{"Id": "sha256:{}", "Config": {{"Cmd": ["fixed"]}}, "Os": "linux",
+                "Architecture": "amd64", "RootFS": {{"Type": "layers", "Layers": ["sha256:aaaa"]}}}}]"#,
+                "c".repeat(64)
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let id = format!("sha256:{}", "c".repeat(64));
+        // Present and identical: the inspected identity, no load.
+        assert_eq!(
+            tool_image_identity(Some(&actual), &id, &metadata, &allowed).unwrap(),
+            Some(id.clone())
+        );
+        // Absent: None (the caller fails closed; it never reloads).
+        assert_eq!(
+            tool_image_identity(None, &id, &metadata, &allowed).unwrap(),
+            None
+        );
+        // Present but different content or identity: refuse.
+        let Value::Array(rows) = &mut actual else {
+            unreachable!()
+        };
+        rows[0].set(
+            "RootFS",
+            json::parse(br#"{"Type": "layers", "Layers": ["sha256:ffff"]}"#).unwrap(),
+        );
+        assert!(
+            tool_image_identity(Some(&actual), &manifest, &metadata, &allowed)
+                .unwrap_err()
+                .contains("execution content")
+        );
+        let Value::Array(rows) = &mut actual else {
+            unreachable!()
+        };
+        rows[0].set("Id", format!("sha256:{}", "f".repeat(64)).into());
+        assert!(
+            tool_image_identity(Some(&actual), &manifest, &metadata, &allowed)
+                .unwrap_err()
+                .contains("identity")
+        );
+        assert!(
+            tool_image_identity(Some(&actual), "floating:tag", &metadata, &allowed)
+                .unwrap_err()
+                .contains("unverified")
+        );
+    }
+
+    #[test]
+    fn concurrent_branches_are_all_joined_and_either_failure_fails_the_step() {
+        use std::sync::Mutex;
+        for failing in ["storage", "archive"] {
+            let finished = Mutex::new(Vec::new());
+            let branch = |name: &'static str| {
+                let finished = &finished;
+                move || -> Result<()> {
+                    if name == failing {
+                        return Err(format!("{name} failed"));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                    finished.lock().unwrap().push(name);
+                    Ok(())
+                }
+            };
+            let error = concurrently(branch("storage"), branch("archive")).unwrap_err();
+            assert_eq!(error, format!("{failing} failed"));
+            // The healthy branch ran to completion before the failure surfaced.
+            let healthy: Vec<&str> = ["storage", "archive"]
+                .into_iter()
+                .filter(|n| *n != failing)
+                .collect();
+            assert_eq!(*finished.lock().unwrap(), healthy);
+        }
+        // Both failing: the first in argument order is reported.
+        assert_eq!(
+            concurrently(
+                || -> Result<()> { Err("first".into()) },
+                || -> Result<()> { Err("second".into()) }
+            )
+            .unwrap_err(),
+            "first"
+        );
+        assert_eq!(concurrently(|| Ok(1), || Ok(2)).unwrap(), (1, 2));
+    }
+
+    #[test]
+    fn timing_lines_follow_the_native_preparation_shape() {
+        let mut rows = Vec::new();
+        timed_with("checkout_copy", &mut |row| rows.push(row), || Ok(())).unwrap();
+        let failed: Result<()> =
+            timed_with("private_image_load", &mut |row| rows.push(row), || {
+                Err("x".into())
+            });
+        assert_eq!(failed.unwrap_err(), "x");
+        let shape: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.at("name").as_str().unwrap(),
+                    r.at("status").as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("bootstrap.checkout_copy", "pass"),
+                ("bootstrap.private_image_load", "fail")
+            ]
+        );
+        for row in &rows {
+            assert_eq!(
+                row.keys(),
+                [
+                    "name",
+                    "started_at",
+                    "status",
+                    "finished_at",
+                    "elapsed_seconds"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn server_ref_protection_reaches_the_controller() {
+        // Producer and dev-credit checks read CI_COMMIT_REF_PROTECTED inside the
+        // root controller; dropping it here refused every protected producer run.
+        for value in ["true", "false"] {
+            let selected = ci_environment(&with("CI_COMMIT_REF_PROTECTED", value)).unwrap();
+            assert_eq!(selected["CI_COMMIT_REF_PROTECTED"], value);
+        }
+        assert!(
+            !ci_environment(&environment())
+                .unwrap()
+                .contains_key("CI_COMMIT_REF_PROTECTED")
+        );
+        assert!(
+            ci_environment(&with("CI_COMMIT_REF_PROTECTED", "yes"))
+                .unwrap_err()
+                .contains("ref protection")
+        );
     }
 
     #[test]
