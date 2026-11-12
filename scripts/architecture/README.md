@@ -41,7 +41,10 @@ from canonical repositories into a task-local cache. Cargo receives credential-f
 local URL mappings while source identities and lockfiles stay unchanged. This permits
 qualification before public stage mirrors advance, without publishing candidate branches.
 
-`native.py` refuses execution outside GitLab. It runs the existing required full suites
+The confined step runner is the pinned controller's `busbar-ci native-qualify` command
+(`tools/ci/src/native`; `native.py` and its `native_*` modules are its former Python form,
+kept for the architecture step's confinement and the release-dispatch fingerprints). It
+refuses execution outside GitLab. It runs the existing required full suites
 and assembled-product checks there; local development uses fmt/clippy/build and targeted
 regressions. Missing services, native libraries, inputs, tools or receipts fail the job.
 Job artifacts retain source/SDK/host/policy identities, commands, actual exit codes,

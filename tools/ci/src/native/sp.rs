@@ -1105,10 +1105,16 @@ mod tests {
 
     #[test]
     fn process_groups_are_stopped_with_grace_then_killed() {
-        let mut spec = Spec::new(strings(&["/bin/sh", "-c", "trap '' TERM; sleep 30 & wait"]));
+        let marker = std::env::temp_dir().join(format!("busbar-ci-trap-{}", uuid_hex()));
+        let script = format!("trap '' TERM; sleep 30 & touch {}; wait", marker.display());
+        let mut spec = Spec::new(strings(&["/bin/sh", "-c", &script]));
         spec.new_session = true;
         let mut child = spawn(&mut spec).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !marker.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_file(&marker);
         let started = Instant::now();
         let code = stop_process_group(&mut child, Duration::from_millis(300)).unwrap();
         assert_eq!(code, -9);
