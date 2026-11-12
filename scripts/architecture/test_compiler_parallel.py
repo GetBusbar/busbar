@@ -53,6 +53,11 @@ class ParallelSelection(unittest.TestCase):
             seeds.append(argv[1])
             output = Path(argv[-1] if argv[1] == 'vendor' else argv[argv.index('--target-dir') + 1])
             (output / 'debug').mkdir(parents=True, exist_ok=True)
+            if argv[1] == 'vendor':
+                setting = next(arg for arg in argv if arg.startswith('resolver.lockfile-path='))
+                lock = Path(json.loads(setting.split('=', 1)[1]))
+                lock.parent.mkdir(parents=True)
+                lock.write_text('version = 4\n')
             config = '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "/v"\n'
             return subprocess.CompletedProcess(argv, 0, config if argv[1] == 'vendor' else '', '')
         class Pool:

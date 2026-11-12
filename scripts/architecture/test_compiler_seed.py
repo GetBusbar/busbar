@@ -23,6 +23,13 @@ directory = "/candidate/witness-vendor"
 '''
 
 
+def write_vendor_lock(argv):
+    setting = next(arg for arg in argv if arg.startswith('resolver.lockfile-path='))
+    lock = Path(json.loads(setting.split('=', 1)[1]))
+    lock.parent.mkdir(parents=True)
+    lock.write_text('version = 4\n')
+
+
 def artifact(name, fresh):
     return {'reason': 'compiler-artifact', 'target': {'name': name, 'kind': ['example']}, 'fresh': fresh}
 
@@ -66,8 +73,11 @@ class Fixture:
             output = Path(argv[-1])
             (output / 'dep-1.0.0').mkdir(parents=True)
             (output / 'dep-1.0.0' / 'lib.rs').write_text('pub fn dep() {}\n')
+            write_vendor_lock(argv)
             return subprocess.CompletedProcess(argv, self.vendor_returncode, VENDOR_CONFIG, 'vendor log')
         self.assertEqual(argv[argv.index('--example') + 1], check.WITNESS_SEED)
+        # Every seeded invocation receives the vendor resolution via the harness.
+        self.assertEqual((self.root / 'scratch/compiler-witnesses/Cargo.lock').read_text(), 'version = 4\n')
         self.assertEqual(argv[argv.index('--jobs') + 1], '4')
         target = Path(argv[argv.index('--target-dir') + 1])
         self.assertTrue(target.is_relative_to(self.root / 'candidate'))
@@ -94,6 +104,16 @@ class Fixture:
             def run(self, child, argv, **kwargs):
                 name = argv[argv.index('--example') + 1]
                 test.events.append(('case', name))
+                harness = test.root / 'scratch/compiler-witnesses'
+                if '--target-dir' not in argv:
+                    # Unseeded fallback: exactly the original inputs and command.
+                    test.assertNotIn('--config', argv)
+                    test.assertFalse((harness / 'Cargo.lock').exists())
+                    test.assertFalse((harness / 'examples' / (check.WITNESS_SEED + '.rs')).exists())
+                    test.assertFalse(list((test.root / 'candidate').iterdir()))
+                    returncode, messages = test.case_outcome[name]
+                    return subprocess.CompletedProcess(argv, returncode, '\n'.join(map(json.dumps, messages)), '')
+                test.assertTrue((harness / 'Cargo.lock').is_file())
                 target = Path(argv[argv.index('--target-dir') + 1])
                 config = Path(argv[argv.index('--config') + 1])
                 test.assertTrue(target.is_relative_to(child.roots['candidate']))
@@ -117,7 +137,7 @@ class Fixture:
         execution = SimpleNamespace(roots={'checkout': self.root, 'candidate': self.root / 'candidate'},
                                     run=self.seed_run, compiler_pool=self.pool,
                                     config={'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}})
-        with patch.object(check, 'EXECUTION', execution), patch('check.print'):
+        with patch.object(check, 'EXECUTION', execution), patch('check.print') as self.printed:
             return check.check_compiler_witnesses(self.policy, self.root, self.root, self.root / 'scratch',
                                                   parallel=True)
 
@@ -127,6 +147,7 @@ class CompilerSeed(Fixture, unittest.TestCase):
         receipt = self.run_witnesses()
         self.assertEqual(receipt['compiler_witnesses'], 3)
         self.assertEqual(receipt['compiler_dependency_seed']['configurations'], 2)
+        self.assertEqual(receipt['compiler_dependency_seed']['status'], 'seeded')
         self.assertEqual(self.events, [('seed', 'vendor'), ('seed', 'check'), ('seed', 'check'), ('map', 3),
                                        ('case', 'witness_00'), ('case', 'witness_01'), ('case', 'witness_02')])
         # Superset (loader) configuration first, then the contract-only one.
@@ -161,14 +182,41 @@ class CompilerSeed(Fixture, unittest.TestCase):
         with self.assertRaisesRegex(check.Violation, 'witness_02: expected'):
             self.run_witnesses()
 
-    def test_seed_failure_fails_the_step_before_any_case(self):
-        for field in ('vendor_returncode', 'seed_returncode'):
-            with self.subTest(field=field):
+    def fail_seed(self, field, evidence):
+        self.setUp()
+        setattr(self, field, 101)
+        with patch.object(check, 'EVIDENCE', evidence):
+            return self.run_witnesses()
+
+    def test_seed_failure_falls_back_to_unseeded_cases_with_the_same_verdicts(self):
+        for field, log in (('vendor_returncode', 'vendor.log'), ('seed_returncode', 'seed-loader.log')):
+            with self.subTest(field=field), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as evidence:
+                receipt = self.fail_seed(field, Path(evidence))
+                self.assertEqual(receipt['compiler_witnesses'], 3)
+                seed = receipt['compiler_dependency_seed']
+                self.assertEqual((seed['status'], seed['fallback']), ('failed', 'unseeded'))
+                self.assertIn('compiler dependency seed failed: ' + log.removesuffix('.log'), seed['reason'])
+                # Every case still ran, each with its own (unseeded) verdict.
+                self.assertEqual([event for event in self.events if event[0] == 'case'],
+                                 [('case', 'witness_00'), ('case', 'witness_01'), ('case', 'witness_02')])
+                lines = [call.args[0] for call in self.printed.call_args_list]
+                self.assertIn('compiler-seed-log: ' + ('vendor log' if log == 'vendor.log' else 'seed log'), lines)
+                self.assertEqual(seed['log'], 'architecture-compiler-seed-' + log)
+                self.assertTrue((Path(evidence) / seed['log']).is_file())
+
+    def test_unseeded_fallback_keeps_negative_and_positive_failures(self):
+        for outcome in ((0, [artifact('witness_01', False)]), (101, [error('witness_01', 'E0001')])):
+            with self.subTest(outcome=outcome):
                 self.setUp()
-                setattr(self, field, 101)
-                with self.assertRaisesRegex(check.Violation, 'compiler dependency seed failed'):
+                self.seed_returncode = 101
+                self.case_outcome['witness_01'] = outcome
+                with self.assertRaisesRegex(check.Violation, 'witness_01: expected'):
                     self.run_witnesses()
-                self.assertFalse(any(event[0] in ('map', 'case') for event in self.events))
+        # The strict own-artifact rule applies only to seeded cases.
+        self.setUp()
+        self.seed_returncode = 101
+        self.case_outcome['witness_00'] = (0, [])
+        self.assertEqual(self.run_witnesses()['compiler_witnesses'], 3)
 
     def test_candidate_seed_links_are_rejected(self):
         source = self.root / 'output'

@@ -671,6 +671,15 @@ def compiler_witness_parallel():
 
 
 WITNESS_SEED = 'witness_seed'
+SEED_LOG_TAIL_LINES = 200
+EVIDENCE = None  # The --output directory; failed seed logs are retained there.
+
+
+class CompilerSeedFailure(Violation):
+    """The optional dependency seed failed; cases fall back to fresh targets."""
+    def __init__(self, message, log=None):
+        super().__init__(message)
+        self.log = log
 HARNESS_UNIT_PREFIXES = ('architecture-compiler-witnesses-', 'architecture_compiler_witnesses-', 'witness_')
 
 
@@ -679,7 +688,7 @@ def copy_candidate_tree(source, destination):
     Only directories and regular files are accepted. Contents are copied, so no
     link or inode is shared with anything a later candidate can write."""
     if not stat.S_ISDIR(os.lstat(source).st_mode):
-        raise Violation(f'compiler dependency seed output is not a directory: {source.name}')
+        raise CompilerSeedFailure(f'compiler dependency seed output is not a directory: {source.name}')
     destination.mkdir(mode=0o755)
     for directory, names, files in os.walk(source):
         relative = Path(directory).relative_to(source)
@@ -690,27 +699,30 @@ def copy_candidate_tree(source, destination):
             elif stat.S_ISREG(mode) and name in files:
                 shutil.copy2(path, destination / relative / name, follow_symlinks=False)
             else:
-                raise Violation(f'compiler dependency seed contains a non-regular entry: {relative / name}')
+                raise CompilerSeedFailure(f'compiler dependency seed contains a non-regular entry: {relative / name}')
 
 
 def vendor_source_config(text, directory):
     """Re-emit Cargo's vendor replacement table with the controller-owned directory."""
-    sources = tomllib.loads(text)
+    try:
+        sources = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise CompilerSeedFailure(f'unreadable cargo vendor configuration: {error}') from None
     if set(sources) != {'source'} or not isinstance(sources['source'], dict):
-        raise Violation('unexpected cargo vendor configuration')
+        raise CompilerSeedFailure('unexpected cargo vendor configuration')
     lines = []
     for name, table in sources['source'].items():
         if name == 'vendored-sources':
             if set(table) != {'directory'}:
-                raise Violation('unexpected vendored source table')
+                raise CompilerSeedFailure('unexpected vendored source table')
             continue
         if (table.get('replace-with') != 'vendored-sources'
                 or not set(table) <= {'replace-with', 'git', 'rev', 'branch', 'tag', 'registry'}
                 or not all(isinstance(value, str) for value in table.values())):
-            raise Violation(f'unexpected cargo vendor replacement: {name}')
+            raise CompilerSeedFailure(f'unexpected cargo vendor replacement: {name}')
         lines += [f'[source.{json.dumps(name)}]', *(f'{json.dumps(k)} = {json.dumps(v)}' for k, v in table.items())]
     if 'vendored-sources' not in sources['source']:
-        raise Violation('cargo vendor emitted no vendored source')
+        raise CompilerSeedFailure('cargo vendor emitted no vendored source')
     lines += ['[source.vendored-sources]', f'directory = {json.dumps(str(directory))}']
     return '\n'.join(lines) + '\n'
 
@@ -738,14 +750,38 @@ def seed_compiler_dependencies(harness, scratch, cases):
     def confined(name, command):
         result = candidate_run(command, cwd=scratch, text=True, capture_output=True,
                                discard_harness_target=True)
-        (root / (name + '.log')).write_text(result.stderr)
+        # rustc diagnostics arrive as JSON on stdout; Cargo's own errors on stderr.
+        rendered = []
+        for line in result.stdout.splitlines():
+            try:
+                row = json.loads(line) if line.startswith('{') else {}
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get('reason') == 'compiler-message':
+                rendered.append(str((row.get('message') or {}).get('rendered') or ''))
+        log = root / (name + '.log')
+        log.write_text(result.stderr + '\n' + '\n'.join(rendered))
         if result.returncode != 0:
-            # No case has run; the step fails rather than reporting any verdict.
-            raise Violation(f'compiler dependency seed failed: {name}; see {root / (name + ".log")}')
+            # No case has run yet; the caller falls back to the unseeded path.
+            raise CompilerSeedFailure(f'compiler dependency seed failed: {name}', log)
         return result
 
     output = candidate / ('witness-vendor-' + uuid.uuid4().hex)
-    vendored = confined('vendor', ['cargo', 'vendor', '--manifest-path', manifest, '--versioned-dirs', str(output)])
+    # Directory sources need a lockfile for git (patched) dependencies, but each
+    # confined invocation otherwise resolves into a private, discarded lockfile.
+    # Keep the vendor resolution and give it to every later seeded invocation:
+    # the controller copies a harness Cargo.lock into each private lockfile.
+    lock = candidate / ('witness-lock-' + uuid.uuid4().hex) / 'Cargo.lock'
+    vendored = confined('vendor', ['cargo', 'vendor', '--manifest-path', manifest, '--versioned-dirs',
+                                   '--config', 'resolver.lockfile-path=' + json.dumps(str(lock)), str(output)])
+    if lock.is_symlink() or not lock.is_file() or lock.parent.is_symlink():
+        raise CompilerSeedFailure('cargo vendor produced no regular lockfile')
+    try:
+        tomllib.loads(lock.read_text())
+    except tomllib.TOMLDecodeError as error:
+        raise CompilerSeedFailure(f'unreadable cargo vendor lockfile: {error}') from None
+    shutil.copyfile(lock, harness / 'Cargo.lock', follow_symlinks=False)
+    shutil.rmtree(lock.parent)
     copy_candidate_tree(output, root / 'vendor')
     shutil.rmtree(output)
     config = root / 'vendor.toml'
@@ -781,6 +817,35 @@ def seed_compiler_dependencies(harness, scratch, cases):
                'vendor_config_sha256': hashlib.sha256(config.read_bytes()).hexdigest()}
     architecture_progress('compiler-seed', 'finish', elapsed_seconds=round(time.monotonic() - started, 3), **receipt)
     return {'target': target, 'config': config, 'receipt': receipt}
+
+
+def abandon_compiler_seed(harness, scratch, failure):
+    """Report a failed seed and remove everything it added before any case runs."""
+    record = {'status': 'failed', 'reason': str(failure), 'fallback': 'unseeded'}
+    if failure.log is not None and failure.log.is_file():
+        lines = failure.log.read_text(errors='replace').splitlines()[-SEED_LOG_TAIL_LINES:]
+        for line in lines:
+            print('compiler-seed-log: ' + line[:4000], file=sys.stderr)
+        sys.stderr.flush()
+        record['log_tail_lines'] = len(lines)
+        record['log_sha256'] = hashlib.sha256(failure.log.read_bytes()).hexdigest()
+        if EVIDENCE is not None:
+            retained = Path(EVIDENCE) / ('architecture-compiler-seed-' + failure.log.name)
+            shutil.copyfile(failure.log, retained)
+            record['log'] = retained.name
+    architecture_progress('compiler-seed', 'fallback', **record)
+    # Seed containers are disposed (candidate_run returned). Unseeded cases must
+    # see the original harness: no lockfile, seed example, vendor or target.
+    for path in (harness / 'Cargo.lock', harness / 'examples' / (WITNESS_SEED + '.rs')):
+        path.unlink(missing_ok=True)
+    root = scratch / 'compiler-witness-seed'
+    for name in ('vendor', 'target'):
+        if (root / name).exists():
+            shutil.rmtree(root / name)
+    for pattern in ('witness-vendor-*', 'witness-lock-*', 'witness-seed-target-*'):
+        for path in EXECUTION.roots['candidate'].glob(pattern):
+            path.unlink() if path.is_symlink() or not path.is_dir() else shutil.rmtree(path)
+    return record
 
 
 def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=False):
@@ -833,7 +898,14 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
     pool = EXECUTION.compiler_pool() if parallel else None
     jobs = 2 if pool else compiler_check_jobs()
     # Only the isolated pool path is seeded; the serial fallback is unchanged.
-    seed = seed_compiler_dependencies(harness, scratch, cases) if pool else None
+    seed = None
+    if pool:
+        try:
+            seed = seed_compiler_dependencies(harness, scratch, cases)
+        except CompilerSeedFailure as failure:
+            # The seed is an optimisation only: restore exactly the unseeded
+            # inputs and run every case on its own fresh target as before.
+            fallback = abandon_compiler_seed(harness, scratch, failure)
 
     def compile_case(execution, case):
         name, expected, needs_loader = case
@@ -887,10 +959,12 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
             compile_case(EXECUTION, case)
     receipt = {'compiler_witnesses': len(cases), 'production_features': True}
     if seed is not None:
-        receipt['compiler_dependency_seed'] = seed['receipt']
+        receipt['compiler_dependency_seed'] = dict(seed['receipt'], status='seeded')
         # Every case container is disposed; release the bounded job disk.
         shutil.rmtree(seed['target'])
         shutil.rmtree(seed['config'].parent / 'vendor')
+    elif pool:
+        receipt['compiler_dependency_seed'] = fallback
     return receipt
 
 
@@ -953,7 +1027,7 @@ def source_revision(checkout):
 
 
 def main():
-    global EXECUTION
+    global EXECUTION, EVIDENCE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--repository', required=True)
@@ -966,6 +1040,7 @@ def main():
     parser.add_argument('--execution-context-sha256')
     args = parser.parse_args()
     EXECUTION = None
+    EVIDENCE = args.output.resolve().parent
     generated_source = None
     if args.execution_context:
         from native_confinement import Execution
