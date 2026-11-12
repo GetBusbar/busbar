@@ -10,9 +10,9 @@
 //! The CLI, `architecture.json` bytes, `architecture-progress:` lines, verdicts
 //! and exit codes are those of the former script. Candidate commands run through
 //! the protected execution context exactly as before (see `confine`).
-mod graph;
+pub mod graph;
 mod sources;
-mod witness;
+pub mod witness;
 
 #[cfg(test)]
 mod tests;
@@ -413,6 +413,16 @@ pub struct Args {
     pub sdk: Option<PathBuf>,
     pub execution_context: Option<PathBuf>,
     pub execution_context_sha256: Option<String>,
+    /// Controller-owned read-only dependency units (`native::depcache`).
+    pub dependency_units: Option<PathBuf>,
+}
+
+/// The verified `--dependency-units` seed for the plugin shipping probe (the
+/// former `check.DEPENDENCY_UNITS` global); set once by `run`.
+static DEPENDENCY_UNITS: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub fn dependency_units() -> Option<&'static PathBuf> {
+    DEPENDENCY_UNITS.get()
 }
 
 pub fn validate_execution_paths(
@@ -468,9 +478,9 @@ pub fn source_revision(checkout: &Path) -> Result<String> {
 
 // ---- command line ------------------------------------------------------------
 
-const USAGE: &str = "usage: busbar-ci architecture [-h] --policy POLICY --repository REPOSITORY\n                               --checkout CHECKOUT --scratch SCRATCH --output\n                               OUTPUT --trusted TRUSTED [--sdk SDK]\n                               [--execution-context EXECUTION_CONTEXT]\n                               [--execution-context-sha256 EXECUTION_CONTEXT_SHA256]";
+const USAGE: &str = "usage: busbar-ci architecture [-h] --policy POLICY --repository REPOSITORY\n                               --checkout CHECKOUT --scratch SCRATCH --output\n                               OUTPUT --trusted TRUSTED [--sdk SDK]\n                               [--execution-context EXECUTION_CONTEXT]\n                               [--execution-context-sha256 EXECUTION_CONTEXT_SHA256]\n                               [--dependency-units DEPENDENCY_UNITS]";
 
-const OPTIONS: [&str; 9] = [
+const OPTIONS: [&str; 10] = [
     "--policy",
     "--repository",
     "--checkout",
@@ -480,6 +490,7 @@ const OPTIONS: [&str; 9] = [
     "--sdk",
     "--execution-context",
     "--execution-context-sha256",
+    "--dependency-units",
 ];
 
 fn usage_error(message: &str) -> ! {
@@ -499,7 +510,7 @@ fn negative_number(value: &str) -> bool {
 /// argparse semantics: `--name VALUE`, `--name=VALUE`, unique prefixes, the
 /// last occurrence wins, option-like values are refused.
 pub fn parse_args(args: &[String]) -> Args {
-    let mut values: [Option<String>; 9] = Default::default();
+    let mut values: [Option<String>; 10] = Default::default();
     let mut index = 0;
     while index < args.len() {
         let arg = &args[index];
@@ -567,6 +578,7 @@ pub fn parse_args(args: &[String]) -> Args {
         sdk: path(&values[6]),
         execution_context: path(&values[7]),
         execution_context_sha256: values[8].clone(),
+        dependency_units: path(&values[9]),
     }
 }
 
@@ -726,6 +738,23 @@ fn run(args: &Args) -> Result<()> {
         execution = Some(engine);
     } else if args.execution_context_sha256.is_some() {
         return Err("execution context digest requires its context".into());
+    }
+    if let Some(units) = &args.dependency_units {
+        let engine = execution
+            .as_ref()
+            .ok_or("dependency units require confined execution")?;
+        // A seed inside any mounted root is ignored: the probe builds fresh.
+        match crate::native::depcache::readonly_seed(units, &engine.roots) {
+            Ok(seed) => {
+                let _ = DEPENDENCY_UNITS.set(seed);
+            }
+            Err(reason) => progress(
+                &log,
+                "dependency-units",
+                "fallback",
+                vec![("reason", Value::str(reason))],
+            ),
+        }
     }
     let receipt = check(args, execution.as_mut(), generated_source, &log)?;
     pathx::write(&args.output, json::dumps_indent(&receipt) + "\n")?;

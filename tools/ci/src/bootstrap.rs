@@ -57,11 +57,13 @@ const CI_KEYS: [&str; 16] = [
     "CI_JOB_TOKEN",
     "BUSBAR_ADMISSION_CORE_REVISION",
 ];
-const JOBS: [&str; 4] = [
+const JOBS: [&str; 5] = [
     "native-qualification",
     "core-conformance",
     "external-conformance",
     "native-isolation-diagnostic",
+    // Core dev push producer of trusted plugin dependency units (native::depcache).
+    "plugin-dependency-units",
 ];
 
 /// Verifies the copied controller in a root-only directory before executing it.
@@ -1441,13 +1443,18 @@ impl Root {
                 &format!("isolation diagnostic failed ({status})"),
             );
         }
-        let services = inputs::stage_services(
-            &self.trusted,
-            DOCKER,
-            &self.env["CI_PROJECT_PATH"],
-            store,
-            &token,
-        )?;
+        // The dependency-unit producer starts no service peer.
+        let services = if self.env["CI_JOB_NAME"] == "plugin-dependency-units" {
+            Value::Object(Vec::new())
+        } else {
+            inputs::stage_services(
+                &self.trusted,
+                DOCKER,
+                &self.env["CI_PROJECT_PATH"],
+                store,
+                &token,
+            )?
+        };
         receipt.set("service_inputs", services);
         require(
             capacity(&self.control)? >= reserve,

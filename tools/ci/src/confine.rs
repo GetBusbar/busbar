@@ -35,6 +35,10 @@ pub fn digest(path: &Path) -> R<String> {
     })
 }
 
+/// Each invocation's private Cargo home, at one path in every job (the same
+/// value as `native_dep_cache.CARGO_HOME_PATH` and `confinement_entry`).
+pub const INVOCATION_CARGO_HOME: &str = "/__busbar_cargo_home";
+
 /// `canonical(value)`: sorted compact JSON plus newline.
 pub fn canonical(value: &Value) -> Vec<u8> {
     json::encoded(value)
@@ -1243,19 +1247,6 @@ impl Execution {
             args.push("--add-host".into());
             args.push(alias.clone());
         }
-        for (source, destination, writable) in &mounts {
-            require(
-                !sp::text(source).contains(',') && !sp::text(destination).contains(','),
-                "unsupported bind path",
-            )?;
-            args.push("--mount".into());
-            args.push(format!(
-                "type=bind,src={},dst={}{}",
-                sp::text(source),
-                sp::text(destination),
-                if *writable { "" } else { ",readonly" }
-            ));
-        }
         let mut safe_env = self.cargo_environment(&argv, env)?;
         let mut disposable_target = None;
         if discard_harness_target {
@@ -1284,10 +1275,29 @@ impl Execution {
         }
         let mut cargo_home = None;
         if safe_env.get("CARGO_HOME").is_some_and(|v| !v.is_empty()) {
+            // One fixed in-container path, independent of the job directory, so
+            // registry/Git unit fingerprints are portable between jobs.
             let path = self.roots.candidate.join("cargo-home-invocation");
             sp::mkdir(&path, 0o700, false)?;
-            safe_env.insert("BUSBAR_INVOCATION_CARGO_HOME".into(), sp::text(&path));
+            mounts.push((path.clone(), INVOCATION_CARGO_HOME.into(), true));
+            safe_env.insert(
+                "BUSBAR_INVOCATION_CARGO_HOME".into(),
+                INVOCATION_CARGO_HOME.into(),
+            );
             cargo_home = Some(path);
+        }
+        for (source, destination, writable) in &mounts {
+            require(
+                !sp::text(source).contains(',') && !sp::text(destination).contains(','),
+                "unsupported bind path",
+            )?;
+            args.push("--mount".into());
+            args.push(format!(
+                "type=bind,src={},dst={}{}",
+                sp::text(source),
+                sp::text(destination),
+                if *writable { "" } else { ",readonly" }
+            ));
         }
         let isolation = self.config.at("isolation").clone();
         let writable: Vec<PathBuf> = mounts.iter().filter(|m| m.2).map(|m| m.0.clone()).collect();

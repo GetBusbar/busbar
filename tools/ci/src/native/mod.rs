@@ -9,6 +9,7 @@
 //! only Python left on this path is named in [`pysteps`].
 pub mod capabilities;
 pub mod cinputs;
+pub mod depcache;
 
 pub mod fixtures;
 pub mod junit;
@@ -1465,6 +1466,10 @@ impl Q {
 
     /// The architecture step: this controller's `architecture` command.
     pub fn architecture(&mut self, sdk: Option<&Path>) -> R<()> {
+        self.architecture_with(sdk, None)
+    }
+
+    pub fn architecture_with(&mut self, sdk: Option<&Path>, units: Option<&Path>) -> R<()> {
         let scratch = self.harness.join("architecture");
         let controller = self.controller()?;
         let (context, expected) = self.execution().write_context()?;
@@ -1479,6 +1484,10 @@ impl Q {
             sdk,
             Some((&context, &expected)),
         );
+        let mut command = command;
+        if let Some(units) = units {
+            command.extend(["--dependency-units".into(), sp::text(units)]);
+        }
         self.run_controller("architecture", command)?;
         let observed = sp::read_json(&self.evidence.join("architecture.json"))?;
         let rows = at(&observed, "candidate_execution")?
@@ -1537,6 +1546,9 @@ impl Q {
     }
 
     pub fn core(&mut self) -> R<()> {
+        if dependency_units_producer(&self.repository) {
+            return self.preparation("dependency-units-producer", depcache::produce);
+        }
         self.core_compilation()?;
         self.architecture(None)?;
         let host = self.host()?;
@@ -1903,11 +1915,19 @@ impl Q {
             .to_owned();
         let sdk = self.sdk()?;
         self.receipt.set("sdk_revision", sdk_pin.into());
-        self.architecture(Some(&sdk))?;
+        let mut units = None;
+        self.preparation("dependency-units", |q| {
+            units = depcache::restore(q, None)?;
+            depcache::install_job_target(q, units.as_deref())
+        })?;
+        let architecture = self.architecture_with(Some(&sdk), units.as_deref());
+        depcache::discard(units.as_deref());
+        architecture?;
         let services = fixtures::Services::open(self, &host)?;
         let body = plugins::qualify_plugin(self, &host, &sdk);
         let closed = services.close(self);
-        closed.and(body)
+        closed.and(body)?;
+        depcache::account(self)
     }
 
     /// `conformance(name)`: the owner roster under the protected inventory.
@@ -2377,16 +2397,23 @@ fn source_checks(q: &mut Q) -> R<()> {
     Ok(())
 }
 
+/// Core's dependency-unit producer job (server-set job name; the bootstrap admits
+/// only known job names) publishes plugin dependency units instead of qualifying.
+pub fn dependency_units_producer(repository: &str) -> bool {
+    repository == CORE && std::env::var("CI_JOB_NAME").is_ok_and(|j| j == depcache::PRODUCER_JOB)
+}
+
 fn body(args: &Args, slot: &mut Option<Q>) -> R<()> {
     *slot = Some(sp::deferred(|| Q::new(args))?);
     let q = slot.as_mut().unwrap();
     // Constructor validation establishes the immutable controller, exact
     // candidate and execution boundary before any regression command runs.
-    if q.repository == CORE && !q.evaluation_only {
+    let producer = dependency_units_producer(&q.repository);
+    if q.repository == CORE && !q.evaluation_only && !producer {
         q.core_regressions()?;
         q.core_formatting()?;
     }
-    if requires_native_oracle(&q.repository, args.external_conformance, &q.policy)? {
+    if !producer && requires_native_oracle(&q.repository, args.external_conformance, &q.policy)? {
         q.preparation("oracle-inputs", oracle::prepare)?;
     }
     q.preparation("canonical-inputs", |q| {
