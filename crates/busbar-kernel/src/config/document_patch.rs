@@ -988,7 +988,7 @@ mod tests {
     #[test]
     fn catalog_edits_refuse_shadowed_deployment_fields_without_exposing_credentials() {
         let deploy = super::super::deploy_from_yaml_str(
-            "providers:\n  example:\n    api_key: {env: PRIVATE_KEY}\n    base_url: opaque:deployment\nmodels: {}\n",
+            "providers:\n  example:\n    api_key: {module: fixture-source, settings: {slot: PRIVATE_KEY}}\n    base_url: opaque:deployment\nmodels: {}\n",
         ).unwrap();
         let patch = |path: &str| {
             super::DocumentPatch::from_value(serde_json::json!({"set": {path: "opaque:catalog"}}))

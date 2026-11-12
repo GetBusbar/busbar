@@ -255,6 +255,8 @@ fn type_conflict_for_shared_name_is_dropped() {
     );
 }
 
+/// The snapshot hands the export owner RAW label text; wire escaping belongs to the exporter
+/// (8987677bae, "Keep metric wire encoding and conformance in the export owner").
 #[test]
 fn label_values_are_escaped() {
     let m = HookMetric {
@@ -273,7 +275,7 @@ fn label_values_are_escaped() {
                 name: "x_total".to_string(),
                 labels: vec![
                     ("hook".to_string(), "h".to_string()),
-                    ("k".to_string(), "a\\\"b\\\\c".to_string())
+                    ("k".to_string(), "a\"b\\c".to_string())
                 ],
                 value: "1".to_string()
             },]

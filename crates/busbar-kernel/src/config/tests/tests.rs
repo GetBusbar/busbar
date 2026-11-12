@@ -1409,9 +1409,15 @@ fn test_debug_of_full_config_never_shows_resolved_secrets() {
         !dbg.contains("SECRET-resolved-value-zzz"),
         "DeployCfg Debug must never contain a resolved secret value: {dbg}"
     );
+    // Since 3e5b860ca5 a reference's settings print as key NAMES only (`Settings { keys: [..] }`):
+    // Debug identifies the reference by its source module and setting keys, never a setting value.
     assert!(
-        dbg.contains("BUSBAR_T_DEBUG_SECRET"),
-        "DeployCfg Debug should still show the secret REFERENCE (env var name): {dbg}"
+        dbg.contains(r#"module: "fixture-source", settings: Settings { keys: ["slot"], .. }"#),
+        "DeployCfg Debug should still identify the secret REFERENCE (module and setting keys): {dbg}"
+    );
+    assert!(
+        !dbg.contains("BUSBAR_T_DEBUG_SECRET"),
+        "DeployCfg Debug must not print a reference's setting values: {dbg}"
     );
 }
 

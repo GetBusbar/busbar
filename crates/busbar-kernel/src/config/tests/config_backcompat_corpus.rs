@@ -69,6 +69,27 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .collect()
 }
 
+/// The corpus members are 1.5.x operator configs, which spell credentials `{ env: … }`. Since
+/// db6f4149aa core declares no source shorthand itself: an admitted secret source owner declares
+/// it. Read the corpus as a deployment whose admitted source declares that word (the snapshot
+/// excludes providers, so the credential spelling never reaches the golden).
+fn corpus_sources() -> busbar_contract::secret_ref::Sugars {
+    use busbar_contract::abi::mechanism::door::{
+        REWRITE_SUGAR, REWRITE_SUGAR_ROLE, SUGAR_ROLE_FILL,
+    };
+    let mut sources = busbar_contract::secret_ref::Sugars::default();
+    sources
+        .declare(
+            "corpus-source",
+            &[
+                (REWRITE_SUGAR, "env".into(), "slot".into()),
+                (REWRITE_SUGAR_ROLE, "env".into(), SUGAR_ROLE_FILL.into()),
+            ],
+        )
+        .expect("the corpus source declares one shorthand");
+    sources
+}
+
 fn rate(v: f64) -> String {
     format!("{v}")
 }
@@ -171,8 +192,11 @@ fn render_limit(l: &super::LimitCfg) -> String {
 fn snapshot_for(config_path: &Path) -> String {
     let yaml = std::fs::read_to_string(config_path)
         .unwrap_or_else(|e| panic!("read corpus config {}: {e}", config_path.display()));
-    let deploy: DeployCfg = serde_yaml::from_str(&yaml)
-        .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
+    let deploy: DeployCfg = busbar_contract::secret_ref::context::deserialize(
+        serde_yaml::Deserializer::from_str(&yaml),
+        &corpus_sources(),
+    )
+    .unwrap_or_else(|e| panic!("parse corpus config {}: {e}", config_path.display()));
     let defs = defs_for(&deploy);
     let cfg = resolve(&deploy, &defs).unwrap_or_else(|errs| {
         panic!(

@@ -327,7 +327,7 @@ models: {}
 identity-providers:
   oracle-keys:
     module: keys
-    token: { env: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN }
+    token: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN } }
 auth:
   chain: [keys]
   admin_auth: []
@@ -362,10 +362,10 @@ models: {}
 identity-providers:
   OPERATOR:
     module: OPERATOR
-    token: { env: BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN }
+    token: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_ADMIN_TOKEN } }
   oracle-keys:
     module: keys
-    token: { env: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN }
+    token: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_ORACLE_UNUSED_TOKEN } }
 auth:
   chain: [keys]
   admin_auth: [OPERATOR]
@@ -405,7 +405,7 @@ identity-providers:
     module: oidc
     browser_login:
       client_id: busbar-web
-      client_secret: { env: BUSBAR_TEST_OIDC_CLIENT_SECRET }
+      client_secret: { module: fixture-source, settings: { slot: BUSBAR_TEST_OIDC_CLIENT_SECRET } }
 auth:
   chain: []
   admin_auth: []
@@ -434,30 +434,30 @@ listen: "127.0.0.1:8080"
 public_url: "https://busbar.example.com"
 providers:
   hosted:
-    api_key: { env: BUSBAR_TEST_HOSTED_KEY }
+    api_key: { module: fixture-source, settings: { slot: BUSBAR_TEST_HOSTED_KEY } }
   local:
     api_key: none
 models: {}
 tls:
-  cert: { file: /run/secrets/cert.pem }
-  key: { file: /run/secrets/key.pem }
-  client_ca: { file: /run/secrets/ca.pem }
+  cert: { module: fixture-source, settings: { slot: /run/secrets/cert.pem } }
+  key: { module: fixture-source, settings: { slot: /run/secrets/key.pem } }
+  client_ca: { module: fixture-source, settings: { slot: /run/secrets/ca.pem } }
 admin_tls:
-  cert: { file: /run/secrets/admin-cert.pem }
-  key: { file: /run/secrets/admin-key.pem }
+  cert: { module: fixture-source, settings: { slot: /run/secrets/admin-cert.pem } }
+  key: { module: fixture-source, settings: { slot: /run/secrets/admin-key.pem } }
 identity-providers:
   OPERATOR:
     module: OPERATOR
-    token: { env: BUSBAR_TEST_ADMIN_TOKEN }
+    token: { module: fixture-source, settings: { slot: BUSBAR_TEST_ADMIN_TOKEN } }
   corp-oidc:
     module: oidc
     browser_login:
       client_id: busbar-web
-      client_secret: { env: BUSBAR_TEST_OIDC_CLIENT_SECRET }
+      client_secret: { module: fixture-source, settings: { slot: BUSBAR_TEST_OIDC_CLIENT_SECRET } }
 auth:
   chain: [keys]
   admin_auth: [OPERATOR]
-  signing_key: { file: /run/secrets/signing.key }
+  signing_key: { module: fixture-source, settings: { slot: /run/secrets/signing.key } }
 "#;
 
     let yaml = yaml.replace("OPERATOR", crate::config::operator_provider());
@@ -525,8 +525,8 @@ auth:
   admin_auth: []
 credentials:
   at_rest:
-    key: { file: /run/secrets/busbar-at-rest.key }
-    previous: { env: BUSBAR_TEST_NEVER_SET_AT_REST_PREVIOUS }
+    key: { module: fixture-source, settings: { slot: /run/secrets/busbar-at-rest.key } }
+    previous: { module: fixture-source, settings: { slot: BUSBAR_TEST_NEVER_SET_AT_REST_PREVIOUS } }
 "#;
     let deploy = crate::config::deploy_from_yaml_str(yaml).expect("the fixture must parse");
     let cfg = crate::config::resolve(&deploy, &std::collections::HashMap::new())
