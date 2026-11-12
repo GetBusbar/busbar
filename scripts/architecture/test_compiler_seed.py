@@ -94,6 +94,8 @@ class Fixture:
         test = self
 
         class Pool:
+            jobs = 1
+
             def map(self, function, cases):
                 test.events.append(('map', len(cases)))
                 for index, case in enumerate(cases):
@@ -105,6 +107,8 @@ class Fixture:
                 name = argv[argv.index('--example') + 1]
                 test.events.append(('case', name))
                 harness = test.root / 'scratch/compiler-witnesses'
+                # Only seeded (vendored) cases skip the job Cargo seed copy.
+                test.assertEqual(kwargs.get('vendored_sources'), '--target-dir' in argv)
                 if '--target-dir' not in argv:
                     # Unseeded fallback: exactly the original inputs and command.
                     test.assertNotIn('--config', argv)

@@ -382,6 +382,7 @@ class Execution:
             "CARGO_TARGET_DIR",
             "CARGO_BUILD_JOBS",
             "CARGO_TERM_COLOR",
+            "CARGO_INCREMENTAL",
             "CARGO_PROFILE_DEV_DEBUG",
             "CARGO_PROFILE_TEST_DEBUG",
             "CARGO_NET_GIT_FETCH_WITH_CLI",
@@ -533,9 +534,14 @@ class Execution:
         return [*argv, '--store-path', str(destination)]
 
     @contextmanager
-    def invocation(self, argv, cwd, env, *, discard_harness_target=False):
+    def invocation(self, argv, cwd, env, *, discard_harness_target=False, vendored_sources=False):
         argv = list(map(str, argv))
         require(argv and not argv[0].startswith("-"), "missing candidate executable")
+        # A vendored-source compiler check reads every dependency from the
+        # controller's read-only vendor directory, never from the job seed.
+        require(not vendored_sources or (discard_harness_target and argv[:2] == ['cargo', 'check']
+                                         and '--config' in argv),
+                'an empty Cargo cache requires a vendored harness compiler check')
         if discard_harness_target:
             require(argv[0] == 'cargo' and '--manifest-path' in argv
                     and argv.index('--manifest-path') + 1 < len(argv)
@@ -554,7 +560,7 @@ class Execution:
         if self.resource_slice is not None:
             require(self.compiler_readonly and set(resources) == set(self.config['resources'])
                     and all(type(value) is int and value > 0
-                            and value * 2 <= self.config['resources'][key]
+                            and value * COMPILER_POOL_WIDTH <= self.config['resources'][key]
                             for key, value in resources.items()),
                     'compiler slices exceed the aggregate resource budget')
         target = root["checkout"] / "target"
@@ -659,6 +665,10 @@ class Execution:
             cargo_home = root['candidate'] / 'cargo-home-invocation'
             cargo_home.mkdir(mode=0o700)
             safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = str(cargo_home)
+            if vendored_sources:
+                # Still private, writable and removed below; only the copy of
+                # the job seed it would never read is skipped.
+                safe_env['BUSBAR_INVOCATION_CARGO_HOME_EMPTY'] = '1'
         isolation = self.config['isolation']
         storage = linux_job_isolation.prepare_writable(isolation, [src for src, _, writable in mounts if writable],
                                    self.config['uid'], self.config['gid'])
@@ -699,7 +709,7 @@ class Execution:
         }
         if self.resource_slice is not None:
             observation['aggregate_resources'] = dict(self.config['resources'])
-            observation['compiler_pool_width'] = 2
+            observation['compiler_pool_width'] = COMPILER_POOL_WIDTH
         self.observations.append(observation)
         try:
             result = self._client(args, capture_output=True, text=True)
@@ -848,8 +858,15 @@ class Execution:
         return CompilerPool(self)
 
 
+# Job 6131: each seeded witness case ran 20-30 s inside its container with
+# 2 CPUs, of which one rustc checks the case's own crate; the remainder was
+# the private copy of the whole job Cargo seed, which vendored cases never read.
+# Four 1 CPU / 1.5 GiB isolates keep the same 4 CPU / 6 GiB aggregate.
+COMPILER_POOL_WIDTH = 4
+
+
 class CompilerPool:
-    """Two compiler isolates sharing only readonly inputs and an aggregate quota.
+    """Compiler isolates sharing only readonly inputs and an aggregate quota.
 
     Each case owns its Execution, observations, home, lockfile, cache and target.
     The caller must validate its result inside the callback so failure cancels
@@ -862,21 +879,23 @@ class CompilerPool:
         self.execution = execution
         # Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
         # runners. Container memory includes its tmpfs and shared memory charges.
-        self.resources = {'cpus': 2, 'memory_bytes': 3 * 1024**3,
-                          'pids': resources['pids'] // 2}
+        width = COMPILER_POOL_WIDTH
+        self.resources = {'cpus': 4 // width, 'memory_bytes': 6 * 1024**3 // width,
+                          'pids': resources['pids'] // width}
+        self.jobs = self.resources['cpus']
         self.cancel = threading.Event()
         self.observations = {}
         self.lock = threading.Lock()
         self.used = False
 
-    def run(self, execution, argv, *, cwd, env=None):
+    def run(self, execution, argv, *, cwd, env=None, vendored_sources=False):
         if self.cancel.is_set():
             raise CancelledError('compiler pool cancelled')
         env = dict(os.environ if env is None else env, TMPDIR='/tmp',
                    BUSBAR_TEST_TMP_ROOT='/tmp/tests', XDG_CACHE_HOME='/tmp/cache',
-                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS='2')
-        with execution.invocation(argv, cwd, env,
-                                  discard_harness_target=True) as (command, environment, _):
+                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS=str(self.jobs))
+        with execution.invocation(argv, cwd, env, discard_harness_target=True,
+                                  vendored_sources=vendored_sources) as (command, environment, _):
             if self.cancel.is_set():
                 raise CancelledError('compiler pool cancelled')
             with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
@@ -959,7 +978,7 @@ class CompilerPool:
         try:
             for sig in handlers:
                 signal.signal(sig, interrupted)
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='compiler') as executor:
+            with ThreadPoolExecutor(max_workers=COMPILER_POOL_WIDTH, thread_name_prefix='compiler') as executor:
                 futures = [executor.submit(invoke, index, case) for index, case in enumerate(cases)]
                 results, errors = [], []
                 for future in futures:

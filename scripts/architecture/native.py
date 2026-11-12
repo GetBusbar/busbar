@@ -56,10 +56,24 @@ def native_scheduling(execution):
             'memory_policy': 'conservative-slot-budget-not-measured-peak-or-fit-guarantee'}
 
 
-OPTIMIZED_STEPS = frozenset({'product-inputs', 'bounded-loom', 'final-binary'})
+OPTIMIZED_STEPS = frozenset({'bounded-loom', 'final-binary'})
 
 
 UNOPTIMIZED_CARGO_COMMANDS = frozenset({'check', 'clippy', 'test', 'nextest', 'build', 'doc'})
+
+
+# Controller-named core wrapper steps whose every compiler invocation is a
+# dev-profile `cargo build`: product-inputs runs the trusted
+# scripts/ci-product-inputs.sh (plugin cdylibs land in target/debug), and core
+# conformance runs the digest-pinned testing/conformance/run.sh, whose suites
+# build dist/default, the packer and the OIDC plugin unoptimized. Job 6131 ran
+# product-inputs at one job: 488 CPU-seconds in 501 s on a 4-CPU boundary.
+# Matched by step name and the exact trusted script name, never by candidate
+# input; any other wrapper keeps the conservative budget.
+UNOPTIMIZED_WRAPPER_STEPS = {
+    'product-inputs': 'scripts/ci-product-inputs.sh',
+    'core-native-conformance': 'testing/conformance/run.sh',
+}
 
 
 def step_build_jobs(name, argv, scheduling):
@@ -67,11 +81,15 @@ def step_build_jobs(name, argv, scheduling):
 
     Wrapper scripts (bash/python drivers) may build optimized binaries inside,
     as a plugin's runtime preparation does with its LTO release build, so they
-    keep the conservative slot budget like every optimized step.
+    keep the conservative slot budget like every optimized step, except the
+    named core wrappers above whose builds are all unoptimized.
     """
     argv = [str(arg) for arg in argv]
     unoptimized = (len(argv) >= 2 and argv[0] == 'cargo' and argv[1] in UNOPTIMIZED_CARGO_COMMANDS
                    and '--release' not in argv and not any(a.startswith('--profile') for a in argv))
+    script = UNOPTIMIZED_WRAPPER_STEPS.get(name)
+    if script is not None and len(argv) == 2 and argv[0] == 'bash' and argv[1].endswith('/' + script):
+        unoptimized = True
     if name in OPTIMIZED_STEPS or not unoptimized or 'unoptimized_build_jobs' not in scheduling:
         return scheduling['build_jobs']
     return scheduling['unoptimized_build_jobs']
@@ -434,8 +452,12 @@ class Qualification:
         # and optimization settings are unchanged; archive admission still hashes the
         # actual complete library used by every runtime and custody witness.
         self.receipt['native_scheduling'] = native_scheduling(self.execution)
+        # Every job starts from an empty target directory, so incremental
+        # query caches are written and never read. Disabling them changes no
+        # profile setting that affects program behaviour (release is already
+        # non-incremental); it only drops that disk and memory traffic.
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
-            RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+            RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='', CARGO_INCREMENTAL='0',
             CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
             CARGO_BUILD_JOBS=str(self.receipt['native_scheduling']['build_jobs']), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
