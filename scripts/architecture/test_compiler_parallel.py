@@ -47,7 +47,7 @@ class ParallelSelection(unittest.TestCase):
         import tempfile
         root = Path(__file__).resolve().parents[2]
         policy = check.Policy(check.read(root / 'ci/architecture.toml'))
-        commands, inventory, seeds = [], [], []
+        commands, inventory, seeds, vendored = [], [], [], []
         def seed(argv, **kwargs):
             # The dependency seed runs once in the parent before the pool.
             seeds.append(argv[1])
@@ -61,6 +61,8 @@ class ParallelSelection(unittest.TestCase):
             config = '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "/v"\n'
             return subprocess.CompletedProcess(argv, 0, config if argv[1] == 'vendor' else '', '')
         class Pool:
+            jobs = 1
+
             def map(self, function, cases):
                 inventory.extend(cases)
                 self.expected = {name: codes for name, codes, _ in cases}
@@ -71,6 +73,7 @@ class ParallelSelection(unittest.TestCase):
 
             def run(self, child, argv, **kwargs):
                 commands.append(argv)
+                vendored.append(kwargs)
                 name = argv[argv.index('--example') + 1]
                 codes = self.expected[name]
                 message = {'reason': 'compiler-message', 'target': {'name': name},
@@ -91,7 +94,8 @@ class ParallelSelection(unittest.TestCase):
         self.assertEqual(len(commands), 52)
         self.assertEqual(seeds, ['vendor', 'check', 'check'])
         self.assertEqual(receipt['compiler_dependency_seed']['configurations'], 2)
-        self.assertTrue(all(argv[argv.index('--jobs') + 1] == '2' for argv in commands))
+        self.assertTrue(all(argv[argv.index('--jobs') + 1] == '1' for argv in commands))
+        self.assertTrue(all(kwargs.get('vendored_sources') for kwargs in vendored))
         self.assertEqual(sum('--features' in argv for argv in commands), 2)
 
 
@@ -188,7 +192,8 @@ class ParallelCompiler(Fixture, unittest.TestCase):
         for row in rows:
             self.assertEqual(row['configuration_sha256'], hashlib.sha256(canonical(self.config)).hexdigest())
             self.assertEqual(row['aggregate_resources'], self.config['resources'])
-            self.assertEqual(row['resources'], {'cpus': 2, 'memory_bytes': 3 * 1024**3, 'pids': 128})
+            self.assertEqual(row['resources'], {'cpus': 1, 'memory_bytes': 6 * 1024**3 // 4, 'pids': 64})
+            self.assertEqual(row['compiler_pool_width'], 4)
             self.assertEqual(row['storage']['root'], str(self.base))
             self.assertEqual(row['storage']['bytes'], self.config['isolation']['storage_bytes'])
             self.assertEqual(row['storage']['tmp_bytes'], 1024**3)

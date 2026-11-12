@@ -65,6 +65,7 @@ def prepare_cargo_home(argv):
     # formatting can read the immutable seed directly. All compilation and
     # candidate test commands still get independent writable source copies.
     fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
+    empty = os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME_EMPTY', None) == '1'
     if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
             or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
         raise RuntimeError('private Cargo cache was not prepared by the controller')
@@ -73,6 +74,11 @@ def prepare_cargo_home(argv):
         # Check the actual filesystem, not permissions a candidate could chmod.
         if not os.statvfs(seed).f_flag & os.ST_RDONLY:
             raise RuntimeError('formatting requires a read-only Cargo seed')
+        return
+    if empty:
+        # Vendored compiler checks: every source is the controller's read-only
+        # vendor directory. Cargo still gets its own empty writable home.
+        os.environ["CARGO_HOME"] = str(fresh)
         return
     shutil.copytree(
         seed,
