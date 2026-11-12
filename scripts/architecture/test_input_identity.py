@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-from input_identity import (CORE, GitObjects, component_identity, compute_identity,
+from input_identity import (CORE, GitObjects, ast_shape, component_identity, compute_identity,
                             encoded, make_proof, plan_reuse, preparation_source_identity,
                             retained_check_identity, verify_reuse, LEGACY_STANDALONE_SELECTOR,
                             OIDC_STANDALONE_SELECTOR, PREPARATION_SELECTOR,
@@ -470,6 +470,31 @@ class ImmutableGitObjects(unittest.TestCase):
 
 
 class ArtifactReaderRetention(unittest.TestCase):
+    def test_import_shape_normalizes_only_absent_eager_import_flag(self):
+        for source in ('import product_artifacts', 'from product_artifacts import plan'):
+            with self.subTest(source=source):
+                parsed = ast.parse(source).body[0]
+                legacy = copy.deepcopy(parsed)
+                legacy._fields = tuple(name for name in legacy._fields if name != 'is_lazy')
+                eager = copy.deepcopy(legacy)
+                eager._fields += ('is_lazy',)
+                eager.is_lazy = 0
+                lazy = copy.deepcopy(eager)
+                lazy.is_lazy = 1
+                self.assertEqual(ast_shape(legacy), ast_shape(eager))
+                self.assertEqual(ast_shape(parsed), ast_shape(eager))
+                self.assertNotEqual(ast_shape(eager), ast_shape(lazy))
+                self.assertEqual(ast_shape(lazy)['is_lazy'], 1)
+
+    def test_lazy_product_input_import_is_not_an_approved_contract(self):
+        for payload in artifact_reader_pair('native_product_inputs.py'):
+            lazy = payload.replace(b'from product_artifacts import', b'lazy from product_artifacts import')
+            self.assertNotEqual(lazy, payload)
+            # Older Python rejects this syntax; Python 3.15 must reject its
+            # distinct AST contract rather than aliasing it to an eager import.
+            with self.assertRaisesRegex(ValueError, 'unrecognized controller source|unknown product input'):
+                product_input_source_identity(lazy, OWNER, 'native-qualification')
+
     def test_exact_optional_default_reader_and_noncore_class_contract_are_equal(self):
         old, new = artifact_reader_pair('product_artifacts.py')
         self.assertEqual(default_artifact_reader_identity(old), default_artifact_reader_identity(new))
