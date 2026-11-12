@@ -281,9 +281,16 @@ def install(seed, destination, *, now=None):
         os.chmod(directory, 0o755)
         for name in files:
             path = Path(directory) / name
-            os.chmod(path, 0o644)
+            # Cargo runs a restored build script again whenever its rerun-if
+            # inputs differ; the sealed seed and the archive carry no mode bits.
+            os.chmod(path, 0o755 if build_script(name) else 0o644)
             os.utime(path, (stamp, stamp), follow_symlinks=False)
     return destination
+
+
+def build_script(name):
+    """A compiled build script executable: build/<unit>/build-script-<name>[-<hash>]."""
+    return name.startswith(('build-script-', 'build_script_')) and '.' not in name
 
 
 def readonly_seed(path, execution):

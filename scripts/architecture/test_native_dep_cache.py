@@ -285,6 +285,18 @@ class Boundary(Fixture):
         stamps = {path.stat().st_mtime for path in copy.rglob('*') if path.is_file()}
         self.assertEqual(stamps, {2_000_000_000})
 
+    def test_installed_build_scripts_stay_executable(self):
+        seed = self.base / 'exec-seed'
+        (seed / 'debug/build/ring-0123456789abcdef').mkdir(parents=True)
+        (seed / 'debug/build/ring-0123456789abcdef/build-script-build').write_bytes(b'#!')
+        (seed / 'debug/build/ring-0123456789abcdef/build-script-build.d').write_bytes(b'dep')
+        (seed / 'debug/build/ring-0123456789abcdef/build_script_build-0123456789abcdef').write_bytes(b'#!')
+        copy = cache.install(seed, self.base / 'exec-copy')
+        unit = copy / 'debug/build/ring-0123456789abcdef'
+        self.assertTrue(os.access(unit / 'build-script-build', os.X_OK))
+        self.assertTrue(os.access(unit / 'build_script_build-0123456789abcdef', os.X_OK))
+        self.assertFalse(os.access(unit / 'build-script-build.d', os.X_OK))
+
     def test_unpack_rejects_escaping_and_unlisted_entries(self):
         for name, kind in (('../escape', tarfile.REGTYPE), ('debug/link', tarfile.SYMTYPE),
                            ('/abs', tarfile.REGTYPE), ('debug/unlisted', tarfile.REGTYPE)):
