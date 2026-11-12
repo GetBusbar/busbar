@@ -103,7 +103,7 @@
     {
       "repo": "busbar-secret-env",
       "url": "https://github.com/GetBusbar/busbar-secret-env",
-      "commit": "590e88617e535b0c3596af6954246d97bc0cdd0a",
+      "commit": "0b18583d24d35c4ece21000fb59ece74aecd2c01",
       "package": "busbar-secret-env-plugin",
       "kind": "secret",
       "alias": "env",
@@ -114,7 +114,7 @@
     {
       "repo": "busbar-secret-file",
       "url": "https://github.com/GetBusbar/busbar-secret-file",
-      "commit": "db0c6d2306c99133cf2e393b19d467eb5e4a3d94",
+      "commit": "fe9004f8277582ef0005df8117367612100ead30",
       "package": "busbar-secret-file-plugin",
       "kind": "secret",
       "alias": "file",
