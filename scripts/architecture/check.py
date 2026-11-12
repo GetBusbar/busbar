@@ -24,6 +24,8 @@ import uuid
 
 
 EXECUTION = None
+# Controller-owned read-only dependency units (native_dep_cache), or None.
+DEPENDENCY_UNITS = None
 
 
 def candidate_run(argv, *, discard_harness_target=False, **kwargs):
@@ -508,6 +510,19 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         jobs = compiler_check_jobs() if build_command[1] == 'check' else None
         if jobs is not None:
             build_command += ['--jobs', str(jobs)]
+        if DEPENDENCY_UNITS is not None and EXECUTION is not None and repository != 'GetBusbar/busbar':
+            # A private writable copy of trusted dependency units; the seed itself
+            # is never mounted. Every candidate unit still compiles here.
+            # Any failure leaves the probe on its own fresh target, as before.
+            import native_dep_cache
+            probe_target = EXECUTION.roots['candidate'] / ('probe-target-' + uuid.uuid4().hex)
+            try:
+                native_dep_cache.install(native_dep_cache.readonly_seed(DEPENDENCY_UNITS, EXECUTION), probe_target)
+            except (native_dep_cache.Unavailable, OSError) as error:
+                architecture_progress('dependency-units', 'fallback', reason=str(error)[:500])
+                shutil.rmtree(probe_target, ignore_errors=True)
+            else:
+                build_command += ['--target-dir', str(probe_target)]
         architecture_progress('source-materialization', 'start', cargo_command=build_command[1],
                               build_jobs=jobs)
         started = time.monotonic()
@@ -1028,7 +1043,7 @@ def source_revision(checkout):
 
 
 def main():
-    global EXECUTION, EVIDENCE
+    global EXECUTION, EVIDENCE, DEPENDENCY_UNITS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--repository', required=True)
@@ -1039,6 +1054,7 @@ def main():
     parser.add_argument('--sdk', type=Path, help='Exact pinned SDK checkout for a C plugin')
     parser.add_argument('--execution-context', type=Path)
     parser.add_argument('--execution-context-sha256')
+    parser.add_argument('--dependency-units', type=Path, help='Controller-owned read-only dependency units')
     args = parser.parse_args()
     EXECUTION = None
     EVIDENCE = args.output.resolve().parent
@@ -1049,6 +1065,11 @@ def main():
         generated_source = validate_execution_paths(args, EXECUTION, json.loads(args.execution_context.read_text()))
     elif args.execution_context_sha256:
         raise Violation('execution context digest requires its context')
+    DEPENDENCY_UNITS = None
+    if args.dependency_units is not None:
+        if EXECUTION is None:
+            raise Violation('dependency units require confined execution')
+        DEPENDENCY_UNITS = args.dependency_units
     policy = Policy(read(args.policy))
     checkout = args.checkout.resolve()
     if args.repository != 'GetBusbar/busbar' and args.repository not in policy.data['repositories']:

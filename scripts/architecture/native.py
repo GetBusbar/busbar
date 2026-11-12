@@ -343,6 +343,8 @@ class Qualification:
         self.conformance_only = args.conformance_only
         self.external_conformance = getattr(args, 'external_conformance', False)
         self.evaluation_only = self.conformance_only or self.external_conformance
+        # Core dev push producer of trusted plugin dependency units (native_dep_cache).
+        self.dependency_units_producer = getattr(args, 'dependency_units', False) is True
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.control = self.work
         self.execution = None
@@ -635,13 +637,15 @@ class Qualification:
             self.save()
         return self._sdk
 
-    def architecture(self, sdk=None):
+    def architecture(self, sdk=None, dependency_units=None):
         scratch = self.harness / 'architecture' if self.execution else self.work / 'architecture'
         command = ['python3', str(self.trusted / 'scripts/architecture/check.py'), '--policy', str(self.trusted / 'ci/architecture.toml'),
             '--repository', self.repository, '--checkout', str(self.root), '--trusted', str(self.trusted),
             '--scratch', str(scratch), '--output', str(self.evidence / 'architecture.json')]
         if sdk:
             command += ['--sdk', str(sdk)]
+        if dependency_units is not None:
+            command += ['--dependency-units', str(dependency_units)]
         if self.execution:
             context, expected = self.execution.write_context()
             command += ['--execution-context', str(context), '--execution-context-sha256', expected]
@@ -678,6 +682,11 @@ class Qualification:
             self.run(name, command)
 
     def core(self):
+        if getattr(self, 'dependency_units_producer', False):
+            from native_dep_cache import produce
+            with self.preparation('dependency-units-producer'):
+                produce(self)
+            return
         self.core_compilation()
         self.architecture()
         host = self.host()
@@ -770,11 +779,19 @@ class Qualification:
         sdk_pin = (self.root / '.busbar-ref').read_text().split()[0]
         sdk = self.sdk()
         self.receipt['sdk_revision'] = sdk_pin
-        self.architecture(sdk)
+        import native_dep_cache
+        with self.preparation('dependency-units'):
+            units = native_dep_cache.restore(self)
+            native_dep_cache.install_job_target(self, units)
+        try:
+            self.architecture(sdk, dependency_units=units)
+        finally:
+            native_dep_cache.discard(units)
         from native_fixtures import Services
         with Services(self, host):
             from native_plugins import qualify_plugin
             qualify_plugin(self, host, sdk)
+        native_dep_cache.account(self)
 
     def conformance(self, name):
         from native_policy import conformance_rows, validate_conformance_roster
@@ -992,7 +1009,10 @@ def qualify():
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--conformance-only', action='store_true')
     modes.add_argument('--external-conformance', action='store_true')
+    modes.add_argument('--dependency-units', action='store_true',
+                       help='Protected core dev push only: publish pinned plugin dependency units')
     args = parser.parse_args()
+    producer = getattr(args, 'dependency_units', False)
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
         raise Violation('full native qualification runs in GitLab CI only')
     qualification = None
@@ -1001,10 +1021,12 @@ def qualify():
             qualification = Qualification(args)
         # Constructor validation establishes the immutable controller, exact
         # candidate and execution boundary before any regression command runs.
-        if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only:
+        if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only \
+                and not producer:
             qualification.core_regressions()
             qualification.core_formatting()
-        if requires_native_oracle(qualification.repository, args.external_conformance, qualification.policy):
+        if not producer and requires_native_oracle(
+                qualification.repository, args.external_conformance, qualification.policy):
             from native_oracle import prepare as prepare_oracle
             with qualification.preparation('oracle-inputs'):
                 prepare_oracle(qualification)
