@@ -470,7 +470,7 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 
 Inside a section that registers named entries (`pools:`, `tools:`, `agents:`, `streams:`, `decisions:` and the rest), a few keys belong to Busbar: the section-level `hooks`, `upstream_credentials` and `usage_observations`, and the core-owned settings `pools`, `breaker`, `on_exhausted`, `affinity`, `gates`, `tier`, `repeatable`, `work`, `timeout`, `rate_card` and `fees`. A registration that takes one of those names cannot be told apart from the setting, so the configuration is refused at `--validate` and at startup.
 
-**What to do:** Rename the registration; any name not on the list works. Then run `busbar --validate`.
+**What to do:** Rename the registration; any name not on the list works. Then run `busbar --validate`. The reserved names and what each is for are tabled in docs/configuration.md (Reserved names).
 
 <a id="config-model-invalid"></a>
 ### BUSBAR-3102 — A model definition is invalid
