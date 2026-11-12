@@ -46,6 +46,28 @@ fn read_int(path: &Path) -> Option<i128> {
     sp::py_int(text.split_whitespace().next()?).ok()
 }
 
+/// Selected integer fields of a flat-keyed cgroup file such as memory.stat,
+/// in file order (`_keyed(path, *keys)`); empty when unreadable or invalid.
+fn keyed(path: &Path, keys: &[&str]) -> Vec<(String, i128)> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut values: Vec<(String, i128)> = Vec::new();
+    for line in text.lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        if keys.contains(&key) {
+            let Ok(number) = sp::py_int(value) else {
+                return Vec::new();
+            };
+            match values.iter_mut().find(|(k, _)| k == key) {
+                Some(row) => row.1 = number,
+                None => values.push((key.to_owned(), number)),
+            }
+        }
+    }
+    values
+}
+
 fn cpu_seconds(cgroup: &Path) -> Option<Value> {
     let text = std::fs::read_to_string(cgroup.join("cpu.stat")).ok()?;
     for line in text.lines() {
@@ -67,6 +89,12 @@ pub struct StepObserver {
     cgroup: Option<PathBuf>,
     samples: u64,
     memory_peak: Option<i128>,
+    // memory.peak counts reclaimable page cache, so a compiler step that
+    // streams a large target directory reports the full limit whether or not
+    // its compilers came near it. Anonymous memory is what an OOM kill is
+    // decided on; keep its sampled maximum and the cgroup's event counters.
+    anon_peak: Option<i128>,
+    events: Option<Value>,
     cpu_seconds: Option<Value>,
     pub emitted: Vec<String>,
     pub quiet: bool,
@@ -88,6 +116,8 @@ impl StepObserver {
             cgroup: None,
             samples: 0,
             memory_peak: None,
+            anon_peak: None,
+            events: None,
             cpu_seconds: None,
             emitted: Vec::new(),
             quiet: false,
@@ -114,6 +144,21 @@ impl StepObserver {
                 .flatten()
                 .max();
             self.memory_peak = observed;
+            if let Some((_, anon)) = keyed(&cgroup.join("memory.stat"), &["anon"]).first() {
+                self.anon_peak = Some((*anon).max(self.anon_peak.unwrap_or(0)));
+            }
+            let events = keyed(
+                &cgroup.join("memory.events"),
+                &["high", "max", "oom", "oom_kill"],
+            );
+            if !events.is_empty() {
+                self.events = Some(Value::Object(
+                    events
+                        .into_iter()
+                        .map(|(k, v)| (k, Value::int(v)))
+                        .collect(),
+                ));
+            }
             if let Some(cpu) = cpu_seconds(cgroup) {
                 self.cpu_seconds = Some(cpu);
             }
@@ -133,6 +178,7 @@ impl StepObserver {
                         ),
                         ("memory_current_bytes", optional(current)),
                         ("memory_peak_bytes", optional(self.memory_peak)),
+                        ("memory_anon_peak_bytes", optional(self.anon_peak)),
                         (
                             "cpu_seconds",
                             self.cpu_seconds.clone().unwrap_or(Value::Null),
@@ -160,6 +206,11 @@ impl StepObserver {
                 "memory_peak_bytes",
                 self.memory_peak.map_or(Value::Null, Value::int),
             ),
+            (
+                "memory_anon_peak_bytes",
+                self.anon_peak.map_or(Value::Null, Value::int),
+            ),
+            ("memory_events", self.events.clone().unwrap_or(Value::Null)),
             (
                 "cpu_seconds",
                 self.cpu_seconds.clone().unwrap_or(Value::Null),
@@ -235,13 +286,34 @@ mod tests {
             )
         );
         assert!(observer.emitted[0].ends_with(
-            "\"memory_current_bytes\": 100, \"memory_peak_bytes\": 300, \"cpu_seconds\": 2.5}}"
+            "\"memory_current_bytes\": 100, \"memory_peak_bytes\": 300, \"memory_anon_peak_bytes\": null, \"cpu_seconds\": 2.5}}"
         ));
+        assert_eq!(summary.at("memory_anon_peak_bytes"), &Value::Null);
+        assert_eq!(summary.at("memory_events"), &Value::Null);
+        for anon in [100, 5000, 300] {
+            std::fs::write(
+                cgroup.join("memory.stat"),
+                format!("anon {anon}\nfile 9999\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                cgroup.join("memory.events"),
+                "low 0\nhigh 0\nmax 7\noom 0\noom_kill 0\n",
+            )
+            .unwrap();
+            observer.sample();
+        }
+        let summary = observer.summary();
+        assert_eq!(summary.at("memory_anon_peak_bytes").as_int(), Some(5000));
+        assert_eq!(
+            json::dumps(summary.at("memory_events"), false),
+            "{\"high\": 0, \"max\": 7, \"oom\": 0, \"oom_kill\": 0}"
+        );
         std::fs::remove_dir_all(&root).unwrap();
         let unobserved = StepObserver::new("x", None).summary();
         assert_eq!(
             json::dumps(&unobserved, false).split_once(", ").unwrap().1,
-            "\"cgroup_observed\": false, \"samples\": 0, \"memory_peak_bytes\": null, \"cpu_seconds\": null, \"sample_seconds\": 15}"
+            "\"cgroup_observed\": false, \"samples\": 0, \"memory_peak_bytes\": null, \"memory_anon_peak_bytes\": null, \"memory_events\": null, \"cpu_seconds\": null, \"sample_seconds\": 15}"
         );
     }
 
