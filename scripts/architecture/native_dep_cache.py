@@ -671,4 +671,9 @@ def produce(q, registry=None):
         except Exception as error:  # one product's failure must not block the others
             rows.append({'repo': product['repo'], 'status': 'failed', 'reason': str(error)[:500]})
         q.save()
+    failed = [row['repo'] for row in rows if row.get('status') == 'failed']
+    if failed:
+        # Every product is attempted first; a fill that published nothing must not pass.
+        from check import Violation
+        raise Violation('dependency units failed for ' + ', '.join(failed))
     return rows
