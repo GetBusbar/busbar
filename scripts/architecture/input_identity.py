@@ -29,6 +29,8 @@ PREPARATION_SELECTOR = 'scripts/architecture/native_sources.py'
 TRIVY_METADATA_CONTRACT_IMAGE = ('mirror.gcr.io/aquasec/trivy:0.76.2@sha256:'
     '8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb')
 TRIVY_METADATA_CONTRACT_SCANNER = '0860330d2bbc1b2bf47b444ea6db82fa139656fe715f8c7aee9f7543e5fc3011'
+# Policies containing this file run the compiled busbar-ci scanner, not scan.py.
+COMPILED_SCANNER = 'tools/ci/src/security.rs'
 # Exact approved ASTs before/after the core-only 5563 reader repair. These are
 # complete function shapes, including every default, assertion and source check.
 ARTIFACT_READER_SHAPES = {
@@ -169,10 +171,25 @@ def semantic_database_identity(database, tools, now, *, scanner_sha256):
             'scanner_image': tools['trivy'], 'schema_validation': 'trivy-0.76.2--skip-db-update'}
 
 
+def scanner_database_identity(database, tools, now, *, scanner_sha256, compiled_scanner_sha256=None):
+    """Database identity under the scanner a policy actually runs.
+
+    The semantic projection is pinned to the one reviewed scan.py program. A
+    compiled scanner is a distinct executable contract: keep its complete
+    metadata identity rather than extending that finite projection to it.
+    """
+    if compiled_scanner_sha256 is not None:
+        return database_identity(database, tools, now)
+    return semantic_database_identity(database, tools, now, scanner_sha256=scanner_sha256)
+
+
 def security_database_identity(request, objects, database, now):
     tools = json.loads(objects.blob(CORE, request['policy'], 'ci/security/tools.json'))
     scanner = sha(objects.blob(CORE, request['policy'], 'scripts/security/scan.py'))
-    return semantic_database_identity(database, tools, now, scanner_sha256=scanner)
+    compiled = (sha(objects.blob(CORE, request['policy'], COMPILED_SCANNER))
+                if COMPILED_SCANNER in objects.tree(CORE, request['policy']) else None)
+    return scanner_database_identity(database, tools, now, scanner_sha256=scanner,
+                                     compiled_scanner_sha256=compiled)
 
 
 def compute_identity(request, objects, *, database=None, now=None):
@@ -195,7 +212,7 @@ def compute_identity(request, objects, *, database=None, now=None):
         # These are all trusted executable/configuration inputs of the dedicated
         # scanner and bootstrap. Entire directories include newly added inputs.
         paths = {name: row for name, row in policy.items() if name.startswith(
-            ('scripts/security/', 'ci/security/')) or name == 'ci/architecture-pipeline.yml'}
+            ('scripts/security/', 'ci/security/', 'tools/ci/')) or name == 'ci/architecture-pipeline.yml'}
         require('scripts/security/scan.py' in paths and 'ci/security/tools.json' in paths
                 and 'ci/architecture-pipeline.yml' in paths, 'incomplete security controller')
         result['policy_inputs_sha256'] = sha(encoded(paths))

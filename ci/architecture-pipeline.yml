@@ -73,9 +73,7 @@ native-qualification:
                   command = None
               elif retained.exists() or retained.is_symlink():
                   raise SystemExit('retention decision left evidence without retaining')
-          if os.environ['CI_JOB_NAME'] == 'security-scans':
-              command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
-          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
+          if os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
               raise SystemExit('unrecognized trusted native job')
           if command is not None:
               subprocess.run(command, check=True)
@@ -110,6 +108,66 @@ security-scans:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
       when: never
     - when: on_success
+  # POSIX sh only: fetch the server-selected policy, then the policy's
+  # tools/ci/security-scans.sh runs the digest-pinned busbar-ci controller.
+  script:
+    - |
+      set -eu
+      # Bootstrap from the server-selected top-level configuration, not a variable
+      # or script supplied by the candidate. Pipeline variable overrides are disabled.
+      uri=$CI_CONFIG_REF_URI
+      # GitLab identifies the consumer project/ref around the full external
+      # configuration setting. The trusted revision is the SHA after its colon:
+      # (https://)?HOST/PROJECT//ci/architecture-pipeline.yml@GetBusbar/busbar:SHA@refs/heads/REF
+      # where REF has no Unicode whitespace. Bytes are matched under LC_ALL=C.
+      select_revision() (
+        LC_ALL=C
+        prefix="$CI_SERVER_HOST/$CI_PROJECT_PATH//ci/architecture-pipeline.yml@GetBusbar/busbar:"
+        selected=${uri#https://}
+        case "$selected" in "$prefix"*) selected=${selected#"$prefix"} ;; *) exit 1 ;; esac
+        revision=${selected%%@*}
+        test "${#revision}" -eq 40 || exit 1
+        case "$revision" in *[!0-9a-f]*) exit 1 ;; esac
+        branch=${selected#"$revision"}
+        case "$branch" in @refs/heads/?*) branch=${branch#@refs/heads/} ;; *) exit 1 ;; esac
+        space=$(printf ' \t\n\r\013\014\034\035\036\037.')
+        case "$branch" in *["${space%.}"]*) exit 1 ;; esac
+        for code in '\302\205' '\302\240' '\341\232\200' '\342\200\250' '\342\200\251' '\342\200\257' \
+            '\342\201\237' '\343\200\200' '\342\200\200' '\342\200\201' '\342\200\202' '\342\200\203' \
+            '\342\200\204' '\342\200\205' '\342\200\206' '\342\200\207' '\342\200\210' '\342\200\211' '\342\200\212'; do
+          character=$(printf "$code")
+          case "$branch" in *"$character"*) exit 1 ;; esac
+        done
+        printf '%s' "$revision"
+      )
+      revision=$(select_revision) || {
+        printf '%s\n' "CI configuration must select the approved immutable core revision: $uri" >&2
+        exit 1
+      }
+      test -n "${BUSBAR_NATIVE_SCRATCH+set}" || exit 1
+      mkdir -p -- "${BUSBAR_NATIVE_SCRATCH:-.}"
+      base=$(cd -P -- "${BUSBAR_NATIVE_SCRATCH:-.}" && pwd -P)
+      work="$base/boundary-$CI_PROJECT_ID-$CI_JOB_ID"
+      mkdir -- "$work"
+      trap 'rm -rf -- "$work"' EXIT
+      trusted="$work/trusted"
+      mkdir -- "$trusted"
+      server=$CI_SERVER_URL
+      while case "$server" in */) true ;; *) false ;; esac; do server=${server%/}; done
+      auth=$(printf 'gitlab-ci-token:%s' "$CI_JOB_TOKEN" | base64 | tr -d '\n')
+      git -C "$trusted" init -q
+      # The credential reaches only this fetch, through its environment.
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$server/.extraheader" \
+        GIT_CONFIG_VALUE_0="Authorization: Basic $auth" GIT_TERMINAL_PROMPT=0 \
+        git -C "$trusted" fetch --depth 1 "$server/GetBusbar/busbar.git" "$revision"
+      unset auth
+      git -C "$trusted" checkout --detach FETCH_HEAD
+      if test "$(git -C "$trusted" rev-parse HEAD)" != "$revision"; then
+        echo 'trusted policy checkout mismatch' >&2
+        exit 1
+      fi
+      test "$CI_JOB_NAME" = security-scans || { echo 'unrecognized trusted security job' >&2; exit 1; }
+      sh "$trusted/tools/ci/security-scans.sh" "$trusted" "$work" || exit 1
   artifacts:
     when: always
     access: developer

@@ -7,6 +7,17 @@ The admission controller refuses missing, stale, optional or unsuccessful scans.
 There is no `|| true`, candidate suppression policy or fallback to an unpinned tool.
 Controlled direct dev pushes remain a separate owner capability, not an MR gate.
 
+The CI job runs no Python. Its POSIX-sh bootstrap fetches the selected policy and
+runs `tools/ci/security-scans.sh`, which executes the dependency-free Rust
+controller `tools/ci` (`busbar-ci security-scans`, the same receipt schema and
+judgement as `scan.py`). The static binary is pinned by size and SHA-256 in
+`tools/ci/controller.pin` and fetched from core's generic package registry; if it
+is absent or differs, the job rebuilds it offline from the trusted source with
+`tools/ci/build-controller.sh` in the pinned Rust image (byte-reproducible).
+After changing `tools/ci`, rebuild, update the pin, and publish the binary under
+the pinned package URL before moving the CI configuration pin. `scan.py` remains
+the scanner library of the release publish gate (`artifacts.py`).
+
 The trusted scanner exports committed blobs without Git export filters or attributes;
 it never executes candidate build/package scripts. Symlinks are scanned as their
 target text rather than followed. Submodules refuse pending separate qualification.

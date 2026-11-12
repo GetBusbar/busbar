@@ -1,0 +1,22 @@
+[package]
+name = "busbar-ci"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Busbar CI controller (security-scans). Not a product crate."
+license = "Apache-2.0"
+
+# CI tooling is its own workspace with its own lockfile: the root product
+# workspace, cargo deny/vet and the architecture checks never include it.
+# It has no dependencies, so building it needs no registry or network.
+[workspace]
+
+[dependencies]
+
+[profile.release]
+codegen-units = 16
+debug = 0
+incremental = false
+panic = "abort"
+strip = true
