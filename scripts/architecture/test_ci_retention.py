@@ -357,10 +357,15 @@ class Pipeline(unittest.TestCase):
     def test_retention_decides_before_bootstrap_for_expensive_kinds_only(self):
         script = self.blocks['native-qualification']
         decision = script.index("scripts/architecture/ci_retention.py")
-        self.assertLess(script.index("in ('native-qualification', 'core-conformance'):"), decision)
-        self.assertLess(decision, script.index('if command is not None:\n              subprocess.run(command'))
-        self.assertIn("if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():\n"
-                      "                  command = None", script)
+        self.assertLess(script.index("        (native-qualification|core-conformance)\n"), decision)
+        # Only the registry-free controller build may overlap the decision; every
+        # download happens inside native-bootstrap, after it.
+        self.assertLess(decision, script.index('wait "$build"'))
+        self.assertLess(decision, script.index('native-bootstrap --trusted'))
+        self.assertIn('--output "$retained" \\\n'
+                      '              && test -f "$retained" && test ! -L "$retained"; then\n'
+                      '            exit 0\n'
+                      '          elif test -e "$retained" || test -L "$retained"; then\n', script)
         self.assertEqual(self.text.count('ci_retention.py'), 1)
         self.assertNotRegex(self.text, r'(?m)^\s*(needs|dependencies|include|default):')
         self.assertNotRegex(self.text, r'\$(BUSBAR_)?(SKIP|RETAIN)')

@@ -38,50 +38,76 @@ native-qualification:
       set -eu
       # Bootstrap from the server-selected top-level configuration, not a variable
       # or script supplied by the candidate. Pipeline variable overrides are disabled.
-      python3 -I -B - <<'PY'
-      import base64, os, pathlib, re, shutil, subprocess
-      uri = os.environ['CI_CONFIG_REF_URI']
-      # GitLab identifies the consumer project/ref around the full external
-      # configuration setting. The trusted revision is the SHA after its colon.
-      match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + '/' + re.escape(os.environ['CI_PROJECT_PATH']) + r'//ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})@refs/heads/[^\s]+', uri)
-      if not match:
-          raise SystemExit('CI configuration must select the approved immutable core revision: ' + uri)
-      base = pathlib.Path(os.environ['BUSBAR_NATIVE_SCRATCH']).resolve()
-      work = base / ('boundary-' + os.environ['CI_PROJECT_ID'] + '-' + os.environ['CI_JOB_ID'])
-      work.mkdir(parents=True, exist_ok=False)
-      trusted = work / 'trusted'
-      trusted.mkdir()
-      env = dict(os.environ)
-      auth = base64.b64encode(('gitlab-ci-token:' + env['CI_JOB_TOKEN']).encode()).decode()
-      server = env['CI_SERVER_URL'].rstrip('/')
-      env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.' + server + '/.extraheader', GIT_CONFIG_VALUE_0='Authorization: Basic ' + auth, GIT_TERMINAL_PROMPT='0')
-      try:
-          subprocess.run(['git', '-C', str(trusted), 'init', '-q'], check=True)
-          subprocess.run(['git', '-C', str(trusted), 'fetch', '--depth', '1', server + '/GetBusbar/busbar.git', match[1]], env=env, check=True)
-          subprocess.run(['git', '-C', str(trusted), 'checkout', '--detach', 'FETCH_HEAD'], check=True)
-          actual = subprocess.check_output(['git', '-C', str(trusted), 'rev-parse', 'HEAD'], text=True).strip()
-          if actual != match[1]:
-              raise SystemExit('trusted policy checkout mismatch')
-          command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/native_ci_bootstrap.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
-          if os.environ['CI_JOB_NAME'] in ('native-qualification', 'core-conformance'):
-              # Decide before any bootstrap download: exit 0 only after the trusted
-              # module authenticated an equal-input successful original and wrote
-              # boundary-evidence/retained.json naming it. Anything else runs fresh.
-              retained = pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/retained.json'
-              decision = subprocess.run(['python3', '-I', '-B', str(trusted / 'scripts/architecture/ci_retention.py'), '--policy', match[1], '--checkout', os.environ['CI_PROJECT_DIR'], '--output', str(retained)])
-              if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():
-                  command = None
-              elif retained.exists() or retained.is_symlink():
-                  raise SystemExit('retention decision left evidence without retaining')
-          if os.environ['CI_JOB_NAME'] == 'security-scans':
-              command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
-          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
-              raise SystemExit('unrecognized trusted native job')
-          if command is not None:
-              subprocess.run(command, check=True)
-      finally:
-          shutil.rmtree(work, ignore_errors=True)
-      PY
+      # POSIX sh only: the operational controller is the trusted tools/ci binary.
+      approved_revision() {
+        # GitLab identifies the consumer project/ref around the full external
+        # configuration setting. The trusted revision is the SHA after its colon.
+        uri=${CI_CONFIG_REF_URI#https://}
+        rest=${uri#"$CI_SERVER_HOST/$CI_PROJECT_PATH//ci/architecture-pipeline.yml@GetBusbar/busbar:"}
+        test "$rest" != "$uri" || return 1
+        revision=$(printf '%.40s' "$rest")
+        branch=${rest#"$revision@refs/heads/"}
+        test "${#revision}" -eq 40 && test "$branch" != "$rest" && test -n "$branch" || return 1
+        case $revision in (*[!0-9a-f]*) return 1 ;; esac
+        case $branch in (*[[:space:][:cntrl:]]*) return 1 ;; esac
+        printf '%s\n' "$revision"
+      }
+      if ! revision=$(approved_revision); then
+        echo "CI configuration must select the approved immutable core revision: $CI_CONFIG_REF_URI" >&2
+        exit 1
+      fi
+      base=$(cd "$BUSBAR_NATIVE_SCRATCH" && pwd -P)
+      work="$base/boundary-$CI_PROJECT_ID-$CI_JOB_ID"
+      mkdir "$work"
+      # Background controller builds finish before the staging root is removed.
+      trap 'wait; rm -rf "$work"' EXIT
+      trap 'exit 143' TERM
+      trap 'exit 130' INT
+      trusted="$work/trusted"
+      mkdir "$trusted"
+      server=${CI_SERVER_URL%/}
+      auth=$(printf 'gitlab-ci-token:%s' "$CI_JOB_TOKEN" | base64 | tr -d '\n')
+      git -C "$trusted" init -q
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$server/.extraheader" GIT_CONFIG_VALUE_0="Authorization: Basic $auth" GIT_TERMINAL_PROMPT=0 \
+        git -C "$trusted" fetch --depth 1 "$server/GetBusbar/busbar.git" "$revision"
+      unset auth
+      git -C "$trusted" checkout --detach FETCH_HEAD
+      if test "$(git -C "$trusted" rev-parse HEAD)" != "$revision"; then
+        echo 'trusted policy checkout mismatch' >&2
+        exit 1
+      fi
+      case $CI_JOB_NAME in
+        (native-qualification|core-conformance|external-conformance|native-isolation-diagnostic)
+          # The fixed controller is built from the verified trusted checkout only
+          # (std-only crate: no registry, network or candidate configuration),
+          # concurrently with the retention decision.
+          sh "$trusted/tools/ci/build-controller.sh" "$trusted" "$work/controller" &
+          build=$! ;;
+      esac
+      case $CI_JOB_NAME in
+        (native-qualification|core-conformance)
+          # Decide before any bootstrap download: exit 0 only after the trusted
+          # module authenticated an equal-input successful original and wrote
+          # boundary-evidence/retained.json naming it. Anything else runs fresh.
+          retained="$CI_PROJECT_DIR/boundary-evidence/retained.json"
+          if python3 -I -B "$trusted/scripts/architecture/ci_retention.py" --policy "$revision" --checkout "$CI_PROJECT_DIR" --output "$retained" \
+              && test -f "$retained" && test ! -L "$retained"; then
+            exit 0
+          elif test -e "$retained" || test -L "$retained"; then
+            echo 'retention decision left evidence without retaining' >&2
+            exit 1
+          fi ;;
+      esac
+      case $CI_JOB_NAME in
+        (security-scans)
+          python3 "$trusted/scripts/security/scan.py" --trusted "$trusted" --checkout "$CI_PROJECT_DIR" --work "$work" --output "$CI_PROJECT_DIR/boundary-evidence/security.json" ;;
+        (native-qualification|core-conformance|external-conformance|native-isolation-diagnostic)
+          wait "$build"
+          "$work/controller/target/debug/busbar-ci" native-bootstrap --trusted "$trusted" --checkout "$CI_PROJECT_DIR" --work "$work" ;;
+        (*)
+          echo 'unrecognized trusted native job' >&2
+          exit 1 ;;
+      esac
   artifacts:
     when: always
     access: developer

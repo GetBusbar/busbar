@@ -28,8 +28,9 @@ variables. The JSON object has exactly these fields:
 | `collector` | Protected local `docker_host` and mapped host `uid`/`gid` for trusted dependency fetching only |
 
 Schema 2 refuses the earlier partial fixture configuration. A protected root
-controller prepares fresh bounded storage using `linux_job_isolation.py` before
-staging job inputs. Full native jobs use `storage_kind: "loop-ext4"`: a private,
+controller (`tools/ci`, `busbar-ci native-root`) prepares fresh bounded storage
+before staging job inputs, with the same contract `linux_job_isolation.py` checks
+per command. Full native jobs use `storage_kind: "loop-ext4"`: a private,
 fully preallocated sibling `storage_image`, fixed byte and inode ceilings, and an
 explicit host free-space reserve. This prevents Cargo outputs consuming the
 worker's RAM or exhausting unrelated host storage. Tiny probes may use `tmpfs`.

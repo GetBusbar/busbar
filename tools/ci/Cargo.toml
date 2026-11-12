@@ -1,0 +1,20 @@
+[package]
+name = "busbar-ci"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This controller is not a product crate and must never enter the shipping graph.
+[workspace]
+
+# Native bootstrap modules are std-only: building on a fresh one-use worker
+# needs no registry, network or vendored source.
+[dependencies]
+
+[profile.dev]
+debug = 0
+# The controller hashes ~1.5 GB of pinned archives per job; unoptimized
+# SHA-256 runs ~10x slower than the few seconds optimization costs to build.
+opt-level = 3
+codegen-units = 16
+incremental = false
