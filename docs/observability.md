@@ -174,8 +174,14 @@ filters. Stderr takes `RUST_LOG` (default `info` — hot-path spans off). OTLP f
 `DEBUG` unconditionally, specifically so pointing an `export:` `module: otlp` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way — set
-`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on stderr, or configure OTLP to
-get them exported without touching stderr at all.
+`RUST_LOG=debug` to see hot-path spans on stderr, or configure OTLP to get them exported without
+touching stderr at all.
+
+**`RUST_LOG` takes one bare level in 1.5.x.** The value is read as a single level word
+(`error`, `warn`, `info`, `debug`, `trace`, any case, or `1` to `5`) applied to every target.
+Per-target directive syntax (`RUST_LOG=busbar=debug`, `busbar=debug,hyper=warn`) is NOT supported:
+such a value does not parse and busbar silently logs at `info`, as it also does for `off` and for any
+misspelt level.
 
 **Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced.** In the
 hot modules (proxy/auth/governance/ingress) every `info!`/`warn!` fires only on an error, rejection,
