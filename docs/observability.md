@@ -230,8 +230,45 @@ filters. Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OT
 `DEBUG` unconditionally, specifically so pointing an `export:` `module: otlp` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way. Set
-`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on stderr, or configure OTLP to
-get them exported without touching stderr at all.
+`RUST_LOG=debug` (or `RUST_LOG=busbar=debug`) to see hot-path spans on the console, or configure OTLP
+to get them exported without touching the console at all.
+
+**`RUST_LOG` grammar (1.6.0).** `observability::console_filter` reads it, once, at boot:
+
+| `RUST_LOG` | Console filter |
+|---|---|
+| unset, empty or blank | `info` for every target (unchanged) |
+| one level word: `error`, `warn`, `info`, `debug`, `trace` (any case), or `1`..`5` | that level for every target, exactly as 1.5.x read it |
+| `off` or `0` | nothing on the console (1.5.x silently read these as `info`) |
+| comma-separated `target=level` directives, optionally with one bare level | per-target levels by target prefix; the bare level (default `info`) covers every target no directive names, e.g. `busbar=debug,hyper=warn`, `warn,busbar::request=debug` |
+
+Anything else stops boot with `[error] BUSBAR-9007: RUST_LOG="…" is not a log filter: …` and exit
+status 1; it is never replaced by a default (1.5.x fell back to `info` silently, so the documented
+`RUST_LOG=busbar=debug` did nothing). A bare word that is not a level (`RUST_LOG=busbar`) is refused
+rather than read as "this target at trace", because a misspelt level would otherwise switch every
+other target off. Span and field directives (`[forward]=debug`) are refused: the filter is a static
+per-target table, so every callsite's interest is decided once and cached. The filter stays on the
+console layer, never the registry, so the OTLP floor above still holds; OTLP's level is the
+console's most verbose level, floored at `DEBUG`.
+
+**The per-request summary: `busbar::request`.** At `DEBUG`, every unit a plane drives emits one
+`request finished` event as it ends (health probes excepted): `request_id` (the `forward` span's),
+`unit_id`, `plane`, `ingress`, `op`, `requested` (the entry the request named), `pool` (after any
+budget downgrade), `key_id`, `governance` (`admitted`, `downgraded`, `no_key`, `not_admitted`,
+`refused`, `off`), `downgraded_to`, `route_policy`, `lane` and `provider` (the last attempt's),
+`attempts`, `tried` (every attempt as `lane(provider) status latency outcome[:failover reason]`),
+`walk` and `walk_detail` (how the walk ended), `outcome`, `step` and `reason` (a refusal's or
+failure's reason code), `status`, `streamed`, `cut`, `latency_ms`, `latency_us`. Fields are native
+values; unknown facts are omitted. It never carries a body, a header, a credential or a hook's
+message text. `RUST_LOG=info,busbar::request=debug` turns on the summary alone.
+
+Its cost is gated once per unit: below `DEBUG` the unit asks `observability::request::enabled()`
+(the `tracing` max-level comparison every disabled `debug!` makes) and carries `None`; nothing is
+allocated, timed or formatted. The same release stopped the request path computing disabled span
+fields: the `forward` span's pool (a lock and an allocation), the `forward_once` span's lane (a
+lock), and each attempt's clock reads now run only when those spans are enabled.
+`cargo bench -p busbar-kernel --features test-support --bench request_debug_overhead` measures the
+per-request instrumentation at each level.
 
 **Event macros (`info!`/`warn!`/`error!`) are a documented convention, not lint-enforced.** In the
 hot modules (proxy/auth/governance/ingress) every `info!`/`warn!` fires only on an error, rejection,

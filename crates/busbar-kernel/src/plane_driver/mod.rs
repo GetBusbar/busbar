@@ -22,6 +22,9 @@ pub mod route_tables;
 pub mod serve;
 pub mod slots;
 mod timing;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use timing::forward_instrumentation;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -577,9 +580,17 @@ impl PlaneDriver {
             steps,
             far,
             caller,
+            state: Mutex::new(UnitState {
+                // A health probe is the host's own traffic, not a request to diagnose.
+                trail: if arrival.claim == busbar_contract::abi::plane::CLAIM_PROBE {
+                    None
+                } else {
+                    crate::observability::request::Trail::start()
+                },
+                ..UnitState::default()
+            }),
             arrival,
             deadline_ns,
-            state: Mutex::new(UnitState::default()),
         }
     }
 
@@ -745,6 +756,29 @@ pub trait DriverSteps {
     fn refusal_words(&self, _reason: ReasonCode) -> Option<Vec<u8>> {
         None
     }
+
+    /// What the host knows of the unit for its DEBUG `request finished` summary
+    /// ([`crate::observability::request`]), its caller's dialect by index. Called only while that
+    /// summary is enabled, once, as the unit ends.
+    fn summary(&self, _ctx: &UnitCtx, _dialect: Option<u32>) -> UnitSummary {
+        UnitSummary::default()
+    }
+}
+
+/// The host's facts for a unit's DEBUG summary ([`DriverSteps::summary`]): names the operator
+/// configured and the governance decision, never a credential.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnitSummary {
+    /// The caller's dialect (ingress protocol) name.
+    pub ingress: Option<String>,
+    /// The pool the unit was routed over, after any budget downgrade.
+    pub pool: Option<String>,
+    /// The governance key id that admitted it (attribution, never the secret).
+    pub key_id: Option<String>,
+    /// The governance decision: `admitted`, `downgraded`, `no_key`, `not_admitted`, `off`.
+    pub governance: &'static str,
+    /// The pool a budget `on_exhaust: downgrade` moved it to.
+    pub downgraded_to: Option<String>,
 }
 
 /// A refusal or failure the plane rendered, for the caller.
@@ -768,6 +802,9 @@ pub(crate) struct UnitState {
     cancel_billed: Arc<std::sync::atomic::AtomicBool>,
     /// A worker cancellation has a result owner; idle siblings must wait for that owner to bill.
     cancel_started: Arc<std::sync::atomic::AtomicBool>,
+    /// The unit's DEBUG summary, only while that summary is enabled at the unit's start
+    /// ([`crate::observability::request`]); `None` costs every recording site one branch.
+    pub(crate) trail: Option<Box<crate::observability::request::Trail>>,
     /// The unit's correlation id, where its host minted one with its request span
     /// ([`DriverSteps::request_span`]): the id its hooks carry. `None`: the hooks' binder mints.
     request_id: Option<u64>,
@@ -1631,9 +1668,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => Some(*reason),
             _ => None,
         };
-        let pending = {
-            let st = self.lock();
-            st.facts.streamed || st.rendered.is_some()
+        let (pending, trail) = {
+            let mut st = self.lock();
+            (st.facts.streamed || st.rendered.is_some(), st.trail.take())
         };
         let body = match reason {
             Some(reason) if !pending => {
@@ -1649,6 +1686,9 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
             }
             _ => Vec::new(),
         };
+        if let Some(trail) = trail {
+            self.summarize(_ctx, &trail, Some(outcome));
+        }
         StepAnswer::proceed(
             token,
             busbar_contract::caps::Frame {
@@ -1658,6 +1698,87 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> UnitEnds for PlaneUnits<'_,
                 meta: busbar_contract::FrameMeta::default(),
             },
         )
+    }
+}
+
+impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
+    /// Emit the unit's DEBUG `request finished` summary from its trail. `outcome`: `None` when the
+    /// unit was abandoned before the kernel ended it.
+    fn summarize(
+        &self,
+        ctx: &UnitCtx,
+        trail: &crate::observability::request::Trail,
+        outcome: Option<&Outcome>,
+    ) {
+        use crate::observability::request::{finished, Summary};
+        let (request_id, op, dialect, requested, route_policy, status, streamed, cut) = {
+            let st = self.lock();
+            let decoded = st.decoded.as_ref();
+            (
+                st.request_id,
+                decoded
+                    .and_then(|d| self.driver.config.op_classes.get(d.op_class as usize))
+                    .map(|op| op.as_str()),
+                decoded.map(|d| d.dialect),
+                decoded
+                    .and_then(|d| d.pool.as_deref())
+                    .map(|p| String::from_utf8_lossy(p).into_owned()),
+                st.route_policy.clone(),
+                if st.facts.status != 0 {
+                    st.facts.status
+                } else {
+                    st.rendered.as_ref().map_or(0, |r| r.status)
+                },
+                st.facts.streamed,
+                st.facts.cut,
+            )
+        };
+        let host = self.steps.summary(ctx, dialect);
+        let attempts = trail.attempts();
+        let last = attempts.last();
+        let (ended, step, reason) = match outcome {
+            None => ("abandoned", None, None),
+            Some(Outcome::Completed) => ("completed", None, None),
+            Some(Outcome::Refused(step, reason)) => {
+                ("refused", Some(step.as_str()), Some(reason.as_str()))
+            }
+            Some(Outcome::Failed(step, reason)) => {
+                ("failed", Some(step.as_str()), Some(reason.as_str()))
+            }
+            Some(Outcome::Aborted(abort)) => ("aborted", None, Some(abort.reason().as_str())),
+            Some(Outcome::TimedOut(step)) => ("timed_out", Some(step.as_str()), None),
+        };
+        let governance = match outcome {
+            Some(Outcome::Refused(..)) if !matches!(host.governance, "admitted" | "downgraded") => {
+                "refused"
+            }
+            _ => host.governance,
+        };
+        finished(&Summary {
+            request_id,
+            unit_id: ctx.key.get(),
+            plane: &self.driver.label,
+            ingress: host.ingress.as_deref(),
+            op,
+            requested: requested.as_deref(),
+            pool: host.pool.as_deref(),
+            key_id: host.key_id.as_deref(),
+            governance,
+            downgraded_to: host.downgraded_to.as_deref(),
+            route_policy: route_policy.as_deref(),
+            lane: last.map(|a| a.lane.as_str()),
+            provider: last.map(|a| a.provider.as_str()),
+            outcome: ended,
+            step,
+            reason,
+            walk: trail.walk.map(|(walk, _)| walk),
+            walk_detail: trail.walk.and_then(|(_, detail)| detail),
+            status,
+            streamed,
+            cut,
+            attempts: &attempts,
+            latency_us: trail.elapsed_us(),
+        });
     }
 }
 
@@ -1714,6 +1835,12 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: SessionCaller> RouteAwait for PlaneUni
 
     fn abandoned(&self, ctx: &UnitCtx, ended: Ended) {
         self.driver.money.abandoned(ctx, ended);
+        if crate::observability::request::enabled() {
+            let trail = self.lock().trail.take();
+            if let Some(trail) = trail {
+                self.summarize(ctx, &trail, None);
+            }
+        }
     }
 
     fn screen<'a>(&'a self, ctx: &'a UnitCtx) -> Screen<'a> {
