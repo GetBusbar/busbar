@@ -124,7 +124,12 @@ class BuildJobs(unittest.TestCase):
         jobs = lambda name, argv: native.step_build_jobs(name, argv, scheduling)
         self.assertEqual(jobs('root-clippy', ['cargo', 'clippy', '--workspace']), 3)
         self.assertEqual(jobs('root-runtime', ['cargo', 'nextest', 'run']), 3)
+        self.assertEqual(jobs('product-inputs', ['bash', '/t/scripts/ci-product-inputs.sh']), 3)
+        self.assertEqual(jobs('core-native-conformance', ['bash', '/c/testing/conformance/run.sh']), 3)
         for name, argv in (('final-binary', ['python3', 'x']), ('product-inputs', ['bash', 'x']),
+                           ('product-inputs', ['bash', '-c', '/t/scripts/ci-product-inputs.sh']),
+                           ('core-native-conformance', ['bash', '/c/other.sh']),
+                           ('plugin-conformance', ['bash', '/c/testing/conformance/run.sh']),
                            ('plugin-runtime-prepare', ['bash', '-euo', 'pipefail', 'prepare.sh']),
                            ('profiled', ['cargo', 'build', '--profile', 'dist']),
                            ('bounded-loom', ['cargo', 'test', '--release']), ('other', ['cargo', 'build', '--release'])):
