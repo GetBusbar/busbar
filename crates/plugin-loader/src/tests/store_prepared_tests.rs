@@ -507,6 +507,11 @@ async fn prepared_upgrade_short_target_recovery_and_completion_use_one_native_in
     drop(backend);
     drop(serving);
     drop(prepared);
+    // The last owner's close can retire on another thread; wait for it as the
+    // sibling drop test does, then require exactly one close.
+    tokio::time::timeout(Duration::from_secs(5), stats.closed_note.notified())
+        .await
+        .expect("the one native instance closes after its last owner drops");
     assert_eq!(stats.closed.load(Ordering::SeqCst), 1);
 }
 
