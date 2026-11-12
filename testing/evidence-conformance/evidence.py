@@ -144,7 +144,7 @@ def build_subject(log, *, oidc=False):
     build_env = (dict(os.environ, CARGO_NET_OFFLINE="true")
                  if "CONFORMANCE_CAPABILITIES" in os.environ or "BUSBAR_CONFORMANCE_INPUTS" in os.environ
                  else None)
-    builds = [oidf.subject_build.busbar_argv(REPO, target)]
+    builds = oidf.subject_build.subject_argvs(REPO, target, pack=False)
     if oidc:
         # The OIDC module is a dev-dependency of dist/default (cargo cannot build one alone with
         # `-p`): its repo at the rev dist/default/Cargo.lock pins, its busbar-contract patched to THIS

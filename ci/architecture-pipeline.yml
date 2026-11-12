@@ -1,5 +1,14 @@
 # Selected by each project's CI configuration setting at an immutable approved SHA.
 # Candidate .gitlab-ci.yml and candidate architecture tooling are never executed here.
+#
+# Core runs in three tiers; plugin projects keep one (native-qualification + security).
+#   DEV  (dev merge requests, dev push): core-build (fmt, deny/vet, the one clippy-linted
+#        release build of dist/default `busbar`) -> core-conformance on that binary.
+#   QA   (protected qa push; owner "qa-nightly" schedule on dev): DEV + native-qualification
+#        (every test, full clippy, witnesses, oracle, loom) + security-scans, all on the
+#        same certified binary.
+#   MAIN (protected main push): release-certification, zero builds: the QA-certified
+#        digests for this exact commit or no release.
 workflow:
   auto_cancel:
     on_new_commit: conservative
@@ -8,20 +17,16 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
-    # Owner-created dev schedule: advisory database refresh. Runs security only.
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_PROJECT_PATH == "GetBusbar/busbar" && ($CI_COMMIT_BRANCH == "qa" || $CI_COMMIT_BRANCH == "main") && $CI_COMMIT_REF_PROTECTED == "true"'
+    # Owner-created dev schedules: the advisory refresh (security only) and "qa-nightly".
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev"'
     - when: never
 
-stages: [qualify, website]
+stages: [build, qualify, website, release]
 
-native-qualification:
-  stage: qualify
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - when: on_success
+# The protected controller every job runs: it fetches the approved core revision
+# named by the server-selected configuration and dispatches on CI_JOB_NAME.
+.controller:
   tags: [busbar-native-admission]
   interruptible: true
   allow_failure: false
@@ -63,7 +68,8 @@ native-qualification:
           if actual != match[1]:
               raise SystemExit('trusted policy checkout mismatch')
           command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/native_ci_bootstrap.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
-          if os.environ['CI_JOB_NAME'] in ('native-qualification', 'core-conformance'):
+          if os.environ['CI_JOB_NAME'] == 'native-qualification' and os.environ['CI_PROJECT_PATH'] != 'GetBusbar/busbar':
+              # Plugins only: core jobs certify this pipeline's own binary and always run.
               # Decide before any bootstrap download: exit 0 only after the trusted
               # module authenticated an equal-input successful original and wrote
               # boundary-evidence/retained.json naming it. Anything else runs fresh.
@@ -75,7 +81,9 @@ native-qualification:
                   raise SystemExit('retention decision left evidence without retaining')
           if os.environ['CI_JOB_NAME'] == 'security-scans':
               command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
-          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic') and not re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME']):
+          elif os.environ['CI_JOB_NAME'] == 'release-certification':
+              command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/release_certification.py'), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/release-certification.json')]
+          elif os.environ['CI_JOB_NAME'] not in ('core-build', 'native-qualification', 'core-conformance', 'native-isolation-diagnostic') and not re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME']):
               raise SystemExit('unrecognized trusted native job')
           if command is not None:
               subprocess.run(command, check=True)
@@ -88,71 +96,93 @@ native-qualification:
     expire_in: 30 days
     paths: [boundary-evidence/]
 
-# Fixed-source runtime witnesses execute on an exclusive existing native worker.
-# This API-only core diagnostic neither qualifies candidate code nor publishes it.
-native-isolation-diagnostic:
-  extends: native-qualification
-  timeout: 30m
+# Shared rule sets, spliced into job rules with !reference. No set ends in a catch-all;
+# every job closes its own list with `when: never`.
+.rules:
+  core-dev:
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "dev"'
+  core-qa:
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "qa" && $CI_COMMIT_REF_PROTECTED == "true"'
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"'
+  plugin-dev:
+    - if: '$CI_PROJECT_PATH != "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+    - if: '$CI_PROJECT_PATH != "GetBusbar/busbar" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "dev"'
+
+# ---- DEV tier (core) -------------------------------------------------------------------
+# fmt, cargo deny/vet for both workspaces, then the ONE product build: cargo build
+# --release of dist/default `busbar` with clippy-driver and -D warnings. Its binary
+# (boundary-evidence/busbar) and sha256 are this pipeline's certified subject.
+core-build:
+  extends: .controller
+  stage: build
+  timeout: 2h
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
+    - !reference [.rules, core-dev]
+    - !reference [.rules, core-qa]
+    - when: never
+
+# Every core conformance suite judges the core-build binary by sha256; no own build.
+# Stage order starts it once core-build passed; it reads that job through the API.
+core-conformance:
+  extends: .controller
+  stage: qualify
+  tags: [busbar-conformance]
+  rules:
+    - !reference [.rules, core-dev]
+    - !reference [.rules, core-qa]
+    - when: never
+
+# ---- QA tier (core) and plugin qualification --------------------------------------------
+# Core: every test (root/dist workspaces, doctests, loader witnesses, loom), full clippy,
+# compiler witnesses, the oracle replay and product inputs; records the same certified
+# binary. Plugins: their native qualification on dev, as before.
+native-qualification:
+  extends: .controller
+  stage: qualify
+  rules:
+    - !reference [.rules, core-qa]
+    - !reference [.rules, plugin-dev]
     - when: never
 
 # Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
 # max_use_count=1, no shared cache). This job never executes candidate processes.
-# Keep that lifecycle contract when changing the runner behind this tag.
+# Its own database age/content checks decide freshness.
 security-scans:
-  extends: native-qualification
-  tags: [busbar-native-admission]
+  extends: .controller
+  stage: qualify
   timeout: 1h
-  # Security always runs fresh, including the dev schedule; its own database
-  # age/content checks decide freshness. It never invalidates native/conformance.
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
-      when: never
-    - when: on_success
+    - !reference [.rules, core-qa]
+    - !reference [.rules, plugin-dev]
+    # Every dev schedule (the advisory refresh included) runs security.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev"'
+    - when: never
   artifacts:
     when: always
     access: developer
     expire_in: 1 year
     paths: [boundary-evidence/security.json]
 
-# Conformance is mandatory alongside native qualification. API runs remain useful
-# diagnostics, but cannot replace these same-pipeline publication prerequisites.
-core-conformance:
-  extends: native-qualification
-  tags: [busbar-conformance]
+# Fixed-source runtime witnesses on an exclusive native worker. Owner API runs on
+# corefix-native-isolation-* only; it neither qualifies candidate code nor publishes it.
+native-isolation-diagnostic:
+  extends: .controller
+  stage: qualify
+  timeout: 30m
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
     - when: never
 
-# LLM's eight spec/voice suites and decisions' Jev suite run inside required
-# native-qualification. Their protected ci-coverage roster cannot be omitted.
-# Neither owner provides the former external-openai.sh/external-jev.sh endpoint
-# entrypoints; no separate external endpoint certification is claimed.
-
-# Trusted producer of prebuilt plugin dependency units (native_dep_cache.py). Only
-# a protected core dev push; stage order runs it only after every qualification
-# job (native, conformance, security) passed, beside website-dev. It runs no
-# candidate code: each pinned product's manifests and lock with every Rust source
-# stubbed, built in the ordinary confinement, published with this job's
-# CI_JOB_TOKEN to core's own generic package registry. Eight parallel instances
-# ("plugin-dependency-units K/8") each own a fixed digest-assigned subset of the
-# products, within the ordinary per-job confinement budget; a per-index
-# resource_group serialises successive pushes so each package file is written
-# exactly once.
-# The owner may also fill the cache without a qualification run: an API pipeline
-# on the protected ci/dep-cache branch (pointed only at a commit already on dev)
-# runs only these eight jobs; every other job's rules exclude that ref. The
-# controller proves the commit is on current dev, and those files are keyed to
-# that exact core commit, so only plugins qualifying against it accept them.
+# ---- dev publication ---------------------------------------------------------------------
+# Trusted producer of prebuilt plugin dependency units (native_dep_cache.py): a protected
+# core dev push after its qualification jobs, or an owner API pipeline on the protected
+# ci/dep-cache branch (a commit already on dev; every other job excludes that ref). No
+# candidate code: each pinned product's manifests and lock with stubbed sources. Eight
+# instances own fixed digest-assigned product subsets; a per-index resource_group writes
+# each package file once.
 plugin-dependency-units:
-  extends: native-qualification
+  extends: .controller
   stage: website
   interruptible: false
   allow_failure: true
@@ -165,11 +195,6 @@ plugin-dependency-units:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
-  artifacts:
-    when: always
-    access: developer
-    expire_in: 30 days
-    paths: [boundary-evidence/]
 
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness.
@@ -193,3 +218,22 @@ website-dev:
     forward:
       yaml_variables: true
       pipeline_variables: false
+
+# ---- MAIN tier (core) ----------------------------------------------------------------------
+# Zero builds: the newest successful protected qa push pipeline at this exact commit must
+# have certified one binary sha256 across core-build, core-conformance and
+# native-qualification, with security passing (release_certification.py). Signing,
+# tagging and publication take only that digest; there is no signing key in DEV or QA.
+release-certification:
+  extends: .controller
+  stage: release
+  timeout: 30m
+  interruptible: false
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - when: never
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 1 year
+    paths: [boundary-evidence/]

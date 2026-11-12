@@ -40,7 +40,7 @@ CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_COMMIT_REF_PROTECTED CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
-JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
+JOBS = {'native-qualification', 'core-build', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
 # Server-assigned names of the `parallel: 8` dependency-unit producer
 # (native_dep_cache.PRODUCER_JOB_NAME; tests pin that the two agree).
 DEPENDENCY_UNITS_JOB = re.compile(r'plugin-dependency-units [1-8]/8')
@@ -651,8 +651,9 @@ def root_main():
                     diagnostic(trusted, config, config_path, store, evidence)
                 else:
                     import native_service_inputs
-                    # The dependency-unit producer starts no service peer.
-                    receipt['service_inputs'] = {} if dependency_units_job(env['CI_JOB_NAME']) else \
+                    # Neither the dependency-unit producer nor core-build starts a service peer.
+                    receipt['service_inputs'] = {} if (dependency_units_job(env['CI_JOB_NAME'])
+                                                       or env['CI_JOB_NAME'] == 'core-build') else \
                         native_service_inputs.stage(trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
                     capacity = os.statvfs(control)
                     require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
@@ -674,6 +675,9 @@ def root_main():
                         command.append('--external-conformance')
                     elif dependency_units_job(env['CI_JOB_NAME']):
                         command.append('--dependency-units')
+                    elif env['CI_JOB_NAME'] == 'core-build':
+                        require(env['CI_PROJECT_PATH'] == 'GetBusbar/busbar', 'core-build is core-only')
+                        command.append('--core-build')
                     try:
                         run(command, env=dict(os.environ), cwd=trusted)
                     finally:
