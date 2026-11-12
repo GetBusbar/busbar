@@ -10,6 +10,16 @@ All notable changes to Busbar are documented here. The format is based on
   `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
   One-shot configuration and overlay migration convert old `plugin`/`at` fields.
 
+- **`RUST_LOG` is read strictly and accepts per-target directives:** `busbar=debug,hyper=warn`
+  and `warn,busbar::request=debug` now filter per target over an `info` default, `off` is honoured,
+  and a value that is not a filter stops boot with `BUSBAR-9007` instead of silently logging at
+  `info` (1.5.5 read only a bare level, so the documented `RUST_LOG=busbar=debug` did nothing).
+  Bare level words read exactly as before.
+- At `DEBUG`, every request ends with one `request finished` summary (target `busbar::request`):
+  request id, ingress, pool, key id, governance decision, each attempt's lane, provider, upstream
+  status, latency and failover reason, outcome, status and total latency. No body, header or
+  credential is logged. At the default level none of it is computed.
+
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.

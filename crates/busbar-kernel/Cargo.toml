@@ -99,5 +99,10 @@ harness = false
 name = "plane_host_vtable_alloc"
 harness = false
 
+[[bench]]
+name = "request_debug_overhead"
+harness = false
+required-features = ["test-support"]
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
