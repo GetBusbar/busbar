@@ -313,7 +313,7 @@ fn a_replaced_image_on_a_reused_fd_runs_its_own_bytes() {
     let dir = std::env::temp_dir().join(format!(
         "busbar-stage-reused-fd-{}-{}",
         std::process::id(),
-        random_hex(4)
+        random_hex(4).unwrap()
     ));
     std::fs::create_dir(&dir).expect("probe build dir");
     let a = build_probe_library(

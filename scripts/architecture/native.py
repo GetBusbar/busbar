@@ -282,6 +282,13 @@ def published_dev_target(repository, source):
     return source
 
 
+CORE_LINT_COMMANDS = (
+    ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
+    ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
+    ('root-clippy-nodefault', ['cargo', 'clippy', '--workspace', '--all-targets', '--no-default-features', '--locked', '--', '-D', 'warnings']),
+)
+
+
 class Qualification:
     def __init__(self, args):
         self.conformance_only = args.conformance_only
@@ -591,7 +598,23 @@ class Qualification:
                 ('conformance-confined-tools-regressions', 'testing/h2-conformance/test_confined_tools.py')):
             self.run_controller(name, [sys.executable, '-B', '-I', str(self.trusted / relative)], cwd=self.trusted)
 
+    def core_formatting(self):
+        # Formatting only needs the checked-out sources and pinned toolchain.
+        # Keep candidate execution and the ordinary hashed step evidence.
+        self.run('root-fmt', ['cargo', 'fmt', '--all', '--check'])
+        self.run('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check'])
+
+    def core_compilation(self):
+        # Compile and lint every workspace target before the compiler witnesses
+        # and product preparation. These are the same commands, in the same
+        # target directory, that the later steps use, so the work moves earlier
+        # rather than being added; a compile or lint error fails in minutes.
+        self.run('root-test-build', ['cargo', 'test', '--workspace', '--locked', '--no-run'])
+        for name, command in CORE_LINT_COMMANDS:
+            self.run(name, command)
+
     def core(self):
+        self.core_compilation()
         self.architecture()
         host = self.host()
         sdk = json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk']
@@ -635,15 +658,10 @@ class Qualification:
             build_capture = self.work / 'final-build-capture'
             artifact_tool = self.trusted / 'scripts/release/development_artifact.py'
             commands = [
-                ('root-fmt', ['cargo', 'fmt', '--all', '--check']),
-                ('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check']),
                 ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast']),
                 ('loader-witnesses', ['cargo', 'build', '--locked', '-p', 'busbar-plugin-loader', '--examples']),
                 ('root-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', *nextest]),
                 ('default-runtime', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', *nextest]),
-                ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
-                ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
-                ('root-clippy-nodefault', ['cargo', 'clippy', '--workspace', '--all-targets', '--no-default-features', '--locked', '--', '-D', 'warnings']),
                 ('selected-default', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', selected, *nextest]),
                 ('selected-errors', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', 'test(keys_error_surface_is_byte_stable) | test(every_admin_error_surface_answers_its_declared_status)', *nextest]),
                 ('timing-admin', ['cargo', 'nextest', 'run', '--locked', '-p', 'busbar-kernel', '-p', 'busbar-core-admin', '--features', 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema', '-E', 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))', *nextest]),
@@ -921,6 +939,7 @@ def qualify():
         # candidate and execution boundary before any regression command runs.
         if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only:
             qualification.core_regressions()
+            qualification.core_formatting()
         if requires_native_oracle(qualification.repository, args.external_conformance, qualification.policy):
             from native_oracle import prepare as prepare_oracle
             with qualification.preparation('oracle-inputs'):
