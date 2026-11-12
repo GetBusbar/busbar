@@ -45,12 +45,12 @@ async fn admin_response_boundary(
         response = match response.status() {
             StatusCode::BAD_REQUEST
             | StatusCode::UNSUPPORTED_MEDIA_TYPE
-            | StatusCode::UNPROCESSABLE_ENTITY => crate::admin::gate::error_envelope(
+            | StatusCode::UNPROCESSABLE_ENTITY => crate::admin::gate::admin_error_envelope(
                 400,
                 "invalid_request",
                 "malformed admin request",
             ),
-            StatusCode::PAYLOAD_TOO_LARGE => crate::admin::gate::error_envelope(
+            StatusCode::PAYLOAD_TOO_LARGE => crate::admin::gate::admin_error_envelope(
                 413,
                 busbar_contract::protocol::ERR_TYPE_REQUEST_TOO_LARGE,
                 "admin request body exceeds the configured limit",

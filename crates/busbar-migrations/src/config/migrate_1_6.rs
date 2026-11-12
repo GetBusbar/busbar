@@ -179,11 +179,12 @@ fn bind_ungoverned_principals(
              group, no budget). 1.5.5 admitted {who} with no grant; 1.6.0 refuses such a principal \
              (401) unless a binding grants it, and this binding keeps 1.5.5's access"
         ));
-        warnings.push(format!(
-            "auth.role_bindings.{provider}.\"{role}\" was written by the migration to keep 1.5.5's \
-             access: {who} is admitted on every pool with no budget, as 1.5.5 admitted them. \
-             Tighten it (allowed_pools, a group with limits) or remove it to refuse them."
-        ));
+        warnings.push(
+            busbar_kernel::diagnostics::coded::migrate_ungoverned_binding_added(
+                provider, role, who,
+            )
+            .into(),
+        );
     }
 }
 
