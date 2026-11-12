@@ -110,6 +110,7 @@ skip = [
     { crate = "hashbrown@0.15", reason = "petgraph (prost-build), build time only" },
     { crate = "hashbrown@0.16", reason = "metrics-util (metrics-exporter-prometheus)" },
     { crate = "foldhash@0.1", reason = "follows hashbrown 0.15 (petgraph, build time only)" },
+    { crate = "rand_core@0.10", reason = "rand 0.10 via chacha20, forced by busbar-store-postgres's postgres-protocol; dist/default only" },
     { crate = "base64@0.23", reason = "pem 4 via rcgen's `pem` feature, which only the tests enable" },
 ]
 
@@ -152,6 +153,9 @@ allow-git = [
     "https://github.com/GetBusbar/busbar-auth-sigv4",
     "https://github.com/GetBusbar/busbar-auth-webhook-signature",
     "https://github.com/GetBusbar/busbar-transport-grpc",
+    "https://github.com/GetBusbar/busbar-hook-webrequest",
+    "https://github.com/GetBusbar/busbar-store-sqlite",
+    "https://github.com/GetBusbar/busbar-store-postgres",
     # Authorized release-line fixes; exact revisions remain in root/dist manifests and locks.
     # h2 d6146a5c425e55653cdfebc5660e52d87430c588 (upstream hyperium/h2#996).
     "https://github.com/MattJackson/h2",
