@@ -80,6 +80,8 @@ fn streaming_media_are_loaded_and_rendered_and_absent_from_legacy_tails() {
         expected.extend_from_slice(&(media.len() as u32).to_le_bytes());
         expected.extend_from_slice(media.as_bytes());
     }
+    // a1ea46a91b appends the plane's class-parent list after the streaming media; empty here.
+    expected.extend_from_slice(&0_u32.to_le_bytes());
     assert!(
         read.kind_tail.ends_with(&expected),
         "signed facts carry the loader's complete list"
@@ -111,10 +113,13 @@ fn streaming_media_are_loaded_and_rendered_and_absent_from_legacy_tails() {
     st.kind_tail = &tail.head;
     // SAFETY: the full tail and its Statement spans remain live.
     let empty = rendering::read(&unsafe { rendering::render(&st) }.unwrap()).unwrap();
+    // The full tail renders an empty media list and (a1ea46a91b) an empty class-parent list; a
+    // legacy tail ending before the media renders neither.
     assert_eq!(
         legacy.kind_tail,
-        empty.kind_tail[..empty.kind_tail.len() - 4]
+        empty.kind_tail[..empty.kind_tail.len() - 8]
     );
+    assert_eq!(&empty.kind_tail[empty.kind_tail.len() - 8..], &[0_u8; 8]);
 }
 
 #[test]
