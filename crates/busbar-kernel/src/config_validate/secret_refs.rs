@@ -481,6 +481,30 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              `RootCfg`.",
         ),
     ),
+    (
+        "Authoring",
+        SecretBearing::NotInResolvedConfig(
+            "`busbar_contract::secret_ref::Authoring`, a BORROWED view (`&SecretRef`) of a \
+             reference already held by a config type, handed out only for a privileged document \
+             operation (52237f7b88); it owns no reference of its own and is never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "Document",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` witness document inside `busbar_contract::secret_ref::context`'s \
+             own unit tests (3e5b860ca5), exercising owner-declared shorthand at typed fields; a \
+             test fixture, never a config type and never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "Entry",
+        SecretBearing::NotInResolvedConfig(
+            "the `#[cfg(test)]` neutral source fixture's table row in \
+             `busbar-core-connector::spawn_env` (52237f7b88), standing in for a secret source in \
+             config-time custody tests; a test fixture, never part of `RootCfg`.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].

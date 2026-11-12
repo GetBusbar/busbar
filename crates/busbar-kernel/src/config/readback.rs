@@ -449,18 +449,26 @@ fn tls_view(tls: Option<&super::TlsCfg>) -> Value {
 }
 
 fn plugin_view(module: &str, settings: &busbar_contract::plugin_settings::Settings) -> Value {
-    plugin_view_with(module, settings, &super::settings_public::public(module))
+    plugin_view_with(
+        module,
+        settings,
+        &super::settings_public::public(module),
+        &super::secret::sugars(),
+    )
 }
 
+/// `sources` is the shorthand admitted owners declared: a declared shorthand is a reference and
+/// is never copied into the public view.
 fn plugin_view_with(
     module: &str,
     settings: &busbar_contract::plugin_settings::Settings,
     public: &std::collections::BTreeSet<String>,
+    sources: &busbar_contract::secret_ref::Sugars,
 ) -> Value {
     json!({
         "module": module,
         "settings_keys": settings.key_names(),
-        "settings_public": settings.snapshot_view(&crate::seal::acquire(), public, &super::secret::sugars()),
+        "settings_public": settings.snapshot_view(&crate::seal::acquire(), public, sources),
     })
 }
 
@@ -476,7 +484,8 @@ mod tests {
             "opaque": "RAW_SENTINEL",
             "token": "TOKEN_SENTINEL",
             "reference": {"module": "vault", "settings": {"text": "REF_SENTINEL"}},
-            "nested": [{"env": "ENV_SENTINEL"}],
+            // A shorthand its admitted owner declared (db6f4149aa: core declares none itself).
+            "nested": [{"lookup": "ENV_SENTINEL"}],
         });
         let public: BTreeSet<_> = ["timeout", "token", "reference", "nested"]
             .into_iter()
@@ -486,6 +495,7 @@ mod tests {
             "example",
             &crate::config::secret::test_settings(settings.as_object().unwrap()),
             &public,
+            &crate::config::secret::fixture_sources(),
         );
         assert_eq!(view["settings_public"], json!({"timeout": 42}));
         let encoded = serde_json::to_string(&view).unwrap();
@@ -507,6 +517,7 @@ mod tests {
             "unknown",
             &crate::config::secret::test_settings(settings.as_object().unwrap()),
             &BTreeSet::new(),
+            &crate::config::secret::fixture_sources(),
         );
         assert_eq!(view["settings_public"], json!({}));
         assert!(!format!("{view:?}").contains("URL_SENTINEL"));

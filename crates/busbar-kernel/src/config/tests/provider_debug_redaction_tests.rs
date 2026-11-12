@@ -32,7 +32,7 @@ fn assert_redacted(what: &str, printed: &str) {
 
 fn provider_cfg() -> ProviderCfg {
     serde_yaml::from_str(&format!(
-        "protocol: proto-a\nbase_url: \"{}\"\napi_key: {{env: K}}\nerror_map: {{}}\n\
+        "protocol: proto-a\nbase_url: \"{}\"\napi_key: {{module: fixture-source, settings: {{slot: K}}}}\nerror_map: {{}}\n\
          token_url: \"{}\"\n",
         base_url(),
         token_url()
@@ -51,7 +51,7 @@ fn provider_def() -> ProviderDef {
 
 fn provider_deploy() -> ProviderDeploy {
     serde_yaml::from_str(&format!(
-        "api_key: {{env: K}}\nbase_url: \"{}\"\ntoken_url: \"{}\"\n",
+        "api_key: {{module: fixture-source, settings: {{slot: K}}}}\nbase_url: \"{}\"\ntoken_url: \"{}\"\n",
         base_url(),
         token_url()
     ))
