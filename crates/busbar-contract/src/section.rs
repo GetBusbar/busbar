@@ -264,14 +264,15 @@ where
 }
 
 /// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
+// The wording is 1.5.5's, byte for byte, for every reserved key including the host-owned
+// `usage_observations` (042049b952 widened it without owner sign-off; customer text is frozen).
 #[must_use]
 pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
     if RESERVED_SECTION_KEYS.contains(&name) {
         format!(
             "a {noun} may not be named `{name}`: that key is RESERVED at the \
              `{section}:` section level (the all-{section} `hooks:` attach list and \
-             `upstream_credentials:` default, and host-owned `usage_observations:` policy). \
-             Rename the {noun}."
+             `upstream_credentials:` default). Rename the {noun}."
         )
     } else {
         format!(

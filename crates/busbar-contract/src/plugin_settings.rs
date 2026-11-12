@@ -733,6 +733,12 @@ impl<'de> Deserialize<'de> for Tree {
             fn visit_newtype_struct<D: Deserializer<'de>>(self, de: D) -> Result<Tree, D::Error> {
                 de.deserialize_any(Capture)
             }
+            // A bare string where a settings document was asked for: never quote it back.
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Tree, E> {
+                Err(E::custom(
+                    "expected a JSON-compatible settings document (value not echoed)",
+                ))
+            }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
                 let key = map.next_key::<Zeroizing<String>>()?;
                 if key.as_deref().map(String::as_str) != Some(RAW_JSON_TOKEN) {

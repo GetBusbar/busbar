@@ -325,12 +325,28 @@ impl<'de> Deserialize<'de> for SecretRef {
             fn visit_bool<E: de::Error>(self, _: bool) -> Result<SecretRef, E> {
                 Err(E::custom(INLINE_LITERAL_REFUSAL))
             }
+            fn visit_i128<E: de::Error>(self, _: i128) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
+            }
+            fn visit_u128<E: de::Error>(self, _: u128) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
+            }
+            fn visit_char<E: de::Error>(self, _: char) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
+            }
+            fn visit_bytes<E: de::Error>(self, _: &[u8]) -> Result<SecretRef, E> {
+                Err(E::custom(INLINE_LITERAL_REFUSAL))
+            }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<SecretRef, A::Error> {
                 let mut module: Option<String> = None;
                 let mut settings: Option<Settings> = None;
                 let mut template: Option<TemplateReference> = None;
                 while let Some(key) = map.next_key::<Zeroizing<String>>()? {
                     match key.as_str() {
+                        // serde_json's exact-number transport: an inline numeric literal.
+                        context::JSON_NUMBER_TOKEN => {
+                            return Err(de::Error::custom(INLINE_LITERAL_REFUSAL))
+                        }
                         "module" if module.is_none() => {
                             let mut value: crate::plugin_settings::Tree = map.next_value()?;
                             let serde_json::Value::String(text) = &mut value.0 else {
