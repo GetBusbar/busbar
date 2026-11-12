@@ -822,6 +822,10 @@ impl Q {
             ("CARGO_TARGET_DIR", work_text("target")),
             ("RUSTC_WRAPPER", String::new()),
             ("RUSTC_WORKSPACE_WRAPPER", String::new()),
+            // Every job starts from an empty target directory, so incremental
+            // query caches are written and never read; release is already
+            // non-incremental.
+            ("CARGO_INCREMENTAL", "0".to_owned()),
             ("CARGO_PROFILE_DEV_DEBUG", "0".to_owned()),
             ("CARGO_PROFILE_TEST_DEBUG", "0".to_owned()),
             (
