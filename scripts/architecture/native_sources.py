@@ -114,10 +114,15 @@ def required_sources(q, host, vector):
 
     Plugin jobs build only their own workspace against the seeded subject
     closures; they never build the SDK's distribution or standalone products,
-    so only the subject locks contribute. Core and release jobs keep the full
-    historical set (SDK distribution lock, host HEAD and every vector product).
+    so only the subject locks contribute. Core jobs read the same subject
+    closures (dependency seed, Cargo's Git mappings, the OIDF suite's shipped
+    OIDC pin in the distribution lock) plus every vector product commit
+    (product-inputs and the standalone product seeds). Neither ever reads the
+    SDK checkout's own distribution lock or core's HEAD from canonical-inputs:
+    a lock cannot name its own commit, and core's host is its checkout. The
+    release job keeps the full historical set.
     """
-    if plugin_job(q):
+    if plugin_job(q) or q.repository == CORE:
         sources = defaultdict(set)
         for _, root, relative in subject_locks(q.root, host, q.sdk()):
             lock = root / relative
@@ -125,6 +130,9 @@ def required_sources(q, host, vector):
                 for repository, revisions in lock_inputs(lock.read_text(), q.policy.data).items():
                     sources[repository].update(revisions)
         sources[CORE].add(vector['sdk'])
+        if q.repository == CORE:
+            for product in vector['products']:
+                sources['GetBusbar/' + product['repo']].add(product['commit'])
         return sources
     from native import git
     sources = inputs(host, q.root, q.policy.data)
