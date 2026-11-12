@@ -8,6 +8,8 @@ workflow:
     - if: '$CI_PIPELINE_SOURCE == "api" && ($CI_PROJECT_PATH == "GetBusbar/busbar" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-llm" || $CI_PROJECT_PATH == "GetBusbar/busbar-plane-decisions")'
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev"'
+    # Owner-created dev schedule: advisory database refresh. Runs security only.
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev"'
     - when: never
 
 stages: [qualify, website]
@@ -16,6 +18,8 @@ native-qualification:
   stage: qualify
   rules:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - when: on_success
   tags: [busbar-native-admission]
@@ -59,11 +63,22 @@ native-qualification:
           if actual != match[1]:
               raise SystemExit('trusted policy checkout mismatch')
           command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/native_ci_bootstrap.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work)]
+          if os.environ['CI_JOB_NAME'] in ('native-qualification', 'core-conformance'):
+              # Decide before any bootstrap download: exit 0 only after the trusted
+              # module authenticated an equal-input successful original and wrote
+              # boundary-evidence/retained.json naming it. Anything else runs fresh.
+              retained = pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/retained.json'
+              decision = subprocess.run(['python3', '-I', '-B', str(trusted / 'scripts/architecture/ci_retention.py'), '--policy', match[1], '--checkout', os.environ['CI_PROJECT_DIR'], '--output', str(retained)])
+              if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():
+                  command = None
+              elif retained.exists() or retained.is_symlink():
+                  raise SystemExit('retention decision left evidence without retaining')
           if os.environ['CI_JOB_NAME'] == 'security-scans':
               command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
           elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'):
               raise SystemExit('unrecognized trusted native job')
-          subprocess.run(command, check=True)
+          if command is not None:
+              subprocess.run(command, check=True)
       finally:
           shutil.rmtree(work, ignore_errors=True)
       PY
@@ -89,6 +104,12 @@ security-scans:
   extends: native-qualification
   tags: [busbar-native-admission]
   timeout: 1h
+  # Security always runs fresh, including the dev schedule; its own database
+  # age/content checks decide freshness. It never invalidates native/conformance.
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH != "dev"'
+      when: never
+    - when: on_success
   artifacts:
     when: always
     access: developer
@@ -102,6 +123,8 @@ core-conformance:
   tags: [busbar-conformance]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
