@@ -389,6 +389,8 @@ class Qualification:
         elif os.environ['CI_PIPELINE_SOURCE'] in ('push', 'api') and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
             self.receipt['target_revision'] = (published_dev_target(self.repository, self.receipt['source'])
                 if os.environ['CI_PIPELINE_SOURCE'] == 'api' else self.receipt['source'])
+            # Server-provided; consumers require a protected dev ref for push/api credit.
+            self.receipt['commit_ref_protected'] = os.environ.get('CI_COMMIT_REF_PROTECTED') == 'true'
         elif self.evaluation_only and os.environ['CI_PIPELINE_SOURCE'] == 'api':
             self.receipt['target_revision'] = None
         else:
