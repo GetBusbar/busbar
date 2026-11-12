@@ -37,6 +37,7 @@ def stage_context(env):
         "stage": "dev" if development else "release",
         "pipeline_source": source,
         "commit_branch": branch,
+        "commit_ref_protected": env.get("CI_COMMIT_REF_PROTECTED") == "true",
         "merge_request_target": target,
         "same_project_merge_request": (
             same_project if source == "merge_request_event" else False

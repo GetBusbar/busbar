@@ -207,6 +207,10 @@ class TrustedStage(unittest.TestCase):
             "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "dev",
         }
         self.assertEqual(stages.stage_context(base)["stage"], "dev")
+        protected = {"CI_PIPELINE_SOURCE": "push", "CI_COMMIT_BRANCH": "dev"}
+        self.assertIs(stages.stage_context(protected)["commit_ref_protected"], False)
+        self.assertIs(stages.stage_context({**protected, "CI_COMMIT_REF_PROTECTED": "true"})["commit_ref_protected"], True)
+        self.assertIs(stages.stage_context({**protected, "CI_COMMIT_REF_PROTECTED": "TRUE"})["commit_ref_protected"], False)
         for changes in (
             {"CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "main"},
             {"CI_MERGE_REQUEST_SOURCE_PROJECT_ID": "4"},
