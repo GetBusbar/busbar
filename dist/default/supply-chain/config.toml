@@ -4,6 +4,21 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
 [policy.aws-lc-sys]
 audit-as-crates-io = true
 notes = "Exact-revision standalone published-package source fork; local nonimportable full Git audit only, no exemption or claim covering the unfixed registry archive."
@@ -149,10 +164,6 @@ criteria = "safe-to-deploy"
 [[exemptions.bytecount]]
 version = "0.6.9"
 criteria = "safe-to-deploy"
-
-[[exemptions.byteorder]]
-version = "1.5.0"
-criteria = "safe-to-run"
 
 [[exemptions.bytes]]
 version = "1.12.1"
@@ -345,18 +356,6 @@ criteria = "safe-to-deploy"
 [[exemptions.errno]]
 version = "0.3.14"
 criteria = "safe-to-deploy"
-
-[[exemptions.fallible-iterator]]
-version = "0.2.0"
-criteria = "safe-to-run"
-
-[[exemptions.fallible-iterator]]
-version = "0.3.0"
-criteria = "safe-to-run"
-
-[[exemptions.fallible-streaming-iterator]]
-version = "0.1.9"
-criteria = "safe-to-run"
 
 [[exemptions.fancy-regex]]
 version = "0.19.0"
@@ -1417,10 +1416,6 @@ criteria = "safe-to-deploy"
 [[exemptions.valuable]]
 version = "0.1.1"
 criteria = "safe-to-deploy"
-
-[[exemptions.vcpkg]]
-version = "0.2.15"
-criteria = "safe-to-run"
 
 [[exemptions.version_check]]
 version = "0.9.5"
