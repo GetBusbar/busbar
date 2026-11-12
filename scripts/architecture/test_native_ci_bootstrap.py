@@ -257,11 +257,22 @@ class Bootstrap(unittest.TestCase):
                 self.assertEqual(exported.call_args.args[0][-4:],
                                  ['save', '--platform', 'linux/amd64', 'sha256:' + manifest_sha])
                 self.assertTrue(producer.stdout.closed)
+                # The collector reuses the administrator's host import: inspect only.
+                calls = []
+                def inspect(argv, **kwargs):
+                    calls.append(argv)
+                    return execute(argv, **kwargs)
+                with patch.object(bootstrap, 'run', side_effect=inspect):
+                    self.assertEqual(bootstrap.verify_imported_tool_image(
+                        archive, 'unix:///fixed.sock', {}, actual['Id']), actual['Id'])
+                self.assertEqual([argv[3:5] for argv in calls], [['image', 'inspect']])
                 with self.assertRaisesRegex(ValueError, 'unverified'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {}, source_image='floating:tag')
                 actual['RootFS'] = {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]}
                 with self.assertRaisesRegex(ValueError, 'execution content'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
+                with self.assertRaisesRegex(ValueError, 'execution content'):
+                    bootstrap.verify_imported_tool_image(archive, 'unix:///fixed.sock', {}, actual['Id'])
                 actual['Id'] = 'sha256:' + 'f' * 64
                 with self.assertRaisesRegex(ValueError, 'identity'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})

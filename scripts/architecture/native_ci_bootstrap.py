@@ -149,8 +149,8 @@ def import_failure(error):
     return RuntimeError('offline image import failed (exit ' + str(error.returncode) + '): ' + detail)
 
 
-def load_tool_image(archive, endpoint, env, source_image=None):
-    """Import offline and bind the daemon's identity to verified execution bytes."""
+def tool_image_config(archive):
+    """The pinned manifest's verified image configuration and its digest."""
     with tarfile.open(archive, 'r:') as source:
         def blob(checksum):
             member = source.getmember('blobs/sha256/' + checksum)
@@ -162,6 +162,35 @@ def load_tool_image(archive, endpoint, env, source_image=None):
         config_sha = manifest['config']['digest'].removeprefix('sha256:')
         config = blob(config_sha)
     require(config['architecture'] == 'amd64' and config['os'] == 'linux', 'tool image platform differs')
+    return config, config_sha
+
+
+def verify_loaded(actual, config, config_sha):
+    """Bind a daemon's image record to the verified execution configuration."""
+    require(actual['Id'] in ('sha256:' + MANIFEST, 'sha256:' + config_sha), 'loaded tool identity differs')
+    require(actual.get('Os') == config['os'] and actual.get('Architecture') == config['architecture']
+            and actual.get('RootFS') == {'Type': config['rootfs']['type'], 'Layers': config['rootfs']['diff_ids']}
+            and all(actual.get('Config', {}).get(key) == value for key, value in config['config'].items()),
+            'loaded tool execution content differs')
+    return actual['Id']
+
+
+def verify_imported_tool_image(archive, endpoint, env, image):
+    """Re-verify an image this job's administrator entry already imported.
+
+    The host daemon loaded and verified these exact bytes in bootstrap()
+    before the root controller started; inspect and re-check the execution
+    identity instead of importing the same archive a second time there.
+    """
+    config, config_sha = tool_image_config(archive)
+    actual = json.loads(run([DOCKER, '--host', endpoint, 'image', 'inspect', image], env=env,
+                            capture_output=True, text=True).stdout)[0]
+    return verify_loaded(actual, config, config_sha)
+
+
+def load_tool_image(archive, endpoint, env, source_image=None):
+    """Import offline and bind the daemon's identity to verified execution bytes."""
+    config, config_sha = tool_image_config(archive)
     client = [DOCKER, '--host', endpoint]
     try:
         if source_image is None:
@@ -192,12 +221,7 @@ def load_tool_image(archive, endpoint, env, source_image=None):
     require(len(names) == 1, 'tool archive must import exactly one image')
     actual = json.loads(run([*client, 'image', 'inspect', names[0]], env=env,
                            capture_output=True, text=True).stdout)[0]
-    require(actual['Id'] in ('sha256:' + MANIFEST, 'sha256:' + config_sha), 'loaded tool identity differs')
-    require(actual.get('Os') == config['os'] and actual.get('Architecture') == config['architecture']
-            and actual.get('RootFS') == {'Type': config['rootfs']['type'], 'Layers': config['rootfs']['diff_ids']}
-            and all(actual.get('Config', {}).get(key) == value for key, value in config['config'].items()),
-            'loaded tool execution content differs')
-    return actual['Id']
+    return verify_loaded(actual, config, config_sha)
 
 
 def entry_command(helper, expected, image, name):
@@ -608,7 +632,10 @@ def root_main():
                 linux_job_isolation.validate_userns(config['isolation'], info)
                 config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV,
                                                   source_image=payload['image'])
-                config['collector']['image'] = load_tool_image(control / 'image.tar', 'unix:///var/run/docker.sock', BASE_ENV)
+                # The administrator entry already imported and verified this
+                # image on the host daemon; re-verify instead of a second import.
+                config['collector']['image'] = verify_imported_tool_image(
+                    control / 'image.tar', 'unix:///var/run/docker.sock', BASE_ENV, payload['image'])
                 require(config['collector']['image'] == payload['image'], 'administrator image identity changed')
                 config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
                 receipt['runtime_sha256'] = digest(config_path)
