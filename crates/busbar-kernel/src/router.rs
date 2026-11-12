@@ -9,7 +9,100 @@ use crate::{
 
 pub(crate) const HEADER_SERVER_TIMING: &str = "server-timing";
 
+/// The [`UPSTREAM_RTT_US`] value of a request that dispatched no upstream call: its
+/// `Server-Timing` reports the full processing time.
 pub(crate) const NO_UPSTREAM_RTT: u64 = u64::MAX;
+
+tokio::task_local! {
+    /// The `Server-Timing` measurement of the request in flight, scoped by
+    /// [`ServerTiming::measure`] for exactly that request: where the forward path records the
+    /// upstream round trip. Absent whenever the header is off, so a deployment without it records
+    /// nothing and reads no clock.
+    static MEASURING: ServerTiming;
+}
+
+/// The request's upstream round-trip slot, when `Server-Timing` is measuring this request.
+///
+/// The forward path takes it once per attempt, reads the clock only when it is `Some`, and stores
+/// with [`record_upstream_rtt`]. A unit polled outside the request's scope (a streamed body pumped
+/// after the head went out, a detached child) finds none, after the header was already written.
+pub(crate) fn upstream_rtt_slot() -> Option<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+    MEASURING
+        .try_with(|timing| std::sync::Arc::clone(&timing.upstream_us))
+        .ok()
+}
+
+/// Record `rtt` as the request's upstream round trip. The last recording wins, as in 1.5.5: on
+/// failover the answering attempt's round trip replaces a failed one's.
+pub(crate) fn record_upstream_rtt(slot: &std::sync::atomic::AtomicU64, rtt: std::time::Duration) {
+    let us = u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX - 1);
+    slot.store(us, std::sync::atomic::Ordering::Relaxed);
+}
+
+static SERVER_TIMING_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Set once at boot from `advanced.response_headers.server_timing` (restart-to-apply), for the
+/// request paths that do not run through a router this module composes: the framed listener serves
+/// a plane's arrival straight to the plane, and asks [`ServerTiming::start`] per request.
+pub fn configure_server_timing(enabled: bool) {
+    let _ = SERVER_TIMING_ENABLED.set(enabled);
+}
+
+/// One request's `Server-Timing: busbar;dur=<ms>` measurement: Busbar's OWN added latency, the
+/// request's wall-clock MINUS the upstream round trip the forward path recorded while it ran
+/// [`ServerTiming::measure`] (`PlaneUnits::attempts`). A request that dispatched no upstream call
+/// reports its full processing time. W3C `dur` is milliseconds, written at µs precision.
+#[derive(Debug, Clone)]
+pub struct ServerTiming {
+    start: std::time::Instant,
+    upstream_us: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl ServerTiming {
+    /// The header's name.
+    pub const HEADER: &'static str = HEADER_SERVER_TIMING;
+
+    /// The measurement for a request arriving now, or `None` when the header is off (configured
+    /// by [`configure_server_timing`]): nothing allocated, no clock read.
+    #[must_use]
+    pub fn start() -> Option<Self> {
+        SERVER_TIMING_ENABLED
+            .get()
+            .copied()
+            .unwrap_or(false)
+            .then(Self::now)
+    }
+
+    fn now() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            upstream_us: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(NO_UPSTREAM_RTT)),
+        }
+    }
+
+    /// Serve the request under this measurement, so its forward path records its round trip here.
+    pub async fn measure<F: std::future::Future>(&self, serving: F) -> F::Output {
+        MEASURING.scope(self.clone(), serving).await
+    }
+
+    /// The header's value as of now for the request being measured ([`ServerTiming::measure`]),
+    /// for a response head written from inside it; `None` when the header is off.
+    #[must_use]
+    pub fn current_value() -> Option<String> {
+        MEASURING.try_with(Self::value).ok()
+    }
+
+    /// The header's value as of now: `busbar;dur=<ms>`.
+    #[must_use]
+    pub fn value(&self) -> String {
+        let total_us = u64::try_from(self.start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        let upstream_us = self.upstream_us.load(std::sync::atomic::Ordering::Relaxed);
+        format!(
+            "busbar;dur={:.3}",
+            server_timing_dur_ms(total_us, upstream_us)
+        )
+    }
+}
 
 tokio::task_local! {
     // A router's physical ownership, retained across its middleware and handler future.
@@ -236,15 +329,17 @@ pub(crate) async fn request_activity_tick(
     next.run(req).await
 }
 
+/// Stamps `Server-Timing: busbar;dur=<ms>` ([`ServerTiming`]) on a response this router serves.
+///
+/// Installed as a layer ONLY when `advanced.response_headers.server_timing` is on
+/// ([`apply_common_layers`]), so a deployment without the header pays nothing per request.
 pub(crate) async fn server_timing(
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let start = std::time::Instant::now();
-    let mut resp = next.run(req).await;
-    let total_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
-    let dur_ms = server_timing_dur_ms(total_us, NO_UPSTREAM_RTT);
-    if let Ok(v) = axum::http::HeaderValue::from_str(&format!("busbar;dur={dur_ms:.3}")) {
+    let timing = ServerTiming::now();
+    let mut resp = timing.measure(next.run(req)).await;
+    if let Ok(v) = axum::http::HeaderValue::from_str(&timing.value()) {
         resp.headers_mut()
             .insert(axum::http::HeaderName::from_static(HEADER_SERVER_TIMING), v);
     }

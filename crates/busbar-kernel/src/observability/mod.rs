@@ -178,18 +178,15 @@ pub fn init_log_bridge() -> Result<(), tracing_log::log::SetLoggerError> {
     tracing_log::LogTracer::init()
 }
 
-pub fn init_logging(stdout_reserved: bool) -> Result<(), LoggingError> {
-    use tracing_subscriber::fmt::writer::BoxMakeWriter;
+/// Install the process's one subscriber: a stderr `fmt` layer filtered by `RUST_LOG`, and the OTLP
+/// export layer. Logs ALWAYS go to stderr, as in 1.5.5, so stdout is never written by logging and
+/// stays free for a plane serving its protocol on stdout (`--mcp-stdio`).
+pub fn init_logging() -> Result<(), LoggingError> {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::Layer as _;
     let (stderr_filter, otlp_filter) = log_levels().map_err(LoggingError::RustLog)?;
-    let make_writer = if stdout_reserved {
-        BoxMakeWriter::new(std::io::stderr)
-    } else {
-        BoxMakeWriter::new(std::io::stdout)
-    };
     let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_writer(make_writer)
+        .with_writer(std::io::stderr)
         .with_target(false)
         .with_filter(stderr_filter);
     let subscriber = tracing_subscriber::registry()

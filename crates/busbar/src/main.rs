@@ -1013,6 +1013,7 @@ async fn run(
     let response_headers_cfg = deploy.advanced.response_headers.clone();
 
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
 
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     snapshot::configure(
@@ -1034,7 +1035,7 @@ async fn run(
         );
     }
 
-    match busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
+    match busbar_kernel::observability::init_logging() {
         Ok(()) => {}
         Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
