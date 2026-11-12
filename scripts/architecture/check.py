@@ -663,8 +663,9 @@ def compiler_witness_parallel():
     storage = EXECUTION.config['isolation']
     # Four representative controls preserved their verdicts with two 2 CPU /
     # 3 GiB isolates: 237.007s serial -> 209.916s parallel. CPU increased 4.2%;
-    # this is a latency improvement, not a reduction in compiler work. Keep
-    # smaller and unmeasured storage boundaries on the existing serial path.
+    # this is a latency improvement, not a reduction in compiler work. The
+    # pool now splits the same aggregate into COMPILER_POOL_WIDTH isolates.
+    # Keep smaller and unmeasured storage boundaries on the existing serial path.
     return (resources['cpus'] >= 4 and resources['memory_bytes'] >= 6 * 1024**3
             and resources['pids'] >= 1024 and storage['storage_kind'] == 'loop-ext4'
             and storage['storage_bytes'] >= 24 * 1024**3)
@@ -896,7 +897,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
     if parallel and EXECUTION is None:
         raise Violation('parallel compiler witnesses require confinement')
     pool = EXECUTION.compiler_pool() if parallel else None
-    jobs = 2 if pool else compiler_check_jobs()
+    jobs = pool.jobs if pool else compiler_check_jobs()
     # Only the isolated pool path is seeded; the serial fallback is unchanged.
     seed = None
     if pool:
@@ -925,7 +926,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
         architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),
                               expected=expected, build_jobs=jobs)
         started = time.monotonic()
-        result = (pool.run(execution, command, cwd=scratch) if pool else
+        result = (pool.run(execution, command, cwd=scratch, vendored_sources=seed is not None) if pool else
                   candidate_run(command, cwd=scratch, text=True, capture_output=True,
                                 discard_harness_target=True))
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
