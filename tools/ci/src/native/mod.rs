@@ -1837,6 +1837,10 @@ impl Q {
                     "busbar-kernel",
                     "--features",
                     "loom-model",
+                    // The txn_loom models are kernel library unit tests; `--lib`
+                    // runs the same two tests without 27 fat-LTO integration
+                    // test links that matched none (see native.py).
+                    "--lib",
                     "txn_loom",
                 ]),
             ),
