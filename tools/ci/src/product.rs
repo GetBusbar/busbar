@@ -414,6 +414,21 @@ pub fn plan(
     revision: &str,
     reader: GitReader,
 ) -> R<Dict> {
+    plan_images(policy, vector, sources, target, cache, revision, reader).map(|(values, _)| values)
+}
+
+/// `plan` plus every product the script builds, in order, with the exact
+/// image path Cargo writes (Python `plan()`'s item list).
+pub fn plan_images(
+    policy: &Value,
+    vector: &Value,
+    sources: &dyn Fn(&Value) -> PathBuf,
+    target: &Path,
+    cache: &Path,
+    revision: &str,
+    reader: GitReader,
+) -> R<(Dict, Vec<(Value, PathBuf)>)> {
+    let mut built: Vec<(Value, PathBuf)> = Vec::new();
     need(
         vector.is_object()
             && vector
@@ -549,10 +564,42 @@ pub fn plan(
             values.0.len() <= 256,
             "total artifact bindings exceed limit",
         )?;
+        built.push((row.clone(), PathBuf::from(&cdylib)));
         images.push(cdylib);
     }
     need(!values.0.is_empty(), "no owner-declared product inputs")?;
-    Ok(values)
+    Ok((values, built))
+}
+
+/// The controller's own image plan, read from the exact canonical commits.
+pub fn canonical_images(
+    work: &Path,
+    policy: &Value,
+    vector: &Value,
+    revision: &str,
+) -> R<Vec<(Value, PathBuf)>> {
+    let work = sp::resolve(work);
+    let canonical = work.join("canonical-inputs");
+    let reader = |source: &Path, args: &[&str]| -> R<Vec<u8>> {
+        need(
+            source.parent() == Some(canonical.as_path()),
+            "unexpected canonical owner source",
+        )?;
+        let trust = format!("safe.directory={}", sp::text(source));
+        let mut full = vec!["-c", "safe.directory=", "-c", trust.as_str()];
+        full.extend_from_slice(args);
+        git(source, &full)
+    };
+    plan_images(
+        policy,
+        vector,
+        &|row: &Value| canonical.join(row.at("repo").as_str().unwrap_or("")),
+        &work.join("target"),
+        &work.join("cache"),
+        revision,
+        &reader,
+    )
+    .map(|(_, built)| built)
 }
 
 /// `load_product_inputs(stdout, work, policy, vector, revision)`.

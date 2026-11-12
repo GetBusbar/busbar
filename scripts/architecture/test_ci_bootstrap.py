@@ -273,8 +273,8 @@ class ControllerCrate(unittest.TestCase):
         self.assertIn('"native-qualify".into()', bootstrap)
         pysteps = (ROOT / 'tools/ci/src/native/pysteps.rs').read_text().split('#[cfg(test)]', 1)[0]
         self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', pysteps))),
-                         ['development_artifact.py', 'development_checks.py', 'sigstore.py',
-                          'test_capabilities.py', 'test_confined_tools.py'])
+                         ['development_artifact.py', 'development_checks.py', 'product_artifacts.py',
+                          'sigstore.py', 'test_capabilities.py', 'test_confined_tools.py'])
         # The architecture step is the controller's own `architecture` command,
         # launched from the verified controller path; never check.py.
         native = (ROOT / 'tools/ci/src/native/mod.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]

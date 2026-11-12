@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from check import Violation
-from product_artifacts import blob, build, declarations, plan
+from product_artifacts import blob, build, declarations, image_argv, install_prebuilt, plan, prebuilt_images
 
 
 class ArtifactFixture(unittest.TestCase):
@@ -188,6 +188,43 @@ class OwnerArtifacts(ArtifactFixture):
                 else:
                     with self.assertRaises(Violation):
                         build(self.root, self.root / "target", self.root / "cache", self.policy)
+
+
+class PrebuiltImages(ArtifactFixture):
+    """The controller-staged trusted image replaces only Cargo's own output."""
+    def staged(self, row, data=b"trusted", **changes):
+        root = self.root / "staged"
+        (root / row["repo"]).mkdir(parents=True)
+        (root / row["repo"] / row["image"]).write_bytes(data)
+        entry = {"commit": row["commit"], "image": row["image"], "lock_sha256": row["lock_sha256"],
+                 "file": row["repo"] + "/" + row["image"], "sha256": hashlib.sha256(b"trusted").hexdigest()}
+        entry.update(changes)
+        (root / "index.json").write_text(json.dumps({row["repo"]: entry}))
+        return root, entry
+
+    def test_verified_image_is_copied_and_any_doubt_refuses(self):
+        row = self.vector["products"][0]
+        destination = self.root / "target/debug" / row["image"]
+        root, entry = self.staged(row)
+        self.assertEqual(prebuilt_images(root), {row["repo"]: entry})
+        self.assertEqual(prebuilt_images(self.root / "absent"), {})
+        install_prebuilt(entry, row, destination, root=root)
+        self.assertEqual(destination.read_bytes(), b"trusted")
+        for data, changes in ((b"other", {}), (b"trusted", {"commit": "f" * 40}),
+                              (b"trusted", {"lock_sha256": "1" * 64}), (b"trusted", {"file": "../escape"})):
+            with self.subTest(changes=changes):
+                import shutil
+                shutil.rmtree(root)
+                root, entry = self.staged(row, data, **changes)
+                with self.assertRaises(Violation):
+                    install_prebuilt(entry, row, destination, root=root)
+
+    def test_image_recipe_is_the_one_cargo_command(self):
+        row = self.vector["products"][0]
+        item = {"product": row, "checkout": Path("/src"), "dropped_in": True}
+        self.assertEqual(image_argv(item, Path("/t")),
+                         ["cargo", "+1.98.0", "build", "--locked", "--manifest-path", "/src/Cargo.toml",
+                          "-p", row["package"], "--lib", "--target-dir", "/t", "--features", "dropped-in"])
 
 
 if __name__ == "__main__":

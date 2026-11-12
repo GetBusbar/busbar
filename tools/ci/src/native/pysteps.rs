@@ -12,7 +12,7 @@
 //!   deterministic gzip archive bytes are CPython zlib output a std-only port
 //!   cannot reproduce byte-for-byte;
 //! * candidate-side programs run inside the pinned image (`final-binary`
-//!   capture, release engineering, Sigstore observation, the C schema driver,
+//!   capture, the trusted product image producer, release engineering, Sigstore observation, the C schema driver,
 //!   the conformance runtime preflight and the TSan runtime controls).
 use super::sp;
 use std::path::Path;
@@ -67,6 +67,38 @@ pub fn regressions(trusted: &Path) -> Vec<(&'static str, Vec<String>)> {
             isolated("testing/h2-conformance/test_confined_tools.py"),
         ),
     ]
+}
+
+/// `product-image-<repo>` (trusted image producer only): the trusted
+/// product-inputs script's one dev-profile image build for a single product,
+/// inside the pinned image like the consumer's `scripts/ci-product-inputs.sh`.
+pub fn product_image(
+    trusted: &Path,
+    root: &Path,
+    target: &Path,
+    cache: &str,
+    repo: &str,
+) -> Vec<String> {
+    vec![
+        PY.to_owned(),
+        t(&trusted.join("scripts/architecture/product_artifacts.py")),
+        "--root".into(),
+        t(root),
+        "--target".into(),
+        t(target),
+        "--cache".into(),
+        cache.to_owned(),
+        "--image-only".into(),
+        repo.to_owned(),
+    ]
+}
+
+/// Whether `argv` is exactly the shape [`product_image`] builds.
+pub fn is_product_image(argv: &[String]) -> bool {
+    argv.len() >= 2
+        && argv[0] == PY
+        && argv[1].ends_with("/scripts/architecture/product_artifacts.py")
+        && argv.iter().any(|a| a == "--image-only")
 }
 
 /// `final-binary`: the candidate build under the capture recorder.
