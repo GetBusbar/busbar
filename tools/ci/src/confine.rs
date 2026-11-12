@@ -1,17 +1,29 @@
-//! Explicit candidate execution boundary (former `native_confinement.Execution`).
-//! Controller code never enters its mounts; missing images, unsupported
-//! fixtures or failed disposal refuse, with no host fallback. The execution
-//! context it writes is read by the architecture step (`check.py`), so its
-//! bytes and the observations it appends keep the former schema exactly.
-use super::pysteps;
-use super::sp::{
-    self, Dict, Error, Io, Kind, R, Spec, at, key_error, need_value as require, value_error,
-};
+//! Explicit candidate execution boundary (former `native_confinement.Execution`
+//! and its `CompilerPool`), the one implementation both controller commands use.
+//!
+//! `native-qualify` constructs it from the protected configuration and writes
+//! the digest-bound execution context; `architecture` reloads that context
+//! (`from_context`) and runs its candidate commands and the two-isolate
+//! compiler pool through the same per-invocation container lifecycle (create,
+//! inspect, attach, state, removal, confirmed absence). Controller code never
+//! enters its mounts; missing images, unsupported fixtures, weakened runtimes
+//! or failed disposal refuse, with no host fallback. The context bytes and the
+//! observation rows keep the former schema exactly.
 use crate::isolation;
 use crate::json::{self, Value, object};
+use crate::native::pysteps;
+use crate::native::sp::{
+    self, Dict, Error, Io, Kind, R, Spec, at, key_error, need_value as require, value_error,
+};
+use crate::proc;
 use crate::sha256;
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 pub fn digest(path: &Path) -> R<String> {
     sha256::file(path).map_err(|e| {
@@ -84,9 +96,35 @@ fn image_reference(value: &str) -> bool {
 }
 
 fn unix_endpoint(value: &str) -> bool {
-    value.strip_prefix("unix:///").is_some_and(|rest| {
-        !rest.is_empty() && !rest.chars().any(|c| c.is_whitespace() || c == ',')
-    })
+    value
+        .strip_prefix("unix:///")
+        .is_some_and(|rest| !rest.is_empty() && !rest.chars().any(|c| c == ',' || py_space(c)))
+}
+
+/// `str.isspace()` / regex `\s` for str patterns.
+pub fn py_space(c: char) -> bool {
+    c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
+}
+
+/// An environment mapping as the architecture checks build it.
+pub type Env = BTreeMap<String, String>;
+
+/// The process environment as `os.environ` sees it.
+pub fn process_env() -> Env {
+    Dict::environ().0.into_iter().collect()
+}
+
+pub type Client = Arc<dyn Fn(&[String], bool) -> R<(i32, Vec<u8>)> + Send + Sync>;
+pub type PrepareWritable = Arc<dyn Fn(&Value, &[PathBuf], u64, u64) -> R<Value> + Send + Sync>;
+pub type Userns = Arc<dyn Fn(&Value, &Value, Option<&Value>) -> R<Value> + Send + Sync>;
+
+/// Host-kernel contracts. Production uses the real Docker client and Linux
+/// checks; unit tests substitute them as the former Python tests patched them.
+#[derive(Clone, Default)]
+pub struct Hooks {
+    pub client: Option<Client>,
+    pub prepare_writable: Option<PrepareWritable>,
+    pub userns: Option<Userns>,
 }
 
 fn positive_int(value: &Value) -> Option<i128> {
@@ -98,7 +136,7 @@ fn is_relative_to(path: &Path, root: &Path) -> bool {
 }
 
 /// The four candidate-visible roots, in their former insertion order.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Roots {
     pub checkout: PathBuf,
     pub candidate: PathBuf,
@@ -107,7 +145,7 @@ pub struct Roots {
 }
 
 impl Roots {
-    fn all(&self) -> [(&'static str, &PathBuf); 4] {
+    pub fn all(&self) -> [(&'static str, &PathBuf); 4] {
         [
             ("checkout", &self.checkout),
             ("candidate", &self.candidate),
@@ -131,6 +169,7 @@ pub struct Restriction {
     pub command: Vec<String>,
 }
 
+#[derive(Clone)]
 pub struct Execution {
     pub config: Value,
     pub control: PathBuf,
@@ -152,6 +191,13 @@ pub struct Execution {
     pub dependency_seed_sha256: Option<String>,
     pub profile: Option<Profile>,
     pub restriction: Option<Restriction>,
+    /// Compiler-pool isolate state (`resource_slice`, `compiler_readonly`,
+    /// `prepared_git`, `readonly_candidate_inputs`); unset outside the pool.
+    pub resource_slice: Option<Value>,
+    pub compiler_readonly: bool,
+    pub prepared_git: Option<PathBuf>,
+    pub readonly_candidate_inputs: Option<PathBuf>,
+    pub hooks: Hooks,
 }
 
 /// One live candidate container; [`Execution::dispose`] must always follow.
@@ -365,7 +411,112 @@ impl Execution {
             dependency_seed_sha256: None,
             profile: None,
             restriction: None,
+            resource_slice: None,
+            compiler_readonly: false,
+            prepared_git: None,
+            readonly_candidate_inputs: None,
+            hooks: Hooks::default(),
         })
+    }
+
+    /// `Execution.from_context(path, expected)`: the digest-bound context the
+    /// step runner wrote, reloaded by the architecture command.
+    pub fn from_context(path: &Path, expected: &str, hooks: Hooks) -> R<Execution> {
+        require(
+            digest(path)? == expected,
+            "controller execution context digest differs",
+        )?;
+        let data = sp::read_json(path)?;
+        let roots = at(&data, "roots")?;
+        require(
+            roots.has_keys(&["checkout", "candidate", "trusted", "harness"]),
+            "unexpected execution roots",
+        )?;
+        let root = |key: &str| PathBuf::from(roots.at(key).as_str().unwrap_or(""));
+        let roots = Roots {
+            checkout: root("checkout"),
+            candidate: root("candidate"),
+            trusted: root("trusted"),
+            harness: root("harness"),
+        };
+        // `Path(native_confinement.__file__).with_name('confinement_entry.py')`:
+        // the policy checkout's own entry, as the step runner mounts it.
+        let entry = roots
+            .trusted
+            .join("scripts/architecture/confinement_entry.py");
+        let control = PathBuf::from(at(&data, "control")?.as_str().unwrap_or(""));
+        let mut execution =
+            Execution::new(at(&data, "configuration")?.clone(), roots, &control, entry)?;
+        execution.hooks = hooks;
+        for value in data.at("extra_readonly").as_array().unwrap_or(&[]) {
+            execution
+                .extra_readonly
+                .push(checked_directory(Path::new(value.as_str().unwrap_or("")))?);
+        }
+        for row in data.at("conformance_mounts").as_array().unwrap_or(&[]) {
+            execution.conformance_mounts.push((
+                PathBuf::from(row.index(0).as_str().unwrap_or("")),
+                PathBuf::from(row.index(1).as_str().unwrap_or("")),
+            ));
+        }
+        if let Some(manifest) = data
+            .at("conformance_inputs_manifest")
+            .as_str()
+            .filter(|m| !m.is_empty())
+        {
+            execution.conformance_inputs_manifest = Some(PathBuf::from(manifest));
+        }
+        if !matches!(data.at("dependency_seed"), Value::Null) {
+            execution.dependency_seed = Some(checked_directory(Path::new(
+                data.at("dependency_seed").as_str().unwrap_or(""),
+            ))?);
+            execution.dependency_seed_sha256 = Some(
+                at(&data, "dependency_seed_sha256")?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            );
+        }
+        Ok(execution)
+    }
+
+    /// `readonly_candidate_inputs or roots['candidate']`.
+    fn inputs_root(&self) -> &Path {
+        self.readonly_candidate_inputs
+            .as_deref()
+            .unwrap_or(&self.roots.candidate)
+    }
+
+    /// One `_client` call, through the test hook when one is installed.
+    fn raw_client(&self, args: &[String], capture: bool) -> R<sp::Done> {
+        if let Some(client) = &self.hooks.client {
+            let (code, stdout) = client(args, capture)?;
+            let mut argv = self.docker.clone();
+            argv.extend(args.iter().cloned());
+            return Ok(sp::Done {
+                argv,
+                code,
+                stdout,
+                stderr: Vec::new(),
+            });
+        }
+        let spec = self.client_spec(args)?;
+        sp::run(if capture {
+            spec.capture()
+        } else {
+            spec.quiet()
+        })
+    }
+
+    fn userns(&self, isolation: &Value, daemon: &Value, inspected: Option<&Value>) -> R<Value> {
+        if let Some(hook) = &self.hooks.userns {
+            return hook(isolation, daemon, inspected);
+        }
+        match inspected {
+            None => isolation::validate_userns(isolation, daemon),
+            Some(actual) => isolation::validate_userns_inspected(isolation, daemon, actual),
+        }
+        .map_err(sp::from_text)
     }
 
     pub fn uid(&self) -> i128 {
@@ -470,7 +621,7 @@ impl Execution {
 
     /// `_client(args, capture_output=True, text=True)`.
     pub fn client(&self, args: &[String]) -> R<sp::Done> {
-        let done = sp::run(self.client_spec(args)?.capture())?;
+        let done = self.raw_client(args, true)?;
         self.check_profile_inspect(args, &done)?;
         Ok(done)
     }
@@ -519,6 +670,9 @@ impl Execution {
 
     /// `sanitize_git()`: source history without clone credentials, hooks or host config.
     pub fn sanitize_git(&self) -> R<PathBuf> {
+        if let Some(prepared) = &self.prepared_git {
+            return checked_directory(prepared);
+        }
         let source = self.roots.checkout.join(".git");
         require(
             source.is_dir() && !sp::is_symlink(&source),
@@ -738,7 +892,7 @@ impl Execution {
         let mut count = sp::py_int(env.get("GIT_CONFIG_COUNT").unwrap_or("0"))?;
         require((0..=1000).contains(&count), "invalid Git mapping count")?;
         result.insert("GIT_CONFIG_COUNT".into(), count.to_string());
-        let inputs = &self.roots.candidate;
+        let inputs = self.inputs_root();
         let prefix = format!("url.{}/", sp::as_uri(&inputs.join("canonical-inputs")));
         for index in 0..count {
             let key = env
@@ -948,10 +1102,31 @@ impl Execution {
         )?;
         let argv = self.prepare_command(argv.to_vec(), &cwd)?;
         let name = format!("busbar-candidate-{}", sp::uuid_hex());
-        let resources = self.config.at("resources").clone();
+        let aggregate = self.config.at("resources").clone();
+        let resources = self
+            .resource_slice
+            .clone()
+            .unwrap_or_else(|| aggregate.clone());
+        if self.resource_slice.is_some() {
+            let keys = ["cpus", "memory_bytes", "pids"];
+            require(
+                self.compiler_readonly
+                    && resources.has_keys(&keys)
+                    && keys.iter().all(|k| {
+                        let value = resources.at(k);
+                        value.is_int()
+                            && value.as_int().is_some_and(|v| {
+                                v > 0 && aggregate.at(k).as_int().is_some_and(|a| v * 2 <= a)
+                            })
+                    }),
+                "compiler slices exceed the aggregate resource budget",
+            )?;
+        }
         let target = self.roots.checkout.join("target");
-        sp::mkdir(&target, 0o777, true)?;
-        checked_directory(&target)?;
+        if !self.compiler_readonly {
+            sp::mkdir(&target, 0o777, true)?;
+            checked_directory(&target)?;
+        }
         let checkout = self.roots.checkout.clone();
         let mut mounts: Vec<(PathBuf, PathBuf, bool)> = vec![
             (checkout.clone(), checkout.clone(), false),
@@ -982,16 +1157,18 @@ impl Execution {
                 false,
             ),
             (self.entry.clone(), "/__busbar_entry.py".into(), false),
-            (target.clone(), target, true),
         ];
+        if !self.compiler_readonly {
+            mounts.push((target.clone(), target, true));
+        }
         for relative in ["canonical-inputs", "host", "sdk", "c-witness"] {
-            let path = self.roots.candidate.join(relative);
+            let path = self.inputs_root().join(relative);
             if path.exists() {
                 mounts.push((checked_directory(&path)?, path, false));
             }
         }
         let nested = checkout.join("dist/default/target");
-        if nested.parent().is_some_and(Path::is_dir) {
+        if nested.parent().is_some_and(Path::is_dir) && !self.compiler_readonly {
             sp::mkdir(&nested, 0o777, true)?;
             checked_directory(&nested)?;
             mounts.push((nested.clone(), nested, true));
@@ -1114,21 +1291,19 @@ impl Execution {
         }
         let isolation = self.config.at("isolation").clone();
         let writable: Vec<PathBuf> = mounts.iter().filter(|m| m.2).map(|m| m.0.clone()).collect();
-        let mut storage = isolation::prepare_writable(
-            &isolation,
-            &writable,
-            self.uid() as u64,
-            self.gid() as u64,
-        )
-        .map_err(sp::from_text)?;
+        let (uid, gid) = (self.uid() as u64, self.gid() as u64);
+        let mut storage = match &self.hooks.prepare_writable {
+            Some(hook) => hook(&isolation, &writable, uid, gid)?,
+            None => isolation::prepare_writable(&isolation, &writable, uid, gid)
+                .map_err(sp::from_text)?,
+        };
         let daemon_result = self.client(&sp::strings(&["info", "--format", "{{json .}}"]))?;
         require(
             daemon_result.code == 0,
             "candidate daemon identity unavailable",
         )?;
         let daemon = sp::loads(&daemon_result.stdout)?;
-        let user_namespace =
-            isolation::validate_userns(&isolation, &daemon).map_err(sp::from_text)?;
+        let user_namespace = self.userns(&isolation, &daemon, None)?;
         safe_env.insert(
             "BUSBAR_EXPECTED_UID_MAP".into(),
             json::dumps(isolation.at("uid_map"), false),
@@ -1152,7 +1327,7 @@ impl Execution {
                 .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
                 .collect(),
         );
-        let observation = object([
+        let mut observation = object([
             ("name", name.as_str().into()),
             ("image", self.image().into()),
             ("runtime", self.config.at("runtime").clone()),
@@ -1186,6 +1361,10 @@ impl Execution {
                 Value::Array(fixture_hosts.iter().map(|h| h.as_str().into()).collect()),
             ),
         ]);
+        if self.resource_slice.is_some() {
+            observation.set("aggregate_resources", aggregate.clone());
+            observation.set("compiler_pool_width", 2u64.into());
+        }
         self.observations.push(observation);
         let mut invocation = Invocation {
             name: name.clone(),
@@ -1195,7 +1374,14 @@ impl Execution {
             disposable_target,
             cargo_home,
         };
-        match self.start(&mut invocation, &args, &daemon, &mounts, &fixture_hosts) {
+        match self.start(
+            &mut invocation,
+            &args,
+            &daemon,
+            &mounts,
+            &fixture_hosts,
+            &resources,
+        ) {
             Ok(()) => {
                 let mut command = self.docker.clone();
                 command.extend(sp::strings(&["start", "--attach"]));
@@ -1221,6 +1407,7 @@ impl Execution {
         daemon: &Value,
         mounts: &[(PathBuf, PathBuf, bool)],
         fixture_hosts: &[String],
+        resources: &Value,
     ) -> R<()> {
         let created = self.client(args)?;
         require(created.code == 0, "candidate container creation failed")?;
@@ -1233,9 +1420,8 @@ impl Execution {
             .ok_or_else(|| Error::new(Kind::Value, "list index out of range"))?
             .clone();
         let isolation = self.config.at("isolation").clone();
-        isolation::validate_userns_inspected(&isolation, daemon, &actual).map_err(sp::from_text)?;
+        self.userns(&isolation, daemon, Some(&actual))?;
         let host = at(&actual, "HostConfig")?;
-        let resources = self.config.at("resources");
         let field = |key: &str| at(host, key);
         let int = |key: &str| resources.at(key).as_int().unwrap_or(0);
         let expected_hosts =
@@ -1376,10 +1562,7 @@ impl Execution {
                 }
             }
         }
-        let removed = sp::run(
-            self.client_spec(&sp::strings(&["rm", "--force", &name]))?
-                .quiet(),
-        )?;
+        let removed = self.raw_client(&sp::strings(&["rm", "--force", &name]), false)?;
         let filter = format!("name=^/{name}$");
         let absent = self.client(&sp::strings(&[
             "container",
@@ -1439,10 +1622,9 @@ impl Execution {
             .capture()
             .timeout(timeout);
         let result = sp::run(spec);
-        let disposed = self.dispose(invocation);
-        let done = result?;
-        disposed?;
-        Ok(done)
+        // The invocation's `finally`: a disposal failure replaces the result.
+        self.dispose(invocation)?;
+        result
     }
 
     /// `check_output(argv, cwd=..., env=..., text=True)`.
@@ -1451,10 +1633,331 @@ impl Execution {
         let mut spec = Spec::new(invocation.command.clone()).env(&self.client_env);
         spec.stdout = sp::Output::Capture;
         let result = sp::run(spec).and_then(sp::Done::checked);
-        let disposed = self.dispose(invocation);
-        let done = result?;
-        disposed?;
-        Ok(done.text())
+        self.dispose(invocation)?;
+        Ok(result?.text())
+    }
+
+    /// `with invocation(argv, cwd, env) as (command, client_env, _): body`.
+    /// A disposal failure replaces the body's outcome, as the former `finally`.
+    pub fn invocation_with<T>(
+        &mut self,
+        argv: &[String],
+        cwd: &Path,
+        env: &Dict,
+        discard_harness_target: bool,
+        body: impl FnOnce(&[String], &[(String, String)]) -> R<T>,
+    ) -> R<T> {
+        let invocation = self.invocation(argv, cwd, env, discard_harness_target)?;
+        let outcome = body(&invocation.command, &self.client_env);
+        self.dispose(invocation)?;
+        outcome
+    }
+
+    pub fn compiler_pool(&mut self) -> R<CompilerPool<'_>> {
+        CompilerPool::new(self)
+    }
+}
+
+/// Error text of a cancelled compiler case (`CancelledError`).
+pub const CANCELLED: &str = "compiler pool cancelled";
+
+fn cancelled() -> Error {
+    value_error(CANCELLED)
+}
+
+/// A finished architecture candidate command (`subprocess.CompletedProcess`
+/// with text-mode streams).
+#[derive(Clone, Debug, Default)]
+pub struct Done {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Spawn a command in this process group, as `subprocess` does; `cancel` is
+/// polled and kills the attach client (its container is removed by disposal).
+pub fn spawn(
+    argv: &[String],
+    env: Option<&[(String, String)]>,
+    cwd: Option<&Path>,
+    capture_stdout: bool,
+    capture_stderr: bool,
+    cancel: Option<&dyn Fn() -> bool>,
+) -> R<(i32, Vec<u8>, Vec<u8>, bool)> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| value_error("missing candidate executable"))?;
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(env) = env {
+        command.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+    }
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command.stdin(Stdio::inherit());
+    if capture_stdout {
+        command.stdout(Stdio::piped());
+    }
+    if capture_stderr {
+        command.stderr(Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| sp::os_error(&e, Some(Path::new(program))))?;
+    let reader = |stream: Option<Box<dyn Read + Send>>| {
+        stream.map(|mut stream| {
+            std::thread::spawn(move || {
+                let mut out = Vec::new();
+                let _ = stream.read_to_end(&mut out);
+                out
+            })
+        })
+    };
+    let out = reader(
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let err = reader(
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let wait_error = |e: std::io::Error| sp::os_error(&e, None);
+    let mut was_cancelled = false;
+    let status = match cancel {
+        None => child.wait().map_err(wait_error)?,
+        Some(stop) => loop {
+            if let Some(status) = child.try_wait().map_err(wait_error)? {
+                break status;
+            }
+            if stop() {
+                let _ = child.kill();
+                was_cancelled = true;
+                break child.wait().map_err(wait_error)?;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        },
+    };
+    let stdout = out
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = err
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    Ok((sp::returncode(status), stdout, stderr, was_cancelled))
+}
+
+fn text_mode(data: &[u8]) -> R<String> {
+    crate::pathx::text_mode(data).map_err(sp::from_text)
+}
+
+/// Two compiler isolates sharing only readonly inputs and an aggregate quota.
+///
+/// Each case owns its Execution, observations, home, lockfile, cache and target.
+/// The callback validates its result so failure cancels other work before
+/// another case starts. No successful receipt survives an error.
+pub struct CompilerPool<'a> {
+    execution: &'a mut Execution,
+    resources: Value,
+    cancel: Arc<AtomicBool>,
+    used: bool,
+}
+
+/// One compiler case's private isolate.
+pub struct Slot {
+    pub execution: Execution,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Slot {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst) || proc::interrupted().is_some()
+    }
+
+    /// `CompilerPool.run`: one confined compiler command, cancellable.
+    pub fn run(&mut self, argv: &[String], cwd: &Path) -> R<Done> {
+        if self.cancelled() {
+            return Err(cancelled());
+        }
+        let mut env = Dict::environ();
+        for (key, value) in [
+            ("TMPDIR", "/tmp"),
+            ("BUSBAR_TEST_TMP_ROOT", "/tmp/tests"),
+            ("XDG_CACHE_HOME", "/tmp/cache"),
+            ("MODERNCI_CACHE_DIR", "/tmp/cache"),
+            ("CARGO_BUILD_JOBS", "2"),
+        ] {
+            env.set(key, value);
+        }
+        let cancel = self.cancel.clone();
+        self.execution
+            .invocation_with(argv, cwd, &env, true, |command, client_env| {
+                let stop = || cancel.load(Ordering::SeqCst) || proc::interrupted().is_some();
+                if stop() {
+                    return Err(cancelled());
+                }
+                let (code, stdout, stderr, was_cancelled) =
+                    spawn(command, Some(client_env), None, true, true, Some(&stop))?;
+                if was_cancelled {
+                    return Err(cancelled());
+                }
+                Ok(Done {
+                    code,
+                    stdout: text_mode(&stdout)?,
+                    stderr: text_mode(&stderr)?,
+                })
+            })
+    }
+}
+
+impl<'a> CompilerPool<'a> {
+    pub fn new(execution: &'a mut Execution) -> R<CompilerPool<'a>> {
+        let resources = execution.config.at("resources").clone();
+        let value = |key: &str| resources.at(key).as_int().unwrap_or(0);
+        require(
+            value("cpus") >= 4 && value("memory_bytes") >= 6 << 30 && value("pids") >= 2,
+            "compiler pool requires the measured resource budget",
+        )?;
+        // Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
+        // runners. Container memory includes its tmpfs and shared memory charges.
+        let slice = object([
+            ("cpus", 2u64.into()),
+            ("memory_bytes", (3u64 << 30).into()),
+            ("pids", Value::int(value("pids") / 2)),
+        ]);
+        Ok(CompilerPool {
+            execution,
+            resources: slice,
+            cancel: Arc::new(AtomicBool::new(false)),
+            used: false,
+        })
+    }
+
+    /// Run every case on at most two isolates, in submission order; observations
+    /// merge in case order; the first non-cancellation failure is reported.
+    pub fn map<C: Sync, T: Send>(
+        &mut self,
+        cases: &[C],
+        function: &(dyn Fn(&mut Slot, usize, &C) -> R<T> + Sync),
+    ) -> R<Vec<T>> {
+        require(!self.used, "compiler pool cannot be reused")?;
+        self.used = true;
+        let prepared_git = self.execution.sanitize_git()?;
+        let parent = self.execution.clone();
+        let resources = self.resources.clone();
+        let cancel = self.cancel.clone();
+        let next = std::sync::Mutex::new(0usize);
+        type Outcome<T> = (R<T>, Vec<Value>);
+        let outcomes: std::sync::Mutex<BTreeMap<usize, Outcome<T>>> = Default::default();
+        proc::install_signal_handlers();
+        let invoke = |index: usize, case: &C| -> Outcome<T> {
+            if cancel.load(Ordering::SeqCst) || proc::interrupted().is_some() {
+                cancel.store(true, Ordering::SeqCst);
+                return (Err(cancelled()), Vec::new());
+            }
+            let base = parent
+                .roots
+                .candidate
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .join(format!("compiler-isolate-{}", sp::uuid_hex()));
+            let prepare = || -> R<Execution> {
+                sp::mkdir(&base, 0o755, false)?;
+                let (candidate, control) = (base.join("candidate"), base.join("control"));
+                sp::mkdir(&candidate, 0o755, false)?;
+                sp::mkdir(&control, 0o700, false)?;
+                let mut child = parent.clone();
+                child.roots.candidate = candidate;
+                child.control = control.clone();
+                child.observations = Vec::new();
+                child.resource_slice = Some(resources.clone());
+                child.compiler_readonly = true;
+                child.prepared_git = Some(prepared_git.clone());
+                child.readonly_candidate_inputs = Some(parent.roots.candidate.clone());
+                // Compiler checks receive no service capabilities or mutable parent
+                // candidate mount. Their source is the readonly core checkout.
+                child.fixture_directory = control.join("fixture-sockets");
+                sp::mkdir(&child.fixture_directory, 0o755, false)?;
+                child.fixture_map = control.join("fixture-map.json");
+                sp::write(&child.fixture_map, "[]\n")?;
+                Ok(child)
+            };
+            let mut slot = match prepare() {
+                Ok(child) => Slot {
+                    execution: child,
+                    cancel: cancel.clone(),
+                },
+                Err(error) => {
+                    cancel.store(true, Ordering::SeqCst);
+                    return (Err(error), Vec::new());
+                }
+            };
+            let mut result = function(&mut slot, index, case);
+            if result.is_err() {
+                cancel.store(true, Ordering::SeqCst);
+            }
+            let mut rows = std::mem::take(&mut slot.execution.observations);
+            for row in &mut rows {
+                row.set("compiler_case_index", (index as u64).into());
+            }
+            // Never delete artifacts while a container could still hold
+            // them. A failed disposal retains the entire private root.
+            if rows.iter().all(|row| row.at("disposed").truthy())
+                && let Err(error) = sp::rmtree(&base)
+            {
+                cancel.store(true, Ordering::SeqCst);
+                result = Err(error);
+            }
+            (result, rows)
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    loop {
+                        let index = {
+                            let mut next = next.lock().unwrap();
+                            let index = *next;
+                            *next += 1;
+                            index
+                        };
+                        let Some(case) = cases.get(index) else {
+                            break;
+                        };
+                        let outcome = invoke(index, case);
+                        outcomes.lock().unwrap().insert(index, outcome);
+                    }
+                });
+            }
+        });
+        proc::restore_default_signals();
+        let outcomes = outcomes.into_inner().unwrap();
+        let mut results = Vec::new();
+        let mut errors = Vec::new();
+        for (_, (result, rows)) in outcomes {
+            self.execution.observations.extend(rows);
+            match result {
+                Ok(value) => results.push(value),
+                Err(error) => errors.push(error),
+            }
+        }
+        if let Some(signal) = proc::interrupted() {
+            return Err(Error::new(
+                Kind::Os,
+                format!("compiler pool interrupted by signal {signal}"),
+            ));
+        }
+        if !errors.is_empty() {
+            let first = errors
+                .iter()
+                .position(|e| e.message != CANCELLED)
+                .unwrap_or(0);
+            return Err(errors.swap_remove(first));
+        }
+        Ok(results)
     }
 }
 
@@ -1717,5 +2220,718 @@ pub mod tests {
         )));
         assert!(unix_endpoint("unix:///var/run/docker.sock"));
         assert!(!unix_endpoint("unix:///a b"));
+    }
+}
+
+/// The former `test_compiler_storage.py` / `test_compiler_parallel.py` and the
+/// architecture context cases: invocation lifecycle against a fake engine.
+#[cfg(test)]
+pub mod lifecycle_tests {
+    use super::*;
+    use crate::native::sp::text;
+    use crate::py;
+    use std::fs;
+    use std::sync::Mutex;
+
+    const TMPFS: &str = "rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777";
+
+    fn no_env() -> Dict {
+        Dict::default()
+    }
+
+    /// The Python `Fixture`: four roots, a control directory and a confinement
+    /// configuration whose Docker client is `/bin/echo`.
+    pub struct Fixture {
+        pub base: PathBuf,
+        pub roots: Roots,
+        pub control: PathBuf,
+        pub config: Value,
+    }
+
+    impl Fixture {
+        pub fn new() -> Fixture {
+            let base =
+                sp::resolve(&std::env::temp_dir()).join(format!("confine-{}", sp::uuid_hex()));
+            let roots = Roots {
+                checkout: base.join("checkout"),
+                candidate: base.join("candidate"),
+                trusted: base.join("trusted"),
+                harness: base.join("harness"),
+            };
+            let control = base.join("control");
+            fs::create_dir_all(&base).unwrap();
+            for (_, path) in roots.all() {
+                fs::create_dir(path).unwrap();
+            }
+            fs::create_dir(&control).unwrap();
+            fs::create_dir(roots.checkout.join(".git")).unwrap();
+            fs::write(
+                roots.checkout.join(".git/config"),
+                "url=https://secret-token@example.invalid/repo",
+            )
+            .unwrap();
+            let config = json::parse(
+                format!(
+                    r#"{{"schema": "busbar.native-confinement/2", "docker": "/bin/echo",
+                "docker_sha256": "{}", "docker_host": "unix:///var/run/docker.sock",
+                "image": "python@sha256:{}", "runtime": "runc", "uid": 1000, "gid": 1000,
+                "python": "/usr/local/bin/python3", "environment": {{"PATH": "/usr/local/bin:/usr/bin:/bin"}},
+                "resources": {{"cpus": 2, "memory_bytes": 2147483648, "pids": 256}},
+                "collector": {{"docker_host": "unix:///var/run/docker.sock", "uid": 525288, "gid": 525288}},
+                "isolation": {{"storage_kind": "tmpfs", "storage_reserve_bytes": 0,
+                  "storage_root": "{}", "storage_bytes": 67108864, "storage_inodes": 4096,
+                  "uid_map": [0, 524288, 65536], "gid_map": [0, 524288, 65536]}}}}"#,
+                    digest(Path::new("/bin/echo")).unwrap(),
+                    "a".repeat(64),
+                    text(&base)
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            Fixture {
+                base,
+                roots,
+                control,
+                config,
+            }
+        }
+
+        pub fn roots_value(&self) -> Value {
+            Value::Object(
+                self.roots
+                    .all()
+                    .iter()
+                    .map(|(k, v)| ((*k).to_owned(), text(v).into()))
+                    .collect(),
+            )
+        }
+
+        pub fn execution(&self, hooks: Hooks) -> Execution {
+            let mut execution = Execution::new(
+                self.config.clone(),
+                self.roots.clone(),
+                &self.control,
+                self.roots
+                    .trusted
+                    .join("scripts/architecture/confinement_entry.py"),
+            )
+            .unwrap();
+            execution.hooks = hooks;
+            execution
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+
+    /// The fake engine of the former test_compiler_parallel.py and test_compiler_storage.py.
+    pub struct Engine {
+        pub calls: Mutex<Vec<Vec<String>>>,
+        pub created: Mutex<BTreeMap<String, Vec<String>>>,
+        pub removed: Mutex<Vec<String>>,
+        pub targets: Mutex<Vec<PathBuf>>,
+        pub mismatch: Mutex<Option<&'static str>>,
+        pub fail_disposal: AtomicBool,
+        pub memory: i64,
+    }
+
+    impl Engine {
+        pub fn new(memory: i64) -> Arc<Engine> {
+            Arc::new(Engine {
+                calls: Default::default(),
+                created: Default::default(),
+                removed: Default::default(),
+                targets: Default::default(),
+                mismatch: Mutex::new(None),
+                fail_disposal: AtomicBool::new(false),
+                memory,
+            })
+        }
+
+        pub fn hooks(self: &Arc<Engine>) -> Hooks {
+            let engine = self.clone();
+            Hooks {
+                client: Some(Arc::new(move |argv: &[String], _| {
+                    let (code, payload) = engine.client(argv);
+                    Ok((code, payload.into_bytes()))
+                })),
+                prepare_writable: Some(Arc::new(|config: &Value, _: &[PathBuf], _, _| {
+                    Ok(object([
+                        ("root", config.at("storage_root").clone()),
+                        ("bytes", config.at("storage_bytes").clone()),
+                    ]))
+                })),
+                userns: Some(Arc::new(|_: &Value, _: &Value, _: Option<&Value>| {
+                    Ok(object([]))
+                })),
+            }
+        }
+
+        fn client(&self, argv: &[String]) -> (i32, String) {
+            self.calls.lock().unwrap().push(argv.to_vec());
+            let mut payload = String::new();
+            let mut code = 0;
+            match argv[0].as_str() {
+                "create" => {
+                    let name = argv[argv.iter().position(|a| a == "--name").unwrap() + 1].clone();
+                    if let Some(target) = argv
+                        .iter()
+                        .find_map(|a| a.strip_prefix("CARGO_TARGET_DIR="))
+                    {
+                        let target = PathBuf::from(target);
+                        let _ = fs::write(target.join("artifact"), b"compiler output");
+                        self.targets.lock().unwrap().push(target);
+                    }
+                    self.created.lock().unwrap().insert(name, argv.to_vec());
+                }
+                "info" => {
+                    payload = r#"{"SecurityOptions": ["name=userns"], "SwapLimit": true}"#.into()
+                }
+                "inspect" if argv[1] == "--format" => payload =
+                    r#"{"Status": "exited", "Running": false, "ExitCode": 0, "OOMKilled": false}"#
+                        .into(),
+                "inspect" => {
+                    let args = self.created.lock().unwrap()[&argv[1]].clone();
+                    let values: BTreeMap<String, String> = args
+                        .iter()
+                        .filter_map(|a| a.strip_prefix("--").and_then(|a| a.split_once('=')))
+                        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                        .collect();
+                    let mut mounts = Vec::new();
+                    for (i, value) in args.iter().enumerate() {
+                        if value == "--mount" {
+                            let fields: BTreeMap<&str, &str> = args[i + 1]
+                                .split(',')
+                                .map(|p| p.split_once('=').unwrap_or((p, "")))
+                                .collect();
+                            mounts.push(format!(
+                                r#"{{"Type": "{}", "Source": "{}", "Destination": "{}", "RW": {}}}"#,
+                                fields["type"],
+                                fields["src"],
+                                fields["dst"],
+                                !fields.contains_key("readonly")
+                            ));
+                        }
+                    }
+                    let mut numbers: BTreeMap<&str, i64> = [
+                        ("PidsLimit", values["pids-limit"].parse::<i64>().unwrap()),
+                        ("Memory", values["memory"].parse().unwrap()),
+                        ("MemorySwap", values["memory-swap"].parse().unwrap()),
+                        (
+                            "NanoCpus",
+                            values["cpus"].parse::<i64>().unwrap() * 1_000_000_000,
+                        ),
+                    ]
+                    .into_iter()
+                    .collect();
+                    if self.memory > 0 {
+                        numbers.insert("Memory", self.memory);
+                        numbers.insert("MemorySwap", self.memory);
+                    }
+                    if let Some(field) = *self.mismatch.lock().unwrap() {
+                        *numbers.get_mut(field).unwrap() += 1;
+                    }
+                    payload = format!(
+                        r#"[{{"Id": "{}", "Image": "python@sha256:{}", "Config": {{"User": "1000:1000"}},
+                        "Mounts": [{}], "HostConfig": {{"NetworkMode": "none", "ReadonlyRootfs": true,
+                        "Privileged": false, "PidMode": "", "IpcMode": "private", "CgroupnsMode": "private",
+                        "Runtime": "runc", "CapDrop": ["ALL"], "CapAdd": [], "PidsLimit": {}, "Memory": {},
+                        "MemorySwap": {}, "NanoCpus": {}, "Devices": [], "DeviceRequests": [], "ExtraHosts": [],
+                        "ShmSize": 67108864, "Tmpfs": {{"/tmp": "{TMPFS}"}},
+                        "SecurityOpt": ["no-new-privileges"]}}}}]"#,
+                        argv[1],
+                        "a".repeat(64),
+                        mounts.join(", "),
+                        numbers["PidsLimit"],
+                        numbers["Memory"],
+                        numbers["MemorySwap"],
+                        numbers["NanoCpus"],
+                    );
+                }
+                "rm" => {
+                    // HarnessStorage (serial) only: artifacts outlive container removal.
+                    if self.memory > 0
+                        && let Some(last) = self.targets.lock().unwrap().last()
+                    {
+                        assert!(
+                            last.exists(),
+                            "artifacts must exist until container removal"
+                        );
+                    }
+                    self.removed
+                        .lock()
+                        .unwrap()
+                        .push(argv.last().unwrap().clone());
+                }
+                "container" if self.fail_disposal.load(Ordering::SeqCst) => code = 1,
+                _ => {}
+            }
+            (code, payload)
+        }
+    }
+
+    fn harness_argv(fixture: &Fixture) -> Vec<String> {
+        let manifest = fixture.roots.harness.join("Cargo.toml");
+        fs::write(&manifest, "[workspace]\n").unwrap();
+        ["cargo", "check", "--manifest-path", &text(&manifest)]
+            .map(String::from)
+            .to_vec()
+    }
+
+    // test_compiler_storage.HarnessStorage
+
+    #[test]
+    fn completed_cases_have_unique_targets_and_reclaim_each_one() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        for _ in 0..3 {
+            execution
+                .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
+                    assert!(engine.targets.lock().unwrap().last().unwrap().exists());
+                    Ok(())
+                })
+                .unwrap();
+            let target = engine.targets.lock().unwrap().last().unwrap().clone();
+            assert!(!target.exists());
+            let row = execution.observations.last().unwrap();
+            assert!(row.at("disposed").truthy() && row.at("harness_target_removed").truthy());
+            assert_eq!(
+                row.at("harness_target_path_sha256").as_str().unwrap(),
+                sha256::hex(text(&target).as_bytes())
+            );
+        }
+        let targets = engine.targets.lock().unwrap().clone();
+        assert_eq!(
+            targets
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn default_retains_generated_build_output() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        execution
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), false, |_, _| {
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            engine
+                .targets
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .join("artifact")
+                .exists()
+        );
+        assert!(
+            execution
+                .observations
+                .last()
+                .unwrap()
+                .get("harness_target_removed")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn process_error_still_reclaims_after_confirmed_disposal() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        let result: R<()> =
+            execution.invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
+                Err(sp::from_text(crate::pathx::called_process_error(&argv, 1)))
+            });
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("non-zero exit status 1")
+        );
+        assert!(!engine.targets.lock().unwrap().last().unwrap().exists());
+    }
+
+    #[test]
+    fn daemon_loss_retains_artifacts_and_refuses_disposal_claim() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        engine.fail_disposal.store(true, Ordering::SeqCst);
+        let mut execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        let error = execution
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.message.contains("disposal"));
+        assert!(engine.targets.lock().unwrap().last().unwrap().exists());
+        let row = execution.observations.last().unwrap();
+        assert!(!row.at("disposed").truthy());
+        assert!(row.get("harness_target_removed").is_none());
+    }
+
+    #[test]
+    fn replaced_target_symlink_does_not_delete_its_destination() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        let sentinel = fixture.control.join("preserve");
+        fs::write(&sentinel, "controller evidence").unwrap();
+        let control = fixture.control.clone();
+        execution
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
+                let target = engine.targets.lock().unwrap().last().unwrap().clone();
+                fs::remove_dir_all(&target).unwrap();
+                std::os::unix::fs::symlink(&control, &target).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        let target = engine.targets.lock().unwrap().last().unwrap().clone();
+        assert!(!sp::is_symlink(&target));
+        assert_eq!(
+            fs::read_to_string(&sentinel).unwrap(),
+            "controller evidence"
+        );
+    }
+
+    #[test]
+    fn candidate_manifest_cannot_request_target_disposal() {
+        let fixture = Fixture::new();
+        let engine = Engine::new(2 << 30);
+        let mut execution = fixture.execution(engine.hooks());
+        let mut argv = harness_argv(&fixture);
+        *argv.last_mut().unwrap() = text(&fixture.roots.checkout.join("Cargo.toml"));
+        let error = execution
+            .invocation_with(
+                &argv,
+                &fixture.roots.checkout,
+                &no_env(),
+                true,
+                |_, _| -> R<()> { panic!("candidate manifest accepted") },
+            )
+            .unwrap_err();
+        assert!(error.message.contains("trusted harness"));
+        assert!(engine.created.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn candidate_symlinks_cannot_redirect_controller_harness_preparation() {
+        let fixture = Fixture::new();
+        let execution = fixture.execution(Hooks::default());
+        let argv = harness_argv(&fixture);
+        std::os::unix::fs::symlink(
+            &fixture.control,
+            fixture.roots.candidate.join("harness-locks"),
+        )
+        .unwrap();
+        let before: Vec<_> = fs::read_dir(&fixture.control)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        let error = execution.cargo_environment(&argv, &no_env()).unwrap_err();
+        assert!(error.message.contains("indirect writable"));
+        let after: Vec<_> = fs::read_dir(&fixture.control)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn requires_pinned_client_image_nonroot_and_private_roots() {
+        let fixture = Fixture::new();
+        for (key, value) in [
+            ("docker_sha256", Value::str("0".repeat(64))),
+            ("image", Value::str("python:latest")),
+            ("uid", Value::int(0)),
+            ("runtime", Value::str("untrusted")),
+            ("docker_host", Value::str("tcp://host:2375")),
+        ] {
+            let mut config = fixture.config.clone();
+            config.set(key, value);
+            assert!(
+                Execution::new(
+                    config,
+                    fixture.roots.clone(),
+                    &fixture.control,
+                    PathBuf::from("/entry.py")
+                )
+                .is_err()
+            );
+        }
+        let mut roots = fixture.roots.clone();
+        roots.candidate = fixture.roots.checkout.join("nested");
+        fs::create_dir(fixture.roots.checkout.join("nested")).unwrap();
+        assert!(
+            Execution::new(
+                fixture.config.clone(),
+                roots,
+                &fixture.control,
+                PathBuf::from("/entry.py")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn context_round_trip_and_digest_binding() {
+        let fixture = Fixture::new();
+        let generated = fixture.roots.candidate.join("generated/x");
+        fs::create_dir_all(&generated).unwrap();
+        let context = object([
+            ("configuration", fixture.config.clone()),
+            ("roots", fixture.roots_value()),
+            ("control", text(&fixture.control).into()),
+            (
+                "extra_readonly",
+                Value::Array(vec![text(&generated).into()]),
+            ),
+            ("conformance_mounts", Value::Array(vec![])),
+            ("conformance_inputs_manifest", Value::Null),
+            ("dependency_seed", Value::Null),
+            ("dependency_seed_sha256", Value::Null),
+        ]);
+        let path = fixture.control.join("execution-context.json");
+        fs::write(&path, canonical(&context)).unwrap();
+        let expected = digest(&path).unwrap();
+        let execution = Execution::from_context(&path, &expected, Hooks::default()).unwrap();
+        assert_eq!(execution.roots, fixture.roots);
+        assert!(py::eq(&execution.config, &fixture.config));
+        assert_eq!(execution.extra_readonly, vec![generated]);
+        assert!(Execution::from_context(&path, &"0".repeat(64), Hooks::default()).is_err());
+    }
+
+    // test_compiler_parallel.ParallelCompiler
+
+    fn pool_fixture() -> (Fixture, Arc<Engine>, Execution, Vec<String>) {
+        let mut fixture = Fixture::new();
+        fixture.config.set(
+            "resources",
+            object([
+                ("cpus", Value::int(4)),
+                ("memory_bytes", Value::int(6i64 << 30)),
+                ("pids", Value::int(256)),
+            ]),
+        );
+        let engine = Engine::new(0);
+        let execution = fixture.execution(engine.hooks());
+        let argv = harness_argv(&fixture);
+        (fixture, engine, execution, argv)
+    }
+
+    fn isolates(fixture: &Fixture) -> usize {
+        fs::read_dir(&fixture.base)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("compiler-isolate-")
+            })
+            .count()
+    }
+
+    #[test]
+    fn two_isolates_enforce_aggregate_limits_and_merge_in_case_order() {
+        let (fixture, engine, mut parent, argv) = pool_fixture();
+        let barrier = std::sync::Barrier::new(2);
+        let harness = fixture.roots.harness.clone();
+        let writable = Mutex::new(Vec::new());
+        let results = parent
+            .compiler_pool()
+            .unwrap()
+            .map(&[0usize, 1], &|slot: &mut Slot, _, index: &usize| {
+                writable
+                    .lock()
+                    .unwrap()
+                    .push(slot.execution.roots.candidate.clone());
+                slot.execution
+                    .invocation_with(&argv, &harness, &no_env(), true, |_, _| {
+                        barrier.wait();
+                        if *index == 0 {
+                            std::thread::sleep(Duration::from_millis(30));
+                        }
+                        Ok(*index)
+                    })
+            })
+            .unwrap();
+        assert_eq!(results, vec![0, 1]);
+        let rows = &parent.observations;
+        let indices: Vec<_> = rows
+            .iter()
+            .map(|r| r.at("compiler_case_index").as_u64().unwrap())
+            .collect();
+        assert_eq!(indices, vec![0, 1]);
+        assert_eq!(engine.removed.lock().unwrap().len(), 2);
+        assert_eq!(
+            writable
+                .lock()
+                .unwrap()
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2
+        );
+        assert_eq!(isolates(&fixture), 0);
+        for key in ["cpus", "memory_bytes", "pids"] {
+            let total: u64 = rows
+                .iter()
+                .map(|r| r.at("resources").at(key).as_u64().unwrap())
+                .sum();
+            assert!(total <= fixture.config.at("resources").at(key).as_u64().unwrap());
+        }
+        for row in rows {
+            assert_eq!(
+                row.at("configuration_sha256").as_str().unwrap(),
+                sha_canonical(&fixture.config)
+            );
+            assert!(py::eq(
+                row.at("aggregate_resources"),
+                fixture.config.at("resources")
+            ));
+            assert_eq!(
+                json::dumps(row.at("resources"), false),
+                r#"{"cpus": 2, "memory_bytes": 3221225472, "pids": 128}"#
+            );
+            assert_eq!(
+                row.at("storage").at("root").as_str().unwrap(),
+                text(&fixture.base)
+            );
+            assert_eq!(row.at("storage").at("tmp_bytes").as_u64(), Some(1 << 30));
+            assert_eq!(row.at("storage").at("shm_bytes").as_u64(), Some(64 << 20));
+            assert_eq!(
+                row.at("swap_bound").at("effective_swap_bytes").as_u64(),
+                Some(0)
+            );
+            assert!(row.at("disposed").truthy() && row.at("harness_target_removed").truthy());
+        }
+    }
+
+    #[test]
+    fn engine_limit_mismatch_refuses_and_disposes() {
+        for field in ["PidsLimit", "Memory", "NanoCpus", "MemorySwap"] {
+            let (fixture, engine, mut parent, argv) = pool_fixture();
+            *engine.mismatch.lock().unwrap() = Some(field);
+            let harness = fixture.roots.harness.clone();
+            let result =
+                parent
+                    .compiler_pool()
+                    .unwrap()
+                    .map(&[0usize], &|slot: &mut Slot, _, _| {
+                        slot.execution.invocation_with(
+                            &argv,
+                            &harness,
+                            &no_env(),
+                            true,
+                            |_, _| -> R<()> { panic!("weakened engine limits were accepted") },
+                        )
+                    });
+            assert!(result.is_err(), "{field}");
+            assert!(parent.observations.last().unwrap().at("disposed").truthy());
+            assert_eq!(isolates(&fixture), 0);
+        }
+    }
+
+    #[test]
+    fn unconfirmed_disposal_retains_private_artifacts_and_fails() {
+        let (fixture, engine, mut parent, argv) = pool_fixture();
+        engine.fail_disposal.store(true, Ordering::SeqCst);
+        let harness = fixture.roots.harness.clone();
+        let error = parent
+            .compiler_pool()
+            .unwrap()
+            .map(&[0usize], &|slot: &mut Slot, _, _| {
+                slot.execution
+                    .invocation_with(&argv, &harness, &no_env(), true, |_, _| Ok(()))
+            })
+            .unwrap_err();
+        assert!(error.message.contains("disposal"));
+        assert_eq!(isolates(&fixture), 1);
+        assert!(!parent.observations.last().unwrap().at("disposed").truthy());
+    }
+
+    #[test]
+    fn case_failure_cancels_and_reaps_other_attach_process() {
+        let (fixture, _engine, mut parent, _) = pool_fixture();
+        let ready = fixture.base.join("ready");
+        let disposed = Mutex::new(0);
+        let mut pool = parent.compiler_pool().unwrap();
+        let cancel = pool.cancel.clone();
+        let error = pool
+            .map(&[0usize, 1, 2, 3], &|slot: &mut Slot,
+                                       index,
+                                       _|
+             -> R<Option<i32>> {
+                if index == 0 {
+                    let script = format!("echo $$ > {}; exec sleep 60", text(&ready));
+                    let argv = ["/bin/sh", "-c", &script].map(String::from);
+                    let stop = || slot.cancel.load(Ordering::SeqCst);
+                    let (_, _, _, was_cancelled) =
+                        spawn(&argv, None, None, true, true, Some(&stop))?;
+                    *disposed.lock().unwrap() += 1;
+                    return if was_cancelled {
+                        Err(cancelled())
+                    } else {
+                        Ok(None)
+                    };
+                }
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                while !ready.exists() && std::time::Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                assert!(ready.exists(), "attach client never started");
+                std::thread::sleep(Duration::from_millis(50));
+                Err(value_error("wrong compiler diagnostic"))
+            })
+            .unwrap_err();
+        assert_eq!(error.message, "wrong compiler diagnostic");
+        assert!(cancel.load(Ordering::SeqCst));
+        let pid: i32 = fs::read_to_string(&ready).unwrap().trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            std::process::Command::new("/bin/kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| !s.success())
+        );
+        assert_eq!(*disposed.lock().unwrap(), 1);
+        assert_eq!(isolates(&fixture), 0);
+    }
+
+    #[test]
+    fn insufficient_budget_refuses_without_creating_isolates() {
+        let (fixture, engine, mut parent, _) = pool_fixture();
+        for (cpus, memory) in [(2, 6i64 << 30), (4, 5i64 << 30)] {
+            parent.config.set(
+                "resources",
+                object([
+                    ("cpus", Value::int(cpus)),
+                    ("memory_bytes", Value::int(memory)),
+                    ("pids", Value::int(256)),
+                ]),
+            );
+            let error = CompilerPool::new(&mut parent).err().unwrap();
+            assert!(error.message.contains("resource budget"));
+        }
+        assert!(engine.created.lock().unwrap().is_empty());
+        drop(fixture);
     }
 }

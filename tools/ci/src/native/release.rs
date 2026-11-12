@@ -21,6 +21,11 @@ pub const MODULES: [&str; 11] = [
 ];
 pub const MISSING: &str = "release-stage subject absent: ModernCI builder key or exact-source attestation delivery not supplied";
 
+// The release-engineering input inventory shared with the website collector
+// (marketing RELEASE_INPUTS) and scripts/release/development_checks.py. The two
+// scripts/architecture entries are no longer executed by CI (this module and
+// `native-qualify` are); they stay hashed until the collector's inventory and
+// test_development_stage move to the Rust sources in one coordinated change.
 const FIXED_INPUTS: [&str; 8] = [
     "scripts/release-build.sh",
     "scripts/pgo-build.sh",

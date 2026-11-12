@@ -605,18 +605,23 @@ The deployed native path still runs host subprocesses. No runner settings,
 protected pipeline configuration or production activation were changed here.
 
 Implemented opt-in confinement:
-- native.py separates run_controller from candidate run; receipts and generated
+- The step runner (`busbar-ci native-qualify`, tools/ci/src/native, formerly
+  native.py) separates run_controller from candidate run; receipts and generated
   harness source live outside candidate writable roots. A protected configuration
   file plus independently selected digest are required; a configured failure has
   no host fallback. See scripts/architecture/CONFINEMENT.md for the exact contract.
-- native_confinement.py creates one nonroot Docker container per command using an
+- The shared boundary (tools/ci/src/confine.rs, formerly native_confinement.py,
+  which remains only for the API-only isolation diagnostic) creates one nonroot
+  Docker container per command using an
   already-present digest-pinned image, private PID/IPC/network/cgroup namespaces,
   read-only root/source/policy/harness mounts, zero capabilities, seccomp filtering,
   no-new-privileges and explicit CPU/memory/PID caps. No Docker socket, controller
   HOME or receipt path is mounted. Environment values use an allowlist; Git clone
   credentials/hooks are removed. Candidate outputs remain writable separately.
-- check.py keeps policy calculation in the controller and sends Cargo/cc/nm through
-  that boundary. Cargo 1.98 supports separate harness lockfiles; harness compilation
+- `busbar-ci architecture` (tools/ci/src/architecture, formerly check.py) keeps
+  policy calculation in the controller and sends Cargo/cc/nm through that boundary
+  (the same tools/ci/src/confine.rs, reloaded from the step runner's digest-bound
+  execution context, including the two-isolate compiler pool). Cargo 1.98 supports separate harness lockfiles; harness compilation
   uses fresh target directories and a fresh copy of the immutable image Cargo seed.
   Source harnesses remain read-only. Candidate output paths are checked before use.
 - Fixture container lifecycle is controller-only. Bounded fixed-destination Unix

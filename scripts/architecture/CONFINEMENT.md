@@ -57,7 +57,7 @@ These requirements need protected bootstrap integration; they never silently
 modify a runner daemon or choose subordinate identity ranges.
 
 The reusable image contains only public compilers, tools, the signed oracle and
-a measured public RustSec snapshot. `native_seed.py` separately prepares each
+a measured public RustSec snapshot. The controller (tools/ci/src/native/seed.rs) separately prepares each
 job's authorized dependency closure, bound to its candidate, assembled host, SDK
 and product locks. It preserves the original Cargo manifest graph but replaces
 source contents with inert placeholders and excludes Cargo configuration and Git

@@ -1,9 +1,9 @@
 //! Protected, measured public instruments mounted read-only for one native job
 //! (former `native_conformance_inputs.stage` and `native_python_runtime.bind`).
 use super::Q;
-use super::confine::sha_canonical;
 use super::sp::{self, R, need};
 use super::staged::regular;
+use crate::confine::sha_canonical;
 use crate::json::{self, Value, object};
 use crate::sha256;
 use std::path::{Path, PathBuf};

@@ -253,9 +253,10 @@ class ControllerCrate(unittest.TestCase):
                 continue
             if path.suffix in ('.sh', '.toml', '.lock', '.pin'):
                 self.assertNotIn(b'python', path.read_bytes().lower(), path)
-            # The native step runner names every remaining Python step program
-            # (check.py, the regression suites, candidate-side drivers) in one
-            # module; no other controller module may start an interpreter.
+            # Only the bootstrap (the API-only isolation diagnostic) and the step
+            # runner's pysteps module (in-image tooling and the Python tooling
+            # regression suites) name an interpreter; the shared confinement
+            # boundary starts only the pinned-image interpreter by config key.
             if path.suffix == '.rs' and path.name not in ('bootstrap.rs', 'pysteps.rs'):
                 code = path.read_text().split('#[cfg(test)]', 1)[0]
                 self.assertNotIn('/usr/bin/python3', code, path)
@@ -272,9 +273,22 @@ class ControllerCrate(unittest.TestCase):
         self.assertIn('"native-qualify".into()', bootstrap)
         pysteps = (ROOT / 'tools/ci/src/native/pysteps.rs').read_text().split('#[cfg(test)]', 1)[0]
         self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', pysteps))),
-                         ['check.py', 'development_artifact.py',
-                          'development_checks.py', 'sigstore.py', 'test_capabilities.py',
-                          'test_confined_tools.py'])
+                         ['development_artifact.py', 'development_checks.py', 'sigstore.py',
+                          'test_capabilities.py', 'test_confined_tools.py'])
+        # The architecture step is the controller's own `architecture` command,
+        # launched from the verified controller path; never check.py.
+        native = (ROOT / 'tools/ci/src/native/mod.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
+        self.assertIn('"architecture".into()', native)
+        self.assertIn('BUSBAR_CI_CONTROLLER', native)
+        # The candidate boundary never runs host Python: each confined command
+        # starts only the protected configuration's pinned-image interpreter on
+        # the read-only in-container entry, for both controller commands.
+        confine = (ROOT / 'tools/ci/src/confine.rs').read_text().split('\n#[cfg(test)]\n', 1)[0]
+        self.assertNotIn('/usr/bin/python3', confine)
+        self.assertNotRegex(confine, r'Command::new\("python')
+        self.assertNotRegex(confine, r'"python3?"')
+        self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', confine))),
+                         ['__busbar_entry.py', 'confinement_entry.py'])
 
     def test_pin_names_one_reproducible_binary_by_digest(self):
         manifest = (ROOT / 'tools/ci/Cargo.toml').read_text()

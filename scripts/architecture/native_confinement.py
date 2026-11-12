@@ -2,21 +2,20 @@
 
 Opt-in through a protected digest-pinned runtime configuration. Missing images,
 unsupported fixtures or failed disposal refuse; there is no host fallback.
+The architecture step's contexts are executed by busbar-ci (tools/ci/src/
+confine.rs, including the two-isolate compiler pool) with identical containers
+and observation rows.
 """
 
 from contextlib import contextmanager
-from concurrent.futures import CancelledError, ThreadPoolExecutor
-import copy
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
-import signal
 import stat
 import subprocess
-import threading
 import uuid
 
 import linux_job_isolation
@@ -843,138 +842,3 @@ class Execution:
             _,
         ):
             return subprocess.check_output(command, env=client_env, **kwargs)
-
-    def compiler_pool(self):
-        return CompilerPool(self)
-
-
-class CompilerPool:
-    """Two compiler isolates sharing only readonly inputs and an aggregate quota.
-
-    Each case owns its Execution, observations, home, lockfile, cache and target.
-    The caller must validate its result inside the callback so failure cancels
-    other work before another case starts. No successful receipt survives error.
-    """
-    def __init__(self, execution):
-        resources = execution.config['resources']
-        require(resources['cpus'] >= 4 and resources['memory_bytes'] >= 6 * 1024**3
-                and resources['pids'] >= 2, 'compiler pool requires the measured resource budget')
-        self.execution = execution
-        # Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
-        # runners. Container memory includes its tmpfs and shared memory charges.
-        self.resources = {'cpus': 2, 'memory_bytes': 3 * 1024**3,
-                          'pids': resources['pids'] // 2}
-        self.cancel = threading.Event()
-        self.observations = {}
-        self.lock = threading.Lock()
-        self.used = False
-
-    def run(self, execution, argv, *, cwd, env=None):
-        if self.cancel.is_set():
-            raise CancelledError('compiler pool cancelled')
-        env = dict(os.environ if env is None else env, TMPDIR='/tmp',
-                   BUSBAR_TEST_TMP_ROOT='/tmp/tests', XDG_CACHE_HOME='/tmp/cache',
-                   MODERNCI_CACHE_DIR='/tmp/cache', CARGO_BUILD_JOBS='2')
-        with execution.invocation(argv, cwd, env,
-                                  discard_harness_target=True) as (command, environment, _):
-            if self.cancel.is_set():
-                raise CancelledError('compiler pool cancelled')
-            with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, text=True) as process:
-                try:
-                    while True:
-                        if self.cancel.is_set():
-                            raise CancelledError('compiler pool cancelled')
-                        try:
-                            stdout, stderr = process.communicate(timeout=0.2)
-                            return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
-                        except subprocess.TimeoutExpired:
-                            continue
-                finally:
-                    # Killing the attach client alone does not kill a container.
-                    # invocation's finally removes it and confirms absence next.
-                    if process.poll() is None:
-                        process.kill()
-                        process.communicate()
-
-    def map(self, function, cases):
-        require(threading.current_thread() is threading.main_thread(),
-                'compiler pool must be supervised by the controller main thread')
-        require(not self.used, 'compiler pool cannot be reused')
-        self.used = True
-        parent = self.execution
-        prepared_git = parent.sanitize_git()
-        pending_signal = []
-        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
-
-        def interrupted(signum, _frame):
-            pending_signal.append(signum)
-            self.cancel.set()
-
-        def invoke_case(index, case):
-            if self.cancel.is_set():
-                raise CancelledError('compiler pool cancelled')
-            base = parent.roots['candidate'].parent / ('compiler-isolate-' + uuid.uuid4().hex)
-            base.mkdir(mode=0o755)
-            candidate, control = base / 'candidate', base / 'control'
-            candidate.mkdir(mode=0o755)
-            control.mkdir(mode=0o700)
-            child = copy.copy(parent)
-            child.roots = dict(parent.roots, candidate=candidate)
-            child.control = control
-            child.observations = []
-            child.resource_slice = dict(self.resources)
-            child.compiler_readonly = True
-            child.prepared_git = prepared_git
-            child.readonly_candidate_inputs = parent.roots['candidate']
-            # Compiler checks receive no service capabilities or mutable parent
-            # candidate mount. Their source is the readonly core checkout.
-            child.fixture_directory = control / 'fixture-sockets'
-            child.fixture_directory.mkdir(mode=0o755)
-            child.fixture_map = control / 'fixture-map.json'
-            child.fixture_map.write_text('[]\n')
-            try:
-                return function(child, case)
-            except BaseException:
-                self.cancel.set()
-                raise
-            finally:
-                for row in child.observations:
-                    row['compiler_case_index'] = index
-                with self.lock:
-                    self.observations[index] = child.observations
-                # Never delete artifacts while a container could still hold
-                # them. A failed disposal retains the entire private root.
-                if all(row.get('disposed') for row in child.observations):
-                    shutil.rmtree(base)
-
-        def invoke(index, case):
-            try:
-                return invoke_case(index, case)
-            except BaseException:
-                # Allocation and post-disposal cleanup failures cancel work too.
-                self.cancel.set()
-                raise
-
-        try:
-            for sig in handlers:
-                signal.signal(sig, interrupted)
-            with ThreadPoolExecutor(max_workers=2, thread_name_prefix='compiler') as executor:
-                futures = [executor.submit(invoke, index, case) for index, case in enumerate(cases)]
-                results, errors = [], []
-                for future in futures:
-                    try:
-                        results.append(future.result())
-                    except BaseException as error:
-                        self.cancel.set()
-                        errors.append(error)
-                if pending_signal:
-                    raise InterruptedError('compiler pool interrupted by signal ' + str(pending_signal[0]))
-                if errors:
-                    raise next((error for error in errors if not isinstance(error, CancelledError)), errors[0])
-                return results
-        finally:
-            for sig, handler in handlers.items():
-                signal.signal(sig, handler)
-            for index in sorted(self.observations):
-                parent.observations.extend(self.observations[index])

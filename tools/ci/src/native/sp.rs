@@ -61,6 +61,14 @@ impl Error {
 
 pub type R<T> = Result<T, Error>;
 
+/// The architecture command's text errors (`str(error)`), for the shared
+/// confinement boundary it runs on.
+impl From<Error> for String {
+    fn from(error: Error) -> String {
+        error.message
+    }
+}
+
 pub fn violation(message: impl Into<String>) -> Error {
     Error::new(Kind::Violation, message)
 }
