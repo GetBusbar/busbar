@@ -938,8 +938,8 @@ busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-e
 # The env source's logic crate is also the door the loader's secret conformance suite links; its cdylib
 # crate (`busbar-secret-env-plugin`, same repo) is NOT a dependency: it is built from this pinned
 # checkout by the build:dlopen-cdylibs step and dlopened.
-busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "590e88617e535b0c3596af6954246d97bc0cdd0a" }
-busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "db0c6d2306c99133cf2e393b19d467eb5e4a3d94" }
+busbar-secret-env = { git = "https://github.com/GetBusbar/busbar-secret-env", rev = "0b18583d24d35c4ece21000fb59ece74aecd2c01" }
+busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", rev = "fe9004f8277582ef0005df8117367612100ead30" }
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
