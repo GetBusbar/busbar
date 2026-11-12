@@ -211,9 +211,8 @@ else why+=("the weak server could not be started, so the negative control did no
 # ── leg 3: SUBJECT ──────────────────────────────────────────────────────────────────────────────────
 say "=== leg 3: subject (dist/default busbar's production TLS listener)"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo/target}"
-subject_target="$CARGO_TARGET_DIR/dist-default"
-if (cd "$repo" && cargo build --locked --manifest-path dist/default/Cargo.toml --target-dir "$subject_target" --bin busbar) >&2; then
-  bin="$subject_target/debug/busbar"
+# The one dist/default build every core suite shares (testing/conformance/subject_build.py).
+if bin="$(python3 -I "$repo/testing/conformance/subject_build.py" busbar)" && [ -n "$bin" ]; then
   if mkcert "$W/subject" ec; then
     python3 -I "$H/subject.py" "$bin" "$W/subject" >"$W/subject-server.log" 2>&1 & pids+=($!)
     for _ in $(seq 1 120); do [ -s "$W/subject/addr" ] && break; sleep 1; done

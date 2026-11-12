@@ -132,75 +132,45 @@ def run(argv, log, cwd=None, env=None):
 # THE SUBJECT: the shipped binary (dist/default), from this checkout
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-def target_dir():
-    # dist/default is its own workspace: its build gets a directory of its own under this repo's
-    # target, so it never relinks over the root workspace's `busbar` (another suite builds that one).
-    return os.path.join(os.environ.get("CARGO_TARGET_DIR") or os.path.join(REPO, "target"), "dist-default")
+def cargo_target():
+    return oidf.subject_build.target_root(REPO)
 
 
 def build_subject(log, *, oidc=False):
-    manifest = os.path.join(REPO, "dist", "default", "Cargo.toml")
-    tgt = target_dir()
+    """The shared subject builds (testing/conformance/subject_build.py, the same argv and directories
+    tls, h2 and oidf-oauth2 use, the signature crates optimized for every suite alike), so a suite
+    that ran earlier in this conformance run left them fresh and Cargo only checks the inputs."""
+    target = cargo_target()
     build_env = (dict(os.environ, CARGO_NET_OFFLINE="true")
                  if "CONFORMANCE_CAPABILITIES" in os.environ or "BUSBAR_CONFORMANCE_INPUTS" in os.environ
                  else None)
-    # Full signed-history checks run in the functional subject. Optimize only the
-    # signature implementation, preserving dev assertions and every strict check;
-    # unoptimized vector arithmetic can otherwise consume the HTTP test budget.
-    crypto = ["--config", "profile.dev.package.ed25519-dalek.opt-level=3",
-              "--config", "profile.dev.package.curve25519-dalek.opt-level=3"]
-    builds = [["cargo", "build", "--locked", "--manifest-path", manifest, "--target-dir", tgt,
-               "--bin", "busbar", *crypto]]
+    builds = [oidf.subject_build.busbar_argv(REPO, target)]
     if oidc:
         # The OIDC module is a dev-dependency of dist/default (cargo cannot build one alone with
         # `-p`): its repo at the rev dist/default/Cargo.lock pins, its busbar-contract patched to THIS
         # checkout (as dist/default's own [patch] does), so module and subject speak one plugin ABI.
-        version, url, rev = oidc_pin()
-        src = os.path.join(tgt, f"oidc-src-{rev[:12]}")
-        if not os.path.isfile(os.path.join(src, "Cargo.toml")):
-            shutil.rmtree(src, ignore_errors=True)
-            try:
-                staged = oidf.staged_oidc_source({"url": url, "rev": rev}, src)
-            except oidf.Refused as error:
-                raise Refused(str(error)) from error
-            if not staged:
-                os.makedirs(src)
-                for argv in (["git", "init", "-q", src], ["git", "-C", src, "fetch", "-q", "--depth", "1", url, rev],
-                             ["git", "-C", src, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD"]):
-                    if run(argv, log) != 0:
-                        raise Refused(f"the OIDC module {url}@{rev[:12]} could not be fetched: {tail(log, 3)}")
-        with open(os.path.join(src, "Cargo.toml")) as f:
-            man = f.read()
-        contract = os.path.join(REPO, "crates", "busbar-contract")
+        # oidf-oauth2 stages and builds the same module at the same place; this reuses it. The
+        # pinned source is admitted before any build.
         try:
-            patches = oidf.contract_patches(man, contract)
-        except oidf.Refused as e:
-            raise Refused(str(e)) from e
-        builds += [["cargo", "build", "--manifest-path", os.path.join(src, "Cargo.toml"), "--target-dir",
-                    os.path.join(tgt, "oidc"), "-p", "busbar-auth-oidc-plugin", *patches],
-                   ["cargo", "build", "--locked", "--target-dir", os.path.join(tgt, "root"),
-                    "-p", "busbar-plugin-loader", "--features", "pack", "--bin", "busbar-plugin-pack"]]
+            oidc_build, version = oidf.stage_oidc_module(REPO, target, log, build_env)
+        except oidf.Refused as error:
+            raise Refused(str(error)) from error
+        builds.append(oidf.subject_build.pack_argv(target))
     for argv in builds:
+        offset, start = oidf.subject_build.log_size(log), time.monotonic()
         rc = run(argv, log, cwd=REPO, env=build_env)
+        say(oidf.subject_build.summary(argv, log, offset, time.monotonic() - start))
         if rc != 0:
             raise Refused(f"`{' '.join(argv[:3])} … {' '.join(argv[-4:])}` exited {rc}: {tail(log, 6)}")
-    debug = os.path.join(tgt, "debug")
-    out = {"busbar": os.path.join(debug, "busbar")}
+    out = {"busbar": oidf.subject_build.busbar_path(target)}
     if oidc:
-        lib = "libbusbar_auth_oidc_plugin." + ("dylib" if sys.platform == "darwin" else "so")
-        out["oidc"] = os.path.join(tgt, "oidc", "debug", lib)
-        out["pack"] = os.path.join(tgt, "root", "debug", "busbar-plugin-pack")
-        out["oidc_version"] = oidc_pin()[0]
+        try:
+            out["oidc"] = oidf.build_oidc_module(oidc_build, target, log, build_env, announce=say)
+        except oidf.Refused as error:
+            raise Refused(str(error)) from error
+        out["oidc_version"] = version
+        out["pack"] = oidf.subject_build.pack_path(target)
     return out
-
-
-def oidc_pin():
-    """(version, git url, rev) of the OIDC module as dist/default/Cargo.lock pins it."""
-    try:
-        pin = oidf.oidc_pin(REPO)
-    except oidf.Refused as e:
-        raise Refused(str(e)) from e
-    return pin["version"], pin["url"], pin["rev"]
 
 
 class Busbar:

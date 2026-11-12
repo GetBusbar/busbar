@@ -254,8 +254,8 @@ else why+=("the negative control server (Caddy, h1) could not be started: $(tail
 
 # ── leg 3: SUBJECT ──────────────────────────────────────────────────────────────────────────────────
 say "=== leg 3: subject (busbar's tls: listener, ALPN h2)"
-tgt="${CARGO_TARGET_DIR:-$repo/target}/dist-default"
-if (cd "$repo" && cargo build --locked --manifest-path dist/default/Cargo.toml --target-dir "$tgt" --bin busbar) >&2; then
+# The one dist/default build every core suite shares (testing/conformance/subject_build.py).
+if bin="$(python3 -I "$repo/testing/conformance/subject_build.py" busbar)" && [ -n "$bin" ]; then
   data="$(free_port)"; admin="$(free_port)"; mkdir -p "$W/subject"
   echo '{}' >"$W/subject/providers.yaml"
   cat >"$W/subject/config.yaml" <<CONF
@@ -264,7 +264,7 @@ if (cd "$repo" && cargo build --locked --manifest-path dist/default/Cargo.toml -
  "auth": {"chain": [], "admin_auth": []},
  "tls": {"cert": {"file": "$W/pki/leaf.pem"}, "key": {"file": "$W/pki/leaf.key"}}}
 CONF
-  (cd "$W/subject" && BUSBAR_CONFIG="$W/subject/config.yaml" exec "$tgt/debug/busbar") >"$W/subject-busbar.log" 2>&1 &
+  (cd "$W/subject" && BUSBAR_CONFIG="$W/subject/config.yaml" exec "$bin") >"$W/subject-busbar.log" 2>&1 &
   bpid=$!; pids+=("$bpid")
   if wait_port "$data"; then
     h2spec_run subject "$data"

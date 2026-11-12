@@ -214,7 +214,9 @@ class Subject(unittest.TestCase):
                 if len(calls) == 1:
                     self.assertEqual(argv, ["cargo", "build", "--locked", "--manifest-path",
                         str(source / "dist/default/Cargo.toml"), "--target-dir",
-                        str(target / "dist-default"), "--bin", "busbar"])
+                        str(target / "dist-default"), "--bin", "busbar",
+                        "--config", "profile.dev.package.ed25519-dalek.opt-level=3",
+                        "--config", "profile.dev.package.curve25519-dalek.opt-level=3"])
                     self.assertEqual(kwargs["cwd"], str(source))
                     binary.write_text("current locked distribution")
                 return 0
@@ -235,9 +237,12 @@ class Subject(unittest.TestCase):
             self.assertEqual(Path(actual).read_text(), "current locked distribution")
             self.assertEqual(wrong_binary.read_text(), "stale artifact from another build")
             self.assertEqual(plugins, str(work / "plugins"))
-            self.assertEqual(calls[1], ["cargo", "build", "--locked", "-p", "busbar-plugin-loader",
-                                       "--features", "pack", "--bin", "busbar-plugin-pack"])
+            self.assertEqual(calls[1], ["cargo", "build", "--locked", "--target-dir", str(target),
+                                       "-p", "busbar-plugin-loader", "--features", "pack",
+                                       "--bin", "busbar-plugin-pack"])
             self.assertEqual(calls[2][-2:], ["--target-dir", str(target / "oidf-oidc-plugin")])
+            self.assertEqual(calls[2][calls[2].index("--manifest-path") + 1],
+                             str(target / "oidc-module-src" / REV[:12] / "Cargo.toml"))
             self.assertEqual(calls[3][0], str(target / "debug/busbar-plugin-pack"))
             self.assertEqual(len(calls), 4)
 

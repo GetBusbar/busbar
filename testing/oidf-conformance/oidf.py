@@ -82,6 +82,19 @@ import threading
 import time
 import urllib.request
 import zipfile
+import importlib.util
+
+
+def _load_subject_build():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "conformance", "subject_build.py")
+    spec = importlib.util.spec_from_file_location("conformance_subject_build", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The argv and target directory of every subject build, shared with tls, h2 and the evidence suites.
+subject_build = _load_subject_build()
 
 # ---------------------------------------------------------------------------------------------------
 # PINS
@@ -549,32 +562,28 @@ def contract_patches(manifest, contract):
 def subject_builds(checkout, target):
     """The two builds the subject needs: the binary busbar SHIPS (the distribution workspace,
     dist/default: core plus its compiled-in transports and planes; the root workspace's `busbar` is
-    core alone, which has no listener), and the plugin packer from the root workspace."""
-    return [
-        ["cargo", "build", "--locked", "--manifest-path", os.path.join(checkout, "dist", "default", "Cargo.toml"),
-         "--target-dir", os.path.join(target, "dist-default"), "--bin", "busbar"],
-        ["cargo", "build", "--locked", "-p", "busbar-plugin-loader", "--features", "pack",
-         "--bin", "busbar-plugin-pack"],
-    ]
+    core alone, which has no listener), and the plugin packer from the root workspace. Both are the
+    shared builds of testing/conformance/subject_build.py, so a suite that ran earlier left them fresh."""
+    return [subject_build.busbar_argv(checkout, target), subject_build.pack_argv(target)]
 
 
-def build_subject(checkout, target, work, log):
-    env = cargo_env(target)
-    # TLS/H2 check this same locked distribution in dist-default. Reuse its
-    # target, but always let Cargo check the current inputs before readback.
-    for argv in subject_builds(checkout, target):
-        rc = run(argv, log, cwd=checkout, env=env)
-        if rc != 0:
-            raise Refused(f"`{' '.join(argv)}` exited {rc}: {tail(log, 6)}")
-    busbar = os.path.join(target, "dist-default", "debug", "busbar")
-    pack = os.path.join(target, "debug", "busbar-plugin-pack")
+def timed_build(argv, log, announce=None, **kwargs):
+    """`run` a subject build, naming on stderr how many crates it compiled (0: reused) and how long."""
+    offset, start = subject_build.log_size(log), time.monotonic()
+    rc = run(argv, log, **kwargs)
+    (announce or say)(subject_build.summary(argv, log, offset, time.monotonic() - start)
+                      + (f" (exit {rc})" if rc else ""))
+    return rc
 
-    # busbar's OIDC module, from its own repo at the rev busbar SHIPS (oidc_pin), its busbar-contract
-    # patched to THIS checkout (what the distribution workspace does for its dev edge), so the module
-    # and the subject speak one plugin ABI.
+
+def stage_oidc_module(checkout, target, log, env):
+    """busbar's OIDC module, from its own repo at the rev busbar SHIPS (oidc_pin), its busbar-contract
+    patched to THIS checkout (what the distribution workspace does for its dev edge), so the module
+    and the subject speak one plugin ABI. A fresh copy of the pinned source at the one shared build
+    location (the measured bundle's file times are preserved, so a module an earlier suite built
+    stays fresh). Returns its build argv and version."""
     pin = oidc_pin(checkout)
-    version = pin["version"]
-    src = os.path.join(work, "busbar-auth-oidc")
+    src = subject_build.oidc_source(target, pin["rev"])
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src)
     if not staged_oidc_source(pin, src):
@@ -591,14 +600,29 @@ def build_subject(checkout, target, work, log):
     contract = os.path.join(checkout, "crates", "busbar-contract")
     with open(os.path.join(src, "Cargo.toml")) as manifest:
         patches = contract_patches(manifest.read(), contract)
-    plugin_target = os.path.join(target, "oidf-oidc-plugin")
-    argv = ["cargo", "build", "--manifest-path", os.path.join(src, "Cargo.toml"), "-p", "busbar-auth-oidc-plugin",
-            *patches, "--target-dir", plugin_target]
-    rc = run(argv, log, cwd=src, env=env)
+    return subject_build.oidc_argv(src, target, patches), pin["version"]
+
+
+def build_oidc_module(argv, target, log, env, announce=None):
+    """Build the staged module (stage_oidc_module's argv); its cdylib."""
+    rc = timed_build(argv, log, announce, cwd=os.path.dirname(argv[argv.index("--manifest-path") + 1]), env=env)
     if rc != 0:
         raise Refused(f"the OIDC module did not build (exit {rc}): {tail(log, 6)}")
-    lib = os.path.join(plugin_target, "debug",
-                       ("libbusbar_auth_oidc_plugin.dylib" if sys.platform == "darwin" else "libbusbar_auth_oidc_plugin.so"))
+    return subject_build.oidc_library(target)
+
+
+def build_subject(checkout, target, work, log):
+    env = cargo_env(target)
+    # TLS/H2 check this same locked distribution in dist-default. Reuse its
+    # target, but always let Cargo check the current inputs before readback.
+    for argv in subject_builds(checkout, target):
+        rc = timed_build(argv, log, cwd=checkout, env=env)
+        if rc != 0:
+            raise Refused(f"`{' '.join(argv)}` exited {rc}: {tail(log, 6)}")
+    busbar = subject_build.busbar_path(target)
+    pack = subject_build.pack_path(target)
+    argv, version = stage_oidc_module(checkout, target, log, env)
+    lib = build_oidc_module(argv, target, log, env)
     plugins = os.path.join(work, "plugins")
     os.makedirs(plugins, exist_ok=True)
     rc = run([pack, "pack", "--lib", lib, "--name", "oidc", "--alias", "oidc", "--kind", "auth",
