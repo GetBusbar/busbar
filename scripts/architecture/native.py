@@ -452,8 +452,12 @@ class Qualification:
         # and optimization settings are unchanged; archive admission still hashes the
         # actual complete library used by every runtime and custody witness.
         self.receipt['native_scheduling'] = native_scheduling(self.execution)
+        # Every job starts from an empty target directory, so incremental
+        # query caches are written and never read. Disabling them changes no
+        # profile setting that affects program behaviour (release is already
+        # non-incremental); it only drops that disk and memory traffic.
         self.env.update(CI='1', RUSTUP_TOOLCHAIN='1.98.0', CARGO_TARGET_DIR=str(self.work / 'target'),
-            RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='',
+            RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='', CARGO_INCREMENTAL='0',
             CARGO_PROFILE_DEV_DEBUG='0', CARGO_PROFILE_TEST_DEBUG='0',
             CARGO_BUILD_JOBS=str(self.receipt['native_scheduling']['build_jobs']), CARGO_TERM_COLOR='never',
             TMPDIR=str(self.work / 'tmp'), BUSBAR_TEST_TMP_ROOT=str(self.work / 'tmp/tests'),
