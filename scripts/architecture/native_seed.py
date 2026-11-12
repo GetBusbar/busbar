@@ -68,12 +68,10 @@ def manifest_snapshot(source, destination, *, revision=None):
 
 def lock_inputs(q, host, sdk, canonical, vector):
     """Keep all subject closures; add standalone locks only for their actual caller."""
-    from native_sources import standalone_products
+    from native_sources import standalone_products, subject_locks
     locks = {}
     inputs = {}
-    for label, directory, relative in (
-            ('candidate', q.root, 'Cargo.lock'), ('host', host, 'Cargo.lock'),
-            ('distribution', host, 'dist/default/Cargo.lock'), ('sdk', sdk, 'Cargo.lock')):
+    for label, directory, relative in subject_locks(q.root, host, sdk):
         path = directory / relative
         if path.is_file():
             locks[label] = path.read_bytes()
