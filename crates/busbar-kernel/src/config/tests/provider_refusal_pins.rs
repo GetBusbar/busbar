@@ -4,7 +4,7 @@ use super::{resolve, ProviderDef, ProviderDeploy};
 
 fn deployment_refusal(key: &str) -> String {
     crate::config::deploy_from_yaml_str(&format!(
-        "providers:\n  p:\n    api_key: {{env: K}}\n    {key}: [a]\n"
+        "providers:\n  p:\n    api_key: {{module: fixture-source, settings: {{slot: K}}}}\n    {key}: [a]\n"
     ))
     .expect_err("a sequence where the provider key wants a scalar or a map is refused")
     .to_string()
@@ -59,7 +59,9 @@ fn composed_refusals() -> Vec<String> {
          path_base: /v1\n",
     )
     .expect("a catalog entry");
-    let dep: ProviderDeploy = serde_yaml::from_str("api_key: {env: K}\n").expect("a deployment");
+    let dep: ProviderDeploy =
+        serde_yaml::from_str("api_key: {module: fixture-source, settings: {slot: K}}\n")
+            .expect("a deployment");
     let mut deploy = super::tests::base_deploy();
     deploy.providers.insert("p".to_string(), dep);
     let defs = HashMap::from([("p".to_string(), def)]);

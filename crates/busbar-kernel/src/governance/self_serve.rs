@@ -54,6 +54,25 @@ impl GovState {
         Ok(key)
     }
 
+    /// Whether the durable row `id` is still this subject's live self-serve binding, only no
+    /// longer in its self group (an operator regroup). A disabled, deleted, foreign or missing
+    /// row is NOT a regroup: `read_self_binding` refuses those.
+    async fn regrouped_self_binding(&self, id: &str, user_sub: &str) -> RecordStoreResult<bool> {
+        let group = format!("{SELF_KEY_GROUP_PREFIX}{user_sub}");
+        Ok(self
+            .core_store()?
+            .identity()
+            .get_key(id)
+            .await?
+            .is_some_and(|k| {
+                k.enabled
+                    && k.deleted_at.is_none()
+                    && k.group.as_deref() != Some(group.as_str())
+                    && k.idp_subject.as_deref() == Some(user_sub)
+                    && k.binding_mode.as_deref() == Some(SELF_KEY_BINDING_MODE)
+            }))
+    }
+
     fn self_mint_refusal(
         &self,
         user_sub: &str,
@@ -257,9 +276,24 @@ impl GovState {
         let existing = self
             .cached_self_binding(user_sub)
             .or_else(|| Self::current_self_binding(&rows, user_sub));
-        match existing {
+        let existing = match existing {
             Some(existing) => {
-                let _key = self.identity_key_guard(&existing.id).await;
+                let key = self.identity_key_guard(&existing.id).await;
+                if self.regrouped_self_binding(&existing.id, user_sub).await? {
+                    // An operator moved this subject's live self-serve row out of its self group
+                    // while we waited on the key claim. That is the row a login arriving after the
+                    // move rebinds (`write_self_binding`, the 1.5.5 reuse of a derived row), so
+                    // take that path rather than refusing only because of the interleaving.
+                    drop(key);
+                    None
+                } else {
+                    Some((key, existing))
+                }
+            }
+            None => None,
+        };
+        match existing {
+            Some((_key, existing)) => {
                 let existing = self.read_self_binding(&existing.id, user_sub).await?;
                 if self
                     .core_store()?
