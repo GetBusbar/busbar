@@ -97,5 +97,22 @@ class Resources(unittest.TestCase):
             self.assertIsNone(nr.find_cgroup('aaa', Path(directory)))
 
 
+class BuildJobs(unittest.TestCase):
+    def test_unoptimized_steps_use_cpus_and_optimized_keep_the_slot_budget(self):
+        import native
+        execution = type('E', (), {'config': {'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}}})()
+        scheduling = native.native_scheduling(execution)
+        self.assertEqual(scheduling['build_jobs'], 1)
+        self.assertEqual(scheduling['unoptimized_build_jobs'], 3)
+        jobs = lambda name, argv: native.step_build_jobs(name, argv, scheduling)
+        self.assertEqual(jobs('root-clippy', ['cargo', 'clippy', '--workspace']), 3)
+        self.assertEqual(jobs('root-runtime', ['cargo', 'nextest', 'run']), 3)
+        for name, argv in (('final-binary', ['python3', 'x']), ('product-inputs', ['bash', 'x']),
+                           ('bounded-loom', ['cargo', 'test', '--release']), ('other', ['cargo', 'build', '--release'])):
+            self.assertEqual(jobs(name, argv), 1, name)
+        # A receipt scheduled before this budget existed keeps its recorded jobs.
+        self.assertEqual(native.step_build_jobs('root-clippy', [], {'build_jobs': 1}), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

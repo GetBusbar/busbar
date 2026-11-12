@@ -41,9 +41,29 @@ def native_scheduling(execution):
     memory_per_slot = 6 * 1024**3
     build_jobs = (test_threads if memory is None else
                   max(1, min(test_threads, memory // memory_per_slot)))
+    # Unoptimized (dev/test-profile) compilers need far less memory than the
+    # optimized ones that exhausted the boundary; one job left 3 of 4 CPUs idle
+    # for every check and test build. Optimized steps keep the slot budget above.
+    # Each step records its cgroup peak, so this budget is checked by evidence
+    # and a too-small boundary fails visibly (OOMKilled) rather than silently.
+    unoptimized_memory_per_slot = 2 * 1024**3
+    unoptimized_build_jobs = (test_threads if memory is None else
+                              max(1, min(test_threads, memory // unoptimized_memory_per_slot)))
     return {'build_jobs': build_jobs, 'test_threads': test_threads,
+            'unoptimized_build_jobs': unoptimized_build_jobs,
             'candidate_memory_bytes': memory, 'compiler_memory_bytes_per_slot': memory_per_slot,
+            'unoptimized_compiler_memory_bytes_per_slot': unoptimized_memory_per_slot,
             'memory_policy': 'conservative-slot-budget-not-measured-peak-or-fit-guarantee'}
+
+
+OPTIMIZED_STEPS = frozenset({'product-inputs', 'bounded-loom', 'final-binary'})
+
+
+def step_build_jobs(name, argv, scheduling):
+    """Optimized builds keep the conservative slot budget; unoptimized ones use the CPUs."""
+    if name in OPTIMIZED_STEPS or '--release' in argv or 'unoptimized_build_jobs' not in scheduling:
+        return scheduling['build_jobs']
+    return scheduling['unoptimized_build_jobs']
 
 
 def validate_test_report(path):
@@ -494,8 +514,13 @@ class Qualification:
             try:
                 with deferred_interruptions():
                     command, environment = argv, self.env
+                    scheduling = self.receipt.get('native_scheduling')
+                    if scheduling and 'CARGO_BUILD_JOBS' in environment:
+                        jobs = step_build_jobs(name, argv, scheduling)
+                        environment = dict(environment, CARGO_BUILD_JOBS=str(jobs))
+                        row['build_jobs'] = jobs
                     if execution:
-                        command, environment, observation = boundary.enter_context(execution.invocation(argv, cwd or self.root, self.env))
+                        command, environment, observation = boundary.enter_context(execution.invocation(argv, cwd or self.root, environment))
                         row['container'] = observation
                     elif controller and getattr(self, 'execution', None):
                         environment = dict(self.env, DOCKER_HOST=self.execution.config['docker_host'])
