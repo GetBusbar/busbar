@@ -422,6 +422,33 @@ class ProducerShards(unittest.TestCase):
         self.assertEqual(seen, [p['repo'] for p in products if cache.product_shard(p['repo']) == 2])
         self.assertEqual(q.receipt['dependency_units_shard'], {'index': 2, 'total': cache.PRODUCER_SHARDS})
 
+    def test_a_producer_with_any_failed_product_fails_after_trying_all(self):
+        # Fill 3002 reported pass while every product failed and nothing was published.
+        products = [{'repo': 'busbar-plane-%02d' % index} for index in range(24)]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/ci-product-pins.json').write_text(json.dumps({'products': products}))
+            q = SimpleNamespace(repository='GetBusbar/busbar', execution=SimpleNamespace(config={'image': IMAGE}),
+                                receipt={}, root=root, save=lambda: None,
+                                policy=SimpleNamespace(data={'repositories': {
+                                    'GetBusbar/' + p['repo']: {'language': 'rust'} for p in products}}))
+            mine = [p['repo'] for p in products if cache.product_shard(p['repo']) == 2]
+            seen = []
+            def build(q, product, *a, **k):
+                seen.append(product['repo'])
+                if product['repo'] == mine[0]:
+                    raise RuntimeError('dubious ownership')
+                return {'repo': product['repo'], 'status': 'published'}
+            env = {'CI_JOB_NAME': 'plugin-dependency-units 3/8', 'CI_PIPELINE_SOURCE': 'push',
+                   'CI_COMMIT_BRANCH': 'dev'}
+            with unittest.mock.patch.object(cache, 'produce_product', build), \
+                    unittest.mock.patch.dict(os.environ, env):
+                with self.assertRaisesRegex(Exception, 'dependency units failed for ' + mine[0]):
+                    cache.produce(q, registry=object())
+        self.assertEqual(seen, mine)
+        self.assertEqual(q.receipt['dependency_units_produced'][0]['status'], 'failed')
+
     def test_producer_kinds_are_exact(self):
         good = {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': cache.PINNED_REF, 'CI_COMMIT_REF_PROTECTED': 'true'}
         self.assertEqual(cache.producer_kind(good), 'pinned')

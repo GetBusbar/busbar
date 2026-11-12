@@ -41,8 +41,10 @@ def manifest_snapshot(source, destination, *, revision=None):
         def read(relative):
             return (source / relative).read_bytes()
     else:
-        output = subprocess.check_output(['git', '-C', str(source), 'ls-tree',
-                                          '-r', '-z', revision])
+        # Canonical inputs are owned by the fetch identity, not the controller;
+        # trust exactly this checkout (clearing any inherited list), nothing wider.
+        trust = ['git', '-c', 'safe.directory=', '-c', 'safe.directory=' + str(source), '-C', str(source)]
+        output = subprocess.check_output([*trust, 'ls-tree', '-r', '-z', revision])
         paths = []
         for row in output.split(b'\0'):
             if not row:
@@ -55,7 +57,7 @@ def manifest_snapshot(source, destination, *, revision=None):
             if not any(part in ('.git', '.cargo', 'target', 'node_modules') for part in relative.parts):
                 paths.append(relative)
         def read(relative):
-            return subprocess.check_output(['git', '-C', str(source), 'show', revision + ':' + str(relative)])
+            return subprocess.check_output([*trust, 'show', revision + ':' + str(relative)])
     for relative in paths:
         if relative.is_absolute() or '..' in relative.parts:
             raise Violation('manifest graph path escapes source')
@@ -77,8 +79,9 @@ def lock_inputs(q, host, sdk, canonical, vector):
             locks[label] = path.read_bytes()
             inputs[label] = (directory, None, str(Path(relative).parent))
     for product in standalone_products(q.repository, q.evaluation_only, vector):
-        data = subprocess.check_output(['git', '-C', str(canonical / product['repo']),
-                                        'show', product['commit'] + ':Cargo.lock'])
+        source = canonical / product['repo']
+        data = subprocess.check_output(['git', '-c', 'safe.directory=', '-c', 'safe.directory=' + str(source),
+                                        '-C', str(source), 'show', product['commit'] + ':Cargo.lock'])
         if hashlib.sha256(data).hexdigest() != product['lock_sha256']:
             raise Violation('job seed product lock differs from admitted vector')
         label = 'product-' + product['repo']
