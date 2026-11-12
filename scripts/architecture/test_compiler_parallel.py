@@ -47,13 +47,22 @@ class ParallelSelection(unittest.TestCase):
         import tempfile
         root = Path(__file__).resolve().parents[2]
         policy = check.Policy(check.read(root / 'ci/architecture.toml'))
-        commands, inventory = [], []
+        commands, inventory, seeds = [], [], []
+        def seed(argv, **kwargs):
+            # The dependency seed runs once in the parent before the pool.
+            seeds.append(argv[1])
+            output = Path(argv[-1] if argv[1] == 'vendor' else argv[argv.index('--target-dir') + 1])
+            (output / 'debug').mkdir(parents=True, exist_ok=True)
+            config = '[source.crates-io]\nreplace-with = "vendored-sources"\n[source.vendored-sources]\ndirectory = "/v"\n'
+            return subprocess.CompletedProcess(argv, 0, config if argv[1] == 'vendor' else '', '')
         class Pool:
             def map(self, function, cases):
                 inventory.extend(cases)
                 self.expected = {name: codes for name, codes, _ in cases}
-                for case in cases:
-                    function(None, case)
+                for index, case in enumerate(cases):
+                    child = Path(scratch) / f'isolate-{index}'
+                    child.mkdir()
+                    function(SimpleNamespace(roots={'candidate': child}), case)
 
             def run(self, child, argv, **kwargs):
                 commands.append(argv)
@@ -61,16 +70,22 @@ class ParallelSelection(unittest.TestCase):
                 codes = self.expected[name]
                 message = {'reason': 'compiler-message', 'target': {'name': name},
                            'message': {'level': 'error', 'code': {'code': codes[0] if codes else None}}}
+                built = {'reason': 'compiler-artifact', 'target': {'name': name}, 'fresh': False}
                 return subprocess.CompletedProcess(argv, 101 if codes else 0,
-                                                   stdout=json.dumps(message) if codes else '', stderr='')
+                                                   stdout=json.dumps(message if codes else built), stderr='')
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as scratch:
-            execution = SimpleNamespace(compiler_pool=Pool)
+            candidate = Path(scratch) / 'candidate'
+            candidate.mkdir()
+            execution = SimpleNamespace(compiler_pool=Pool, run=seed, roots={'checkout': root, 'candidate': candidate},
+                                        config={'resources': {'cpus': 4, 'memory_bytes': 6 * 1024**3}})
             with patch.object(check, 'EXECUTION', execution), patch.object(check, 'architecture_progress'):
                 receipt = check.check_compiler_witnesses(policy, root, root, Path(scratch), parallel=True)
         self.assertEqual(receipt['compiler_witnesses'], 52)
         self.assertEqual(sum(not codes for _, codes, _ in inventory), 16)
         self.assertEqual(sum(bool(codes) for _, codes, _ in inventory), 36)
         self.assertEqual(len(commands), 52)
+        self.assertEqual(seeds, ['vendor', 'check', 'check'])
+        self.assertEqual(receipt['compiler_dependency_seed']['configurations'], 2)
         self.assertTrue(all(argv[argv.index('--jobs') + 1] == '2' for argv in commands))
         self.assertEqual(sum('--features' in argv for argv in commands), 2)
 
