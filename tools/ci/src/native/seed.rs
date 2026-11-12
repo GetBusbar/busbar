@@ -215,12 +215,7 @@ fn lock_inputs(
     vector: &Value,
 ) -> R<Vec<(String, LockInput)>> {
     let mut locks: Vec<(String, LockInput)> = Vec::new();
-    for (label, directory, relative) in [
-        ("candidate", q.root.as_path(), "Cargo.lock"),
-        ("host", host, "Cargo.lock"),
-        ("distribution", host, "dist/default/Cargo.lock"),
-        ("sdk", sdk, "Cargo.lock"),
-    ] {
+    for (label, directory, relative) in super::sources::subject_locks(&q.root, host, sdk) {
         let path = directory.join(relative);
         if path.is_file() {
             let parent = Path::new(relative)
