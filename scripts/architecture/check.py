@@ -13,12 +13,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import time
 import tomllib
 from urllib.parse import urlsplit
+import uuid
 
 
 EXECUTION = None
@@ -668,6 +670,119 @@ def compiler_witness_parallel():
             and storage['storage_bytes'] >= 24 * 1024**3)
 
 
+WITNESS_SEED = 'witness_seed'
+HARNESS_UNIT_PREFIXES = ('architecture-compiler-witnesses-', 'architecture_compiler_witnesses-', 'witness_')
+
+
+def copy_candidate_tree(source, destination):
+    """Snapshot disposed candidate output into a new controller-owned tree.
+    Only directories and regular files are accepted. Contents are copied, so no
+    link or inode is shared with anything a later candidate can write."""
+    if not stat.S_ISDIR(os.lstat(source).st_mode):
+        raise Violation(f'compiler dependency seed output is not a directory: {source.name}')
+    destination.mkdir(mode=0o755)
+    for directory, names, files in os.walk(source):
+        relative = Path(directory).relative_to(source)
+        for name in names + files:
+            path, mode = Path(directory) / name, os.lstat(Path(directory) / name).st_mode
+            if stat.S_ISDIR(mode) and name in names:
+                (destination / relative / name).mkdir(mode=0o755)
+            elif stat.S_ISREG(mode) and name in files:
+                shutil.copy2(path, destination / relative / name, follow_symlinks=False)
+            else:
+                raise Violation(f'compiler dependency seed contains a non-regular entry: {relative / name}')
+
+
+def vendor_source_config(text, directory):
+    """Re-emit Cargo's vendor replacement table with the controller-owned directory."""
+    sources = tomllib.loads(text)
+    if set(sources) != {'source'} or not isinstance(sources['source'], dict):
+        raise Violation('unexpected cargo vendor configuration')
+    lines = []
+    for name, table in sources['source'].items():
+        if name == 'vendored-sources':
+            if set(table) != {'directory'}:
+                raise Violation('unexpected vendored source table')
+            continue
+        if (table.get('replace-with') != 'vendored-sources'
+                or not set(table) <= {'replace-with', 'git', 'rev', 'branch', 'tag', 'registry'}
+                or not all(isinstance(value, str) for value in table.values())):
+            raise Violation(f'unexpected cargo vendor replacement: {name}')
+        lines += [f'[source.{json.dumps(name)}]', *(f'{json.dumps(k)} = {json.dumps(v)}' for k, v in table.items())]
+    if 'vendored-sources' not in sources['source']:
+        raise Violation('cargo vendor emitted no vendored source')
+    lines += ['[source.vendored-sources]', f'directory = {json.dumps(str(directory))}']
+    return '\n'.join(lines) + '\n'
+
+
+def seed_compiler_dependencies(harness, scratch, cases):
+    """Build the witness harness's dependency closure once, before any case runs.
+
+    The seed is a trusted harness example with no candidate-selected code of its
+    own, compiled from the same manifest, features and toolchain as every case.
+    Its outputs are snapshotted into the read-only harness mount after the seed
+    container is disposed. Cases receive a private copy; none can alter it.
+    Dependency sources are vendored to one stable path because each isolate's
+    private CARGO_HOME path differs, and Cargo fingerprints registry source paths.
+    """
+    started = time.monotonic()
+    architecture_progress('compiler-seed', 'start')
+    root = scratch / 'compiler-witness-seed'
+    if root.exists():
+        raise Violation('compiler dependency seed must be fresh')
+    root.mkdir()
+    (harness / 'examples' / (WITNESS_SEED + '.rs')).write_text('fn main() {}\n')
+    manifest = str(harness / 'Cargo.toml')
+    candidate = EXECUTION.roots['candidate']
+
+    def confined(name, command):
+        result = candidate_run(command, cwd=scratch, text=True, capture_output=True,
+                               discard_harness_target=True)
+        (root / (name + '.log')).write_text(result.stderr)
+        if result.returncode != 0:
+            # No case has run; the step fails rather than reporting any verdict.
+            raise Violation(f'compiler dependency seed failed: {name}; see {root / (name + ".log")}')
+        return result
+
+    output = candidate / ('witness-vendor-' + uuid.uuid4().hex)
+    vendored = confined('vendor', ['cargo', 'vendor', '--manifest-path', manifest, '--versioned-dirs', str(output)])
+    copy_candidate_tree(output, root / 'vendor')
+    shutil.rmtree(output)
+    config = root / 'vendor.toml'
+    config.write_text(vendor_source_config(vendored.stdout, root / 'vendor'))
+    output = candidate / ('witness-seed-target-' + uuid.uuid4().hex)
+    # Superset first; the contract-only resolution may unify fewer features.
+    configurations = sorted({needs_loader for _, _, needs_loader in cases}, reverse=True)
+    for needs_loader in configurations:
+        command = ['cargo', 'check', '--manifest-path', manifest, '--example', WITNESS_SEED,
+                   '--message-format=json', '--config', str(config), '--target-dir', str(output)]
+        if needs_loader:
+            command += ['--features', 'busbar-plugin-loader']
+        jobs = compiler_check_jobs()
+        if jobs is not None:
+            command += ['--jobs', str(jobs)]
+        confined('seed-loader' if needs_loader else 'seed-contract', command)
+    target = root / 'target'
+    copy_candidate_tree(output, target)
+    shutil.rmtree(output)
+    # Never ship a cached result for any harness unit: each case's own crate is
+    # always compiled by its own rustc invocation.
+    for profile in [path for path in target.iterdir() if path.is_dir()]:
+        for name in ('examples', 'incremental'):
+            if (profile / name).exists():
+                shutil.rmtree(profile / name)
+        for name in ('.fingerprint', 'deps', 'build'):
+            for path in (profile / name).iterdir() if (profile / name).is_dir() else ():
+                if path.name.startswith(HARNESS_UNIT_PREFIXES):
+                    shutil.rmtree(path) if path.is_dir() else path.unlink()
+    files = [path for path in target.rglob('*') if path.is_file()]
+    receipt = {'configurations': len(configurations), 'target_files': len(files),
+               'target_bytes': sum(path.stat().st_size for path in files),
+               'vendor_config_sha256': hashlib.sha256(config.read_bytes()).hexdigest()}
+    architecture_progress('compiler-seed', 'finish', elapsed_seconds=round(time.monotonic() - started, 3), **receipt)
+    return {'target': target, 'config': config, 'receipt': receipt}
+
+
 def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=False):
     """Compile approved positive/negative SDK examples against the candidate APIs.
     Unlike a bare compile_fail result, require the intended rustc error category."""
@@ -717,6 +832,8 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
         raise Violation('parallel compiler witnesses require confinement')
     pool = EXECUTION.compiler_pool() if parallel else None
     jobs = 2 if pool else compiler_check_jobs()
+    # Only the isolated pool path is seeded; the serial fallback is unchanged.
+    seed = seed_compiler_dependencies(harness, scratch, cases) if pool else None
 
     def compile_case(execution, case):
         name, expected, needs_loader = case
@@ -727,6 +844,12 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
             command += ['--features', 'busbar-plugin-loader']
         if jobs is not None:
             command += ['--jobs', str(jobs)]
+        if seed is not None:
+            # A private copy inside this case's own isolate root, never the seed
+            # itself. The pool removes it with the isolate after disposal.
+            target = execution.roots['candidate'] / ('witness-target-' + uuid.uuid4().hex)
+            shutil.copytree(seed['target'], target, symlinks=True)
+            command += ['--config', str(seed['config']), '--target-dir', str(target)]
         architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),
                               expected=expected, build_jobs=jobs)
         started = time.monotonic()
@@ -740,11 +863,21 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
         (harness / (name + '.log')).write_text(log)
         passed = ((not expected and result.returncode == 0) or
                   (bool(expected) and result.returncode != 0 and bool(set(expected).intersection(codes))))
+        details = {}
+        if seed is not None:
+            artifacts = [row for row in messages if row.get('reason') == 'compiler-artifact']
+            # A seeded positive must prove rustc checked this case's own crate now;
+            # a fresh (cached) result for it is never accepted as success.
+            compiled = any(row.get('target', {}).get('name') == name and row.get('fresh') is False
+                           for row in artifacts)
+            passed = passed and (bool(expected) or compiled)
+            details['dependency_units_rebuilt'] = sum(
+                row.get('fresh') is False and row.get('target', {}).get('name') != name for row in artifacts)
         architecture_progress('compiler-witnesses', 'finish', case=name, total=len(cases),
                               expected=expected, received=sorted(codes), build_jobs=jobs,
                               passed=passed, exit_code=result.returncode,
                               elapsed_seconds=round(time.monotonic() - started, 3),
-                              log_sha256=hashlib.sha256(log.encode()).hexdigest())
+                              log_sha256=hashlib.sha256(log.encode()).hexdigest(), **details)
         if not passed:
             raise Violation(f'{name}: expected {expected or "successful positive control"}, received {sorted(codes)}; see {harness / (name + ".log")}')
     if pool:
@@ -752,7 +885,13 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
     else:
         for case in cases:
             compile_case(EXECUTION, case)
-    return {'compiler_witnesses': len(cases), 'production_features': True}
+    receipt = {'compiler_witnesses': len(cases), 'production_features': True}
+    if seed is not None:
+        receipt['compiler_dependency_seed'] = seed['receipt']
+        # Every case container is disposed; release the bounded job disk.
+        shutil.rmtree(seed['target'])
+        shutil.rmtree(seed['config'].parent / 'vendor')
+    return receipt
 
 
 def generated_revision(checkout):
