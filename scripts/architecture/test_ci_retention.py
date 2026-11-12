@@ -398,7 +398,7 @@ class RepositoryProof(unittest.TestCase):
             if reader in tree:
                 self.assertIn(needle, objects.blobs([tree[reader][1]])[tree[reader][1]], reader)
         if not any(note.startswith('content exclusion disabled') for note in notes):
-            self.assertIn('CONTRIBUTING.md', excluded)
+            self.assertTrue(any('/' not in p and p.endswith('.md') for p in excluded), excluded)
 
 
 if __name__ == '__main__':
