@@ -78,16 +78,20 @@ fn the_composed_path_and_path_base_destinations_are_refused_as_1_5_5_did() {
     assert_eq!(
         composed_refusals(),
         vec![
-            "provider 'p' base_url+path 'https://169.254.169.254/latest/meta-data' targets a \
+            crate::diagnostics::coded::config_provider_destination_blocked(
+                "provider 'p' base_url+path 'https://169.254.169.254/latest/meta-data' targets a \
              blocked cloud-metadata host '169.254.169.254' (cloud-metadata/IMDS endpoints are \
              denied; to override add the host to this provider's allow_metadata_hosts, or \
-             security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
-                .to_string(),
-            "provider 'p' base_url+path_base 'https://169.254.169.254/v1' targets a blocked \
+             security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
+            )
+            .to_string(),
+            crate::diagnostics::coded::config_provider_destination_blocked(
+                "provider 'p' base_url+path_base 'https://169.254.169.254/v1' targets a blocked \
              cloud-metadata host '169.254.169.254' (cloud-metadata/IMDS endpoints are denied; to \
              override add the host to this provider's allow_metadata_hosts, or \
-             security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
-                .to_string(),
+             security.allow_metadata_hosts, or set security.allow_all_metadata: true)",
+            )
+            .to_string(),
         ]
     );
 }

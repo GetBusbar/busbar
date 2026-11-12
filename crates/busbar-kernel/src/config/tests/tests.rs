@@ -2821,10 +2821,11 @@ fn a_catalog_entrys_stray_key_is_refused_at_resolve() {
         .insert("p".to_string(), provider_deploy("K"));
     let errors = resolve(&deploy, &defs).expect_err("a stray catalog key is refused");
     let no_plane = |name: &str, key: &str| {
-        format!(
+        crate::diagnostics::coded::config_provider_invalid(format_args!(
             "providers.yaml: providers.{name}: unknown field `{key}`: no loaded plane speaks this \
              provider's dialect, so it takes no option"
-        )
+        ))
+        .to_string()
     };
     assert!(errors.contains(&no_plane("p", "bogus_key")), "{errors:?}");
     assert!(

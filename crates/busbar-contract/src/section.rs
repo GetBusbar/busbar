@@ -263,23 +263,21 @@ where
     })
 }
 
+crate::coded_text! {
+    /// The coded reserved-name refusal (`BUSBAR-3101`): names the offending word and the section
+    /// it is reserved in, and links the code's page, which lists every reserved name.
+    pub fn reserved_name(noun, name, section) => crate::diagnostic::CONFIG_RESERVED_NAME,
+    RESERVED_NAME_TEXT = "a {noun} may not be named `{name}` (reserved in `{section}:`)"
+}
+
 /// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
-// The wording is 1.5.5's, byte for byte, for every reserved key including the host-owned
-// `usage_observations` (042049b952 widened it without owner sign-off; customer text is frozen).
+/// for every reserved name: the section-level keys (`hooks`, `upstream_credentials`,
+/// `usage_observations`) and the core-owned settings (`breaker`, ...) alike. Owner decision
+/// 2026-11-12 (operator error codes): one coded sentence, `BUSBAR-3101`, linking the page that lists
+/// every reserved name; 1.5.5 spelled each reserved word's role inline.
 #[must_use]
 pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
-    if RESERVED_SECTION_KEYS.contains(&name) {
-        format!(
-            "a {noun} may not be named `{name}`: that key is RESERVED at the \
-             `{section}:` section level (the all-{section} `hooks:` attach list and \
-             `upstream_credentials:` default). Rename the {noun}."
-        )
-    } else {
-        format!(
-            "a {noun} may not be named `{name}`: that key is RESERVED at the \
-             `{section}:` section level (the core-owned `{name}:` setting). Rename the {noun}."
-        )
-    }
+    reserved_name(noun, name, section).into()
 }
 
 #[cfg(test)]

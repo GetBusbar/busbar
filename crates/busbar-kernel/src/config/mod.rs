@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
+use crate::diagnostics::coded;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -535,12 +536,15 @@ pub fn resolve_auth(
             Some(def) => {
                 let module = def.module.trim().to_string();
                 if module.is_empty() {
-                    errors.push(format!(
-                        "identity-providers.{name}.module must be a non-empty module name"
-                    ));
+                    errors.push(
+                        coded::config_auth_chain_invalid(format!(
+                            "identity-providers.{name}.module must be a non-empty module name"
+                        ))
+                        .into(),
+                    );
                 }
                 if let Err(e) = validate_token_placement(name, &module, def.token.is_some()) {
-                    errors.push(e);
+                    errors.push(coded::config_auth_policy_invalid(e).into());
                 }
                 let max_admin_scope = def.max_admin_scope.clone().or_else(|| {
                     (!names_operator(&module)).then(|| DEFAULT_MAX_ADMIN_SCOPE.to_string())
@@ -558,12 +562,15 @@ pub fn resolve_auth(
                 AuthChainEntry::bare(name.clone())
             }
             None => {
-                errors.push(format!(
-                    "auth.{plane} references '{name}', which is not defined in \
+                errors.push(
+                    coded::config_auth_chain_invalid(format!(
+                        "auth.{plane} references '{name}', which is not defined in \
                      `identity-providers:` (and is not a built-in: {}). Define it, or reference a \
                      built-in by its bare name.",
-                    builtin_identity_providers().join(" / ")
-                ));
+                        builtin_identity_providers().join(" / ")
+                    ))
+                    .into(),
+                );
                 AuthChainEntry::bare(name.clone())
             }
         }
@@ -651,62 +658,80 @@ fn check_failover_pool(
     this_registry: &str,
 ) {
     if def.members.len() < 2 {
-        errors.push(format!(
+        errors.push(
+            coded::config_plane_pool_invalid(format!(
             "{section}.{pool}: a failover pool needs at least TWO members (it has {}). A pool with \
              one member has nowhere to fail over to, so it changes nothing; remove it or add the \
              second registration.",
             def.members.len()
-        ));
+        ))
+            .into(),
+        );
     }
 
     if def.members.len() > crate::store::MAX_POOL_MEMBERS {
-        errors.push(format!(
+        errors.push(
+            coded::config_plane_pool_invalid(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
              (the breaker's per-member lane table is fixed at process start). Split the pool or \
              drop members.",
             def.members.len(),
             crate::store::MAX_POOL_MEMBERS
-        ));
+        ))
+            .into(),
+        );
     }
 
     if on_this_plane(pool) {
-        errors.push(format!(
+        errors.push(
+            coded::config_plane_pool_invalid(format!(
             "{section}.{pool}: `{pool}` is also the id of a `{this_registry}:` registration. A \
              pool's name shares the breaker keyspace with registration ids on its plane, so it \
              must not collide with one; rename the pool."
-        ));
+        ))
+            .into(),
+        );
     }
     let mut seen = std::collections::BTreeSet::new();
     for member in &def.members {
         if !seen.insert(member.as_str()) {
-            errors.push(format!(
+            errors.push(
+                coded::config_plane_pool_invalid(format!(
                 "{section}.{pool}: `{member}` is named twice. A repeated member would be tried \
                  twice against the same upstream, which is a retry wearing a failover's clothes."
-            ));
+            ))
+                .into(),
+            );
         }
         if on_this_plane(member) {
             continue;
         }
         if let Some(other_registry) = elsewhere(member) {
-            errors.push(format!(
+            errors.push(coded::config_plane_pool_invalid(format!(
                 "{section}.{pool}: `{member}` is an entry in the top-level `{other_registry}:` \
                  section, not `{this_registry}:`. A failover pool may not straddle two planes — the \
                  section a pool is written in IS which plane it is on."
-            ));
+            )).into());
         } else {
-            errors.push(format!(
+            errors.push(
+                coded::config_plane_pool_invalid(format!(
                 "{section}.{pool}: `{member}` is not defined in the top-level `{this_registry}:` \
                  map. Define it there, or remove it from the pool."
-            ));
+            ))
+                .into(),
+            );
         }
     }
 
     for op in &def.repeatable {
         if op.trim().is_empty() {
-            errors.push(format!(
-                "{section}.{pool}: `repeatable:` holds an empty entry. Every entry names ONE \
+            errors.push(
+                coded::config_plane_pool_invalid(format!(
+                    "{section}.{pool}: `repeatable:` holds an empty entry. Every entry names ONE \
                  operation that may be performed twice; an empty one names nothing."
-            ));
+                ))
+                .into(),
+            );
         }
     }
 }
@@ -1478,7 +1503,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
         ) {
             Ok(admitted) => admitted,
             Err(error) => {
-                errors.push(format!("export.{name}: {error}"));
+                errors.push(coded::config_export_invalid(format!("export.{name}: {error}")).into());
                 (false, None)
             }
         };
@@ -1574,7 +1599,7 @@ pub fn resolve(
 ) -> Result<RootCfg, Vec<String>> {
     let mut errors = Vec::new();
     if let Err(error) = measurement_rates::validate(&deploy.plugin_rate_cards) {
-        errors.push(error);
+        errors.push(coded::config_rate_card_invalid(error).into());
     }
     for name in deploy
         .rate_card
@@ -1613,16 +1638,20 @@ pub fn resolve(
             providers::judge_catalog_entry(name, &defs[name])
         };
         if let Err(refusal) = judged {
-            errors.push(format!("providers.yaml: {refusal}"));
+            errors
+                .push(coded::config_provider_invalid(format!("providers.yaml: {refusal}")).into());
         }
     }
 
     for (deploy_name, deploy_cfg) in &deploy.providers {
         let Some(def) = defs.get(deploy_name) else {
-            errors.push(format!(
-                "provider '{}' referenced in config.yaml not found in providers.yaml",
-                deploy_name
-            ));
+            errors.push(
+                coded::config_provider_reference_unknown(format!(
+                    "provider '{}' referenced in config.yaml not found in providers.yaml",
+                    deploy_name
+                ))
+                .into(),
+            );
             continue;
         };
 
@@ -1657,10 +1686,13 @@ pub fn resolve(
             Ok(stated) => {
                 plane_pools.insert(section, stated);
             }
-            Err(e) => errors.push(format!(
-                "{section}.{}: {e}",
-                busbar_contract::section::RESERVED_POOLS_KEY
-            )),
+            Err(e) => errors.push(
+                coded::config_plane_pool_invalid(format!(
+                    "{section}.{}: {e}",
+                    busbar_contract::section::RESERVED_POOLS_KEY
+                ))
+                .into(),
+            ),
         }
     }
 
@@ -1709,12 +1741,15 @@ pub fn resolve(
             for member in &def.members {
                 if let Some(first) = owner.insert(member.as_str(), pool.as_str()) {
                     if first != pool.as_str() {
-                        errors.push(format!(
-                            "{at}: `{member}` is a member of both `{first}` and `{pool}`. A \
+                        errors.push(
+                            coded::config_plane_pool_invalid(format!(
+                                "{at}: `{member}` is a member of both `{first}` and `{pool}`. A \
                              registration belongs to at most ONE failover pool — its learned \
                              health lives in that pool's breaker cells, and two pools would keep \
                              two contradictory histories for one upstream."
-                        ));
+                            ))
+                            .into(),
+                        );
                     }
                 }
             }
@@ -1722,17 +1757,20 @@ pub fn resolve(
     }
     for (name, def) in &deploy.hooks {
         if is_reserved_hook_name(name) {
-            errors.push(format!(
+            errors.push(
+                coded::config_hook_invalid(format!(
                 "hooks.{name}: '{name}' is a reserved name (an on_error terminal, built-in ranking \
                  strategy, or built-in auth module) and cannot name a hook definition"
-            ));
+            ))
+                .into(),
+            );
             continue;
         }
         match hook_cfg_from_def(def) {
             Ok(cfg) => {
                 hooks_registry.insert(name.clone(), cfg);
             }
-            Err(e) => errors.push(format!("hooks.{name}: {e}")),
+            Err(e) => errors.push(coded::config_hook_invalid(format!("hooks.{name}: {e}")).into()),
         }
     }
 
@@ -1751,7 +1789,12 @@ pub fn resolve(
                 .find(|d| d.config_section == section)?;
             let parse = decl.parse_section?;
             parse(decl, value)
-                .map_err(|e| errors.push(format!("`{section}:` is not valid: {e}")))
+                .map_err(|e| {
+                    errors.push(
+                        coded::config_section_invalid(format!("`{section}:` is not valid: {e}"))
+                            .into(),
+                    )
+                })
                 .ok()
                 .map(|cfg| (section, cfg))
         })
@@ -1770,24 +1813,27 @@ pub fn resolve(
             &g.section_hooks,
             &crate::config::plane_sections::config_sections(),
         ) {
-            errors.push(e);
+            errors.push(coded::config_section_invalid(e).into());
         }
         for hook in &g.section_hooks {
             if !deploy.hooks.contains_key(hook) {
-                errors.push(format!(
+                errors.push(coded::config_hook_invalid(format!(
                     "{section}.hooks: names `{hook}`, which is not defined in the top-level `hooks:` \
                      map. Define it there, or remove the reference."
-                ));
+                )).into());
             }
         }
 
         for (entry, hooks) in &g.containers {
             for hook in hooks {
                 if !deploy.hooks.contains_key(hook) {
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_hook_invalid(format!(
                         "{section}.{entry}: `hooks:` names `{hook}`, which is not defined in the \
                          top-level `hooks:` map. Define it there, or remove the reference."
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
             }
         }
@@ -1806,7 +1852,8 @@ pub fn resolve(
                     let mut names: Vec<&str> =
                         resolved_providers.keys().map(String::as_str).collect();
                     names.sort_unstable();
-                    errors.push(format!(
+                    errors.push(
+                        coded::config_provider_reference_unknown(format!(
                         "{path} names '{provider_name}', which is not defined in the top-level \
                          `providers:` map. Valid providers: {}. Define it there, or fix the \
                          reference.",
@@ -1815,18 +1862,20 @@ pub fn resolve(
                         } else {
                             names.join(", ")
                         }
-                    ));
+                    ))
+                        .into(),
+                    );
                 }
                 Some(p) => {
                     if let Some(known) = section.known_dialects() {
                         if !known.contains(&p.dialect()) {
-                            errors.push(format!(
+                            errors.push(coded::config_provider_reference_unknown(format!(
                                 "{path} '{provider_name}' resolves to protocol '{}', but this plane \
                                  speaks only: {}. Point it at a provider whose protocol resolves to \
                                  one of those, or remove the reference.",
                                 p.dialect(),
                                 known.join(", ")
-                            ));
+                            )).into());
                         }
                     }
                 }
@@ -1836,7 +1885,7 @@ pub fn resolve(
 
     for cfg in deploy.declared.0.values() {
         if let Err(e) = cfg.validate_registry() {
-            errors.push(e);
+            errors.push(coded::config_section_invalid(e).into());
         }
     }
 
@@ -1855,12 +1904,15 @@ pub fn resolve(
             .as_ref()
             .is_some_and(|t| t.client_ca.is_some());
         if exposed && !has_client_mtls && deploy.admin_require_mtls {
-            errors.push(format!(
+            errors.push(
+                coded::config_admin_listener_exposed(format!(
                 "admin_listen '{admin_listen}' is network-exposed but the admin plane has no mTLS \
                  (admin_tls.client_ca is unset). Require client certificates by supplying \
                  admin_tls.client_ca, bind admin_listen to loopback, or set admin_require_mtls: \
                  false to deliberately run a token-only admin plane (e.g. behind a mesh)."
-            ));
+            ))
+                .into(),
+            );
         }
     }
 
@@ -1887,9 +1939,11 @@ pub fn resolve(
     if endpoint_block.is_some_and(|ep| ep.is_present()) {
         plane_sections.insert(endpoint_section);
     }
-    let lowered_endpoint = endpoint_block
-        .zip(lower)
-        .and_then(|(ep, lower)| lower(&**ep).map_err(|e| errors.push(e)).ok());
+    let lowered_endpoint = endpoint_block.zip(lower).and_then(|(ep, lower)| {
+        lower(&**ep)
+            .map_err(|e| errors.push(coded::config_section_invalid(e).into()))
+            .ok()
+    });
 
     let mut endpoint_resources: std::collections::HashMap<_, _> = lowered_endpoint
         .map(|resource| (endpoint_section, resource))
@@ -1907,11 +1961,9 @@ pub fn resolve(
         .filter(|block| !block.is_null())
         .and_then(|block| {
             let Some(seam) = crate::oauth_as::seam::seam() else {
-                errors.push(
-                    "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) \
+                errors.push(coded::config_section_invalid("oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) \
                      is not linked into this binary"
-                        .to_string(),
-                );
+                        ).into());
                 return None;
             };
             match (seam.check)(&block) {
@@ -1919,7 +1971,7 @@ pub fn resolve(
                     Some(crate::oauth_as::seam::CheckedAsBlock { block, secret_refs })
                 }
                 Err(e) => {
-                    errors.push(e);
+                    errors.push(coded::config_section_invalid(e).into());
                     None
                 }
             }
