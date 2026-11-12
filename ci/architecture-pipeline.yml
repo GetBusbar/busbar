@@ -75,7 +75,7 @@ native-qualification:
                   raise SystemExit('retention decision left evidence without retaining')
           if os.environ['CI_JOB_NAME'] == 'security-scans':
               command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
-          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic', 'plugin-dependency-units'):
+          elif os.environ['CI_JOB_NAME'] not in ('native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic') and not re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME']):
               raise SystemExit('unrecognized trusted native job')
           if command is not None:
               subprocess.run(command, check=True)
@@ -139,17 +139,21 @@ core-conformance:
 # job (native, conformance, security) passed, beside website-dev. It runs no
 # candidate code: each pinned product's manifests and lock with every Rust source
 # stubbed, built in the ordinary confinement, published with this job's
-# CI_JOB_TOKEN to core's own generic package registry. resource_group serialises
-# producers so each package file is written exactly once.
+# CI_JOB_TOKEN to core's own generic package registry. Eight parallel instances
+# ("plugin-dependency-units K/8") each own a fixed digest-assigned subset of the
+# products, within the ordinary per-job confinement budget; a per-index
+# resource_group serialises successive pushes so each package file is written
+# exactly once.
 plugin-dependency-units:
   extends: native-qualification
   stage: website
   interruptible: false
   allow_failure: true
-  # First fill builds every pinned product (~5 min each); later runs only
-  # products whose lock or toolchain identity changed.
-  timeout: 4h
-  resource_group: plugin-dependency-units
+  parallel: 8
+  # A first fill builds at most six products per instance (~5 min each); later
+  # runs only products whose lock or toolchain identity changed.
+  timeout: 2h
+  resource_group: plugin-dependency-units-$CI_NODE_INDEX
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
