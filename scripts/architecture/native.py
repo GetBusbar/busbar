@@ -605,11 +605,10 @@ class Qualification:
         self.run('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check'])
 
     def core_compilation(self):
-        # Compile and lint every workspace target before the compiler witnesses
-        # and product preparation. These are the same commands, in the same
-        # target directory, that the later steps use, so the work moves earlier
-        # rather than being added; a compile or lint error fails in minutes.
-        self.run('root-test-build', ['cargo', 'test', '--workspace', '--locked', '--no-run'])
+        # Type-check and lint every target, tests included, before the compiler
+        # witnesses and product preparation. These are the same clippy steps
+        # that previously ran last, so the work moves earlier rather than being
+        # added; a compile or lint error now fails in minutes.
         for name, command in CORE_LINT_COMMANDS:
             self.run(name, command)
 
