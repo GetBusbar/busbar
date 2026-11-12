@@ -34,6 +34,7 @@
 //! caller of `busbar_kernel::config::groups::*` moves. This module keeps the tree VALIDATION and the
 //! child-provisioning helpers, which touch the pool namespace and are core-only concerns.
 
+use crate::diagnostics::coded;
 use std::collections::BTreeMap;
 
 pub use busbar_contract::records::ScopeRef;
@@ -54,11 +55,11 @@ pub fn validate_groups(
             let id = crate::cost::group_bucket_id(components.0, components.1, components.2);
             if let Some(previous) = identities.get(&id) {
                 if previous != &components {
-                    errors.push(format!(
+                    errors.push(coded::config_group_invalid(format!(
                         "groups.{name}.limits has enforcement bucket identity `{id}` also used by \
                          distinct limits of group `{}`; rename the group or its pool to keep usage separate",
                         previous.0
-                    ));
+                    )).into());
                 }
             } else {
                 identities.insert(id, components);
@@ -74,30 +75,39 @@ pub fn validate_groups(
             if let Some(scope) = &limit.scope {
                 let pool = &scope.value;
                 if !pool_exists(pool) {
-                    errors.push(format!(
-                        "groups.{name}.{field} has `pool: {pool}`, but no such pool exists; \
+                    errors.push(
+                        coded::config_group_invalid(format!(
+                            "groups.{name}.{field} has `pool: {pool}`, but no such pool exists; \
                          name a pool from the top-level `pools:` section or drop the qualifier \
                          for a group-wide limit"
-                    ));
+                        ))
+                        .into(),
+                    );
                 }
             }
             if let Some(to) = &limit.downgrade_to {
                 let to = &to.value;
                 if !pool_exists(to) {
-                    errors.push(format!(
-                        "groups.{name}.{field} has `downgrade_to: {to}`, but no such pool \
+                    errors.push(
+                        coded::config_group_invalid(format!(
+                            "groups.{name}.{field} has `downgrade_to: {to}`, but no such pool \
                          exists; exhausted traffic needs a real pool to land on"
-                    ));
+                        ))
+                        .into(),
+                    );
                 }
             }
         }
         if let Some(parent) = &group.parent {
             if !groups.contains_key(parent) {
-                errors.push(format!(
-                    "groups.{name} names parent '{parent}', which does not exist.\n\
+                errors.push(
+                    coded::config_group_invalid(format!(
+                        "groups.{name} names parent '{parent}', which does not exist.\n\
                      Paste this under groups and set its limits:\n\n    \
                      {parent}:\n      limits:\n        - {{ requests: 0, per: minute }}\n"
-                ));
+                    ))
+                    .into(),
+                );
                 continue;
             }
         }
@@ -106,11 +116,14 @@ pub fn validate_groups(
         let mut path = vec![name.as_str()];
         while let Some(cur) = cursor {
             if path.contains(&cur) {
-                errors.push(format!(
+                errors.push(
+                    coded::config_group_invalid(format!(
                     "groups chain starting at '{name}' is CYCLIC ({} -> {cur}); break the cycle \
                      by removing one `parent:`",
                     path.join(" -> ")
-                ));
+                ))
+                    .into(),
+                );
                 break;
             }
             path.push(cur);

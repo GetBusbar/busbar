@@ -3,6 +3,7 @@
 
 //! Pure declaration-owned location and host-owned provider destination policy.
 
+use crate::diagnostics::coded;
 use busbar_contract::net::{host_is_private_or_loopback, target_host, url_authority};
 
 use super::{ssrf_blocked_host, MetadataPosture};
@@ -102,27 +103,34 @@ pub fn validate_provider_destinations(
             let claim = target.split_once("://").map_or("<missing>", |(s, _)| s);
             let prefix = format!("provider '{provider}' {field} claim '{claim}'");
             if url_authority(&target).userinfo.is_some() {
-                errors.push(format!(
-                    "{prefix}: userinfo is not permitted in an endpoint"
-                ));
+                errors.push(
+                    coded::config_destination_refused(format!(
+                        "{prefix}: userinfo is not permitted in an endpoint"
+                    ))
+                    .into(),
+                );
                 continue;
             }
             let destination = match locate(&target) {
                 Ok(destination) => destination,
                 Err(reason) => {
-                    errors.push(format!("{prefix}: {reason}"));
+                    errors.push(
+                        coded::config_destination_refused(format!("{prefix}: {reason}")).into(),
+                    );
                     continue;
                 }
             };
             let host = match destination.host() {
                 Ok(host) => host,
                 Err(reason) => {
-                    errors.push(format!("{prefix}: {reason}"));
+                    errors.push(
+                        coded::config_destination_refused(format!("{prefix}: {reason}")).into(),
+                    );
                     continue;
                 }
             };
             if !destination.secure && !host_is_private_or_loopback(&host) {
-                errors.push(format!("{prefix} must use a secure connection for a public host; plaintext is permitted only for a private/loopback local-model upstream"));
+                errors.push(coded::config_destination_refused(format!("{prefix} must use a secure connection for a public host; plaintext is permitted only for a private/loopback local-model upstream")).into());
                 continue;
             }
             // Shared authority normalization retains the existing metadata override ordering.
@@ -132,7 +140,7 @@ pub fn validate_provider_destinations(
                 posture.allow_all,
                 &posture.blocked_hosts,
             ) {
-                errors.push(format!("{prefix} targets a blocked cloud-metadata host '{blocked}' (cloud-metadata/IMDS endpoints are denied; override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"));
+                errors.push(coded::config_destination_refused(format!("{prefix} targets a blocked cloud-metadata host '{blocked}' (cloud-metadata/IMDS endpoints are denied; override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)")).into());
             }
         }
     }

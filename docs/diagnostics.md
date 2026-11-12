@@ -461,6 +461,457 @@ A plugin declares billable classes for a configured lane, but that lane lacks on
 
 **What to do:** Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup.
 
+<a id="config-reserved-name"></a>
+### BUSBAR-3101 — A registration is named with a reserved word
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-reserved-name`
+
+Inside a section that registers named entries (`pools:`, `tools:`, `agents:`, `streams:`, `decisions:` and the rest), a few keys belong to Busbar: the section-level `hooks`, `upstream_credentials` and `usage_observations`, and the core-owned settings `pools`, `breaker`, `on_exhausted`, `affinity`, `gates`, `tier`, `repeatable`, `work`, `timeout`, `rate_card` and `fees`. A registration that takes one of those names cannot be told apart from the setting, so the configuration is refused at `--validate` and at startup.
+
+**What to do:** Rename the registration; any name not on the list works. Then run `busbar --validate`.
+
+<a id="config-model-invalid"></a>
+### BUSBAR-3102 — A model definition is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-model-invalid`
+
+An entry under `models:` names a provider that is not defined, or sets a per-model value outside its range: `default_max_tokens`, `max_concurrent` or `max_requests` of 0, an `attempt_timeout_ms` of 0 or above the 30-year ceiling, an empty `upstream_model`, or a `context_max` that two pools declare differently. The message names the model and the field.
+
+**What to do:** Fix the named field under `models.<name>:`: point `provider:` at a provider defined in providers.yaml or `providers:`, use a positive value, or omit the field to take its default. Then run `busbar --validate`.
+
+<a id="config-name-reserved-route"></a>
+### BUSBAR-3103 — A model, pool or provider is named after a reserved route prefix
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-name-reserved-route`
+
+Models, pools and providers are reachable at `/<name>/...`. The names `admin` and the native-API root are routed to the operator admin surface before any model, pool or provider route, so an entry with one of those names could never be reached by a client and would bypass its own governance.
+
+**What to do:** Rename the model, pool or provider the message names, and update every reference to it.
+
+<a id="config-name-conflict"></a>
+### BUSBAR-3104 — A pool shares its name with a provider or a model
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-name-conflict`
+
+Pools, providers and models share one route namespace (`/<name>/...`), so a pool may not take the name of a provider or a model: one of the two would be unreachable.
+
+**What to do:** Rename the pool (or the provider or model) so every name is distinct, and update the references to it.
+
+<a id="config-pool-members-invalid"></a>
+### BUSBAR-3105 — A pool's member list is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-members-invalid`
+
+A pool has no members, a member's `weight` is 0, a member's `attempt_timeout_ms` is 0 or above the 30-year ceiling, or a member names a model that is not defined (or whose provider is not). A pool with no routable member answers every request with a misleading 503.
+
+**What to do:** Fix the member the message names under `pools.<pool>.members:`: name a model defined under `models:`, use a weight of at least 1 and a positive timeout, or remove the pool.
+
+<a id="config-pool-failover-invalid"></a>
+### BUSBAR-3106 — A pool's failover block is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-failover-invalid`
+
+`failover.timeout_secs` is 0 (every request would 503 before its first attempt) or above 24 hours, or `failover.exclusions` names something that is not a member of the pool (so it benches nothing).
+
+**What to do:** Set `failover.timeout_secs` between 1 and 86400 and list only the pool's own members under `failover.exclusions`.
+
+<a id="config-pool-on-exhausted-invalid"></a>
+### BUSBAR-3107 — A pool's on_exhausted block is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-on-exhausted-invalid`
+
+`on_exhausted` names a fallback pool that does not exist or the pool itself, or its `queue.max_ms` is 0 or longer than the pool's whole failover budget. Such a setting never engages: the pool 503s exactly as if it had no fallback.
+
+**What to do:** Point `on_exhausted.fallback_pool` at a different, defined pool, and keep `queue.max_ms` above 0 and at or below the failover budget (or raise `failover.timeout_secs`).
+
+<a id="config-pool-affinity-invalid"></a>
+### BUSBAR-3108 — A pool's affinity header name is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-affinity-invalid`
+
+`affinity.header_name` must be a valid, non-empty, ASCII HTTP field-name of at most 64 characters; anything else would silently disable session affinity.
+
+**What to do:** Set `affinity.header_name` to a plain header name such as `x-session-id`, or remove the affinity block.
+
+<a id="config-pool-fallback-cycle"></a>
+### BUSBAR-3109 — Pools' on_exhausted fallbacks form a cycle
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-fallback-cycle`
+
+Following `on_exhausted.fallback_pool` from pool to pool leads back to a pool already visited. The runtime loop guard would cut the ring on re-entry, so every pool in it 503s instead of degrading.
+
+**What to do:** Break the cycle the message prints: point one pool at a pool outside the ring, or remove its `on_exhausted`.
+
+<a id="config-pool-breaker-invalid"></a>
+### BUSBAR-3110 — A pool's circuit-breaker settings are invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-breaker-invalid`
+
+A `breaker:` value is out of range: a cooldown of 0 (which re-admits a tripped backend at once), `max_cooldown_secs` below `base_cooldown_secs`, a trip `min_requests`, `window_secs` or `consecutive_n` of 0, or an error-rate `threshold` outside (0.0, 1.0].
+
+**What to do:** Fix the field the message names under `pools.<pool>.breaker:`; docs/circuit-breaker.md gives every default.
+
+<a id="config-pool-hooks-invalid"></a>
+### BUSBAR-3111 — A pool's hook list is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-pool-hooks-invalid`
+
+A pool's `hooks:` list names a hook that is not defined under top-level `hooks:`, names a tap (only a gate can influence routing), or names a built-in ranking strategy this binary was built without.
+
+**What to do:** Define the hook under top-level `hooks:`, use a gate, or name a strategy this build carries (`busbar --help` lists the build's features).
+
+<a id="config-hook-invalid"></a>
+### BUSBAR-3112 — A hook definition is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-hook-invalid`
+
+An entry under top-level `hooks:` (or `global_hooks:`) cannot work as written: it names no plugin, a tap asks to rewrite or to be the default ordering, it takes a reserved name, more than one hook is the default, its timeout is out of range, or its `on_error` chain names an unknown fallback, a tap, an absent ranking strategy or loops.
+
+**What to do:** Fix the hook the message names: set `module:` to a `kind: hook` plugin, use `kind: gate` where it must decide, rename it off reserved words, and end every `on_error` chain on nothing, weighted, reject, first or a ranking strategy.
+
+<a id="config-auth-policy-invalid"></a>
+### BUSBAR-3113 — An auth policy or key lifetime setting is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-auth-policy-invalid`
+
+A setting under `auth:` that governs minted keys cannot hold: a duration that does not parse, a default TTL above the maximum, a per-role mint ceiling wider than the deployment-wide policy, a delegated admin scope that does not parse, or a browser-login method without a `public_url:` to build its redirect URLs.
+
+**What to do:** Fix the named setting: durations are written like `30d` or `12h`, per-role ceilings must stay within `auth.policy`, and a browser login needs top-level `public_url: https://<busbar-host>`.
+
+<a id="config-role-binding-invalid"></a>
+### BUSBAR-3114 — A role binding is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-role-binding-invalid`
+
+An entry under `auth.role_bindings` names a module that is in neither auth chain, a role that shadows the reserved operator principal, an unknown admin scope or admin verb, a grant kind no installed plane declares, or a group that does not exist. A binding like that grants nothing, or grants something other than what it says.
+
+**What to do:** Fix the binding the message names; the message prints the exact YAML to add where a module or group is missing.
+
+<a id="config-auth-chain-invalid"></a>
+### BUSBAR-3115 — The auth chain cannot authenticate as configured
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-auth-chain-invalid`
+
+The data-plane or admin auth chain is incomplete: it names a module that was removed, it verifies busbar-signed keys without an `auth.signing_key` or without any way to mint one, an operator token sits on a module that is not the operator provider, or the operator token has no answer. Busbar refuses rather than start with an auth surface that admits the wrong callers or none.
+
+**What to do:** Follow the message: generate a signing key with `busbar --generate-signing-key` and reference it from `auth.signing_key`, name `keys` or an IdP plugin in `auth.chain`, and keep the operator token on the operator provider.
+
+<a id="config-plane-open-to-anonymous"></a>
+### BUSBAR-3116 — A plane is configured while the data-plane auth chain is empty
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-plane-open-to-anonymous`
+
+A plane section (tools, agents and the like) is configured but `auth.chain` is empty, so the plane would serve anonymous callers with wildcard grants over every registered subject, and outbound credentials would have no inbound grant to bind to.
+
+**What to do:** Close the data-plane chain (`auth: { chain: [keys] }` or an IdP auth plugin), or remove the plane block if this deployment does not serve it.
+
+<a id="config-setting-out-of-range"></a>
+### BUSBAR-3117 — A global limit or timing setting is out of range
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-setting-out-of-range`
+
+A value under `limits:`, `health:`, `routing:` or `advanced:` is outside what busbar can run with: a timeout or interval of 0 (which fails or disables the thing it bounds), a size below its floor or above its ceiling, a duration above the 30-year ceiling the runtime's clock arithmetic can hold, or reasoning-effort budgets that are zero or not ascending.
+
+**What to do:** Set the named key within the range the message states, or omit it to take the default; docs/configuration.md lists every default.
+
+<a id="config-rate-card-invalid"></a>
+### BUSBAR-3118 — A rate card or fee is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-rate-card-invalid`
+
+A rate card or fee cannot be priced as written: a rate that is negative, not finite or implausibly large, a unit or class the plane does not declare or count, a reserved class priced by name, a card entry for a model that is not defined, or a negative per-request fee.
+
+**What to do:** Fix the named entry: price only the units and classes the plane declares, keep rates finite and non-negative, and name only defined models.
+
+<a id="config-group-invalid"></a>
+### BUSBAR-3119 — A group's limits are invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-group-invalid`
+
+A group under `groups:` sets a limit of 0, which rejects every request through the group instead of bounding it.
+
+**What to do:** Use a positive limit, or remove the limit to leave that dimension unbounded.
+
+<a id="config-store-invalid"></a>
+### BUSBAR-3120 — The store block is missing or names no module
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-store-invalid`
+
+Busbar keeps keys, budgets, audit and configuration overlays in the store named by top-level `store:`. The block is missing or its `module:` is empty.
+
+**What to do:** Add `store: { module: <store plugin> }` (for example `sqlite` with a `db_path` setting).
+
+<a id="config-secret-reference-invalid"></a>
+### BUSBAR-3121 — A secret reference or secret module setting is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-secret-reference-invalid`
+
+A secret is referenced in a way busbar cannot resolve safely: `none` where a credential is required, a reference form the setting does not accept, or module-level settings on a built-in secret module that takes none.
+
+**What to do:** Reference the secret as `{ env: VAR }`, `{ file: /path }` or `{ module: <secret-module>, settings: {...} }`, as the message shows for the setting it names.
+
+<a id="config-metadata-host-entry-invalid"></a>
+### BUSBAR-3122 — A metadata host list entry can never match
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-metadata-host-entry-invalid`
+
+`security.blocked_metadata_hosts` and `security.allow_metadata_hosts` are matched by exact IP or hostname. An entry with a CIDR (`/`) or one that maps to no host would silently never match, leaving the protection it was meant to add (or remove) a no-op.
+
+**What to do:** List exact IPs or hostnames, for example `169.254.169.254`, not `169.254.0.0/16`.
+
+<a id="config-provider-invalid"></a>
+### BUSBAR-3123 — A provider definition is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-provider-invalid`
+
+A provider's settings cannot work: a health interval or timeout of 0 or above its ceiling, an `error_map` class that does not exist, a `path` or `path_base` that does not begin with `/`, or an option the provider's protocol does not take.
+
+**What to do:** Fix the field the message names under `providers.<name>:`; docs/providers.md documents every provider field.
+
+<a id="config-provider-destination-blocked"></a>
+### BUSBAR-3124 — A provider URL targets a blocked cloud-metadata host
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-provider-destination-blocked`
+
+A provider's `base_url`, `base_url` + `path`, `base_url` + `path_base` or `token_url` resolves to a cloud-metadata (IMDS) endpoint on `security.blocked_metadata_hosts`. Busbar would send credentials there, so it refuses the configuration.
+
+**What to do:** Point the provider at its real API host. If the host is deliberately reachable, list it under `security.allow_metadata_hosts`.
+
+<a id="config-provider-credential-invalid"></a>
+### BUSBAR-3125 — A provider's credential cannot be used as configured
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-provider-credential-invalid`
+
+A provider's outbound credential is invalid for its auth style: the referenced secret does not parse (a service-account key, a signing key), required auth settings are missing, or the settings contradict the style. The message names the provider, the style and the secret's source, never its value.
+
+**What to do:** Fix the secret the message points at (its `env:`, `file:` or module source) or the provider's auth settings, then run `busbar --validate`.
+
+<a id="config-provider-protocol-unknown"></a>
+### BUSBAR-3126 — A provider names a protocol this build does not speak
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-provider-protocol-unknown`
+
+A provider's `protocol:` is not one this binary carries: it is misspelled, or the build has no plane that speaks it.
+
+**What to do:** Use one of the protocols the message lists, or run a build that carries the plane for it.
+
+<a id="config-plane-pool-invalid"></a>
+### BUSBAR-3127 — A plane section's failover pool is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-plane-pool-invalid`
+
+A failover pool inside a plane section (`tools.pools`, `agents.pools`, ...) cannot fail over as written: it has fewer than two members or more than the breaker's lane table holds, it shares its name with a registration, it names a member twice, a member belongs to another plane or is not defined, a member sits in two pools, or a `repeatable:` entry is empty.
+
+**What to do:** Fix the pool the message names: list two or more distinct members defined in the same plane section, give the pool its own name, and keep each registration in at most one pool.
+
+<a id="config-provider-reference-unknown"></a>
+### BUSBAR-3128 — A reference names a provider that is not defined or speaks the wrong protocol
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-provider-reference-unknown`
+
+config.yaml (or a plane section) names a provider that providers.yaml and `providers:` do not define, or one whose protocol the referencing plane does not speak.
+
+**What to do:** Define the provider, fix the spelling, or point the reference at a provider of the right protocol; the message lists the valid choices.
+
+<a id="config-section-invalid"></a>
+### BUSBAR-3129 — A configuration section is not valid for this build
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-section-invalid`
+
+A top-level section does not parse into its shape, its registry fails its own checks, or it configures a plane (such as `oauth_as:`) whose implementation this binary does not link. The message names the section and the reason.
+
+**What to do:** Fix the section as the message describes, or remove a section this build does not carry.
+
+<a id="config-admin-listener-exposed"></a>
+### BUSBAR-3130 — The admin listener is network-exposed without mTLS
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-admin-listener-exposed`
+
+`admin_listen` binds a non-loopback address but `admin_tls.client_ca` is unset, so the admin plane would accept connections from the network without client certificates.
+
+**What to do:** Set `admin_tls.client_ca` to require client certificates, or bind `admin_listen` to a loopback address.
+
+<a id="config-export-invalid"></a>
+### BUSBAR-3131 — An export sink definition is invalid
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-export-invalid`
+
+An entry under `export:` cannot deliver what it promises: an unknown module, settings the module refuses, a stream or field that does not exist, has no producer or that the module cannot carry, a duplicate, an empty list, a pinned field left out, or `durable: true` that this release does not implement.
+
+**What to do:** Fix the sink the message names; the message lists the valid streams and fields. docs/export.md documents every stream.
+
+<a id="config-destination-refused"></a>
+### BUSBAR-3132 — An outbound destination is refused by the egress policy
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-destination-refused`
+
+A configured outbound URL (an upstream, a token endpoint, a sink) is not one busbar will send to: it is malformed, uses plaintext for a public host, or targets a blocked cloud-metadata host.
+
+**What to do:** Use an `https://` URL for a public host, fix the URL the message names, or list a deliberately reachable metadata host under `security.allow_metadata_hosts`.
+
+<a id="migrate-path-missing"></a>
+### BUSBAR-3401 — --migrate-config was given no file to migrate
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `migrate-path-missing`
+
+`busbar --migrate-config` converts one old config file and needs its path. None was given, so nothing was read or printed; the process exited with the usage status (2).
+
+**What to do:** Name the file: `busbar --migrate-config old-config.yaml > config.yaml`.
+
+<a id="migrate-source-unreadable"></a>
+### BUSBAR-3402 — --migrate-config could not read the file it was given
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `migrate-source-unreadable`
+
+The old config file named to `--migrate-config` could not be read: it does not exist, it is not readable by this user, or it is not UTF-8 text. The operating system's reason follows the path. Nothing was migrated.
+
+**What to do:** Check the path and its permissions, then run the migration again.
+
+<a id="migrate-launch-directory"></a>
+### BUSBAR-3403 — --migrate-config could not resolve its working directory
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `migrate-launch-directory`
+
+The migration resolves relative paths (a providers file, a store path) against the directory busbar was launched from, as the old launcher did. The current directory could not be read (it was deleted or is not accessible), so nothing was migrated.
+
+**What to do:** Run the migration from an existing, readable directory, ideally the one the old deployment was launched from.
+
+<a id="migrate-failed"></a>
+### BUSBAR-3404 — --migrate-config refused the file
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `migrate-failed`
+
+The old config could not be converted mechanically: it is not valid YAML, it has a shape no busbar release accepted, or it carries a value the migration cannot carry forward without guessing. The reason follows the code. Nothing was printed to stdout, so no half-migrated config can be deployed by accident.
+
+**What to do:** Fix the reason the message names in the OLD file (or capture the setting by hand), then run the migration again. docs/migration-1-6.md lists every key the migration rewrites.
+
+<a id="migrate-refresh-ttl-meaning-changed"></a>
+### BUSBAR-3405 — Migration carried refresh_ttl over to verify_ttl, whose meaning differs
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `migrate-refresh-ttl-meaning-changed`
+
+1.5's `refresh_ttl` was a background sweep cadence (default 6h). Its replacement `verify_ttl` is the longest a cached tool listing may be served before a `tools/call` re-verifies the upstream live (default 5s). The migration carried your value over unchanged, which can leave a long drift-serving window on the request path.
+
+**What to do:** Review the migrated `verify_ttl`: a few seconds is the default, `0` is strict-live, and a large value is an explicit security downgrade.
+
+<a id="migrate-admin-scope-widened"></a>
+### BUSBAR-3406 — Migration widened a retired delegated admin scope to full
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `migrate-admin-scope-widened`
+
+1.5.2 retired the delegated admin scopes. An auth chain entry or role binding that granted one is migrated to `full`, the nearest scope that keeps every call it allowed working, which may be broader than intended.
+
+**What to do:** Review the named entry and tighten it to `read-only` if `full` is too broad.
+
+<a id="migrate-empty-allowed-pools-flipped"></a>
+### BUSBAR-3407 — An empty allowed_pools list now means no pools
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `migrate-empty-allowed-pools-flipped`
+
+Before 1.5.0 an empty `allowed_pools: []` on a role binding meant every pool; since 1.5.0 it means no pool. The migration keeps the list as written, so the role now reaches nothing.
+
+**What to do:** If the role should reach every pool, delete the `allowed_pools` line (omitted means all). If it should reach none, keep `[]`.
+
+<a id="migrate-ungoverned-binding-added"></a>
+### BUSBAR-3408 — Migration added a binding that keeps 1.5.5's ungoverned access
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `migrate-ungoverned-binding-added`
+
+1.5.5 admitted a principal its identity provider recognised even when no role binding granted it anything; 1.6.0 refuses such a principal (401). To keep a migrated deployment serving the same callers, the migration wrote an empty binding for them: every pool, no group, no budget.
+
+**What to do:** Tighten the named binding (allowed_pools, a group with limits) or remove it to refuse those principals.
+
+<a id="migrate-worker-threads-ignored"></a>
+### BUSBAR-3409 — BUSBAR_WORKER_THREADS was not a positive integer and was not captured
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `migrate-worker-threads-ignored`
+
+The migration captures the old launcher's BUSBAR_WORKER_THREADS into `advanced.worker_threads`. Its value was not a positive integer, which the old launcher also ignored, so nothing was captured and the configured worker count (or TOKIO_WORKER_THREADS) still applies.
+
+**What to do:** Set `advanced.worker_threads` in the migrated config if you meant to pin the worker count, and remove BUSBAR_WORKER_THREADS from the launcher.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
@@ -2154,6 +2605,149 @@ A recoverable credential (a signed-request secret) minted by 1.5.5 is stored as 
 
 **What to do:** Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear.
 
+<a id="admin-not-found"></a>
+### BUSBAR-8101 — The admin resource named in the request does not exist
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-not-found`
+
+The path names a resource (a key, a group, a hook, an exporter, a plugin) that this deployment does not have, or one that cannot exist in its current mode (a key read with governance disabled). The response's `message` names the missing thing.
+
+**What to do:** List the collection (for example `GET /api/v1/admin/keys`) to find the right name or id, or create the resource first.
+
+<a id="admin-unauthorized"></a>
+### BUSBAR-8102 — The admin request carries no valid admin credential
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unauthorized`
+
+The request reached `/api/v1/admin` without a credential the `admin_auth:` chain accepts: no `Authorization: Bearer` or `x-admin-token` header, an unknown or expired token, or a key that is not an admin credential (`invalid_api_key`).
+
+**What to do:** Send the operator admin token (or a credential your admin auth plugin accepts) in `Authorization: Bearer <token>` or `x-admin-token`. docs/admin-api.md covers the auth chain.
+
+<a id="admin-method-not-allowed"></a>
+### BUSBAR-8103 — The admin path does not take this HTTP method
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-method-not-allowed`
+
+The path exists on the admin surface, but not with the method the request used (for example a `DELETE` on a read-only collection).
+
+**What to do:** Use a method the path documents; the OpenAPI document at /docs/api/ lists every path and method.
+
+<a id="admin-forbidden"></a>
+### BUSBAR-8104 — The admin credential's scope does not cover this call
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-forbidden`
+
+The caller authenticated, but its admin scope (read-only, or a role binding's verb list) does not include this operation. The message names the scope that would have sufficed.
+
+**What to do:** Call with a credential whose scope covers the operation, or widen the role binding's `admin_scope` or `verbs`.
+
+<a id="admin-invalid-request"></a>
+### BUSBAR-8105 — The admin request is malformed or fails validation
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-invalid-request`
+
+The request body or its parameters are not what the operation takes: a malformed JSON body, an unknown or missing field, a value out of range, or a configuration change that fails the same validation `busbar --validate` runs. The message says which.
+
+**What to do:** Fix the request as the message describes; the OpenAPI document at /docs/api/ gives each operation's schema.
+
+<a id="admin-version-conflict"></a>
+### BUSBAR-8106 — The If-Match version is stale
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-version-conflict`
+
+The request's `If-Match` names a version of the resource that is no longer current: someone else changed it after you read it. This is retryable.
+
+**What to do:** Re-read the resource, re-apply your change to the current version, and retry with the new `ETag`.
+
+<a id="admin-conflict"></a>
+### BUSBAR-8107 — The admin request contradicts the server's state
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-conflict`
+
+The request cannot apply to the current state and a retry will not change that: governance is disabled, a base-defined hook cannot be removed, a grant is immutable, a duplicate already exists, or an idempotency key is still in flight. The message says which.
+
+**What to do:** Change the request (or the state it depends on) as the message describes; this is not a transient error.
+
+<a id="admin-rate-limited"></a>
+### BUSBAR-8108 — The admin mutation rate limit is exhausted
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-rate-limited`
+
+The caller has used its per-minute budget of admin mutations. Reads are not limited.
+
+**What to do:** Wait for the window the `retry-after` header gives (at most a minute) and retry; batch changes where the API allows.
+
+<a id="admin-internal"></a>
+### BUSBAR-8109 — The admin call failed inside busbar
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-internal`
+
+An internal failure (a store or plugin error) stopped the call. The response never carries the cause, which may be sensitive; the server log carries it under its own code.
+
+**What to do:** Check the busbar log at the time of the call for the error line and its code, then retry once the cause is fixed.
+
+<a id="admin-unavailable"></a>
+### BUSBAR-8110 — The admin call could not complete within its bound
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unavailable`
+
+An operation that is normally fast could not start or finish in time (for example the plugin catalog scan), or no administrative surface is mounted on this listener. The call was abandoned rather than left to hang.
+
+**What to do:** Retry after a short wait. If it persists, check the server log and the store's health.
+
+<a id="admin-unpriced-class"></a>
+### BUSBAR-8111 — A usage read names a class the rate card does not price
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-unpriced-class`
+
+A usage query asked for a class the rate card in force does not price, so there is no amount to report for it.
+
+**What to do:** Price the class on the plane's rate card, or drop it from the query.
+
+<a id="admin-request-too-large"></a>
+### BUSBAR-8112 — The admin request body exceeds the configured limit
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-request-too-large`
+
+The request body is larger than the admin surface accepts.
+
+**What to do:** Send a smaller body (split a bulk change into several requests), or raise the configured admin body limit.
+
+<a id="admin-request-refused"></a>
+### BUSBAR-8199 — The admin request was refused
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `admin-request-refused`
+
+The admin surface refused the request for a reason the `error.code` field names. This code covers refusals without a more specific admin code.
+
+**What to do:** Read `error.code` and `error.message` in the response; docs/admin-api.md lists every error code.
+
 ## 9xxx — Boot & lifecycle
 
 <a id="boot-audit-restore-read-failed"></a>
@@ -2287,4 +2881,37 @@ The fallback idle-purge helper (for targets where jemalloc's background purge th
 busbar found audit history in the legacy durable table but could not copy it into the neutral `plane_records` the durable audit seam now reads at boot — a store read/write hiccup, not a chain-verification failure. The migration is IDEMPOTENT and is retried on the next boot, so the pre-existing history reappears once the store is healthy; until then the seam-backed audit read (`GET /audit`) reflects only records written since this boot.
 
 **What to do:** Investigate the governance store's write path at boot (the same store the audit log persists to). Once it accepts writes, restart so the one-time migration completes and the durable history is restored into the seam; a transient hiccup needs no action beyond confirming the store is healthy.
+
+<a id="cli-unrecognized-argument"></a>
+### BUSBAR-9101 — The command line names an argument busbar does not know
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-unrecognized-argument`
+
+busbar was started with an argument that is neither a flag it accepts nor the value of one. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Check the spelling against `busbar --help`. Configuration is not passed on the command line: put settings in config.yaml and point busbar at it with `--config <path>`.
+
+<a id="cli-invalid-arguments"></a>
+### BUSBAR-9102 — A command's arguments do not fit together
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-invalid-arguments`
+
+A command-line command (an overlay migration or a principal transition) was given arguments it cannot act on: a missing companion flag, a conflicting pair, or a malformed value. The text after the code names which. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Fix the arguments the message names; `busbar --help` lists every command with its flags.
+
+<a id="cli-flag-requires-value"></a>
+### BUSBAR-9103 — A command-line flag is missing its value
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `cli-flag-requires-value`
+
+A flag that takes a value (such as `--config <path>` or `--providers <path>`) was the last argument, so it has nothing to read. Nothing ran; the process exited with the usage status (2).
+
+**What to do:** Give the flag its value, for example `busbar --config /etc/busbar/config.yaml --validate`.
 

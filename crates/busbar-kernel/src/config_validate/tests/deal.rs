@@ -337,16 +337,19 @@ fn the_knob_field_lists_are_the_kernel_types_own() {
 }
 
 #[test]
-fn the_reserved_name_sentence_is_1_5_5s() {
-    use busbar_contract::section::reserved_name_refusal;
-    assert_eq!(
-        reserved_name_refusal("pools", "pool", "hooks"),
-        "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level \
-         (the all-pools `hooks:` attach list and `upstream_credentials:` default). Rename the pool."
-    );
-    assert_eq!(
-        reserved_name_refusal("tools", "tool", "breaker"),
-        "a tool may not be named `breaker`: that key is RESERVED at the `tools:` section level \
-         (the core-owned `breaker:` setting). Rename the tool."
-    );
+fn the_reserved_name_refusal_is_the_coded_generic_sentence() {
+    use busbar_contract::diagnostic::CONFIG_RESERVED_NAME;
+    use busbar_contract::section::{reserved_name, reserved_name_refusal};
+    for (section, noun, name) in [("pools", "pool", "hooks"), ("tools", "tool", "breaker")] {
+        let coded = reserved_name(noun, name, section);
+        assert_eq!(coded.code(), CONFIG_RESERVED_NAME.code);
+        assert_eq!(
+            coded.detail(),
+            format!("a {noun} may not be named `{name}` (reserved in `{section}:`)")
+        );
+        assert_eq!(
+            reserved_name_refusal(section, noun, name),
+            coded.to_string()
+        );
+    }
 }
