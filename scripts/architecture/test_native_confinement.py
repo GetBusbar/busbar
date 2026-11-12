@@ -284,11 +284,12 @@ class Boundary(Fixture, unittest.TestCase):
     def test_private_cargo_cache_resets_at_stable_dependency_path(self):
         self.config['environment']['CARGO_HOME'] = '/opt/seed'
         execution = self.execution()
-        paths = []
+        paths, mounts = [], []
         def client(argv, **kwargs):
             if argv[0] == 'create':
                 paths.extend(value.split('=', 1)[1] for value in argv
                              if value.startswith('BUSBAR_INVOCATION_CARGO_HOME='))
+                mounts.extend(value for value in argv if value.endswith('dst=/__busbar_cargo_home'))
             payload = (json.dumps([{'HostConfig': {'NetworkMode': 'bridge'}}]) if argv[0] == 'inspect'
                        else json.dumps({'SecurityOptions': ['name=userns']}) if argv[0] == 'info' else '')
             return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr='')
@@ -298,7 +299,10 @@ class Boundary(Fixture, unittest.TestCase):
                     with execution.invocation(['python3', '-c', 'pass'], self.roots['checkout'], {}):
                         self.fail('weakened runtime executed')
                 self.assertFalse((self.roots['candidate'] / 'cargo-home-invocation').exists())
-        self.assertEqual(paths, [str(self.roots['candidate'] / 'cargo-home-invocation')] * 2)
+        # One job-independent in-container path keeps dependency fingerprints portable.
+        self.assertEqual(paths, ['/__busbar_cargo_home'] * 2)
+        self.assertEqual(mounts, ['type=bind,src=' + str(self.roots['candidate'] / 'cargo-home-invocation')
+                                  + ',dst=/__busbar_cargo_home'] * 2)
 
     def test_empty_cargo_home_only_for_vendored_harness_checks(self):
         self.config['environment']['CARGO_HOME'] = '/opt/seed'

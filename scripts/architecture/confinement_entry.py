@@ -57,6 +57,11 @@ def readonly_format_command(argv):
     )
 
 
+# The controller mounts each invocation's private Cargo home at this fixed path,
+# the same in every job, so registry/Git unit fingerprints are portable.
+INVOCATION_CARGO_HOME = Path("/__busbar_cargo_home")
+
+
 def prepare_cargo_home(argv):
     seed = os.environ.get("CARGO_HOME")
     if not seed:
@@ -66,7 +71,7 @@ def prepare_cargo_home(argv):
     # candidate test commands still get independent writable source copies.
     fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
     empty = os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME_EMPTY', None) == '1'
-    if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
+    if (fresh != INVOCATION_CARGO_HOME
             or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
         raise RuntimeError('private Cargo cache was not prepared by the controller')
     if readonly_format_command(argv):
