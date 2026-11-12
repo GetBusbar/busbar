@@ -19,7 +19,7 @@ import uuid
 from check import Violation
 
 
-def manifest_snapshot(source, destination, *, revision=None):
+def manifest_snapshot(source, destination, *, revision=None, keep_patched=False):
     """Preserve Cargo's graph without executing or staging candidate source code.
 
     Cargo fetch parses manifests and discovers target filenames, but does not
@@ -58,6 +58,7 @@ def manifest_snapshot(source, destination, *, revision=None):
                 paths.append(relative)
         def read(relative):
             return subprocess.check_output([*trust, 'show', revision + ':' + str(relative)])
+    kept = patched_paths(read(Path('Cargo.toml'))) if keep_patched else ()
     for relative in paths:
         if relative.is_absolute() or '..' in relative.parts:
             raise Violation('manifest graph path escapes source')
@@ -65,7 +66,26 @@ def manifest_snapshot(source, destination, *, revision=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         # Non-manifest bytes cannot affect dependency collection. Empty files
         # preserve explicit target/build/readme names, including unusual suffixes.
-        target.write_bytes(read(relative) if relative.name in ('Cargo.toml', 'Cargo.lock') else b'')
+        # A [patch] path crate replaces a registry crate that registry code
+        # compiles against, so the producer needs its real source.
+        real = relative.name in ('Cargo.toml', 'Cargo.lock') or any(
+            relative.parts[:len(prefix.parts)] == prefix.parts for prefix in kept)
+        target.write_bytes(read(relative) if real else b'')
+    return kept
+
+
+def patched_paths(manifest):
+    """Relative directories of the root manifest's `[patch.*]` path entries."""
+    import tomllib
+    kept = []
+    for table in tomllib.loads(manifest.decode()).get('patch', {}).values():
+        for entry in table.values():
+            if isinstance(entry, dict) and 'path' in entry:
+                path = Path(entry['path'])
+                if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] in ('.git', '.cargo'):
+                    raise Violation('patched path escapes the manifest graph')
+                kept.append(path)
+    return tuple(kept)
 
 
 def lock_inputs(q, host, sdk, canonical, vector):
