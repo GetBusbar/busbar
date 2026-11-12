@@ -56,7 +56,7 @@ def native_scheduling(execution):
             'memory_policy': 'conservative-slot-budget-not-measured-peak-or-fit-guarantee'}
 
 
-OPTIMIZED_STEPS = frozenset({'bounded-loom', 'final-binary'})
+OPTIMIZED_STEPS = frozenset({'bounded-loom', 'certified-build'})
 
 
 UNOPTIMIZED_CARGO_COMMANDS = frozenset({'check', 'clippy', 'test', 'nextest', 'build', 'doc'})
@@ -351,11 +351,58 @@ def is_ancestor(root, ancestor, descendant):
     return subprocess.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', ancestor, descendant]).returncode == 0
 
 
+# Dependency policy of both workspaces: the dev tier's core-build job.
+CORE_POLICY_COMMANDS = (
+    ('dependency-policy', ['cargo', 'deny', 'check'], None),
+    ('dependency-vet', ['cargo', 'vet'], None),
+    ('default-dependency-policy', ['cargo', 'deny', '--manifest-path', 'dist/default/Cargo.toml', 'check'], None),
+    ('default-dependency-vet', ['cargo', 'vet'], 'dist/default'),
+)
+
+# Pipelines a core job may qualify: (source, branch). The dev tier runs on dev
+# merge requests (handled separately) and these; QA adds its own pair below.
+PROTECTED_REF_PIPELINES = {('push', 'dev'), ('api', 'dev'), ('push', 'qa'), ('schedule', 'dev')}
+
 CORE_LINT_COMMANDS = (
     ('root-clippy', ['cargo', 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
     ('default-clippy', ['cargo', 'clippy', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', '--all-targets', '--all-features', '--locked', '--', '-D', 'warnings']),
     ('root-clippy-nodefault', ['cargo', 'clippy', '--workspace', '--all-targets', '--no-default-features', '--locked', '--', '-D', 'warnings']),
 )
+
+
+# dist/default runs once with the selected features; its every default-run test
+# is in that run except the two `cfg(not(feature = "test-harness"))` boot tests,
+# which run alone in the same graph without test-harness (only the busbar bin
+# test unit recompiles).
+DEFAULT_FEATURES = 'test-harness,transport-webrtc,openapi-schema'
+WITHOUT_HARNESS_FEATURES = 'transport-webrtc,openapi-schema'
+WITHOUT_HARNESS_TESTS = ('test(a_build_without_test_harness_ignores_the_harness_key_and_refuses_a_test_signed_first_party_plugin)'
+                         ' | test(an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin)')
+# The root workspace runs once with the former timing-admin features; the kernel's
+# `cfg(all(test, not(feature = "timing")))` module runs alone without them.
+ROOT_FEATURES = 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema'
+TIMING_OFF_TESTS = 'test(/zero_cost_when_off/)'
+
+
+def qa_test_commands(nextest):
+    """The QA tier's test steps, in order. Every former test step's tests are here."""
+    return [
+        ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast',
+                                '--features', ROOT_FEATURES]),
+        ('loader-witnesses', ['cargo', 'build', '--locked', '-p', 'busbar-plugin-loader', '--examples']),
+        ('root-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', '--features', ROOT_FEATURES, *nextest]),
+        ('kernel-timing-off', ['cargo', 'nextest', 'run', '--locked', '-p', 'busbar-kernel', '--lib',
+                               '-E', TIMING_OFF_TESTS, *nextest]),
+        ('default-runtime', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml',
+                             '--workspace', '--features', DEFAULT_FEATURES, *nextest]),
+        ('default-without-harness', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml',
+                                     '--bin', 'busbar', '--features', WITHOUT_HARNESS_FEATURES,
+                                     '-E', WITHOUT_HARNESS_TESTS, *nextest]),
+        # The txn_loom models are `#[cfg(all(test, feature = "loom-model"))]`
+        # unit tests of the kernel library: `--lib` runs exactly them.
+        ('bounded-loom', ['cargo', 'test', '--release', '--locked', '-p', 'busbar-kernel', '--features', 'loom-model',
+                          '--lib', 'txn_loom']),
+    ]
 
 
 class Qualification:
@@ -365,6 +412,8 @@ class Qualification:
         self.evaluation_only = self.conformance_only or self.external_conformance
         # Core dev push producer of trusted plugin dependency units (native_dep_cache).
         self.dependency_units_producer = getattr(args, 'dependency_units', False) is True
+        # Dev tier: fmt, dependency policy and the one certified product build (native_certified).
+        self.core_build_job = getattr(args, 'core_build', False) is True
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.control = self.work
         self.execution = None
@@ -420,10 +469,15 @@ class Qualification:
         if self.evaluation_only:
             expected_job = evaluation_job(self.repository, self.conformance_only, self.external_conformance, self.policy)
             if (os.environ.get('CI_JOB_NAME') != expected_job
-                    or os.environ.get('CI_PIPELINE_SOURCE') not in ('api', 'merge_request_event', 'push')):
+                    or os.environ.get('CI_PIPELINE_SOURCE') not in ('api', 'merge_request_event', 'push', 'schedule')):
                 raise Violation('conformance requires its trusted job and pipeline source')
             # This receipt supplements, and never replaces, native qualification.
             self.receipt['schema'] = 'busbar.protected-conformance/1'
+        if self.core_build_job:
+            from native_certified import JOB, SCHEMA
+            if os.environ.get('CI_JOB_NAME') != JOB or self.repository != 'GetBusbar/busbar':
+                raise Violation('the certified build runs only as core\'s core-build job')
+            self.receipt['schema'] = SCHEMA
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
         tools_path = getattr(args, 'conformance_inputs', None)
@@ -451,7 +505,9 @@ class Qualification:
             if not is_ancestor(self.root, target, self.receipt['source']):
                 raise Violation('candidate must be rebased on current dev and qualified again')
             self.receipt['target_revision'] = target
-        elif os.environ['CI_PIPELINE_SOURCE'] in ('push', 'api') and os.environ.get('CI_COMMIT_BRANCH') == 'dev':
+        elif (os.environ['CI_PIPELINE_SOURCE'], os.environ.get('CI_COMMIT_BRANCH')) in PROTECTED_REF_PIPELINES \
+                and (os.environ.get('CI_COMMIT_BRANCH') == 'dev' or self.repository == 'GetBusbar/busbar'):
+            # qa push and the owner's dev schedule are core's QA tier; plugins keep dev only.
             self.receipt['target_revision'] = (published_dev_target(self.repository, self.receipt['source'])
                 if os.environ['CI_PIPELINE_SOURCE'] == 'api' else self.receipt['source'])
             # Server-provided; consumers require a protected dev ref for push/api credit.
@@ -697,6 +753,13 @@ class Qualification:
         self.run('root-fmt', ['cargo', 'fmt', '--all', '--check'])
         self.run('default-fmt', ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check'])
 
+    def core_lock_alignment(self):
+        """dist/default resolves every shared core crate as the root lock does (check.py)."""
+        from check import check_shared_core_resolution, read as read_toml
+        self.receipt['shared_core_packages'] = check_shared_core_resolution(
+            read_toml(self.root / 'Cargo.lock'), read_toml(self.root / 'dist/default/Cargo.lock'))
+        self.save()
+
     def core_compilation(self):
         # Type-check and lint every target, tests included, before the compiler
         # witnesses and product preparation. These are the same clippy steps
@@ -758,59 +821,26 @@ class Qualification:
             self.env.update(BUSBAR_C_ABI_SOURCES=str(c_source / recipe['test-root']), BUSBAR_C_ABI_LIBRARY=str(library))
             nextest = ['--no-fail-fast', '--test-threads', str(self.receipt['native_scheduling']['test_threads']), '--tool-config-file',
                        'admission:' + str(self.trusted / 'ci/native-nextest.toml')]
-            selected = 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | (package(busbar-default) & test(/^distribution::admin_cross_plane::/)) | (package(busbar-default) & test(/(serve_tests|secret_source|connector|boot)::/))'
-            features = 'test-harness,transport-webrtc,openapi-schema'
-            final_build = ['build', '--release', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--bin', 'busbar']
-            build_capture = self.work / 'final-build-capture'
-            artifact_tool = self.trusted / 'scripts/release/development_artifact.py'
-            commands = [
-                ('workspace-doctests', ['cargo', 'test', '--workspace', '--doc', '--locked', '--no-fail-fast']),
-                ('loader-witnesses', ['cargo', 'build', '--locked', '-p', 'busbar-plugin-loader', '--examples']),
-                ('root-runtime', ['cargo', 'nextest', 'run', '--workspace', '--locked', *nextest]),
-                ('default-runtime', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--workspace', *nextest]),
-                ('selected-default', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', selected, *nextest]),
-                ('selected-errors', ['cargo', 'nextest', 'run', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--features', features, '-E', 'test(keys_error_surface_is_byte_stable) | test(every_admin_error_surface_answers_its_declared_status)', *nextest]),
-                ('timing-admin', ['cargo', 'nextest', 'run', '--locked', '-p', 'busbar-kernel', '-p', 'busbar-core-admin', '--features', 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema', '-E', 'binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/))', *nextest]),
-                # The txn_loom models are `#[cfg(all(test, feature = "loom-model"))]`
-                # unit tests of the kernel library. Listing both ways selects the
-                # same two tests in the same library test binary; the 27 kernel
-                # integration tests and 3 doctests match none, so `--lib` runs
-                # every test this step ran without 27 extra fat-LTO test links.
-                ('bounded-loom', ['cargo', 'test', '--release', '--locked', '-p', 'busbar-kernel', '--features', 'loom-model', '--lib', 'txn_loom']),
-                ('dependency-policy', ['cargo', 'deny', 'check']),
-                ('dependency-vet', ['cargo', 'vet']),
-                ('default-dependency-policy', ['cargo', 'deny', '--manifest-path', 'dist/default/Cargo.toml', 'check']),
-                ('final-binary', ['python3', '-I', str(artifact_tool), 'capture', '--directory', str(build_capture), '--', *final_build]),
-            ]
-            for name, command in commands:
+            for name, command in qa_test_commands(nextest):
                 self.run(name, command)
-            self.run('default-dependency-vet', ['cargo', 'vet'], cwd=host / 'dist/default')
-            binary = Path(self.env['CARGO_TARGET_DIR']) / 'release/busbar'
-            collected = collect_output(self, binary, self.evidence / 'busbar', compiler_output=True)
-            self.receipt['binary_sha256'] = digest(collected)
-            artifact_evidence = self.evidence / 'development-artifact'
-            (artifact_evidence / 'build').mkdir(parents=True)
-            for name in ('cargo-metadata.json', 'Cargo.lock', 'cargo-messages.jsonl', 'build-context.json'):
-                collect_output(self, build_capture / name, artifact_evidence / 'build' / name, limit=64 * 1024**2)
-            self.run_controller('development-artifact-evidence', [sys.executable, '-I', str(artifact_tool),
-                'finalize', '--directory', str(artifact_evidence), '--binary', str(collected),
-                '--source', self.receipt['source'], '--policy', self.receipt['policy_revision'], '--sdk', sdk,
-                '--vector', str(host / 'scripts/ci-product-pins.json'), '--package', 'busbar-default',
-                '--compiler-output', str(binary), '--command-json', json.dumps(final_build),
-                '--retention-policy-sha256', digest(self.trusted / 'ci/architecture-pipeline.yml')])
-            self.receipt['development_artifact'] = {
-                'path': 'development-artifact/receipt.json',
-                'sha256': digest(artifact_evidence / 'receipt.json'),
-                'signed': False, 'release_eligible': False,
-                'supported_lifetime_retention_verified': False,
-            }
+            # The QA tier certifies this pipeline's core-build binary: same bytes, no second build.
+            import native_certified
+            binary, staged = native_certified.stage(self)
             self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
             self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
             self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
             self.env['BUSBAR_BIN'] = str(binary)
+            self.save()
             # Section 15 qualifies the native product and its boundary. Core's
             # separate certification launcher includes the unimplemented ModernCI
             # attestation producer; this cutover does not commission that project.
+
+    def core_build(self):
+        """Dev tier after formatting: dependency policy and the one certified product build."""
+        import native_certified
+        for name, command, cwd in CORE_POLICY_COMMANDS:
+            self.run(name, command, cwd=self.root / cwd if cwd else None)
+        native_certified.build(self)
 
     def plugin(self):
         host = self.host()
@@ -843,7 +873,11 @@ class Qualification:
         suites = self.root / 'testing/conformance/suites.tsv'
         if suites.is_file() and any(line.strip() and not line.lstrip().startswith('#') for line in suites.read_text().splitlines()):
             if getattr(self, 'execution', None):
-                for relative in ('testing/conformance/run.sh', 'testing/conformance/capabilities.py'):
+                controls = ['testing/conformance/run.sh', 'testing/conformance/capabilities.py']
+                if self.env.get('BUSBAR_CONFORMANCE_SUBJECT'):
+                    # Every suite resolves its subject here: it must judge the staged binary.
+                    controls.append('testing/conformance/subject_build.py')
+                for relative in controls:
                     path = self.root / relative
                     if path.is_symlink() or not path.is_file() or digest(path) != digest(self.trusted / relative):
                         raise Violation('confined conformance requires the published capability-aware controls: ' + relative)
@@ -959,8 +993,15 @@ class Qualification:
             engineering_report = run_engineering(self, collect_output)
         except (Violation, OSError, ValueError, KeyError):
             failed = True
+        import native_certified
+        # Conformance judges this pipeline's certified core-build binary, never a build of its own.
+        binary, staged = native_certified.stage(self)
+        self.env.update(BUSBAR_CONFORMANCE_SUBJECT=str(binary), BUSBAR_CONFORMANCE_SUBJECT_SHA256=staged['sha256'])
         try:
-            self.conformance('core-native-conformance')
+            try:
+                self.conformance('core-native-conformance')
+            finally:
+                native_certified.verify_unchanged(binary, staged)
         except Violation as conformance_error:
             try:
                 if str(conformance_error) != 'core-native-conformance failed; no automatic retry':
@@ -1049,6 +1090,8 @@ def qualify():
     modes.add_argument('--external-conformance', action='store_true')
     modes.add_argument('--dependency-units', action='store_true',
                        help='Protected core producer pipelines only: publish pinned plugin dependency units')
+    modes.add_argument('--core-build', action='store_true',
+                       help="Core's dev tier: fmt, dependency policy and the one certified product build")
     args = parser.parse_args()
     producer = getattr(args, 'dependency_units', False)
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
@@ -1059,11 +1102,15 @@ def qualify():
             qualification = Qualification(args)
         # Constructor validation establishes the immutable controller, exact
         # candidate and execution boundary before any regression command runs.
+        build_only = getattr(qualification, 'core_build_job', False)
         if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only \
-                and not producer:
+                and not producer and not build_only:
             qualification.core_regressions()
+        if build_only:
+            # Needs only sources and the pinned toolchain: fail in seconds, before preparation.
             qualification.core_formatting()
-        if not producer and requires_native_oracle(
+            qualification.core_lock_alignment()
+        if not producer and not build_only and requires_native_oracle(
                 qualification.repository, args.external_conformance, qualification.policy):
             from native_oracle import prepare as prepare_oracle
             with qualification.preparation('oracle-inputs'):
@@ -1075,6 +1122,7 @@ def qualify():
             from native_seed import prepare as prepare_seed
             with qualification.preparation('dependency-seed'):
                 prepare_seed(qualification)
+        if qualification.execution is not None and not build_only:
             from native_staged_fixtures import collect_required
             with qualification.preparation('staged-fixtures'):
                 collect_required(qualification)
@@ -1082,6 +1130,13 @@ def qualify():
                 from native_conformance_capabilities import prepare as prepare_capabilities
                 with qualification.preparation('conformance-capabilities'):
                     prepare_capabilities(qualification)
+        compile_target = cached_target = None
+        if qualification.repository == 'GetBusbar/busbar' and qualification.execution is not None \
+                and not producer:
+            # Trusted Cargo target of the newest protected dev/qa run of this job.
+            import native_compile_cache as compile_target
+            with qualification.preparation('compile-target'):
+                cached_target = compile_target.restore(qualification)
         evaluation_error = None
         if args.external_conformance:
             try:
@@ -1094,7 +1149,10 @@ def qualify():
             except Violation as error:
                 evaluation_error = error
         elif qualification.repository == 'GetBusbar/busbar':
-            qualification.core()
+            if build_only:
+                qualification.core_build()
+            else:
+                qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
             from native_plugins import qualify_generator
             qualify_generator(qualification)
@@ -1114,6 +1172,9 @@ def qualify():
             raise Violation('could not bind the qualified source archive')
         if evaluation_error is not None:
             raise evaluation_error
+        if compile_target is not None:
+            with qualification.preparation('compile-target-producer'):
+                compile_target.produce(qualification, cached_target)
         qualification.finish('pass')
     except BaseException as error:
         if qualification is not None:

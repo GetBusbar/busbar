@@ -426,6 +426,10 @@ class Execution:
                 "BUSBAR_C_ABI_LIBRARY",
                 "BUSBAR_PLUGIN_CDYLIB",
                 "BUSBAR_BIN",
+                "BUSBAR_CONFORMANCE_SUBJECT",
+                "BUSBAR_CONFORMANCE_SUBJECT_SHA256",
+                "CLIPPY_ARGS",
+                "CARGO_ENCODED_RUSTFLAGS",
                 "TSAN_OPTIONS",
             }
         )

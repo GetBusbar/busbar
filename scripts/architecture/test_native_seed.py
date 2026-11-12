@@ -145,9 +145,9 @@ class PreparationTiming(unittest.TestCase):
                         native.qualify()
                 expected = ['validated-constructor', 'architecture-regressions']
                 if not fail_regression:
+                    # Formatting is the dev tier's core-build job, not core native qualification.
                     expected += ['toolchain-regressions', 'conformance-capability-regressions',
-                                 'conformance-confined-tools-regressions', 'root-fmt', 'default-fmt',
-                                 'canonical-inputs']
+                                 'conformance-confined-tools-regressions', 'canonical-inputs']
                 self.assertEqual(events, expected)
                 self.assertEqual(collect.call_count, int(not fail_regression))
                 self.assertEqual(oracle.call_count, int(not fail_regression))
@@ -163,7 +163,8 @@ class PreparationTiming(unittest.TestCase):
                 q.repository, q.evaluation_only = 'GetBusbar/busbar', False
                 q.control = q.work = Path('/unused-test-work')
                 q.policy = object()
-                q.finish, q.core_regressions = Mock(), Mock()
+                q.core_build_job = True  # core-build: fmt first, then the lock check
+                q.finish, q.core_regressions, q.core_lock_alignment = Mock(), Mock(), Mock()
                 def formatting(name, argv, cwd, timeout, **kwargs):
                     if name == failed:
                         raise native.Violation(name + ' failed; no automatic retry')
@@ -179,7 +180,8 @@ class PreparationTiming(unittest.TestCase):
                      patch('native_staged_fixtures.collect_required') as fixtures:
                     with self.assertRaisesRegex(native.Violation, failed):
                         native.qualify()
-                q.core_regressions.assert_called_once_with()
+                q.core_regressions.assert_not_called()
+                q.core_lock_alignment.assert_not_called()
                 calls = q._run.call_args_list
                 self.assertEqual([call.args[0] for call in calls],
                                  ['root-fmt'] if failed == 'root-fmt' else ['root-fmt', 'default-fmt'])

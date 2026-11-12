@@ -530,8 +530,19 @@ class PipelineRules(unittest.TestCase):
         python = python.replace('&&', ' and ').replace('||', ' or ')
         return eval(python, {})
 
+    @classmethod
+    def text(cls):
+        """The YAML with every `!reference [.rules, name]` spliced in, as GitLab does."""
+        text = (cls.ROOT / 'ci/architecture-pipeline.yml').read_text()
+        shared = text.split('\n.rules:\n', 1)[1].split('\n\n', 1)[0]
+        sets = dict(re.findall(r'^  ([a-z-]+):\n((?:    .*\n?)*)', shared, re.M))
+
+        def splice(match):
+            return sets[match[1]].rstrip('\n')
+        return re.sub(r'^    - !reference \[\.rules, ([a-z-]+)\]$', splice, text, flags=re.M)
+
     def jobs(self, env):
-        text = (self.ROOT / 'ci/architecture-pipeline.yml').read_text()
+        text = self.text()
         blocks = re.split(r'^([A-Za-z][A-Za-z0-9_-]*):\s*$', text, flags=re.M)
         selected = set()
         for name, block in zip(blocks[1::2], blocks[2::2]):
@@ -556,13 +567,53 @@ class PipelineRules(unittest.TestCase):
         self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PROJECT_PATH='GetBusbar/busbar-x',
                                                                      CI_PROJECT_NAME='busbar-x')))
 
+    CORE = {'CI_PROJECT_PATH': 'GetBusbar/busbar', 'CI_PROJECT_NAMESPACE': 'GetBusbar', 'CI_PROJECT_NAME': 'busbar'}
+    PLUGIN = {'CI_PROJECT_PATH': 'GetBusbar/busbar-store-sqlite', 'CI_PROJECT_NAMESPACE': 'GetBusbar',
+              'CI_PROJECT_NAME': 'busbar-store-sqlite'}
+
+    def workflow(self, env):
+        rules = self.text().split('\nworkflow:\n', 1)[1].split('\n\n', 1)[0]
+        for expression, when, bare in re.findall(
+                r"    - (?:if: '([^']*)'(?:\n      when: (\w+))?|when: (\w+))", rules):
+            if not expression or self.evaluate(expression, env):
+                return (when or bare or 'always') != 'never'
+        return False
+
     def test_dev_pipelines_keep_their_jobs(self):
-        env = {'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev', 'CI_COMMIT_REF_PROTECTED': 'true',
-               'CI_PROJECT_PATH': 'GetBusbar/busbar', 'CI_PROJECT_NAMESPACE': 'GetBusbar', 'CI_PROJECT_NAME': 'busbar'}
-        self.assertEqual(self.jobs(env), {'native-qualification', 'security-scans', 'core-conformance',
-                                          'plugin-dependency-units', 'website-dev'})
-        self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PIPELINE_SOURCE='api')))
-        self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')))
+        env = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='dev', CI_COMMIT_REF_PROTECTED='true')
+        self.assertEqual(self.jobs(env), {'core-build', 'core-conformance', 'plugin-dependency-units', 'website-dev'})
+        self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='api')), {'core-build', 'core-conformance'})
+        self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')), {'security-scans'})
+
+    def test_core_tiers(self):
+        mr = dict(self.CORE, CI_PIPELINE_SOURCE='merge_request_event', CI_MERGE_REQUEST_TARGET_BRANCH_NAME='dev',
+                  CI_COMMIT_REF_PROTECTED='false')
+        self.assertTrue(self.workflow(mr))
+        self.assertEqual(self.jobs(mr), {'core-build', 'core-conformance'})
+        qa = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa', CI_COMMIT_REF_PROTECTED='true')
+        everything = {'core-build', 'core-conformance', 'native-qualification', 'security-scans'}
+        self.assertTrue(self.workflow(qa))
+        self.assertEqual(self.jobs(qa), everything)
+        nightly = dict(self.CORE, CI_PIPELINE_SOURCE='schedule', CI_COMMIT_BRANCH='dev',
+                       CI_COMMIT_REF_PROTECTED='true', CI_PIPELINE_SCHEDULE_DESCRIPTION='qa-nightly')
+        self.assertEqual(self.jobs(nightly), everything)
+        main = dict(qa, CI_COMMIT_BRANCH='main')
+        self.assertTrue(self.workflow(main))
+        self.assertEqual(self.jobs(main), {'release-certification'})
+        # Unprotected qa/main refs run nothing; other branches start no pipeline.
+        for env in (dict(qa, CI_COMMIT_REF_PROTECTED='false'), dict(main, CI_COMMIT_REF_PROTECTED='false')):
+            self.assertFalse(self.workflow(env))
+            self.assertEqual(self.jobs(env), set())
+        self.assertFalse(self.workflow(dict(qa, CI_COMMIT_BRANCH='feature')))
+
+    def test_plugins_keep_one_tier(self):
+        for source in ('push', 'merge_request_event', 'api'):
+            env = dict(self.PLUGIN, CI_PIPELINE_SOURCE=source, CI_COMMIT_BRANCH='dev',
+                       CI_MERGE_REQUEST_TARGET_BRANCH_NAME='dev')
+            expected = {'native-qualification', 'security-scans'} | ({'website-dev'} if source == 'push' else set())
+            self.assertEqual(self.jobs(env), expected, source)
+        self.assertEqual(self.jobs(dict(self.PLUGIN, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa',
+                                        CI_COMMIT_REF_PROTECTED='true')), set())
 
 
 if __name__ == '__main__':

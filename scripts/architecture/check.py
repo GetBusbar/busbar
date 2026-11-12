@@ -330,8 +330,57 @@ def check_vector(policy, checkout, entries):
             if known and package.get('source'):
                 if not package['source'].endswith('#' + revisions.get(known['repository'], 'unclassified')):
                     raise Violation(f'assembly lock/vector mismatch: {path}: {package["name"]}')
-    return {'sdk_revision': vector['sdk'], 'products': len(vector['products']),
+    shared = check_shared_core_resolution(read(checkout / 'Cargo.lock'), read(checkout / 'dist/default/Cargo.lock'))
+    return {'sdk_revision': vector['sdk'], 'products': len(vector['products']), 'shared_core_packages': shared,
             'vector_sha256': hashlib.sha256((checkout / 'scripts/ci-product-pins.json').read_bytes()).hexdigest()}
+
+
+def check_shared_core_resolution(root_lock, distribution_lock):
+    """Every core path crate dist/default links resolves exactly as in the root lock.
+
+    The distribution lock records a non-member path crate's normal and build
+    dependencies; the root lock records them too (plus dev-dependencies). If each
+    one's whole closure in dist/default is a subset of its root closure, the two
+    workspaces compile the same core crate from the same dependency versions and
+    sources, so one shared target can reuse identical units. Returns the count.
+    """
+    def graph(lock):
+        packages = lock.get('package', [])
+        by_name = {}
+        for package in packages:
+            by_name.setdefault(package['name'], []).append(package)
+
+        def resolve(entry):
+            name, *rest = entry.split(' ')
+            rows = by_name.get(name, [])
+            if rest:
+                rows = [row for row in rows if row['version'] == rest[0]]
+            if len(rest) > 1:
+                rows = [row for row in rows if '(' + row.get('source', '') + ')' == rest[1]]
+            if len(rows) != 1:
+                raise Violation('unresolvable lock dependency: ' + entry)
+            return rows[0]
+
+        def closure(package):
+            seen, stack = {}, [package]
+            while stack:
+                row = stack.pop()
+                identity = (row['name'], row['version'], row.get('source'))
+                if identity not in seen:
+                    seen[identity] = row
+                    stack.extend(resolve(entry) for entry in row.get('dependencies', []))
+            return set(seen)
+        return {p['name']: p for p in packages if p.get('source') is None}, closure
+
+    root_paths, root_closure = graph(root_lock)
+    distribution_paths, distribution_closure = graph(distribution_lock)
+    shared = sorted(set(root_paths) & set(distribution_paths))
+    for name in shared:
+        extra = distribution_closure(distribution_paths[name]) - root_closure(root_paths[name])
+        if extra:
+            sample = ', '.join(f'{n} {v}' for n, v, _ in sorted(extra)[:5])
+            raise Violation(f'dist/default resolves core crate {name} differently from the root lock: {sample}')
+    return len(shared)
 
 
 def binary_resolution_root(checkout, entry, probe):
