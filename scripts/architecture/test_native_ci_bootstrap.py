@@ -1,5 +1,6 @@
 """Boundaries of the fixed-source native administrator bootstrap."""
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -139,6 +140,25 @@ class Bootstrap(unittest.TestCase):
                     row['archive_url'] + '?token=secret'):
             with self.subTest(url=bad), self.assertRaises(ValueError):
                 bootstrap.verify_judge_record('mcp', dict(row, archive_url=bad))
+
+    def test_core_judge_oidc_source_matches_distribution_lock(self):
+        # The core archive's oidc-source bundle is refused by oidf.py when its
+        # source-identity rev differs from dist/default/Cargo.lock. Fail here,
+        # before the conformance run, when a re-pin leaves the archive stale.
+        # Republishing the archive means recording its staged OIDC rev below.
+        staged_oidc_rev = {
+            'b548d9e3623df2cbdbd495c41dd6ff2f078c641315cd6b61f07a565a12853024':
+                '6c89d7c55ff8b14bf3907978afbaadf690677257',
+        }
+        checkout = Path(__file__).parents[2]
+        plan = json.loads((checkout / 'ci/native-judge-inputs.json').read_text())
+        archive = plan['owners']['core']['archive_sha256']
+        self.assertIn(archive, staged_oidc_rev, 'record the OIDC rev staged by the new core judge archive')
+        spec = importlib.util.spec_from_file_location('oidf_lock', checkout / 'testing/oidf-conformance/oidf.py')
+        oidf = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(oidf)
+        self.assertEqual(staged_oidc_rev[archive], oidf.oidc_pin(str(checkout))['rev'],
+                         'core judge archive stages a stale oidc-source; republish it for the locked OIDC rev')
 
     def test_judge_staging_binds_verified_archive_and_keeps_it_outside_candidate_roots(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
