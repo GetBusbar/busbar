@@ -1556,14 +1556,24 @@ fn a_linked_row_is_linked_and_first_party_and_a_dropped_in_unsigned_row_is_neith
 #[test]
 fn a_hook_statement_without_its_kind_tail_is_refused_at_load() {
     let untailed = rows(hook_door_plugin::untailed::door, "hook_door", Way::Linked);
+    // df111e05c3 reads the kind tail at load (`validate_door` runs `Kind::context`), so the probe's
+    // own bind already refuses: no facts, and the one problem is the load refusal, named.
     assert_eq!(
         untailed.probe(
             UNTAILED_NAME,
             "gate",
             &crate::dispatch::test_settings(&json!({"reject_over_messages": 3}))
         ),
-        Some((None, Vec::new())),
-        "an untailed hook states no facts"
+        Some((
+            None,
+            vec![format!(
+                "hook plugin '{UNTAILED_NAME}': {}",
+                crate::dispatch::load::LoadError::KindTail(
+                    crate::dispatch::kinds::hook::NO_TAIL.to_owned()
+                )
+            )]
+        )),
+        "an untailed hook states no facts and is refused at the probe's load"
     );
     let refused = untailed
         .open(

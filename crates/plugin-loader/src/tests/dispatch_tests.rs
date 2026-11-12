@@ -4433,6 +4433,9 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         let mut t: TransportTail = unsafe { std::mem::zeroed() };
         t.head.size = std::mem::size_of::<TransportTail>() as u32;
         t.frame_piece_size = piece;
+        // df111e05c3 checks the whole kind tail at load (`Kind::context`): a conforming transport
+        // is exactly one role, so only the piece differs between the admitted and refused doors.
+        t.role = busbar_contract::abi::transport::ROLE_CARRIER;
         t.claim_rows = row;
         t.claim_rows_len = 1;
         let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
@@ -4454,7 +4457,17 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
         let mut t: PlaneTail = unsafe { std::mem::zeroed() };
         t.head.size = std::mem::size_of::<PlaneTail>() as u32;
         t.answer_layout = layout;
+        // df111e05c3 checks the whole kind tail at load (`Kind::context`): a conforming plane
+        // states an ingress, so only the layout differs between the admitted and refused doors.
+        t.ingress = busbar_contract::abi::plane::INGRESS_REQUEST_RESPONSE;
         let tail = (Box::leak(Box::new(t)) as *const PlaneTail).cast::<KindTailHead>();
+        // ... and declares exactly one section.
+        use busbar_contract::abi::mechanism::door::Section;
+        let sections: &'static [Section] = Box::leak(Box::new([Section {
+            name: AbiStr::of("door"),
+            flags: busbar_contract::abi::mechanism::door::SECTION_DECLARING,
+            _reserved: 0,
+        }]));
         door_over::<Plane>(
             KindCode::Plane,
             Statement {
@@ -4462,6 +4475,8 @@ fn open_linked_refuses_another_layout_as_the_dropped_in_door_is_refused() {
                 kind: KindCode::Plane as u32,
                 kind_abi: KindCode::Plane.abi_version(),
                 kind_tail: tail,
+                sections: sections.as_ptr(),
+                sections_len: sections.len(),
                 ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
             },
         )

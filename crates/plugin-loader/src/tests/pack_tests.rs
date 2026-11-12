@@ -1033,11 +1033,19 @@ fn x_busbar_ref_passes_pack_time_validation_untouched() {
 fn derives_secret_ref_oneof_from_the_shared_type() {
     let oneof = busbar_contract::secret_ref::oneof_schema();
     let alts = oneof["oneOf"].as_array().expect("oneOf array");
+    // db6f4149aa retired the built-in env/file sugar: a shorthand is a source's declaration, not
+    // core grammar, so the shared type is the `none` scalar, module/settings and a template.
     assert_eq!(
         alts.len(),
-        4,
-        "the `none` scalar + module/settings + env + file, nothing else"
+        3,
+        "the `none` scalar + module/settings + template, nothing else"
     );
+    assert_eq!(
+        alts[0],
+        serde_json::json!({"const": busbar_contract::secret_ref::SECRET_MODULE_NONE})
+    );
+    assert_eq!(alts[1]["required"], serde_json::json!(["module"]));
+    assert_eq!(alts[2]["required"], serde_json::json!(["template"]));
 
     let mut full = serde_json::json!({});
     for (k, v) in oneof.as_object().unwrap() {
@@ -1553,9 +1561,16 @@ fn pack_schema_accepts_opaque_secret_slots_without_weakening_privacy() {
         serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(serde_json::json!(42))
             .is_err()
     );
+    // db6f4149aa: with no admitted source declaring it, `{env: …}` is no reference at all.
     assert!(
         serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
             serde_json::json!({"env":"VAULT_TOKEN"})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<busbar_contract::secret_ref::SecretRef>(
+            serde_json::json!({"module":"fixture-source","settings":{"slot":"VAULT_TOKEN"}})
         )
         .is_ok()
     );

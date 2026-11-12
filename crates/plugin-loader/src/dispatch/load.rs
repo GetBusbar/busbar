@@ -37,6 +37,22 @@ pub struct ManifestFacts {
 
 impl ManifestFacts {
     pub fn read(rendering: &[u8]) -> Result<Self, LoadError> {
+        // The contract's reader refuses another mechanism version before it answers any fact
+        // (fba670826c). A current-magic rendering at another version still earns the typed
+        // refusal naming both versions and the rebuild, whichever origin stated it.
+        use busbar_contract::abi::mechanism::rendering::RENDERING_MAGIC;
+        if let Some(word) = rendering
+            .strip_prefix(RENDERING_MAGIC.as_slice())
+            .and_then(|rest| rest.get(..size_of::<u32>()))
+        {
+            let stated = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            if stated != MECHANISM_VERSION {
+                return Err(LoadError::ManifestMechanism {
+                    stated,
+                    host: MECHANISM_VERSION,
+                });
+            }
+        }
         let facts = read(rendering)
             .map_err(|e| LoadError::Rendering(format!("byte {} is not {}", e.at, e.what)))?;
         crate::settings_schema::statement_schema(&facts.settings_schema)
