@@ -6,6 +6,11 @@ all direct pushes, and force pushes remain disabled everywhere. Qualified merges
 still require successful pipelines and fast-forward history.
 This controller additionally admits only the trusted native job for the exact source,
 target, host, SDK and policy revision. Fork/external-status pipelines cannot impersonate it.
+
+Core is admitted to dev on its DEV-tier receipts: the core-build job (fmt, deny/vet and
+the one certified release build) and the core-conformance job that judged exactly that
+binary by sha256, both from the current MR pipeline. Native qualification and security
+are core's QA tier and are not dev admission inputs. Plugins keep native + security.
 """
 from __future__ import annotations
 
@@ -274,9 +279,73 @@ def validate_security_scans(receipt, repository, fixture_policy=None):
             used.add(entry['id'])
 
 
+CORE = 'GetBusbar/busbar'
+# Checks every passing core-build receipt must contain (native.core_formatting,
+# native.CORE_POLICY_COMMANDS and native_certified.build).
+CORE_BUILD_STEPS = ('root-fmt', 'default-fmt', 'dependency-policy', 'dependency-vet',
+                    'default-dependency-policy', 'default-dependency-vet', 'certified-build',
+                    'development-artifact-evidence')
+
+
+def passing_steps(receipt, label):
+    steps = receipt.get('steps')
+    if (not isinstance(steps, list) or not steps
+            or any(not isinstance(step, dict) or step.get('status') != 'pass' or step.get('exit_code') != 0
+                   for step in steps)):
+        raise ValueError(label + ' receipt contains missing or nonpassing checks')
+    names = [step.get('name') for step in steps]
+    if len(names) != len(set(names)):
+        raise ValueError(label + ' receipt contains duplicate checks')
+    return set(names)
+
+
+def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conformance_receipt,
+                           revision, target, host, sdk):
+    """Core's dev admission: this pipeline's certified build and the conformance of those bytes."""
+    from native_certified import JOB, verify_receipt
+
+    def required_job(name):
+        rows = [job for job in jobs if job.get('name') == name]
+        if len(rows) != 1 or not rows[0].get('runner') or type(rows[0].get('id')) is not int:
+            raise ValueError('required same-pipeline dev-tier job is missing, ambiguous or external: ' + name)
+        return rows[0]
+
+    build, evaluation = required_job(JOB), required_job('core-conformance')
+    identity = {'status': 'pass', 'repository': project['path_with_namespace'], 'source': mr['sha'],
+                'policy_revision': revision, 'pipeline_id': str(pipeline['id']),
+                'target_revision': target, 'host_revision': host, 'sdk_revision': sdk}
+    for label, receipt, job in (('core-build', build_receipt, build),
+                                ('conformance', conformance_receipt, evaluation)):
+        if not isinstance(receipt, dict):
+            raise ValueError(label + ' receipt is missing')
+        for key, value in dict(identity, job_id=str(job['id'])).items():
+            if receipt.get(key) != value:
+                raise ValueError(label + ' receipt mismatch: ' + key)
+    # Schema, this pipeline/job/policy/source and the certified record of the one build.
+    record = verify_receipt(build_receipt, job_id=build['id'], source=mr['sha'], policy=revision,
+                            pipeline=pipeline['id'])
+    missing = set(CORE_BUILD_STEPS) - passing_steps(build_receipt, 'core-build')
+    if missing:
+        raise ValueError('core-build receipt omits required checks: ' + ', '.join(sorted(missing)))
+    if conformance_receipt.get('schema') != 'busbar.protected-conformance/1':
+        raise ValueError('conformance receipt mismatch: schema')
+    passing_steps(conformance_receipt, 'conformance')
+    judged = conformance_receipt.get('certified_binary')
+    if (not isinstance(judged, dict) or judged.get('sha256') != record['sha256']
+            or conformance_receipt.get('binary_sha256') != record['sha256']
+            or judged.get('bytes') != record.get('bytes')
+            or judged.get('core_build_job_id') != build['id'] or judged.get('pipeline_id') != pipeline['id']):
+        raise ValueError("conformance did not judge this pipeline's certified core-build binary")
+
+
 def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk,
                    conformance_receipt=None, security_receipt=None, secret_fixture_policy=None):
-    """Finite admission predicate, shared by the controller and bypass regressions."""
+    """Finite admission predicate, shared by the controller and bypass regressions.
+
+    For core, receipt is the core-build receipt and conformance_receipt the
+    core-conformance receipt (DEV tier); security_receipt is not consulted.
+    For every other project, receipt is the native-qualification receipt.
+    """
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
         raise ValueError('trusted CI setting changed')
     if not (project['merge_method'] == 'ff' and project['only_allow_merge_if_pipeline_succeeds'] and project['allow_merge_on_skipped_pipeline'] is False):
@@ -287,6 +356,10 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
         raise ValueError('missing, stale or unsuccessful current MR pipeline')
     if any(job.get('status') != 'success' or job.get('allow_failure') for job in jobs):
         raise ValueError('pipeline contains a nonpassing or optional job')
+    if project['path_with_namespace'] == CORE:
+        validate_core_dev_tier(project, mr, pipeline, jobs, receipt, conformance_receipt,
+                               revision, target, host, sdk)
+        return
     security = [job for job in jobs if job['name'] == 'security-scans']
     if len(security) != 1 or not security[0].get('runner'):
         raise ValueError('required independent security job missing or ambiguous')
@@ -331,6 +404,48 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
                 step.get('status') != 'pass' or step.get('exit_code') != 0
                 for step in conformance_receipt['steps']):
             raise ValueError('conformance receipt contains missing or nonpassing checks')
+
+
+def job_receipt(api, identity, job, filename='receipt.json'):
+    return api.request(identity + '/jobs/' + str(job['id']) + '/artifacts/boundary-evidence/' + filename)
+
+
+def core_dev_receipts(api, identity, jobs):
+    """Core DEV tier: this pipeline's core-build and core-conformance receipts only."""
+    receipts = []
+    for job_name in ('core-build', 'core-conformance'):
+        rows = [job for job in jobs if job['name'] == job_name and job['status'] == 'success']
+        if len(rows) != 1:
+            raise ValueError('current ' + job_name + ' is not successful')
+        receipts.append(job_receipt(api, identity, rows[0]))
+    return receipts
+
+
+def native_receipts(api, identity, jobs, name, policy_revision):
+    """Plugin/assembly admission inputs: native qualification, security and any conformance."""
+    native = [job for job in jobs if job['name'] == 'native-qualification' and job['status'] == 'success']
+    if len(native) != 1:
+        raise ValueError('current native qualification is not successful')
+    receipt = job_receipt(api, identity, native[0])
+    conformance_receipt = None
+    security_jobs = [job for job in jobs if job['name'] == 'security-scans']
+    if len(security_jobs) != 1:
+        raise ValueError('required security job missing or ambiguous')
+    security_receipt = job_receipt(api, identity, security_jobs[0], 'security.json')
+    secret_fixture_policy = None
+    if any(row.get('findings') for row in security_receipt.get('steps', [])):
+        # Read only the controller-approved immutable policy, never candidate files.
+        manifest = api.request('projects/' + encoded('GetBusbar/busbar')
+            + '/repository/files/' + encoded('ci/security/public-secret-fixtures.json')
+            + '?ref=' + policy_revision)
+        secret_fixture_policy = base64.b64decode(manifest['content'], validate=True)
+    required = required_conformance_job(name)
+    if required:
+        evaluations = [job for job in jobs if job['name'] == required]
+        if len(evaluations) != 1:
+            raise ValueError('required same-pipeline conformance job is missing or ambiguous')
+        conformance_receipt = job_receipt(api, identity, evaluations[0])
+    return receipt, conformance_receipt, security_receipt, secret_fixture_policy
 
 
 def main():
@@ -400,32 +515,14 @@ def main():
                 raise ValueError('current MR pipeline is missing')
             pipeline = api.request(identity + '/pipelines/' + str(pipeline['id']))
             jobs = api.all(identity + '/pipelines/' + str(pipeline['id']) + '/jobs')
-            native = [job for job in jobs if job['name'] == 'native-qualification' and job['status'] == 'success']
-            if len(native) != 1:
-                raise ValueError('current native qualification is not successful')
-            receipt = api.request(identity + '/jobs/' + str(native[0]['id']) + '/artifacts/boundary-evidence/receipt.json')
             target = api.request(identity + '/repository/branches/dev')['commit']['id']
             host, sdk = expected_inputs(api, project, mr['sha'])
-            conformance_receipt = None
-            security_jobs = [job for job in jobs if job['name'] == 'security-scans']
-            if len(security_jobs) != 1:
-                raise ValueError('required security job missing or ambiguous')
-            security_receipt = api.request(identity + '/jobs/' + str(security_jobs[0]['id'])
-                + '/artifacts/boundary-evidence/security.json')
-            secret_fixture_policy = None
-            if any(row.get('findings') for row in security_receipt.get('steps', [])):
-                # Read only the controller-approved immutable policy, never candidate files.
-                manifest = api.request('projects/' + encoded('GetBusbar/busbar')
-                    + '/repository/files/' + encoded('ci/security/public-secret-fixtures.json')
-                    + '?ref=' + args.policy_revision)
-                secret_fixture_policy = base64.b64decode(manifest['content'], validate=True)
-            required = required_conformance_job(name)
-            if required:
-                evaluations = [job for job in jobs if job['name'] == required]
-                if len(evaluations) != 1:
-                    raise ValueError('required same-pipeline conformance job is missing or ambiguous')
-                conformance_receipt = api.request(identity + '/jobs/' + str(evaluations[0]['id'])
-                    + '/artifacts/boundary-evidence/receipt.json')
+            if name == CORE:
+                receipt, conformance_receipt, security_receipt, secret_fixture_policy = (
+                    *core_dev_receipts(api, identity, jobs), None, None)
+            else:
+                receipt, conformance_receipt, security_receipt, secret_fixture_policy = native_receipts(
+                    api, identity, jobs, name, args.policy_revision)
             validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk,
                            conformance_receipt, security_receipt, secret_fixture_policy)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})

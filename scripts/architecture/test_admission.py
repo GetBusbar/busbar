@@ -3,21 +3,33 @@ import copy
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
-from admission import expected_inputs, required_conformance_job, validate_merge, validate_protection
+import admission
+from admission import (CORE_BUILD_STEPS, expected_inputs, required_conformance_job, validate_merge,
+                       validate_protection)
+
+# Native admission (plugins and the release generator). Its conformance branch is
+# exercised through a plugin that declares a same-pipeline external judge.
+PLUGIN = 'GetBusbar/busbar-store-memory'
+REAL_REQUIRED = admission.required_conformance_job
 
 
 class Admission(unittest.TestCase):
     def setUp(self):
         self.revision, self.source, self.target = 'a' * 40, 'b' * 40, 'c' * 40
-        self.host, self.sdk = self.source, 'd' * 40
-        self.project = dict(id=3, path_with_namespace='GetBusbar/busbar',
+        self.host, self.sdk = 'e' * 40, 'd' * 40
+        required = patch('admission.required_conformance_job', side_effect=lambda repository, policy=None:
+                         'core-conformance' if repository == PLUGIN else REAL_REQUIRED(repository, policy))
+        required.start()
+        self.addCleanup(required.stop)
+        self.project = dict(id=3, path_with_namespace=PLUGIN,
             ci_config_path='ci/architecture-pipeline.yml@GetBusbar/busbar:' + self.revision,
             merge_method='ff', only_allow_merge_if_pipeline_succeeds=True, allow_merge_on_skipped_pipeline=False)
         self.mr = dict(source_project_id=3, target_project_id=3, target_branch='dev', sha=self.source)
         self.pipeline = dict(id=100, project_id=3, source='merge_request_event', sha=self.source, status='success')
         self.jobs = [dict(id=101, name='native-qualification', status='success', allow_failure=False, runner={'id': 9})]
-        self.receipt = dict(status='pass', repository='GetBusbar/busbar', source=self.source,
+        self.receipt = dict(status='pass', repository=PLUGIN, source=self.source,
             policy_revision=self.revision, pipeline_id='100', job_id='101', target_revision=self.target,
             host_revision=self.host, sdk_revision=self.sdk,
             steps=[dict(name='architecture', status='pass', exit_code=0)])
@@ -25,7 +37,7 @@ class Admission(unittest.TestCase):
         self.conformance = dict(copy.deepcopy(self.receipt), job_id='102', schema='busbar.protected-conformance/1')
         self.jobs.append(dict(self.jobs[0], id=103, name='security-scans'))
         self.security = dict(schema='busbar.security-scans/1', status='pass',
-            repository='GetBusbar/busbar', source=self.source, policy_revision=self.revision,
+            repository=PLUGIN, source=self.source, policy_revision=self.revision,
             pipeline_id='100', job_id='103', steps=[dict(name=name, status='pass', exit_code=0, findings=0)
                 for name in ('secrets', 'dependencies', 'sast')])
 
@@ -145,7 +157,8 @@ class Admission(unittest.TestCase):
         api = Mock()
         vector = {'content': base64.b64encode(json.dumps({'sdk': self.sdk}).encode()).decode()}
         api.request.return_value = vector
-        self.assertEqual(expected_inputs(api, self.project, self.source), (self.source, self.sdk))
+        core = dict(self.project, path_with_namespace='GetBusbar/busbar')
+        self.assertEqual(expected_inputs(api, core, self.source), (self.source, self.sdk))
         api.all.assert_not_called()
         self.assertIn('?ref=' + self.source, api.request.call_args.args[0])
         project = dict(self.project, path_with_namespace='GetBusbar/busbar-auth-header')
@@ -156,6 +169,140 @@ class Admission(unittest.TestCase):
             self.assertEqual(expected_inputs(api, project, self.source), (self.host, self.sdk))
             self.assertTrue(api.request.call_args_list[0].args[0].endswith('/commits/' + ref))
             self.assertTrue(api.request.call_args_list[1].args[0].endswith('?ref=' + self.host))
+
+
+class CoreDevTierAdmission(unittest.TestCase):
+    """Core MRs to dev are admitted on core-build + core-conformance of the MR pipeline."""
+
+    def setUp(self):
+        from native_certified import BUILD
+        self.revision, self.source, self.target, self.sdk = 'a' * 40, 'b' * 40, 'c' * 40, 'd' * 40
+        self.host = self.source
+        self.digest = '5' * 64
+        self.project = dict(id=3, path_with_namespace='GetBusbar/busbar',
+            ci_config_path='ci/architecture-pipeline.yml@GetBusbar/busbar:' + self.revision,
+            merge_method='ff', only_allow_merge_if_pipeline_succeeds=True, allow_merge_on_skipped_pipeline=False)
+        self.mr = dict(source_project_id=3, target_project_id=3, target_branch='dev', sha=self.source)
+        self.pipeline = dict(id=100, project_id=3, source='merge_request_event', sha=self.source, status='success')
+        self.jobs = [dict(id=101, name='core-build', status='success', allow_failure=False, runner={'id': 9}),
+                     dict(id=102, name='core-conformance', status='success', allow_failure=False, runner={'id': 9})]
+        identity = dict(status='pass', repository='GetBusbar/busbar', source=self.source,
+                        policy_revision=self.revision, pipeline_id='100', target_revision=self.target,
+                        host_revision=self.host, sdk_revision=self.sdk)
+        self.build = dict(identity, schema='busbar.core-build/1', job_id='101', binary_sha256=self.digest,
+            certified_binary=dict(sha256=self.digest, bytes=4096, path='busbar', command=['cargo', *BUILD]),
+            steps=[dict(name=name, status='pass', exit_code=0) for name in CORE_BUILD_STEPS])
+        self.conformance = dict(identity, schema='busbar.protected-conformance/1', job_id='102',
+            binary_sha256=self.digest,
+            certified_binary=dict(sha256=self.digest, bytes=4096, core_build_job_id=101, pipeline_id=100),
+            steps=[dict(name='core-native-conformance', status='pass', exit_code=0)])
+
+    def validate(self):
+        validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.build, self.revision,
+                       self.target, self.host, self.sdk, self.conformance)
+
+    def test_matching_dev_tier_receipts_admit_without_qa_tier_jobs(self):
+        self.validate()
+
+    def test_conformance_of_other_bytes_or_another_build_never_admits(self):
+        good = copy.deepcopy(self.conformance)
+        for change in (dict(binary_sha256='6' * 64),
+                       dict(certified_binary=dict(good['certified_binary'], sha256='6' * 64)),
+                       dict(binary_sha256='6' * 64, certified_binary=dict(good['certified_binary'], sha256='6' * 64)),
+                       dict(certified_binary=dict(good['certified_binary'], bytes=4097)),
+                       dict(certified_binary=dict(good['certified_binary'], core_build_job_id=99)),
+                       dict(certified_binary=dict(good['certified_binary'], pipeline_id=99)),
+                       dict(certified_binary=None)):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'certified core-build binary'):
+                self.conformance = dict(good, **change)
+                self.validate()
+
+    def test_build_must_certify_its_binary(self):
+        good = copy.deepcopy(self.build)
+        for change in (dict(binary_sha256='6' * 64), dict(certified_binary=None),
+                       dict(certified_binary=dict(good['certified_binary'], command=['cargo', 'build'])),
+                       dict(certified_binary=dict(good['certified_binary'], sha256='short'))):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.build = dict(good, **change)
+                self.validate()
+
+    def test_missing_failed_or_ambiguous_receipts_and_jobs_never_admit(self):
+        for receipts in ((None, self.conformance), (self.build, None)):
+            with self.subTest(receipts=receipts), self.assertRaisesRegex(ValueError, 'receipt is missing'):
+                self.build, self.conformance = (copy.deepcopy(r) for r in receipts)
+                self.validate()
+        self.setUp()
+        good = copy.deepcopy(self.jobs)
+        for jobs in ([good[0]], [good[1]], good + [good[0]], good + [good[1]],
+                     [good[0], dict(good[1], runner=None)], [dict(good[0], runner=None), good[1]]):
+            with self.subTest(jobs=jobs), self.assertRaisesRegex(ValueError, 'dev-tier job'):
+                self.jobs = jobs
+                self.validate()
+        for index in (0, 1):
+            for change in (dict(status='failed'), dict(status='skipped'), dict(allow_failure=True)):
+                with self.subTest(index=index, change=change), self.assertRaises(ValueError):
+                    self.jobs = copy.deepcopy(good)
+                    self.jobs[index].update(change)
+                    self.validate()
+
+    def test_failed_or_incomplete_checks_never_admit(self):
+        for receipt in ('build', 'conformance'):
+            good = copy.deepcopy(getattr(self, receipt))
+            for steps in ([], [dict(name='root-fmt', status='fail', exit_code=1)],
+                          [*good['steps'][:-1], dict(good['steps'][-1], exit_code=101)]):
+                with self.subTest(receipt=receipt, steps=steps), self.assertRaises(ValueError):
+                    setattr(self, receipt, dict(good, steps=steps))
+                    self.validate()
+            with self.subTest(receipt=receipt, status='fail'), self.assertRaises(ValueError):
+                setattr(self, receipt, dict(good, status='fail'))
+                self.validate()
+            setattr(self, receipt, good)
+        for name in CORE_BUILD_STEPS:
+            with self.subTest(omitted=name), self.assertRaisesRegex(ValueError, 'omits required checks'):
+                self.build['steps'] = [dict(name=other, status='pass', exit_code=0)
+                                       for other in CORE_BUILD_STEPS if other != name]
+                self.validate()
+
+    def test_receipts_from_another_pipeline_source_policy_or_target_never_admit(self):
+        for receipt in ('build', 'conformance'):
+            good = copy.deepcopy(getattr(self, receipt))
+            for key in ('source', 'policy_revision', 'pipeline_id', 'job_id', 'repository', 'schema',
+                        'target_revision', 'host_revision', 'sdk_revision'):
+                with self.subTest(receipt=receipt, key=key), self.assertRaises(ValueError):
+                    setattr(self, receipt, dict(good, **{key: 'stale'}))
+                    self.validate()
+            setattr(self, receipt, good)
+
+    def test_not_rebased_on_current_dev_never_admits(self):
+        # Both jobs record the dev head they verified as an ancestor; dev has since moved.
+        with self.assertRaisesRegex(ValueError, 'target_revision'):
+            validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.build, self.revision,
+                           'f' * 40, self.host, self.sdk, self.conformance)
+
+    def test_same_project_dev_mr_pipeline_and_server_gates_still_apply(self):
+        for target, change in ((self.mr, dict(source_project_id=99)), (self.mr, dict(target_project_id=99)),
+                               (self.mr, dict(target_branch='qa')), (self.pipeline, dict(source='push')),
+                               (self.pipeline, dict(source='api')), (self.pipeline, dict(sha='f' * 40)),
+                               (self.pipeline, dict(status='failed')), (self.pipeline, dict(project_id=99)),
+                               (self.project, dict(allow_merge_on_skipped_pipeline=True)),
+                               (self.project, dict(ci_config_path='ci/architecture-pipeline.yml@x:y'))):
+            saved = copy.deepcopy(target)
+            target.update(change)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.validate()
+            target.clear()
+            target.update(saved)
+        self.validate()
+
+    def test_step_names_follow_the_core_build_job(self):
+        import native
+        self.assertEqual(set(CORE_BUILD_STEPS), {'root-fmt', 'default-fmt', 'certified-build',
+                         'development-artifact-evidence', *(name for name, _, _ in native.CORE_POLICY_COMMANDS)})
+
+    def test_plugins_still_require_native_and_security(self):
+        self.project['path_with_namespace'] = 'GetBusbar/busbar-store-memory'
+        with self.assertRaisesRegex(ValueError, 'security'):
+            self.validate()
 
 
 class Protection(unittest.TestCase):
