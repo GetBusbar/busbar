@@ -4,8 +4,12 @@
 //! scripts/security/scan.py), `native-bootstrap`/`native-root`/`native-daemon`
 //! (former native_ci_bootstrap.py) and `retention`, the in-CI retain-or-fresh
 //! decision native-bootstrap runs first (former scripts/architecture/
-//! ci_retention.py). See controller.pin for its delivery.
+//! ci_retention.py) and `architecture`, the native step's source/graph/policy
+//! and compiler-witness checks (former scripts/architecture/check.py). See
+//! controller.pin for its delivery.
+mod architecture;
 mod bootstrap;
+mod confine;
 mod fetch;
 mod images;
 mod inflate;
@@ -13,6 +17,7 @@ mod inputs;
 mod isolation;
 mod isotime;
 mod json;
+mod pathx;
 mod policy;
 mod proc;
 mod py;
@@ -26,8 +31,7 @@ mod zip;
 use std::path::{Component, Path, PathBuf};
 
 const USAGE: &str = "usage: busbar-ci security-scans --trusted TRUSTED --checkout CHECKOUT --work WORK --output OUTPUT";
-const COMMANDS: &str =
-    "usage: busbar-ci {security-scans|retention|native-bootstrap|native-root|native-daemon} ...";
+const COMMANDS: &str = "usage: busbar-ci {security-scans|retention|architecture|native-bootstrap|native-root|native-daemon} ...";
 const OPTIONS: [&str; 4] = ["--trusted", "--checkout", "--work", "--output"];
 
 fn usage_error(message: &str) -> ! {
@@ -198,6 +202,7 @@ fn main() {
     let code = match command.as_str() {
         "security-scans" => security_main(args),
         "retention" => retention_main(args),
+        "architecture" => architecture::main(args),
         "native-bootstrap" | "native-root" | "native-daemon" => {
             match bootstrap::main(&command, &args) {
                 Ok(()) => 0,

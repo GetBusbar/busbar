@@ -1094,6 +1094,9 @@ fn root(payload: Value, self_binary: PathBuf) -> Result<()> {
     controller_env.insert("PATH".into(), format!("/opt/cargo/bin:{}", proc::HOST_PATH));
     controller_env.insert("RUSTUP_HOME".into(), "/opt/rustup".into());
     controller_env.insert("CARGO_HOME".into(), path_text(&control.join("home/.cargo")));
+    // The step runner launches this same digest-verified binary for its
+    // controller-owned steps (`busbar-ci architecture`); never a candidate path.
+    controller_env.insert("BUSBAR_CI_CONTROLLER".into(), path_text(&self_binary));
     let home = control.join("home");
     io(fs::create_dir(&home), &home)?;
     io(

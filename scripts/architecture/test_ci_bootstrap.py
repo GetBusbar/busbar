@@ -253,7 +253,7 @@ class ControllerCrate(unittest.TestCase):
                 continue
             if path.suffix in ('.sh', '.toml', '.lock', '.pin'):
                 self.assertNotIn(b'python', path.read_bytes().lower(), path)
-            if path.suffix == '.rs' and path.name != 'bootstrap.rs':
+            if path.suffix == '.rs' and path.name not in ('bootstrap.rs', 'confine.rs'):
                 code = path.read_text().split('#[cfg(test)]', 1)[0]
                 self.assertNotIn('/usr/bin/python3', code, path)
                 self.assertNotRegex(code, r'"python3?"', path)
@@ -265,6 +265,16 @@ class ControllerCrate(unittest.TestCase):
         # the controller's own `retention` command (no interpreter).
         self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', bootstrap))),
                          ['native.py', 'native_isolation_diagnostic.py'])
+        # The candidate boundary (`busbar-ci architecture`) never runs host Python:
+        # each confined command starts only the protected configuration's pinned-image
+        # interpreter on the read-only in-container entry, exactly as the step runner.
+        confine = (ROOT / 'tools/ci/src/confine.rs').read_text().split('\n#[cfg(test)]\npub mod tests', 1)[0]
+        self.assertNotIn('/usr/bin/python3', confine)
+        self.assertNotRegex(confine, r'Command::new\("python')
+        # The configuration key, its validation, and the entry argv.
+        self.assertEqual(len(re.findall(r'"python3?"', confine)), 3)
+        self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', confine))),
+                         ['__busbar_entry.py', 'confinement_entry.py', 'native_confinement.py'])
 
     def test_pin_names_one_reproducible_binary_by_digest(self):
         manifest = (ROOT / 'tools/ci/Cargo.toml').read_text()

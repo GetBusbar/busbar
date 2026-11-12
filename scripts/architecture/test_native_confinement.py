@@ -17,7 +17,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import check
 from confinement_entry import ignore_cargo_seed_entries
 import linux_job_isolation
 import native
@@ -331,15 +330,6 @@ class Boundary(Fixture, unittest.TestCase):
                 ["cargo", "check", "--manifest-path", str(manifest)], {}
             )
         self.assertEqual(set(self.control.iterdir()), before)
-
-    def test_architecture_compiler_calls_have_no_host_fallback(self):
-        execution = self.execution()
-        with patch.object(check, "EXECUTION", execution), patch.object(
-            execution, "run", side_effect=ValueError("unavailable")
-        ), patch.object(check.subprocess, "run") as host:
-            with self.assertRaisesRegex(ValueError, "unavailable"):
-                check.candidate_run(["cargo", "check"])
-            host.assert_not_called()
 
     def test_conformance_without_migrated_fixture_api_refuses(self):
         q = native.Qualification.__new__(native.Qualification)

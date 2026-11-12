@@ -157,7 +157,7 @@ role = "wrapper"
 dev_allows = ["busbar-contract", "busbar-plugin-loader"]
 """)
             output = q.evidence / (label + '-architecture.json')
-            command = ['python3', str(q.trusted / 'scripts/architecture/check.py'),
+            command = [q.controller(), 'architecture',
                 '--policy', str(policy_file), '--repository', repo, '--checkout', str(root),
                 '--trusted', str(q.trusted), '--scratch', str(scratch), '--output', str(output)]
             if q.execution is not None:
