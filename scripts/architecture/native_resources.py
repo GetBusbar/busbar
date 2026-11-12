@@ -39,6 +39,19 @@ def _read_int(path):
         return None
 
 
+def _keyed(path, *keys):
+    """Selected integer fields of a flat-keyed cgroup file such as memory.stat."""
+    values = {}
+    try:
+        for line in path.read_text().splitlines():
+            key, _, value = line.partition(' ')
+            if key in keys:
+                values[key] = int(value)
+    except (OSError, ValueError):
+        return {}
+    return values
+
+
 def _cpu_seconds(cgroup):
     try:
         for line in (cgroup / 'cpu.stat').read_text().splitlines():
@@ -61,6 +74,13 @@ class StepObserver:
         self.cgroup = None
         self.samples = 0
         self.memory_peak = None
+        # memory.peak counts reclaimable page cache, so a compiler step that
+        # streams a large target directory reports the full limit whether or
+        # not its compilers came near it. Anonymous memory is what an
+        # out-of-memory kill is decided on; record its sampled maximum and the
+        # cgroup's own pressure/OOM event counters next to the gross peak.
+        self.anon_peak = None
+        self.events = None
         self.cpu_seconds = None
 
     def sample(self):
@@ -72,6 +92,12 @@ class StepObserver:
             peak = _read_int(self.cgroup / 'memory.peak')
             observed = max(v for v in (peak, current, self.memory_peak or 0) if v is not None)
             self.memory_peak = observed
+            anon = _keyed(self.cgroup / 'memory.stat', 'anon').get('anon')
+            if anon is not None:
+                self.anon_peak = max(anon, self.anon_peak or 0)
+            events = _keyed(self.cgroup / 'memory.events', 'high', 'max', 'oom', 'oom_kill')
+            if events:
+                self.events = events
             cpu = _cpu_seconds(self.cgroup)
             if cpu is not None:
                 self.cpu_seconds = cpu
@@ -82,12 +108,13 @@ class StepObserver:
             self.emit(json.dumps({'heartbeat': {
                 'step': self.name, 'elapsed_seconds': round(now - self.started, 1),
                 'memory_current_bytes': current, 'memory_peak_bytes': self.memory_peak,
-                'cpu_seconds': self.cpu_seconds}}))
+                'memory_anon_peak_bytes': self.anon_peak, 'cpu_seconds': self.cpu_seconds}}))
 
     def summary(self):
         return {'elapsed_seconds': round(self.clock() - self.started, 3),
                 'cgroup_observed': self.cgroup is not None, 'samples': self.samples,
-                'memory_peak_bytes': self.memory_peak, 'cpu_seconds': self.cpu_seconds,
+                'memory_peak_bytes': self.memory_peak, 'memory_anon_peak_bytes': self.anon_peak,
+                'memory_events': self.events, 'cpu_seconds': self.cpu_seconds,
                 'sample_seconds': SAMPLE_SECONDS}
 
 
