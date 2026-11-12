@@ -57,7 +57,9 @@ class Sources(unittest.TestCase):
                 self.assertEqual(q.receipt['canonical_inputs'][repository], sorted({needed} | ({extra} if standalone else set())))
                 self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar-auth-oidc'], [current])
                 self.assertEqual(read.call_count, int(standalone))
-                self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar'], sorted({sdk, current}))
+                # Core jobs no longer read their own HEAD from canonical-inputs.
+                self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar'],
+                                 sorted({sdk} | (set() if owner == 'GetBusbar/busbar' else {current})))
 
     def test_collects_exact_public_commits_and_rejects_mutable_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -169,6 +171,26 @@ class Sources(unittest.TestCase):
             joined = ' '.join(' '.join(argv) for argv in fetches)
             for unused in (sdk_dist, vector_only, host_rev):
                 self.assertNotIn(unused, joined)
+
+    def test_core_fetches_subject_closures_and_vector_products_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, sdk, heads, (sdk_rev, host_rev, own, sdk_dist, vector_only) = self.plugin_fixture(Path(directory))
+            # A core job: the candidate checkout is the host.
+            q.repository, q.root = 'GetBusbar/busbar', host
+            q.policy.data['repositories']['GetBusbar/busbar'] = {'private': False}
+            (host / 'Cargo.lock').write_text((q.work.parent / 'candidate/Cargo.lock').read_text())
+            calls = []
+            with patch('native_sources.product_inputs', side_effect=lambda *a: calls.append(a) or {}):
+                fetches = self.run_prepare(q, host, heads)
+            self.assertEqual(q.receipt['canonical_inputs'], {
+                'GetBusbar/busbar': [sdk_rev], 'GetBusbar/busbar-store-memory': [own],
+                'GetBusbar/busbar-auth-ldap': [vector_only]})
+            joined = ' '.join(' '.join(argv) for argv in fetches)
+            for unused in (sdk_dist, host_rev):
+                self.assertNotIn(unused, joined)
+            # Every vector product still reaches the standalone product closure.
+            self.assertEqual([row['repo'] for row in calls[0][1]['products']],
+                             ['busbar-store-memory', 'busbar-auth-ldap'])
 
     def test_plugin_still_rejects_private_vector_products(self):
         with tempfile.TemporaryDirectory() as directory:
