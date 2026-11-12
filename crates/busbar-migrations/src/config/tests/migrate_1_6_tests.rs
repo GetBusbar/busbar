@@ -157,3 +157,99 @@ fn the_ungoverned_role_binds_exactly_whom_1_5_5_admitted_ungoverned() {
 
     assert!(synthesize_bound_key("sso", &principal(&[]), &bindings("sso: { eng: {} }")).is_none());
 }
+
+/// `allow_private: true` becomes an `advanced.allow_destinations` entry for exactly the hosts that
+/// registration dials (its url and its token endpoint), never a wildcard or a network; the key is
+/// gone, and the report says what replaced it.
+#[test]
+fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() {
+    let out = migrate_config(
+        "store: { module: memory }\n\
+         advanced:\n  allow_destinations: ['already.internal']\n\
+         tools:\n  hooks: [pii-guard]\n  search:\n    url: https://MCP.tools.internal./mcp\n    \
+         allow_private: true\n    token_exchange: { token_url: 'https://10.1.2.3:8443/token' }\n  \
+         other:\n    url: https://already.internal/mcp\n    allow_private: true\n  \
+         public:\n    url: https://mcp.example.com/mcp\n    allow_private: false\n\
+         agents:\n  planner:\n    url: 'http://[fd00::7]:8080/a2a'\n    allow_private: true\n",
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert_eq!(
+        d["advanced"]["allow_destinations"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "['already.internal', 'mcp.tools.internal', '10.1.2.3', 'fd00::7']"
+        )
+        .unwrap(),
+        "{}",
+        out.yaml
+    );
+    for at in [
+        "tools.search",
+        "tools.other",
+        "tools.public",
+        "agents.planner",
+    ] {
+        let (section, name) = at.split_once('.').unwrap();
+        assert!(
+            d[section][name].get("allow_private").is_none(),
+            "{at}: {}",
+            out.yaml
+        );
+    }
+    assert_eq!(d["tools"]["hooks"][0], "pii-guard");
+    let report = out.changes.join("\n");
+    assert!(
+        report.contains("tools.search.allow_private: replaced by advanced.allow_destinations: 'mcp.tools.internal'"),
+        "{report}"
+    );
+    assert!(
+        report.contains("tools.other.allow_private: removed; 'already.internal' is already listed"),
+        "{report}"
+    );
+    assert!(
+        report.contains("tools.public.allow_private: removed (it was not `true`"),
+        "{report}"
+    );
+    assert!(
+        out.warnings
+            .iter()
+            .any(|w| w.starts_with("agents.planner: `http://[fd00::7]:8080/a2a` is plaintext")),
+        "{:?}",
+        out.warnings
+    );
+    assert!(
+        !out.yaml.contains("*."),
+        "no wildcard is ever written: {}",
+        out.yaml
+    );
+}
+
+/// A registration whose `allow_private` reached a cloud-metadata host keeps it refused: nothing is
+/// listed, and the operator is told why.
+#[test]
+fn allow_private_never_lists_a_metadata_host() {
+    let out = migrate_config(
+        "store: { module: memory }\n\
+         agents:\n  imds:\n    url: http://169.254.169.254/latest\n    allow_private: true\n  \
+         gce:\n    url: https://metadata.google.internal/a2a\n    allow_private: true\n",
+    )
+    .expect("migrates");
+    let d = doc(&out.yaml);
+    assert!(
+        d.get("advanced")
+            .and_then(|a| a.get("allow_destinations"))
+            .is_none(),
+        "{}",
+        out.yaml
+    );
+    for name in ["imds", "gce"] {
+        assert!(d["agents"][name].get("allow_private").is_none());
+        assert!(
+            out.warnings.iter().any(|w| w
+                .starts_with(&format!("agents.{name}.allow_private: removed; "))
+                && w.contains("cloud-metadata")),
+            "{name}: {:?}",
+            out.warnings
+        );
+    }
+}

@@ -122,7 +122,7 @@ Naming a server `hooks` or `upstream_credentials` is refused at parse with a mes
 | `resource_templates_allow` | map of URI template → object | no | `{}` | RFC 6570 **level 1 only**. |
 | `aud` | absolute http(s) URI | required when `token_exchange:` is set; **refused** on `stdio` | — | The RFC 8707 resource indicator for the OUTBOUND token. Not Busbar's own audience — that is `mcp.canonical_uri`. |
 | `grants` | object of three booleans | no | all `false` | `sampling`, `elicitation`, `roots` — which asks this upstream may put to your callers. A granted ask is relayed to the caller; Busbar answers none itself. |
-| `allow_private` | bool | no; **refused** on `stdio` | `false` | Permits a private / loopback / CGNAT address for this one server. Never permits cloud-metadata addresses. To reach a server on a private network, list its host in `advanced.allow_destinations` instead: that one setting governs every outbound connection busbar and its plugins make ([configuration](/docs/configuration/#advanced)); `allow_private` is being retired in its favour. |
+| `allow_private` | — | **refused** (BUSBAR-3027) | — | Retired in 1.6.0. One setting governs every outbound connection: list the server's host (or its address) in [`advanced.allow_destinations`](/docs/configuration/#advanced). `busbar --migrate-config` removes the key and lists exactly that registration's host. A cloud-metadata address stays refused whatever is listed. |
 | `token_exchange` | object | no; **refused** on `stdio` | absent | RFC 8693 exchange. Absent ⇒ no credential is sent at all. |
 | `max_input_required_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on the rounds of an UPSTREAM's asks Busbar relays to its caller, per dispatch. `0` means never. |
 | `max_caller_ask_rounds` | u32 | no | `3` (`tools_config.rs`) | Cap on rounds Busbar asks ITS OWN CALLER for. `0` is an operator kill switch for every `ask_caller` on this server. |
@@ -153,7 +153,7 @@ One round of `ask_caller` is a map from a server-assigned key to `{method, param
 
 **`resource_templates_allow.<template>`**: `name`, `description`, `mime_type`, `text`. There is deliberately no `blob:`.
 
-**`token_exchange`**: `token_url` (must be `https`, or `http` only on a registration that also sets `allow_private: true`), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`tools_config.rs`; the derivation is `tool_scope.rs`).
+**`token_exchange`**: `token_url` (must be `https`; its host is governed by [`advanced.allow_destinations`](/docs/configuration/#advanced) like every other destination), `subject_token` (a `SecretRef` — Busbar's OWN token, never the caller's), `subject_token_type` (default `urn:ietf:params:oauth:token-type:access_token`). There is deliberately **no `scope:`** — the requested scope is derived from the inbound caller's own grant at dispatch time, because a configured scope list would be a second statement of what a caller may reach and the wider one would win (`tools_config.rs`; the derivation is `tool_scope.rs`).
 
 ```yaml
 tools:
@@ -193,7 +193,6 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | `token_exchange:` on `stdio` | a pipe has no header block to carry a bearer. Refused rather than silently dropped | `1154-1160` |
 | `aud:` on `stdio` | stdio mints no outbound token | `1161-1166` |
 | `upstream_credentials:` on `stdio` | stdio makes no network hop | `1167-1172` |
-| `allow_private:` on `stdio` | there is no address for it to widen | `1175-1180` |
 | rooted `pin.mechanism` with no `pin.key` | a pin with nothing to verify with is not a pin | `1218-1225` |
 | `pin.mechanism: unpinned` carrying `pin.key` | key material never verified against reads as protection that does not exist | `1226-1232` |
 | `verify_ttl:` unparseable | parsed at boot so it lands on the operator, not on a silent fallback later | `tools_config.rs` |
@@ -207,7 +206,7 @@ All of these are checked by `validate_server` / `validate_endpoint`, which is ca
 | `resources_allow.<uri>` declares both `text:` and `blob:` | | `1365-1372` |
 | a resource template using anything above RFC 6570 level 1 (`+ # / ? & *`), an unbalanced brace, an empty `{}`, a duplicated parameter, or no parameter at all | a matcher that accepted level-3 syntax with level-1 semantics would resolve some URIs to the wrong template — content served under an approval nobody gave | `1629-1684` |
 | `resource_templates_allow.<t>.text:` substitutes none of the template's parameters | a concrete resource behind a URI wildcard | `1382-1393` |
-| `token_exchange.token_url:` not https (and not `http` + `allow_private`) | it receives Busbar's own subject token | `1401-1409` |
+| `token_exchange.token_url:` not https | it receives Busbar's own subject token | `1401-1409` |
 | `token_exchange:` beside `upstream_credentials: passthrough` | one says Busbar mints the credential, the other says the caller supplies it | `1413-1422` |
 | `token_exchange:` with no `aud:` | without a resource indicator the issued token is spendable at any backend the AS serves | `1426-1432` |
 | `aud:` not an absolute http(s) URI | | `1435-1442` |

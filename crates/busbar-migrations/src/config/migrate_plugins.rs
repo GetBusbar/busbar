@@ -944,7 +944,7 @@ fn allow_destination(root: &mut Mapping, plugin: &str, host: &str, ledger: &mut 
     }
 }
 
-fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
+pub(super) fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, String> {
     let advanced = root
         .entry(Value::from(field::ADVANCED))
         .or_insert_with(|| Value::Mapping(Mapping::new()));
@@ -970,7 +970,7 @@ fn push_allowed(root: &mut Mapping, plugin: &str, host: &str) -> Result<bool, St
     Ok(true)
 }
 
-fn already_allowed(root: &Mapping, name: &str) -> bool {
+pub(super) fn already_allowed(root: &Mapping, name: &str) -> bool {
     let Some(Value::Mapping(advanced)) = root.get(Value::from(field::ADVANCED)) else {
         return false;
     };
