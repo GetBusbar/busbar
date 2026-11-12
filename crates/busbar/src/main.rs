@@ -1034,7 +1034,7 @@ async fn run(
         );
     }
 
-    match busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
+    match busbar_kernel::observability::init_logging() {
         Ok(()) => {}
         Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
         Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
