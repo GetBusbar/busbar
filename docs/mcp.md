@@ -384,7 +384,7 @@ The credential rides an environment variable and not a flag, because argv is wor
 
 The identity is **frozen for the life of the session**: a key revoked mid-session keeps being honoured until the process ends. The party able to end the session is the party that started it, and killing the child *is* the revocation — which no network peer can say of an HTTP stream.
 
-Because stdout is the MCP channel, logging goes to stderr in this mode (`crates/busbar/src/main.rs`).
+Busbar's log stream is always stderr, so stdout carries the MCP channel and nothing else (`busbar_kernel::observability::init_logging`).
 
 `--mcp-stdio` requires the `mcp:` block. Two live asks and one round cap are transport-local belts: a 30-second timeout on one live ask, and a cap of 8 live MRTR rounds per request on top of the operator's own `max_caller_ask_rounds` (`line.rs`).
 
