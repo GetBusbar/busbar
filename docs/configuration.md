@@ -1952,7 +1952,8 @@ connector resolves the name, applies this check to every answered address, and l
 open only the address it checked. So `block_private_addresses` and `allow_destinations` govern an
 export sink (OTLP, webhook), a hook's outbound call (`webrequest`), an identity provider fetch
 (OIDC), a plane's upstream (an MCP server, an A2A agent) and every other plugin dial alike; there
-is no per-plugin private-address switch to set. The scheme a destination may use is part of the
+is no per-plugin private-address switch (the 1.5.x `tools.<server>.allow_private` and
+`agents.<agent>.allow_private` are refused, BUSBAR-3027; `busbar --migrate-config` moves them here). The scheme a destination may use is part of the
 same check: an export sink or hook on the `loopback-allowed` class takes `https://`, or plaintext
 `http://` only to loopback; an `open-web` destination (a webhook sink, an identity provider's
 documents) takes `https://` only.

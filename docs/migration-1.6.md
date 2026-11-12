@@ -268,6 +268,28 @@ once and update clients that submit or read retired fields.
   `at`. Read `fires_at` for the effective stages and `phase` for the configured list. Update clients
   and dashboards that previously read `at`.
 
+- **`tools.<server>.allow_private` and `agents.<agent>.allow_private` → `advanced.allow_destinations`.**
+  One setting governs every outbound connection busbar and its plugins make; the per-registration
+  switch is retired and a configuration that still sets it is refused (BUSBAR-3027), naming the
+  registration. `busbar --migrate-config` removes the key and lists exactly the hosts that
+  registration dials (its `url`, and a token endpoint it names), never a wildcard or a network:
+
+  ```yaml
+  # before
+  tools:
+    search:
+      url: https://mcp.tools.internal/mcp
+      allow_private: true
+  # after
+  advanced:
+    allow_destinations: [mcp.tools.internal]
+  tools:
+    search:
+      url: https://mcp.tools.internal/mcp
+  ```
+
+  `allow_private: false` is simply removed. A cloud-metadata host is never listed. A registration
+  whose URL is plaintext `http://` is reported, because `allow_private` also admitted plaintext.
 
 ---
 
