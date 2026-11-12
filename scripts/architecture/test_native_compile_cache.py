@@ -191,6 +191,108 @@ class Provenance(unittest.TestCase):
             cache.provenance(self.Registry(duplicated), 'v', self.ROW, self.MANIFEST)
 
 
+class RoundTrip(unittest.TestCase):
+    """A protected dev push publishes; a later merge request restores and stamps."""
+
+    class Registry:
+        def __init__(self):
+            self.files, self.uploads = {}, []
+            self.pipeline = {'id': 70, 'ref': 'dev', 'source': 'push', 'sha': 'c' * 40}
+
+        def read(self, version, name, limit):
+            if (version, name) not in self.files:
+                raise FileNotFoundError(name)
+            return self.files[(version, name)]
+
+        def upload(self, version, name, path):
+            self.files[(version, name)] = Path(path).read_bytes()
+            self.uploads.append(name)
+
+        def download(self, version, name, destination, size, digest):
+            Path(destination).write_bytes(self.files[(version, name)])
+
+        def json(self, path):
+            if path.startswith('/packages?'):
+                version = path.split('package_version=', 1)[1]
+                return [{'id': 9, 'name': cache.PACKAGE, 'version': version}]
+            rows = []
+            for (_, name), data in reversed(list(self.files.items())):
+                import hashlib
+                rows.append({'file_name': name, 'pipelines': [self.pipeline],
+                             'file_sha256': hashlib.sha256(data).hexdigest()})
+            return rows
+
+    def q(self, base, env):
+        class Q:
+            pass
+        q = Q()
+        q.repository, q.receipt, q.save = 'GetBusbar/busbar', {'commit_ref_protected': True}, lambda: None
+        q.execution = type('E', (), {'config': {'image': 'sha256:' + 'a' * 64}})()
+        q.root, q.control = base / 'checkout', base / 'control'
+        q.control.mkdir(parents=True)
+        q.env = dict(env, CARGO_TARGET_DIR=str(base / 'target'))
+        return q
+
+    def test_publish_then_restore_reuses_unchanged_units_by_content(self):
+        registry = self.Registry()
+        env = {'RUSTUP_TOOLCHAIN': '1.98.0'}
+        ci = {'CI_JOB_NAME': 'core-build', 'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev',
+              'CI_COMMIT_SHA': 'c' * 40, 'CI_PIPELINE_ID': '70', 'CI_JOB_ID': '71'}
+        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as two, \
+                patch.dict(os.environ, ci):
+            producer = self.q(Path(one), env)
+            consumer = self.q(Path(two), env)
+            # Both jobs see the same absolute paths, as the bootstrap lays them out.
+            consumer.root, consumer.env['CARGO_TARGET_DIR'] = producer.root, producer.env['CARGO_TARGET_DIR']
+            tree(producer.root, {'Cargo.toml': b'[workspace]\n', 'crates/a/src/lib.rs': b'a\n',
+                                 'crates/b/src/lib.rs': b'b\n'})
+            for directory, names, files in os.walk(producer.root):
+                for name in names + files:
+                    os.utime(Path(directory) / name, ns=(1_700_000_000_000_000_000,) * 2)
+            os.utime(producer.root, ns=(1_700_000_000_000_000_000,) * 2)
+            target = Path(producer.env['CARGO_TARGET_DIR'])
+            tree(target, {'debug/deps/liba.rlib': b'a-unit', 'debug/build/x/build-script-build': b'#!'})
+            os.chmod(target / 'debug/build/x/build-script-build', 0o755)
+            record = cache.produce(producer, None, registry)
+            self.assertEqual(record['status'], 'published', record)
+            self.assertEqual(record['generation'], 0)
+            self.assertTrue(registry.uploads[0].startswith('target-'))
+            self.assertEqual(registry.uploads[1], 'manifest-' + 'c' * 40 + '.json')
+            # A later merge request: one changed file, an empty target, read-only use.
+            import shutil
+            shutil.rmtree(target)
+            (producer.root / 'crates/b/src/lib.rs').write_bytes(b'b changed\n')
+            with patch.dict(os.environ, CI_PIPELINE_SOURCE='merge_request_event', CI_COMMIT_BRANCH=''):
+                manifest = cache.restore(consumer, registry)
+                self.assertEqual(consumer.receipt['compile_target']['status'], 'hit', consumer.receipt)
+                self.assertEqual(cache.produce(consumer, manifest, registry)['status'], 'skipped')
+            self.assertEqual((target / 'debug/deps/liba.rlib').read_bytes(), b'a-unit')
+            self.assertTrue(os.access(target / 'debug/build/x/build-script-build', os.X_OK))
+            self.assertEqual(os.stat(producer.root / 'crates/a/src/lib.rs').st_mtime_ns, 1_700_000_000_000_000_000)
+            self.assertGreater(os.stat(producer.root / 'crates/b/src/lib.rs').st_mtime,
+                               os.stat(target / 'debug/deps/liba.rlib').st_mtime)
+            self.assertEqual(len(registry.uploads), 2)
+
+    def test_exhausted_generation_or_foreign_writer_is_a_cold_start(self):
+        registry = self.Registry()
+        ci = {'CI_JOB_NAME': 'core-build', 'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev',
+              'CI_COMMIT_SHA': 'c' * 40, 'CI_PIPELINE_ID': '70', 'CI_JOB_ID': '71'}
+        with tempfile.TemporaryDirectory() as one, patch.dict(os.environ, ci):
+            q = self.q(Path(one), {})
+            tree(q.root, {'Cargo.toml': b'x'})
+            os.utime(q.root / 'Cargo.toml', ns=(1_700_000_000_000_000_000,) * 2)
+            os.utime(q.root, ns=(1_700_000_000_000_000_000,) * 2)
+            tree(Path(q.env['CARGO_TARGET_DIR']), {'debug/deps/liba.rlib': b'a'})
+            cache.produce(q, {'generation': cache.MAX_GENERATIONS - 1}, registry)
+            import shutil
+            shutil.rmtree(q.env['CARGO_TARGET_DIR'])
+            self.assertIsNone(cache.restore(q, registry))
+            self.assertIn('generation', ' '.join(q.receipt['compile_target']['reasons']))
+            registry.pipeline = dict(registry.pipeline, ref='feature')
+            self.assertIsNone(cache.restore(q, registry))
+            self.assertFalse((Path(q.env['CARGO_TARGET_DIR']) / 'debug').exists())
+
+
 class Producer(unittest.TestCase):
     def test_merge_request_runs_never_write(self):
         class Q:

@@ -162,13 +162,18 @@ def install(seed, destination, restored_at, executables=None):
     if destination.exists() or destination.is_symlink():
         raise Unavailable('compile target destination already exists')
     shutil.copytree(seed, destination, symlinks=True, copy_function=shutil.copyfile)
+    return settle(destination, restored_at, executables, seed)
+
+
+def settle(destination, restored_at, executables=None, seed=None):
+    """Writable modes, execute bits and one restore time on an extracted target."""
     for directory, names, files in os.walk(destination):
         os.chmod(directory, 0o755)
         for name in files:
             path = Path(directory) / name
             relative = path.relative_to(destination).as_posix()
             executable = (relative in executables if executables is not None
-                          else os.access(Path(seed) / relative, os.X_OK))
+                          else seed is not None and os.access(Path(seed) / relative, os.X_OK))
             os.chmod(path, 0o755 if executable else 0o644)
             os.utime(path, (restored_at, restored_at), follow_symlinks=False)
     return destination
@@ -318,7 +323,6 @@ def restore(q, registry=None, *, now=None):
         record['status'] = 'not-applicable'
         q.save()
         return None
-    seed = q.control / 'compile-target-seed'
     download = q.control / 'compile-target.tar.gz'
     target = Path(q.env['CARGO_TARGET_DIR'])
     started = time.monotonic()
@@ -351,12 +355,15 @@ def restore(q, registry=None, *, now=None):
             record['reasons'] = reasons[:5]
             return None
         registry.download(version, archive['name'], download, archive['bytes'], archive['sha256'])
-        unpack(download, seed, manifest['files'])
-        executables = {name for name, row in manifest['files'].items() if row[1]}
+        # One copy only: the job store also holds the build. Extract straight into
+        # the empty job target, every file checked against the manifest digest.
         if target.exists():
             target.rmdir()
+        unpack(download, target, manifest['files'])
+        download.unlink()
+        executables = {name for name, row in manifest['files'].items() if row[1]}
         restored_at = (time.time() if now is None else now) - 60
-        install(seed, target, restored_at, executables)
+        settle(target, restored_at, executables)
         record['stamp'] = stamp_checkout(q.root, manifest['sources'], restored_at)
         record.update(status='hit', generation=manifest['generation'], archive_sha256=archive['sha256'],
                       archive_bytes=archive['bytes'], files=len(manifest['files']),
@@ -369,11 +376,6 @@ def restore(q, registry=None, *, now=None):
         return None
     finally:
         record['restore_seconds'] = round(time.monotonic() - started, 3)
-        for path in (seed,):
-            if path.exists():
-                for directory, _, _ in os.walk(path):
-                    os.chmod(directory, 0o755)
-                shutil.rmtree(path)
         download.unlink(missing_ok=True)
         q.save()
 
