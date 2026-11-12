@@ -304,8 +304,8 @@ class SameOrigin(urllib.request.HTTPRedirectHandler):
 
 
 class Registry:
-    def __init__(self, token, api=PROJECT_API, opener=None):
-        self.api, self.token = api, token
+    def __init__(self, token, api=PROJECT_API, opener=None, package=PACKAGE):
+        self.api, self.token, self.package = api, token, package
         self.opener = opener or urllib.request.build_opener(SameOrigin())
 
     def _open(self, url, method='GET', data=None, timeout=120):
@@ -320,7 +320,7 @@ class Registry:
             raise Unavailable(f'package registry unavailable: {error}') from None
 
     def file_url(self, version, name):
-        return f'{self.api}/packages/generic/{PACKAGE}/{version}/{name}'
+        return f'{self.api}/packages/generic/{self.package}/{version}/{name}'
 
     def read(self, version, name, limit):
         with self._open(self.file_url(version, name)) as response:
@@ -366,10 +366,11 @@ def provenance(registry, version, manifest):
     A personal-token or other-pipeline upload, a duplicate file, or an API that
     will not answer is a miss: build from scratch.
     """
-    query = urllib.parse.urlencode({'package_type': 'generic', 'package_name': PACKAGE,
+    package = getattr(registry, 'package', PACKAGE)
+    query = urllib.parse.urlencode({'package_type': 'generic', 'package_name': package,
                                     'package_version': version})
     packages = [p for p in registry.json('/packages?' + query)
-                if p.get('name') == PACKAGE and p.get('version') == version]
+                if p.get('name') == package and p.get('version') == version]
     if len(packages) != 1:
         raise Unavailable('dependency package is absent or ambiguous')
     producer = manifest['producer']
@@ -609,5 +610,14 @@ def produce(q, registry=None):
             rows.append(produce_product(q, product, q.policy, registry, image=q.execution.config['image']))
         except Exception as error:  # one product's failure must not block the others
             rows.append({'repo': product['repo'], 'status': 'failed', 'reason': str(error)[:500]})
+        q.save()
+    # The same shard's products also publish their core product-inputs test
+    # image (native_product_images), built with the consumer's exact recipe.
+    import native_product_images
+    shard_products = [p for p in vector['products'] if product_shard(p['repo']) == shard]
+    try:
+        native_product_images.produce(q, shard_products)
+    except Exception as error:  # images are an optimisation; never block units
+        q.receipt['product_images_produced'] = [{'status': 'failed', 'reason': str(error)[:500]}]
         q.save()
     return rows

@@ -38,3 +38,16 @@ def load_product_inputs(stdout, work, policy, vector, revision):
         require(len(roots) == 1, "product path is outside candidate build/cache outputs")
         regular_under(path, roots[0])
     return ProductInputs(values)
+
+
+def canonical_plan(work, policy, vector, revision):
+    """The controller's own plan, read from the exact canonical owner commits."""
+    work = Path(work).resolve()
+    def canonical_git(source, *args):
+        # Confinement reowns candidate storage, including these controller-fetched
+        # bare objects, to the remapped UID. Trust only this exact source for this
+        # read; blob() still checks paths, immutable commits, blob type and bounds.
+        require(Path(source).parent == work / "canonical-inputs", "unexpected canonical owner source")
+        return git(source, "-c", "safe.directory=", "-c", "safe.directory=" + str(source), *args)
+    return plan(policy, vector, lambda row: work / "canonical-inputs" / row["repo"],
+                work / "target", work / "cache", revision, git_reader=canonical_git)

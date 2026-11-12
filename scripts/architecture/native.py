@@ -90,6 +90,10 @@ def step_build_jobs(name, argv, scheduling):
     script = UNOPTIMIZED_WRAPPER_STEPS.get(name)
     if script is not None and len(argv) == 2 and argv[0] == 'bash' and argv[1].endswith('/' + script):
         unoptimized = True
+    # The trusted image producer runs product-inputs' one dev-profile image build.
+    if (name.startswith('product-image-') and len(argv) >= 2 and argv[0] == 'python3'
+            and argv[1].endswith('/scripts/architecture/product_artifacts.py') and '--image-only' in argv):
+        unoptimized = True
     if name in OPTIMIZED_STEPS or not unoptimized or 'unoptimized_build_jobs' not in scheduling:
         return scheduling['build_jobs']
     return scheduling['unoptimized_build_jobs']
@@ -697,10 +701,19 @@ class Qualification:
             'crates/busbar-contract/src', 'crates/busbar-contract/include', 'crates/busbar-contract/Cargo.toml'])
         self.receipt['sdk_revision'] = sdk
         from native_fixtures import Services
+        import native_product_images
+        vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
+        with self.preparation('product-images'):
+            # Trusted prebuilt pinned plugin images; any miss builds as before.
+            images = native_product_images.restore(self, vector, self.receipt['host_revision'])
         with Services(self, host):
-            envfile = self.run('product-inputs', ['bash', str(self.trusted / 'scripts/ci-product-inputs.sh')])
-            from native_product_inputs import load_product_inputs
-            vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
+            try:
+                envfile = self.run('product-inputs', ['bash', str(self.trusted / 'scripts/ci-product-inputs.sh')])
+            finally:
+                native_product_images.discard(self)
+            from native_product_inputs import canonical_plan, load_product_inputs
+            native_product_images.verify(self, images, canonical_plan(
+                self.work, self.policy, vector, self.receipt['host_revision'])[0])
             product_inputs = load_product_inputs(envfile, self.work, self.policy, vector, self.receipt['host_revision'])
             if self.execution is not None:
                 self.execution.allow_product_inputs(product_inputs)

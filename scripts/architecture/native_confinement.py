@@ -231,6 +231,9 @@ class Execution:
         self.conformance_inputs_manifest = None
         self.dependency_seed = None
         self.dependency_seed_sha256 = None
+        # Controller-owned trusted prebuilt product images (native_product_images),
+        # mounted read-only for the product-inputs step only.
+        self.product_images = None
         self.resource_slice = None
         self.compiler_readonly = False
         self.prepared_git = None
@@ -604,6 +607,8 @@ class Execution:
                            Path('/__busbar_conformance_capabilities.json'), False))
         if self.dependency_seed is not None:
             mounts.append((self.dependency_seed, Path('/__busbar_job_seed'), False))
+        if getattr(self, 'product_images', None) is not None:
+            mounts.append((checked_directory(self.product_images), Path('/__busbar_product_images'), False))
         fixture_hosts = (['localhost.emobix.co.uk:127.0.0.1', 'busbar.oidf.test:127.0.0.1']
                          if any(target == Path('/opt/busbar-conformance/oidf')
                                 for _, target in self.conformance_mounts) else [])
