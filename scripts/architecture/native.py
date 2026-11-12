@@ -498,7 +498,12 @@ class Qualification:
                     elif controller and getattr(self, 'execution', None):
                         environment = dict(self.env, DOCKER_HOST=self.execution.config['docker_host'])
                     process = subprocess.Popen(command, cwd=cwd or self.root, env=environment, stdout=out, stderr=err, start_new_session=True)
-                code = process.wait(timeout=timeout)
+                from native_resources import StepObserver, wait_observed
+                observer = StepObserver(name, (row.get('container') or {}).get('container_id'))
+                try:
+                    code = wait_observed(process, timeout, observer)
+                finally:
+                    row['resources'] = observer.summary()
             except subprocess.TimeoutExpired:
                 row.update(status='timeout', finished_at=now())
                 self.save()
