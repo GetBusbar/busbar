@@ -11,6 +11,10 @@ pub struct Entry {
     pub kind: u8,
     pub size: u64,
     pub mode: u32,
+    pub uid: u64,
+    pub gid: u64,
+    /// Symbolic or hard link target (`TarInfo.linkname`).
+    pub linkname: String,
 }
 
 impl Entry {
@@ -156,6 +160,7 @@ impl<R: Read> Reader<R> {
             return Ok(None);
         }
         let mut long_name: Option<String> = None;
+        let mut long_link: Option<String> = None;
         let mut extended: BTreeMap<String, String> = BTreeMap::new();
         loop {
             let Some(block) = self.block()? else {
@@ -203,7 +208,8 @@ impl<R: Read> Reader<R> {
                     continue;
                 }
                 b'K' => {
-                    self.payload(size, 1 << 16)?;
+                    let data = self.payload(size, 1 << 16)?;
+                    long_link = Some(text(&data)?);
                     continue;
                 }
                 _ => {}
@@ -226,6 +232,21 @@ impl<R: Read> Reader<R> {
                 None => size,
             };
             let mode = octal(&block[100..108])? as u32;
+            let numeric = |key: &str, field: &[u8]| -> Result<u64, String> {
+                match extended.get(key) {
+                    Some(value) => value.parse().map_err(|_| format!("invalid PAX {key}")),
+                    None => octal(field),
+                }
+            };
+            let uid = numeric("uid", &block[108..116])?;
+            let gid = numeric("gid", &block[116..124])?;
+            let mut linkname = text(&block[157..257])?;
+            if let Some(value) = long_link.take() {
+                linkname = value;
+            }
+            if let Some(value) = extended.get("linkpath") {
+                linkname = value.clone();
+            }
             // Members without data still occupy their padded size on disk for
             // regular files only; links/directories carry zero-length bodies.
             let body = if matches!(kind, b'1' | b'2' | b'3' | b'4' | b'5' | b'6') {
@@ -239,6 +260,9 @@ impl<R: Read> Reader<R> {
                 kind,
                 size: body,
                 mode,
+                uid,
+                gid,
+                linkname,
             }));
         }
     }
