@@ -184,7 +184,7 @@ advanced:
 
 **Why default off.** Both headers are useful. `Server-Timing` is a standard latency probe DevTools and APM tooling already understand, and the route headers are handy when debugging which policy picked a lane. But Busbar is deliberately anti-fingerprinting: an unauthenticated client should not be able to tell it's talking to a gateway rather than the backend directly from response shape alone. `Server-Timing: busbar;dur=…` and `x-busbar-route-*` are both in-band Busbar tells observable on every response, so both stay invisible until an operator explicitly accepts that tradeoff.
 
-**The composition gate (not a runtime check).** Enabling `server_timing` installs an ADDITIONAL middleware layer on the router at boot (mirroring how `limits.max_inbound_concurrent: 0` removes the inbound-concurrency layer entirely rather than checking a flag inside it); when disabled, the layer performing the actual timing (a per-request allocation, a monotonic clock read, and a task-local scope) is never installed at all, so the default-off posture costs nothing per request, not even the allocation the earlier gate used to pay even while suppressing the header. `route_policy` is gated the same way in spirit: a single process-wide decision read at the header's one injection site, not a per-response cost when off.
+**The composition gate (not a runtime check).** Enabling `server_timing` installs an ADDITIONAL middleware layer on the router at boot (mirroring how `limits.max_inbound_concurrent: 0` removes the inbound-concurrency layer entirely rather than checking a flag inside it); when disabled, the layer performing the actual timing (a per-request allocation, a monotonic clock read, and a task-local scope) is never installed at all, so the default-off posture costs nothing per request, not even the allocation the earlier gate used to pay even while suppressing the header. A model, MCP or A2A request is served by the data listener straight to its plane rather than through that router; there the same boot-time setting decides per request whether a measurement is started at all, so off still means no allocation, no clock read and no task-local scope. The upstream round trip is recorded by the plane driver's attempt loop, from each attempt's send to the upstream's latest piece before the response head goes out; on failover the answering attempt's round trip is the one subtracted. `route_policy` is gated the same way in spirit: a single process-wide decision read at the header's one injection site, not a per-response cost when off.
 
 ## Tracing (the hot-path level policy)
 
@@ -226,7 +226,8 @@ keeps the type tracing-opentelemetry 0.33 gave it: an `i64`, `bool` or `f64` fie
 
 `HOTPATH_LEVEL` is `DEBUG`, not the `tracing::Level::TRACE` variant, because it pairs with the
 OTHER half of the one-spot policy: `observability::log_levels()`, which builds the stderr and OTLP
-filters. Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
+filters. Logs are always written to stderr, never stdout (as in 1.5.5), so stdout stays free for a
+plane serving its protocol there (`--mcp-stdio`). Stderr takes `RUST_LOG` (default `info`, so hot-path spans are off). OTLP floors at
 `DEBUG` unconditionally, specifically so pointing an `export:` `module: otlp` instance at a collector gets
 the request-path spans without ALSO having to set `RUST_LOG=debug` and flood stderr with every debug
 line in the process. Both stay off at the default `RUST_LOG=info` filter either way. Set

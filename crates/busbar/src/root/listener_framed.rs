@@ -1021,6 +1021,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 Established::scheme_of(self.secured),
                 self.timeout,
                 permit.and_then(Result::ok),
+                busbar_kernel::router::ServerTiming::start(),
             ))
         } else {
             let request = operator::request(&head, &piece.bytes, self.secured, body, self.timeout);
@@ -1472,7 +1473,7 @@ impl ActorCaller {
     fn response_head(
         &self,
         status: u32,
-        fields: busbar_kernel::plane_driver::HeadFields,
+        mut fields: busbar_kernel::plane_driver::HeadFields,
         end: bool,
     ) {
         let mut stated = self
@@ -1485,6 +1486,12 @@ impl ActorCaller {
         *stated = Some(status);
         if end {
             self.ended.store(true, std::sync::atomic::Ordering::Release);
+        }
+        // A head written while `serve_data` measures the request carries its `Server-Timing`.
+        if let Some(value) = busbar_kernel::router::ServerTiming::current_value() {
+            let name = busbar_kernel::router::ServerTiming::HEADER.as_bytes();
+            fields.retain(|(field, _)| !field.eq_ignore_ascii_case(name));
+            fields.push((name.to_vec(), value.into_bytes()));
         }
         let (done, _) = oneshot::channel();
         self.out.send(Op::Head {
@@ -1633,6 +1640,7 @@ pub(in crate::root) async fn serve_admitted_body_test(
             StreamEnd(emitter, None),
             busbar_contract::abi::host::service::SCHEME_SECURE,
             std::time::Duration::from_secs(1),
+            None,
             None
         ),
         collect
@@ -1651,6 +1659,7 @@ async fn serve_data(
     scheme: u8,
     timeout: std::time::Duration,
     _permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    timing: Option<busbar_kernel::router::ServerTiming>,
 ) {
     use crate::root::serve::Stated as _;
     use busbar_contract::caps::ReasonCode;
@@ -1706,6 +1715,15 @@ async fn serve_data(
         routes
             .serve_admitted(&admission, context, body, scheme, slot, Arc::clone(&caller))
             .await
+    };
+    // With `Server-Timing` on, the request is served under its measurement, so the forward path
+    // records the upstream round trip the header subtracts and its head carries the header
+    // (`ActorCaller::response_head`).
+    let work = async {
+        match &timing {
+            Some(timing) => timing.measure(work).await,
+            None => work.await,
+        }
     };
     let pipe = match admission.deadline() {
         Some(deadline) => {
