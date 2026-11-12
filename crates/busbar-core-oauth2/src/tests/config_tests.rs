@@ -311,9 +311,21 @@ fn an_unknown_key_in_the_block_is_refused_at_resolve() {
 
 #[test]
 fn the_signing_key_reference_is_listed_for_the_kernel_to_resolve() {
-    let resolved = resolve_block(serde_json::json!({
+    // db6f4149aa retired the built-in `{env: …}` / `{file: …}` sugar: a shorthand exists only when
+    // an admitted source declares it, so with none admitted it refuses without echoing the value.
+    let refused = resolve_block(serde_json::json!({
         "issuer": "https://gw.example.com",
         "signing_key": { "env": "AS_SIGNING_KEY" },
+    }))
+    .expect_err("an undeclared shorthand is refused");
+    assert_eq!(
+        refused,
+        ["oauth_as: unknown reference member: shorthand requires an admitted source declaration (value not echoed)"]
+    );
+
+    let resolved = resolve_block(serde_json::json!({
+        "issuer": "https://gw.example.com",
+        "signing_key": { "module": "fixture-source", "settings": { "slot": "AS_SIGNING_KEY" } },
     }))
     .expect("valid");
     let checked = resolved.oauth_as.expect("accepted");

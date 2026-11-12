@@ -644,9 +644,7 @@ impl Zeroize for Tree {
 }
 impl Tree {
     pub(crate) fn encode(&self) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
-        let mut output = Wiping(Zeroizing::new(Vec::new()));
-        serde_json::to_writer(&mut output, &self.0)?;
-        Ok(crate::Secret::new(std::mem::take(&mut *output.0)))
+        encode_guarded(&self.0)
     }
     fn take(&mut self) -> Value {
         std::mem::take(&mut self.0)
@@ -735,6 +733,12 @@ impl<'de> Deserialize<'de> for Tree {
             fn visit_newtype_struct<D: Deserializer<'de>>(self, de: D) -> Result<Tree, D::Error> {
                 de.deserialize_any(Capture)
             }
+            // A bare string where a settings document was asked for: never quote it back.
+            fn visit_str<E: de::Error>(self, _: &str) -> Result<Tree, E> {
+                Err(E::custom(
+                    "expected a JSON-compatible settings document (value not echoed)",
+                ))
+            }
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Tree, A::Error> {
                 let key = map.next_key::<Zeroizing<String>>()?;
                 if key.as_deref().map(String::as_str) != Some(RAW_JSON_TOKEN) {
@@ -815,6 +819,15 @@ mod exact_number_tests {
         assert_eq!(serde_json::to_value(value.writing()).unwrap(), expected);
         assert!(serde_yaml::from_str::<Settings>("value: .inf").is_err());
     }
+}
+
+/// Encode `value` as JSON into guarded custody; every intermediate allocation is wiped.
+pub(crate) fn encode_guarded<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
+    let mut output = Wiping(Zeroizing::new(Vec::new()));
+    serde_json::to_writer(&mut output, value)?;
+    Ok(crate::Secret::new(std::mem::take(&mut *output.0)))
 }
 
 /// Growth moves into a new guarded allocation and wipes the previous block before freeing it.

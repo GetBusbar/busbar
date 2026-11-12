@@ -199,7 +199,7 @@ fn preresolve_hook_secrets_fails_closed_on_unresolvable_secret() {
     let mut settings = serde_json::Map::new();
     settings.insert(
         "licenseKey".to_string(),
-        serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" }),
+        serde_json::json!({ "module": "fixture-source", "settings": { "slot": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_B1" } }),
     );
     let mut hook = base_gate();
     hook.settings = settings.into();
@@ -244,7 +244,7 @@ fn preopen_gate_hooks_aborts_on_a_broken_gate_but_never_a_broken_tap() {
     let mut settings = serde_json::Map::new();
     settings.insert(
         "licenseKey".to_string(),
-        serde_json::json!({ "env": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_PREOPEN" }),
+        serde_json::json!({ "module": "fixture-source", "settings": { "slot": "BUSBAR_TEST_DEFINITELY_UNSET_SECRET_PREOPEN" } }),
     );
 
     let mut broken_tap = base_gate();
@@ -1211,7 +1211,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     }))
     .unwrap();
     hook.settings = serde_json::json!({
-        "api_token": { "env": var },
+        "api_token": { "module": "fixture-source", "settings": { "slot": var } },
         "ratio": 0.4,
         // The `{ literal: … }` escape hatch is NOT a reference: the plugin receives the inner value,
         // so the read path must compare against the inner value too.
@@ -1301,9 +1301,9 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     }))
     .unwrap();
     hook.settings = serde_json::json!({
-        // A built-in `env` reference (resolvable), and a `kind: secret` PLUGIN reference — the arm
-        // that is a blocking FFI call, and the one no read path may ever touch.
-        "api_token": { "env": var },
+        // Two canonical source references (core declares no built-in shorthand since db6f4149aa);
+        // resolving either is a blocking FFI call, the one thing no read path may ever touch.
+        "api_token": { "module": "fixture-source", "settings": { "slot": var } },
         "licenseKey": { "module": "vault", "settings": { "path": "secret/busbar" } },
         "ratio": 0.4
     })

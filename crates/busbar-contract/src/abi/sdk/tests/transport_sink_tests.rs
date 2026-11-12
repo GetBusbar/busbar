@@ -295,10 +295,19 @@ fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
             fields,
             ..Piece::data(1, b"x: v\r\n".to_vec())
         });
+        // c33b88067b: words that fill the empty frame go alone, never dropped; the body follows.
+        let words = fill_into(&mut f, 0, 6, 1, 1);
+        assert_eq!(words.frame, b"reason");
+        assert_eq!(words.heads.len(), 1);
+        assert_eq!(words.heads[0].reason.offset, 0);
+        assert_eq!(words.heads[0].reason.len, 6);
+        assert!(words.pieces.is_empty());
+        assert!(f.pieces.front().unwrap().head.is_none());
         let got = fill_into(&mut f, 0, 6, 1, 1);
-        assert!(got.heads.is_empty());
+        assert!(got.heads.is_empty(), "the words are delivered once");
         assert_eq!(got.frame, b"x: v\r\n");
         assert_eq!(got.pieces.len(), 1);
+        assert_eq!(got.pieces[0].len, 6);
         assert!(f.pieces.is_empty());
     }
     let mut f = Framing::default();
@@ -309,9 +318,14 @@ fn a_whole_sink_too_small_for_words_and_a_fragment_still_makes_progress() {
     let empty = fill_into(&mut f, 0, 0, 1, 1);
     assert!(empty.pieces.is_empty() && empty.heads.is_empty());
     assert!(f.pieces.front().unwrap().head.is_some());
+    let words = fill_into(&mut f, 0, 6, 1, 1);
+    assert_eq!(words.frame, b"words", "no field line fits beside the words");
+    assert_eq!(words.heads.len(), 1);
+    assert!(words.pieces.is_empty());
     let got = fill_into(&mut f, 0, 6, 1, 1);
-    assert!(got.heads.is_empty());
-    assert_eq!(got.frame, b"x: v\r\n", "the field name fits without words");
+    assert!(got.heads.is_empty(), "the words are delivered once");
+    assert_eq!(got.frame, b"x: v\r\n");
+    assert_eq!(got.pieces.len(), 1);
     assert!(f.pieces.is_empty());
     let mut f = Framing::default();
     f.pieces.push_back(Piece {

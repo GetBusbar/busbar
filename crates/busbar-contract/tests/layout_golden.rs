@@ -2091,11 +2091,11 @@ fn a_perturbed_connector_golden_line_fails_the_comparator() {
 #[test]
 fn a_perturbed_plane_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "pkind::OnPieceOut.units_written=124";
+    let line = "pkind::OnPieceOut.units_written=148";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_written=112", 1);
+    let perturbed = actual.replacen(line, "pkind::OnPieceOut.units_written=136", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("pkind::OnPieceOut.units_written=112"), "{err}");
+    assert!(err.contains("pkind::OnPieceOut.units_written=136"), "{err}");
 }
 
 /// RED ARM, THE AUTH KIND: one perturbed auth golden line (`fields`' slot in the auth table) fails
@@ -2112,40 +2112,40 @@ fn a_perturbed_auth_golden_line_fails_the_comparator() {
 #[test]
 fn a_perturbed_secret_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "SecretResolveOut.error_kind=120";
+    let line = "SecretResolveOut.error_kind=144";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "SecretResolveOut.error_kind=124", 1);
+    let perturbed = actual.replacen(line, "SecretResolveOut.error_kind=148", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("SecretResolveOut.error_kind=124"), "{err}");
+    assert!(err.contains("SecretResolveOut.error_kind=148"), "{err}");
 }
 
 #[test]
 fn a_perturbed_export_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "ExportDeliverIn.batch=112";
+    let line = "ExportDeliverIn.batch=120";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=120", 1);
+    let perturbed = actual.replacen(line, "ExportDeliverIn.batch=128", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("ExportDeliverIn.batch=120"), "{err}");
+    assert!(err.contains("ExportDeliverIn.batch=128"), "{err}");
 }
 
 #[test]
 fn a_perturbed_hook_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "HookDecideOut.order_written=136";
+    let line = "HookDecideOut.order_written=160";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "HookDecideOut.order_written=144", 1);
+    let perturbed = actual.replacen(line, "HookDecideOut.order_written=168", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed line must fail");
-    assert!(err.contains("HookDecideOut.order_written=144"), "{err}");
+    assert!(err.contains("HookDecideOut.order_written=168"), "{err}");
 }
 
 /// RED ARM, store kind: one perturbed primitive Store golden line
 #[test]
 fn a_perturbed_store_golden_line_fails_the_comparator() {
     let actual = compute_layout();
-    let line = "pstore::ReadIn.addresses=104";
+    let line = "pstore::ReadIn.addresses=112";
     assert!(actual.lines().any(|l| l == line), "the golden holds {line}");
-    let perturbed = actual.replacen(line, "pstore::ReadIn.addresses=112", 1);
+    let perturbed = actual.replacen(line, "pstore::ReadIn.addresses=120", 1);
     let err = compare(&perturbed, &actual).expect_err("a perturbed store line must fail");
-    assert!(err.contains("pstore::ReadIn.addresses=112"), "{err}");
+    assert!(err.contains("pstore::ReadIn.addresses=120"), "{err}");
 }
