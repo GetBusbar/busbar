@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-description = "Busbar CI controller (security-scans, native bootstrap). Not a product crate."
+description = "Busbar CI controller (security-scans, native bootstrap, retention, architecture). Not a product crate."
 license = "Apache-2.0"
 
 # CI tooling is its own workspace with its own lockfile: the root product

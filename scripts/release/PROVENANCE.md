@@ -615,8 +615,9 @@ Implemented opt-in confinement:
   no-new-privileges and explicit CPU/memory/PID caps. No Docker socket, controller
   HOME or receipt path is mounted. Environment values use an allowlist; Git clone
   credentials/hooks are removed. Candidate outputs remain writable separately.
-- check.py keeps policy calculation in the controller and sends Cargo/cc/nm through
-  that boundary. Cargo 1.98 supports separate harness lockfiles; harness compilation
+- `busbar-ci architecture` (tools/ci/src/architecture, formerly check.py) keeps
+  policy calculation in the controller and sends Cargo/cc/nm through that boundary
+  (tools/ci/src/confine.rs creates the same containers). Cargo 1.98 supports separate harness lockfiles; harness compilation
   uses fresh target directories and a fresh copy of the immutable image Cargo seed.
   Source harnesses remain read-only. Candidate output paths are checked before use.
 - Fixture container lifecycle is controller-only. Bounded fixed-destination Unix

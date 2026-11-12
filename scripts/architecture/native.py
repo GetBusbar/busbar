@@ -602,9 +602,19 @@ class Qualification:
             self.save()
         return self._sdk
 
+    def controller(self):
+        """The digest-verified busbar-ci binary the bootstrap runs this step runner from."""
+        value = os.environ.get('BUSBAR_CI_CONTROLLER', '')
+        path = Path(value)
+        if (not value or not path.is_absolute() or path.is_symlink() or not path.is_file()
+                or not os.access(path, os.X_OK)
+                or any(path.resolve().is_relative_to(root) for root in (self.root, self.work))):
+            raise Violation('verified busbar-ci controller is unavailable')
+        return str(path)
+
     def architecture(self, sdk=None):
         scratch = self.harness / 'architecture' if self.execution else self.work / 'architecture'
-        command = ['python3', str(self.trusted / 'scripts/architecture/check.py'), '--policy', str(self.trusted / 'ci/architecture.toml'),
+        command = [self.controller(), 'architecture', '--policy', str(self.trusted / 'ci/architecture.toml'),
             '--repository', self.repository, '--checkout', str(self.root), '--trusted', str(self.trusted),
             '--scratch', str(scratch), '--output', str(self.evidence / 'architecture.json')]
         if sdk:
