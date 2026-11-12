@@ -80,29 +80,99 @@ POLICY_FILES = ('scripts/architecture/admission.py', 'scripts/architecture/nativ
                 'ci/security/public-secret-fixtures.json', 'ci/architecture-pipeline.yml')
 
 
-def independent_qualification_job(raw, job):
-    """Recognize only the approved simple first-stage job inheritance grammar.
+LEGACY_STAGES = re.compile(r'^stages: \[qualify, website\]$', re.M)
+TIERED_STAGES = re.compile(r'^stages: \[build, qualify, website, release\]$', re.M)
+# Core's DEV tier: the certified build and the lint-only clippy job, then
+# conformance of exactly the build's bytes.
+CORE_DEV_JOBS = ('core-build', 'core-clippy', 'core-conformance')
+TIERED_JOBS = {'core-build': 'build', 'core-clippy': 'build', 'core-conformance': 'qualify',
+               'native-qualification': 'qualify', 'security-scans': 'qualify'}
+# Approved build-stage job sets: core-build alone (before the lint-only job
+# split out of it), or core-build in parallel with core-clippy.
+BUILD_STAGE_SETS = (['core-build'], ['core-build', 'core-clippy'])
 
+
+def pipeline_blocks(text):
+    blocks = re.split(r'^(\.?[A-Za-z][A-Za-z0-9_-]*):[ \t]*$', text, flags=re.M)
+    names = blocks[1::2]
+    require(len(names) == len(set(names)), 'duplicate original job definition')
+    return dict(zip(names, blocks[2::2]))
+
+
+def pipeline_tier(raw):
+    """'single' (one qualify stage) or 'tiered' (build -> qualify); anything else fails closed."""
+    text = raw.decode('utf-8')
+    require(not re.search(r'^(?:include|default|workflow_defaults):', text, re.M)
+            and not re.search(r'^\s*(?:needs|dependencies|<<):', text, re.M)
+            and not re.search(r'^[^#\n]*[&*][A-Za-z_]', text, re.M),
+            'unrecognized original job prerequisite graph')
+    if LEGACY_STAGES.search(text):
+        return 'single'
+    require(TIERED_STAGES.search(text), 'unrecognized original job prerequisite graph')
+    return 'tiered'
+
+
+def plain_rules(block):
+    """Rules may only select (or exclude with `when: never`); never run after failures."""
+    require(not re.search(r'^  when:', block, re.M), 'job-level when changes prerequisites')
+    match = re.search(r'^  rules:\n((?:(?:    .*)?\n)*)', block, re.M)
+    rules = match[1] if match else ''
+    require(all(value == 'never' for value in re.findall(r'^\s*(?:- )?when:\s*(\S+)', rules, re.M)),
+            'rule-level when changes prerequisites')
+
+
+def independent_qualification_job(raw, job):
+    """Recognize only the approved job inheritance grammars.
+
+    single: one qualify stage, jobs extend native-qualification.
+    tiered: every job extends the shared .controller template; core-build (and,
+    in newer policies, core-clippy) occupies the build stage, so a qualify job's
+    prerequisites are exactly those successful jobs of the same pipeline (core)
+    or nothing (plugins).
     Unknown DAG/include/default syntax fails closed, requiring fresh execution or
     an explicit controller implementation of that new prerequisite contract.
     """
     text = raw.decode('utf-8')
-    require(re.search(r'^stages: \[qualify, website\]$', text, re.M)
-            and not re.search(r'^(?:include|default|workflow_defaults):', text, re.M)
-            and not re.search(r'^\s*(?:needs|dependencies|<<):', text, re.M)
-            and not re.search(r'^[^#\n]*[&*][A-Za-z_]', text, re.M),
-            'unrecognized original job prerequisite graph')
-    blocks = re.split(r'^([A-Za-z][A-Za-z0-9_-]*):\s*$', text, flags=re.M)
-    jobs = dict(zip(blocks[1::2], blocks[2::2]))
-    require(job in jobs and 'native-qualification' in jobs, 'original job definition missing')
-    base = jobs['native-qualification']
-    require(re.search(r'^  stage: qualify$', base, re.M)
-            and not re.search(r'^  extends:', base, re.M), 'native prerequisite graph changed')
-    if job != 'native-qualification':
-        block = jobs[job]
-        require(re.search(r'^  extends: native-qualification$', block, re.M)
-                and not re.search(r'^  stage:', block, re.M), 'job prerequisite inheritance changed')
+    tier = pipeline_tier(raw)
+    if tier == 'single':
+        blocks = re.split(r'^([A-Za-z][A-Za-z0-9_-]*):\s*$', text, flags=re.M)
+        jobs = dict(zip(blocks[1::2], blocks[2::2]))
+        require(job in jobs and 'native-qualification' in jobs, 'original job definition missing')
+        base = jobs['native-qualification']
+        require(re.search(r'^  stage: qualify$', base, re.M)
+                and not re.search(r'^  extends:', base, re.M), 'native prerequisite graph changed')
+        if job != 'native-qualification':
+            block = jobs[job]
+            require(re.search(r'^  extends: native-qualification$', block, re.M)
+                    and not re.search(r'^  stage:', block, re.M), 'job prerequisite inheritance changed')
+        return True
+    blocks = pipeline_blocks(text)
+    require(job in TIERED_JOBS and job in blocks and '.controller' in blocks, 'original job definition missing')
+    template = blocks['.controller']
+    require(not re.search(r'^  (?:stage|extends|rules|when):', template, re.M),
+            'controller template prerequisite graph changed')
+    stages = {}
+    for name, block in blocks.items():
+        stage = re.findall(r'^  stage: (\S+)$', block, re.M)
+        require(len(stage) <= 1 and not re.search(r'^  stage:(?! \S+$)', block, re.M),
+                'ambiguous job stage')
+        if stage:
+            stages[name] = stage[0]
+    require(stages.get(job) == TIERED_JOBS[job], 'job prerequisite stage changed')
+    prerequisites = sorted(name for name, stage in stages.items() if stage == 'build')
+    require(prerequisites in BUILD_STAGE_SETS, 'build-stage prerequisite set changed')
+    for name in {job, *prerequisites}:
+        block = blocks[name]
+        require(re.findall(r'^  extends: (.*)$', block, re.M) == ['.controller'],
+                'job prerequisite inheritance changed')
+        plain_rules(block)
+    # Shared rule sets are spliced into job rules with !reference.
+    require(all(value == 'never' for value in re.findall(r'^\s*(?:- )?when:\s*(\S+)',
+                                                         blocks.get('.rules', ''), re.M)),
+            'shared rule-level when changes prerequisites')
     return True
+
+
 POLICY_CODE = """
 import json, sys, tomllib
 from pathlib import Path
@@ -122,6 +192,55 @@ print(json.dumps({'required_external':admission.required_conformance_job(repo,p)
  'owner_suites':sorted(native_policy.conformance_rows(repo,p,trusted=base)),
  'native_settings':native_policy.native_settings(repo,p)}))
 """
+
+
+RECEIPT_SCHEMAS = {'native-qualification': 'busbar.protected-native-admission/1',
+                   'core-build': 'busbar.core-build/1',
+                   'core-clippy': 'busbar.core-clippy/1',
+                   'core-conformance': 'busbar.protected-conformance/1'}
+
+
+def dev_required_jobs(repository, tier, required_external=None):
+    """Jobs a protected dev execution of this repository must pass under its policy."""
+    if repository == CORE and tier == 'tiered':
+        return set(CORE_DEV_JOBS)
+    required = {'native-qualification', 'security-scans'}
+    if required_external:
+        required.add(required_external)
+    return required
+
+
+def validate_core_build(original, receipt, artifact, context, policy):
+    """Complete core-build validation: the retained binary is the certified record's bytes."""
+    from native_certified import BUILD, SCHEMA
+    require(original['repository'] == CORE and original['job'] == 'core-build'
+            and receipt.get('schema') == SCHEMA, 'core-build validator scope differs')
+    record = receipt.get('certified_binary')
+    require(isinstance(record, dict) and re.fullmatch('[0-9a-f]{64}', str(record.get('sha256')))
+            and receipt.get('binary_sha256') == record['sha256']
+            and record.get('command') == ['cargo', *BUILD] and record.get('rustc_wrapper') == ''
+            and record.get('clippy_args') == [] and record.get('path') == 'busbar',
+            'original core-build certifies no plain release binary')
+    binary = artifact('busbar')
+    require(digest(binary) == record['sha256'] and len(binary) == record.get('bytes'),
+            'original certified binary differs from its receipt')
+    development = receipt.get('development_artifact') or {}
+    require(digest(artifact('development-artifact/receipt.json'))
+            == record.get('development_artifact_receipt_sha256') == development.get('sha256'),
+            'original development artifact receipt differs')
+    return True
+
+
+def validate_core_clippy(original, receipt, artifact, context, policy):
+    """Complete core-clippy validation: both workspaces linted, every check passed."""
+    from admission import CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS
+    require(original['repository'] == CORE and original['job'] == 'core-clippy'
+            and receipt.get('schema') == CORE_CLIPPY_SCHEMA, 'core-clippy validator scope differs')
+    steps = receipt.get('steps') or []
+    require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps)
+            and set(CORE_CLIPPY_STEPS) <= {s.get('name') for s in steps},
+            'original core-clippy checks did not pass')
+    return True
 
 
 class Resolver:
@@ -207,8 +326,10 @@ class Resolver:
             require(result.returncode == 0, 'immutable original policy rejected evidence context')
             info = json.loads(result.stdout)
             info['files'] = hashes
-            independent_qualification_job((base / 'ci/architecture-pipeline.yml').read_bytes(), request['job'])
+            pipeline_yaml = (base / 'ci/architecture-pipeline.yml').read_bytes()
+            independent_qualification_job(pipeline_yaml, request['job'])
             info['independent_job'] = True
+            info['tier'] = pipeline_tier(pipeline_yaml)
             if security:
                 info['tools'] = json.loads((base / 'ci/security/tools.json').read_bytes())
             return info
@@ -263,9 +384,8 @@ class Resolver:
                 and (pipeline.get('user') or {}).get('id') in self.owner_users,
                 'original owner pipeline/source/ref is not successful and authentic')
         jobs = self._all(self.api, base + '/pipelines/' + receipt['pipeline_id'] + '/jobs')
-        required = {'native-qualification', 'security-scans'}
-        if policy['required_external']:
-            required.add(policy['required_external'])
+        required = dev_required_jobs(original['repository'], policy.get('tier', 'single'),
+                                     policy['required_external'])
         require(original['job'] in required, 'original job not required by its immutable policy')
         # Other first-stage jobs are independent requirements. Their failure or
         # intentional absence cannot turn this successful job into a failure;
@@ -286,8 +406,7 @@ class Resolver:
                         target_revision=original['source'], policy_revision=original['policy'],
                         host_revision=original['host'], sdk_revision=original['sdk'], status='pass',
                         policy_sha256=policy['files']['ci/architecture.toml'],
-                        schema='busbar.protected-native-admission/1' if original['job'] ==
-                        'native-qualification' else 'busbar.protected-conformance/1')
+                        schema=RECEIPT_SCHEMAS.get(original['job'], 'busbar.protected-conformance/1'))
         if security:
             expected = dict(repository=original['repository'], source=original['source'],
                             policy_revision=original['policy'], status='pass',
@@ -312,11 +431,33 @@ class Resolver:
         archive = Archive(artifact_bytes)
         require(archive.read(filename) == receipt_bytes and json.loads(receipt_bytes) == receipt,
                 'receipt bytes are not from the original full archive/job')
+        if original['job'] == 'core-conformance' and policy.get('tier') == 'tiered':
+            self._judged_build(base, pipeline, jobs, receipt)
         context = dict(original=original, project=project, pipeline=pipeline, job=job,
                        protected_refs=protected_refs,
                        policy=policy, receipt_bytes=receipt_bytes, artifact_bytes=artifact_bytes,
                        artifact_sha256=digest(artifact_bytes), receipt_sha256=digest(receipt_bytes))
         return context
+
+    def _judged_build(self, base, pipeline, jobs, receipt):
+        """Tiered core conformance credits only the certified build of its own pipeline."""
+        builds = [j for j in jobs if j.get('name') == 'core-build']
+        require(len(builds) == 1 and builds[0].get('status') == 'success'
+                and builds[0].get('allow_failure') is False and type(builds[0].get('id')) is int,
+                'original conformance pipeline has no single successful core-build')
+        build = json.loads(self._raw(base + '/jobs/' + str(builds[0]['id'])
+                                     + '/artifacts/boundary-evidence/receipt.json'))
+        record = (build.get('certified_binary') if isinstance(build, dict) else None) or {}
+        judged = receipt.get('certified_binary') or {}
+        require(isinstance(judged, dict) and build.get('schema') == RECEIPT_SCHEMAS['core-build']
+                and build.get('status') == 'pass' and build.get('job_id') == str(builds[0]['id'])
+                and build.get('pipeline_id') == str(pipeline['id']) and build.get('source') == pipeline['sha']
+                and re.fullmatch('[0-9a-f]{64}', str(record.get('sha256')))
+                and build.get('binary_sha256') == record['sha256'] == receipt.get('binary_sha256')
+                == judged.get('sha256') and judged.get('bytes') == record.get('bytes')
+                and judged.get('core_build_job_id') == builds[0]['id']
+                and judged.get('pipeline_id') == pipeline['id'],
+                "original conformance did not judge its pipeline's certified core-build binary")
 
     def _security(self, original, receipt, context):
         policy = context['policy']
@@ -405,6 +546,11 @@ class Resolver:
                 require(digest(artifact(name + '.' + stream)) == step.get(stream + '_sha256'),
                         'original check stream missing or modified')
         require(len(names) == len(set(names)), 'duplicate original checks')
+        if original['job'] == 'core-build':
+            require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps),
+                    'original core-build checks did not pass')
+            from admission import CORE_BUILD_STEPS
+            require(set(CORE_BUILD_STEPS) <= set(names), 'original core-build omits required checks')
         if original['job'] == 'native-qualification':
             require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps),
                     'original native checks did not pass')
@@ -488,13 +634,17 @@ def verify_release_dispatch(raw):
     require(shape(functions['main']) == shape(expected_main), 'native main dispatch changed')
     tries = [node for node in functions['qualify'].body if isinstance(node, ast.Try)]
     require(len(tries) == 1, 'native qualification control flow changed')
-    starts = [node for node in tries[0].body if isinstance(node, ast.If)
-              and shape(node.test) == shape(ast.parse('args.external_conformance', mode='eval').body)]
-    require(len(starts) == 1, 'native qualification dispatch missing')
-    branch = starts[0]
-    for expression in ('args.external_conformance', 'args.conformance_only',
-                       "qualification.repository == 'GetBusbar/busbar'",
-                       "qualification.repository == 'GetBusbar/busbar-release'"):
+    # Older controllers led the chain with a since-removed external-conformance branch.
+    chain = ['args.conformance_only', "qualification.repository == 'GetBusbar/busbar'",
+             "qualification.repository == 'GetBusbar/busbar-release'"]
+    heads = [node for node in tries[0].body if isinstance(node, ast.If)
+             and shape(node.test) in (shape(ast.parse(e, mode='eval').body)
+                                      for e in ('args.external_conformance', chain[0]))]
+    require(len(heads) == 1, 'native qualification dispatch missing')
+    branch = heads[0]
+    if shape(branch.test) == shape(ast.parse('args.external_conformance', mode='eval').body):
+        chain.insert(0, 'args.external_conformance')
+    for expression in chain:
         require(shape(branch.test) == shape(ast.parse(expression, mode='eval').body),
                 'native release dispatch condition changed')
         if expression.endswith("'GetBusbar/busbar-release'"):
@@ -949,7 +1099,9 @@ class OwnerRuntime:
         marketing = MarketingValidator(self.normalizer, expected_loader(self.objects, self.normalizer))
         release = ReleaseValidator(self.objects)
         def validate(original, receipt, artifact, context, original_policy):
-            validator = release if original['repository'] == REPOSITORY else marketing
+            validator = (release if original['repository'] == REPOSITORY else
+                         validate_core_build if original['job'] == 'core-build' else
+                         validate_core_clippy if original['job'] == 'core-clippy' else marketing)
             return validator(original, receipt, artifact, context, original_policy)
         self.resolver = ReleaseResolver(self.reads, group_api=self.groups, objects=self.objects,
             current_policy=self.policy, merge_users=self.principals, owner_users=self.principals,

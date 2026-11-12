@@ -1,4 +1,4 @@
-"""Core-only development classification; raw conformance verdicts never change."""
+"""Core pipeline tiers and conformance stage classification; raw verdicts never change."""
 
 import hashlib
 import json
@@ -21,9 +21,52 @@ MODULES = [
 ]
 MISSING = "release-stage subject absent: ModernCI builder key or exact-source attestation delivery not supplied"
 
+# The one definition of core's protected-ref pipelines: (source, branch) -> tier.
+# DEV: pushes and owner API pipelines on dev (dev merge requests are classified
+# separately). QA: protected qa pushes and the owner's dev schedules (only the
+# "qa-nightly" schedule runs QA jobs; the YAML selects it). MAIN signs and
+# releases only what QA certified; it runs no conformance of its own.
+PROTECTED_PIPELINES = {
+    ("push", "dev"): "dev",
+    ("api", "dev"): "dev",
+    ("push", "qa"): "qa",
+    ("schedule", "dev"): "qa",
+}
+# Protected pipelines that may write a trusted cache: every protected tier
+# pipeline except owner API runs (which only re-qualify published dev).
+CACHE_PRODUCER_PIPELINES = frozenset(
+    pair for pair in PROTECTED_PIPELINES if pair[0] != "api"
+)
+# Suites whose inputs exist only after main signs the certified binary: the
+# Sigstore bundle and the builder's SLSA provenance. DEV and QA defer them.
+SIGNED_RELEASE_SUITES = ("slsa-verifier", "sigstore")
+# Conformance stages that judge unsigned artifacts: every suite except the
+# signed-release ones must pass; those must be exactly the unattempted not-run.
+UNSIGNED_STAGES = ("dev", "qa")
+
+
+def protected_tier(env):
+    """'dev' or 'qa' for a protected core tier pipeline, else None (fail closed)."""
+    pair = (env.get("CI_PIPELINE_SOURCE"), env.get("CI_COMMIT_BRANCH"))
+    if env.get("CI_COMMIT_REF_PROTECTED") != "true":
+        return None
+    return PROTECTED_PIPELINES.get(pair)
+
+
+def cache_producer(env):
+    """The protected tier of a pipeline that may publish a trusted cache, else None."""
+    pair = (env.get("CI_PIPELINE_SOURCE"), env.get("CI_COMMIT_BRANCH"))
+    return protected_tier(env) if pair in CACHE_PRODUCER_PIPELINES else None
+
 
 def stage_context(env):
-    """Use controller CI context, never candidate conformance output."""
+    """Use controller CI context, never candidate conformance output.
+
+    dev: dev merge requests, dev pushes and owner API pipelines on dev (unchanged).
+    qa: protected qa pushes and the owner's dev schedule (qa-nightly). Every suite
+    is required except the signed-release ones, which main runs after signing.
+    release: anything else; every suite and the Sigstore evidence are required.
+    """
     source = env.get("CI_PIPELINE_SOURCE")
     branch = env.get("CI_COMMIT_BRANCH")
     target = env.get("CI_MERGE_REQUEST_TARGET_BRANCH_NAME")
@@ -33,8 +76,9 @@ def stage_context(env):
     development = (source in ("push", "api") and branch == "dev") or (
         source == "merge_request_event" and target == "dev" and same_project
     )
+    qa = not development and protected_tier(env) == "qa"
     return {
-        "stage": "dev" if development else "release",
+        "stage": "dev" if development else ("qa" if qa else "release"),
         "pipeline_source": source,
         "commit_branch": branch,
         "commit_ref_protected": env.get("CI_COMMIT_REF_PROTECTED") == "true",
@@ -146,10 +190,16 @@ def run_engineering(q, collect):
 
 
 def classify(q, report_path):
-    """Only unattempted QA artifact readiness may be nonblocking for development."""
+    """Only unattempted signed-release readiness may be nonblocking before main.
+
+    dev and qa judge unsigned artifacts with the same strict rule: every suite
+    passes and is armed, except slsa-verifier, which must be exactly the
+    unattempted not-run (its builder attestation exists only after signing).
+    """
     context = q.receipt.get("conformance_stage", {})
-    if context.get("stage") != "dev":
-        raise Violation("release-stage evidence cannot use development classification")
+    stage = context.get("stage")
+    if stage not in UNSIGNED_STAGES:
+        raise Violation("release-stage evidence cannot use unsigned-stage classification")
     report = engineering(q, report_path)
     source = q.evidence / "conformance"
     invocation = load(source / "invocation.json")
@@ -209,7 +259,9 @@ def classify(q, report_path):
             )
     coverage = load(q.trusted / "conformance/ci-coverage.json")
     rows = coverage.get("suites", coverage.get("coverage", {}))
-    # The current source contract places artifact attestation at QA, Sigstore at main.
+    # The generated coverage contract still names slsa-verifier "qa" (its
+    # generator assigns every non-Sigstore suite to QA); its builder
+    # attestation only exists once main signs, so dev and QA defer it.
     if (
         rows.get("slsa-verifier", {}).get("stage") != "qa"
         or rows.get("sigstore", {}).get("stage") != "main"
@@ -220,9 +272,9 @@ def classify(q, report_path):
         if path.is_absolute() or ".." in path.parts or sha(q.root / path) != expected:
             raise Violation("conformance invocation inputs differ")
     return {
-        "schema": "busbar.development-conformance/1",
+        "schema": "busbar.development-conformance/1" if stage == "dev" else "busbar.qa-conformance/1",
         "status": "pass",
-        "stage": "dev",
+        "stage": stage,
         "stage_context": context,
         "source": q.receipt["source"],
         "policy_revision": q.receipt["policy_revision"],
@@ -235,7 +287,7 @@ def classify(q, report_path):
         },
         "required_suites": sorted(set(suites) - {"slsa-verifier"}),
         "release_readiness": {
-            "slsa-verifier": {"stage": "qa", "status": "not-run", "armed": False}
+            "slsa-verifier": {"stage": "main", "status": "not-run", "armed": False}
         },
         "raw_invocation_exit_code": 1,
         "release_attestation_verified": False,

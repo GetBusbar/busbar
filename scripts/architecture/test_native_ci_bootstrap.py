@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 import tarfile
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -38,6 +39,16 @@ class Bootstrap(unittest.TestCase):
                 bootstrap.ci_environment(self.environment() | {key: value})
         with self.assertRaises(ValueError):
             bootstrap.approved_revision(selected | {'CI_CONFIG_REF_URI': selected['CI_CONFIG_REF_URI'].replace('b' * 40, 'dev')})
+
+    def test_server_ref_protection_reaches_the_controller(self):
+        # Producer and dev-credit checks read CI_COMMIT_REF_PROTECTED inside the
+        # root controller; dropping it here refused every protected producer run.
+        for value in ('true', 'false'):
+            selected = bootstrap.ci_environment(self.environment() | {'CI_COMMIT_REF_PROTECTED': value})
+            self.assertEqual(selected['CI_COMMIT_REF_PROTECTED'], value)
+        self.assertNotIn('CI_COMMIT_REF_PROTECTED', bootstrap.ci_environment(self.environment()))
+        with self.assertRaisesRegex(ValueError, 'ref protection'):
+            bootstrap.ci_environment(self.environment() | {'CI_COMMIT_REF_PROTECTED': 'yes'})
 
     def test_plugin_host_binding_cannot_float_or_disappear(self):
         env = self.environment() | {'CI_PROJECT_PATH': 'GetBusbar/busbar-plane-mcp', 'CI_JOB_NAME': 'native-qualification'}
@@ -129,7 +140,10 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance'), ['core', 'tls', 'oidf', 'release-engineering'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
-        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-llm', 'external-conformance'), [])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance-debug'),
+                         ['core', 'tls', 'oidf', 'release-engineering'])
+        for job in ('core-build', 'core-clippy'):
+            self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', job), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-decisions', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-secret-c', 'native-qualification'), ['python-schema'])
         self.assertEqual([repo for repo, owners in plan['repositories'].items() if 'python-schema' in owners],
@@ -257,14 +271,143 @@ class Bootstrap(unittest.TestCase):
                 self.assertEqual(exported.call_args.args[0][-4:],
                                  ['save', '--platform', 'linux/amd64', 'sha256:' + manifest_sha])
                 self.assertTrue(producer.stdout.closed)
+                # The collector reuses the administrator's host import: inspect only.
+                calls = []
+                def inspect(argv, **kwargs):
+                    calls.append(argv)
+                    return execute(argv, **kwargs)
+                with patch.object(bootstrap, 'run', side_effect=inspect):
+                    self.assertEqual(bootstrap.inspect_tool_image(
+                        archive, 'unix:///fixed.sock', {}, actual['Id']), actual['Id'])
+                self.assertEqual([argv[3:5] for argv in calls], [['image', 'inspect']])
                 with self.assertRaisesRegex(ValueError, 'unverified'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {}, source_image='floating:tag')
                 actual['RootFS'] = {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]}
                 with self.assertRaisesRegex(ValueError, 'execution content'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
+                with self.assertRaisesRegex(ValueError, 'execution content'):
+                    bootstrap.inspect_tool_image(archive, 'unix:///fixed.sock', {}, actual['Id'])
                 actual['Id'] = 'sha256:' + 'f' * 64
                 with self.assertRaisesRegex(ValueError, 'identity'):
                     bootstrap.load_tool_image(archive, 'unix:///fixed.sock', {})
+
+
+    def tool_fixture(self, directory):
+        config = {'architecture': 'amd64', 'os': 'linux', 'config': {'Cmd': ['fixed']},
+                  'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + 'a' * 64]}}
+        config_raw = json.dumps(config).encode()
+        config_sha = hashlib.sha256(config_raw).hexdigest()
+        manifest_raw = json.dumps({'config': {'digest': 'sha256:' + config_sha}}).encode()
+        manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
+        archive = Path(directory) / 'image.tar'
+        with tarfile.open(archive, 'w') as output:
+            for checksum, raw in [(config_sha, config_raw), (manifest_sha, manifest_raw)]:
+                item = tarfile.TarInfo('blobs/sha256/' + checksum)
+                item.size = len(raw)
+                output.addfile(item, io.BytesIO(raw))
+        actual = {'Id': 'sha256:' + config_sha, 'Config': config['config'], 'Os': 'linux',
+                  'Architecture': 'amd64', 'RootFS': {'Type': 'layers', 'Layers': config['rootfs']['diff_ids']}}
+        return archive, manifest_sha, actual
+
+    def test_collector_inspects_present_image_loads_only_when_absent_and_refuses_mismatch(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            archive, manifest_sha, actual = self.tool_fixture(directory)
+            calls = []
+            state = {'present': True}
+            def execute(argv, **kwargs):
+                calls.append(argv[3:5])
+                if argv[3:5] == ['image', 'inspect']:
+                    if not state['present']:
+                        raise subprocess.CalledProcessError(1, argv, stderr='No such image')
+                    return subprocess.CompletedProcess(argv, 0, json.dumps([actual]))
+                if argv[3:5] == ['image', 'load']:
+                    state['present'] = True
+                    return subprocess.CompletedProcess(argv, 0, 'Loaded image: fixed:tag\n')
+                self.fail(argv)
+            with patch.object(bootstrap, 'MANIFEST', manifest_sha), patch.object(bootstrap, 'run', side_effect=execute):
+                # Present and identical: inspect only, no load.
+                self.assertEqual(bootstrap.inspect_tool_image(archive, 'unix:///h.sock', {}, actual['Id']), actual['Id'])
+                self.assertEqual(calls, [['image', 'inspect']])
+                # Absent: None, so the caller falls back to the full load path.
+                state['present'] = False
+                calls.clear()
+                self.assertIsNone(bootstrap.inspect_tool_image(archive, 'unix:///h.sock', {}, actual['Id']))
+                self.assertEqual(bootstrap.load_tool_image(archive, 'unix:///h.sock', {}), actual['Id'])
+                self.assertEqual(calls, [['image', 'inspect'], ['image', 'load'], ['image', 'inspect']])
+                # Present but different content or identity: refuse, never load.
+                state['present'] = True
+                calls.clear()
+                actual['RootFS'] = {'Type': 'layers', 'Layers': ['sha256:' + 'f' * 64]}
+                with self.assertRaisesRegex(ValueError, 'execution content'):
+                    bootstrap.inspect_tool_image(archive, 'unix:///h.sock', {}, 'sha256:' + manifest_sha)
+                actual['Id'] = 'sha256:' + 'f' * 64
+                with self.assertRaisesRegex(ValueError, 'identity'):
+                    bootstrap.inspect_tool_image(archive, 'unix:///h.sock', {}, 'sha256:' + manifest_sha)
+                with self.assertRaisesRegex(ValueError, 'unverified'):
+                    bootstrap.inspect_tool_image(archive, 'unix:///h.sock', {}, 'floating:tag')
+                self.assertNotIn(['image', 'load'], calls)
+
+    def test_archive_is_hashed_once_on_download_and_once_on_the_trust_boundary_copy(self):
+        content = b'pinned archive bytes'
+        pin = hashlib.sha256(content).hexdigest()
+        class Source(io.BytesIO):
+            def __enter__(self):
+                return self
+        opener = Mock()
+        opener.open.return_value = Source(content)
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory, \
+                patch.object(bootstrap, 'ARCHIVE_SHA256', pin), patch.object(bootstrap, 'ARCHIVE_BYTES', len(content)), \
+                patch.object(bootstrap.urllib.request, 'build_opener', return_value=opener), \
+                patch.object(bootstrap, 'digest', side_effect=AssertionError('file re-hash')) as rehash, \
+                patch.object(sys, 'stdout', io.StringIO()):
+            downloaded = Path(directory) / 'public-tools.tar'
+            bootstrap.fetch_archive(downloaded, 'token')
+            self.assertEqual(downloaded.read_bytes(), content)
+            self.assertEqual(downloaded.stat().st_mode & 0o777, 0o444)
+            copied = Path(directory) / 'image.tar'
+            bootstrap.copy_verified(downloaded, copied)
+            self.assertEqual(copied.read_bytes(), content)
+            self.assertEqual(copied.stat().st_mode & 0o777, 0o444)
+            rehash.assert_not_called()
+            # A tampered source is refused and leaves no copy behind.
+            downloaded.chmod(0o644)
+            downloaded.write_bytes(b'tampered archive byte')
+            with self.assertRaisesRegex(ValueError, 'copied public tooling archive differs'):
+                bootstrap.copy_verified(downloaded, Path(directory) / 'second.tar')
+            self.assertFalse((Path(directory) / 'second.tar').exists())
+            # A tampered download is refused by the single streaming hash.
+            opener.open.return_value = Source(b'x' * len(content))
+            with self.assertRaisesRegex(ValueError, 'protected pin'):
+                bootstrap.fetch_archive(Path(directory) / 'bad.tar', 'token')
+
+    def test_concurrent_branches_are_all_joined_and_either_failure_fails_the_step(self):
+        for failing in ('storage', 'archive'):
+            with self.subTest(failing=failing):
+                finished = []
+                def branch(name):
+                    def task():
+                        if name == failing:
+                            raise RuntimeError(name + ' failed')
+                        time.sleep(.05)
+                        finished.append(name)
+                    return task
+                with self.assertRaisesRegex(RuntimeError, failing + ' failed'):
+                    bootstrap.concurrently(storage=branch('storage'), archive=branch('archive'))
+                # The healthy branch ran to completion before the failure surfaced.
+                self.assertEqual(finished, [name for name in ('storage', 'archive') if name != failing])
+        self.assertEqual(bootstrap.concurrently(a=lambda: 1, b=lambda: 2), {'a': 1, 'b': 2})
+
+    def test_timing_lines_follow_the_native_preparation_shape(self):
+        out = io.StringIO()
+        with patch.object(sys, 'stdout', out):
+            with bootstrap.timed('checkout_copy'):
+                pass
+            with self.assertRaises(KeyError), bootstrap.timed('private_image_load'):
+                raise KeyError('x')
+        rows = [json.loads(line)['native_preparation'] for line in out.getvalue().splitlines()]
+        self.assertEqual([(row['name'], row['status']) for row in rows],
+                         [('bootstrap.checkout_copy', 'pass'), ('bootstrap.private_image_load', 'fail')])
+        self.assertTrue(all({'started_at', 'finished_at', 'elapsed_seconds'} <= row.keys() for row in rows))
 
 
 if __name__ == '__main__':

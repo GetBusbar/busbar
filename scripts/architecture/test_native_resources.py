@@ -67,6 +67,21 @@ class Resources(unittest.TestCase):
             self.assertEqual([b['step'] for b in beats], ['root-clippy'])
             self.assertGreaterEqual(beats[0]['elapsed_seconds'], 300)
 
+    def test_records_anonymous_peak_and_memory_events_apart_from_page_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = cgroup(root, 6000, 6442450944, 1_000_000)
+            clock = Clock()
+            observer = nr.StepObserver('x', CID, clock=clock, root=root, emit=lambda _: None)
+            for anon in (100, 5000, 300):
+                (path / 'memory.stat').write_text(f'anon {anon}\nfile 9999\n')
+                (path / 'memory.events').write_text('low 0\nhigh 0\nmax 7\noom 0\noom_kill 0\n')
+                observer.sample()
+            summary = observer.summary()
+            self.assertEqual(summary['memory_peak_bytes'], 6442450944)
+            self.assertEqual(summary['memory_anon_peak_bytes'], 5000)
+            self.assertEqual(summary['memory_events'], {'high': 0, 'max': 7, 'oom': 0, 'oom_kill': 0})
+
     def test_preserves_the_original_timeout(self):
         clock = Clock()
         observer = nr.StepObserver('slow', None, clock=clock, root=Path('/nonexistent'), emit=lambda _: None)
@@ -83,6 +98,8 @@ class Resources(unittest.TestCase):
         summary = observer.summary()
         self.assertFalse(summary['cgroup_observed'])
         self.assertIsNone(summary['memory_peak_bytes'])
+        self.assertIsNone(summary['memory_anon_peak_bytes'])
+        self.assertIsNone(summary['memory_events'])
 
     def test_observation_errors_never_change_the_outcome(self):
         clock = Clock()
@@ -107,7 +124,12 @@ class BuildJobs(unittest.TestCase):
         jobs = lambda name, argv: native.step_build_jobs(name, argv, scheduling)
         self.assertEqual(jobs('root-clippy', ['cargo', 'clippy', '--workspace']), 3)
         self.assertEqual(jobs('root-runtime', ['cargo', 'nextest', 'run']), 3)
+        self.assertEqual(jobs('product-inputs', ['bash', '/t/scripts/ci-product-inputs.sh']), 3)
+        self.assertEqual(jobs('core-native-conformance', ['bash', '/c/testing/conformance/run.sh']), 3)
         for name, argv in (('final-binary', ['python3', 'x']), ('product-inputs', ['bash', 'x']),
+                           ('product-inputs', ['bash', '-c', '/t/scripts/ci-product-inputs.sh']),
+                           ('core-native-conformance', ['bash', '/c/other.sh']),
+                           ('plugin-conformance', ['bash', '/c/testing/conformance/run.sh']),
                            ('plugin-runtime-prepare', ['bash', '-euo', 'pipefail', 'prepare.sh']),
                            ('profiled', ['cargo', 'build', '--profile', 'dist']),
                            ('bounded-loom', ['cargo', 'test', '--release']), ('other', ['cargo', 'build', '--release'])):

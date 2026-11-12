@@ -24,6 +24,8 @@ import uuid
 
 
 EXECUTION = None
+# Controller-owned read-only dependency units (native_dep_cache), or None.
+DEPENDENCY_UNITS = None
 
 
 def candidate_run(argv, *, discard_harness_target=False, **kwargs):
@@ -328,8 +330,57 @@ def check_vector(policy, checkout, entries):
             if known and package.get('source'):
                 if not package['source'].endswith('#' + revisions.get(known['repository'], 'unclassified')):
                     raise Violation(f'assembly lock/vector mismatch: {path}: {package["name"]}')
-    return {'sdk_revision': vector['sdk'], 'products': len(vector['products']),
+    shared = check_shared_core_resolution(read(checkout / 'Cargo.lock'), read(checkout / 'dist/default/Cargo.lock'))
+    return {'sdk_revision': vector['sdk'], 'products': len(vector['products']), 'shared_core_packages': shared,
             'vector_sha256': hashlib.sha256((checkout / 'scripts/ci-product-pins.json').read_bytes()).hexdigest()}
+
+
+def check_shared_core_resolution(root_lock, distribution_lock):
+    """Every core path crate dist/default links resolves exactly as in the root lock.
+
+    The distribution lock records a non-member path crate's normal and build
+    dependencies; the root lock records them too (plus dev-dependencies). If each
+    one's whole closure in dist/default is a subset of its root closure, the two
+    workspaces compile the same core crate from the same dependency versions and
+    sources, so one shared target can reuse identical units. Returns the count.
+    """
+    def graph(lock):
+        packages = lock.get('package', [])
+        by_name = {}
+        for package in packages:
+            by_name.setdefault(package['name'], []).append(package)
+
+        def resolve(entry):
+            name, *rest = entry.split(' ')
+            rows = by_name.get(name, [])
+            if rest:
+                rows = [row for row in rows if row['version'] == rest[0]]
+            if len(rest) > 1:
+                rows = [row for row in rows if '(' + row.get('source', '') + ')' == rest[1]]
+            if len(rows) != 1:
+                raise Violation('unresolvable lock dependency: ' + entry)
+            return rows[0]
+
+        def closure(package):
+            seen, stack = {}, [package]
+            while stack:
+                row = stack.pop()
+                identity = (row['name'], row['version'], row.get('source'))
+                if identity not in seen:
+                    seen[identity] = row
+                    stack.extend(resolve(entry) for entry in row.get('dependencies', []))
+            return set(seen)
+        return {p['name']: p for p in packages if p.get('source') is None}, closure
+
+    root_paths, root_closure = graph(root_lock)
+    distribution_paths, distribution_closure = graph(distribution_lock)
+    shared = sorted(set(root_paths) & set(distribution_paths))
+    for name in shared:
+        extra = distribution_closure(distribution_paths[name]) - root_closure(root_paths[name])
+        if extra:
+            sample = ', '.join(f'{n} {v}' for n, v, _ in sorted(extra)[:5])
+            raise Violation(f'dist/default resolves core crate {name} differently from the root lock: {sample}')
+    return len(shared)
 
 
 def binary_resolution_root(checkout, entry, probe):
@@ -508,6 +559,19 @@ def check_sources(policy, repository, checkout, metadata, trusted, scratch):
         jobs = compiler_check_jobs() if build_command[1] == 'check' else None
         if jobs is not None:
             build_command += ['--jobs', str(jobs)]
+        if DEPENDENCY_UNITS is not None and EXECUTION is not None and repository != 'GetBusbar/busbar':
+            # A private writable copy of trusted dependency units; the seed itself
+            # is never mounted. Every candidate unit still compiles here.
+            # Any failure leaves the probe on its own fresh target, as before.
+            import native_dep_cache
+            probe_target = EXECUTION.roots['candidate'] / ('probe-target-' + uuid.uuid4().hex)
+            try:
+                native_dep_cache.install(native_dep_cache.readonly_seed(DEPENDENCY_UNITS, EXECUTION), probe_target)
+            except (native_dep_cache.Unavailable, OSError) as error:
+                architecture_progress('dependency-units', 'fallback', reason=str(error)[:500])
+                shutil.rmtree(probe_target, ignore_errors=True)
+            else:
+                build_command += ['--target-dir', str(probe_target)]
         architecture_progress('source-materialization', 'start', cargo_command=build_command[1],
                               build_jobs=jobs)
         started = time.monotonic()
@@ -663,8 +727,9 @@ def compiler_witness_parallel():
     storage = EXECUTION.config['isolation']
     # Four representative controls preserved their verdicts with two 2 CPU /
     # 3 GiB isolates: 237.007s serial -> 209.916s parallel. CPU increased 4.2%;
-    # this is a latency improvement, not a reduction in compiler work. Keep
-    # smaller and unmeasured storage boundaries on the existing serial path.
+    # this is a latency improvement, not a reduction in compiler work. The
+    # pool now splits the same aggregate into COMPILER_POOL_WIDTH isolates.
+    # Keep smaller and unmeasured storage boundaries on the existing serial path.
     return (resources['cpus'] >= 4 and resources['memory_bytes'] >= 6 * 1024**3
             and resources['pids'] >= 1024 and storage['storage_kind'] == 'loop-ext4'
             and storage['storage_bytes'] >= 24 * 1024**3)
@@ -896,7 +961,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
     if parallel and EXECUTION is None:
         raise Violation('parallel compiler witnesses require confinement')
     pool = EXECUTION.compiler_pool() if parallel else None
-    jobs = 2 if pool else compiler_check_jobs()
+    jobs = pool.jobs if pool else compiler_check_jobs()
     # Only the isolated pool path is seeded; the serial fallback is unchanged.
     seed = None
     if pool:
@@ -925,7 +990,7 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
         architecture_progress('compiler-witnesses', 'start', case=name, total=len(cases),
                               expected=expected, build_jobs=jobs)
         started = time.monotonic()
-        result = (pool.run(execution, command, cwd=scratch) if pool else
+        result = (pool.run(execution, command, cwd=scratch, vendored_sources=seed is not None) if pool else
                   candidate_run(command, cwd=scratch, text=True, capture_output=True,
                                 discard_harness_target=True))
         messages = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
@@ -1027,7 +1092,7 @@ def source_revision(checkout):
 
 
 def main():
-    global EXECUTION, EVIDENCE
+    global EXECUTION, EVIDENCE, DEPENDENCY_UNITS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policy', required=True, type=Path)
     parser.add_argument('--repository', required=True)
@@ -1038,6 +1103,7 @@ def main():
     parser.add_argument('--sdk', type=Path, help='Exact pinned SDK checkout for a C plugin')
     parser.add_argument('--execution-context', type=Path)
     parser.add_argument('--execution-context-sha256')
+    parser.add_argument('--dependency-units', type=Path, help='Controller-owned read-only dependency units')
     args = parser.parse_args()
     EXECUTION = None
     EVIDENCE = args.output.resolve().parent
@@ -1048,6 +1114,11 @@ def main():
         generated_source = validate_execution_paths(args, EXECUTION, json.loads(args.execution_context.read_text()))
     elif args.execution_context_sha256:
         raise Violation('execution context digest requires its context')
+    DEPENDENCY_UNITS = None
+    if args.dependency_units is not None:
+        if EXECUTION is None:
+            raise Violation('dependency units require confined execution')
+        DEPENDENCY_UNITS = args.dependency_units
     policy = Policy(read(args.policy))
     checkout = args.checkout.resolve()
     if args.repository != 'GetBusbar/busbar' and args.repository not in policy.data['repositories']:

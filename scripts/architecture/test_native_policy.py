@@ -40,20 +40,22 @@ class NativePolicy(unittest.TestCase):
     def test_new_owner_obligations_need_only_trusted_data(self):
         repository = 'GetBusbar/busbar-fixture-owner'
         settings = {'services': ['valkey'], 'server_binary': 'valkey', 'native_oracle': True,
-                    'external_conformance': 'testing/conformance/external-fixture.sh',
                     'prepare_runtime': 'testing/native/prepare.sh'}
         policy = {'repositories': {repository: {'native': settings}}}
         self.assertEqual(native_settings(repository, policy), settings)
-        self.assertEqual(evaluation_job(repository, False, True, policy), 'external-conformance')
-        self.assertEqual(required_conformance_job(repository, policy), 'external-conformance')
-        self.assertTrue(requires_native_oracle(repository, False, policy))
-        self.assertFalse(requires_native_oracle(repository, True, policy))
+        self.assertIsNone(evaluation_job(repository, False))
+        self.assertIsNone(required_conformance_job(repository, policy))
+        self.assertTrue(requires_native_oracle(repository, policy))
+        # The removed external evaluation mode is an unknown policy field.
+        with self.assertRaises(Violation):
+            native_settings(repository, {'repositories': {repository: {'native': dict(
+                settings, external_conformance='testing/conformance/external-fixture.sh')}}})
 
     def test_unknown_services_commands_paths_and_inconsistent_server_refuse(self):
         for settings in [{'services': ['unknown']}, {'services': ['mysql', 'mysql']}, {'command': 'true'},
                          {'prepare_runtime': '../private.sh'}, {'prepare_runtime': 'testing/native/../private.sh'},
                          {'prepare_runtime': 'testing/conformance/run.sh'}, {'prepare_runtime': 'testing/native/run.py'},
-                         {'external_conformance': '../private.sh'}, {'external_conformance': '/private.sh'},
+                         {'external_conformance': 'testing/conformance/x.sh'},
                          {'server_binary': 'valkey'}, {'migration_fixture': 'arbitrary'}, {'native_oracle': 'false'},
                          {'required_conformance': 'false'}]:
             policy = {'repositories': {'fixture': {'native': settings}}}

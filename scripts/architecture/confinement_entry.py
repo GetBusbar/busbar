@@ -57,6 +57,11 @@ def readonly_format_command(argv):
     )
 
 
+# The controller mounts each invocation's private Cargo home at this fixed path,
+# the same in every job, so registry/Git unit fingerprints are portable.
+INVOCATION_CARGO_HOME = Path("/__busbar_cargo_home")
+
+
 def prepare_cargo_home(argv):
     seed = os.environ.get("CARGO_HOME")
     if not seed:
@@ -65,7 +70,8 @@ def prepare_cargo_home(argv):
     # formatting can read the immutable seed directly. All compilation and
     # candidate test commands still get independent writable source copies.
     fresh = Path(os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME'))
-    if (fresh.parent != Path(os.environ['HOME']).parent or fresh.name != 'cargo-home-invocation'
+    empty = os.environ.pop('BUSBAR_INVOCATION_CARGO_HOME_EMPTY', None) == '1'
+    if (fresh != INVOCATION_CARGO_HOME
             or fresh.is_symlink() or not fresh.is_dir() or any(fresh.iterdir())):
         raise RuntimeError('private Cargo cache was not prepared by the controller')
     if readonly_format_command(argv):
@@ -73,6 +79,11 @@ def prepare_cargo_home(argv):
         # Check the actual filesystem, not permissions a candidate could chmod.
         if not os.statvfs(seed).f_flag & os.ST_RDONLY:
             raise RuntimeError('formatting requires a read-only Cargo seed')
+        return
+    if empty:
+        # Vendored compiler checks: every source is the controller's read-only
+        # vendor directory. Cargo still gets its own empty writable home.
+        os.environ["CARGO_HOME"] = str(fresh)
         return
     shutil.copytree(
         seed,

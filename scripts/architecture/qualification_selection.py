@@ -29,7 +29,7 @@ import tomllib
 import input_identity as identity
 
 KINDS = {'native': 'native-qualification', 'security': 'security-scans',
-         'conformance': 'core-conformance'}
+         'build': 'core-build', 'clippy': 'core-clippy', 'conformance': 'core-conformance'}
 LIVE = {'created', 'pending', 'running', 'preparing', 'waiting_for_resource',
         'scheduled', 'manual'}
 SCOPES = {'verify-execution-reuse': 'execution-equivalent',
@@ -56,12 +56,21 @@ def requirements(row, objects):
         identity.require(suites and all(isinstance(value.get('command'), str)
                          and value['command'] for value in suites.values()),
                          'current owner conformance inventory incomplete')
+    from reuse_evidence import TIERED_STAGES
+    if repository == identity.CORE and TIERED_STAGES.search(objects.blob(
+            identity.CORE, row['policy'], 'ci/architecture-pipeline.yml').decode()):
+        # Core's DEV tier: the certified build, the lint-only clippy job and
+        # conformance of the build's bytes. Native qualification and security are
+        # its QA tier (qa / qa-nightly). The resolver still authenticates each
+        # original against its own policy graph.
+        return {'build': dict(job='core-build', suites=[]),
+                'clippy': dict(job='core-clippy', suites=[]),
+                'conformance': dict(job='core-conformance', suites=sorted(suites))}
     result = {'native': dict(job='native-qualification',
                             suites=sorted(suites) if settings.get('required_conformance') else []),
               'security': dict(job='security-scans', suites=[])}
-    if repository == identity.CORE or settings.get('external_conformance'):
-        result['conformance'] = dict(job='core-conformance' if repository == identity.CORE
-                                     else 'external-conformance', suites=sorted(suites))
+    if repository == identity.CORE:
+        result['conformance'] = dict(job='core-conformance', suites=sorted(suites))
     return result
 
 

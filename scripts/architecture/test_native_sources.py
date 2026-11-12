@@ -57,7 +57,9 @@ class Sources(unittest.TestCase):
                 self.assertEqual(q.receipt['canonical_inputs'][repository], sorted({needed} | ({extra} if standalone else set())))
                 self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar-auth-oidc'], [current])
                 self.assertEqual(read.call_count, int(standalone))
-                self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar'], sorted({sdk, current}))
+                # Core jobs no longer read their own HEAD from canonical-inputs.
+                self.assertEqual(q.receipt['canonical_inputs']['GetBusbar/busbar'],
+                                 sorted({sdk} | (set() if owner == 'GetBusbar/busbar' else {current})))
 
     def test_collects_exact_public_commits_and_rejects_mutable_identity(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -111,6 +113,131 @@ class Sources(unittest.TestCase):
             product['lock_sha256'] = '0' * 64
             with self.assertRaisesRegex(ValueError, 'lock differs'):
                 product_inputs(parent, {'products':[product]}, policy)
+
+
+    def plugin_fixture(self, root, policy_private=False):
+        """A plugin job whose SDK distribution and vector pin extra revisions."""
+        sdk_rev, host_rev, own, sdk_dist, vector_only = 'd' * 40, 'e' * 40, 'a' * 40, 'b' * 40, 'c' * 40
+        def lock(repository, revision):
+            return ('[[package]]\nname="x"\nversion="1.0.0"\nsource="git+https://github.com/'
+                    + repository + '?rev=' + revision + '#' + revision + '"\n')
+        host, sdk, candidate = root / 'work/host', root / 'work/sdk', root / 'candidate'
+        for path in (host / 'scripts', host / 'dist/default', sdk / 'dist/default', candidate):
+            path.mkdir(parents=True)
+        (host / 'scripts/ci-product-pins.json').write_text(json.dumps({'sdk': sdk_rev, 'products': [
+            {'repo': 'busbar-store-memory', 'commit': own}, {'repo': 'busbar-auth-ldap', 'commit': vector_only}]}))
+        (host / 'Cargo.lock').write_text('')
+        (host / 'dist/default/Cargo.lock').write_text(lock('GetBusbar/busbar-store-memory', own))
+        (sdk / 'Cargo.lock').write_text(lock('GetBusbar/busbar', sdk_rev))
+        (sdk / 'dist/default/Cargo.lock').write_text(lock('GetBusbar/busbar-store-memory', sdk_dist))
+        (candidate / 'Cargo.lock').write_text(lock('GetBusbar/busbar-store-memory', own))
+        policy = {'repositories': {'GetBusbar/busbar-plane-mcp': {'private': False},
+                                   'GetBusbar/busbar-store-memory': {'private': False},
+                                   'GetBusbar/busbar-auth-ldap': {'private': policy_private}}}
+        q = SimpleNamespace(repository='GetBusbar/busbar-plane-mcp', evaluation_only=False, root=candidate,
+            work=root / 'work', sdk=lambda: sdk, policy=SimpleNamespace(data=policy),
+            env={}, receipt={}, save=lambda: None)
+        heads = {host.resolve(): host_rev, sdk.resolve(): sdk_rev}
+        return q, host, sdk, heads, (sdk_rev, host_rev, own, sdk_dist, vector_only)
+
+    def run_prepare(self, q, host, heads, run=None):
+        calls = []
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if run:
+                run(argv)
+        def fake_git(path, *args):
+            if args[-1].startswith('refs/heads/input-'):
+                return args[-1].removeprefix('refs/heads/input-')
+            return heads[Path(path).resolve()]
+        with patch('native.fetch_environment', return_value={'CI_SERVER_URL': 'https://github.com'}), \
+             patch('native.git', side_effect=fake_git), \
+             patch('native_sources.subprocess.run', side_effect=fake_run):
+            prepare(q, host)
+        return [argv for argv in calls if 'fetch' in argv]
+
+    def test_plugin_fetches_only_seeded_subject_closures_from_exact_sources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, sdk, heads, (sdk_rev, host_rev, own, sdk_dist, vector_only) = self.plugin_fixture(Path(directory))
+            fetches = self.run_prepare(q, host, heads)
+            self.assertEqual(q.receipt['canonical_inputs'], {
+                'GetBusbar/busbar': [sdk_rev], 'GetBusbar/busbar-store-memory': [own]})
+            remotes = sorted(argv[argv.index('1') + 1] for argv in fetches)
+            # The SDK revision comes from the verified controller checkout, not the forge.
+            self.assertEqual(remotes, sorted([str(sdk.resolve()),
+                'https://github.com/GetBusbar/busbar-store-memory.git']))
+            for argv in fetches:
+                self.assertEqual(argv[3:8], ['fetch', '--quiet', '--no-tags', '--depth', '1'])
+            joined = ' '.join(' '.join(argv) for argv in fetches)
+            for unused in (sdk_dist, vector_only, host_rev):
+                self.assertNotIn(unused, joined)
+
+    def test_core_fetches_subject_closures_and_vector_products_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, sdk, heads, (sdk_rev, host_rev, own, sdk_dist, vector_only) = self.plugin_fixture(Path(directory))
+            # A core job: the candidate checkout is the host.
+            q.repository, q.root = 'GetBusbar/busbar', host
+            q.policy.data['repositories']['GetBusbar/busbar'] = {'private': False}
+            (host / 'Cargo.lock').write_text((q.work.parent / 'candidate/Cargo.lock').read_text())
+            calls = []
+            with patch('native_sources.product_inputs', side_effect=lambda *a: calls.append(a) or {}):
+                fetches = self.run_prepare(q, host, heads)
+            self.assertEqual(q.receipt['canonical_inputs'], {
+                'GetBusbar/busbar': [sdk_rev], 'GetBusbar/busbar-store-memory': [own],
+                'GetBusbar/busbar-auth-ldap': [vector_only]})
+            joined = ' '.join(' '.join(argv) for argv in fetches)
+            for unused in (sdk_dist, host_rev):
+                self.assertNotIn(unused, joined)
+            # Every vector product still reaches the standalone product closure.
+            self.assertEqual([row['repo'] for row in calls[0][1]['products']],
+                             ['busbar-store-memory', 'busbar-auth-ldap'])
+
+    def test_plugin_still_rejects_private_vector_products(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, _, heads, _ = self.plugin_fixture(Path(directory), policy_private=True)
+            with self.assertRaisesRegex(ValueError, 'private repository'):
+                self.run_prepare(q, host, heads)
+
+    def test_one_shallow_fetch_per_repository_and_identity_is_verified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, _, heads, (_, _, own, _, _) = self.plugin_fixture(Path(directory))
+            second = 'f' * 40
+            (q.root / 'Cargo.lock').write_text(''.join(
+                '[[package]]\nname="x' + r[0] + '"\nversion="1.0.0"\nsource="git+https://github.com/'
+                'GetBusbar/busbar-store-memory?rev=' + r + '#' + r + '"\n' for r in (own, second)))
+            fetches = self.run_prepare(q, host, heads)
+            memory = [argv for argv in fetches if argv[-1].startswith(('refs', own, second))
+                      and 'busbar-store-memory.git' in ' '.join(argv)]
+            self.assertEqual(len(memory), 1)
+            self.assertEqual(memory[0][-2:], [own + ':refs/heads/input-' + own, second + ':refs/heads/input-' + second])
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, _, heads, _ = self.plugin_fixture(Path(directory))
+            with patch('native.fetch_environment', return_value={'CI_SERVER_URL': 'https://github.com'}), \
+                 patch('native.git', side_effect=lambda path, *args: '0' * 40 if args[-1].startswith('refs/')
+                       else heads[Path(path).resolve()]), \
+                 patch('native_sources.subprocess.run'):
+                with self.assertRaisesRegex(ValueError, 'revision mismatch'):
+                    prepare(q, host)
+
+    def test_independent_repositories_fetch_concurrently(self):
+        import threading
+        with tempfile.TemporaryDirectory() as directory:
+            q, host, _, heads, (sdk_rev, _, own, _, _) = self.plugin_fixture(Path(directory))
+            # Two network repositories must be in flight together; a serial loop
+            # would break this barrier. The SDK comes from its local checkout.
+            (q.root / 'Cargo.lock').write_text(
+                '[[package]]\nname="x"\nversion="1.0.0"\nsource="git+https://github.com/GetBusbar/'
+                'busbar-store-memory?rev=' + own + '#' + own + '"\n'
+                '[[package]]\nname="y"\nversion="1.0.0"\nsource="git+https://github.com/GetBusbar/'
+                'busbar-plane-mcp?rev=' + own + '#' + own + '"\n')
+            barrier = threading.Barrier(2, timeout=10)
+            def network(argv):
+                if 'fetch' in argv and argv[argv.index('1') + 1].startswith('https://'):
+                    barrier.wait()
+            heads[(q.work / 'sdk').resolve()] = sdk_rev
+            with patch('native_sources.FETCH_WORKERS', 2):
+                fetches = self.run_prepare(q, host, heads, run=network)
+            self.assertEqual(sum(argv[argv.index('1') + 1].startswith('https://') for argv in fetches), 2)
 
 
 if __name__ == '__main__':
