@@ -21,6 +21,9 @@ import uuid
 
 import linux_job_isolation
 
+# Same value as native_dep_cache.CARGO_HOME_PATH and confinement_entry; tests pin it.
+INVOCATION_CARGO_HOME = '/__busbar_cargo_home'
+
 
 def require(value, message):
     if not value:
@@ -634,16 +637,6 @@ class Execution:
         ]
         for alias in fixture_hosts:
             args += ['--add-host', alias]
-        for source, destination, writable in mounts:
-            require(
-                "," not in str(source) and "," not in str(destination),
-                "unsupported bind path",
-            )
-            args += [
-                "--mount",
-                f"type=bind,src={source},dst={destination}"
-                + ("" if writable else ",readonly"),
-            ]
         safe_env = self.cargo_environment(argv, env)
         disposable_target = None
         if discard_harness_target:
@@ -656,9 +649,22 @@ class Execution:
         if safe_env.get('CARGO_HOME'):
             # Stable dependency paths preserve Cargo target fingerprints. The
             # contents remain fresh for every invocation and are removed below.
+            # One fixed in-container path, independent of the job directory, so
+            # registry/Git unit fingerprints are portable between jobs.
             cargo_home = root['candidate'] / 'cargo-home-invocation'
             cargo_home.mkdir(mode=0o700)
-            safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = str(cargo_home)
+            mounts.append((cargo_home, Path(INVOCATION_CARGO_HOME), True))
+            safe_env['BUSBAR_INVOCATION_CARGO_HOME'] = INVOCATION_CARGO_HOME
+        for source, destination, writable in mounts:
+            require(
+                "," not in str(source) and "," not in str(destination),
+                "unsupported bind path",
+            )
+            args += [
+                "--mount",
+                f"type=bind,src={source},dst={destination}"
+                + ("" if writable else ",readonly"),
+            ]
         isolation = self.config['isolation']
         storage = linux_job_isolation.prepare_writable(isolation, [src for src, _, writable in mounts if writable],
                                    self.config['uid'], self.config['gid'])

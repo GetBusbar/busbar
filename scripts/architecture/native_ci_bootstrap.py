@@ -40,7 +40,8 @@ CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
-JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
+JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic',
+        'plugin-dependency-units'}
 HOST_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
 BASE_ENV = {'PATH': HOST_PATH,
             'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -615,8 +616,9 @@ def root_main():
                     diagnostic(trusted, config, config_path, store, evidence)
                 else:
                     import native_service_inputs
-                    receipt['service_inputs'] = native_service_inputs.stage(
-                        trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
+                    # The dependency-unit producer starts no service peer.
+                    receipt['service_inputs'] = {} if env['CI_JOB_NAME'] == 'plugin-dependency-units' else \
+                        native_service_inputs.stage(trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
                     capacity = os.statvfs(control)
                     require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
                             'service image imports would consume the protected host disk reserve')
@@ -635,6 +637,8 @@ def root_main():
                         command.append('--conformance-only')
                     elif env['CI_JOB_NAME'] == 'external-conformance':
                         command.append('--external-conformance')
+                    elif env['CI_JOB_NAME'] == 'plugin-dependency-units':
+                        command.append('--dependency-units')
                     try:
                         run(command, env=dict(os.environ), cwd=trusted)
                     finally:
