@@ -81,6 +81,7 @@ q.receipt = {'steps': []}
 q.host = lambda: q.root
 # This fixture exercises cancellation, not recursive controller regressions.
 q.core_regressions = lambda: None
+q.core_formatting = lambda: None
 supervisor = sys.argv[3]
 q.core = lambda: q.run('nested', [sys.executable, supervisor, str(root)])
 native.Qualification = lambda args: q

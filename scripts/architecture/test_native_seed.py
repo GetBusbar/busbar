@@ -4,7 +4,8 @@ import json
 import hashlib
 import io
 import os
-from contextlib import redirect_stdout
+import tempfile
+from contextlib import nullcontext, redirect_stdout
 from types import SimpleNamespace
 import unittest
 from pathlib import Path
@@ -118,6 +119,7 @@ class PreparationTiming(unittest.TestCase):
                 q.receipt, q.policy = {'steps': []}, object()
                 q.save, q.finish, q.host, q.architecture = Mock(), Mock(), Mock(), Mock()
                 events = []
+                q.run = Mock(side_effect=lambda name, argv: events.append(name))
                 def regression(name, argv, **kwargs):
                     self.assertEqual(kwargs['cwd'], q.trusted)
                     events.append(name)
@@ -144,13 +146,118 @@ class PreparationTiming(unittest.TestCase):
                 expected = ['validated-constructor', 'architecture-regressions']
                 if not fail_regression:
                     expected += ['toolchain-regressions', 'conformance-capability-regressions',
-                                 'conformance-confined-tools-regressions', 'canonical-inputs']
+                                 'conformance-confined-tools-regressions', 'root-fmt', 'default-fmt',
+                                 'canonical-inputs']
                 self.assertEqual(events, expected)
                 self.assertEqual(collect.call_count, int(not fail_regression))
                 self.assertEqual(oracle.call_count, int(not fail_regression))
                 seed.assert_not_called()
                 q.architecture.assert_not_called()
                 q.finish.assert_called_once()
+
+    def test_failed_formatting_stops_before_oracle_sources_seed_and_fixtures(self):
+        import native
+        for failed in ('root-fmt', 'default-fmt'):
+            with self.subTest(failed=failed):
+                q = native.Qualification.__new__(native.Qualification)
+                q.repository, q.evaluation_only = 'GetBusbar/busbar', False
+                q.control = q.work = Path('/unused-test-work')
+                q.policy = object()
+                q.finish, q.core_regressions = Mock(), Mock()
+                def formatting(name, argv, cwd, timeout, **kwargs):
+                    if name == failed:
+                        raise native.Violation(name + ' failed; no automatic retry')
+                q._run = Mock(side_effect=formatting)
+                args = SimpleNamespace(external_conformance=False, conformance_only=False, work=q.work)
+                with patch.dict(os.environ, {'CI_JOB_ID': '1', 'CI_PIPELINE_ID': '2', 'CI_PROJECT_ID': '3',
+                        'CI_PROJECT_PATH': q.repository, 'CI_CONFIG_REF_URI': 'immutable'}), \
+                     patch('native.argparse.ArgumentParser.parse_args', return_value=args), \
+                     patch('native.Qualification', return_value=q), \
+                     patch('native.requires_native_oracle') as oracle, \
+                     patch('native_sources.prepare') as collect, \
+                     patch('native_seed.prepare') as seed, \
+                     patch('native_staged_fixtures.collect_required') as fixtures:
+                    with self.assertRaisesRegex(native.Violation, failed):
+                        native.qualify()
+                q.core_regressions.assert_called_once_with()
+                calls = q._run.call_args_list
+                self.assertEqual([call.args[0] for call in calls],
+                                 ['root-fmt'] if failed == 'root-fmt' else ['root-fmt', 'default-fmt'])
+                self.assertTrue(all(call.kwargs == {'controller': False} for call in calls))
+                self.assertTrue(all(call.args[2:] == (None, 3600) for call in calls))
+                oracle.assert_not_called()
+                collect.assert_not_called()
+                seed.assert_not_called()
+                fixtures.assert_not_called()
+                q.finish.assert_called_once()
+
+    def test_early_formatting_keeps_confined_execution_and_hashed_step_outputs(self):
+        import native
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            q = native.Qualification.__new__(native.Qualification)
+            q.root = q.evidence = Path(directory)
+            q.env, q.receipt = {'CI': '1'}, {'steps': []}
+            q.save = Mock()
+            observation = {'disposed': True}
+            q.execution = SimpleNamespace(invocation=Mock(side_effect=lambda *args:
+                nullcontext((['confined', *args[0]], {'BOUNDARY': '1'}, dict(observation)))))
+            def launch(argv, **kwargs):
+                self.assertEqual(argv[0], 'confined')
+                self.assertEqual(kwargs['env'], {'BOUNDARY': '1'})
+                self.assertEqual(kwargs['cwd'], q.root)
+                kwargs['stdout'].write(b'format stdout')
+                kwargs['stderr'].write(b'format stderr')
+                return SimpleNamespace(wait=Mock(return_value=0))
+            with patch('native.subprocess.Popen', side_effect=launch), \
+                 patch('native.stop_process_group'), redirect_stdout(io.StringIO()):
+                q.core_formatting()
+            commands = [
+                ['cargo', 'fmt', '--all', '--check'],
+                ['cargo', 'fmt', '--manifest-path', 'dist/default/Cargo.toml', '--all', '--check']]
+            self.assertEqual([call.args for call in q.execution.invocation.call_args_list],
+                             [(command, q.root, q.env) for command in commands])
+            self.assertEqual([row['name'] for row in q.receipt['steps']], ['root-fmt', 'default-fmt'])
+            for row, command in zip(q.receipt['steps'], commands):
+                self.assertEqual(row['argv'], command)
+                self.assertEqual(row['authority'], 'candidate')
+                self.assertEqual(row['status'], 'pass')
+                self.assertEqual(row['container'], observation)
+                for stream in ('stdout', 'stderr'):
+                    self.assertEqual(row[stream + '_sha256'],
+                                     native.digest(q.evidence / (row['name'] + '.' + stream)))
+
+    def test_core_compiles_and_lints_every_target_before_compiler_witnesses(self):
+        import native
+        q = native.Qualification.__new__(native.Qualification)
+        events = []
+        q.run = Mock(side_effect=lambda name, argv: events.append((name, argv)))
+        def witnesses():
+            events.append(('architecture', None))
+            raise native.Violation('stop after witnesses')
+        q.architecture = Mock(side_effect=witnesses)
+        with self.assertRaisesRegex(native.Violation, 'stop after witnesses'):
+            q.core()
+        names = [name for name, _ in events]
+        self.assertEqual(names, ['root-test-build', 'root-clippy', 'default-clippy',
+                                 'root-clippy-nodefault', 'architecture'])
+        self.assertEqual(events[0][1], ['cargo', 'test', '--workspace', '--locked', '--no-run'])
+        for name, argv in events[1:4]:
+            self.assertEqual(argv[:2], ['cargo', 'clippy'])
+            self.assertIn('--all-targets', argv)
+            self.assertEqual(argv[-2:], ['-D', 'warnings'])
+
+    def test_failed_early_compilation_stops_before_compiler_witnesses(self):
+        import native
+        q = native.Qualification.__new__(native.Qualification)
+        def run(name, argv):
+            if name == 'root-test-build':
+                raise native.Violation(name + ' failed; no automatic retry')
+        q.run = Mock(side_effect=run)
+        q.architecture = Mock()
+        with self.assertRaisesRegex(native.Violation, 'root-test-build'):
+            q.core()
+        q.architecture.assert_not_called()
+        self.assertEqual(q.run.call_count, 1)
 
     def test_monotonic_cost_is_recorded_for_success_and_failure_without_qualifying_checks(self):
         from native import Qualification
