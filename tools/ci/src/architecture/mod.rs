@@ -67,7 +67,9 @@ pub struct Case {
 /// One compiler isolate of the confined pool.
 pub trait Slot {
     fn candidate(&self) -> PathBuf;
-    fn run(&mut self, argv: &[String], cwd: &Path) -> Result<Done>;
+    /// `vendored_sources`: a seeded case whose sources are the read-only
+    /// vendor directory gets an empty private Cargo home.
+    fn run(&mut self, argv: &[String], cwd: &Path, vendored_sources: bool) -> Result<Done>;
 }
 
 pub type CaseFn<'a> = dyn Fn(&mut dyn Slot, &Case) -> Result<()> + Sync + 'a;
@@ -288,8 +290,8 @@ impl Engine for Execution {
             fn candidate(&self) -> PathBuf {
                 self.0.execution.roots.candidate.clone()
             }
-            fn run(&mut self, argv: &[String], cwd: &Path) -> Result<Done> {
-                Ok(self.0.run(argv, cwd)?)
+            fn run(&mut self, argv: &[String], cwd: &Path, vendored_sources: bool) -> Result<Done> {
+                Ok(self.0.run(argv, cwd, vendored_sources)?)
             }
         }
         self.compiler_pool()?

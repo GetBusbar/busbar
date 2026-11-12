@@ -1155,8 +1155,13 @@ impl Peers {
     }
 
     pub fn provision(&mut self, q: &mut Q, owner: &mut Services, requested: &[String]) -> R<()> {
+        // Start every peer before waiting on any: database initialisation and
+        // JVM/LDAP boot then overlap instead of running back to back. Each peer
+        // keeps its own bounded readiness check, in the same order.
         for service in requested {
             self.start(q, owner, service)?;
+        }
+        for service in requested {
             let peer = self.peer(service);
             let (name, port) = (peer.name.clone(), peer.port);
             let token = format!("busbar_oracle_{}_v4", owner.tag.replace('-', "_"));

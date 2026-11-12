@@ -829,7 +829,11 @@ pub fn check_compiler_witnesses(
     if parallel {
         ctx.engine.as_deref_mut().unwrap().pool_check()?;
     }
-    let jobs = if parallel { Some(2) } else { ctx.check_jobs() };
+    let jobs = if parallel {
+        Some(crate::confine::COMPILER_POOL_JOBS as i128)
+    } else {
+        ctx.check_jobs()
+    };
     // Only the isolated pool path is seeded; the serial fallback is unchanged.
     let mut seed = None;
     let mut fallback_record = None;
@@ -862,7 +866,7 @@ pub fn check_compiler_witnesses(
         engine.pool_map(&cases, &|slot: &mut dyn Slot, case: &Case| {
             let candidate = slot.candidate();
             compile_case(log, &shared, case, Some(candidate), &mut |argv| {
-                slot.run(argv, scratch)
+                slot.run(argv, scratch, shared.seed.is_some())
             })
         })?;
     } else {
