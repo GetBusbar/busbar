@@ -2,13 +2,18 @@
 # Candidate .gitlab-ci.yml and candidate architecture tooling are never executed here.
 #
 # Core runs in three tiers; plugin projects keep one (native-qualification + security).
-#   DEV  (dev merge requests, dev push): core-build (fmt, deny/vet, the one clippy-linted
-#        release build of dist/default `busbar`) -> core-conformance on that binary.
+#   DEV  (dev merge requests, dev push, owner API pipelines on dev): core-build (fmt,
+#        deny/vet, the one plain `cargo build --release` of dist/default `busbar`) in
+#        parallel with core-clippy (lint-only, both workspaces, -D warnings), then
+#        core-conformance on that binary's sha256.
 #   QA   (protected qa push; owner "qa-nightly" schedule on dev): DEV + native-qualification
-#        (every test, full clippy, witnesses, oracle, loom) + security-scans, all on the
-#        same certified binary.
+#        (every test incl. the shipped default features, no-default clippy, witnesses,
+#        oracle, loom) + core-conformance-debug (the debug-assertion build) +
+#        security-scans; conformance is strict, but signing evidence is main's. On a qa
+#        push, qa-certification retains the binary and receipts without expiry.
 #   MAIN (protected main push): release-certification, zero builds: the QA-certified
-#        digests for this exact commit or no release.
+#        digests for this exact commit or no release; signing and the Sigstore/SLSA
+#        verification of the signed artifact follow it on main.
 workflow:
   auto_cancel:
     on_new_commit: conservative
@@ -46,6 +51,10 @@ stages: [build, qualify, website, release]
       python3 -I -B - <<'PY'
       import base64, os, pathlib, re, shutil, subprocess
       uri = os.environ['CI_CONFIG_REF_URI']
+      # Schedules select their tier by description; an absent description must
+      # fail loudly instead of silently running a subset (the QA rules need it).
+      if os.environ['CI_PIPELINE_SOURCE'] == 'schedule' and not os.environ.get('CI_PIPELINE_SCHEDULE_DESCRIPTION'):
+          raise SystemExit('scheduled pipeline has no CI_PIPELINE_SCHEDULE_DESCRIPTION; cannot select its tier')
       # GitLab identifies the consumer project/ref around the full external
       # configuration setting. The trusted revision is the SHA after its colon.
       match = re.fullmatch(r'(?:https://)?' + re.escape(os.environ['CI_SERVER_HOST']) + '/' + re.escape(os.environ['CI_PROJECT_PATH']) + r'//ci/architecture-pipeline\.yml@GetBusbar/busbar:([0-9a-f]{40})@refs/heads/[^\s]+', uri)
@@ -83,8 +92,10 @@ stages: [build, qualify, website, release]
               command = ['python3', str(trusted / 'scripts/security/scan.py'), '--trusted', str(trusted), '--checkout', os.environ['CI_PROJECT_DIR'], '--work', str(work), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/security.json')]
           elif os.environ['CI_JOB_NAME'] == 'release-certification':
               command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/release_certification.py'), '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/release-certification.json')]
-          elif os.environ['CI_JOB_NAME'] not in ('core-build', 'native-qualification', 'core-conformance', 'native-isolation-diagnostic') and not re.fullmatch(r'plugin-dependency-units [1-8]/8', os.environ['CI_JOB_NAME']):
-              raise SystemExit('unrecognized trusted native job')
+          elif os.environ['CI_JOB_NAME'] == 'qa-certification':
+              command = ['python3', '-I', '-B', str(trusted / 'scripts/architecture/release_certification.py'), '--qa-record', '--output', str(pathlib.Path(os.environ['CI_PROJECT_DIR']) / 'boundary-evidence/qa-certification.json')]
+          # Every other job name is validated by native_ci_bootstrap.ci_environment
+          # (its one job list) before any download.
           if command is not None:
               subprocess.run(command, check=True)
       finally:
@@ -97,22 +108,29 @@ stages: [build, qualify, website, release]
     paths: [boundary-evidence/]
 
 # Shared rule sets, spliced into job rules with !reference. No set ends in a catch-all;
-# every job closes its own list with `when: never`.
+# every job closes its own list with `when: never`. These are the YAML side of
+# native_release_stage.PROTECTED_PIPELINES (the controller's one definition).
 .rules:
   core-dev:
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "dev"'
-  core-qa:
+  core-qa-push:
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "qa" && $CI_COMMIT_REF_PROTECTED == "true"'
-    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev" && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"'
+  core-qa:
+    - !reference [.rules, core-qa-push]
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"'
+  core-dev-push:
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_COMMIT_REF_PROTECTED == "true"'
+  core-main-push:
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true"'
   plugin-dev:
     - if: '$CI_PROJECT_PATH != "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
     - if: '$CI_PROJECT_PATH != "GetBusbar/busbar" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "dev"'
 
 # ---- DEV tier (core) -------------------------------------------------------------------
-# fmt, cargo deny/vet for both workspaces, then the ONE product build: cargo build
-# --release of dist/default `busbar` with clippy-driver and -D warnings. Its binary
-# (boundary-evidence/busbar) and sha256 are this pipeline's certified subject.
+# fmt, cargo deny/vet for both workspaces, then the ONE product build: a plain
+# `cargo build --release --locked` of dist/default `busbar` (no compiler wrapper). Its
+# binary (boundary-evidence/busbar) and sha256 are this pipeline's certified subject.
 core-build:
   extends: .controller
   stage: build
@@ -122,8 +140,20 @@ core-build:
     - !reference [.rules, core-qa]
     - when: never
 
+# Lint-only: cargo clippy --all-targets --all-features -D warnings of the root workspace
+# and dist/default, in parallel with core-build, on its own compile-target cache key.
+core-clippy:
+  extends: .controller
+  stage: build
+  timeout: 2h
+  rules:
+    - !reference [.rules, core-dev]
+    - !reference [.rules, core-qa]
+    - when: never
+
 # Every core conformance suite judges the core-build binary by sha256; no own build.
-# Stage order starts it once core-build passed; it reads that job through the API.
+# Stage order starts it once core-build and core-clippy passed; it reads core-build
+# through the API.
 core-conformance:
   extends: .controller
   stage: qualify
@@ -134,15 +164,26 @@ core-conformance:
     - when: never
 
 # ---- QA tier (core) and plugin qualification --------------------------------------------
-# Core: every test (root/dist workspaces, doctests, loader witnesses, loom), full clippy,
-# compiler witnesses, the oracle replay and product inputs; records the same certified
-# binary. Plugins: their native qualification on dev, as before.
+# Core: every test (root/dist workspaces incl. the shipped default features, doctests,
+# loader witnesses, loom), no-default clippy, compiler witnesses, the oracle replay and
+# product inputs; records the same certified binary. Plugins: their native
+# qualification on dev, as before.
 native-qualification:
   extends: .controller
   stage: qualify
   rules:
     - !reference [.rules, core-qa]
     - !reference [.rules, plugin-dev]
+    - when: never
+
+# QA only: every core conformance suite against the debug-assertion (dev-profile)
+# dist/default build of the same source, in addition to the certified release binary.
+core-conformance-debug:
+  extends: .controller
+  stage: qualify
+  tags: [busbar-conformance]
+  rules:
+    - !reference [.rules, core-qa]
     - when: never
 
 # Runner 32 allocates a distinct one-use VM per job (capacity_per_instance=1,
@@ -192,15 +233,16 @@ plugin-dependency-units:
   timeout: 2h
   resource_group: plugin-dependency-units-$CI_NODE_INDEX
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - !reference [.rules, core-dev-push]
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
 
 # Every qualified assembled-product dev change refreshes current website evidence.
-# The marketing pipeline independently verifies source and binary freshness.
+# The marketing pipeline independently verifies source and binary freshness. Core's
+# dev evidence is its DEV tier (core-build, core-clippy, core-conformance receipts);
+# stage ordering starts this only after every one of them passed.
 website-dev:
   stage: website
-  # Stage ordering requires every qualification job, including conformance.
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
       variables:
@@ -219,18 +261,36 @@ website-dev:
       yaml_variables: true
       pipeline_variables: false
 
+# QA push only, after every QA job passed: re-verify them (one certified sha256 across
+# core-build, core-conformance and native-qualification, the approved controller
+# revision) and retain the binary and every receipt as artifacts that never expire, so
+# main can certify however long after QA it is pushed (release_certification.py).
+qa-certification:
+  extends: .controller
+  stage: release
+  timeout: 30m
+  interruptible: false
+  rules:
+    - !reference [.rules, core-qa-push]
+    - when: never
+  artifacts:
+    access: developer
+    expire_in: never
+    paths: [boundary-evidence/]
+
 # ---- MAIN tier (core) ----------------------------------------------------------------------
 # Zero builds: the newest successful protected qa push pipeline at this exact commit must
-# have certified one binary sha256 across core-build, core-conformance and
-# native-qualification, with security passing (release_certification.py). Signing,
-# tagging and publication take only that digest; there is no signing key in DEV or QA.
+# have passed every QA job and retained (qa-certification) one certified binary sha256
+# under the approved controller revision (release_certification.py). Signing, tagging
+# and publication take only that digest, and the Sigstore/SLSA verification of the
+# signed artifact runs on main after signing; there is no signing key in DEV or QA.
 release-certification:
   extends: .controller
   stage: release
   timeout: 30m
   interruptible: false
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - !reference [.rules, core-main-push]
     - when: never
   artifacts:
     when: always

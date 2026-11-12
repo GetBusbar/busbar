@@ -140,7 +140,10 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance'), ['core', 'tls', 'oidf', 'release-engineering'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
-        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-llm', 'external-conformance'), [])
+        self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance-debug'),
+                         ['core', 'tls', 'oidf', 'release-engineering'])
+        for job in ('core-build', 'core-clippy'):
+            self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', job), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-decisions', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-secret-c', 'native-qualification'), ['python-schema'])
         self.assertEqual([repo for repo, owners in plan['repositories'].items() if 'python-schema' in owners],

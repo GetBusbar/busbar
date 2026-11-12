@@ -28,6 +28,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Isolated Python omits the script directory; load only the adjacent protected module.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_dep_cache import producer_shard  # noqa: E402
+
 PACKAGE = 'https://github.com/api/v4/projects/3/packages/generic/busbar-native-public-tools/20261110-78dea35890609955/image.tar'
 ARCHIVE_SHA256 = '2b0ba52edc6f3bb198f2fcf9afc2c7edd75f3111f93f8b5afcbb3125eb813873'
 ARCHIVE_BYTES = 938926592
@@ -42,14 +46,17 @@ CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_COMMIT_REF_PROTECTED CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
-JOBS = {'native-qualification', 'core-build', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
-# Server-assigned names of the `parallel: 8` dependency-unit producer
-# (native_dep_cache.PRODUCER_JOB_NAME; tests pin that the two agree).
-DEPENDENCY_UNITS_JOB = re.compile(r'plugin-dependency-units [1-8]/8')
+JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-conformance', 'core-conformance-debug',
+        'native-isolation-diagnostic'}
+# Core jobs that judge conformance (and so stage judges and service peers).
+CONFORMANCE_JOBS = ('core-conformance', 'core-conformance-debug')
+# Core dev-tier jobs that start no service peer.
+NO_SERVICE_JOBS = ('core-build', 'core-clippy')
 
 
 def dependency_units_job(name):
-    return DEPENDENCY_UNITS_JOB.fullmatch(name or '') is not None
+    """A server-assigned `parallel` dependency-unit producer name (the one definition)."""
+    return producer_shard(name) is not None
 HOST_PATH = '/usr/sbin:/usr/bin:/sbin:/bin'
 BASE_ENV = {'PATH': HOST_PATH,
             'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C.UTF-8', 'GIT_CONFIG_NOSYSTEM': '1',
@@ -468,7 +475,7 @@ def judge_selection(plan, repository, job):
             and plan['schema'] == 'busbar.native-judge-inputs/1'
             and isinstance(plan['owners'], dict) and len(plan['owners']) <= 16
             and isinstance(plan['repositories'], dict), 'invalid protected judge input plan')
-    if job == 'external-conformance' or (repository == 'GetBusbar/busbar' and job != 'core-conformance'):
+    if repository == 'GetBusbar/busbar' and job not in CONFORMANCE_JOBS:
         return []
     selected = plan['repositories'].get(repository, [])
     require(isinstance(selected, list) and len(selected) == len(set(selected))
@@ -765,9 +772,9 @@ def root_main():
                     diagnostic(trusted, config, config_path, store, evidence)
                 else:
                     import native_service_inputs
-                    # Neither the dependency-unit producer nor core-build starts a service peer.
+                    # Neither the dependency-unit producer nor core-build/core-clippy starts a service peer.
                     receipt['service_inputs'] = {} if (dependency_units_job(env['CI_JOB_NAME'])
-                                                       or env['CI_JOB_NAME'] == 'core-build') else \
+                                                       or env['CI_JOB_NAME'] in NO_SERVICE_JOBS) else \
                         native_service_inputs.stage(trusted, env['CI_PROJECT_PATH'], store, env['CI_JOB_TOKEN'])
                     capacity = os.statvfs(control)
                     require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
@@ -781,15 +788,15 @@ def root_main():
                     if judges is not None:
                         command.extend(['--conformance-inputs', judges['manifest'], '--conformance-inputs-sha256', judges['sha256']])
                         receipt['judge_inputs'] = judges
-                    if env['CI_JOB_NAME'] == 'core-conformance':
+                    if env['CI_JOB_NAME'] in CONFORMANCE_JOBS:
                         command.append('--conformance-only')
-                    elif env['CI_JOB_NAME'] == 'external-conformance':
-                        command.append('--external-conformance')
+                        if env['CI_JOB_NAME'] == 'core-conformance-debug':
+                            command.append('--debug-subject')
                     elif dependency_units_job(env['CI_JOB_NAME']):
                         command.append('--dependency-units')
-                    elif env['CI_JOB_NAME'] == 'core-build':
-                        require(env['CI_PROJECT_PATH'] == 'GetBusbar/busbar', 'core-build is core-only')
-                        command.append('--core-build')
+                    elif env['CI_JOB_NAME'] in NO_SERVICE_JOBS:
+                        require(env['CI_PROJECT_PATH'] == 'GetBusbar/busbar', env['CI_JOB_NAME'] + ' is core-only')
+                        command.append('--' + env['CI_JOB_NAME'])
                     try:
                         run(command, env=dict(os.environ), cwd=trusted)
                     finally:

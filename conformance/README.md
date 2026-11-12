@@ -35,7 +35,8 @@ The separate `external-conformance` job formerly named `external-openai.sh` and
 Git history.
 Core commit `600544b622abfbf930349bc84a508fa4289f284a` introduced those references;
 `f199d3eb20664ebb4a849473c7acf7c7c9df5316` moved them into policy without adding implementations.
-The stale job routing is removed; the nine implemented suites remain mandatory in native CI.
+The stale job routing (and the controller's unreachable `external-conformance` mode) is
+removed; the nine implemented suites remain mandatory in native CI.
 Future external endpoint profiles still require an explicit protected entrypoint and a confined
 fixed-destination broker. They cannot inherit a pass from the offline specification checks.
 

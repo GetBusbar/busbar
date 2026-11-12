@@ -185,7 +185,7 @@ class EvidenceTests(unittest.TestCase):
                       stdout_sha256=hashlib.sha256(b'tested').hexdigest(),
                       stderr_sha256=hashlib.sha256(b'').hexdigest()) for name in CORE_BUILD_STEPS]
         record = dict(sha256=hashlib.sha256(binary).hexdigest(), bytes=len(binary), path='busbar',
-                      command=['cargo', *BUILD], rustc_wrapper='clippy-driver', clippy_args=['-D', 'warnings'],
+                      command=['cargo', *BUILD], rustc_wrapper='', clippy_args=[],
                       profile_use=None, development_artifact_receipt_sha256=hashlib.sha256(development).hexdigest())
         uri = ('github.com/GetBusbar/busbar//ci/architecture-pipeline.yml@GetBusbar/busbar:'
                + '2' * 40 + '@refs/heads/dev')
@@ -237,7 +237,7 @@ class EvidenceTests(unittest.TestCase):
         self.tiered_core()
         self.assertTrue(self.verify())
         self.assertTrue(self.verify_conformance())
-        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'tiered'), {'core-build', 'core-conformance'})
+        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'tiered'), {'core-build', 'core-clippy', 'core-conformance'})
         self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'single', 'core-conformance'),
                          {'native-qualification', 'security-scans', 'core-conformance'})
         self.assertEqual(dev_required_jobs('GetBusbar/busbar-x', 'tiered'),
@@ -252,6 +252,7 @@ class EvidenceTests(unittest.TestCase):
         self.tiered_core()
         good = copy.deepcopy(self.receipt)
         for change in (dict(binary_sha256='0' * 64), dict(schema='busbar.protected-native-admission/1'),
+                       dict(certified_binary=dict(good['certified_binary'], rustc_wrapper='clippy-driver')),
                        dict(certified_binary=dict(good['certified_binary'], command=['cargo', 'build'])),
                        dict(certified_binary=dict(good['certified_binary'], sha256='0' * 64)),
                        dict(certified_binary=dict(good['certified_binary'], bytes=1)),

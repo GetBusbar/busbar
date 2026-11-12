@@ -195,6 +195,55 @@ class Restore(Fixture):
         self.assertEqual(images.restore(self.q, VECTOR, 'c' * 40, registry=Registry()), {})
 
 
+class PinnedProducer(Fixture):
+    """Images from the owner's ci/dep-cache pipeline serve exactly their host revision."""
+
+    def setUp(self):
+        super().setUp()
+        # The ancestor-configuration rule depends on the machine running the tests.
+        patcher = patch('native_product_images.cargo_configuration', return_value={'.cargo/config.toml': None})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_pinned_images_carry_the_marker_and_restore_for_their_host_only(self):
+        global PIPELINE
+        commit = 'c' * 40
+        self.assertNotEqual(units.key(images.job_identity(self.q, ROW, VECTOR['sdk'])),
+                            units.key(images.job_identity(self.q, ROW, VECTOR['sdk'], pinned_commit=commit)))
+        registry = Registry()
+        saved = PIPELINE
+        PIPELINE = {'id': 77, 'ref': units.PINNED_REF, 'sha': commit, 'source': 'api'}
+        try:
+            built = self.q.work / 'product-images-target/debug' / ROW['image']
+
+            def run(name, argv, cwd=None):
+                built.parent.mkdir(parents=True, exist_ok=True)
+                built.write_bytes(BYTES)
+                out = self.q.control / (name + '.stdout')
+                out.write_text(str(built) + '\n')
+                return out
+            self.q.run = run
+            with patch.dict(os.environ, {'CI_PIPELINE_ID': '77', 'CI_JOB_ID': '9', 'CI_COMMIT_SHA': commit,
+                                         'CI_COMMIT_BRANCH': units.PINNED_REF, 'CI_PIPELINE_SOURCE': 'api',
+                                         'CI_COMMIT_REF_PROTECTED': 'true'}):
+                result = images.produce_image(self.q, ROW, VECTOR, registry, pinned_commit=commit)
+            self.assertEqual(result['status'], 'published')
+            manifest = json.loads(registry.read(result['key'], units.MANIFEST, 1 << 20))
+            self.assertEqual(manifest['identity']['pinned_producer'], {'ref': units.PINNED_REF, 'commit': commit})
+            self.assertEqual((manifest['producer']['source'], manifest['producer']['protected']), ('api', True))
+            staging = self.q.control / 'staging'
+            staging.mkdir()
+            self.q.receipt['host_revision'] = commit
+            record, entry = images.restore_one(self.q, ROW, VECTOR['sdk'], registry, staging)
+            self.assertEqual(record['status'], 'hit', record)
+            self.assertEqual(entry['sha256'], hashlib.sha256(BYTES).hexdigest())
+            self.q.receipt['host_revision'] = 'f' * 40
+            record, entry = images.restore_one(self.q, ROW, VECTOR['sdk'], registry, self.q.control / 'other')
+            self.assertEqual((record['status'], entry), ('miss', None))
+        finally:
+            PIPELINE = saved
+
+
 class TrustedScript(Fixture):
     def staged(self, data=BYTES, **changes):
         root = self.q.control / 'staged'

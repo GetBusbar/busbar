@@ -257,8 +257,8 @@ class Reuse(unittest.TestCase):
         self.assertEqual(result['requires_fresh_assembly'], NEW)
         self.assertEqual(plan_reuse(self.original, self.requested, self.objects)['action'],
                          'verify-retained-check')
-        for job in ('core-conformance', 'external-conformance'):
-            repository = CORE if job == 'core-conformance' else OWNER
+        for job in ('core-conformance',):
+            repository = CORE
             old = dict(self.original, repository=repository, job=job)
             new = dict(self.requested, repository=repository, job=job)
             if repository == CORE:
@@ -363,7 +363,7 @@ class Reuse(unittest.TestCase):
                 preparation_source_identity(source, CORE, 'core-conformance', {'products': products})
 
     def test_core_and_conformance_jobs_cannot_be_retained_components(self):
-        for request in (dict(self.original, repository=CORE), dict(self.original, job='external-conformance')):
+        for request in (dict(self.original, repository=CORE), dict(self.original, job='core-conformance')):
             with self.subTest(request=request), self.assertRaisesRegex(ValueError, 'non-core native'):
                 component_identity(request, self.objects)
 

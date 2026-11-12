@@ -1,15 +1,19 @@
 """The certified core binary: one release build of dist/default `busbar` per pipeline.
 
-core-build runs the one product build of the dev tier,
+core-build runs the one product build of the dev tier, a plain
 
     cargo build --release --locked --manifest-path dist/default/Cargo.toml --bin busbar
 
-with clippy-driver as RUSTC_WRAPPER and `-D warnings`, so the same compiler pass
-lints every local crate it compiles (dist/default and every core path crate under
-crates/*; registry and Git crates keep Cargo's --cap-lints allow, which disables
-clippy) and produces the binary. Its sha256 is the certified subject: core
-conformance judges exactly these bytes, and native qualification verifies and
-records the same digest instead of building another release binary.
+with no compiler wrapper (RUSTC_WRAPPER and RUSTC_WORKSPACE_WRAPPER empty), so the
+certified bytes are exactly what a release build produces. Lints are the separate
+core-clippy job (native.CORE_CLIPPY_COMMANDS), which never touches these bytes.
+Its sha256 is the certified subject: core conformance judges exactly these bytes,
+and native qualification verifies and records the same digest instead of building
+another release binary.
+
+The release build runs at CARGO_BUILD_JOBS=1 (native.OPTIMIZED_STEPS); the
+receipt records the step's sampled cgroup memory peak (build_resources) so the
+parallelism can be raised from measurement.
 
 Consumers never trust a file placed in their checkout. They read the core-build
 job of their own pipeline through the GitLab API with their own job token: the
@@ -29,7 +33,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sys
 import urllib.error
 import urllib.parse
@@ -40,22 +43,17 @@ from check import Violation
 JOB = 'core-build'
 SCHEMA = 'busbar.core-build/1'
 BUILD = ['build', '--release', '--locked', '--manifest-path', 'dist/default/Cargo.toml', '--bin', 'busbar']
-LINTER = 'clippy-driver'
-# What `cargo clippy -- -D warnings` hands clippy-driver (Cargo's own encoding).
-LINT_ARGS = ['-D', 'warnings']
+STEP = 'certified-build'
 PACKAGE = 'busbar-default'
 MAX_BINARY_BYTES = 512 * 1024**2
 MAX_RECEIPT_BYTES = 64 * 1024**2
 SUBJECT = 'certified-subject'
 
 
-def clippy_args(args=LINT_ARGS):
-    return ''.join(arg + '__CLIPPY_HACKERY__' for arg in args)
-
-
-def lint_environment(env):
-    """The compile identity of the one build: clippy-driver wraps rustc for every unit."""
-    return dict(env, RUSTC_WRAPPER=LINTER, RUSTC_WORKSPACE_WRAPPER='', CLIPPY_ARGS=clippy_args())
+def plain_environment(env):
+    """The compile identity of the one build: rustc itself, no wrapper or lint arguments."""
+    plain = {key: value for key, value in env.items() if key != 'CLIPPY_ARGS'}
+    return dict(plain, RUSTC_WRAPPER='', RUSTC_WORKSPACE_WRAPPER='')
 
 
 def profile_environment(env, profile=None):
@@ -87,16 +85,20 @@ def build(q, *, profile=None):
     capture = q.work / 'certified-build-capture'
     tool = q.trusted / 'scripts/release/development_artifact.py'
     saved = q.env
-    environment, profile_record = profile_environment(lint_environment(q.env), profile)
+    environment, profile_record = profile_environment(plain_environment(q.env), profile)
     q.env = environment
     try:
-        q.run('certified-build', ['python3', '-I', str(tool), 'capture', '--directory', str(capture), '--', *BUILD])
+        q.run(STEP, ['python3', '-I', str(tool), 'capture', '--directory', str(capture), '--', *BUILD])
     except Violation:
         diagnostics(q, capture / 'cargo-messages.jsonl')
         raise
     finally:
         q.env = saved
     binary = Path(q.env['CARGO_TARGET_DIR']) / 'release/busbar'
+    # The compiler wrote (and its JSON messages name) the path it saw: the fixed
+    # in-container path when the job runs on fixed roots, else the host path.
+    execution = getattr(q, 'execution', None)
+    compiler_output = execution.container_path(binary) if execution is not None else str(binary)
     collected = collect_output(q, binary, q.evidence / 'busbar', compiler_output=True)
     evidence = q.evidence / 'development-artifact'
     (evidence / 'build').mkdir(parents=True)
@@ -106,12 +108,25 @@ def build(q, *, profile=None):
         'finalize', '--directory', str(evidence), '--binary', str(collected),
         '--source', q.receipt['source'], '--policy', q.receipt['policy_revision'], '--sdk', pins['sdk'],
         '--vector', str(host / 'scripts/ci-product-pins.json'), '--package', PACKAGE,
-        '--compiler-output', str(binary), '--command-json', json.dumps(BUILD),
+        '--compiler-output', compiler_output, '--command-json', json.dumps(BUILD),
         '--retention-policy-sha256', digest(q.trusted / 'ci/architecture-pipeline.yml')])
+    step = next(row for row in reversed(q.receipt['steps']) if row.get('name') == STEP)
+    resources = step.get('resources') or {}
     record = {'sha256': digest(collected), 'bytes': collected.stat().st_size, 'path': 'busbar',
-              'command': ['cargo', *BUILD], 'rustc_wrapper': LINTER, 'clippy_args': LINT_ARGS,
-              'profile_use': profile_record,
-              'development_artifact_receipt_sha256': digest(evidence / 'receipt.json')}
+              'command': ['cargo', *BUILD], 'step': STEP, 'rustc_wrapper': '', 'clippy_args': [],
+              'profile_use': profile_record, 'compiler_output': compiler_output,
+              'development_artifact_receipt_sha256': digest(evidence / 'receipt.json'),
+              # Measured, not assumed: the release build's cgroup memory.peak
+              # (includes page cache) and sampled anonymous peak at its job count.
+              'build_resources': {
+                  'build_jobs': step.get('build_jobs'),
+                  'memory_limit_bytes': (q.receipt.get('native_scheduling') or {}).get('candidate_memory_bytes'),
+                  'memory_peak_bytes': resources.get('memory_peak_bytes'),
+                  'memory_anon_peak_bytes': resources.get('memory_anon_peak_bytes'),
+                  'memory_events': resources.get('memory_events'),
+                  'cpu_seconds': resources.get('cpu_seconds'),
+                  'elapsed_seconds': resources.get('elapsed_seconds'),
+                  'samples': resources.get('samples')}}
     q.receipt['binary_sha256'] = record['sha256']
     q.receipt['certified_binary'] = record
     q.receipt['development_artifact'] = {
@@ -205,6 +220,8 @@ def verify_receipt(receipt, *, job_id, source, policy, pipeline):
     if not isinstance(record, dict) or not re.fullmatch('[0-9a-f]{64}', str(record.get('sha256'))) \
             or record.get('command') != ['cargo', *BUILD] or receipt.get('binary_sha256') != record['sha256']:
         raise Violation('core-build receipt has no certified binary')
+    if record.get('rustc_wrapper') != '' or record.get('clippy_args') != []:
+        raise Violation('core-build certified binary was not a plain release build')
     return record
 
 
@@ -247,9 +264,3 @@ def verify_unchanged(binary, staged):
     if Path(binary).is_symlink() or digest(binary) != staged['sha256']:
         raise Violation('certified subject changed during evaluation')
 
-
-def discard(q):
-    directory = q.control / SUBJECT
-    if directory.is_dir() and not directory.is_symlink():
-        directory.chmod(0o755)
-        shutil.rmtree(directory)

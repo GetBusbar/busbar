@@ -379,8 +379,6 @@ class Boundary(Fixture, unittest.TestCase):
         q.root = self.roots["checkout"]
         with self.assertRaisesRegex(native.Violation, "controller-owned"):
             q.conformance("confined")
-        with self.assertRaisesRegex(native.Violation, "fixed-destination"):
-            q.external_endpoint_conformance()
 
     def test_artifact_intake_rejects_symlinks_fifos_and_oversized_files(self):
         q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
@@ -800,6 +798,39 @@ else:raise AssertionError('metadata network available')
                 timeout=30,
             )
         self.assertTrue(execution.observations[-1]["disposed"])
+
+
+
+class FixedRoots(unittest.TestCase):
+    """Job-specific writable roots appear at fixed in-container paths once enabled."""
+
+    def execution(self, job):
+        import native_confinement
+        execution = object.__new__(native_confinement.Execution)
+        store = Path("/srv/busbar-native-ci/job-" + job + "/store")
+        execution.roots = {"checkout": store / "checkout",
+                           "candidate": store / ("boundary-3-" + job) / "candidate"}
+        execution.fixed_paths = {}
+        return execution
+
+    def test_paths_are_identical_across_jobs_and_round_trip(self):
+        seen = []
+        for job in ("101", "202"):
+            execution = self.execution(job)
+            candidate = execution.roots["candidate"]
+            self.assertEqual(execution.container_path(candidate / "target"), str(candidate / "target"))
+            execution.use_fixed_paths()
+            values = [execution.container_path(execution.roots["checkout"]),
+                      execution.container_path(candidate / "target/release/busbar"),
+                      execution.container_path("url." + (candidate / "canonical-inputs").as_uri() + "/.insteadOf"),
+                      execution.container_path("/srv/busbar-native-ci/job-" + job + "/trusted/x")]
+            seen.append(values[:3])
+            self.assertEqual(values[3], "/srv/busbar-native-ci/job-" + job + "/trusted/x")
+            self.assertEqual(execution.host_text("/__busbar_checkout/dist/default\n"),
+                             str(execution.roots["checkout"]) + "/dist/default\n")
+        self.assertEqual(seen[0], seen[1])
+        self.assertEqual(seen[0], ["/__busbar_checkout", "/__busbar_candidate/target/release/busbar",
+                                   "url.file:///__busbar_candidate/canonical-inputs/.insteadOf"])
 
 
 if __name__ == "__main__":

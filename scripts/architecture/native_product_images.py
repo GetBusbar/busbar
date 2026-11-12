@@ -11,8 +11,14 @@ runs product_artifacts.build_image -- the same image_argv() the consumer would
 run -- in the ordinary candidate confinement, and publishes the image to core's
 generic package registry under a key over every one of those inputs.
 
-Consumer: core native qualification computes the same key. A verified hit
-(protected dev-push provenance, archive and file digests) is staged into a
+An owner API pipeline on the protected native_dep_cache.PINNED_REF produces the
+same images under a key that also carries the pinned-producer marker (that exact
+core commit), like dependency units: they never share a key with dev producers
+and match only a consumer qualifying against exactly that host revision.
+
+Consumer: core native qualification computes the same key (and, on a miss, the
+pinned key for its host revision). A verified hit (protected dev-push or pinned
+owner-pipeline provenance, archive and file digests) is staged into a
 controller-owned read-only directory that only the product-inputs step mounts;
 the trusted script verifies the digest again and copies it to the exact path
 Cargo would have written. Anything absent, different or doubtful builds as
@@ -80,9 +86,12 @@ def seed_configuration(execution):
     return sha256_file(path) if path.is_file() else None
 
 
-def identity(row, sdk, image, env, cargo_config, builder, seed_config):
-    """Everything outside the product commit that decides the image bytes."""
-    return {
+def identity(row, sdk, image, env, cargo_config, builder, seed_config, pinned_commit=None):
+    """Everything outside the product commit that decides the image bytes.
+
+    A pinned-ref producer adds its exact core commit (as native_dep_cache does).
+    """
+    value = {
         'schema': SCHEMA,
         'repository': 'GetBusbar/' + row['repo'],
         'commit': row['commit'],
@@ -98,11 +107,14 @@ def identity(row, sdk, image, env, cargo_config, builder, seed_config):
         'cargo_configuration': cargo_config,
         'builder_sha256': builder,
     }
+    if pinned_commit is not None:
+        value['pinned_producer'] = {'ref': units.PINNED_REF, 'commit': pinned_commit}
+    return value
 
 
-def job_identity(q, row, sdk):
+def job_identity(q, row, sdk, pinned_commit=None):
     return identity(row, sdk, q.execution.config['image'], q.env, cargo_configuration(q.root),
-                    builder_sha256(q.trusted), seed_configuration(q.execution))
+                    builder_sha256(q.trusted), seed_configuration(q.execution), pinned_commit)
 
 
 def planned(q, vector, revision):
@@ -123,7 +135,18 @@ def restore_one(q, row, sdk, registry, staging):
         try:
             manifest = json.loads(registry.read(version, units.MANIFEST, units.MAX_MANIFEST_BYTES))
         except FileNotFoundError:
-            return record, None
+            # Only on a dev-key miss: the owner-run producer's image for exactly
+            # the core host revision this job qualifies against.
+            host = q.receipt.get('host_revision')
+            if not (isinstance(host, str) and re.fullmatch('[0-9a-f]{40}', host)):
+                return record, None
+            wanted = job_identity(q, row, sdk, pinned_commit=host)
+            version = key(wanted)
+            record['pinned_key'] = version
+            try:
+                manifest = json.loads(registry.read(version, units.MANIFEST, units.MAX_MANIFEST_BYTES))
+            except FileNotFoundError:
+                return record, None
         if manifest.get('schema') != SCHEMA or manifest.get('key') != version or manifest.get('identity') != wanted:
             raise Unavailable('image manifest identity differs')
         archive, image = manifest['archive'], manifest['image']
@@ -214,10 +237,10 @@ def discard(q):
 
 # --- Producer ------------------------------------------------------------------------
 
-def produce_image(q, row, vector, registry, *, upload=True):
+def produce_image(q, row, vector, registry, *, upload=True, pinned_commit=None):
     """Build one pinned product's test image with the consumer's exact recipe."""
     from native import collect_output
-    wanted = job_identity(q, row, vector['sdk'])
+    wanted = job_identity(q, row, vector['sdk'], pinned_commit)
     version = key(wanted)
     result = {'repo': row['repo'], 'commit': row['commit'], 'key': version, 'kind': 'image'}
     try:
@@ -248,7 +271,9 @@ def produce_image(q, row, vector, registry, *, upload=True):
     manifest = {'schema': SCHEMA, 'key': version, 'identity': wanted, 'archive': archive, 'files': files,
                 'image': image, 'product': {'repo': row['repo'], 'commit': row['commit']},
                 'producer': {'pipeline_id': int(os.environ['CI_PIPELINE_ID']), 'job_id': int(os.environ['CI_JOB_ID']),
-                             'commit': os.environ['CI_COMMIT_SHA'], 'ref': os.environ.get('CI_COMMIT_BRANCH')}}
+                             'commit': os.environ['CI_COMMIT_SHA'], 'ref': os.environ.get('CI_COMMIT_BRANCH'),
+                             'source': os.environ.get('CI_PIPELINE_SOURCE'),
+                             'protected': os.environ.get('CI_COMMIT_REF_PROTECTED') == 'true'}}
     manifest_path = owned.parent / (row['repo'] + '.manifest.json')
     manifest_path.write_bytes(canonical(manifest))
     result.update(status='built', sha256=image['sha256'], bytes=image['bytes'])
@@ -263,8 +288,11 @@ def produce_image(q, row, vector, registry, *, upload=True):
     return result
 
 
-def produce(q, rows, registry=None):
-    """Called by the dependency-unit producer for its shard's products only."""
+def produce(q, rows, registry=None, *, pinned_commit=None):
+    """Called by the dependency-unit producer for its shard's products only.
+
+    pinned_commit is the pinned owner pipeline's own core commit, else None.
+    """
     registry = registry or units.Registry(os.environ['CI_JOB_TOKEN'], package=PACKAGE)
     vector = json.loads((q.root / 'scripts/ci-product-pins.json').read_text())
     declared = {item['product']['repo'] for item in planned(q, vector, q.receipt['source'])}
@@ -273,7 +301,7 @@ def produce(q, rows, registry=None):
         if row['repo'] not in declared:
             continue
         try:
-            results.append(produce_image(q, row, vector, registry))
+            results.append(produce_image(q, row, vector, registry, pinned_commit=pinned_commit))
         except Exception as error:  # one product's failure must not block the others
             results.append({'repo': row['repo'], 'kind': 'image', 'status': 'failed', 'reason': str(error)[:500]})
         q.receipt['product_images_produced'] = results
