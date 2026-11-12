@@ -599,7 +599,7 @@ pub fn validate_storage_paths(config: &Value, writable: &[PathBuf]) -> Result<Va
     for path in writable {
         require(
             path.is_dir()
-                && *path == crate::native::sp::resolve(path)
+                && exact_path(path)
                 && !path.is_symlink()
                 && *path != root
                 && path.starts_with(&root),
@@ -628,15 +628,18 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
         "candidate identity outside subordinate map",
     )?;
     let (mapped_uid, mapped_gid) = ((start(uid_map) + uid) as u32, (start(gid_map) + gid) as u32);
-    fn walk(directory: &Path, uid: u32, gid: u32) -> Result<()> {
-        let Ok(entries) = fs::read_dir(directory) else {
-            return Ok(());
+    // os.fwalk(follow_symlinks=False): the top directory must open, an
+    // unreadable subdirectory is skipped (onerror=None), and every listed
+    // entry is stat'ed without following links (errors propagate).
+    fn walk(directory: &Path, top: bool, uid: u32, gid: u32) -> Result<()> {
+        let entries = match fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(e) if top => return Err(format!("{}: {e}", directory.display())),
+            Err(_) => return Ok(()),
         };
-        for entry in entries.filter_map(|e| e.ok()) {
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                continue;
-            };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
             let kind = metadata.file_type();
             if kind.is_file() || kind.is_dir() {
                 if (metadata.uid(), metadata.gid()) != (uid, gid) {
@@ -648,7 +651,7 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
                         .map_err(|e| e.to_string())?;
                 }
                 if kind.is_dir() {
-                    walk(&path, uid, gid)?;
+                    walk(&path, false, uid, gid)?;
                 }
             }
         }
@@ -657,7 +660,7 @@ pub fn prepare_writable(config: &Value, writable: &[PathBuf], uid: u64, gid: u64
     for path in writable {
         std::os::unix::fs::lchown(path, Some(mapped_uid), Some(mapped_gid))
             .map_err(|e| e.to_string())?;
-        walk(path, mapped_uid, mapped_gid)?;
+        walk(path, true, mapped_uid, mapped_gid)?;
     }
     Ok(observation)
 }
@@ -741,10 +744,13 @@ pub fn kernel_no_swap_from(swaps: &[u8], meminfo: &[u8]) -> Result<Value> {
         "runtime swap is unbounded: kernel has swap capacity or invalid evidence",
     )?;
     let ascii = |data: &[u8]| -> Result<String> {
-        require(
-            data.is_ascii(),
-            "'ascii' codec can't decode kernel swap evidence",
-        )?;
+        // bytes.decode('ascii') and its UnicodeDecodeError text.
+        if let Some(position) = data.iter().position(|b| !b.is_ascii()) {
+            return Err(format!(
+                "'ascii' codec can't decode byte 0x{:02x} in position {position}: ordinal not in range(128)",
+                data[position]
+            ));
+        }
         Ok(String::from_utf8_lossy(data).into_owned())
     };
     Ok(object([

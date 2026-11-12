@@ -1,5 +1,5 @@
 image=mirror.gcr.io/library/rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
-source=8da8b6013af099bcbd9946b63b98cf10946923d82e6b766aaaa860dea940f7ee
-sha256=28f58e774203cbc0941dc5d046ea894449d9a061b24083583e7d53fbf2d0c786
-bytes=3016424
-package=https://github.com/api/v4/projects/3/packages/generic/busbar-ci-controller/0.1.0-28f58e774203cbc0/busbar-ci
+source=5a24e33dd2cab67cadf5e0ce2a4fa25999a7489fe512587aafef11da8362c63f
+sha256=b9528f0bd81f7a9e4376b86a500330f84279636785125fdd386ab496ab48fac3
+bytes=3495656
+package=https://github.com/api/v4/projects/3/packages/generic/busbar-ci-controller/0.1.0-b9528f0bd81f7a9e/busbar-ci

@@ -1,3 +1,4 @@
+
 """Direct confinement regressions; optional real existing-runtime witnesses.
 
 Set BUSBAR_CONFINEMENT_TEST_CONFIG to a protected local test configuration to
@@ -14,13 +15,10 @@ import sys
 import tempfile
 import threading
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import check
 from confinement_entry import ignore_cargo_seed_entries
 import linux_job_isolation
-import native
 from native_confinement import Execution, digest
 from native_fixture_proxy import Fixtures
 
@@ -332,95 +330,6 @@ class Boundary(Fixture, unittest.TestCase):
             )
         self.assertEqual(set(self.control.iterdir()), before)
 
-    def test_architecture_compiler_calls_have_no_host_fallback(self):
-        execution = self.execution()
-        with patch.object(check, "EXECUTION", execution), patch.object(
-            execution, "run", side_effect=ValueError("unavailable")
-        ), patch.object(check.subprocess, "run") as host:
-            with self.assertRaisesRegex(ValueError, "unavailable"):
-                check.candidate_run(["cargo", "check"])
-            host.assert_not_called()
-
-    def test_conformance_without_migrated_fixture_api_refuses(self):
-        q = native.Qualification.__new__(native.Qualification)
-        q.execution = self.execution()
-        q.root = self.roots["checkout"]
-        with self.assertRaisesRegex(native.Violation, "controller-owned"):
-            q.conformance("confined")
-        with self.assertRaisesRegex(native.Violation, "fixed-destination"):
-            q.external_endpoint_conformance()
-
-    def test_artifact_intake_rejects_symlinks_fifos_and_oversized_files(self):
-        q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
-        source, destination = q.work / "artifact", self.control / "artifact"
-        source.write_bytes(b"actual artifact")
-        native.collect_output(q, source, destination)
-        self.assertEqual(destination.read_bytes(), b"actual artifact")
-        destination.unlink()
-        with self.assertRaisesRegex(native.Violation, "exceeds limit"):
-            native.collect_output(q, source, destination, limit=1)
-        source.unlink()
-        source.symlink_to(self.control / "secret")
-        with self.assertRaisesRegex(native.Violation, "indirect"):
-            native.collect_output(q, source, destination)
-        source.unlink()
-        os.mkfifo(source)
-        with self.assertRaisesRegex(native.Violation, "nonregular"):
-            native.collect_output(q, source, destination)
-
-    def test_artifact_intake_rejects_parent_traversal_and_hardlinks(self):
-        q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
-        secret = self.control / "secret"
-        secret.write_bytes(b"controller only")
-        destination = self.control / "artifact"
-        with self.assertRaisesRegex(native.Violation, "escapes"):
-            native.collect_output(q, q.work / "../control/secret", destination)
-        alias = q.work / "linked"
-        os.link(secret, alias)
-        with self.assertRaisesRegex(native.Violation, "linked"):
-            native.collect_output(q, alias, destination)
-        self.assertFalse(destination.exists())
-
-    def test_cargo_hardlinked_output_is_copied_to_single_link_controller_artifact(self):
-        q = SimpleNamespace(work=self.roots['candidate'], root=self.roots['checkout'], receipt={})
-        original = q.work / 'compiler.so'
-        original.write_bytes(b'actual compiler fixture content')
-        alias = q.work / 'compiler-alias.so'
-        os.link(original, alias)
-        destination = self.control / 'artifact.so'
-        native.collect_output(q, alias, destination, compiler_output=True)
-        self.assertEqual(destination.read_bytes(), original.read_bytes())
-        self.assertEqual(destination.stat().st_nlink, 1)
-        self.assertEqual(q.receipt['collected_outputs'][0]['source_link_count'], 2)
-        # An alias to controller-owned input is still refused under the remapped
-        # candidate boundary, even when a caller expects a compiler artifact.
-        q.execution = self.execution()
-        with self.assertRaisesRegex(native.Violation, 'linked'):
-            native.collect_output(q, alias, self.control / 'refused', compiler_output=True)
-
-    def test_artifact_collection_removes_partial_copy_on_mutation(self):
-        q = SimpleNamespace(work=self.roots["candidate"], root=self.roots["checkout"])
-        source = q.work / "artifact"
-        source.write_bytes(b"actual artifact")
-        destination = self.control / "artifact"
-        original = os.fstat
-        count = 0
-
-        def changed(fd):
-            nonlocal count
-            count += 1
-            result = original(fd)
-            if count == 2:
-                return SimpleNamespace(st_size=result.st_size + 1,
-                    st_mtime_ns=result.st_mtime_ns, st_ctime_ns=result.st_ctime_ns,
-                    st_nlink=result.st_nlink)
-            return result
-
-        with patch.object(native.os, "fstat", side_effect=changed):
-            with self.assertRaisesRegex(native.Violation, "changed"):
-                native.collect_output(q, source, destination)
-        self.assertFalse(destination.exists())
-
     def test_fixture_capability_relays_only_to_its_fixed_loopback_peer(self):
         class Echo(socketserver.BaseRequestHandler):
             def handle(self):
@@ -700,37 +609,6 @@ else:raise AssertionError('metadata network available')
             fixtures.close()
             peer.shutdown()
             peer.server_close()
-
-    def test_native_candidate_and_controller_dispatch_are_separate(self):
-        execution = self.execution()
-        q = native.Qualification.__new__(native.Qualification)
-        q.execution, q.root, q.work = (
-            execution,
-            self.roots["checkout"],
-            self.roots["candidate"],
-        )
-        q.evidence = self.control / "evidence"
-        q.evidence.mkdir()
-        q.env, q.receipt = {}, {"steps": []}
-        source = (
-            'from pathlib import Path; assert not Path(%r).exists(); print("candidate")'
-            % str(q.evidence)
-        )
-        q.run("candidate", [self.config["python"], "-c", source])
-        q.run_controller(
-            "controller",
-            [
-                sys.executable,
-                "-c",
-                'from pathlib import Path; Path(%r).write_text("controller")'
-                % str(q.evidence / "owned"),
-            ],
-        )
-        self.assertEqual((q.evidence / "owned").read_text(), "controller")
-        self.assertEqual(
-            [r["authority"] for r in q.receipt["steps"]], ["candidate", "controller"]
-        )
-        self.assertTrue(q.receipt["steps"][0]["container"]["disposed"])
 
     def test_actual_failure_and_timeout_dispose_the_container(self):
         execution = self.execution()

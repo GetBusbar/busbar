@@ -6,7 +6,7 @@ repository's Rust 1.98.0, Clippy and rustfmt, plus the Python/GCC tools from its
 immutable official Rust Bookworm base. Both Linux platform manifests and component
 archives are pinned in `pins.json`; bounded actual checks cover Linux ARM64 and
 x86_64. The reusable worker image contains public tools only. Per-job product
-and private dependencies are collected separately by `native_seed.py`.
+and private dependencies are collected separately by the controller (`busbar-ci native-qualify`, tools/ci/src/native/seed.rs).
 
 The approved input plan has schema `busbar.native-toolchain-inputs/1` and exactly
 these fields (version 2 additionally requires `payload`, `advisory_db`,

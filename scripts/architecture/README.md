@@ -42,8 +42,15 @@ local URL mappings while source identities and lockfiles stay unchanged. This pe
 qualification before public stage mirrors advance, without publishing candidate branches.
 
 The confined step runner is the pinned controller's `busbar-ci native-qualify` command
-(`tools/ci/src/native`; `native.py` and its `native_*` modules are its former Python form,
-kept for the architecture step's confinement and the release-dispatch fingerprints). It
+(`tools/ci/src/native`), and its architecture step is the same binary's `busbar-ci
+architecture`; both run candidate commands through one confinement boundary
+(`tools/ci/src/confine.rs`) and read policy through `tools/ci/src/product.rs`. No CI
+path executes `native.py`: it stays only as a hashed release-engineering input and the
+import target of `scripts/release/test_development_stage.py` until those move with the
+website collector. `native_confinement.py`, `linux_job_isolation.py` and
+`native_service_peers.py` remain for the API-only isolation diagnostic. The core
+regression steps run the controller's own Rust tests first (`architecture-regressions`),
+then the remaining Python tooling suites. It
 refuses execution outside GitLab. It runs the existing required full suites
 and assembled-product checks there; local development uses fmt/clippy/build and targeted
 regressions. Missing services, native libraries, inputs, tools or receipts fail the job.

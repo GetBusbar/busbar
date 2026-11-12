@@ -2,8 +2,8 @@
 //! verified against the protected release key (former `native_oracle.prepare`).
 //! Candidate builds receive no release credentials.
 use super::Q;
-use super::confine::digest;
 use super::sp::{self, Dict, R, Spec, at, need, value_error, violation};
+use crate::confine::digest;
 use crate::json::{Value, object};
 use std::path::Path;
 

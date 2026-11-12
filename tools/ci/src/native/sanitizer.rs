@@ -2,9 +2,9 @@
 //! qualification (former `native_sanitizer` and the host side of
 //! `toolchain/tsan_linux29_probe` / `sanitizer_profile`). The candidate
 //! profile is never activated beyond the fixed C unit command.
-use super::confine::{Execution, Profile, Restriction, Roots, canonical, digest};
 use super::sp::{self, Dict, R, at, value_error};
 use super::{Q, pysteps};
+use crate::confine::{Execution, Profile, Restriction, Roots, canonical, digest};
 use crate::json::{self, Value, object};
 use crate::sha256;
 use std::path::{Path, PathBuf};
