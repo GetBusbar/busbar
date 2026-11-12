@@ -120,6 +120,7 @@ fn in_head(size: usize, op: u32) -> InHead {
         trace_id: [0; 16],
         parent_span_id: 0,
         extensions: absent(),
+        measurement_revision: 0,
     }
 }
 
@@ -146,6 +147,7 @@ fn out_head(size: usize) -> OutHead {
             metrics_len: 0,
             diags: ptr::null(),
             diags_len: 0,
+            measurements: busbar_contract::abi::measurement::MeasurementBatch::ZERO,
         },
         extensions: absent(),
     }
