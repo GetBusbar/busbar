@@ -10,9 +10,13 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-const UPSTREAM_HOLD: Duration = Duration::from_secs(3);
+/// Bounds the wait for every burst arrival to be accounted for; only a broken
+/// cap (or a hung gateway) ever reaches it.
+const SETTLE: Duration = Duration::from_secs(30);
 
 const ADMITTED_BUDGET: Duration = Duration::from_secs(5);
 const BURST: usize = 8;
@@ -23,7 +27,8 @@ const SHED_BODY: &str = r#"{"error":{"type":"rate_limit_error","message":"The ga
 #[test]
 fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
     let dir = fixture_dir();
-    let upstream_port = spawn_slow_upstream();
+    let upstream = Arc::new(Upstream::default());
+    let upstream_port = spawn_held_upstream(Arc::clone(&upstream));
     let data_port = free_port();
     let admin_port = free_port();
     write_configs(&dir, data_port, admin_port, upstream_port);
@@ -62,14 +67,32 @@ fn inbound_cap_sheds_the_excess_and_serves_the_admitted() {
         read_log(&log_path)
     );
 
+    // The upstream holds every admitted request until each burst arrival is
+    // accounted for (answered, or held upstream), so no admitted request can
+    // finish and free a slot for a later arrival before the cap is judged.
     let started = Instant::now();
+    let (answered_tx, answered) = mpsc::channel();
     let handles: Vec<_> = (0..BURST)
-        .map(|_| std::thread::spawn(move || post_chat(data_port)))
+        .map(|_| {
+            let answered_tx = answered_tx.clone();
+            std::thread::spawn(move || {
+                let _ = answered_tx.send(post_chat(data_port));
+            })
+        })
         .collect();
-    let results: Vec<Response> = handles
-        .into_iter()
-        .map(|h| h.join().expect("client thread did not panic"))
-        .collect();
+    drop(answered_tx);
+    let mut results: Vec<Response> = Vec::with_capacity(BURST);
+    let settle = Instant::now() + SETTLE;
+    while results.len() + upstream.held.load(Ordering::SeqCst) < BURST && Instant::now() < settle {
+        if let Ok(response) = answered.recv_timeout(Duration::from_millis(10)) {
+            results.push(response);
+        }
+    }
+    upstream.release();
+    results.extend(answered.iter());
+    for h in handles {
+        h.join().expect("client thread did not panic");
+    }
     let burst_elapsed = started.elapsed();
 
     let _ = child.kill();
@@ -182,12 +205,37 @@ models:
     .unwrap();
 }
 
-fn spawn_slow_upstream() -> u16 {
+/// An upstream that holds each request it is sent until the test releases it.
+#[derive(Default)]
+struct Upstream {
+    held: AtomicUsize,
+    gate: (Mutex<bool>, Condvar),
+}
+
+impl Upstream {
+    fn hold(&self) {
+        self.held.fetch_add(1, Ordering::SeqCst);
+        let (open, cv) = &self.gate;
+        let mut open = open.lock().unwrap_or_else(|e| e.into_inner());
+        while !*open {
+            open = cv.wait(open).unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    fn release(&self) {
+        let (open, cv) = &self.gate;
+        *open.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_all();
+    }
+}
+
+fn spawn_held_upstream(upstream: Arc<Upstream>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut stream) = conn else { continue };
+            let upstream = Arc::clone(&upstream);
             std::thread::spawn(move || {
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut content_length = 0usize;
@@ -207,7 +255,7 @@ fn spawn_slow_upstream() -> u16 {
                 let mut body = vec![0u8; content_length];
                 let _ = reader.read_exact(&mut body);
 
-                std::thread::sleep(UPSTREAM_HOLD);
+                upstream.hold();
                 let payload = br#"{"id":"chatcmpl-test","object":"chat.completion","created":0,"model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
                 let head = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -262,7 +310,7 @@ fn post_chat(port: u16) -> Response {
             body: String::new(),
         };
     };
-    let _ = stream.set_read_timeout(Some(ADMITTED_BUDGET));
+    let _ = stream.set_read_timeout(Some(SETTLE));
     let head = format!(
         "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
