@@ -1049,6 +1049,22 @@ impl<S: super::DriverSteps> AttemptSteps for S {
 
 impl AttemptSteps for () {}
 
+/// One attempt's upstream round trip, for the `Server-Timing` measurement of the request in flight
+/// (`crate::router::ServerTiming`). Inert, with no clock read, when the header is off.
+struct UpstreamRtt(Option<(Arc<std::sync::atomic::AtomicU64>, std::time::Instant)>);
+
+impl UpstreamRtt {
+    fn start() -> Self {
+        Self(crate::router::upstream_rtt_slot().map(|slot| (slot, std::time::Instant::now())))
+    }
+
+    fn record(&self) {
+        if let Some((slot, started)) = &self.0 {
+            crate::router::record_upstream_rtt(slot, started.elapsed());
+        }
+    }
+}
+
 impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
     pub(crate) async fn answered_here(&self, run: &mut Pumping<'_>) -> End {
         let body = Piece {
@@ -1278,13 +1294,19 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 };
             }
             run.lock().dialled = true;
+            // The upstream round trip `Server-Timing` subtracts (1.5.5's meaning): from this send to
+            // the far end's latest piece, so a buffered answer counts its whole download. Only while
+            // the header measures this request; otherwise no slot, and no clock is read.
+            let upstream = UpstreamRtt::start();
             let sent = {
                 use tracing::Instrument as _;
                 self.far
                     .send(run.token, request)
                     .instrument(attempt_span.clone())
             };
-            match turn_wait(run, turn, sent).await {
+            let sent = turn_wait(run, turn, sent).await;
+            upstream.record();
+            match sent {
                 Ok(true) => {}
 
                 Ok(false) => {
@@ -1304,7 +1326,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     use tracing::Instrument as _;
                     self.far.next(run.token).instrument(attempt_span.clone())
                 };
-                let mut piece = match turn_wait(run, turn, next).await {
+                let next = turn_wait(run, turn, next).await;
+                upstream.record();
+                let mut piece = match next {
                     Ok(Some(piece)) => piece,
                     Ok(None) => FarPiece {
                         last: true,

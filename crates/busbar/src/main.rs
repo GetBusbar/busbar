@@ -1013,6 +1013,7 @@ async fn run(
     let response_headers_cfg = deploy.advanced.response_headers.clone();
 
     busbar_kernel::plane_driver::configure_route_policy_headers(response_headers_cfg.route_policy);
+    busbar_kernel::router::configure_server_timing(response_headers_cfg.server_timing);
 
     let resolved_export = config::resolve_export(&deploy.export, &mut Vec::new());
     snapshot::configure(

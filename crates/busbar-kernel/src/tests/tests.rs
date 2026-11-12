@@ -365,6 +365,65 @@ fn test_server_timing_dur_ms() {
     assert_eq!(server_timing_dur_ms(500, 800), 0.0);
 }
 
+/// The middleware subtracts the round trip the forward path recorded inside its scope, and a
+/// request that recorded none keeps its whole time (the end-to-end proof through the shipped
+/// binary is `dist/default/tests/server_timing_excludes_upstream.rs`).
+#[tokio::test]
+async fn server_timing_subtracts_the_recorded_upstream_round_trip() {
+    use tower::ServiceExt as _;
+    const UPSTREAM: std::time::Duration = std::time::Duration::from_millis(300);
+
+    async fn dur_of(router: Router) -> f64 {
+        let resp = router
+            .oneshot(
+                axum::http::Request::get("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let value = resp.headers()[HEADER_SERVER_TIMING].to_str().unwrap();
+        value
+            .strip_prefix("busbar;dur=")
+            .and_then(|d| d.parse().ok())
+            .unwrap_or_else(|| panic!("unexpected Server-Timing: {value}"))
+    }
+
+    let forwarded = Router::new()
+        .route(
+            "/",
+            axum::routing::get(|| async {
+                let slot = crate::router::upstream_rtt_slot().expect("measured while enabled");
+                let started = std::time::Instant::now();
+                tokio::time::sleep(UPSTREAM).await;
+                crate::router::record_upstream_rtt(&slot, started.elapsed());
+            }),
+        )
+        .layer(axum::middleware::from_fn(server_timing));
+    let dur = dur_of(forwarded).await;
+    assert!(
+        dur < 100.0,
+        "the {UPSTREAM:?} upstream round trip is not Busbar's time: dur={dur}"
+    );
+
+    let local = Router::new()
+        .route(
+            "/",
+            axum::routing::get(|| async { tokio::time::sleep(UPSTREAM).await }),
+        )
+        .layer(axum::middleware::from_fn(server_timing));
+    let dur = dur_of(local).await;
+    assert!(
+        dur >= UPSTREAM.as_secs_f64() * 1000.0,
+        "no upstream call: the full processing time is reported: dur={dur}"
+    );
+
+    assert!(
+        crate::router::upstream_rtt_slot().is_none(),
+        "outside the middleware nothing is measured"
+    );
+}
+
 #[tokio::test]
 async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     use axum::response::IntoResponse;
