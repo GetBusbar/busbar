@@ -12,8 +12,10 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from reuse_evidence import (Archive, Resolver, independent_qualification_job,
-                            OwnerRuntime, ReleaseValidator, verify_release_dispatch, expected_loader)
+from admission import CORE_BUILD_STEPS
+from reuse_evidence import (Archive, Resolver, dev_required_jobs, independent_qualification_job,
+                            OwnerRuntime, ReleaseValidator, pipeline_tier, validate_core_build,
+                            verify_release_dispatch, expected_loader)
 from input_identity import (encoded, TRIVY_METADATA_CONTRACT_IMAGE,
                             TRIVY_METADATA_CONTRACT_SCANNER)
 
@@ -90,7 +92,8 @@ class EvidenceTests(unittest.TestCase):
             merge_users={6}, owner_users={6}, scratch=self.tmp.name, full_validator=self.validator,
             trusted_policies={'2' * 40, '4' * 40})
         result._policy = lambda *args: dict(required_external=None, owner_suites=[],
-                                            files={'ci/architecture.toml': 'a' * 64})
+                                            files={'ci/architecture.toml': 'a' * 64},
+                                            tier=getattr(self, 'tier', 'single'))
         return result
 
     def verify(self):
@@ -147,6 +150,143 @@ class EvidenceTests(unittest.TestCase):
         for addition in (b'  needs: [other]\n', b'  dependencies: [other]\n', b'  stage: website\n'):
             with self.subTest(addition=addition), self.assertRaises(ValueError):
                 independent_qualification_job(text + addition, 'security-scans')
+
+    def test_tiered_prerequisite_graph_is_exact(self):
+        text = (Path(__file__).resolve().parents[2] / 'ci/architecture-pipeline.yml').read_bytes()
+        self.assertEqual(pipeline_tier(text), 'tiered')
+        self.assertTrue(independent_qualification_job(text, 'core-conformance'))
+        build = b'core-build:\n  extends: .controller\n  stage: build\n'
+        self.assertIn(build, text)
+        changes = [
+            (b'  stage: build\n', b'  stage: build\n  needs: [other]\n'),
+            (build, build.replace(b'stage: build', b'stage: qualify')),
+            (build, build + b'  when: always\n'),
+            (build, build.replace(b'.controller', b'native-qualification')),
+            (b'core-conformance:\n  extends: .controller\n  stage: qualify\n',
+             b'core-conformance:\n  extends: .controller\n  stage: website\n'),
+            (b'    - !reference [.rules, core-dev]\n', b'    - !reference [.rules, core-dev]\n    - when: always\n'),
+            (b'stages: [build, qualify, website, release]', b'stages: [build, qualify, extra, website, release]'),
+            (b'.controller:\n', b'.controller:\n  stage: qualify\n'),
+            (b'website-dev:\n  stage: website\n', b'website-dev:\n  stage: build\n'),
+            (b'core-dev:\n', b'core-dev:\n    - when: on_success\n'),
+        ]
+        for old, new in changes:
+            with self.subTest(change=new), self.assertRaises(ValueError):
+                self.assertIn(old, text)
+                independent_qualification_job(text.replace(old, new, 1), 'core-conformance')
+
+    def tiered_core(self):
+        """The same original pipeline as a tiered core dev push: core-build -> core-conformance."""
+        from native_certified import BUILD
+        binary, development = b'certified-binary', b'{"development": true}'
+        self.original = dict(self.original, repository='GetBusbar/busbar', host='1' * 40,
+                             job='core-build')
+        steps = [dict(name=name, status='pass', exit_code=0,
+                      stdout_sha256=hashlib.sha256(b'tested').hexdigest(),
+                      stderr_sha256=hashlib.sha256(b'').hexdigest()) for name in CORE_BUILD_STEPS]
+        record = dict(sha256=hashlib.sha256(binary).hexdigest(), bytes=len(binary), path='busbar',
+                      command=['cargo', *BUILD], rustc_wrapper='clippy-driver', clippy_args=['-D', 'warnings'],
+                      profile_use=None, development_artifact_receipt_sha256=hashlib.sha256(development).hexdigest())
+        uri = ('github.com/GetBusbar/busbar//ci/architecture-pipeline.yml@GetBusbar/busbar:'
+               + '2' * 40 + '@refs/heads/dev')
+        self.receipt = dict(self.receipt, schema='busbar.core-build/1', repository='GetBusbar/busbar',
+            host_revision='1' * 40, config_uri=uri, steps=steps, certified_binary=record,
+            binary_sha256=record['sha256'], development_artifact=dict(sha256=record[
+                'development_artifact_receipt_sha256'], path='development-artifact/receipt.json'))
+        self.receipt_bytes = json.dumps(self.receipt).encode()
+        self.files = {'receipt.json': self.receipt_bytes, 'busbar': binary,
+                      'development-artifact/receipt.json': development,
+                      **{step['name'] + '.' + stream: (b'tested' if stream == 'stdout' else b'')
+                         for step in steps for stream in ('stdout', 'stderr')}}
+        self.artifacts = archive(self.files)
+        self.job.update(name='core-build')
+        conformance_job = dict(self.job, id=14, name='core-conformance')
+        self.conformance = dict(self.receipt, schema='busbar.protected-conformance/1', job_id='14',
+            certified_binary=dict(sha256=record['sha256'], bytes=len(binary), core_build_job_id=12,
+                                  pipeline_id=11),
+            steps=[dict(name='core-native-conformance', status='pass', exit_code=0,
+                        stdout_sha256=hashlib.sha256(b'judged').hexdigest(),
+                        stderr_sha256=hashlib.sha256(b'').hexdigest())])
+        self.store_conformance()
+        project = dict(self.rows.pop('projects/GetBusbar%2Fbusbar-secret-c'), path_with_namespace='GetBusbar/busbar')
+        self.rows['projects/GetBusbar%2Fbusbar'] = project
+        self.rows['projects/10/pipelines/11/jobs'] = [self.job, conformance_job]
+        self.rows['projects/10/jobs/14'] = conformance_job
+        self.raw.update({'projects/10/jobs/12/artifacts/boundary-evidence/receipt.json': self.receipt_bytes,
+                         'projects/10/jobs/12/artifacts': self.artifacts})
+        self.store_conformance()
+        self.tier = 'tiered'
+        self.validator = validate_core_build
+
+    def store_conformance(self):
+        self.conformance_bytes = json.dumps(self.conformance).encode()
+        self.conformance_artifacts = archive({'receipt.json': self.conformance_bytes,
+            'core-native-conformance.stdout': b'judged', 'core-native-conformance.stderr': b''})
+        self.raw.update({'projects/10/jobs/14/artifacts/boundary-evidence/receipt.json': self.conformance_bytes,
+                         'projects/10/jobs/14/artifacts': self.conformance_artifacts})
+
+    def verify_conformance(self):
+        self.validator = lambda *args: True  # The marketing normalizer is covered elsewhere.
+        resolver = self.resolver()
+        original = dict(self.original, job='core-conformance')
+        self.assertTrue(resolver.authenticate_original(original, self.conformance,
+                                                       hashlib.sha256(self.conformance_artifacts).hexdigest()))
+        return resolver.validate_original(original, self.conformance_bytes, self.conformance_artifacts)
+
+    def test_tiered_core_dev_jobs_are_the_required_reusable_pair(self):
+        self.tiered_core()
+        self.assertTrue(self.verify())
+        self.assertTrue(self.verify_conformance())
+        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'tiered'), {'core-build', 'core-conformance'})
+        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'single', 'core-conformance'),
+                         {'native-qualification', 'security-scans', 'core-conformance'})
+        self.assertEqual(dev_required_jobs('GetBusbar/busbar-x', 'tiered'),
+                         {'native-qualification', 'security-scans'})
+        # Under the tiered policy core-native is a QA-tier job: never dev reuse evidence.
+        self.original['job'] = 'native-qualification'
+        self.job['name'] = 'native-qualification'
+        with self.assertRaisesRegex(ValueError, 'not required'):
+            self.resolver().resolve(self.original, dict(self.receipt, schema='busbar.protected-native-admission/1'))
+
+    def test_tiered_core_build_refuses_other_bytes_or_failed_checks(self):
+        self.tiered_core()
+        good = copy.deepcopy(self.receipt)
+        for change in (dict(binary_sha256='0' * 64), dict(schema='busbar.protected-native-admission/1'),
+                       dict(certified_binary=dict(good['certified_binary'], command=['cargo', 'build'])),
+                       dict(certified_binary=dict(good['certified_binary'], sha256='0' * 64)),
+                       dict(certified_binary=dict(good['certified_binary'], bytes=1)),
+                       dict(steps=good['steps'][1:]),
+                       dict(steps=[dict(good['steps'][0], status='fail', exit_code=1), *good['steps'][1:]])):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.receipt = dict(good, **change)
+                self.receipt_bytes = json.dumps(self.receipt).encode()
+                self.artifacts = archive(dict(self.files, **{'receipt.json': self.receipt_bytes}))
+                self.raw['projects/10/jobs/12/artifacts/boundary-evidence/receipt.json'] = self.receipt_bytes
+                self.raw['projects/10/jobs/12/artifacts'] = self.artifacts
+                self.verify()
+
+    def test_tiered_core_conformance_must_judge_its_own_pipeline_build(self):
+        self.tiered_core()
+        good = copy.deepcopy(self.conformance)
+        for change in (dict(binary_sha256='0' * 64),
+                       dict(certified_binary=dict(good['certified_binary'], sha256='0' * 64)),
+                       dict(certified_binary=dict(good['certified_binary'], core_build_job_id=99)),
+                       dict(certified_binary=dict(good['certified_binary'], pipeline_id=99)),
+                       dict(certified_binary=None)):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'certified core-build'):
+                self.conformance = dict(good, **change)
+                self.store_conformance()
+                self.verify_conformance()
+        self.conformance = good
+        self.store_conformance()
+        for status in ('failed', 'skipped'):
+            with self.subTest(status=status), self.assertRaisesRegex(ValueError, 'core-build'):
+                self.rows['projects/10/pipelines/11/jobs'][0]['status'] = status
+                self.verify_conformance()
+        self.rows['projects/10/pipelines/11/jobs'][0]['status'] = 'success'
+        self.rows['projects/10/pipelines/11/jobs'].pop(0)
+        with self.assertRaisesRegex(ValueError, 'core-build'):
+            self.verify_conformance()
 
     def test_unapproved_original_validator_never_executes(self):
         resolver = self.resolver()

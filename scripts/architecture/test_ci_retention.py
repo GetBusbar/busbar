@@ -366,12 +366,15 @@ class Pipeline(unittest.TestCase):
         self.assertNotRegex(self.text, r'(?m)^\s*(needs|dependencies|include|default):')
         self.assertNotRegex(self.text, r'\$(BUSBAR_)?(SKIP|RETAIN)')
 
-    def test_owner_workstation_grammar_refuses_the_tiered_graph(self):
-        # reuse_evidence admits only the former single-stage graph; the tiered graph
-        # (build stage, shared templates) fails closed until it learns the tiers.
-        from reuse_evidence import independent_qualification_job
-        for job in ('native-qualification', 'security-scans', 'core-conformance'):
-            with self.assertRaisesRegex(ValueError, 'unrecognized original job prerequisite graph'):
+    def test_owner_workstation_grammar_accepts_the_tiered_graph(self):
+        # reuse_evidence recognizes the tiered graph: core-build alone in the build
+        # stage, every qualify job's only prerequisite is that build.
+        from reuse_evidence import independent_qualification_job, pipeline_tier
+        self.assertEqual(pipeline_tier(self.text.encode()), 'tiered')
+        for job in ('core-build', 'core-conformance', 'native-qualification', 'security-scans'):
+            self.assertTrue(independent_qualification_job(self.text.encode(), job))
+        for job in ('website-dev', 'release-certification', 'plugin-dependency-units'):
+            with self.assertRaises(ValueError):
                 independent_qualification_job(self.text.encode(), job)
 
 
