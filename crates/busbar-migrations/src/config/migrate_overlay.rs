@@ -184,15 +184,15 @@ mod tests {
             }
             Ok(Some((
                 module.into(),
-                Migrated {
-                    settings: settings.clone(),
-                    report: vec!["externalized old credential".into()],
-                    needs: vec![
+                Migrated::new(
+                    settings.clone(),
+                    vec!["externalized old credential".into()],
+                    vec![
                         busbar_contract::abi::sdk::migrate::MigrateNeed::ExternalizeSecret {
                             path: vec!["token".into()],
                         },
                     ],
-                }
+                )
                 .into(),
             )))
         }

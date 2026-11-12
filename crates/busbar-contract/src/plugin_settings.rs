@@ -644,9 +644,7 @@ impl Zeroize for Tree {
 }
 impl Tree {
     pub(crate) fn encode(&self) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
-        let mut output = Wiping(Zeroizing::new(Vec::new()));
-        serde_json::to_writer(&mut output, &self.0)?;
-        Ok(crate::Secret::new(std::mem::take(&mut *output.0)))
+        encode_guarded(&self.0)
     }
     fn take(&mut self) -> Value {
         std::mem::take(&mut self.0)
@@ -815,6 +813,15 @@ mod exact_number_tests {
         assert_eq!(serde_json::to_value(value.writing()).unwrap(), expected);
         assert!(serde_yaml::from_str::<Settings>("value: .inf").is_err());
     }
+}
+
+/// Encode `value` as JSON into guarded custody; every intermediate allocation is wiped.
+pub(crate) fn encode_guarded<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<crate::Secret<Vec<u8>>, serde_json::Error> {
+    let mut output = Wiping(Zeroizing::new(Vec::new()));
+    serde_json::to_writer(&mut output, value)?;
+    Ok(crate::Secret::new(std::mem::take(&mut *output.0)))
 }
 
 /// Growth moves into a new guarded allocation and wipes the previous block before freeing it.
