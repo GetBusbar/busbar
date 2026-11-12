@@ -763,7 +763,9 @@ impl Engine for Fake<'_> {
             fn candidate(&self) -> PathBuf {
                 self.0.clone()
             }
-            fn run(&mut self, argv: &[String], _: &Path) -> Result<Done> {
+            fn run(&mut self, argv: &[String], _: &Path, vendored_sources: bool) -> Result<Done> {
+                // Only seeded (vendored) cases skip the job Cargo seed copy.
+                assert_eq!(vendored_sources, argv.iter().any(|a| a == "--target-dir"));
                 (self.1.borrow_mut())(&self.0, argv)
             }
         }
@@ -1082,7 +1084,7 @@ fn parallel_dispatch_keeps_the_complete_trusted_case_inventory() {
             .as_u64(),
         Some(2)
     );
-    assert!(commands.iter().all(|argv| arg(argv, "--jobs") == "2"));
+    assert!(commands.iter().all(|argv| arg(argv, "--jobs") == "1"));
     assert_eq!(
         commands
             .iter()
