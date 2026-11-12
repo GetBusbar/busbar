@@ -20,6 +20,10 @@ IMAGE = 'sha256:' + 'a' * 64
 ENV = {'RUSTUP_TOOLCHAIN': '1.98.0', 'CARGO_PROFILE_DEV_DEBUG': '0', 'CARGO_PROFILE_TEST_DEBUG': '0',
        'RUSTC_WRAPPER': '', 'RUSTC_WORKSPACE_WRAPPER': ''}
 PIPELINE = {'id': 77, 'ref': 'dev', 'sha': 'c' * 40, 'source': 'push'}
+HOST = 'e' * 40
+PINNED_PIPELINE = {'id': 88, 'ref': cache.PINNED_REF, 'sha': HOST, 'source': 'api'}
+PINNED_PRODUCER = {'pipeline_id': 88, 'commit': HOST, 'ref': cache.PINNED_REF, 'source': 'api',
+                   'protected': True, 'dev_revision': 'f' * 40}
 
 
 def write_target(root):
@@ -97,7 +101,7 @@ class Fixture(unittest.TestCase):
         for directory, _, files in os.walk(root):
             os.chmod(directory, 0o755)
 
-    def published(self, *, tamper=None, identity=None, pipelines=None, duplicate=False):
+    def published(self, *, tamper=None, identity=None, pipelines=None, duplicate=False, producer=None):
         work = Path(tempfile.mkdtemp(dir=self.base))
         target = write_target(work / 'producer-target')
         cache.strip_path_units(target, {'busbar-transport-example', 'busbar-transport-example-plugin'})
@@ -106,17 +110,24 @@ class Fixture(unittest.TestCase):
         data = archive.read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         name = 'units-' + digest + '.tar.gz'
-        manifest = {'schema': cache.SCHEMA, 'key': self.version, 'identity': identity or self.identity,
+        version = cache.key(identity) if identity and 'pinned_producer' in identity else self.version
+        manifest = {'schema': cache.SCHEMA, 'key': version, 'identity': identity or self.identity,
                     'archive': {'name': name, 'sha256': digest, 'bytes': len(data)}, 'files': files,
                     'product': {'repo': REPO.split('/')[1], 'commit': 'd' * 40},
-                    'producer': {'pipeline_id': PIPELINE['id'], 'commit': PIPELINE['sha'], 'ref': 'dev'}}
+                    'producer': producer or {'pipeline_id': PIPELINE['id'], 'commit': PIPELINE['sha'], 'ref': 'dev'}}
         rows = [{'file_name': cache.MANIFEST, 'pipelines': pipelines or [PIPELINE]},
                 {'file_name': name, 'file_sha256': digest, 'pipelines': pipelines or [PIPELINE]}]
         if duplicate:
             rows.append(dict(rows[1]))
         stored = tamper(data) if tamper else data
-        return FakeRegistry({(self.version, cache.MANIFEST): cache.canonical(manifest), (self.version, name): stored},
-                            package_files=rows, packages=[{'id': 9, 'name': cache.PACKAGE, 'version': self.version}])
+        return FakeRegistry({(version, cache.MANIFEST): cache.canonical(manifest), (version, name): stored},
+                            package_files=rows, packages=[{'id': 9, 'name': cache.PACKAGE, 'version': version}])
+
+    def pinned(self, commit=HOST, **kwargs):
+        identity = dict(self.identity, pinned_producer={'ref': cache.PINNED_REF, 'commit': commit})
+        kwargs.setdefault('pipelines', [dict(PINNED_PIPELINE, sha=commit)])
+        kwargs.setdefault('producer', dict(PINNED_PRODUCER, commit=commit))
+        return self.published(identity=identity, **kwargs)
 
 
 class Restore(Fixture):
@@ -183,6 +194,53 @@ class Restore(Fixture):
                 self.assertIsNone(cache.restore(self.q, registry))
                 self.assertEqual(self.q.receipt['dependency_units']['status'], 'fallback')
                 self.assertEqual(registry.downloads, 0)
+
+    def test_pinned_producer_files_hit_only_for_their_exact_host_revision(self):
+        self.q.receipt['host_revision'] = HOST
+        seed = cache.restore(self.q, self.pinned())
+        record = self.q.receipt['dependency_units']
+        self.assertIsNotNone(seed)
+        self.assertEqual(record['status'], 'hit')
+        self.assertEqual(record['provenance']['ref'], cache.PINNED_REF)
+        self.assertEqual(record['pinned_key'], cache.key(dict(self.identity, pinned_producer={
+            'ref': cache.PINNED_REF, 'commit': HOST})))
+        self.assertNotEqual(record['pinned_key'], self.version)
+        cache.discard(seed)
+        # Another host revision (or none recorded) never looks at them.
+        for host in ('d' * 40, None):
+            with self.subTest(host=host):
+                self.q.receipt.clear()
+                if host:
+                    self.q.receipt['host_revision'] = host
+                registry = self.pinned()
+                self.assertIsNone(cache.restore(self.q, registry))
+                self.assertEqual(self.q.receipt['dependency_units']['status'], 'miss')
+                self.assertEqual(registry.downloads, 0)
+
+    def test_pinned_files_need_the_protected_owner_api_pipeline_on_the_exact_ref(self):
+        bad = [dict(pipelines=[dict(PINNED_PIPELINE, ref='dev')]),
+               dict(pipelines=[dict(PINNED_PIPELINE, ref=cache.PINNED_REF + '-x')]),
+               dict(pipelines=[dict(PINNED_PIPELINE, source='push')]),
+               dict(pipelines=[dict(PINNED_PIPELINE, source='schedule')]),
+               dict(pipelines=[dict(PINNED_PIPELINE, sha='d' * 40)]),
+               dict(pipelines=[dict(PINNED_PIPELINE, id=89)]),
+               dict(producer=dict(PINNED_PRODUCER, protected=False)),
+               dict(producer=dict(PINNED_PRODUCER, source='push')),
+               dict(producer=dict(PINNED_PRODUCER, ref='dev')),
+               dict(producer=dict(PINNED_PRODUCER, commit='d' * 40))]
+        for kwargs in bad:
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                self.q.receipt.clear()
+                self.q.receipt['host_revision'] = HOST
+                registry = self.pinned(**kwargs)
+                self.assertIsNone(cache.restore(self.q, registry))
+                self.assertEqual(self.q.receipt['dependency_units']['status'], 'fallback')
+                self.assertEqual(registry.downloads, 0)
+
+    def test_dev_key_files_never_accept_a_pinned_pipeline(self):
+        registry = self.published(pipelines=[dict(PINNED_PIPELINE, sha=PIPELINE['sha'])])
+        self.assertIsNone(cache.restore(self.q, registry))
+        self.assertEqual(self.q.receipt['dependency_units']['status'], 'fallback')
 
     def test_duplicated_archive_is_rejected(self):
         registry = self.published(duplicate=True)
@@ -363,6 +421,97 @@ class ProducerShards(unittest.TestCase):
                 cache.produce_product = original
         self.assertEqual(seen, [p['repo'] for p in products if cache.product_shard(p['repo']) == 2])
         self.assertEqual(q.receipt['dependency_units_shard'], {'index': 2, 'total': cache.PRODUCER_SHARDS})
+
+    def test_producer_kinds_are_exact(self):
+        good = {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': cache.PINNED_REF, 'CI_COMMIT_REF_PROTECTED': 'true'}
+        self.assertEqual(cache.producer_kind(good), 'pinned')
+        self.assertEqual(cache.producer_kind({'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev'}), 'dev')
+        for env in (dict(good, CI_COMMIT_REF_PROTECTED='false'), dict(good, CI_COMMIT_BRANCH='dev'),
+                    dict(good, CI_COMMIT_BRANCH=cache.PINNED_REF + '/x'), dict(good, CI_PIPELINE_SOURCE='push'),
+                    dict(good, CI_PIPELINE_SOURCE='schedule'), {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': 'dev'},
+                    {'CI_PIPELINE_SOURCE': 'merge_request_event', 'CI_COMMIT_BRANCH': 'dev'}):
+            with self.subTest(env=env):
+                self.assertIsNone(cache.producer_kind(env))
+
+    def test_pinned_producer_needs_the_constructor_dev_ancestry_proof(self):
+        products = [{'repo': 'busbar-plane-%02d' % index} for index in range(24)]
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/ci-product-pins.json').write_text(json.dumps({'products': products}))
+            q = SimpleNamespace(repository='GetBusbar/busbar', execution=SimpleNamespace(config={'image': IMAGE}),
+                                receipt={}, root=root, save=lambda: None,
+                                policy=SimpleNamespace(data={'repositories': {
+                                    'GetBusbar/' + p['repo']: {'language': 'rust'} for p in products}}))
+            seen = []
+            env = {'CI_JOB_NAME': 'plugin-dependency-units 3/8', 'CI_PIPELINE_SOURCE': 'api',
+                   'CI_COMMIT_BRANCH': cache.PINNED_REF, 'CI_COMMIT_REF_PROTECTED': 'true'}
+            with unittest.mock.patch.object(cache, 'produce_product',
+                                            lambda q, product, *a, **k: seen.append(k['pinned']) or {}), \
+                    unittest.mock.patch.dict(os.environ, env):
+                with self.assertRaisesRegex(Exception, 'protected core dev push producer'):
+                    cache.produce(q, registry=object())
+                q.receipt.update(target_revision='f' * 40, commit_ref_protected=True)
+                cache.produce(q, registry=object())
+        self.assertTrue(seen and all(seen))
+        self.assertEqual(q.receipt['dependency_units_producer_kind'], 'pinned')
+
+    def test_pinned_identity_differs_from_dev_identity(self):
+        dev = cache.identity(REPO, '0' * 64, IMAGE, ENV, wrapper='w')
+        self.assertNotIn('pinned_producer', dev)
+        pinned = cache.identity(REPO, '0' * 64, IMAGE, ENV, wrapper='w', pinned_commit=HOST)
+        self.assertEqual(pinned, dict(dev, pinned_producer={'ref': cache.PINNED_REF, 'commit': HOST}))
+
+
+class PipelineRules(unittest.TestCase):
+    """Evaluate the actual YAML rules for the pipelines that matter here."""
+    ROOT = Path(__file__).resolve().parents[2]
+
+    @staticmethod
+    def evaluate(expression, env):
+        def value(match):
+            return repr(env.get(match[1]))
+        python = re.sub(r'=~ /((?:[^/\\]|\\.)*)/', lambda m: '=~ ' + repr(m[1]), expression)
+        python = re.sub(r'\$([A-Z_]+)', value, python)
+        python = re.sub(r"(\S+) =~ ('(?:[^'\\]|\\.)*')",
+                        lambda m: f'(__import__("re").search({m[2]}, {m[1]} or "") is not None)', python)
+        python = python.replace('&&', ' and ').replace('||', ' or ')
+        return eval(python, {})
+
+    def jobs(self, env):
+        text = (self.ROOT / 'ci/architecture-pipeline.yml').read_text()
+        blocks = re.split(r'^([A-Za-z][A-Za-z0-9_-]*):\s*$', text, flags=re.M)
+        selected = set()
+        for name, block in zip(blocks[1::2], blocks[2::2]):
+            if name in ('workflow', 'stages') or '\n  rules:\n' not in block:
+                continue
+            rules = block.split('\n  rules:\n', 1)[1]
+            rules = re.split(r'\n  [a-z]', rules, maxsplit=1)[0]
+            for rule in re.findall(r"    - (?:if: '([^']*)'(?:\n      when: (\w+))?|when: (\w+))", rules):
+                expression, when, bare = rule
+                if expression and not self.evaluate(expression, env):
+                    continue
+                if (when or bare or 'on_success') != 'never':
+                    selected.add(name)
+                break
+        return selected
+
+    def test_owner_pinned_api_pipeline_runs_only_the_producer(self):
+        env = {'CI_PIPELINE_SOURCE': 'api', 'CI_COMMIT_BRANCH': cache.PINNED_REF, 'CI_COMMIT_REF_PROTECTED': 'true',
+               'CI_PROJECT_PATH': 'GetBusbar/busbar', 'CI_PROJECT_NAMESPACE': 'GetBusbar', 'CI_PROJECT_NAME': 'busbar'}
+        self.assertEqual(self.jobs(env), {'plugin-dependency-units'})
+        self.assertEqual(self.jobs(dict(env, CI_COMMIT_REF_PROTECTED='false')), set())
+        self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PROJECT_PATH='GetBusbar/busbar-x',
+                                                                     CI_PROJECT_NAME='busbar-x')))
+
+    def test_dev_pipelines_keep_their_jobs(self):
+        env = {'CI_PIPELINE_SOURCE': 'push', 'CI_COMMIT_BRANCH': 'dev', 'CI_COMMIT_REF_PROTECTED': 'true',
+               'CI_PROJECT_PATH': 'GetBusbar/busbar', 'CI_PROJECT_NAMESPACE': 'GetBusbar', 'CI_PROJECT_NAME': 'busbar'}
+        self.assertEqual(self.jobs(env), {'native-qualification', 'security-scans', 'core-conformance',
+                                          'plugin-dependency-units', 'website-dev'})
+        self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PIPELINE_SOURCE='api')))
+        self.assertNotIn('plugin-dependency-units', self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')))
+
 
 if __name__ == '__main__':
     unittest.main()
