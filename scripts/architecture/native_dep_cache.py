@@ -129,16 +129,20 @@ def key(value):
 
 
 def stub_workspace(source, destination, *, revision=None):
-    """Exact manifest graph and lock; every Rust file becomes an inert stub.
+    """Exact manifest graph and lock; every Rust file becomes an inert stub,
+    except `[patch]` path crates that registry dependencies compile against
+    (their own units are still stripped before upload).
 
     The manifest snapshot keeps every path so Cargo discovers the same targets.
     Only target roots are compiled; each one is `fn main() {}`, valid as a
     library, binary, build script, harness test or example.
     """
     from native_seed import manifest_snapshot
-    manifest_snapshot(source, destination, revision=revision)
+    kept = manifest_snapshot(source, destination, revision=revision, keep_patched=True)
     for path in destination.rglob('*.rs'):
-        path.write_bytes(STUB)
+        relative = path.relative_to(destination)
+        if not any(relative.parts[:len(prefix.parts)] == prefix.parts for prefix in kept):
+            path.write_bytes(STUB)
     return destination
 
 

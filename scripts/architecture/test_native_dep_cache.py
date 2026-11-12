@@ -350,6 +350,31 @@ class Portability(unittest.TestCase):
             self.assertEqual((stub / 'crate/data.json').read_bytes(), b'')
             self.assertFalse((stub / '.cargo').exists())
 
+    def test_stub_workspace_keeps_real_source_of_patched_path_crates(self):
+        # busbar-store-postgres patches postgres-protocol from vendor/; stubbing it broke
+        # postgres-types (registry) in fill 3003.
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            source, stub = Path(directory) / 'src', Path(directory) / 'stub'
+            (source / 'crate/src').mkdir(parents=True)
+            (source / 'vendor/proto/src').mkdir(parents=True)
+            (source / 'Cargo.toml').write_text('[workspace]\nmembers = ["crate"]\nexclude = ["vendor/proto"]\n'
+                                               '[patch.crates-io]\nproto = { path = "vendor/proto" }\n')
+            (source / 'Cargo.lock').write_text('version = 4\n')
+            (source / 'crate/Cargo.toml').write_text('[package]\nname = "crate"\n')
+            (source / 'crate/src/lib.rs').write_text('compile_error!("candidate");')
+            (source / 'vendor/proto/Cargo.toml').write_text('[package]\nname = "proto"\n')
+            (source / 'vendor/proto/src/lib.rs').write_text('pub mod types {}')
+            (source / 'vendor/proto/src/data.bin').write_bytes(b'real')
+            cache.stub_workspace(source, stub)
+            self.assertEqual((stub / 'crate/src/lib.rs').read_bytes(), cache.STUB)
+            self.assertEqual((stub / 'vendor/proto/src/lib.rs').read_text(), 'pub mod types {}')
+            self.assertEqual((stub / 'vendor/proto/src/data.bin').read_bytes(), b'real')
+            for bad in ('../outside', '/abs', '.cargo/x'):
+                with self.subTest(path=bad), tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as other:
+                    (source / 'Cargo.toml').write_text('[patch.crates-io]\nproto = { path = "%s" }\n' % bad)
+                    with self.assertRaisesRegex(Exception, 'patched path escapes'):
+                        cache.stub_workspace(source, Path(other) / 'stub')
+
     def test_rebuilt_dependency_units_ignore_members(self):
         text = ('   Compiling serde v1.0.0\n   Checking busbar-x v1.6.0 (/w/x)\n'
                 '    Finished `dev` profile\n   Compiling busbar-contract v1.6.0 (https://github.com/GetBusbar/busbar?rev=a#a)\n')
