@@ -392,7 +392,9 @@ pub const CONFIG_RESERVED_NAME: Diagnostic = Diagnostic {
               `repeatable`, `work`, `timeout`, `rate_card` and `fees`. A registration that takes one \
               of those names cannot be told apart from the setting, so the configuration is refused \
               at `--validate` and at startup.",
-    action: "Rename the registration; any name not on the list works. Then run `busbar --validate`.",
+    action: "Rename the registration; any name not on the list works. Then run `busbar --validate`. \
+             The reserved names and what each is for are tabled in docs/configuration.md \
+             (Reserved names).",
     since: "1.6.0",
     retired: false,
 };

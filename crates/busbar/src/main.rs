@@ -1061,8 +1061,8 @@ async fn run(
 
     busbar_core_admin::mark_start();
 
-    let mut cfg = config::resolve(&deploy, &defs)
-        .unwrap_or_else(|errs| die_list("config errors", errs));
+    let mut cfg =
+        config::resolve(&deploy, &defs).unwrap_or_else(|errs| die_list("config errors", errs));
     root::measurements::configure(&cfg.plugin_rate_cards)
         .unwrap_or_else(|error| die(format!("plugin measurement configuration: {error}")));
 

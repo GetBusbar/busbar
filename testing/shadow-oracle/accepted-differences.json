@@ -6679,6 +6679,39 @@
         "by": "2026-12-31"
       },
       "rationale": "Exact same-Bedrock one-cell bookkeeping only: eventstream.frames records successful decode of synthesized caller-mode EventStream; hdr.length records content-length normalized after body normalization. The complete /applied before/after arrays must match, after signed exact28 has projected only egress.cred. Any extra/missing marker fails the exact value transform. All other JSON is untouched and judged by existing normal entries. Mandatory all28 cryptographic premise and all five existing RowA behavioral probes. Append after signed exact28 entry. Historical1.5 records unchanged."
+    },
+    {
+      "id": "RESERVED-NAME generic reserved-name refusal with docs link",
+      "kind": "improvement",
+      "changelog": "Reserved-name refusal: a configuration that names a registration with a reserved word is refused with one generic sentence that names the word and links https://getbusbar.com/docs/configuration#reserved-names, the full list of reserved names.",
+      "by": "owner (Matthew Jackson), 2026-11-12",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-12",
+        "ruling": "owner signed 2026-11-12: generic reserved-name refusal with docs link"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^boot\\.refusal\\|BOOT-P07\\|validate$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.stderr"
+      ],
+      "transform": {
+        "candidate": [
+          [
+            "a pool may not be named `hooks`: that name is reserved in the `pools:` section\\. See https://getbusbar\\.com/docs/configuration#reserved-names for the full list\\. Rename the pool\\.",
+            "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level (the all-pools `hooks:` attach list and `upstream_credentials:` default). Rename the pool."
+          ]
+        ]
+      },
+      "premise": {
+        "cell": "boot.refusal|BOOT-P07|validate",
+        "status": 1
+      },
+      "rationale": "Owner signed 2026-11-12: the reserved-name refusal is one generic sentence that names the offending word and links the one docs page listing every reserved name (crates/busbar-contract/src/section.rs reserved_name_refusal). CELL: boot.refusal|BOOT-P07|validate (a pool named `hooks`). BYTES MOVED (golden -> candidate): effects.stderr, the refusal sentence only. The transform rewrites that one sentence back to 1.5.5's wording so only it is forgiven; the cell reports ACCEPTED, never PASS, and the golden is untouched."
     }
   ]
 }

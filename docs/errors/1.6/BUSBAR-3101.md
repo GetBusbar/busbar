@@ -18,7 +18,7 @@ Inside a section that registers named entries (`pools:`, `tools:`, `agents:`, `s
 
 ## How to fix it
 
-Rename the registration; any name not on the list works. Then run `busbar --validate`.
+Rename the registration; any name not on the list works. Then run `busbar --validate`. The reserved names and what each is for are tabled in docs/configuration.md (Reserved names).
 
 ## Example
 
