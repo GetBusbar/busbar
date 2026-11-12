@@ -2318,6 +2318,10 @@ impl FarEnd for EgressFarEnd<'_> {
     }
 
     fn attempt_span(&self, _token: &Pass<Route>) -> tracing::Span {
+        // Below the hot-path level the span is disabled: take no lock for its fields.
+        if !crate::observability::hotpath_enabled() {
+            return tracing::Span::none();
+        }
         let w = self.lock();
         let Some(live) = w.live.as_ref() else {
             return tracing::Span::none();
