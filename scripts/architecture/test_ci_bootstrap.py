@@ -253,18 +253,28 @@ class ControllerCrate(unittest.TestCase):
                 continue
             if path.suffix in ('.sh', '.toml', '.lock', '.pin'):
                 self.assertNotIn(b'python', path.read_bytes().lower(), path)
-            if path.suffix == '.rs' and path.name != 'bootstrap.rs':
+            # The native step runner names every remaining Python step program
+            # (check.py, the regression suites, candidate-side drivers) in one
+            # module; no other controller module may start an interpreter.
+            if path.suffix == '.rs' and path.name not in ('bootstrap.rs', 'pysteps.rs'):
                 code = path.read_text().split('#[cfg(test)]', 1)[0]
                 self.assertNotIn('/usr/bin/python3', code, path)
                 self.assertNotRegex(code, r'"python3?"', path)
         security = (ROOT / 'tools/ci/src/security.rs').read_text()
         self.assertNotRegex(security, r'Command::new\("(?!git"|docker"|sleep"|sh")')
         bootstrap = (ROOT / 'tools/ci/src/bootstrap.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
-        # Fixed trusted Python modules invoked by the controller: the native step
-        # runner and the API-only diagnostic witnesses. The retention decision is
-        # the controller's own `retention` command (no interpreter).
+        # The only fixed trusted Python module the bootstrap invokes is the
+        # API-only isolation diagnostic. The retention decision and the native
+        # step runner are the controller's own `retention` and `native-qualify`
+        # commands (no interpreter).
         self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', bootstrap))),
-                         ['native.py', 'native_isolation_diagnostic.py'])
+                         ['native_isolation_diagnostic.py'])
+        self.assertIn('"native-qualify".into()', bootstrap)
+        pysteps = (ROOT / 'tools/ci/src/native/pysteps.rs').read_text().split('#[cfg(test)]', 1)[0]
+        self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', pysteps))),
+                         ['check.py', 'development_artifact.py',
+                          'development_checks.py', 'sigstore.py', 'test_capabilities.py',
+                          'test_confined_tools.py'])
 
     def test_pin_names_one_reproducible_binary_by_digest(self):
         manifest = (ROOT / 'tools/ci/Cargo.toml').read_text()
