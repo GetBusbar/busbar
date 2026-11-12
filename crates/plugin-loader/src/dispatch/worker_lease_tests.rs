@@ -852,6 +852,9 @@ fn dropped_writebehind_past_deadline_counts_without_wake_once() {
     );
     until(|| d.is_pending(ticket));
     drop(reply);
+    // The deadline sweep runs on the worker: wait for its count, then keep the
+    // settle window so a second count of the same op would still be seen.
+    until(|| d.stats().deadline_without_wake >= 1);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(d.stats().deadline_without_wake, 1);
     wake(&p, ticket);
@@ -866,6 +869,9 @@ fn expired_pending_calls_each_count_without_wake_once() {
     let ra = d.submit(&p, a, slot::TICK, frame(2), DeadlineClass::Call, deadline);
     let rb = d.submit(&p, b, slot::TICK, frame(2), DeadlineClass::Call, deadline);
     drop((ra.wait(WAIT), rb.wait(WAIT)));
+    // Wait for the worker's sweep to count both, then keep the settle window so
+    // a repeated count of either op would still be seen.
+    until(|| d.stats().deadline_without_wake >= 2);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(d.stats().deadline_without_wake, 2);
     d.recycle(a);

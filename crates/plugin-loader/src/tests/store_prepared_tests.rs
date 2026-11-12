@@ -552,6 +552,11 @@ async fn cancelled_inspection_keeps_the_exact_ticket_and_protected_inputs_for_re
         b"PREPARED_SECRET_CANARY"
     );
     drop(prepared);
+    // The retried crossing's worker may still hold the session past its reply,
+    // so its close can retire on that thread; wait for it, then require one.
+    tokio::time::timeout(Duration::from_secs(5), stats.closed_note.notified())
+        .await
+        .expect("the native instance closes after its last owner drops");
     assert_eq!(stats.closed.load(Ordering::SeqCst), 1);
     assert_eq!(stats.opened.load(Ordering::SeqCst), 0);
 }

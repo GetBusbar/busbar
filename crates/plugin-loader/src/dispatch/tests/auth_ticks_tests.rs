@@ -191,9 +191,16 @@ async fn a_dropped_inbound_instance_is_ticked_no_more() {
         FOREVER.load(Ordering::SeqCst) >= 2,
         "the instance is ticked on its schedule"
     );
+    let held = a.instance();
     drop(a);
 
-    tokio::time::sleep(Duration::from_millis(3 * GAP_NS / 1_000_000)).await;
+    // The schedule lets the dropped instance go on its own worker; a tick may
+    // still be crossing until then, so count from the release, not a fixed sleep.
+    until(|| held.upgrade().is_none()).await;
+    assert!(
+        held.upgrade().is_none(),
+        "the dropped instance is let go by its schedule"
+    );
     let stopped = FOREVER.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_millis(10 * GAP_NS / 1_000_000)).await;
     assert_eq!(
