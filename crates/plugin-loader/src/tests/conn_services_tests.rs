@@ -857,8 +857,9 @@ fn recycling_one_instances_ticket_never_replays_anothers_establish() {
 
 #[test]
 fn a_config_program_is_declared_as_a_program() {
+    let label = "config-program-declared";
     let table = Arc::new(Recording::default());
-    let p = bound(Box::leak(Box::new(NEEDS)), &table);
+    let p = bound_labelled(Box::leak(Box::new(NEEDS)), &table, label);
     assert_eq!(
         open_with(
             &p,
@@ -885,7 +886,7 @@ fn a_config_program_is_declared_as_a_program() {
         "no target string was declared"
     );
     assert_eq!(
-        refresh_with(&p, br#"{"upstream":{"command":"server"}}"#),
+        refresh_with(&p, br#"{"upstream":{"command":"/usr/bin/other"}}"#),
         Outcome::Ready
     );
     let owners: Vec<_> = table
@@ -895,16 +896,38 @@ fn a_config_program_is_declared_as_a_program() {
         .iter()
         .map(|(owner, ..)| *owner)
         .collect();
+    assert_eq!(owners.len(), 2, "the refresh declares its program again");
     assert_eq!(
-        owners,
-        vec![p.instance()],
+        owners[0],
+        p.instance(),
         "the open owns the program authority"
     );
-    let refreshed = table.declared.lock().unwrap()[0].0;
+    let refreshed = owners[1];
     assert_ne!(refreshed, p.instance(), "refresh mints its own authority");
     assert!(belongs_to(&p, refreshed));
-    assert_eq!(targets(&table, &p), vec![None], "a misspelled program");
-    assert_eq!(table.programs.lock().unwrap().len(), 1);
+    assert_eq!(
+        table.programs.lock().unwrap()[1].2.command,
+        "/usr/bin/other"
+    );
+    // db6f4149aa: a malformed program is refused before ANY table admission; it is never
+    // declared as a target-less need.
+    assert_eq!(
+        refresh_with(&p, br#"{"upstream":{"command":"server"}}"#),
+        Outcome::Ready
+    );
+    assert!(targets(&table, &p).is_empty(), "a misspelled program");
+    assert_eq!(table.programs.lock().unwrap().len(), 2);
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "program_malformed"
+            }
+        )],
+        "the refused program is audited once, in its word"
+    );
 }
 
 #[test]
@@ -2201,8 +2224,9 @@ const MEMBER_NEEDS: [Need; 1] = [Need {
 #[test]
 fn a_member_program_need_is_declared_with_each_registrations_program() {
     use busbar_contract::conn::Program;
+    let label = "member-programs-declared";
     let table = Arc::new(Recording::default());
-    let p = bound(Box::leak(Box::new(MEMBER_NEEDS)), &table);
+    let p = bound_labelled(Box::leak(Box::new(MEMBER_NEEDS)), &table, label);
     assert_eq!(
         open_with(
             &p,
@@ -2210,10 +2234,13 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                  "env":{"PLAIN":"v","KEY":{"module":"fixture-source","settings":{"slot":"BUSBAR_LOADER_MEMBER_PROGRAM_SECRET"}}},
                  "pin":{"mechanism":"unpinned"},"tools_allow":["a"]},
                 "web":{"url":"https://upstream.example/rpc","pin":{"mechanism":"unpinned"}},
-                "bad":{"transport":"piped","command":"relative"},
                 "pools":{"p":{"members":["one"]}}}"#
         ),
         Outcome::Ready
+    );
+    assert!(
+        refused_for(label).is_empty(),
+        "every member program is admitted"
     );
     let members = table.members.lock().unwrap().clone();
     assert_eq!(
@@ -2259,6 +2286,31 @@ fn a_member_program_need_is_declared_with_each_registrations_program() {
                 env_refs: Vec::new(),
             }
         )]
+    );
+    // db6f4149aa: one malformed member refuses the whole need before any table admission; the
+    // valid peer is neither admitted alone nor allowed to conceal it.
+    assert_eq!(
+        refresh_with(
+            &p,
+            br#"{"two":{"command":"/usr/bin/two"},"bad":{"transport":"piped","command":"relative"}}"#
+        ),
+        Outcome::Ready
+    );
+    assert_eq!(
+        table.members.lock().unwrap().len(),
+        2,
+        "nothing is declared"
+    );
+    assert_eq!(
+        refused_for(label),
+        vec![format!(
+            "{:?}",
+            crate::observe::BindRefusal::Need {
+                need: 0,
+                reason: "program_malformed"
+            }
+        )],
+        "the refused members are audited once, in their word"
     );
 }
 
