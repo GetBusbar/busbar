@@ -261,9 +261,10 @@ class ControllerCrate(unittest.TestCase):
         self.assertNotRegex(security, r'Command::new\("(?!git"|docker"|sleep"|sh")')
         bootstrap = (ROOT / 'tools/ci/src/bootstrap.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
         # Fixed trusted Python modules invoked by the controller: the native step
-        # runner, the API-only diagnostic witnesses and the retention decision.
+        # runner and the API-only diagnostic witnesses. The retention decision is
+        # the controller's own `retention` command (no interpreter).
         self.assertEqual(sorted(set(re.findall(r'[a-z_]+\.py\b', bootstrap))),
-                         ['ci_retention.py', 'native.py', 'native_isolation_diagnostic.py'])
+                         ['native.py', 'native_isolation_diagnostic.py'])
 
     def test_pin_names_one_reproducible_binary_by_digest(self):
         manifest = (ROOT / 'tools/ci/Cargo.toml').read_text()
@@ -440,6 +441,87 @@ class ControllerAcquisition(unittest.TestCase):
         self.assertFalse((self.log / 'curl.args').exists())
         self.assertFalse((self.log / 'controller.args').exists())
 
+
+
+class RetentionPipeline(unittest.TestCase):
+    """The strict job graph: retention runs before bootstrap; schedules run security only.
+
+    Moved from the former test_ci_retention.py when the retention decision moved
+    from scripts/architecture/ci_retention.py into the controller (tools/ci/src/
+    retention.rs, unit-tested there with the former Python cases).
+    """
+
+    def setUp(self):
+        self.blocks = dict(re.findall(r'^([a-z][a-z-]*):\n((?:(?: .*)?\n)*)', YAML, re.M))
+
+    def test_schedule_runs_security_only(self):
+        self.assertIn("- if: '$CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_BRANCH == \"dev\"'",
+                      self.blocks['workflow'])
+        never = "    - if: '$CI_PIPELINE_SOURCE == \"schedule\"'\n      when: never\n"
+        for job in ('native-qualification', 'core-conformance'):
+            self.assertIn(never, self.blocks[job], job)
+        self.assertNotIn('"schedule"', self.blocks['security-scans'])
+        self.assertIn('  rules:\n', self.blocks['security-scans'])
+        website = self.blocks['website-dev']
+        self.assertNotIn('"schedule"', website)
+        self.assertEqual(re.findall(r'CI_PIPELINE_SOURCE == "(\w+)"', website), ['push', 'push'])
+
+    def test_retention_decides_before_bootstrap_for_expensive_kinds_only(self):
+        # The YAML is POSIX sh; the trusted controller's native-bootstrap entry
+        # makes the decision before any bootstrap download, by running its own
+        # verified binary's `retention` command (never an interpreter).
+        self.assertNotIn('ci_retention', YAML)
+        self.assertFalse((ROOT / 'scripts/architecture/ci_retention.py').exists())
+        self.assertIn('controller native-bootstrap --trusted', self.blocks['native-qualification'])
+        source = (ROOT / 'tools/ci/src/bootstrap.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
+        self.assertNotIn('ci_retention', source)
+        self.assertIn('pub const RETAINABLE: [&str; 2] = ["native-qualification", "core-conformance"];', source)
+        command = source.split('\npub fn retention_command(', 1)[1].split('\n}\n', 1)[0]
+        self.assertIn('vec![\n        path_text(binary),\n        "retention".into(),', command)
+        self.assertNotIn('python', command.lower())
+        outer = source.split('\nfn outer(', 1)[1].split('\n}\n', 1)[0]
+        decision = outer.index('if retained(&binary, &checkout, &revision, &env["CI_JOB_NAME"])? {\n'
+                               '        return Ok(());\n    }')
+        # Only identity checks precede it; every download and image load follows.
+        self.assertLess(outer.index('verify_trusted(&trusted, &revision)?'), decision)
+        self.assertLess(outer.index('let binary = fs::canonicalize('), decision)
+        for later in ('fetch::fetch(', 'load_tool_image(', 'entry_command('):
+            self.assertLess(decision, outer.index(later), later)
+        self.assertEqual(outer.count('fetch::'), 1)
+        retained = source.split('\nfn decide_retention(', 1)[1].split('\n}\n', 1)[0]
+        self.assertIn('if decided && regular {\n        return Ok(true);', retained)
+        self.assertIn('"retention decision left evidence without retaining"', retained)
+        self.assertIn('is_ok_and(|m| m.file_type().is_file())', retained)
+        main = (ROOT / 'tools/ci/src/main.rs').read_text()
+        self.assertIn('"retention" => retention_main(args),', main)
+        self.assertNotRegex(YAML, r'(?m)^\s*(needs|dependencies|include|default):')
+        self.assertNotRegex(YAML, r'\$(BUSBAR_)?(SKIP|RETAIN)')
+
+    def test_retention_contract_and_credential_confinement(self):
+        code = (ROOT / 'tools/ci/src/retention.rs').read_text().split('\n#[cfg(test)]', 1)[0]
+        for literal in ('"busbar.ci-retained-check/1"', '"busbar.ci-input-identity/1"',
+                        '"busbar.protected-native-admission/1"', '"busbar.protected-conformance/1"',
+                        'pub const RETAINED: i32 = 0;', 'pub const FRESH: i32 = 3;',
+                        '"busbar-retention: {kind}: retained(original job {}, pipeline {}, identity {})"',
+                        '"busbar-retention: {kind}: fresh({})"'):
+            self.assertIn(literal, code)
+        self.assertNotRegex(code.lower(), r'python3|"python')
+        # The job token is read from the environment and reaches curl only as a
+        # stdin-configured header (fetch::get), never an argument or a log line.
+        self.assertEqual(len(re.findall(r'.*"CI_JOB_TOKEN".*', code)), 4)
+        self.assertNotRegex(code, r'\.arg\([^)]*token')
+        self.assertNotRegex(code, r'(print_line|eprintln!|println!)\([^;]*token')
+        fetch = (ROOT / 'tools/ci/src/fetch.rs').read_text().split('\n#[cfg(test)]', 1)[0]
+        get = fetch.split('\npub fn get(', 1)[1].split('\n}\n', 1)[0]
+        self.assertIn('&proc::strings(&[CURL, "--disable", "--config", "-"])', get)
+        self.assertIn('header = {}', get)
+
+    def test_owner_workstation_grammar_still_accepts_the_graph(self):
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from reuse_evidence import independent_qualification_job
+        for job in ('native-qualification', 'security-scans', 'core-conformance'):
+            self.assertTrue(independent_qualification_job(YAML.encode(), job))
 
 if __name__ == '__main__':
     unittest.main()

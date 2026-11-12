@@ -347,15 +347,16 @@ fn expected_work(env: &Env) -> PathBuf {
 pub const RETAINABLE: [&str; 2] = ["native-qualification", "core-conformance"];
 
 /// The retention decision, made before any bootstrap download: true only after
-/// the trusted ci_retention module authenticated an equal-input successful
-/// original and wrote boundary-evidence/retained.json naming it. Anything else
-/// runs fresh; evidence left behind without retaining fails the job.
-fn retained(trusted: &Path, checkout: &Path, revision: &str, job: &str) -> Result<bool> {
+/// this verified controller's own `retention` command (crate::retention, run as
+/// a separate process with the job environment) authenticated an equal-input
+/// successful original and wrote boundary-evidence/retained.json naming it.
+/// Anything else runs fresh; evidence left behind without retaining fails the job.
+fn retained(binary: &Path, checkout: &Path, revision: &str, job: &str) -> Result<bool> {
     if !RETAINABLE.contains(&job) {
         return Ok(false);
     }
     let output = checkout.join("boundary-evidence/retained.json");
-    let argv = retention_command(trusted, checkout, revision, &output);
+    let argv = retention_command(binary, checkout, revision, &output);
     decide_retention(&argv, &output)
 }
 
@@ -379,16 +380,14 @@ fn decide_retention(argv: &[String], output: &Path) -> Result<bool> {
 }
 
 pub fn retention_command(
-    trusted: &Path,
+    binary: &Path,
     checkout: &Path,
     revision: &str,
     output: &Path,
 ) -> Vec<String> {
     vec![
-        "/usr/bin/python3".into(),
-        "-I".into(),
-        "-B".into(),
-        path_text(&trusted.join("scripts/architecture/ci_retention.py")),
+        path_text(binary),
+        "retention".into(),
         "--policy".into(),
         revision.into(),
         "--checkout".into(),
@@ -432,7 +431,7 @@ fn outer(args: &[String]) -> Result<()> {
         "controller binary is outside the job staging root",
     )?;
     let binary_sha = sha256::file(&binary)?;
-    if retained(&trusted, &checkout, &revision, &env["CI_JOB_NAME"])? {
+    if retained(&binary, &checkout, &revision, &env["CI_JOB_NAME"])? {
         return Ok(());
     }
     let archive = work.join("public-tools.tar");
@@ -1653,9 +1652,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn retention_runs_the_trusted_module_and_retains_only_on_regular_evidence() {
+    fn retention_runs_the_verified_controller_and_retains_only_on_regular_evidence() {
         let argv = retention_command(
-            Path::new("/w/trusted"),
+            Path::new("/var/lib/busbar-native/boundary-3-19/controller/busbar-ci"),
             Path::new("/home/fleeting/builds/x"),
             &"a".repeat(40),
             Path::new("/home/fleeting/builds/x/boundary-evidence/retained.json"),
@@ -1663,10 +1662,8 @@ mod tests {
         assert_eq!(
             argv,
             strings(&[
-                "/usr/bin/python3",
-                "-I",
-                "-B",
-                "/w/trusted/scripts/architecture/ci_retention.py",
+                "/var/lib/busbar-native/boundary-3-19/controller/busbar-ci",
+                "retention",
                 "--policy",
                 &"a".repeat(40),
                 "--checkout",
