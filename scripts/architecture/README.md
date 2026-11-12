@@ -14,6 +14,9 @@ pipeline-variable overrides and no direct/job-token/force pushes. Existing stric
 QA/main merge permissions stay unchanged. Creating a missing QA/main protection
 requires an explicit `--stage-owner-id`; it never grants the dev operator promotion access. `merge` accepts only a same-project dev MR
 with the current successful native job and an exact source/target/host/SDK/policy receipt.
+For core that is its DEV tier: the MR pipeline's `core-build` receipt (fmt, deny/vet and
+the certified release build with its sha256) and the `core-conformance` receipt that
+judged those same bytes; native qualification and security are core's QA tier.
 Every matching project and group rule is checked because permissions are additive.
 Unreadable group rules, permissive wildcards or unavailable settings prevent admission.
 The server also rejects a merge when the target has advanced beyond the candidate.
