@@ -1938,6 +1938,7 @@ impl Generated {
             sdk: None,
             execution_context: None,
             execution_context_sha256: None,
+            dependency_units: None,
         }
     }
 
