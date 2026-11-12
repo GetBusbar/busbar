@@ -676,6 +676,69 @@ fn rebuilt_units_ignore_members_and_trailers() {
 }
 
 #[test]
+fn only_server_named_parallel_instances_are_producers() {
+    for index in 1..=PRODUCER_SHARDS {
+        assert_eq!(
+            producer_shard(&format!(
+                "plugin-dependency-units {index}/{PRODUCER_SHARDS}"
+            )),
+            Some(index - 1)
+        );
+    }
+    for name in [
+        "",
+        "plugin-dependency-units",
+        "plugin-dependency-units 0/8",
+        "plugin-dependency-units 01/8",
+        "plugin-dependency-units +1/8",
+        "plugin-dependency-units 9/8",
+        "plugin-dependency-units 1/4",
+        "plugin-dependency-units 1/8 ",
+        "plugin-dependency-units  1/8",
+        "plugin-dependency-units: [1]",
+        "native-qualification",
+    ] {
+        assert_eq!(producer_shard(name), None, "{name:?}");
+    }
+}
+
+#[test]
+fn product_shards_match_the_python_controller_and_stay_bounded() {
+    // int(hashlib.sha256(repo.encode()).hexdigest(), 16) % 8 (Python 3.15).
+    for (repo, shard) in [
+        ("busbar-transport-grpc", 7),
+        ("busbar-plane-llm", 5),
+        ("busbar-auth-oidc", 3),
+    ] {
+        assert_eq!(product_shard(repo), shard, "{repo}");
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let vector = sp::read_json(&root.join("scripts/ci-product-pins.json")).unwrap();
+    let mut counts = [0usize; PRODUCER_SHARDS as usize];
+    for product in vector.at("products").as_array().unwrap() {
+        counts[product_shard(product.at("repo").as_str().unwrap()) as usize] += 1;
+    }
+    // A first fill stays bounded: no instance owns more than six products.
+    assert!(counts.iter().all(|&count| count <= 6), "{counts:?}");
+}
+
+#[test]
+fn pipeline_declares_the_parallel_producer_with_per_index_exclusion() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let yaml = std::fs::read_to_string(root.join("ci/architecture-pipeline.yml")).unwrap();
+    let job = yaml
+        .split_once("\nplugin-dependency-units:\n")
+        .unwrap()
+        .1
+        .split_once("\n\n")
+        .unwrap()
+        .0;
+    assert!(job.contains(&format!("\n  parallel: {PRODUCER_SHARDS}\n")));
+    assert!(job.contains("\n  resource_group: plugin-dependency-units-$CI_NODE_INDEX\n"));
+    assert!(yaml.contains(r#"|"plugin-dependency-units "[1-8]/8) ;;"#));
+}
+
+#[test]
 fn producer_commands_are_the_plugin_steps() {
     let source = include_str!("../plugins.rs");
     for (name, argv) in plugin_commands("NAME") {
