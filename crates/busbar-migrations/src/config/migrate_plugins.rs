@@ -148,14 +148,37 @@ struct Site {
     kind: String,
     module: String,
 
-    settings: serde_json::Value,
+    /// The section as written, encoded and held in guarded custody. It is read back into a wiping
+    /// tree only while this site is being migrated ([`Site::handed`]).
+    settings: busbar_contract::Secret<Vec<u8>>,
 
     read_only: Vec<String>,
     references_only: bool,
     browser_client_id: Option<String>,
 }
 
+/// Seal a section for a [`Site`]: guarded encoded bytes, never a readable tree at rest.
+fn sealed(settings: serde_json::Value) -> Result<busbar_contract::Secret<Vec<u8>>, String> {
+    busbar_contract::plugin_settings::ResolvedSettings::from(settings)
+        .encode()
+        .map_err(|_| "its settings could not be held for migration (values not echoed)".to_owned())
+}
+
 impl Site {
+    /// The section as written, read back from guarded custody for this site's migration only.
+    fn handed(&self) -> Result<busbar_contract::abi::sdk::cred::SettingsValue, String> {
+        busbar_contract::abi::sdk::cred::settings_document(
+            self.settings.expose(&busbar_kernel::seal::lend()),
+        )
+        .map_err(|_| {
+            format!(
+                "{}: its settings could not be read back for migration (values not echoed); \
+                 they were left as written",
+                self.path
+            )
+        })
+    }
+
     fn owns_reference_scope(&self, path: &[String]) -> bool {
         self.kind == busbar_contract::abi::mechanism::kind::PLANE
             && path.len() > 1
@@ -225,21 +248,28 @@ pub(super) fn migrate_recognized(
         {
             continue;
         }
-        if site.validate(host, &site.settings).is_ok() {
+        let handed = match site.handed() {
+            Ok(handed) => handed,
+            Err(failure) => {
+                ledger.failures.push(failure);
+                continue;
+            }
+        };
+        if site.validate(host, &handed).is_ok() {
             continue;
         }
-        match host.migrate(&site.kind, &site.module, &site.settings, &from) {
+        match host.migrate(&site.kind, &site.module, &handed, &from) {
             Ok(Some((plugin, migrated))) if serde_json::to_value(migrated.authoring(&busbar_kernel::seal::acquire()))
                 .map(busbar_contract::abi::sdk::cred::SettingsValue::from)
-                .is_ok_and(|settings| *settings != site.settings) => {
-                let proof = match super::provenance::HistoricalConfigProof::settings(&site.path, &site.settings) {
+                .is_ok_and(|settings| *settings != *handed) => {
+                let proof = match super::provenance::HistoricalConfigProof::settings(&site.path, &handed) {
                     Ok(proof) => proof,
                     Err(error) => { ledger.failures.push(error); continue; }
                 };
                 if host.admit_config_profile(&proof).is_err() {
                     ledger.failures.push("historical settings evidence was refused".into()); continue;
                 }
-                apply(root, host, &site, &plugin, migrated, ledger);
+                apply(root, host, &site, &handed, &plugin, migrated, ledger);
             }
             _ => ledger.todos.push(format!("{}: current settings were refused and the registered owner established no supported historical conversion", site.path)),
         }
@@ -259,8 +289,15 @@ pub(super) fn migrate_over(
     let from = host.migrating_from().to_string();
     let mut wanted: Vec<(String, String)> = Vec::new();
     for site in sites(root, planes, host, ledger) {
+        let handed = match site.handed() {
+            Ok(handed) => handed,
+            Err(failure) => {
+                ledger.failures.push(failure);
+                continue;
+            }
+        };
         if site.references_only {
-            match host.migrate_references(&site.kind, &site.module, &site.settings, &from) {
+            match host.migrate_references(&site.kind, &site.module, &handed, &from) {
                 Ok(Some((_, answer))) => {
                     for need in answer.needs {
                         match need {
@@ -278,13 +315,15 @@ pub(super) fn migrate_over(
             continue;
         }
         wanted.push((site.kind.clone(), site.module.clone()));
-        match host.migrate(&site.kind, &site.module, &site.settings, &from) {
+        match host.migrate(&site.kind, &site.module, &handed, &from) {
             Ok(None) => {
-                if site.validate(host, &site.settings).is_err() {
+                if site.validate(host, &handed).is_err() {
                     ledger.failures.push(format!("{}: current plugin validation refused unchanged settings; install the current plugin or resolve its migration prerequisites before retrying", site.path));
                 }
             }
-            Ok(Some((plugin, migrated))) => apply(root, host, &site, &plugin, migrated, ledger),
+            Ok(Some((plugin, migrated))) => {
+                apply(root, host, &site, &handed, &plugin, migrated, ledger);
+            }
             Err(why) => ledger.todos.push(format!(
                 "{}: the {} plugin '{}' could not migrate its settings ({why}); they were left as \
                  written",
@@ -358,6 +397,13 @@ fn sites(
                 else {
                     continue;
                 };
+                let settings = match sealed(settings) {
+                    Ok(settings) => settings,
+                    Err(why) => {
+                        ledger.failures.push(format!("{path}: {why}"));
+                        continue;
+                    }
+                };
                 out.push(Site {
                     path,
                     at: vec![key.to_string(), field::SETTINGS.to_string()],
@@ -386,6 +432,13 @@ fn sites(
                 migration_json(entry.get(Value::from(field::SETTINGS)), &path, ledger)
             else {
                 continue;
+            };
+            let settings = match sealed(settings) {
+                Ok(settings) => settings,
+                Err(why) => {
+                    ledger.failures.push(format!("{path}: {why}"));
+                    continue;
+                }
             };
             out.push(Site {
                 path,
@@ -471,12 +524,20 @@ fn sites(
                 read_only.push((*s).to_string());
             }
         }
+        let path = plane.owns.join(", ");
+        let settings = match sealed(serde_json::Value::Object(sections)) {
+            Ok(settings) => settings,
+            Err(why) => {
+                ledger.failures.push(format!("{path}: {why}"));
+                continue;
+            }
+        };
         out.push(Site {
-            path: plane.owns.join(", "),
+            path,
             at: Vec::new(),
             kind: busbar_contract::abi::mechanism::kind::PLANE.to_string(),
             module: plane.key.to_string(),
-            settings: serde_json::Value::Object(sections),
+            settings,
             read_only,
             references_only: !selected,
             browser_client_id: None,
@@ -573,6 +634,7 @@ fn apply(
     root: &mut Mapping,
     host: &dyn MigrateHost,
     site: &Site,
+    handed: &serde_json::Value,
     plugin: &str,
     migrated: MigrationAnswer,
     ledger: &mut Ledger<'_>,
@@ -616,8 +678,8 @@ fn apply(
         ledger.failures.push(format!("{}: current plugin validation refused the migrated settings; no converted configuration was emitted", site.path));
         return;
     }
-    if *settings != site.settings {
-        if let Err(why) = write_back(root, site, &settings) {
+    if *settings != *handed {
+        if let Err(why) = write_back(root, site, handed, &settings) {
             if lifted_secret {
                 ledger.failures.push(format!("{}: migrated secret settings could not be installed; no converted configuration was emitted", site.path));
                 return;
@@ -814,7 +876,12 @@ fn decimal_value(text: &str) -> Option<(bool, String, i64)> {
     Some((negative, digits, exponent))
 }
 
-fn write_back(root: &mut Mapping, site: &Site, settings: &serde_json::Value) -> Result<(), String> {
+fn write_back(
+    root: &mut Mapping,
+    site: &Site,
+    handed: &serde_json::Value,
+    settings: &serde_json::Value,
+) -> Result<(), String> {
     let value = yaml_value;
     if site.kind == busbar_contract::abi::mechanism::kind::PLANE {
         let serde_json::Value::Object(sections) = settings else {
@@ -823,7 +890,7 @@ fn write_back(root: &mut Mapping, site: &Site, settings: &serde_json::Value) -> 
 
         let mut writes = Vec::new();
         for (name, v) in sections {
-            let Some(handed) = site.settings.get(name) else {
+            let Some(handed) = handed.get(name) else {
                 return Err(format!("`{name}` is not a section it was handed"));
             };
             if site.read_only.contains(name) {

@@ -8,6 +8,16 @@ fn doc(text: &str) -> Document {
     Document::parse(text.to_owned()).expect("the document parses")
 }
 
+/// Deal a seat that binds and encodes cleanly.
+fn deal(d: &Document, seat: Seat<'_>) -> Option<Section> {
+    d.deal(seat).expect("the seat deals")
+}
+
+/// The blob a dealt section lends, read back under the test kernel seal.
+fn blob(s: &Section) -> serde_json::Value {
+    serde_json::from_slice(s.settings.expose(&crate::seal::lend())).expect("the blob is JSON")
+}
+
 fn verbs(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| (*s).to_owned()).collect()
 }
@@ -38,23 +48,21 @@ agents:
 #[test]
 fn red_a_section_reaches_only_its_plugin() {
     let d = doc(DOC);
-    let tools = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
-    assert_eq!(tools.settings, json!({"tools": {"t1": {"url": "a"}}}));
+    let tools = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    assert_eq!(blob(&tools), json!({"tools": {"t1": {"url": "a"}}}));
     assert_eq!(tools.at, vec![verbs(&["tools"])]);
 
-    let both = d
-        .deal(Seat::Verbs(&verbs(&["agents", "unwritten"])))
-        .expect("dealt");
-    assert_eq!(both.settings, json!({"agents": {"a1": {"url": "b"}}}));
-    assert!(d.deal(Seat::Verbs(&verbs(&["unwritten"]))).is_none());
+    let both = deal(&d, Seat::Verbs(&verbs(&["agents", "unwritten"]))).expect("dealt");
+    assert_eq!(blob(&both), json!({"agents": {"a1": {"url": "b"}}}));
+    assert!(deal(&d, Seat::Verbs(&verbs(&["unwritten"]))).is_none());
 
-    let h1 = d.deal(Seat::Instance(Kind::Hook, "h1")).expect("dealt");
-    assert_eq!(h1.settings, json!({"k": 1}));
+    let h1 = deal(&d, Seat::Instance(Kind::Hook, "h1")).expect("dealt");
+    assert_eq!(blob(&h1), json!({"k": 1}));
     assert_eq!(h1.at, vec![verbs(&["hooks", "h1", "settings"])]);
-    let store = d.deal(Seat::Instance(Kind::Store, "store")).expect("dealt");
-    assert_eq!(store.settings, json!({"p": 1}));
-    assert!(d.deal(Seat::Instance(Kind::Hook, "h3")).is_none());
-    assert!(d.deal(Seat::Instance(Kind::Transport, "t")).is_none());
+    let store = deal(&d, Seat::Instance(Kind::Store, "store")).expect("dealt");
+    assert_eq!(blob(&store), json!({"p": 1}));
+    assert!(deal(&d, Seat::Instance(Kind::Hook, "h3")).is_none());
+    assert!(deal(&d, Seat::Instance(Kind::Transport, "t")).is_none());
 }
 
 #[test]
@@ -79,11 +87,8 @@ tools:
     timeout: 10s
     upstream_credentials: passthrough
 ");
-    let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
-    assert_eq!(
-        s.settings,
-        json!({"tools": {"t1": {"url": "a", "keep": 1}}})
-    );
+    let s = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    assert_eq!(blob(&s), json!({"tools": {"t1": {"url": "a", "keep": 1}}}));
     let mut paths: Vec<String> = s.reserved.iter().map(|(p, _)| p.join(".")).collect();
     paths.sort();
     let mut want = vec![
@@ -114,7 +119,7 @@ tools:
 #[test]
 fn red_a_refusal_names_its_position() {
     let d = doc(DOC);
-    let tools = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    let tools = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
     assert_eq!(d.refuse(&tools, "bad"), "tools: bad at line 16 column 3");
     assert_eq!(
         d.refusal(&verbs(&["tools", "t1"]), "nope"),
@@ -160,7 +165,7 @@ fn a_rewrite_keeps_the_operators_positions() {
         root.remove("listen");
         root.insert("rewritten".into(), json!(true));
     }
-    let tools = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    let tools = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
     assert_eq!(d.refuse(&tools, "bad"), "tools: bad at line 16 column 3");
 }
 
@@ -185,8 +190,8 @@ tools:
     url: a
     tier: small
 ");
-    let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
-    assert_eq!(s.settings, json!({"tools": {"t1": {"url": "a"}}}));
+    let s = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    assert_eq!(blob(&s), json!({"tools": {"t1": {"url": "a"}}}));
     assert_eq!(
         paths(&s),
         [
@@ -223,9 +228,9 @@ tools:
       members: [{name: t1, meta: {tier: deep}}]
       shape: {work: 1}
 ");
-    let s = d.deal(Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
+    let s = deal(&d, Seat::Verbs(&verbs(&["tools"]))).expect("dealt");
     assert_eq!(
-        s.settings,
+        blob(&s),
         json!({"tools": {"t1": {"url": "a", "opts": {"tier": "x", "breaker": {"trip": 1}}}}})
     );
     assert_eq!(paths(&s), ["tools.pools"]);
@@ -249,9 +254,9 @@ pools:
     members: [{model: m}]
     on_exhausted: reject
 ");
-    let s = d.deal(Seat::Verbs(&verbs(&["pools"]))).expect("dealt");
+    let s = deal(&d, Seat::Verbs(&verbs(&["pools"]))).expect("dealt");
     assert_eq!(
-        s.settings,
+        blob(&s),
         json!({"pools": {
             "tier": {"members": [{"model": "m"}]},
             "work": {"members": [{"model": "m"}]},

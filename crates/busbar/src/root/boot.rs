@@ -448,18 +448,11 @@ pub fn validate_dealt<'s>(
     mut validate: impl FnMut(&'s str, &[u8]) -> Result<(), String>,
 ) -> Result<(), String> {
     for (instance, seat) in seats {
-        let Some(section) = doc.deal(seat) else {
+        let Some(section) = doc.deal(seat)? else {
             continue;
         };
-
-        let settings = match seat {
-            Seat::Verbs(_) => {
-                busbar_kernel::config::filled::plane_bound(&[], section.settings.clone())?
-            }
-            Seat::Instance(..) => section.settings.clone(),
-        };
-        let blob = serde_json::to_vec(&settings).map_err(|e| e.to_string())?;
-        validate(instance, &blob).map_err(|reason| {
+        let seal = busbar_kernel::seal::lend();
+        validate(instance, section.settings.expose(&seal)).map_err(|reason| {
             format!(
                 "config.yaml: invalid YAML: {}",
                 doc.refuse(&section, &reason)

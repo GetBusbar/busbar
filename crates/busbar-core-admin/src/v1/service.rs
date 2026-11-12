@@ -31,8 +31,17 @@ pub(crate) fn settings_keys(settings: &busbar_contract::plugin_settings::Setting
     keys
 }
 
-pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
-    redact_settings_bags_with(v, &busbar_kernel::config::settings_public::public);
+/// A root-section projection that has been through [`redact_settings_bags`]: every nested
+/// `settings:` bag is reduced to `settings_keys` (and any declared `settings_public` values).
+/// Only that redaction step constructs it, so an admin view cannot carry an unredacted overlay.
+#[derive(Debug, serde::Serialize)]
+#[serde(transparent)]
+pub struct RedactedRootSettings(serde_json::Value);
+
+/// Redact every opaque `settings:` bag inside a root-section projection for an admin response.
+pub(crate) fn redact_settings_bags(mut v: serde_json::Value) -> RedactedRootSettings {
+    redact_settings_bags_with(&mut v, &busbar_kernel::config::settings_public::public);
+    RedactedRootSettings(v)
 }
 
 pub(crate) fn redact_settings_bags_with(
