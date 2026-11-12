@@ -1,0 +1,4 @@
+image=mirror.gcr.io/library/rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+sha256=de4f5c325ba3a147ee4deb2e97b25bdca880798afd3da395838bdb90167b726f
+bytes=770696
+package=https://git.getbusbar.dev/api/v4/projects/3/packages/generic/busbar-ci-controller/0.1.0-de4f5c325ba3a147/busbar-ci
