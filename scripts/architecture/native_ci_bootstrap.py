@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -62,6 +64,53 @@ def require(value, message):
 def digest(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def emit_phase(name, started_at, elapsed, status='pass'):
+    """One JSON timing line per bootstrap sub-phase, in the native_preparation style."""
+    row = {'name': 'bootstrap.' + name, 'started_at': started_at, 'status': status,
+           'finished_at': now(), 'elapsed_seconds': round(elapsed, 3)}
+    print(json.dumps({'native_preparation': row}), flush=True)
+
+
+@contextlib.contextmanager
+def timed(name):
+    started, clock = now(), time.monotonic()
+    try:
+        yield
+    except BaseException:
+        emit_phase(name, started, time.monotonic() - clock, 'fail')
+        raise
+    emit_phase(name, started, time.monotonic() - clock)
+
+
+def concurrently(**tasks):
+    """Run independent steps in threads; fail closed.
+
+    Every branch is always joined before returning or raising, so no branch is
+    left running over partial state. If any branch failed, the first failure (in
+    argument order) is raised and the caller must treat the whole step as failed.
+    """
+    outcomes = {}
+    def branch(name, task):
+        try:
+            outcomes[name] = (True, task())
+        except BaseException as error:  # noqa: BLE001 - re-raised below, never swallowed
+            outcomes[name] = (False, error)
+    threads = [threading.Thread(target=branch, args=item, name=item[0]) for item in tasks.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    for name in tasks:
+        ok, value = outcomes[name]
+        if not ok:
+            raise value
+    return {name: outcomes[name][1] for name in tasks}
 
 
 def host_program(name):
@@ -130,15 +179,46 @@ class SameOrigin(urllib.request.HTTPRedirectHandler):
 def fetch_archive(destination, token):
     request = urllib.request.Request(PACKAGE, headers={'JOB-TOKEN': token})
     opener = urllib.request.build_opener(SameOrigin())
+    # The one and only pass over these bytes in the unprivileged bootstrap: the
+    # digest is computed over exactly what is written, so the file on disk is
+    # the verified file and is never re-read for hashing here.
+    hasher, hashing = hashlib.sha256(), 0.
+    started, clock = now(), time.monotonic()
     with opener.open(request, timeout=90) as source, destination.open('xb') as output:
         remaining = ARCHIVE_BYTES
         while chunk := source.read(min(1024**2, remaining + 1)):
             remaining -= len(chunk)
             require(remaining >= 0, 'public tooling archive exceeds its protected size')
             output.write(chunk)
-    require(destination.stat().st_size == ARCHIVE_BYTES and digest(destination) == ARCHIVE_SHA256,
+            tick = time.monotonic()
+            hasher.update(chunk)
+            hashing += time.monotonic() - tick
+    total = time.monotonic() - clock
+    require(destination.stat().st_size == ARCHIVE_BYTES and hasher.hexdigest() == ARCHIVE_SHA256,
             'public tooling archive differs from its protected pin')
     destination.chmod(0o444)
+    emit_phase('tool_archive_download', started, total - hashing)
+    emit_phase('tool_archive_hash', started, hashing)
+
+
+def copy_verified(source, destination):
+    """Copy into a root-owned path while hashing the bytes actually written.
+
+    The source sits in the unprivileged bootstrap's work directory, so it crosses
+    a trust boundary here; the digest is taken over the copied bytes (no
+    check-then-copy window) and replaces both the pre-copy and post-copy passes.
+    """
+    hasher = hashlib.sha256()
+    try:
+        with Path(source).open('rb') as stream, Path(destination).open('xb') as output:
+            while chunk := stream.read(1024**2):
+                hasher.update(chunk)
+                output.write(chunk)
+        require(hasher.hexdigest() == ARCHIVE_SHA256, 'copied public tooling archive differs')
+    except BaseException:
+        Path(destination).unlink(missing_ok=True)
+        raise
+    Path(destination).chmod(0o444)
 
 
 def import_failure(error):
@@ -150,8 +230,7 @@ def import_failure(error):
     return RuntimeError('offline image import failed (exit ' + str(error.returncode) + '): ' + detail)
 
 
-def tool_image_config(archive):
-    """The pinned manifest's verified image configuration and its digest."""
+def tool_metadata(archive):
     with tarfile.open(archive, 'r:') as source:
         def blob(checksum):
             member = source.getmember('blobs/sha256/' + checksum)
@@ -163,11 +242,10 @@ def tool_image_config(archive):
         config_sha = manifest['config']['digest'].removeprefix('sha256:')
         config = blob(config_sha)
     require(config['architecture'] == 'amd64' and config['os'] == 'linux', 'tool image platform differs')
-    return config, config_sha
+    return config_sha, config
 
 
-def verify_loaded(actual, config, config_sha):
-    """Bind a daemon's image record to the verified execution configuration."""
+def verify_tool_image(actual, config, config_sha):
     require(actual['Id'] in ('sha256:' + MANIFEST, 'sha256:' + config_sha), 'loaded tool identity differs')
     require(actual.get('Os') == config['os'] and actual.get('Architecture') == config['architecture']
             and actual.get('RootFS') == {'Type': config['rootfs']['type'], 'Layers': config['rootfs']['diff_ids']}
@@ -176,22 +254,27 @@ def verify_loaded(actual, config, config_sha):
     return actual['Id']
 
 
-def verify_imported_tool_image(archive, endpoint, env, image):
-    """Re-verify an image this job's administrator entry already imported.
+def inspect_tool_image(archive, endpoint, env, image):
+    """Identity check of an already-present image; None when the daemon lacks it.
 
-    The host daemon loaded and verified these exact bytes in bootstrap()
-    before the root controller started; inspect and re-check the execution
-    identity instead of importing the same archive a second time there.
+    Applies the same Id/platform/RootFS/Config comparison as load_tool_image to
+    the daemon's own record. A present image that differs raises (refuse); the
+    caller falls back to a load only when the image is absent.
     """
-    config, config_sha = tool_image_config(archive)
-    actual = json.loads(run([DOCKER, '--host', endpoint, 'image', 'inspect', image], env=env,
-                            capture_output=True, text=True).stdout)[0]
-    return verify_loaded(actual, config, config_sha)
+    config_sha, config = tool_metadata(archive)
+    require(image in ('sha256:' + MANIFEST, 'sha256:' + config_sha),
+            'unverified image selected for inspection')
+    try:
+        raw = run([DOCKER, '--host', endpoint, 'image', 'inspect', image], env=env,
+                  capture_output=True, text=True).stdout
+    except subprocess.CalledProcessError:
+        return None
+    return verify_tool_image(json.loads(raw)[0], config, config_sha)
 
 
 def load_tool_image(archive, endpoint, env, source_image=None):
     """Import offline and bind the daemon's identity to verified execution bytes."""
-    config, config_sha = tool_image_config(archive)
+    config_sha, config = tool_metadata(archive)
     client = [DOCKER, '--host', endpoint]
     try:
         if source_image is None:
@@ -222,7 +305,7 @@ def load_tool_image(archive, endpoint, env, source_image=None):
     require(len(names) == 1, 'tool archive must import exactly one image')
     actual = json.loads(run([*client, 'image', 'inspect', names[0]], env=env,
                            capture_output=True, text=True).stdout)[0]
-    return verify_loaded(actual, config, config_sha)
+    return verify_tool_image(actual, config, config_sha)
 
 
 def entry_command(helper, expected, image, name):
@@ -256,7 +339,8 @@ def bootstrap(trusted, checkout, work):
     client_env = dict(BASE_ENV, HOME=str(work), DOCKER_CONFIG=str(work / 'docker-client'))
     Path(client_env['DOCKER_CONFIG']).mkdir(mode=0o700)
     try:
-        image = load_tool_image(archive, 'unix:///var/run/docker.sock', client_env)
+        with timed('host_image_load'):
+            image = load_tool_image(archive, 'unix:///var/run/docker.sock', client_env)
         payload = {'environment': env, 'trusted': str(trusted), 'checkout': str(checkout),
                    'work': str(work), 'archive': str(archive),
                    'revision': revision, 'image': image}
@@ -567,8 +651,9 @@ def root_main():
             and original_checkout == original_checkout.resolve()
             and original_checkout.is_relative_to('/home/fleeting/builds'), 'root bootstrap paths differ')
     require(re.fullmatch(r'sha256:[0-9a-f]{64}', payload['image']), 'unapproved tool image identity')
-    require(digest(DOCKER) == DOCKER_SHA256 and digest(payload['archive']) == ARCHIVE_SHA256,
-            'administrator bootstrap inputs changed')
+    # The archive is not hashed here: it is hashed once, over the bytes copied
+    # into the root-owned control directory (copy_verified), which is what is used.
+    require(digest(DOCKER) == DOCKER_SHA256, 'administrator bootstrap inputs changed')
     os.environ.clear()
     os.environ.update(BASE_ENV | env)
     control = job_directory(ROOT / ('job-' + env['CI_JOB_ID']))
@@ -578,12 +663,10 @@ def root_main():
     os.environ['CARGO_HOME'] = str(control / 'home/.cargo')
     Path(os.environ['HOME']).mkdir(mode=0o700)
     trusted = control / 'trusted'
-    shutil.copytree(original_trusted, trusted, symlinks=True)
-    trusted.chmod(0o755)  # Published source is mounted read-only in candidate invocations.
-    verify_trusted(trusted, payload['revision'])
-    shutil.copyfile(payload['archive'], control / 'image.tar')
-    (control / 'image.tar').chmod(0o444)
-    require(digest(control / 'image.tar') == ARCHIVE_SHA256, 'copied public tooling archive differs')
+    with timed('trusted_tree_copy'):
+        shutil.copytree(original_trusted, trusted, symlinks=True)
+        trusted.chmod(0o755)  # Published source is mounted read-only in candidate invocations.
+        verify_trusted(trusted, payload['revision'])
     endpoint = 'unix://' + str(control / 'docker.sock')
     is_diagnostic = env['CI_JOB_NAME'] == 'native-isolation-diagnostic'
     config = runtime_configuration(control, endpoint, payload['image'], is_diagnostic)
@@ -610,8 +693,24 @@ def root_main():
         with subordinate_ids():
             capacity = os.statvfs(control)
             receipt['host_available_bytes_before_storage'] = capacity.f_bavail * capacity.f_frsize
-            receipt['storage'] = linux_job_isolation.prepare(config['isolation'])
-            mounted = True
+            def create_storage():
+                nonlocal mounted
+                with timed('filesystem_create'):
+                    receipt['storage'] = linux_job_isolation.prepare(config['isolation'])
+                mounted = True
+            def copy_archive():
+                with timed('tool_archive_copy_hash'):
+                    copy_verified(payload['archive'], control / 'image.tar')
+            # Disk-bound filesystem creation overlaps the archive copy; both must
+            # succeed before anything uses either. A mounted-but-incomplete state
+            # is disposed here, never carried forward.
+            try:
+                concurrently(storage=create_storage, archive=copy_archive)
+            except BaseException:
+                if mounted:
+                    linux_job_isolation.dispose(config['isolation'])
+                    mounted = False
+                raise
             store = Path(config['isolation']['storage_root'])
             # Both candidate daemon and its containerd inherit this mounted root.
             log = (evidence / 'bootstrap-daemon.log').open('w')
@@ -620,6 +719,7 @@ def root_main():
                 '--daemon', str(control)], env=BASE_ENV, stdout=log, stderr=subprocess.STDOUT)
             client = [DOCKER, '--host', endpoint]
             try:
+                daemon_started, daemon_clock = now(), time.monotonic()
                 deadline = time.monotonic() + 60
                 while time.monotonic() < deadline:
                     require(supervisor.poll() is None, 'private daemon supervisor exited; see daemon.log')
@@ -629,14 +729,28 @@ def root_main():
                     time.sleep(.25)
                 else:
                     raise RuntimeError('private Docker daemon did not become ready')
+                emit_phase('private_daemon_start', daemon_started, time.monotonic() - daemon_clock)
                 info = json.loads(status.stdout)
                 linux_job_isolation.validate_userns(config['isolation'], info)
-                config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV,
-                                                  source_image=payload['image'])
-                # The administrator entry already imported and verified this
-                # image on the host daemon; re-verify instead of a second import.
-                config['collector']['image'] = verify_imported_tool_image(
-                    control / 'image.tar', 'unix:///var/run/docker.sock', BASE_ENV, payload['image'])
+                checkout = store / 'checkout'
+                def load_private():
+                    with timed('private_image_load'):
+                        config['image'] = load_tool_image(control / 'image.tar', endpoint, BASE_ENV,
+                                                          source_image=payload['image'])
+                def copy_checkout():
+                    with timed('checkout_copy'):
+                        shutil.copytree(original_checkout, checkout, symlinks=True)
+                # The checkout copy only needs the mounted store, not the daemon.
+                # Both branches are joined; either failing fails the job.
+                concurrently(private_image=load_private, **({} if is_diagnostic else {'checkout': copy_checkout}))
+                # The host daemon already holds the verified image from bootstrap();
+                # re-check its identity by inspection and load only if it is absent.
+                with timed('collector_image_check'):
+                    host_sock = 'unix:///var/run/docker.sock'
+                    collector = inspect_tool_image(control / 'image.tar', host_sock, BASE_ENV, payload['image'])
+                    if collector is None:
+                        collector = load_tool_image(control / 'image.tar', host_sock, BASE_ENV)
+                    config['collector']['image'] = collector
                 require(config['collector']['image'] == payload['image'], 'administrator image identity changed')
                 config_path.write_text(json.dumps(config, sort_keys=True) + '\n')
                 receipt['runtime_sha256'] = digest(config_path)
@@ -658,8 +772,6 @@ def root_main():
                     capacity = os.statvfs(control)
                     require(capacity.f_bavail * capacity.f_frsize >= config['isolation']['storage_reserve_bytes'],
                             'service image imports would consume the protected host disk reserve')
-                    checkout = store / 'checkout'
-                    shutil.copytree(original_checkout, checkout, symlinks=True)
                     work = store / ('boundary-' + env['CI_PROJECT_ID'] + '-' + env['CI_JOB_ID'])
                     work.mkdir()
                     command = ['/usr/bin/python3', '-B', str(trusted / 'scripts/architecture/native.py'),
