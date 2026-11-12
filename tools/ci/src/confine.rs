@@ -829,6 +829,7 @@ impl Execution {
             "CARGO_TARGET_DIR",
             "CARGO_BUILD_JOBS",
             "CARGO_TERM_COLOR",
+            "CARGO_INCREMENTAL",
             "CARGO_PROFILE_DEV_DEBUG",
             "CARGO_PROFILE_TEST_DEBUG",
             "CARGO_NET_GIT_FETCH_WITH_CLI",
