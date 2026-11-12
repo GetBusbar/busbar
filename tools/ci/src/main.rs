@@ -1,12 +1,27 @@
 //! Busbar CI controller. Not a product crate: it never enters the shipping graph.
+//!
+//! One static binary serves every trusted job: `security-scans` (former
+//! scripts/security/scan.py) and `native-bootstrap`/`native-root`/`native-daemon`
+//! (former native_ci_bootstrap.py). See controller.pin for its delivery.
+mod bootstrap;
+mod fetch;
+mod images;
+mod inputs;
+mod isolation;
 mod isotime;
 mod json;
+mod policy;
+mod proc;
 mod security;
 mod sha256;
+mod tar;
+mod toml;
 
 use std::path::{Component, Path, PathBuf};
 
 const USAGE: &str = "usage: busbar-ci security-scans --trusted TRUSTED --checkout CHECKOUT --work WORK --output OUTPUT";
+const COMMANDS: &str =
+    "usage: busbar-ci {security-scans|native-bootstrap|native-root|native-daemon} ...";
 const OPTIONS: [&str; 4] = ["--trusted", "--checkout", "--work", "--output"];
 
 fn usage_error(message: &str) -> ! {
@@ -128,24 +143,45 @@ fn security_scans(args: &[String]) -> i32 {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn security_main(args: Vec<String>) -> i32 {
+    // Panic text may derive from source or tool output; the job prints only
+    // the fixed safe failure line (exit 1), as for every other refusal.
+    std::panic::set_hook(Box::new(|_| {}));
     // Report parsing recurses to CPython's json nesting bound (~10k levels);
     // a dedicated large stack keeps that a bounded refusal, not an overflow.
     let worker = std::thread::Builder::new()
         .stack_size(512 << 20)
-        .spawn(move || match args.first().map(String::as_str) {
-            Some("security-scans") => security_scans(&args[1..]),
-            _ => {
-                eprintln!("{USAGE}");
-                2
-            }
-        });
-    let code = match worker.map(|handle| handle.join()) {
+        .spawn(move || security_scans(&args));
+    match worker.map(|handle| handle.join()) {
         Ok(Ok(code)) => code,
         _ => {
             eprintln!("{}", security::SAFE_FAILURE);
             1
+        }
+    }
+}
+
+fn main() {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let command = if args.is_empty() {
+        String::new()
+    } else {
+        args.remove(0)
+    };
+    let code = match command.as_str() {
+        "security-scans" => security_main(args),
+        "native-bootstrap" | "native-root" | "native-daemon" => {
+            match bootstrap::main(&command, &args) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("busbar-ci {command}: {error}");
+                    1
+                }
+            }
+        }
+        _ => {
+            eprintln!("{COMMANDS}");
+            2
         }
     };
     std::process::exit(code);

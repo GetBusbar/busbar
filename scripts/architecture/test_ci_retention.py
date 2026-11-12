@@ -355,13 +355,25 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(re.findall(r'CI_PIPELINE_SOURCE == "(\w+)"', website), ['push', 'push'])
 
     def test_retention_decides_before_bootstrap_for_expensive_kinds_only(self):
-        script = self.blocks['native-qualification']
-        decision = script.index("scripts/architecture/ci_retention.py")
-        self.assertLess(script.index("in ('native-qualification', 'core-conformance'):"), decision)
-        self.assertLess(decision, script.index('if command is not None:\n              subprocess.run(command'))
-        self.assertIn("if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():\n"
-                      "                  command = None", script)
-        self.assertEqual(self.text.count('ci_retention.py'), 1)
+        # The YAML is POSIX sh; the trusted controller's native-bootstrap entry
+        # makes the decision before any bootstrap download.
+        self.assertNotIn('ci_retention', self.text)
+        self.assertIn('controller native-bootstrap --trusted', self.blocks['native-qualification'])
+        source = (REPO / 'tools/ci/src/bootstrap.rs').read_text().split('\n#[cfg(test)]\nmod tests', 1)[0]
+        self.assertEqual(source.count('scripts/architecture/ci_retention.py'), 1)
+        self.assertIn('pub const RETAINABLE: [&str; 2] = ["native-qualification", "core-conformance"];', source)
+        outer = source.split('\nfn outer(', 1)[1].split('\n}\n', 1)[0]
+        decision = outer.index('if retained(&trusted, &checkout, &revision, &env["CI_JOB_NAME"])? {\n'
+                               '        return Ok(());\n    }')
+        # Only identity checks precede it; every download and image load follows.
+        self.assertLess(outer.index('verify_trusted(&trusted, &revision)?'), decision)
+        for later in ('fetch::fetch(', 'load_tool_image(', 'entry_command('):
+            self.assertLess(decision, outer.index(later), later)
+        self.assertEqual(outer.count('fetch::'), 1)
+        retained = source.split('\nfn decide_retention(', 1)[1].split('\n}\n', 1)[0]
+        self.assertIn('if decided && regular {\n        return Ok(true);', retained)
+        self.assertIn('"retention decision left evidence without retaining"', retained)
+        self.assertIn('is_ok_and(|m| m.file_type().is_file())', retained)
         self.assertNotRegex(self.text, r'(?m)^\s*(needs|dependencies|include|default):')
         self.assertNotRegex(self.text, r'\$(BUSBAR_)?(SKIP|RETAIN)')
 
