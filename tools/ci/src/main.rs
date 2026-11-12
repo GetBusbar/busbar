@@ -1,27 +1,33 @@
 //! Busbar CI controller. Not a product crate: it never enters the shipping graph.
 //!
 //! One static binary serves every trusted job: `security-scans` (former
-//! scripts/security/scan.py) and `native-bootstrap`/`native-root`/`native-daemon`
-//! (former native_ci_bootstrap.py). See controller.pin for its delivery.
+//! scripts/security/scan.py), `native-bootstrap`/`native-root`/`native-daemon`
+//! (former native_ci_bootstrap.py) and `retention`, the in-CI retain-or-fresh
+//! decision native-bootstrap runs first (former scripts/architecture/
+//! ci_retention.py). See controller.pin for its delivery.
 mod bootstrap;
 mod fetch;
 mod images;
+mod inflate;
 mod inputs;
 mod isolation;
 mod isotime;
 mod json;
 mod policy;
 mod proc;
+mod py;
+mod retention;
 mod security;
 mod sha256;
 mod tar;
 mod toml;
+mod zip;
 
 use std::path::{Component, Path, PathBuf};
 
 const USAGE: &str = "usage: busbar-ci security-scans --trusted TRUSTED --checkout CHECKOUT --work WORK --output OUTPUT";
 const COMMANDS: &str =
-    "usage: busbar-ci {security-scans|native-bootstrap|native-root|native-daemon} ...";
+    "usage: busbar-ci {security-scans|retention|native-bootstrap|native-root|native-daemon} ...";
 const OPTIONS: [&str; 4] = ["--trusted", "--checkout", "--work", "--output"];
 
 fn usage_error(message: &str) -> ! {
@@ -161,6 +167,27 @@ fn security_main(args: Vec<String>) -> i32 {
     }
 }
 
+fn retention_main(args: Vec<String>) -> i32 {
+    // The job environment as os.environ sees it (undecodable bytes replaced).
+    let env: retention::Env = std::env::vars_os()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    // Untrusted JSON nests to the decoder's recursion bound on a large stack;
+    // any panic is a fresh decision (exit 1), never retained.
+    let worker = std::thread::Builder::new()
+        .stack_size(512 << 20)
+        .spawn(move || retention::main(&args, &env));
+    match worker.map(|handle| handle.join()) {
+        Ok(Ok(code)) => code,
+        _ => 1,
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let command = if args.is_empty() {
@@ -170,6 +197,7 @@ fn main() {
     };
     let code = match command.as_str() {
         "security-scans" => security_main(args),
+        "retention" => retention_main(args),
         "native-bootstrap" | "native-root" | "native-daemon" => {
             match bootstrap::main(&command, &args) {
                 Ok(()) => 0,
