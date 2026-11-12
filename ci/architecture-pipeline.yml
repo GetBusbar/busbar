@@ -124,6 +124,8 @@ core-conformance:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH =~ /^corefix-native-isolation-/'
       when: never
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache"'
+      when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar"'
@@ -144,6 +146,11 @@ core-conformance:
 # products, within the ordinary per-job confinement budget; a per-index
 # resource_group serialises successive pushes so each package file is written
 # exactly once.
+# The owner may also fill the cache without a qualification run: an API pipeline
+# on the protected ci/dep-cache branch (pointed only at a commit already on dev)
+# runs only these eight jobs; every other job's rules exclude that ref. The
+# controller proves the commit is on current dev, and those files are keyed to
+# that exact core commit, so only plugins qualifying against it accept them.
 plugin-dependency-units:
   extends: native-qualification
   stage: website
@@ -156,6 +163,7 @@ plugin-dependency-units:
   resource_group: plugin-dependency-units-$CI_NODE_INDEX
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "dev" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
   artifacts:
     when: always

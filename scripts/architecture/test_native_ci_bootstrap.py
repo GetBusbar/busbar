@@ -39,6 +39,16 @@ class Bootstrap(unittest.TestCase):
         with self.assertRaises(ValueError):
             bootstrap.approved_revision(selected | {'CI_CONFIG_REF_URI': selected['CI_CONFIG_REF_URI'].replace('b' * 40, 'dev')})
 
+    def test_server_ref_protection_reaches_the_controller(self):
+        # Producer and dev-credit checks read CI_COMMIT_REF_PROTECTED inside the
+        # root controller; dropping it here refused every protected producer run.
+        for value in ('true', 'false'):
+            selected = bootstrap.ci_environment(self.environment() | {'CI_COMMIT_REF_PROTECTED': value})
+            self.assertEqual(selected['CI_COMMIT_REF_PROTECTED'], value)
+        self.assertNotIn('CI_COMMIT_REF_PROTECTED', bootstrap.ci_environment(self.environment()))
+        with self.assertRaisesRegex(ValueError, 'ref protection'):
+            bootstrap.ci_environment(self.environment() | {'CI_COMMIT_REF_PROTECTED': 'yes'})
+
     def test_plugin_host_binding_cannot_float_or_disappear(self):
         env = self.environment() | {'CI_PROJECT_PATH': 'GetBusbar/busbar-plane-mcp', 'CI_JOB_NAME': 'native-qualification'}
         with self.assertRaisesRegex(ValueError, 'immutable host'):
