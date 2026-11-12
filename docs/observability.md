@@ -164,7 +164,7 @@ deliberate, and it is the signal an operator most often has nothing else to see.
 
 The `pool` label is always a configured pool name or the sentinel `unresolved` (for routes that did not resolve to a pool). It is never a raw client-supplied model string, which would create unbounded label cardinality.
 
-Deeper observability rides the single `export:` surface (as of 1.5.3 the `observability:` block is gone): a `module: otlp` instance for traces and a `module: request-log-webhook` instance for per-request logs. Both are validated at startup against SSRF blocklists (no RFC-1918, loopback, or cloud-metadata targets, except OTLP allows plaintext `http://` to loopback for a local collector). Because `export:` is a NAMED map, several instances of one module are allowed: for example two request-log webhooks, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
+Deeper observability rides the single `export:` surface (as of 1.5.3 the `observability:` block is gone): a `module: otlp` instance for traces and a `module: request-log-webhook` instance for per-request logs. Both are governed by the one destination guard, `advanced.block_private_addresses` / `advanced.allow_destinations` (see [configuration.md](configuration.md#advanced)): a private target is refused unless `allow_destinations` names it, a cloud-metadata target always; OTLP also allows plaintext `http://` to loopback for a local collector. Because `export:` is a NAMED map, several instances of one module are allowed: for example two request-log webhooks, one to your log store and one to a SIEM. See [configuration.md](configuration.md#export).
 
 ## Response headers
 
