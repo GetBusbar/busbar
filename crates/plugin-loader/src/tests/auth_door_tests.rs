@@ -499,6 +499,9 @@ async fn a_sign_in_past_max_inflight_is_an_outage_not_a_rejected_credential() {
     })
     .await
     .expect("the tick schedule ends");
+    // Hold the slow verify in flight so the one slot stays taken while both
+    // login calls arrive; without the gate it may finish first and free it.
+    hold_slow();
     let slow = a.verify(request(Some("slow"), None));
     let mut over = a.complete_login(busbar_contract::auth_calls::LoginCallback::default());
     assert_eq!(
@@ -520,6 +523,7 @@ async fn a_sign_in_past_max_inflight_is_an_outage_not_a_rejected_credential() {
             retry_after_secs: None
         })
     );
+    release_slow();
     let _ = Box::into_pin(slow).await;
 }
 
