@@ -189,9 +189,20 @@ async fn server_timing_header_absent_by_default_present_when_enabled() {
         .map(str::to_string);
     server.abort();
     let st = st.expect("Server-Timing must be PRESENT when server_timing_enabled == true");
+    let dur = st
+        .strip_prefix("busbar;dur=")
+        .unwrap_or_else(|| panic!("unexpected Server-Timing shape: {st}"));
     assert!(
-        st.starts_with("busbar;dur="),
-        "unexpected Server-Timing shape: {st}"
+        dur.split_once('.').is_some_and(|(_, frac)| frac.len() == 3),
+        "dur is milliseconds at microsecond precision: {st}"
+    );
+    let dur: f64 = dur
+        .parse()
+        .unwrap_or_else(|_| panic!("dur is a number of milliseconds: {st}"));
+    // /healthz dispatches no upstream call: its dur is its whole (non-zero, finite) processing time.
+    assert!(
+        dur > 0.0 && dur < 60_000.0,
+        "a request with no upstream call reports its full processing time: {st}"
     );
 }
 
