@@ -1541,13 +1541,6 @@ impl DriverSteps for DoorSteps<'_> {
         op: OpClassId,
     ) -> Option<(tracing::Span, u64)> {
         let request_id = self.app.next_request_id();
-        let pool = self.downgraded().or_else(|| {
-            decoded
-                .pool
-                .as_deref()
-                .map(|p| String::from_utf8_lossy(p).into_owned())
-        });
-        let ingress = self.facts.dialects.get(decoded.dialect as usize);
 
         let span = tracing::span!(
             target: "busbar::proxy::engine",
@@ -1558,18 +1551,57 @@ impl DriverSteps for DoorSteps<'_> {
             op = %op,
             request_id = tracing::field::Empty
         );
-        if let Some(pool) = pool.as_deref() {
-            span.record("pool", tracing::field::display(pool));
+        // A disabled span records nothing: compute none of its fields (no lock, no allocation).
+        if !span.is_disabled() {
+            let pool = self.downgraded().or_else(|| {
+                decoded
+                    .pool
+                    .as_deref()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+            });
+            if let Some(pool) = pool.as_deref() {
+                span.record("pool", tracing::field::display(pool));
+            }
+            if let Some(ingress) = self.facts.dialects.get(decoded.dialect as usize) {
+                span.record("ingress", tracing::field::display(ingress));
+            }
+            span.record("request_id", request_id);
         }
-        if let Some(ingress) = ingress {
-            span.record("ingress", tracing::field::display(ingress));
-        }
-        span.record("request_id", request_id);
         Some((span, request_id))
     }
 
     fn expected(&self, _ctx: &UnitCtx, units: &[UnitCount]) {
         self.lock().expected = units.to_vec();
+    }
+
+    fn summary(
+        &self,
+        _ctx: &UnitCtx,
+        dialect: Option<u32>,
+    ) -> busbar_kernel::plane_driver::UnitSummary {
+        let u = self.lock();
+        let pool = u.downgraded.clone().or_else(|| {
+            u.named
+                .as_ref()
+                .and_then(|(_, pool)| pool.as_deref())
+                .map(|p| String::from_utf8_lossy(p).into_owned())
+        });
+        let governance = match (&u.downgraded, u.charged, &self.key) {
+            _ if self.app.governance.is_none() => "off",
+            (Some(_), _, _) => "downgraded",
+            (None, true, _) => "admitted",
+            (None, false, None) => "no_key",
+            (None, false, Some(_)) => "not_admitted",
+        };
+        busbar_kernel::plane_driver::UnitSummary {
+            ingress: dialect
+                .and_then(|d| self.facts.dialects.get(d as usize))
+                .cloned(),
+            pool,
+            key_id: self.key.as_ref().map(|k| k.id.clone()),
+            governance,
+            downgraded_to: u.downgraded.clone(),
+        }
     }
 
     fn refused_words(&self) -> (Option<u32>, Option<String>) {

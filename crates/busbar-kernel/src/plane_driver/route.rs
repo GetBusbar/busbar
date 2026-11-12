@@ -504,6 +504,19 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
     (input, blank_out())
 }
 
+/// How a walk ended, for the unit's DEBUG summary: the terminal's name and its static detail.
+fn walk_of(end: &End) -> (&'static str, Option<&'static str>) {
+    match end {
+        End::Done => ("done", None),
+        End::RetiredByCompletion => ("retired", None),
+        End::Failed(reason) => ("failed", Some(reason.as_str())),
+        End::Exhausted(_, _, detail) => ("exhausted", Some(*detail)),
+        // A veto's text is the hook's own words for the caller: never logged here.
+        End::Vetoed(..) => ("vetoed", None),
+        End::Cancel(reason, _) => ("cancelled", Some(reason.as_str())),
+    }
+}
+
 pub(crate) enum End {
     Done,
 
@@ -1074,10 +1087,30 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             unit_id = run.ctx.key.get(),
             request_id = run.lock().request_id,
         );
-        self.attempts_inner(run, turn).instrument(span).await
+        // The unit's DEBUG summary log, only while that summary is enabled (no lock otherwise).
+        let log = if crate::observability::request::enabled() {
+            run.lock().trail.as_ref().map(|t| Arc::clone(&t.attempts))
+        } else {
+            None
+        };
+        let end = self
+            .attempts_inner(run, turn, log.as_ref())
+            .instrument(span)
+            .await;
+        if log.is_some() {
+            if let Some(trail) = run.lock().trail.as_mut() {
+                trail.walk = Some(walk_of(&end));
+            }
+        }
+        end
     }
 
-    async fn attempts_inner(&self, run: &mut Pumping<'_>, turn: Option<&session::Turn<'_>>) -> End {
+    async fn attempts_inner(
+        &self,
+        run: &mut Pumping<'_>,
+        turn: Option<&session::Turn<'_>>,
+        log: Option<&crate::observability::request::AttemptLog>,
+    ) -> End {
         let mut attempt_no = 0;
 
         let mut failed: Option<&'static str> = None;
@@ -1086,9 +1119,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if let Some(t) = turn {
                 t.held.send_replace(false);
             }
-            let route_started = std::time::Instant::now();
+            // Read only for the attempt span's `route_wait_us`, so never below the hot-path level.
+            let route_started =
+                crate::observability::hotpath_enabled().then(std::time::Instant::now);
             let picked = turn_wait(run, turn, self.far.member(run.token, attempt_no)).await;
-            let route_wait = route_started.elapsed();
+            let route_wait = route_started.map(|started| started.elapsed());
             let ((member, pool), terminal) = match picked {
                 Ok(Pick::Member { name, .. }) if turn.is_some_and(|t| !t.within(&name)) => {
                     continue 'attempt;
@@ -1156,11 +1191,19 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             } else {
                 tracing::Span::none()
             };
+            let trail = log.filter(|_| far_bound).map(|log| {
+                crate::observability::request::AttemptTrail::open(
+                    Arc::clone(log),
+                    &member,
+                    &run.bufs.provider,
+                )
+            });
             let mut timing = super::timing::AttemptTiming::new(
                 attempt_span.clone(),
                 run.ctx.key.get(),
                 attempt_no,
                 route_wait,
+                trail,
             );
             let mut request = OutboundRequest {
                 member,
@@ -1205,7 +1248,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         }
 
                         Step::Retry if far_bound => {
-                            timing.finish("retry");
+                            timing.retry(Some("plane_retry"));
                             continue 'attempt;
                         }
                         _ => {}
@@ -1246,7 +1289,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
 
                 Ok(false) => {
                     failed = self.far.failure(run.token);
-                    timing.finish("retry");
+                    timing.retry(failed);
                     continue 'attempt;
                 }
                 Err(end) => {
@@ -1279,7 +1322,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         return End::Failed(ReasonCode::DestinationUnreachable);
                     }
                     failed = self.far.failure(run.token);
-                    timing.finish("retry");
+                    timing.retry(failed);
                     continue 'attempt;
                 }
                 {
@@ -1334,7 +1377,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                             return End::Failed(ReasonCode::DestinationUnreachable);
                         }
                         failed = self.far.failure(run.token);
-                        timing.finish("retry");
+                        timing.retry(failed);
                         continue 'attempt;
                     }
                     Step::Answered(_) if !followup.verb.is_empty() => {

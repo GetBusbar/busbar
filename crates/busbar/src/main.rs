@@ -338,6 +338,12 @@ fn main() {
         root::cli::Parsed::Serve => {}
     }
 
+    // A RUST_LOG the console filter cannot read stops boot here, before any work: it is never
+    // silently replaced by the default level.
+    if let Err(e) = busbar_kernel::observability::check_rust_log() {
+        die(e);
+    }
+
     #[cfg(not(target_env = "msvc"))]
     {
         use tikv_jemalloc_ctl::background_thread;
@@ -1028,8 +1034,12 @@ async fn run(
         );
     }
 
-    if let Err(e) = busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
-        eprintln!("busbar: tracing subscriber already initialized: {e}");
+    match busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
+        Ok(()) => {}
+        Err(busbar_kernel::observability::LoggingError::RustLog(e)) => die(e),
+        Err(e @ busbar_kernel::observability::LoggingError::AlreadyInitialized(_)) => {
+            eprintln!("busbar: {e}");
+        }
     }
 
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "busbar starting");
