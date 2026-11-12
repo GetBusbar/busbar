@@ -264,22 +264,20 @@ where
 }
 
 /// THE SENTENCE an operator reads when they name a registration with a reserved word, written once
-// The wording is 1.5.5's, byte for byte, for every reserved key including the host-owned
-// `usage_observations` (042049b952 widened it without owner sign-off; customer text is frozen).
+/// for every reserved name: the section-level keys (`hooks`, `upstream_credentials`,
+/// `usage_observations`) and the core-owned settings (`breaker`, ...) alike.
+///
+/// The wording is generic: it names the offending word and links the one docs page that lists every
+/// reserved name. The owner signed this wording on 2026-11-12, a customer-visible difference from
+/// 1.5.5 (which spelled each reserved word's role inline); the oracle records it as an accepted
+/// difference for cell BOOT-P07.
 #[must_use]
 pub fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
-    if RESERVED_SECTION_KEYS.contains(&name) {
-        format!(
-            "a {noun} may not be named `{name}`: that key is RESERVED at the \
-             `{section}:` section level (the all-{section} `hooks:` attach list and \
-             `upstream_credentials:` default). Rename the {noun}."
-        )
-    } else {
-        format!(
-            "a {noun} may not be named `{name}`: that key is RESERVED at the \
-             `{section}:` section level (the core-owned `{name}:` setting). Rename the {noun}."
-        )
-    }
+    format!(
+        "a {noun} may not be named `{name}`: that name is reserved in the `{section}:` section. \
+         See https://getbusbar.com/docs/configuration#reserved-names for the full list. \
+         Rename the {noun}."
+    )
 }
 
 #[cfg(test)]
