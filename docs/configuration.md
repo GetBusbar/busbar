@@ -51,6 +51,7 @@ Both files support `${VAR}` environment interpolation before YAML is parsed. A m
   - [`security`](#security)
   - [`advanced`](#advanced)
 - [Migrating a 1.4.x config](#migrating-a-14x-config)
+- [Reserved names](#reserved-names)
 - [Minimal working example](#minimal-working-example)
 - [Full annotated example](#full-annotated-example)
 - [Startup validation summary](#startup-validation-summary)
@@ -1590,6 +1591,47 @@ security:
 | `allow_all_metadata` | bool | `false` | Disables the SSRF guard entirely. Every cloud-metadata endpoint becomes reachable by every provider. **Logs a startup WARNING.** Development use only. |
 
 **Precedence:** a host is blocked iff it is in the denylist (hardcoded union `blocked_metadata_hosts`) **and not** in any allow-override (`security.allow_metadata_hosts` union that provider's `allow_metadata_hosts`) **and not** `allow_all_metadata`. Allow always wins.
+
+---
+
+## Reserved names
+
+Inside a plane section (`pools:`, `tools:`, `agents:`, `streams:`, `decisions:` and any other section
+that registers named entries), a few words belong to Busbar, not to you. A registration named with one
+of them is refused at startup with this message, which names the offending word:
+
+```text
+a pool may not be named `hooks`: that name is reserved in the `pools:` section. See https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool.
+```
+
+Rename the registration; any other name works.
+
+### Reserved at the top of every plane section
+
+| Name | What it is for |
+|---|---|
+| `hooks` | The all-section hook attach list: hooks listed here run for every registration in the section, in addition to each registration's own `hooks:`. |
+| `upstream_credentials` | The all-section default credential mode (`own` or `passthrough`) for upstream calls; a registration may override it. |
+| `usage_observations` | Durable usage accounting policy keyed by configured member (accounting namespace, usage classes, reservation). Host-owned; never a registration. |
+
+### Reserved settings Busbar owns
+
+These words configure behavior of the section or of its pools. A registration is refused when it takes one
+of these names and its body is shaped like a registration instead of the setting.
+
+| Name | What it is for |
+|---|---|
+| `pools` | The named pools of a plane's section. |
+| `breaker` | A pool's circuit-breaker ladder (`base_cooldown_secs`, `max_cooldown_secs`, `trip`). See [`breaker`](#breaker). |
+| `on_exhausted` | What a pool does when every member is unavailable (`fallback_pool`, `queue`, or `reject`). See [`on_exhausted`](#on_exhausted). |
+| `affinity` | A pool's session affinity (`mode`, `header_name`). See [`affinity`](#affinity). |
+| `gates` | The ordered list of gating hooks on a pool. See [Pool `hooks`](#pool-hooks-ordering-and-gates). |
+| `tier` | A pool member's tier, written in a member object (`{name, tier}`). |
+| `repeatable` | The operations a pool may perform twice. |
+| `work` | Bounds on asynchronous work handles: `max_live` and `retain_s`. |
+| `timeout` | A registration's wall-clock bound on one attempt to reach it. |
+| `rate_card` | The plane's rate card, one lane per entry. See [Per-plane rate cards](#per-plane-rate-cards-toolsrate_card-agentsrate_card-streamsrate_card-decisionsrate_card). |
+| `fees` | The plane's `per_request` and `per_session` fees. |
 
 ---
 

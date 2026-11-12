@@ -258,7 +258,7 @@ fn type_conflict_for_shared_name_is_dropped() {
 /// The snapshot hands the export owner RAW label text; wire escaping belongs to the exporter
 /// (8987677bae, "Keep metric wire encoding and conformance in the export owner").
 #[test]
-fn label_values_are_escaped() {
+fn label_values_pass_through_raw() {
     let m = HookMetric {
         labels: labels(&[("k", "a\"b\\c")]),
         ..metric("x_total", "counter", 1.0)
