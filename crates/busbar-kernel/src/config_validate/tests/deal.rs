@@ -337,16 +337,16 @@ fn the_knob_field_lists_are_the_kernel_types_own() {
 }
 
 #[test]
-fn the_reserved_name_sentence_is_1_5_5s() {
+fn the_reserved_name_sentence_is_generic_with_docs_link() {
     use busbar_contract::section::reserved_name_refusal;
     assert_eq!(
         reserved_name_refusal("pools", "pool", "hooks"),
-        "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level \
-         (the all-pools `hooks:` attach list and `upstream_credentials:` default). Rename the pool."
+        "a pool may not be named `hooks`: that name is reserved in the `pools:` section. See \
+         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the pool."
     );
     assert_eq!(
         reserved_name_refusal("tools", "tool", "breaker"),
-        "a tool may not be named `breaker`: that key is RESERVED at the `tools:` section level \
-         (the core-owned `breaker:` setting). Rename the tool."
+        "a tool may not be named `breaker`: that name is reserved in the `tools:` section. See \
+         https://getbusbar.com/docs/configuration#reserved-names for the full list. Rename the tool."
     );
 }
