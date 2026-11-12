@@ -285,11 +285,7 @@ impl KernelServices {
                 .map_err(|_| "caller binding read failed")?
             {
                 let seal = crate::seal::lend();
-                let reference = std::str::from_utf8(saved.expose(&seal))
-                    .map_err(|_| "corrupt caller binding")?;
-                return valid_reference(reference)
-                    .then(|| reference.to_owned())
-                    .ok_or("corrupt caller binding");
+                return read_reference(saved.expose(&seal)).ok_or("corrupt caller binding");
             }
             let request = Request {
                 op_id: store
@@ -320,6 +316,13 @@ impl KernelServices {
         }
         Err("caller binding contention")
     }
+}
+
+/// Decodes a stored caller binding row: exactly one valid caller reference, the same pseudonymous
+/// value lent to plugins as `caller_ref`. Anything else is a corrupt row and yields nothing.
+fn read_reference(row: &[u8]) -> Option<String> {
+    let reference = std::str::from_utf8(row).ok()?;
+    valid_reference(reference).then(|| String::from(reference))
 }
 
 fn valid_reference(reference: &str) -> bool {
