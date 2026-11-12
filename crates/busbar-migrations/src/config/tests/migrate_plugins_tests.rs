@@ -33,12 +33,7 @@ impl MigrateHost for Stub {
                 }
                 Ok(Some((
                     "busbar-stub".into(),
-                    Migrated {
-                        settings,
-                        report,
-                        needs,
-                    }
-                    .into(),
+                    Migrated::new(settings, report, needs).into(),
                 )))
             }
             _ => Ok(None),
@@ -343,12 +338,7 @@ impl MigrateHost for Witness {
         }
         Ok(Some((
             "busbar-witness".into(),
-            Migrated {
-                settings: out,
-                report: Vec::new(),
-                needs,
-            }
-            .into(),
+            Migrated::new(out, Vec::new(), needs).into(),
         )))
     }
 
@@ -808,16 +798,16 @@ impl MigrateHost for SecretLift {
         }
         Ok(Some((
             module.into(),
-            Migrated {
-                settings: settings.clone(),
-                report: vec![format!(
+            Migrated::new(
+                settings.clone(),
+                vec![format!(
                     "old literal {}",
                     settings["token"].as_str().unwrap()
                 )],
-                needs: vec![MigrateNeed::ExternalizeSecret {
+                vec![MigrateNeed::ExternalizeSecret {
                     path: vec!["token".into()],
                 }],
-            }
+            )
             .into(),
         )))
     }
@@ -991,12 +981,7 @@ impl MigrateHost for BrowserProjection {
         {
             Ok(Some((
                 "neutral".into(),
-                Migrated {
-                    settings,
-                    report: Vec::new(),
-                    needs: Vec::new(),
-                }
-                .into(),
+                Migrated::new(settings, Vec::new(), Vec::new()).into(),
             )))
         } else {
             Ok(None)
@@ -1126,11 +1111,11 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
             needs.push(MigrateNeed::AllowDestination("127.0.0.1".into()));
             Ok(Some((
                 module.into(),
-                Migrated {
-                    settings: serde_json::json!({"injected":true}),
-                    report: vec!["ignored".into()],
+                Migrated::new(
+                    serde_json::json!({"injected":true}),
+                    vec!["ignored".into()],
                     needs,
-                }
+                )
                 .into(),
             )))
         }

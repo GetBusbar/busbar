@@ -83,7 +83,8 @@ fn reader() -> String {
 #[test]
 fn the_signing_gates_reader_reads_a_tailed_statement_that_declares_secret_fields() {
     use busbar_contract::abi::mechanism::rendering::{
-        RENDERING_MAGIC_TAIL_SIZE_ONLY, RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
+        RENDERING_MAGIC_TAIL_SIZE_ONLY, RENDERING_MAGIC_WITHOUT_MEASUREMENTS,
+        RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
     };
     // SAFETY: every list and the tail `STATEMENT` points at is `'static`.
     let rendered = unsafe { busbar_contract::abi::mechanism::rendering::render(&STATEMENT) }
@@ -97,6 +98,7 @@ fn the_signing_gates_reader_reads_a_tailed_statement_that_declares_secret_fields
     for magic in [
         RENDERING_MAGIC_TAIL_SIZE_ONLY,
         RENDERING_MAGIC_WITHOUT_NEED_RETENTION,
+        RENDERING_MAGIC_WITHOUT_MEASUREMENTS,
     ] {
         let mut old = rendered.clone();
         old[..magic.len()].copy_from_slice(magic);
@@ -118,6 +120,16 @@ fn the_signing_gates_reader_reads_a_tailed_statement_that_declares_secret_fields
             false,
         ));
     }
+    // BBSTMT04 ends with the measurement-class count; past 64 the gate refuses.
+    let classes_at = rendered.len() - std::mem::size_of::<u32>();
+    assert_eq!(&rendered[classes_at..], &0_u32.to_le_bytes());
+    let mut over = rendered.clone();
+    over[classes_at..].copy_from_slice(&65_u32.to_le_bytes());
+    over.extend(std::iter::repeat_n(
+        0_u8,
+        65 * 2 * std::mem::size_of::<u32>(),
+    ));
+    cases.push(("measurement class count", over, false));
     let mut padded = rendered.clone();
     padded.push(0);
     cases.push(("trailing bytes", padded, false));
