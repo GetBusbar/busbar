@@ -270,7 +270,8 @@ pub struct ConfigSettingsView {
     ///
     /// This field NAME is frozen wire and is the response ENVELOPE member, not a plugin settings
     /// bag; the redaction applies to the bags nested INSIDE it.
-    pub settings: serde_json::Value,
+    #[schemars(with = "serde_json::Value")]
+    pub settings: crate::v1::service::RedactedRootSettings,
     /// Fields that were stored durably but are RESTART-TO-APPLY: a socket rebind, a TLS acceptor
     /// build and a store open all happen once at process start, so a `POST /config/reload` does NOT
     /// make them live; `POST /restart` (or a supervisor restart) does. Empty when the PUT touched

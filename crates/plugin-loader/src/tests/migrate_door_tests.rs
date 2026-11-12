@@ -24,11 +24,7 @@ impl Migrate for Stub {
                 needs.push(MigrateNeed::AllowDestination(host.to_string()));
             }
         }
-        Migrated {
-            settings,
-            report,
-            needs,
-        }
+        Migrated::new(settings, report, needs)
     }
 }
 

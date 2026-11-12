@@ -1237,12 +1237,15 @@ mod pending_open_custody {
         let error =
             unsafe { std::slice::from_raw_parts(output.head.error.ptr, output.head.error.len) };
         assert_eq!(error, b"scripted pending OPEN failure");
+        // c33b88067b: the host never sends CLOSE for a failed open, so the SDK runs `Life::close`
+        // exactly once itself as it retires the partial instance.
         assert_eq!(
             counts(),
             Counts {
                 opens: 1,
                 steps: 2,
                 resumes: 1,
+                closes: 1,
                 drops: 1,
                 parked_drops: 1,
                 ..Counts::default()

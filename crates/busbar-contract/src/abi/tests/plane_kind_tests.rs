@@ -28,9 +28,16 @@ fn only_on_piece_serve_and_the_boot_ops_may_pend() {
         .filter(|c| c.may_pend)
         .map(|c| c.slot)
         .collect();
+    // 814fcc22bc: the authenticated route continuation may pend under the unit's deadline.
     assert_eq!(
         pend,
-        [slot::ON_PIECE, slot::SERVE, slot::HYDRATE, slot::START]
+        [
+            slot::ON_PIECE,
+            slot::SERVE,
+            slot::HYDRATE,
+            slot::START,
+            slot::AUTHENTICATED_ROUTE
+        ]
     );
 }
 

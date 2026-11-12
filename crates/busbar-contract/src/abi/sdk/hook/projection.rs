@@ -18,6 +18,7 @@ enum Field<'a> {
     Float(f64),
     Bool(bool),
     Signal(&'a SignalValue),
+    Signals(Vec<&'a SignalValue>),
     Extra(&'a serde_json::Value),
     Request(&'a Decoded<'a>),
     Candidates(&'a [DecodedCandidate<'a>]),
@@ -41,6 +42,7 @@ impl Serialize for Field<'_> {
             Self::Float(v) => v.serialize(serializer),
             Self::Bool(v) => v.serialize(serializer),
             Self::Signal(v) => v.serialize(serializer),
+            Self::Signals(v) => v.serialize(serializer),
             Self::Extra(v) => v.serialize(serializer),
             Self::Request(v) => request(v).serialize(serializer),
             Self::Candidates(v) => {
@@ -161,10 +163,28 @@ fn request<'a>(view: &'a Decoded<'a>) -> BTreeMap<&'a str, Field<'a>> {
     if let Some(user) = &view.user {
         fields.insert("user", Field::User(user));
     }
-    for (signal, value) in view.signals.iter() {
-        fields.insert(signal.name(), Field::Signal(value));
-    }
+    insert_signals(&mut fields, &view.signals);
     fields
+}
+
+/// The signal bag as [`crate::signal::SignalBag`]'s own serialization states it: a signal pushed
+/// more than once is one key whose value is the array of its values in push order.
+fn insert_signals<'a>(
+    fields: &mut BTreeMap<&'a str, Field<'a>>,
+    signals: &'a crate::signal::SignalBag,
+) {
+    for (signal, value) in signals.iter() {
+        match fields.get_mut(signal.name()) {
+            Some(Field::Signal(first)) => {
+                let first = *first;
+                fields.insert(signal.name(), Field::Signals(vec![first, value]));
+            }
+            Some(Field::Signals(values)) => values.push(value),
+            _ => {
+                fields.insert(signal.name(), Field::Signal(value));
+            }
+        }
+    }
 }
 
 fn candidate_fields<'a>(view: &'a DecodedCandidate<'a>) -> BTreeMap<&'a str, Field<'a>> {
@@ -199,9 +219,7 @@ fn candidate_fields<'a>(view: &'a DecodedCandidate<'a>) -> BTreeMap<&'a str, Fie
     if !view.tags.is_empty() {
         fields.insert("tags", Field::Tags(&view.tags));
     }
-    for (signal, value) in view.signals.iter() {
-        fields.insert(signal.name(), Field::Signal(value));
-    }
+    insert_signals(&mut fields, &view.signals);
     fields
 }
 

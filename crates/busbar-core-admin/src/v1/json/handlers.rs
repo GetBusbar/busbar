@@ -2526,9 +2526,10 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
         Err(error) => return err_json(&error),
     };
 
-    let mut settings = serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
-        .unwrap_or_else(|_| json!({}));
-    crate::v1::service::redact_settings_bags(&mut settings);
+    let settings = crate::v1::service::redact_settings_bags(
+        serde_json::to_value(root.authoring(&busbar_kernel::seal::acquire()))
+            .unwrap_or_else(|_| json!({})),
+    );
     with_config_etag(
         ok_json(
             StatusCode::OK,
@@ -2712,10 +2713,10 @@ pub(crate) async fn put_config_settings(
                 format!("stored and installed as configuration; reload_to_apply paths {} require a process restart. plane_refresh observes only synchronous ordinary door callbacks, not listener, model, credential, fallback, transport, or asynchronous plugin activation", reload_to_apply.join(", "))
             };
 
-            let mut settings =
+            let settings = crate::v1::service::redact_settings_bags(
                 serde_json::to_value(merged.authoring(&busbar_kernel::seal::acquire()))
-                    .unwrap_or_else(|_| json!({}));
-            crate::v1::service::redact_settings_bags(&mut settings);
+                    .unwrap_or_else(|_| json!({})),
+            );
             with_config_etag(
                 ok_json(
                     StatusCode::OK,
