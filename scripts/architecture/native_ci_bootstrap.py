@@ -37,7 +37,7 @@ SUBCOUNT = 65536
 REMAP = 'busbar-ci-remap'
 ROOT = Path('/srv/busbar-native-ci')
 CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_JOB_NAME '
-    'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_CONFIG_REF_URI '
+    'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_COMMIT_REF_PROTECTED CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
 JOBS = {'native-qualification', 'core-conformance', 'external-conformance', 'native-isolation-diagnostic'}
@@ -88,6 +88,7 @@ def ci_environment(env):
     require(result.get('CI_JOB_TOKEN'), 'controller job token is missing')
     host = result.get('BUSBAR_ADMISSION_CORE_REVISION')
     require(host is None or re.fullmatch(r'[0-9a-f]{40}', host), 'protected host revision must be immutable')
+    require(result.get('CI_COMMIT_REF_PROTECTED') in (None, 'true', 'false'), 'invalid ref protection')
     require(result['CI_PROJECT_PATH'] == 'GetBusbar/busbar' or host is not None,
             'plugin qualification requires its protected immutable host revision')
     return result
