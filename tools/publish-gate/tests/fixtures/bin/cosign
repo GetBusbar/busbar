@@ -1,0 +1,3 @@
+#!/bin/sh
+# Test double for cosign sign/verify.
+exit 0

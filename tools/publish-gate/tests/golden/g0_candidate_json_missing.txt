@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-0 candidate.json: expected the candidate manifest; found [Errno 2] No such file or directory: '<W>/cand/candidate.json'. Fetch the candidate's outputs.
+
+publish-gate: 0 checks over 0 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,0 +1,18 @@
+exit 1
+REFUSED G-3 plugins/busbar-store-fake-1.6.1-aarch64-apple-darwin.tar.gz: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
+REFUSED G-3 plugins/busbar-store-fake-1.6.1-aarch64-unknown-linux-gnu.tar.gz: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
+REFUSED G-3 plugins/busbar-store-fake-1.6.1-x86_64-apple-darwin.tar.gz: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
+REFUSED G-3 plugins/busbar-store-fake-1.6.1-x86_64-pc-windows-msvc.tar.gz: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
+REFUSED G-3 plugins/busbar-store-fake-1.6.1-x86_64-unknown-linux-gnu.tar.gz: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
+REFUSED G-3 plugins/busbar-store-fake-1.6.0-aarch64-apple-darwin.tar.gz: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-3 plugins/busbar-store-fake-1.6.0-aarch64-unknown-linux-gnu.tar.gz: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-3 plugins/busbar-store-fake-1.6.0-x86_64-apple-darwin.tar.gz: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-3 plugins/busbar-store-fake-1.6.0-x86_64-pc-windows-msvc.tar.gz: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-3 plugins/busbar-store-fake-1.6.0-x86_64-unknown-linux-gnu.tar.gz: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-3 plugin busbar-store-fake: expected pinned ('v1.6.0', '<HEX>'); found ('v1.6.0', '<HEX>') version 1.6.1. The candidate must build exactly the committed pins.
+REFUSED G-3 artifacts/plugin-index.json: expected the index rendered from the candidate's plugins; found no render: [Errno 2] No such file or directory: '<W>/cand/plugins/busbar-store-fake-1.6.1-x86_64-unknown-linux-gnu.tar.gz'. Every plugin's tarball must state its ABI version; rebuild the plugins slice.
+REFUSED G-0 G-5: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 52 checks over 12 rules; 14 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.
