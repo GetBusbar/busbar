@@ -1,7 +1,449 @@
 # Outbound destination guard and TLS trust store: one place for each
 
-Status: DESIGN for adversarial review and owner sign-off. Nothing past the design is built.
-Date: 2026-11-12. Base: core `fix/corefix-integration` @ e207f2aea4. Plugin repos: each repo's `dev`.
+Status: DESIGN, Revision 2 (after the adversarial review, verdict REWORK targeted). For owner
+sign-off. Nothing past the design is built. Revision 2 (the next section) supersedes Revision 1
+wherever they differ; Revision 1 is kept below it unchanged, for history.
+Date: 2026-11-12. Revision 1 base: core `fix/corefix-integration` @ e207f2aea4. Revision 2 code read
+at: core `origin/feat/single-destination-policy` @ 43fda1da12, `origin/feat/single-destination-policy-retire-allow-private`
+@ c61a57d82e, `origin/feat/operator-error-codes` (registry rules), `origin/dev`; plugin repos at
+`origin/dev`; `testing/shadow-oracle` at 43fda1da12.
+
+---
+
+## Revision 2
+
+### R2.0 Summary and the Sunday verdict
+
+The review's direction stands and every blocker and major is adopted (R2.1). One correction comes
+from the code: **two of the three ABI retirements (`UPGRADE_VERIFY_OFF`, CA via `trust_from`)
+cannot be retired before the 1.6.0 GA tag (Sunday 2026-11-15) without first shipping the trust
+store.** The trust store is the largest piece of this design. Without it:
+
+* Retiring `UPGRADE_VERIFY_OFF` leaves a store user whose server chains to a private CA (Amazon RDS,
+  Cloud SQL, any in-house PKI) with no verified path. `sslrootcert` is already refused
+  (`store-postgres pgwire.rs:299-305`), valkey has no CA setting, and the only remaining choice is
+  `sslmode=disable` or `redis://`. That pushes these users to plaintext, which is worse than today.
+* Retiring CA via `trust_from` removes private-CA support from auth-ldap, auth-github, auth-oidc,
+  secret-vault and plane-mcp at GA, with nothing to replace it.
+
+**Plain verdict:** the full pre-GA slice the review asked for (three retirements, two-phase, plus the
+egress-class rule) is **too risky for Sunday**. The **safe pre-GA slice** (R2.3) is:
+
+1. Retire `TRUST_PRIVATE_REACH` fully. Its replacement, `advanced.allow_destinations`, already exists.
+2. Close the parts of the egress-class hole that are ABI values: refuse `operator-infrastructure` on a
+   plugin's `dest.judge`, and refuse a framed (`http`/`grpc`) operator-infrastructure need that has
+   no declared target.
+3. Freeze `UpgradeIn::offered_name`: it is never a trust selector, and it must equal the dial host
+   unless the dial is an IP literal.
+4. Remove the metadata carve-out in `allow_destinations`. It is new in 1.6, so it is frozen config at
+   GA.
+5. Ship `UPGRADE_VERIFY_OFF`, CA via `trust_from`, and operator-infrastructure carriers without a
+   declared target as **reserved-but-accepted, deprecated** values. The GA ABI docs state the sunset
+   (refused from 1.7.0). Operator-actionable cases get a coded warning and an audit record.
+6. Optional, and only if the owner signs the five 1.5.5 golden cells in R2.8 by Friday: retire the
+   1.5.5 metadata keys at GA. Otherwise they ship deprecated and are retired in 1.7.0.
+
+This slice changes **two plugins in lock-step: plane-mcp and plane-a2a.** It takes about 3 core
+dev-days plus 1 plugin dev-day. The risk to Sunday is **medium**: the work is small and local, and the
+risk sits in rebasing onto `feat/operator-error-codes` and in re-tagging two plugins against the
+1.6.0 test kit. Everything else is post-GA (R2.4).
+
+### R2.1 Disposition table (review finding → change)
+
+| Finding | Disposition | Change (where specified) | Slice |
+|---|---|---|---|
+| B1 metadata carve-outs | ADOPT | Metadata is always refused, with no exceptions (R2.2.1). The `pins` carve-out and the name-arm lift are removed. An `allow_destinations` entry naming metadata is refused at boot (3134). `security.allow_all_metadata`, `security.allow_metadata_hosts` and `providers.<p>.allow_metadata_hosts` are retired (3136, migration 3411). There is no carve-out for credential plugins: workload-identity federation only, and any future instance credentials come from a core-owned source in a separate design | Carve-out 1: PRE-GA. Keys 2-4: PRE-GA if the owner signs R2.8 item 4, else deprecated at GA and retired in 1.7.0 |
+| B2 plaintext for carriers; `prefer` downgrade | ADOPT | One rule, P-c, for framed **and** carrier needs: plaintext intent only to loopback or to an exact-host `{host, plaintext: true}` entry. There is no opportunistic mode. Postgres `prefer`/`allow` are refused (migrated to `require`). The intent is declared from the operator's URL and judged at need declaration (R2.2.2) | POST-GA. At GA, `prefer` stays opportunistic and deprecated (3138 warning). Owner signs the known gap (R2.9 D-5) |
+| B3 egress class self-selection | ADOPT, split | (a) `dest.judge` refuses `EGRESS_OPERATOR_INFRASTRUCTURE` from a plugin (6014). (b) A framed operator-infrastructure need without `target_from` is refused at declaration (6013). (c) A carrier operator-infrastructure need without `target_from` (postgres, valkey, mysql, ldap) is a deprecated shape at GA and refused from 1.7.0. The four carriers move to a declared target post-GA. (d) The a2a card fetch judges in the registration's own class (`provider`), not open-web | (a), (b), (d): PRE-GA. (c): doc at GA, code POST-GA |
+| B4 trust chosen by `offered_name` | ADOPT, refined | Trust is selected only by the guard-judged dial target, never by `offered_name`. `offered_name` must equal the dial host when the dial target is a name. A dial to an IP literal may offer a name, because libpq `hostaddr` + `host` needs it (`store-postgres pgwire.rs:401-440`), but anchors are still selected by the dialled target | PRE-GA (constraint + ABI doc); store selection POST-GA |
+| M1 proxies | ADOPT | R2.2.6 | POST-GA (default behaviour unchanged at GA) |
+| M2 runtime expiry | ADOPT | Boot load, plus a periodic sweep registered in the unified `Refresher` of `secret-refresh-resilience.md` (D1), not a new thread. Runtime expiry withdraws the anchor (5048). The 30-day warning repeats daily. `notBefore` has a 5-minute tolerance. Fatal-at-boot stays for operator anchors, and its text names the scoped destination and the runbook | POST-GA |
+| M3 `roots: system` rules | ADOPT | R2.2.4. Base-set rules differ from anchor rules: expired or non-CA roots are dropped with one coded warning carrying the count. An empty system set is a boot refusal. `SSL_CERT_FILE`/`SSL_CERT_DIR` are logged and audited. New release dependencies `rustls-native-certs` and `x509-parser` get vet audits, not exemptions | POST-GA |
+| M4 `roots: none` + pin panics | ADOPT | An empty effective store is a coded refusal at config build (3140). `PinnedKeyVerifier::new` returns `Result`. `wants_client_cert` surfaces every failed `add` | POST-GA (`roots` does not exist at GA, and bundled is never empty) |
+| M5 exclusive anchors; no secret refs | ADOPT | A matching `tls.destinations` entry's anchors **replace** the base set. `include_roots: true` opts back in. Sources are `{file}`, `{env}` and inline only. A secret-ref `ca_cert_pem` migrates to a TODO | POST-GA |
+| M6 reload semantics | ADOPT | Boot-time, restart to apply (consistent with the guard). The periodic sweep also compares each file anchor's on-disk SHA-256 with the loaded one and warns on change (5049). No hot reload | POST-GA |
+| M7 every refusal audited | ADOPT | Every dial refusal (5046) and every TLS verification failure (5047) gets a coded, rate-limited line plus an audit record. `FACTS` gains an appended reason field (append-only, minor) | POST-GA |
+| M8 client identity on plugin needs | ADOPT | A settings-path `trust_from` may hold `{cert, key}` (key as a sealed secret ref, never in plugin memory) and a pin, for any outbound need. This serves CyberArk CCP, Oracle wallets and MongoDB X.509. Today the connector reads a settings-path `trust_from` only as CA PEM (`lib.rs:2511-2522`); the identity shape is reserved in the GA ABI doc | Doc PRE-GA, code POST-GA |
+| M9 sequencing; "minor bump" | ADOPT, refined | No minor-bump semantics. Two phases, **plugins first**: phase 1 = first-party plugins stop using the value (works against today's core); phase 2 = core refuses with a code naming the plugin and the value. Core CI never goes red. `-dev`-built drop-ins are unsupported. Values core cannot retire by Sunday ship reserved-but-accepted with a documented 1.7.0 sunset (R2.3 item 5). BUSBAR-6013 also refuses by schema shape (a CA-string setting feeding `trust_from`) once the sunset arrives | PRE-GA for role 4; sunset POST-GA |
+| M10 code allocation | ADOPT | R2.5. 3133 is taken by `login-attempt-limiter.md`, so refusals start at **3134**, migration at **3410**, plugin-ABI refusals at **6013**, runtime egress at **5046**. 3027 is renumbered to 3135 | PRE-GA for the codes the pre-GA slice emits |
+| M11 migration rows | ADOPT | Secret-held URLs get a TODO and a coded plugin parse refusal. `CA:FALSE` self-signed anchors: a RED test pins today's behaviour, then migration reports the concrete fix (3418). auth-oidc discovered hosts: the open-time failure carries the host to add (5047 fields) | POST-GA |
+| M12 credentials over plaintext | ADOPT | A credential's `require_secure` is never lifted toward a non-loopback host, `plaintext: true` included. `auth-ldap allow_insecure_transport` migrates to a refusal plus a TODO (3146/3417). There is no `credentials_in_clear` attribute | POST-GA |
+| m1 wildcards, plaintext entry shape | ADOPT | Wildcards over a public suffix or a single label are refused (3145). `plaintext: true` is accepted only on an exact host or exact IP (3144). `tls.destinations` IP/CIDR entries match only IP-literal dials | POST-GA. The public-suffix refusal is a 1.6-only key, so it is PRE-GA-eligible, but it needs a PSL dependency, so it is deferred and documented as a limit at GA |
+| m2 NAT64 NSP | ADOPT (doc) | Document the limit at GA. `advanced.nat64_prefixes` post-GA | Doc PRE-GA |
+| m3 revocation | ADOPT (doc) | "No CRL/OCSP in 1.6.x" is stated. Optional per-anchor `crls: [{file}]` post-GA | Doc |
+| m4 test 8 | ADOPT | The boot == dial property is restricted to literals, metadata names and alternate encodings. G4 text stays byte-identical (BOOT-025, BOOT-033) | POST-GA |
+| m5 red for the right reason | ADOPT | Tests are driven YAML → validate → designed code | Both |
+| m6 DTLS | ADOPT | Out of scope, listed in §6.2 as T18. The ICE call site's `reach` argument is touched only when `reach` is deleted (post-GA) | Doc |
+| m7 server-advertised redirects | ADOPT | Content-named, judged in default class with `DEST_REFUSE_PRIVATE`, never operator-infrastructure. SRV targets are each judged | Doc (rule), code with each store |
+| m8 base | ADOPT | Build rebases onto `origin/dev` and `feat/operator-error-codes` | PRE-GA |
+| m9 docs `configuration.md:1944` | ADOPT | Rewritten with R2.2.1 | PRE-GA |
+| m10 MSSQL TDS | ADOPT (doc) | Any future framed TLS builds through `build_client_config` and the store | Doc |
+| Review "recommended decisions": busbar-admin `--insecure` | ADOPT | Remove `--insecure`. Keep `--ca-cert` and add `--pin sha256/…` (SPKI). busbar-admin is versioned on its own (0.2.x), so this is not GA-frozen. Ship in busbar-admin 0.3.0. Terraform/pulumi `insecure` follow the same rule | POST-GA (independent) |
+| Review: valkey `#insecure` | ADOPT | Refused at parse with a plugin-declared code (3143). Migration removes it from literal URLs and writes a TODO for ref-held URLs | POST-GA (deprecated, 6015 warning at GA) |
+| secret-refresh-resilience §9 (finding 6, T-G1/T-G2) | ADOPT | Both holes (address-arm `pins`, name-arm lift) closed in R2.3 item 4. Tests T-G1 and T-G2 are adopted verbatim | PRE-GA |
+
+### R2.2 Revised rules (normative; replace §3 where they differ)
+
+#### R2.2.1 Metadata (new §3.4)
+
+* A cloud-metadata destination (`METADATA_HOSTS`, `ip_is_cloud_metadata`, link-local v4, `fe80::/10`,
+  and operator `security.blocked_metadata_hosts`) is refused in **every** class, for every plugin and
+  every core caller. No configuration admits it.
+* `guard.rs` changes:
+  * In `judge_address`, `allowlisted` never applies to a denied address. The `self.allow.iter().any(|e| e.pins(addr))` branch (`guard.rs:505-507`) is removed, and `Entry::pins` goes with it.
+  * In `judge_name_with`, `allowed` no longer lifts the `METADATA_HOSTS`/`blocked` refusal (`guard.rs:430-436`).
+  * `Metadata::lifts`/`carves_address` and the provider carve-out class are deleted when keys 2-4 retire.
+* Boot: `strict()` (`guard.rs:225`) refuses an `advanced.allow_destinations` entry that is a metadata
+  host name, a metadata literal, or a /32 or /128 equal to a metadata address. The code is
+  **BUSBAR-3134**, and the message names the index. A wider CIDR that merely covers metadata is
+  accepted (it never admits metadata). The docs say so.
+* Instance credentials: no plugin need and no `allow_destinations` entry ever reaches IMDS. The
+  supported route is workload-identity federation (IRSA, AKS WI, GKE WIF) through projected token
+  files, which `secret-refresh-resilience.md` (b) re-reads on rotation. ECS task roles, EKS Pod
+  Identity or plain EC2/GCE instance credentials, if demanded, become a **core-owned credential
+  source** in their own design: core dials IMDSv2 on fixed paths, audited, and hands sealed
+  credentials to custody. Enterprise designs cite this paragraph.
+* 1.5.5 keys `security.allow_all_metadata`, `security.allow_metadata_hosts` and
+  `providers.<p>.allow_metadata_hosts` are refused (**BUSBAR-3136**). `--migrate-config` removes
+  them (**BUSBAR-3411**, warning naming each removed entry). BUSBAR-5045
+  (`METADATA_PROTECTION_DISABLED`) becomes `retired = true`. BUSBAR-3132's `action` text loses its
+  `allow_metadata_hosts` advice. **Owner-gated** (R2.8 item 4).
+
+#### R2.2.2 Plaintext: one rule, P-c, every transport
+
+* A need has a **security intent** for each target:
+  * `tls` (secure from the first byte);
+  * `upgrade` (secured mid-stream before any application byte or lent credential);
+  * `plaintext`.
+* Framed needs take it from the scheme. A carrier states it in an appended `Need` detail derived
+  from the operator's URL (append-only, so a minor change post-GA): postgres `sslmode`, valkey
+  `redis://`/`rediss://`, mysql `ssl-mode`, ldap `ldap://`/StartTLS/`ldaps://`.
+* `plaintext` is admitted only:
+  * to loopback, or
+  * to a destination whose `allow_destinations` entry is `{host: <exact host or IP>, plaintext: true}`.
+
+  This is judged at need declaration (early, coded **BUSBAR-3141**) and again at the dial.
+* `upgrade` is enforced by the host. It refuses to lend any credential, and refuses reads and writes
+  past the negotiation window, until `upgrade_secure` succeeds. **There is no opportunistic intent.**
+* `open-web` never admits plaintext.
+* A credential's `require_secure` is never lifted toward a non-loopback host (M12).
+* Plane registrations (`tools.<s>.url`, `agents.<a>.url`, `token_exchange.token_url`) are
+  config-declared targets and follow P-c in their need's own class.
+* Every plugin scheme gate (S2, S3, S4 and S6-S9 in R2.6) is deleted when this lands.
+  * **Interim at GA:** plane-mcp and plane-a2a gate `http://` to **loopback only**. Revision 1 keyed
+    the gate on `allow_private`, which is retired. Widening this to P-c later is compatible;
+    tightening a wider rule later would not be.
+
+#### R2.2.3 Egress class (new rule in §3.3)
+
+* `EGRESS_OPERATOR_INFRASTRUCTURE` is a property of a **config-declared target**, never a
+  plugin's choice.
+  * `dest.judge` from a plugin refuses class 2 (`host_services.rs:2737`) with **BUSBAR-6014**.
+    Content-named hosts are judged in default or open-web with `DEST_REFUSE_PRIVATE`.
+  * An operator-infrastructure need whose transport is framed (`http`, `grpc`) and that declares
+    no `target_from` is refused at `declare` (`lib.rs:2486`) with **BUSBAR-6013**. No first-party
+    plugin declares one: secret-vault has `target_from`, and plane-mcp's stdio need has the member
+    program.
+  * A carrier (`tcp`, `unix`) operator-infrastructure need without `target_from` is the
+    **deprecated** shape at GA. Today that is postgres, valkey, mysql and ldap: they name the target
+    per connection because of multi-host lists, `hostaddr`, unix sockets and LDAP URL lists.
+    * Post-GA, these carriers declare `target_from` on their URL setting, and the connector derives
+      the admitted host set from that URL/DSN (libpq URL and key-value forms, multi-host,
+      `hostaddr`, `socket=`, `rediss://`, LDAP URL lists). An open is admitted only to a member of
+      that set.
+    * From 1.7.0 the deprecated shape is refused with BUSBAR-6013.
+    * No operator warning at GA: the operator cannot act on a plugin's shape. The conformance kit
+      flags it to plugin authors.
+* `judged_class` (`guard.rs:59`) is unchanged: a configured default-class need still lifts to
+  operator-infrastructure.
+
+#### R2.2.4 Trust store (T-c revised; replaces §3.1-3.2 where they differ)
+
+```yaml
+advanced:
+  tls:
+    roots: bundled                  # bundled (default; 1.5.5 parity: webpki-roots) | system | none
+    trust_anchors:                  # trusted for every destination, on top of roots
+      - { file: /etc/busbar/ca/corp-root.pem }
+    destinations:
+      - match: ldap.corp.internal   # exact host, *.domain (not over a public suffix), IP or CIDR
+        trust_anchors: [ { file: /etc/busbar/ca/ldap-ca.pem } ]
+        include_roots: false        # default: these anchors REPLACE roots + trust_anchors for this match
+```
+
+* **Selection.** Selection is by the guard-judged dial target (`line.target()`), never by
+  `offered_name` and never by a proxy hop. Name entries match a name dial. IP and CIDR entries match
+  only IP-literal dials. A dial matching several entries trusts the union of their anchors (plus the
+  roots and `trust_anchors` if any matching entry sets `include_roots`).
+* **Sources.** Anchors come from `{file}`, `{env}` or inline PEM. Secret refs are refused (boot
+  cycle: Vault's own CA).
+* **Operator-anchor validation** (global and per destination):
+  * the PEM parses and holds only certificates;
+  * v3 with `CA:TRUE` and, if present, `keyCertSign`;
+  * `notBefore - 5 min <= now < notAfter`;
+  * rustls accepts it.
+
+  A failure is fatal at boot with **BUSBAR-3137**, naming the key, the index, the scoped destination
+  and the rotation runbook. An anchor expiring within 30 days warns with **BUSBAR-3139**, daily.
+  Every accepted anchor gets one **BUSBAR-3138** line (SHA-256 of the DER, subject, issuer,
+  `notAfter`, scope) and one `config.tls_trust_anchor` audit record.
+* **Base-set rules (`bundled`, `system`):** expired or non-CA roots are dropped with one
+  **BUSBAR-3140** warning carrying the count. Each `rustls-native-certs` error is reported, never
+  dropped. An empty system set is a boot refusal (3140, Fatal). The log carries a count and a SHA-256
+  of the sorted set, never 150 lines. The `SSL_CERT_FILE`/`SSL_CERT_DIR` source is logged and
+  audited.
+* **`roots: none`** with no matching anchor: the config build refuses with 3140. It never panics
+  (`PinnedKeyVerifier::new` returns `Result`).
+* **Runtime.** A periodic sweep (hourly, in the unified `Refresher`) withdraws expired anchors from
+  new client configs (5048, audited). A dial whose matched entry has no anchor left is refused
+  (5047). File anchors whose on-disk digest changed get **BUSBAR-5049** ("restart to apply").
+* **Revocation:** none in 1.6.x (stated).
+* **Pins** stay layered over verification.
+
+#### R2.2.5 `offered_name` (ABI doc, frozen at GA)
+
+`UpgradeIn::offered_name` is the SNI and the name verified, and **never selects trust anchors**. When
+the dial target is a host name, `offered_name` must equal it (case-insensitive, after IDNA). If it does
+not, the call is Refused with **BUSBAR-6014**. When the dial target is an IP literal, any DNS name may
+be offered (libpq `hostaddr`), and the anchors are those of the IP target.
+store-postgres passes `endpoint.name`, store-valkey passes `t.host`, and auth-ldap passes `None`, so
+every first-party caller already complies.
+
+#### R2.2.6 Proxies (new §3.5)
+
+(a) The name arm always applies. The address arm applies when the name resolves locally (1.5.5
+reqwest parity).
+(b) One boot line (**BUSBAR-3149**) plus an audit record names the redacted proxy endpoint and
+`NO_PROXY`, and states that the address check is delegated for names that do not resolve locally.
+(c) `NO_PROXY` is parsed through the guard's `judged_host`, giving one matcher (`proxy_route.rs:102-190`
+is replaced).
+(d) Owner option `advanced.proxy_resolution: local` sends `CONNECT <judged literal>:port`.
+(e) The trust store selects by target, not by proxy hop.
+
+The proxy hop's own judgement (`reach = true` today, `lib.rs:1777-1781, 2000-2004`) becomes a
+config-declared operator-infrastructure target when `reach` is deleted.
+
+### R2.3 PRE-GA slice (must land before the 1.6.0 tag, Sunday 2026-11-15)
+
+Rule for this slice: change only what is ABI-frozen or config-frozen at GA, choose the strict form
+now (it can be widened later compatibly), and change no plugin except where it must move in
+lock-step.
+
+**Order (plugins first, so core CI never goes red):** P1/P2 merged and tagged against the 1.6.0 test
+kit, then C3 (refusal of role 4). Everything else is independent of the plugins.
+
+Core (one branch, rebased onto `origin/dev` + `feat/operator-error-codes`):
+
+| # | Change | Where | Codes | Effort |
+|---|---|---|---|---|
+| C1 | Metadata: remove the `pins` carve-out and the name-arm lift. Boot refusal of a metadata `allow_destinations` entry. Fix `configuration.md:1940-1947`. Tests T-G1, T-G2, and a boot refusal for each entry form | `busbar-core-connector/src/guard.rs`, `guard_tests.rs` (flip `a_name_entry_never_admits_a_metadata_answer`, `an_exact_metadata_allow_entry_is_the_documented_carve_out`) | 3134 | 0.5 d |
+| C2 | Merge c61a57d82e (the kernel refuses `allow_private`; migration writes exact hosts). Renumber 3027 → **3135**. Refuse the `allow_private` key **by name** in every `tools.*`/`agents.*` registration, so the coded refusal survives the plugins dropping role 4. Give the migration's lines code **3410**. A `http://` non-loopback registration's migration warning says "refused at GA; use https (P-c `plaintext: true` arrives post-GA)" | `busbar-kernel/src/trust/section.rs`, `catalog.toml`, `busbar-migrations/src/config/migrate_1_6.rs` | 3135, 3410 | 0.5 d |
+| C3 | Retire `TRUST_PRIVATE_REACH` (=4) as a reserved value: `check_trust_keys` refuses role 4 (fault `trust_key.role_retired`), and the loader refuses the plugin naming it and the role. The internal `reach` plumbing is left dead and deleted post-GA (the proxy hop still uses it) | `busbar-contract/src/abi/plane/check.rs:1651`, `abi/plane/mod.rs:1217` (doc: RESERVED), `plugin-loader/src/dispatch/kinds/plane.rs:611` | 6013 | 0.5 d |
+| C4 | `dest.judge` refuses `EGRESS_OPERATOR_INFRASTRUCTURE` from a plugin | `busbar-kernel/src/host_services.rs:2737`, `abi/host/service.rs` doc | 6014 | 0.25 d |
+| C5 | A framed operator-infrastructure need without `target_from` is refused at `declare`. The carrier shape is documented as deprecated (refused from 1.7.0) | `busbar-core-connector/src/lib.rs:2486`, `abi/host/conn/connector.rs:19` doc | 6013 | 0.5 d |
+| C6 | `offered_name` constraint (R2.2.5) and ABI doc | `busbar-core-connector/src/lib.rs:2558-2605`, `abi/host/conn/connector.rs:328` | 6014 | 0.25 d |
+| C7 | Reserved-but-accepted, deprecated: `UPGRADE_VERIFY_OFF` is still honoured only for operator-infrastructure (as today). Its untyped WARN becomes **BUSBAR-6015** once per instance, plus an audit record. CA via `trust_from` is still accepted: an info line with the SHA-256 of each anchor, and no operator warning (the operator cannot act until the store exists). ABI docs on `UPGRADE_VERIFY_OFF`, `UpgradeIn::flags`, `Need::trust_from` (identity `{cert, key}` + pin reserved; CA PEM deprecated) and `EGRESS_OPERATOR_INFRASTRUCTURE` state "deprecated; refused from 1.7.0" | `lib.rs:2572-2582`, `connector.rs:331-339`, `tls/client.rs` `operator_ca_anchors`, `abi/sdk/store/wire.rs:283` (doc only: no `#[deprecated]` attribute, which would fail plugins' `-D warnings` clippy at a pin bump) | 6015 | 0.5 d |
+| C8 (owner-gated) | Retire the 1.5.5 metadata keys (R2.2.1). Retire 5045 | `busbar-kernel` config schema and validation, `guard.rs` `Metadata`, `busbar-migrations`, `catalog.toml`, docs | 3136, 3411 | 0.75 d |
+
+Plugins (lock-step; each merged to `dev` and tagged against the 1.6.0 test kit before C3):
+
+| # | Plugin | Change | Effort |
+|---|---|---|---|
+| P1 | **busbar-plane-mcp** | Drop the `allow_private` trust key (`statement.rs:262`) and the field. `dest_verdict` (`plane_door_impl.rs:1476`) always passes `DEST_REFUSE_PRIVATE` for tool-argument hosts. The `token_exchange.token_url` scheme gate (`tools_config.rs:1281-1289`) becomes https, or http to a loopback host only | 0.5 d |
+| P2 | **busbar-plane-a2a** | Drop the `allow_private` trust key (`statement.rs:289`). Card fetch (`plane_door.rs:3977-3981`) judges a **registered agent's** card in `EGRESS_PROVIDER` (its need's class) with `DEST_EXPLAIN`, so `allow_destinations` governs it; never operator-infrastructure. Push and content hosts stay open-web with `DEST_REFUSE_PRIVATE`. `card_trust.rs` `scheme_refusal` becomes https, or http to loopback only, and its refusal text names `allow_destinations` (G10) | 0.5 d |
+
+No other plugin changes for GA. store-postgres, store-valkey, store-mysql, auth-ldap, auth-github,
+auth-oidc, secret-vault and webrequest keep working unchanged against the GA core.
+
+**Totals and risk.**
+* Core: C1-C7 about 3.0 dev-days, plus about 0.75 for C8.
+* Plugins: about 1.0 dev-day, plus two re-tags.
+* Tests: as listed in R2.7 (targeted locally; CI runs the suites).
+* **Risk to Sunday: MEDIUM.** The changes are small and local. The main risks are:
+  * (1) the rebase onto `feat/operator-error-codes` (the codes need its `text` machinery; if that
+    branch does not land before GA, the same numbers are added without `text` and gain it when it
+    lands);
+  * (2) two plugin re-tags against the 1.6.0 test kit (`release/plugin-pins.tsv` is still empty);
+  * (3) the a2a and mcp fence cells, which need an owner signature (R2.8).
+* **Fallback if P1 or P2 cannot be re-tagged by Sunday:** skip C3. C2 already refuses the config key
+  by name, so role 4 can never carry `true`; the role is inert. Ship role 4 as reserved-but-accepted
+  (6015 at load, refused from 1.7.0). C1, C4-C7 do not depend on the plugins.
+* **Not recommended for Sunday (Option B, rejected):** shipping a minimal `advanced.tls` before GA so
+  that `UPGRADE_VERIFY_OFF` and CA via `trust_from` could retire now. It brings `x509-parser` (and
+  likely `rustls-native-certs`) as new release dependencies needing vet audits, a new config grammar,
+  validation, audit and migration. That is 4-6 dev-days plus five plugin re-tags. **High** risk.
+
+**What the deprecated values cost.** They ship at GA and are refused at 1.7.0 without an ABI_MAJOR
+bump. That breaks the append-only reading of `ABI_MINOR` (`abi/mod.rs:240`). The owner signs it as a
+documented deprecation exception (R2.9 D-2), or else they stay honoured until ABI 2.
+
+### R2.4 POST-GA slice
+
+| # | Work | Plugins affected | Effort | Risk | Oracle cells |
+|---|---|---|---|---|---|
+| Q1 | Trust store (R2.2.4): grammar, validation, base-set rules, audit, connector selection by target, exclusive anchors, sweep in the unified `Refresher` (1.6.1 per `secret-refresh-resilience.md` D1), file-change warning; `x509-parser` + `rustls-native-certs` vet | none (core) | 6-8 d | Medium (new deps, connector config cache per matched set) | none with `roots: bundled`; `wire.tls|client-hello|*` unchanged (rustls sends no CA list) |
+| Q2 | Retire CA via `trust_from` (sunset 1.7.0): migration of `ca_cert_pem` → `tls.destinations` (exact host; ref → TODO; `CA:FALSE` detection 3418); 6013 by schema shape | auth-ldap, auth-github, auth-oidc, secret-vault, plane-mcp (`tools.<s>.tls.ca_cert_pem`) | core 2 d, plugins 0.5 d each | Medium | none known (no cell sets `ca_cert_pem`) |
+| Q3 | Retire `UPGRADE_VERIFY_OFF` (sunset 1.7.0): host Refused + 6013/6014; delete `unverified_client_config`, `AcceptsAnyCertificate`, SDK `upgrade_secure_unverified`. Postgres `prefer`/`allow` refused (3142), migration `prefer` → `require` (3412); valkey `#insecure` refused (3143), migration (3413, TODO for refs) | store-postgres, store-valkey | core 1 d, plugins 1 d | Medium (operator behaviour change; needs Q1 first) | none (no cell uses `prefer` or `#insecure`) |
+| Q4 | P-c for every transport (R2.2.2): intent detail on `Need` (append-only), declaration-time judgement, upgrade enforcement, object entries, delete every plugin scheme gate; ldap `allow_insecure_transport` → refusal + TODO | store-postgres, store-valkey, store-mysql, auth-ldap, secret-vault, auth-oidc, auth-oauth, auth-github, plane-mcp, plane-a2a, hook-webrequest | core 4 d, plugins 3 d | High (largest operator-visible change) | `store.boot|postgres|private-validate`, `store.boot|valkey|private-validate` (R2.8 item 6); BOOT-023/031 text kept byte-identical |
+| Q5 | Carriers declare `target_from` (R2.2.3), connector derives host sets; 6013 for the old shape from 1.7.0 | store-postgres, store-valkey, store-mysql, auth-ldap | core 2-3 d, plugins 1 d | Medium (multi-host and `hostaddr` corners; `store.boot|postgres|multi-host`/`key-value` must stay green) | none expected |
+| Q6 | Proxies (R2.2.6) | none | 2 d | Medium | none with defaults |
+| Q7 | Audit of every dial refusal and TLS failure (5046/5047), `FACTS` reason (appended) | none | 1.5 d | Low | none |
+| Q8 | Client identity on any outbound need (M8) | enabling only; enterprise stores later | 2 d | Medium | none |
+| Q9 | Remove the dead `reach` plumbing; G3-G5 call `Guard::judge_name`; webrequest drops `net_guard` (calls `dest.judge` at configure) | hook-webrequest | 1.5 d | Low | none (texts byte-identical) |
+| Q10 | Wildcard public-suffix refusal, `plaintext` entry shape, `nat64_prefixes`, optional CRLs | none | 1.5 d | Low | none |
+| Q11 | busbar-admin: remove `--insecure`, add `--pin`; terraform/pulumi `insecure` | busbar-admin (0.3.0), providers | 0.5 d + 1 d | Low | none (not in the oracle) |
+| Q12 | If C8 was not signed: retire the 1.5.5 metadata keys in 1.7.0 (deprecated + 3136 warning at GA) | none | 0.75 d | Low | R2.8 item 4 |
+
+Post-GA total: about 25-30 dev-days. Q1 must precede Q2 and Q3, Q4 must precede the deletion of the
+plugin scheme gates, and Q5 must precede the 1.7.0 refusal of the carrier shape.
+
+### R2.5 Diagnostic codes (registry rules of `feat/operator-error-codes`)
+
+Checked against that branch's `catalog.toml` and `docs/errors/LEDGER.tsv`, every `origin/*` branch,
+and the sibling designs. 3133 is claimed by `login-attempt-limiter.md`, and 8026-8028 by
+`secret-refresh-resilience.md`. Re-check at merge. Each operator-facing entry carries `text`,
+`example` and `example_detail`.
+
+| Code | Slug | Severity | Slice |
+|---|---|---|---|
+| 3134 | config-destination-names-metadata | Fatal | PRE-GA |
+| 3135 | config-private-reach-retired (was 3027 on c61a57d82e, never shipped) | Fatal | PRE-GA |
+| 3136 | config-metadata-carve-out-retired | Fatal (Actionable warning if deferred to 1.7.0) | PRE-GA if signed |
+| 3137 | config-tls-anchor-invalid | Fatal | POST |
+| 3138 | config-tls-anchor-accepted (info; owner confirms info lines belong in 31xx) | Info | POST |
+| 3139 | config-tls-anchor-expiring | Actionable | POST |
+| 3140 | config-tls-base-set (dropped roots count / empty set / `none` with no anchor) | Actionable / Fatal | POST |
+| 3141 | config-plaintext-not-admitted | Fatal | POST |
+| 3142 | store-postgres-sslmode-opportunistic-refused (plugin-declared) | Fatal | POST |
+| 3143 | store-valkey-insecure-refused (plugin-declared) | Fatal | POST |
+| 3144 | config-plaintext-entry-not-exact | Fatal | POST |
+| 3145 | config-wildcard-over-public-suffix | Fatal | POST |
+| 3146 | config-credentials-over-plaintext | Fatal | POST |
+| 3149 | config-proxy-delegates-address-check | Info | POST |
+| 3410 | migrate-private-reach-to-allowlist | Warning | PRE-GA |
+| 3411 | migrate-metadata-carve-out-removed | Warning | PRE-GA if signed |
+| 3412 | migrate-sslmode-prefer-to-require | Warning | POST |
+| 3413 | migrate-valkey-insecure-removed (TODO for refs) | Warning | POST |
+| 3414 | migrate-plaintext-entry-written | Warning | POST |
+| 3415 | migrate-ca-cert-pem-to-tls-destinations | Warning | POST |
+| 3416 | migrate-discovered-host-todo | Warning | POST |
+| 3417 | migrate-insecure-transport-refused-todo | Warning | POST |
+| 3418 | migrate-anchor-not-a-ca | Warning | POST |
+| 5046 | egress-dial-refused (rate-limited, audited) | BenignRecurring | POST |
+| 5047 | egress-tls-verification-failed (audited; dial host, matched entries, anchor fingerprints, presented issuer and subject) | Actionable | POST |
+| 5048 | egress-tls-anchor-expired-withdrawn | Actionable | POST |
+| 5049 | egress-tls-anchor-file-changed | Actionable | POST |
+| 6013 | plugin-declares-retired-abi-value (load: role 4, framed op-infra without target; from 1.7.0 also the deprecated values) | Fatal | PRE-GA |
+| 6014 | plugin-call-refused-abi-rule (call: `dest.judge` op-infra, `offered_name` mismatch), once per instance, audited | Actionable | PRE-GA |
+| 6015 | plugin-uses-deprecated-abi-value (`UPGRADE_VERIFY_OFF` honoured), once per instance, audited | Actionable | PRE-GA |
+
+3147, 3148 and 3150-3159 are left free for this design's review rounds. Revision 1's 3028-3031 are
+withdrawn.
+
+### R2.6 Duplication audit additions (§6)
+
+| # | Mechanism | Where | Action |
+|---|---|---|---|
+| G11 | Plugin-chosen egress class | `dest.judge` class argument (`process.rs:80-90`, `host_services.rs:2737`); operator-infrastructure needs without `target_from` (`lib.rs:2497-2503`) | REPLACE with core-derived class (R2.2.3) |
+| S6 | Postgres plaintext and opportunistic modes | `store-postgres pgwire.rs:28-41,222,244-256` | REPLACE with intent + P-c (Q3, Q4) |
+| S7 | Valkey `redis://` versus `rediss://` | `store-valkey lib.rs:191` | REPLACE with intent + P-c |
+| S8 | MySQL `ssl-mode` disabled/preferred | `store-mysql credentials/mod.rs:71-80` | REPLACE with intent + P-c |
+| S9 | LDAP `ldap://` without StartTLS; operator-infrastructure `http://` settings URLs (vault `addr`) | auth-ldap, secret-vault | REPLACE with intent + P-c; credentials never in clear (M12) |
+| T18 | DTLS (`dimpl`), ICE candidates | core-connector `datagram.rs` (h3) | OUT OF SCOPE: fingerprint-authenticated by signalling |
+| T19 | Future framed TLS (MSSQL TDS PRELOGIN) | none yet | Must build through `build_client_config` and the store |
+
+Counts after Revision 2:
+* plaintext rules: 1 (the core intent rule), from 11 sites (S1-S4, S6-S9);
+* address guards: 1;
+* class selectors: core only;
+* rustls client builders: 1, with no skip-verify after Q3. At GA there is still 1 plus a deprecated
+  skip-verify path.
+
+### R2.7 Tests added (red first; YAML → validate → designed code where config is involved)
+
+PRE-GA:
+* T-G1: flip `a_name_entry_never_admits_a_metadata_answer`.
+* T-G2: a metadata-name entry is refused in every class.
+* Boot refusal 3134 for an IP, a /32, a /128 and a name entry.
+* Flip `an_exact_metadata_allow_entry_is_the_documented_carve_out` to a refusal in the default,
+  provider and operator-infrastructure classes.
+* 3135 for `allow_private` written in a registration whose plugin declares no role 4.
+* Role 4 in a Statement → 6013 naming the plugin.
+* `dest.judge` with class 2 → 6014.
+* A framed operator-infrastructure need without `target_from` → 6013. A carrier need is still
+  admitted.
+* `offered_name` ≠ dial host on a name dial → Refused with 6014. An IP-literal dial offering a name is
+  admitted.
+* `UPGRADE_VERIFY_OFF` → 6015 once per instance plus one audit record.
+* plane-a2a: an `http://127.0.0.1` registered agent with `127.0.0.1` allowlisted is fetched, and
+  `http://` to a public host is refused.
+* plane-mcp: a tool-argument private host is refused whatever is configured.
+
+POST-GA: the review's additional-tests list, in full, attached to Q1-Q10.
+
+### R2.8 Oracle cells needing the owner's explicit signature
+
+PRE-GA (the slice in R2.3):
+1. `a2a|fence|egress-message-send` (`cells.json` config at l.121 sets `allow_private: true`). The
+   config line is removed. The card is then judged in `provider` and admitted through the oracle pin
+   `advanced.allow_destinations: ["127.0.0.1"]`. `http://` to loopback stays admitted. Status and body
+   are expected unchanged, but the **cell config edit** needs a signature.
+2. `mcp|fence|egress-tools-call` (`cells.json` l.26128, `allow_private: true`): same edit, same
+   expectation.
+3. `accepted-differences.json:3109` rationale: re-sign the wording. It says "an A2A registration's own
+   `allow_private`" and "cloud metadata is refused … unless an IP or CIDR allowlist entry names it",
+   and both statements become false. No cell moves.
+4. **Only if C8 (retire the 1.5.5 metadata keys at GA) is chosen.** 1.5.5 golden, exit status
+   unchanged (1), stderr text changes:
+   * `boot.refusal__BOOT-002__validate` (`security.allow_metadata_hosts` CIDR text → 3136 retired-key text);
+   * `boot.refusal__BOOT-003__validate` (`providers.gemini.allow_metadata_hosts` → 3136);
+   * `boot.refusal__BOOT-025__validate` (the base_url metadata refusal's "to override add … allow_metadata_hosts … allow_all_metadata" advice is removed);
+   * `boot.refusal__BOOT-033__validate` (same advice in the token_url refusal);
+   * `neutrality__NEUT-U-providers__validate` (the unknown-field list loses `allow_metadata_hosts`).
+
+   The related records also change: the `why` texts at `cells.json` l.12990 and l.13007, and
+   `accepted-differences.json` l.272, l.1322 and l.1364. If C8 is deferred, BOOT-002 and BOOT-003
+   still gain one 3136 deprecation-warning line at 1.7.0, so the owner signs either now or then.
+   `cli|--print-metadata-blocklist` is unchanged: it prints the block list, which stays.
+
+POST-GA:
+5. BOOT-023 and BOOT-031 (provider `base_url` / `token_url` plaintext text). Planned **unchanged**:
+   Q4 keeps these strings byte-identical. A signature is needed only if Q4 cannot.
+6. `store.boot|postgres|private-validate` (`postgres://…@10.255.255.1:5432/busbar`, no sslmode) and
+   `store.boot|valkey|private-validate` (`redis://10.255.255.1:6379/0`). 1.5.5 accepts both under
+   `--validate`. Under P-c for carriers (Q4), plaintext intent to a non-loopback host without
+   `{host, plaintext: true}` is refused at declaration, so both would exit 1. Either the owner signs
+   the refusal, or the cell configs gain the entry (also a signed edit). Recommended: sign the
+   refusal, because a 1.5.5 operator with a private plaintext database gets a migration-written
+   entry (3414) when the URL is literal, and a coded refusal when it is ref-held.
+7. Behaviour difference with no cell: a private non-loopback `http://` provider (for example vLLM at
+   `http://10.0.0.5:8000`) needs `plaintext: true` in addition to its 2026-10-02 allowlist entry.
+8. `admin.ops__GetHooksNameSchema__ok_hooks-webrequest`: unchanged unless the schema description is
+   edited for P-c. The plan keeps it.
+9. No change: `store.boot|postgres|sslmode-disable`, `sslmode-require`, `multi-host`, `key-value`,
+   `url-options`, `loopback*` (all loopback); `wire.tls|client-hello|*`; provider TLS roots (default
+   `bundled`); proxy defaults.
+
+### R2.9 Owner decisions requested
+
+| # | Decision | Recommendation |
+|---|---|---|
+| D-1 | Pre-GA slice = R2.3 C1-C7 + P1/P2, with full retirement of `UPGRADE_VERIFY_OFF` and CA via `trust_from` deferred | Approve |
+| D-2 | Deprecated ABI values refused at 1.7.0 without an ABI_MAJOR bump (a documented deprecation exception to append-only) | Approve. The alternative is honouring them until ABI 2 |
+| D-3 | C8: retire the 1.5.5 metadata keys at GA (sign R2.8 item 4 by Friday) or deprecate them and retire in 1.7.0 | Retire at GA if signed. It is the cleaner boundary |
+| D-4 | Interim plaintext for plane-mcp and plane-a2a at GA: loopback only | Approve (strict now, P-c widens compatibly) |
+| D-5 | Known gap at GA: postgres `sslmode=prefer` and valkey `#insecure` stay opportunistic or unverified (deprecated, 6015) until Q1 + Q3 | Accept. The alternative pushes private-CA users to plaintext |
+| D-6 | `DEST_REFUSE_PRIVATE` | Keep (unchanged from Revision 1) |
+| D-7 | Roots default `bundled`, `system` opt-in | Approve (1.5.5 parity) |
+| D-8 | Info-severity anchor lines in the 31xx band (3138, 3149) | Approve |
+| D-9 | busbar-admin `--insecure` removed in 0.3.0 | Approve |
+
+---
+
+## Revision 1 (2026-11-12, kept for history; superseded by Revision 2 where they differ)
+
+Original status: DESIGN for adversarial review and owner sign-off. Base: core `fix/corefix-integration`
+@ e207f2aea4. Plugin repos: each repo's `dev`.
 Branches already pushed for reference (not merged): core `feat/single-destination-policy` (14304112c3),
 core `feat/single-destination-policy-retire-allow-private` (c61a57d82e, gated), README-only branches
 `feat/single-destination-policy` in busbar-export-otlp, busbar-export-webhook, busbar-auth-oidc.
