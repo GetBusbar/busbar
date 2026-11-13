@@ -277,6 +277,23 @@ impl Held {
             .collect()
     }
 
+    fn reject_hint(&self, ext: Blob) -> Option<busbar_contract::auth_calls::RejectHint> {
+        busbar_contract::abi::auth::reject_hint_of(self.extensions(ext)?)
+    }
+
+    fn extensions(&self, ext: Blob) -> Option<&[u8]> {
+        if ext.ptr.is_null() || ext.len == 0 {
+            return None;
+        }
+        let off = (ext.ptr as usize).checked_sub(self.buf as usize)?;
+        if off.checked_add(ext.len)? > self.buf_cap {
+            return None;
+        }
+        // SAFETY: `off + len <= buf_cap` (checked above) inside the `buf_cap` bytes `Held` owns,
+        // and the op completed, so the plugin no longer writes the buffer.
+        Some(unsafe { std::slice::from_raw_parts(self.buf.add(off), ext.len) })
+    }
+
     fn retry_after(&self, ext: Blob) -> Option<u64> {
         if ext.ptr.is_null() || ext.len == 0 {
             return None;

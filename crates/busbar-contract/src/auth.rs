@@ -141,6 +141,11 @@ pub struct LoginField {
 /// A declarative form spec a `Credential`-kind method returns from `begin_login`. The
 /// core renders WHATEVER fields the plugin declares (username+password, or +totp, …) — generic, not
 /// LDAP-shaped. The submitted values come back keyed by [`LoginField::name`].
+///
+/// THE ACCOUNT IDENTIFIER IS THE FIRST [`FieldKind::Text`] FIELD. The host's login attempt limiter
+/// keys each attempt on that field's value alone (normalised), across every credential method, so a
+/// plugin must declare the account name (username, UPN, e-mail) first among its Text fields; a
+/// second Text field (a domain, an OTP) never changes the key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginForm {
     pub fields: Vec<LoginField>,
@@ -156,7 +161,9 @@ pub struct CompleteLogin {
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
     /// Credential-flow: the submitted form values, keyed by the [`LoginField::name`] the plugin
-    /// declared in its [`LoginForm`]. Every value is [`Secret`] (Debug/Display never print it). This
+    /// declared in its [`LoginForm`]. The host forwards ONLY declared names, in declared order, each
+    /// at most once (a duplicated declared name is refused before the plugin is called; an
+    /// undeclared name is dropped). Every value is [`Secret`] (Debug/Display never print it). This
     /// SUBSUMES the old ad-hoc `username`/`password` pair — one generic credential transport, so a
     /// method declaring `[username, password, totp]` just works.
     pub submitted: Vec<(String, Secret<String>)>,

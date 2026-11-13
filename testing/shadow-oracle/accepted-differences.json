@@ -6712,6 +6712,196 @@
         "status": 1
       },
       "rationale": "Owner signed 2026-11-12: the reserved-name refusal is one generic sentence that names the offending word and links the one docs page listing every reserved name (crates/busbar-contract/src/section.rs reserved_name_refusal). CELL: boot.refusal|BOOT-P07|validate (a pool named `hooks`). BYTES MOVED (golden -> candidate): effects.stderr, the refusal sentence only. The transform rewrites that one sentence back to 1.5.5's wording so only it is forgiven; the cell reports ACCEPTED, never PASS, and the golden is untouched."
+    },
+    {
+      "id": "LOGIN-LIMITER D1-D3 account throttle",
+      "kind": "breaking",
+      "changelog": "Hosted credential sign-in refuses the 4th failed attempt for one account within 15 minutes with 429 \"Too many sign-in attempts\" and Retry-After, without contacting the directory.",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^http\\.crosscut\\|auth-token\\|credential-throttled(-account)?$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers",
+        "effects"
+      ],
+      "rationale": "D1 429 from the 4th failure (3 per 15 min, keyed across methods), D2 Retry-After (the method window in whole minutes, 60..=900), D3 no directory bind egress when throttled. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D4 source throttle",
+      "kind": "breaking",
+      "changelog": "Hosted credential sign-in limits each client source (20 failures per 15 minutes per IPv4 address or IPv6 /64, with /48 and /32 aggregates, 30 submissions per minute) and answers 429 with Retry-After.",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^http\\.crosscut\\|auth-token\\|credential-throttled-source$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "D4 a first attempt for a never-failed account may be 429 when its source spent its budget. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D6 admin door",
+      "kind": "breaking",
+      "changelog": "The admin API answers 429 rate_limited (BUSBAR-8108) with the real Retry-After to a source that presented 50 refused admin credentials within 5 minutes.",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^admin\\.ops\\|admin-token\\|refused-credential-budget$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "D6 counts only presented-and-refused credentials: the 112 admin.ops|*|unauth cells present none and are unaffected. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D8 audit",
+      "kind": "improvement",
+      "changelog": "Credential sign-in writes audit records auth.login_throttled, auth.login_failed and auth.login_succeeded (first per account and window, within a per-node budget, with a suppressed-count summary).",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^audit\\.login\\|credential-(throttled|failed|succeeded)$",
+      "expected_cells": 0,
+      "classes": [
+        "body",
+        "effects"
+      ],
+      "rationale": "D8 new audit records. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D9-D10 fail closed",
+      "kind": "breaking",
+      "changelog": "Hosted credential sign-in answers 503 \"Couldn't reach your provider\" without contacting the directory when the core store or the signing key is unavailable, when the login plugin could not be started, or while a method's outage breaker is open.",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^http\\.crosscut\\|auth-token\\|credential-(store-unavailable|no-signing-key|offload-saturated|breaker-open)$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers",
+        "effects"
+      ],
+      "rationale": "D9 store unavailable or no signing key: 503 with no directory call (1.5.5 bound, then the mint failed). D10 offload saturation: 503 instead of a false 401. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D11 login cookie",
+      "kind": "breaking",
+      "changelog": "The hosted login cookie is __Host-busbar_login with Path=/, MACed with its issue time, and single-use: a forged, expired or replayed cookie is answered 400 \"Sign-in session expired\".",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^http\\.crosscut\\|auth-token\\|login-cookie-(forged|replayed|expired)$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "D11 fixes login CSRF (cookie tossing) and the unauthenticated refresh flag. egress.auth|login-hop|oidc carries whatever set-cookie it is given and records only the IdP POST and the callback status, so it is unaffected. These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "LOGIN-LIMITER D12 form canonicalisation",
+      "kind": "breaking",
+      "changelog": "Hosted credential sign-in forwards only the fields the login plugin declared, each once, and refuses a form that repeats a declared field with 400 \"Sign-in didn't finish\".",
+      "by": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+      "cells": "^http\\.crosscut\\|auth-token\\|credential-duplicate-field$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body",
+        "effects"
+      ],
+      "rationale": "D12 closes the account-key rotation bypass (review B1). These precise cell IDs are owed; expected_cells=0 does not forgive existing or unnamed oracle cells. A single wrong password is still 1.5.5's 401 'Sign-in was declined'.",
+      "premise": {
+        "cell": "http.crosscut|auth-token|GET-none",
+        "status": 200
+      },
+      "signoff": {
+        "who": "ruling:\u00a7LOGIN-LIMITER-R2 (owner-signed design login-attempt-limiter.md Revision 2, 2026-11-12)",
+        "when": "2026-11-12",
+        "ruling": "Owner signed the login attempt limiter design and its review (blockers B1-B5, Q1-Q14) for 1.6.0 GA; every difference below is named in that sign-off. No cell drives a credential login, so each is OWED."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

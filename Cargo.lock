@@ -469,6 +469,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "unicode-normalization",
  "url",
  "zeroize",
 ]

@@ -1432,6 +1432,127 @@ summary = "An update_key request body did not parse as valid JSON, so busbar ret
 action = "None — self-heals; the client must send well-formed JSON. Persistent volume from one caller indicates a broken client worth fixing."
 
 [[diagnostic]]
+name = "LOGIN_THROTTLED_ACCOUNT"
+doc = "A credential sign-in was refused because its account's failure ceiling is reached."
+code = 4032
+class = "Auth"
+slug = "login-throttled-account"
+title = "Credential sign-in throttled: the account's failure ceiling is reached"
+severity = "BenignRecurring"
+summary = "A hosted credential sign-in (`POST /auth/token` with a login cookie) named an account that already has `max_failures` failed attempts inside its failure window, counted fleet-wide in the core store and keyed on an HMAC of the normalised account name (never the name). busbar answered 429 \"Too many sign-in attempts\" with Retry-After and did NOT call the login plugin, so the directory saw no bind. The first refusal per account and window is logged at warn and audited (`auth.login_throttled`); later ones log at debug."
+action = "None for a single burst: it expires on its own. Repeated refusals for one account are a targeted attack or a user who forgot a password: see BUSBAR-4041. Keep `browser_login.max_failures` x ceil(directory reset window / failure window) below the directory's lockout threshold."
+
+[[diagnostic]]
+name = "LOGIN_THROTTLED_SOURCE"
+doc = "A credential sign-in was refused because its source address spent its failure or submission budget."
+code = 4033
+class = "Auth"
+slug = "login-throttled-source"
+title = "Credential sign-in throttled: the client's source spent its budget"
+severity = "BenignRecurring"
+summary = "One client source (an IPv4 address, or an IPv6 /64 with /48 and /32 aggregates) exceeded the per-source failure ceiling or the submission rate inside the window, typically one client spraying many usernames. busbar answered 429 with Retry-After without calling the login plugin. The first refusal per source and window is logged at warn and audited; later ones log at debug."
+action = "None for a single client. If every user arrives from one address (an ingress or load balancer), configure `advanced.trusted_proxies` so busbar sees the real client address."
+
+[[diagnostic]]
+name = "LOGIN_GLOBAL_ALARM"
+doc = "Credential sign-in failures on this node passed the global alarm threshold; per-source limits are tightened."
+code = 4034
+class = "Auth"
+slug = "login-global-alarm"
+title = "Credential sign-in failures passed the global alarm threshold"
+severity = "Actionable"
+summary = "More than `auth.login_limits.global.max_failures_per_minute` credential sign-in failures happened on this node in one minute: the shape of a distributed password spray. busbar does not refuse everyone; while the alarm holds it cuts each source's failure ceiling to a quarter and its submission rate to a third, and records `auth.login_alarm`. Warned once per trip; the clear is logged at info."
+action = "Investigate the spray (sources, targeted accounts in the audit log). Put a WAF rate limit in front of `POST /auth/token` if it persists."
+
+[[diagnostic]]
+name = "LOGIN_LIMITER_STORE_UNAVAILABLE"
+doc = "The login attempt limiter could not reach the core store; credential sign-ins are refused (503) without calling the plugin."
+code = 4035
+class = "Auth"
+slug = "login-limiter-store-unavailable"
+title = "Login attempt limiter cannot reach the core store (sign-ins refused)"
+severity = "Actionable"
+summary = "The per-account limiter keeps its counts in the core store so they hold fleet-wide. The store failed, was absent, or a compare-and-swap could not settle, so busbar fails closed: every credential sign-in answers 503 \"Couldn't reach your provider\" with Retry-After and the login plugin is not called (a sign-in could not finish anyway: issuing the key writes to the same store). Warned on entering the state and logged on recovery."
+action = "Restore the core store (`store:`). Sign-ins resume on their own once it answers."
+
+[[diagnostic]]
+name = "LOGIN_CLIENT_ADDRESS_UNKNOWN"
+doc = "A credential sign-in or admin request came from a source busbar cannot identify; per-source limits do not apply to it."
+code = 4036
+class = "Auth"
+slug = "login-client-address-unknown"
+title = "Client address unknown: per-source login limits skipped"
+severity = "Actionable"
+summary = "busbar could not tell who sent a request: the server has no socket peer (an embedded server), a trusted proxy forwarded an unparseable hop, or a private or loopback peer sent `X-Forwarded-For` or `Forwarded` while `advanced.trusted_proxies` is empty, which means an ingress sits in front of busbar and every user would otherwise share one bucket. Per-source limits are skipped for such requests; the per-account limiter still applies. Warned once, then at debug."
+action = "List the ingress or load balancer addresses in `advanced.trusted_proxies` (and set `advanced.forwarded_header` if it sends `Forwarded`)."
+
+[[diagnostic]]
+name = "LOGIN_LIMITER_DISABLED"
+doc = "A login limiter is disabled by config."
+code = 4037
+class = "Auth"
+slug = "login-limiter-disabled"
+title = "A login attempt limiter is disabled"
+severity = "Actionable"
+summary = "`auth.login_limits.per_source.enabled` or `auth.login_limits.global.enabled` is false. That is allowed for a site whose WAF already does this, and logged at every boot and reload so it is never silent. The per-account limiter cannot be disabled."
+action = "Re-enable it, or confirm that a WAF in front of busbar rate-limits `POST /auth/token`."
+
+[[diagnostic]]
+name = "ADMIN_AUTH_THROTTLED_SOURCE"
+doc = "One source spent its budget of refused admin credentials; it is answered 429 until the window passes."
+code = 4038
+class = "Auth"
+slug = "admin-auth-throttled-source"
+title = "Admin door: a source's refused-credential budget is spent"
+severity = "BenignRecurring"
+summary = "A source presented `auth.login_limits.admin.max_failures` admin credentials that were refused inside the window. Further admin requests from it get 429 `rate_limited` (BUSBAR-8108) with the real Retry-After, before any credential is judged. Requests that present no credential are never counted. Logged at warn and audited (`admin.auth_throttled`) once per source and window."
+action = "Check who is guessing the admin credential from that source. Use a long random operator token (see BUSBAR-4042)."
+
+[[diagnostic]]
+name = "LOGIN_LIMITER_NO_KEY"
+doc = "Credential sign-in is refused because no auth.signing_key is configured to key the login limiter."
+code = 4039
+class = "Auth"
+slug = "login-limiter-no-key"
+title = "Credential sign-in refused: no signing key to key the login limiter"
+severity = "Actionable"
+summary = "The per-account limiter keys accounts with an HMAC derived from `auth.signing_key`, so every node computes the same key over the shared store. No signing key is configured, so busbar refuses each credential sign-in with 503 and does not call the plugin; it never falls back to a per-node random key, which would split the budget silently. Such a deployment cannot issue keys either. Warned once, then at debug."
+action = "Configure `auth.signing_key` (`busbar --generate-signing-key`)."
+
+[[diagnostic]]
+name = "LOGIN_PROVIDER_BREAKER_OPEN"
+doc = "A credential method's identity provider failed repeatedly; sign-ins to it are answered 503 for a short time without calling it."
+code = 4040
+class = "Auth"
+slug = "login-provider-breaker-open"
+title = "Credential method held open after repeated provider outages"
+severity = "Actionable"
+summary = "The login plugin answered `Outage` (directory or IdP unreachable) five times within a minute. busbar answers sign-ins for that method with 503 \"Couldn't reach your provider\" and Retry-After: 30 for 30 seconds, without calling the plugin and without counting the attempts against anyone, so an outage does not throttle every user. Warned each time it opens."
+action = "Restore the directory or identity provider the method uses."
+
+[[diagnostic]]
+name = "LOGIN_ACCOUNT_THROTTLE_SUSTAINED"
+doc = "One account has been throttled in more than four consecutive failure windows: a targeted account."
+code = 4041
+class = "Auth"
+slug = "login-account-throttle-sustained"
+title = "An account has been throttled for more than four consecutive windows"
+severity = "Actionable"
+summary = "Someone keeps spending one account's failure budget, window after window. busbar keeps refusing (inside busbar only; the directory is protected), but the real user cannot sign in either. The log carries the account's key fingerprint, never the name. Warned once per window while it lasts."
+action = "Treat it as a security event: find the sources in the audit log and block them upstream. Tell the user; consider a trusted network path for them."
+
+[[diagnostic]]
+name = "ADMIN_OPERATOR_TOKEN_SHORT"
+doc = "The configured operator token is shorter than 32 bytes."
+code = 4042
+class = "Auth"
+slug = "admin-operator-token-short"
+title = "Operator token is shorter than 32 bytes"
+severity = "Actionable"
+summary = "The admin operator token is operator-chosen and compared by digest, so its entropy is the only thing between an online guesser and the admin API. A token shorter than 32 bytes is warned at every boot and reload in 1.6 and will be refused in 1.7."
+action = "Replace it with at least 32 random bytes (for example `openssl rand -hex 32`)."
+
+[[diagnostic]]
 name = "PLANE_BREAKER_TRIPPED"
 code = 5038
 class = "Proxy"
@@ -1745,3 +1866,14 @@ title = "--generate-signing-key could not mint a key (OS entropy source unavaila
 severity = "Actionable"
 summary = "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written."
 action = "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment."
+
+[[diagnostic]]
+name = "CONFIG_LOGIN_LIMITS_INVALID"
+doc = "A login-limits setting is out of range or malformed; boot refuses."
+code = 3133
+class = "Config"
+slug = "config-login-limits-invalid"
+title = "A login attempt limit setting is invalid"
+severity = "Fatal"
+summary = "A key of `auth.login_limits`, a provider's `browser_login.max_failures` or `browser_login.failure_window`, `advanced.trusted_proxies` or `advanced.forwarded_header` is out of range or does not parse, so busbar refuses the config rather than run with a limit nobody chose. Counts are 1..=100 (per account) or at least 1, windows 1m..=24h, `per_account.max_failures` may not exceed `per_source.max_failures`, every trusted proxy is an IP or a CIDR, and the forwarded header is `x-forwarded-for` or `forwarded`."
+action = "Fix the key the message names."

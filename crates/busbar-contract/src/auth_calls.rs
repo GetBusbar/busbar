@@ -262,6 +262,24 @@ pub trait LoginCall: Future<Output = LoginOutcome> + Send + Unpin {
     fn faulted(&self) -> bool {
         false
     }
+
+    /// Why a declined credential was declined, when the plugin said
+    /// ([`crate::abi::auth::EXT_REJECT_HINT`] on a `LOGIN_BAD_CREDENTIAL` reply). The host acts on it
+    /// (it stops forwarding attempts for the account) and never shows it to the client. `None`
+    /// before the step answered, for any other answer, and when the plugin stated nothing.
+    fn reject_hint(&self) -> Option<RejectHint> {
+        None
+    }
+}
+
+/// What a plugin may say about WHY it declined a credential (`complete_login`'s reply extension
+/// [`crate::abi::auth::EXT_REJECT_HINT`]). Additive: a plugin that states nothing is a plain decline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectHint {
+    /// The directory reports the account locked (for example Active Directory `data 775`).
+    AccountLocked,
+    /// The plugin's own attempt limiter refused the attempt.
+    Throttled,
 }
 
 /// A login step answered before anything crossed.

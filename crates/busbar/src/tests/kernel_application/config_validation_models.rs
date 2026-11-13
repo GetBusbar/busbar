@@ -13,6 +13,7 @@ fn make_root_cfg(
 ) -> RootCfg {
     crate::dist_root_install::install();
     config::RootCfg {
+        login_limits: Default::default(),
         plane_defs: Default::default(),
         plane_pools: Default::default(),
         plane_sections: Default::default(),
