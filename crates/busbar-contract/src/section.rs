@@ -320,8 +320,8 @@ mod tests {
         ] {
             let input = format!(r#"{{"usage_observations":{value}}}"#);
             let error = parse(&input).unwrap_err().to_string();
-            assert!(error.contains("RESERVED"), "{value}: {error}");
-            assert!(error.contains(USAGE_OBSERVATIONS_KEY), "{error}");
+            let refusal = reserved_name_refusal("witness", "member", USAGE_OBSERVATIONS_KEY);
+            assert!(error.contains(&refusal), "{value}: {error}");
         }
     }
 
@@ -329,7 +329,9 @@ mod tests {
     fn ordinary_reserved_keys_still_refuse_member_definitions() {
         for key in ["hooks", UPSTREAM_CREDENTIALS_KEY] {
             let input = format!(r#"{{"{key}":{{"target":"https://example.test"}}}}"#);
-            assert!(parse(&input).unwrap_err().to_string().contains("RESERVED"));
+            let error = parse(&input).unwrap_err().to_string();
+            let refusal = reserved_name_refusal("witness", "member", key);
+            assert!(error.contains(&refusal), "{key}: {error}");
         }
         let parsed = parse(r#"{"hooks":["gate"],"upstream_credentials":"own","one":{}}"#).unwrap();
         assert_eq!(parsed.hooks, ["gate"]);
