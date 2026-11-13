@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -149,7 +150,12 @@ class Restore(Fixture):
         self.assertEqual(entry['sha256'], hashlib.sha256(BYTES).hexdigest())
         staged = self.q.execution.product_images
         self.assertEqual((staged / entry['file']).read_bytes(), BYTES)
-        self.assertFalse(os.access(staged / entry['file'], os.W_OK))
+        # Sealed by mode bits for every user; root (the native controller) bypasses
+        # them, so the effective-access check only applies to an unprivileged run.
+        for path in (staged / entry['file'], (staged / entry['file']).parent, staged):
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode) & 0o222, 0, path)
+        if os.geteuid() != 0:
+            self.assertFalse(os.access(staged / entry['file'], os.W_OK))
         self.assertEqual(json.loads((staged / 'index.json').read_text()), index)
         self.assertEqual(self.q.receipt['product_images']['status'], 'hit')
         # The trusted script copies it to Cargo's own output path.
