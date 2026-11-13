@@ -164,10 +164,9 @@ pub(super) fn complete(paths: &mut Map<String, Value>, schemas: &mut Map<String,
     {
         // Preserve the legacy enum shape and publish the reader compatibility requirement.
         let mut known = code.get("enum").cloned().unwrap_or_else(|| json!([]));
-        for value in ["request_too_large"] {
-            if !known.as_array().unwrap().contains(&json!(value)) {
-                known.as_array_mut().unwrap().push(json!(value));
-            }
+        let value = "request_too_large";
+        if !known.as_array().unwrap().contains(&json!(value)) {
+            known.as_array_mut().unwrap().push(json!(value));
         }
         *code = json!({"type":"string","enum":known,"x-busbar-extensible-enum":true,"description":"Known server codes; forward-compatible readers preserve unknown code strings instead of failing the whole response."});
     }
