@@ -922,6 +922,10 @@ pub enum SelfMintRefusal {
     /// The subject's binding was minted through a different identity provider
     /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
+    /// The subject's binding was revoked (denylisted).
+    Revoked,
+    /// The subject itself is held (a principal transition today).
+    Held,
 }
 
 /// A self-serve mint failure: a typed refusal, or the store failing underneath the mint.
@@ -949,6 +953,12 @@ impl std::fmt::Display for SelfMintError {
                 "self-serve mint refused: the subject's binding was minted by another identity \
                  provider",
             ),
+            SelfMintError::Refused(SelfMintRefusal::Revoked) => {
+                f.write_str("self-serve mint refused: the subject's binding is revoked")
+            }
+            SelfMintError::Refused(SelfMintRefusal::Held) => {
+                f.write_str("self-serve mint refused: the subject is on hold")
+            }
             SelfMintError::Store(e) => e.fmt(f),
         }
     }

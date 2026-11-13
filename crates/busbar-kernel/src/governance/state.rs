@@ -41,6 +41,10 @@ pub enum KeyMutationError {
         operation: &'static str,
         reconcile: RecordStoreError,
     },
+    /// Refused, nothing written: the request would re-enable a revoked key.
+    Revoked {
+        key_id: String,
+    },
 }
 impl From<RecordStoreError> for KeyMutationError {
     fn from(error: RecordStoreError) -> Self {
@@ -57,6 +61,7 @@ impl std::fmt::Display for KeyMutationError {
                 f,
                 "{operation} applied to key '{key_id}'; cache reconciliation incomplete"
             ),
+            Self::Revoked { key_id } => write!(f, "key '{key_id}' is revoked"),
         }
     }
 }
@@ -65,6 +70,7 @@ impl From<KeyMutationError> for RecordStoreError {
     fn from(error: KeyMutationError) -> Self {
         match error {
             KeyMutationError::Store(error) => error,
+            revoked @ KeyMutationError::Revoked { .. } => Self(revoked.to_string()),
             KeyMutationError::Applied {
                 key_id,
                 operation,

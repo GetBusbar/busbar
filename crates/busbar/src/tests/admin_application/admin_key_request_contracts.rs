@@ -1166,6 +1166,48 @@ async fn test_patch_key_enables_disables_and_validates_at_create_parity() {
         .unwrap();
     assert_eq!(missing.status().as_u16(), 404);
 
+    // Revoked is terminal: a PATCH {enabled:true} on a revoked key is refused with a coded 409,
+    // audited as a rejected key.patch, and the key stays revoked.
+    let revoked = client
+        .post(format!("{key_url}/revoke"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status().as_u16(), 200);
+    let reenable = client
+        .patch(&key_url)
+        .header("x-admin-token", "admintok")
+        .json(&serde_json::json!({"enabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        reenable.status().as_u16(),
+        409,
+        "a revoked key is never re-enabled"
+    );
+    let body: serde_json::Value = reenable.json().await.unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({"error": {"code": "conflict", "message": format!(
+            "BUSBAR-4044: key '{id}' is revoked, and a revoked key is never re-enabled; delete it \
+             instead, and a self-serve subject's next sign-in issues a new key. See \
+             https://getbusbar.com/docs/1.6/errors/BUSBAR-4044"
+        )}}),
+    );
+    let after: serde_json::Value = client
+        .get(&key_url)
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["enabled"], false, "the key stays revoked: {after}");
+    assert_eq!(after["state"], "revoked", "the key stays revoked: {after}");
+
     handle.abort();
     println!("{WITNESS}");
 }

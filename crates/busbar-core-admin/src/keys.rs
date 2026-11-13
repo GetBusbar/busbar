@@ -1242,6 +1242,7 @@ async fn update_key_owned(
                 Ok(match gov.update_key_outcome_claimed_async(&id, enabled, group, &identity_guard).await {
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => UpdateOutcome::Applied,
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => return Err(error),
+                    Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => return Err(revoked.into()),
                     Ok(Some(key)) => {
                         let state = key_state(&key, &gov);
                         UpdateOutcome::Updated(Box::new(key), state)
@@ -1564,6 +1565,9 @@ async fn rotate_key_owned(
                 }
                 Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
                     return Err(error)
+                }
+                Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => {
+                    return Err(revoked.into())
                 }
                 Ok(Some(rotated)) => {
                     RotateOutcome::Rotated(key_state(&rotated.key, &gov), Box::new(rotated))
@@ -1941,6 +1945,9 @@ async fn delete_key_owned(
                     Ok(()) => Ok(DeleteOutcome::Deleted),
                     Err(busbar_kernel::governance::KeyMutationError::Applied { .. }) => {
                         Ok(DeleteOutcome::Applied)
+                    }
+                    Err(revoked @ busbar_kernel::governance::KeyMutationError::Revoked { .. }) => {
+                        Err(revoked.into())
                     }
                     Err(busbar_kernel::governance::KeyMutationError::Store(error)) => {
                         audit::AUDIT.record_by(
