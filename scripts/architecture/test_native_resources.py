@@ -123,7 +123,15 @@ class BuildJobs(unittest.TestCase):
         self.assertEqual(scheduling['unoptimized_build_jobs'], 3)
         jobs = lambda name, argv: native.step_build_jobs(name, argv, scheduling)
         self.assertEqual(jobs('root-clippy', ['cargo', 'clippy', '--workspace']), 3)
-        self.assertEqual(jobs('root-runtime', ['cargo', 'nextest', 'run']), 3)
+        # Test builds link many large test executables at once: three of them exhausted the 6 GiB
+        # boundary (qa-nightly 3472 jobs 7635 default-runtime, 7979 root-runtime, OOMKilled), so
+        # cargo test / nextest get a 3 GiB slot: two jobs on this boundary.
+        self.assertEqual(scheduling['test_build_jobs'], 2)
+        self.assertEqual(scheduling['test_compiler_memory_bytes_per_slot'], 3 * 1024**3)
+        self.assertEqual(jobs('root-runtime', ['cargo', 'nextest', 'run']), 2)
+        self.assertEqual(jobs('default-runtime', ['cargo', 'nextest', 'run', '--manifest-path', 'dist/default/Cargo.toml']), 2)
+        self.assertEqual(jobs('workspace-doctests', ['cargo', 'test', '--workspace', '--doc']), 2)
+        self.assertEqual(jobs('loader-witnesses', ['cargo', 'build', '-p', 'x', '--examples']), 3)
         self.assertEqual(jobs('product-inputs', ['bash', '/t/scripts/ci-product-inputs.sh']), 3)
         self.assertEqual(jobs('core-native-conformance', ['bash', '/c/testing/conformance/run.sh']), 3)
         for name, argv in (('final-binary', ['python3', 'x']), ('product-inputs', ['bash', 'x']),

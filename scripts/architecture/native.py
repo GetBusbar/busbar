@@ -49,10 +49,17 @@ def native_scheduling(execution):
     unoptimized_memory_per_slot = 2 * 1024**3
     unoptimized_build_jobs = (test_threads if memory is None else
                               max(1, min(test_threads, memory // unoptimized_memory_per_slot)))
+    # cargo test / nextest link many large test executables concurrently; at three jobs the link
+    # phase exhausted the 6 GiB boundary (qa-nightly 3472: job 7635 default-runtime, job 7979
+    # root-runtime, both OOMKilled at the cgroup limit). They get a wider slot, so two jobs here.
+    test_memory_per_slot = 3 * 1024**3
+    test_build_jobs = (test_threads if memory is None else
+                       max(1, min(test_threads, memory // test_memory_per_slot)))
     return {'build_jobs': build_jobs, 'test_threads': test_threads,
-            'unoptimized_build_jobs': unoptimized_build_jobs,
+            'unoptimized_build_jobs': unoptimized_build_jobs, 'test_build_jobs': test_build_jobs,
             'candidate_memory_bytes': memory, 'compiler_memory_bytes_per_slot': memory_per_slot,
             'unoptimized_compiler_memory_bytes_per_slot': unoptimized_memory_per_slot,
+            'test_compiler_memory_bytes_per_slot': test_memory_per_slot,
             'memory_policy': 'conservative-slot-budget-not-measured-peak-or-fit-guarantee'}
 
 
@@ -96,6 +103,8 @@ def step_build_jobs(name, argv, scheduling):
         unoptimized = True
     if name in OPTIMIZED_STEPS or not unoptimized or 'unoptimized_build_jobs' not in scheduling:
         return scheduling['build_jobs']
+    if argv[0] == 'cargo' and argv[1] in ('test', 'nextest') and 'test_build_jobs' in scheduling:
+        return scheduling['test_build_jobs']
     return scheduling['unoptimized_build_jobs']
 
 
