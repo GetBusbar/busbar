@@ -1,0 +1,36 @@
+error[E0080]: evaluation panicked: SDK registration requires arrive
+  --> cases/fail/witness_44.rs:13:1
+   |
+13 | / busbar_contract::plugin_door! {
+14 | |     ops: Ops,
+15 | |     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::plane::Pla...
+16 | |     lifecycle: {
+...  |
+33 | |     },
+34 | | }
+   | |_^ evaluation of `door::__DOOR` failed inside this call
+   |
+note: inside `busbar_contract::abi::sdk::registration::check::<busbar_contract::abi::plane::Ops>`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: $BUSBAR_CONTRACT/src/abi/sdk/registration.rs
+   |
+   |                 require!(o; arrive, on_piece, refusal, hydrate, start, project);
+   |                 --------------------------------------------------------------- in this macro invocation
+   = note: this error originates in the macro `busbar_contract::plugin_door` which comes from the expansion of the macro `require` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> cases/fail/witness_44.rs:13:1
+   |
+13 | / busbar_contract::plugin_door! {
+14 | |     ops: Ops,
+15 | |     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::plane::Plan...
+16 | |     lifecycle: {
+...  |
+33 | |     },
+34 | | }
+   | |_^
+   |
+   = note: this note originates in the macro `busbar_contract::plugin_door` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,0 +1,16 @@
+error[E0277]: the trait bound `T: CombinedPlugin` is not satisfied
+ --> cases/fail/witness_50.rs:6:68
+  |
+6 | fn incomplete<T: VerifyPlugin + OutboundPlugin>() { require_life::<Both<T>>(); }
+  |                                                                    ^^^^^^^ the trait `CombinedPlugin` is not implemented for `T`
+  |
+  = note: required for `busbar_contract::abi::sdk::auth_outbound::Both<T>` to implement `Life`
+note: required by a bound in `require_life`
+ --> cases/fail/witness_50.rs:5:20
+  |
+5 | fn require_life<T: Life>() {}
+  |                    ^^^^ required by this bound in `require_life`
+help: consider further restricting type parameter `T` with trait `CombinedPlugin`
+  |
+6 | fn incomplete<T: VerifyPlugin + OutboundPlugin + busbar_contract::abi::sdk::auth_outbound::CombinedPlugin>() { require_life::<Both<T>>(); }
+  |                                                ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

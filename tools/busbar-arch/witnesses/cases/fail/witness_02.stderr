@@ -1,0 +1,19 @@
+error[E0277]: the trait bound `AuthKind: busbar_contract::abi::host::access::RawIo` is not satisfied
+ --> cases/fail/witness_02.rs:4:47
+  |
+4 | fn auth(host: &Host<AuthKind>) { let _ = host.io(Ticket::NONE); }
+  |                                               ^^ the trait `busbar_contract::abi::host::access::RawIo` is not implemented for `AuthKind`
+  |
+help: the trait `busbar_contract::abi::host::access::RawIo` is implemented for `TransportKind`
+ --> $BUSBAR_CONTRACT/src/abi/host/access.rs
+  |
+  | impl RawIo for TransportKind {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `busbar_contract::abi::sdk::conn::Host::<K>::io`
+ --> $BUSBAR_CONTRACT/src/abi/sdk/conn.rs
+  |
+  |     pub fn io(&self, ticket: Ticket) -> super::io::Io<'_>
+  |            -- required by a bound in this associated function
+  |     where
+  |         K: crate::abi::host::access::RawIo,
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `Host::<K>::io`
