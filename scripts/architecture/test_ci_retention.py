@@ -96,12 +96,12 @@ class Fixture(unittest.TestCase):
                 'finished_at': '2026-11-11T00:00:00Z', 'artifacts_file': {'size': size},
                 'pipeline': {'id': pipeline_id, 'project_id': 3, 'ref': 'dev', 'sha': source, 'source': 'push'}}
 
-    def receipt(self, job_id, pipeline_id, source, host=None):
+    def receipt(self, job_id, pipeline_id, source, host=None, policy=POLICY):
         value = {'schema': retention.RECEIPT_SCHEMAS[self.kind], 'status': 'pass', 'repository': self.project,
                  'source': source, 'job_id': str(job_id), 'pipeline_id': str(pipeline_id),
-                 'policy_revision': POLICY,
+                 'policy_revision': policy,
                  'config_uri': HOST + '/' + self.project + '//ci/architecture-pipeline.yml@GetBusbar/busbar:'
-                               + POLICY + '@refs/heads/dev',
+                               + policy + '@refs/heads/dev',
                  'steps': [{'name': 'root-runtime', 'status': 'pass', 'exit_code': 0,
                             'stdout_sha256': sha(b'out'), 'stderr_sha256': sha(b'err')}]}
         if host:
@@ -128,8 +128,12 @@ class Fixture(unittest.TestCase):
         value.update(overrides)
         return value
 
-    def decide(self, source, **overrides):
-        return retention.decide(self.env(source, **overrides), POLICY, retention.Git(self.root), self.api)
+    def decide(self, source, host_identity=None, **overrides):
+        return retention.decide(self.env(source, **overrides), POLICY, retention.Git(self.root), self.api,
+                                host_identity=host_identity or self.host_identity)
+
+    def host_identity(self, context, host, env):
+        self.fail('core retention never computes a plugin host identity')
 
     def assertFresh(self, result, pattern):
         decision, reasons = result
@@ -291,19 +295,80 @@ class Decisions(Fixture):
             self.assertFresh(self.decide(current), 'internal error: RuntimeError')
 
 
+def identity_record(project, policy, host, seed='1'):
+    record = {'schema': retention.phi.SCHEMA, 'repository': project, 'policy_revision': policy,
+              'host_revision': host, 'host_unread': list(retention.phi.HOST_UNREAD),
+              'host_tree_sha256': seed * 64, 'controller_tree_sha256': '2' * 64,
+              'content_excluded': [], 'judge_selection': None, 'notes': []}
+    record['sha256'] = retention.phi.digest_of(record)
+    return record
+
+
 class PluginHost(Fixture):
     project = 'GetBusbar/busbar-plane-llm'
+    current_identity = identity_record(project, POLICY, 'c' * 40)['sha256']
 
     def setUp(self):
         super().setUp()
         self.api = FakeApi()
         self.add_job(100, 50, self.original, host='c' * 40)
 
-    def test_same_host_retains_and_changed_host_runs_fresh(self):
+    def host_identity(self, context, host, env):
+        self.assertEqual((context['project'], context['policy']), (self.project, POLICY))
+        return self.current_identity
+
+    def add_qualified(self, job_id, pipeline_id, policy, host, record):
+        receipt = self.receipt(job_id, pipeline_id, self.original, host, policy=policy)
+        receipt['plugin_host_identity'] = record
+        self.add_job(job_id, pipeline_id, self.original, receipt=receipt)
+
+    def test_same_host_retains_and_changed_host_without_identity_runs_fresh(self):
         current = self.commit({'CONTRIBUTING.md': 'changed\n'})
-        self.assertRetained(self.decide(current, BUSBAR_ADMISSION_CORE_REVISION='c' * 40), 100)
+        receipt = self.assertRetained(self.decide(current, BUSBAR_ADMISSION_CORE_REVISION='c' * 40), 100)
+        self.assertEqual(receipt['original']['basis'], 'exact-policy-and-host')
+        self.assertEqual(receipt['identity']['schema'], 'busbar.ci-input-identity/2')
+        self.assertEqual(receipt['identity']['plugin_host_identity'], self.current_identity)
         self.assertFresh(self.decide(current, BUSBAR_ADMISSION_CORE_REVISION='d' * 40),
-                         'job 100 identity differs')
+                         'job 100 .*records no plugin host identity')
+
+    def test_other_policy_and_host_with_equal_identity_is_retained(self):
+        # The fleet repointed core: same plugin tree, a core commit that changed
+        # nothing this plugin's qualification reads.
+        policy, host = 'b' * 40, 'e' * 40
+        record = identity_record(self.project, policy, host)
+        self.assertEqual(record['sha256'], self.current_identity)
+        self.add_qualified(101, 51, policy, host, record)
+        receipt = self.assertRetained(self.decide(self.commit(), BUSBAR_ADMISSION_CORE_REVISION='c' * 40), 101)
+        self.assertEqual(receipt['original']['basis'], 'plugin-host-identity')
+        self.assertEqual((receipt['original']['policy_revision'], receipt['original']['host_revision'],
+                          receipt['original']['plugin_host_identity']), (policy, host, self.current_identity))
+        self.assertEqual(receipt['policy_revision'], POLICY)
+
+    def test_differing_forged_or_unbound_identity_runs_fresh_with_reason(self):
+        policy, host = 'b' * 40, 'e' * 40
+        cases = {
+            'differs from the current': identity_record(self.project, policy, host, seed='9'),
+            'host_revision differs from its receipt': identity_record(self.project, policy, 'f' * 40),
+            'not self-consistent': dict(identity_record(self.project, policy, host), host_tree_sha256='8' * 64),
+            'unavailable at qualification': {'schema': retention.phi.SCHEMA, 'unavailable': 'x'},
+        }
+        for index, (reason, record) in enumerate(cases.items()):
+            with self.subTest(reason=reason):
+                self.api = FakeApi()
+                self.add_qualified(110 + index, 60 + index, policy, host, record)
+                self.assertFresh(self.decide(self.commit(), BUSBAR_ADMISSION_CORE_REVISION='c' * 40),
+                                 'policy bbbbbbbbbb against host eeeeeeeeee: .*' + reason)
+
+    def test_unavailable_current_identity_runs_fresh(self):
+        def unavailable(context, host, env):
+            raise retention.Fresh('plugin host identity unavailable: fetch failed')
+        self.assertFresh(self.decide(self.commit(), unavailable, BUSBAR_ADMISSION_CORE_REVISION='c' * 40),
+                         'plugin host identity unavailable')
+
+    def test_changed_plugin_tree_never_retains_on_identity(self):
+        self.add_qualified(101, 51, 'b' * 40, 'e' * 40, identity_record(self.project, 'b' * 40, 'e' * 40))
+        self.assertFresh(self.decide(self.commit({'crates/a/src/lib.rs': 'pub fn b() {}\n'}),
+                                     BUSBAR_ADMISSION_CORE_REVISION='c' * 40), 'inputs differ')
 
     def test_core_conformance_kind_is_core_only(self):
         current = self.commit()

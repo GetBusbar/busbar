@@ -226,6 +226,28 @@ def expected_inputs(api, project, source):
     return host, sdk
 
 
+def current_plugin_host_identity(api, repository, policy, host):
+    """The plugin host identity of (policy, host) from immutable core commits, or None."""
+    import os
+    import tempfile
+    import plugin_host_identity as identity
+    auth = base64.b64encode(('oauth2:' + api.token).encode()).decode()
+    env = {key: value for key, value in os.environ.items() if key in ('PATH', 'HOME')}
+    env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.' + api.server + '/.extraheader',
+               GIT_CONFIG_VALUE_0='Authorization: Basic ' + auth, GIT_TERMINAL_PROMPT='0',
+               GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null')
+    try:
+        with tempfile.TemporaryDirectory(prefix='busbar-host-identity-') as scratch:
+            trees = identity.GitTrees(scratch, env=env)
+            trees._git('init', '-q')
+            for revision in sorted({policy, host}):
+                trees._git('fetch', '-q', '--depth', '1', '--no-tags', api.server + '/GetBusbar/busbar.git', revision)
+            return identity.compute(repository, trees, policy, trees, host)['sha256']
+    except identity.Unavailable as error:
+        print('admission: plugin host identity unavailable: ' + str(error))
+        return None
+
+
 def required_conformance_job(repository, policy=None):
     if repository == 'GetBusbar/busbar':
         return 'core-conformance'
@@ -345,15 +367,33 @@ def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conforman
         raise ValueError("conformance did not judge this pipeline's certified core-build binary")
 
 
+def plugin_host_matches(label, receipt, host, host_identity):
+    """A plugin receipt's host is current, or its recorded core inputs equal the current host's.
+
+    host_identity is the plugin host identity of (admission policy, current host),
+    computed by the caller from immutable core commits; None when unavailable.
+    """
+    if receipt.get('host_revision') == host:
+        return
+    from plugin_host_identity import Unavailable, accept
+    try:
+        accept(receipt, host_identity)
+    except Unavailable as error:
+        raise ValueError(label + ' receipt mismatch: host_revision ' + str(receipt.get('host_revision'))[:40]
+                         + ' is not the current host ' + host + ' and ' + str(error)) from None
+
+
 def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk,
                    conformance_receipt=None, security_receipt=None, secret_fixture_policy=None,
-                   clippy_receipt=None):
+                   clippy_receipt=None, host_identity=None):
     """Finite admission predicate, shared by the controller and bypass regressions.
 
     For core, receipt is the core-build receipt, conformance_receipt the
     core-conformance receipt and clippy_receipt the core-clippy receipt (DEV
     tier); security_receipt is not consulted.
-    For every other project, receipt is the native-qualification receipt.
+    For every other project, receipt is the native-qualification receipt. Its
+    host must be the current host, or it must record a plugin host identity
+    (bound to its own policy and host) equal to host_identity.
     """
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
         raise ValueError('trusted CI setting changed')
@@ -386,10 +426,11 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
         raise ValueError('external commit status is not a native job')
     expected = {'status': 'pass', 'repository': project['path_with_namespace'], 'source': mr['sha'],
                 'policy_revision': revision, 'pipeline_id': str(pipeline['id']), 'job_id': str(native[0]['id']),
-                'target_revision': target, 'host_revision': host, 'sdk_revision': sdk}
+                'target_revision': target, 'sdk_revision': sdk}
     for key, value in expected.items():
         if receipt.get(key) != value:
             raise ValueError('native receipt mismatch: ' + key)
+    plugin_host_matches('native', receipt, host, host_identity)
     if not receipt.get('steps') or any(step.get('status') != 'pass' or step.get('exit_code') != 0 for step in receipt['steps']):
         raise ValueError('native receipt contains missing or nonpassing checks')
     from native_policy import conformance_rows
@@ -409,6 +450,7 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
         for key, value in expected.items():
             if conformance_receipt.get(key) != value:
                 raise ValueError('conformance receipt mismatch: ' + key)
+        plugin_host_matches('conformance', conformance_receipt, host, host_identity)
         if not conformance_receipt.get('steps') or any(
                 step.get('status') != 'pass' or step.get('exit_code') != 0
                 for step in conformance_receipt['steps']):
@@ -533,8 +575,13 @@ def main():
             else:
                 receipt, conformance_receipt, security_receipt, secret_fixture_policy = native_receipts(
                     api, identity, jobs, name, args.policy_revision)
+            host_identity = None
+            if name != CORE and any(isinstance(value, dict) and value.get('host_revision') != host
+                                    for value in (receipt, conformance_receipt)):
+                host_identity = current_plugin_host_identity(api, name, args.policy_revision, host)
             validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk,
-                           conformance_receipt, security_receipt, secret_fixture_policy, clippy_receipt)
+                           conformance_receipt, security_receipt, secret_fixture_policy, clippy_receipt,
+                           host_identity)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})
             report['projects'].append({'project': name, 'source': mr['sha'], 'target_before': target, 'merge_commit_sha': result.get('merge_commit_sha'), 'state': result['state']})
         args.output.write_text(json.dumps(report, indent=2) + '\n')

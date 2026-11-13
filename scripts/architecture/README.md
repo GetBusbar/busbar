@@ -61,6 +61,49 @@ branch freshness and publishes the current results at `/certifications/`. A fail
 missing or stale qualification cannot trigger a green publication. Successful native
 CI evidence does not create a signed certification or promote code to QA/main.
 
+## Plugin host identity
+
+A plugin (and busbar-release) qualification reads core through two trees: the
+trusted policy checkout its `ci_config_path` selects and the assembled host
+checkout (`BUSBAR_ADMISSION_CORE_REVISION`, else core dev). `plugin_host_identity.py`
+hashes exactly those inputs, so plugin evidence stays valid across core commits
+that change nothing the plugin's qualification reads. It hashes every path, mode
+and blob of both trees except three reviewed reductions:
+
+1. `scripts/architecture/`, `ci/` and `.gitlab/` of the *host* tree. Plugin jobs
+   run the policy checkout's copy; `native.py` removes these paths from the host
+   working tree before any candidate code runs (sparse checkout, still clean at
+   the exact commit) and records the identity in `receipt.plugin_host_identity`.
+2. The contents (not paths) of controller unit-test modules
+   `scripts/architecture/**/test_*.py` in the policy tree, unless any non-markdown
+   blob names the module (transitively) or an unreviewed test walker exists.
+3. `ci/native-judge-inputs.json`, reduced to this repository's selected judge rows.
+
+Commit ids and commit metadata are not inputs; core sources, core tests, the
+dist profile, product pins, plugins.yaml, fixtures, policy and every controller
+module (including resource budgets in `native.py`) are.
+
+Acceptance, everywhere fail-closed: evidence qualified against its exact current
+host (and policy) is accepted as before. Evidence for another host or policy is
+accepted only when its authenticated receipt records a self-consistent identity
+bound to its own policy, host and repository that equals the identity computed for
+the current core; anything else is refused with the reason. `ci_retention.py`
+(identity schema `busbar.ci-input-identity/2` for plugins), `admission.py` and the
+website collector apply this rule. Receipts recorded before this change carry no
+identity and are accepted only on their exact host, so the first fleet run after
+this lands is a normal one.
+
+A repoint is unnecessary when the identities match. Before relaunching a plugin on
+`NEW` (for example in the fleet H3 step), compare its current selector `OLD_POLICY`
+and host variable `OLD_HOST` from a local core clone holding all three commits:
+
+    python3 -B scripts/architecture/plugin_host_identity.py compare --git-dir CORE_CLONE \
+        --repository GetBusbar/busbar-secret-c --policy OLD_POLICY --host OLD_HOST --to NEW
+
+Exit 0 means unchanged: leave the selector and variable as they are and launch
+nothing; the website accepts the existing evidence for `NEW`. Exit 1 means changed:
+repoint and relaunch. Exit 2 means no identity: repoint and relaunch.
+
 Run the finite tooling regressions with `python3 -m unittest discover -s
 scripts/architecture -p 'test_*.py'`. Production policy/API changes require the owner
 to review and select a new immutable policy revision; candidate authors cannot expand

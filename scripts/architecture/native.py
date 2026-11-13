@@ -734,11 +734,37 @@ class Qualification:
                 if json.loads((host / 'scripts/ci-product-pins.json').read_text())['sdk'] != sdk:
                     raise Violation('assembled host and plugin SDK differ; submit a coherent cohort')
         self.receipt['host_revision'] = git(host, 'rev-parse', 'HEAD')
+        if self.repository != 'GetBusbar/busbar':
+            self.record_plugin_host_identity(host)
         self.env['BUSBAR_CHECKOUT'] = str(host)
         self.env['BUSBAR_ADMISSION_CORE_REVISION'] = self.receipt['host_revision']
         self.save()
         self._host = host
         return host
+
+    def record_plugin_host_identity(self, host):
+        """Hide host-unread controller paths, then record exactly what this job reads from core.
+
+        The restricted host view is enforced (a failure stops the job before any
+        candidate code). An identity that cannot be established is recorded as
+        unavailable: such evidence is then accepted only on its exact host.
+        """
+        import plugin_host_identity as identity
+        try:
+            identity.restrict_host_view(host)
+        except identity.Unavailable as error:
+            raise Violation('restricted host view: ' + str(error)) from None
+        try:
+            record = identity.compute(self.repository, identity.GitTrees(self.trusted),
+                                      git(self.trusted, 'rev-parse', 'HEAD'), identity.GitTrees(host),
+                                      self.receipt['host_revision'])
+        except identity.Unavailable as error:
+            record = {'schema': identity.SCHEMA, 'unavailable': str(error)[:500]}
+        self.receipt['plugin_host_identity'] = record
+        print('busbar-host-identity: ' + record.get('sha256', 'unavailable: ' + record.get('unavailable', '')),
+              flush=True)
+        for note in record.get('notes', []):
+            print('busbar-host-identity:   note: ' + note, flush=True)
 
     def sdk(self):
         if not hasattr(self, '_sdk'):

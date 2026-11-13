@@ -60,6 +60,37 @@ class Admission(unittest.TestCase):
     def test_current_native_proof_admits(self):
         self.validate()
 
+    def test_moved_host_admits_only_on_an_equal_bound_plugin_host_identity(self):
+        import plugin_host_identity as phi
+        old_host = 'f' * 40
+        record = {'schema': phi.SCHEMA, 'repository': PLUGIN, 'policy_revision': self.revision,
+                  'host_revision': old_host, 'host_unread': list(phi.HOST_UNREAD), 'host_tree_sha256': '1' * 64,
+                  'controller_tree_sha256': '2' * 64, 'content_excluded': [], 'judge_selection': None, 'notes': []}
+        record['sha256'] = phi.digest_of(record)
+        for value in (self.receipt, self.conformance):
+            value.update(host_revision=old_host, plugin_host_identity=record)
+
+        def validate(identity):
+            validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.receipt, self.revision,
+                           self.target, self.host, self.sdk, self.conformance, self.security, None, None, identity)
+
+        validate(record['sha256'])
+        for identity, reason in (('0' * 64, 'differs from the current'), (None, 'no current plugin host identity')):
+            with self.subTest(reason=reason), self.assertRaisesRegex(
+                    ValueError, 'native receipt mismatch: host_revision f{40} is not the current host e{40} and .*'
+                    + reason):
+                validate(identity)
+        self.receipt['plugin_host_identity'] = None
+        with self.assertRaisesRegex(ValueError, 'records no plugin host identity'):
+            validate(record['sha256'])
+        self.receipt['plugin_host_identity'] = dict(record, host_revision=self.host)
+        with self.assertRaisesRegex(ValueError, 'host_revision differs from its receipt'):
+            validate(record['sha256'])
+        self.receipt['plugin_host_identity'] = record
+        self.conformance['plugin_host_identity'] = None
+        with self.assertRaisesRegex(ValueError, 'conformance receipt mismatch: host_revision'):
+            validate(record['sha256'])
+
     def test_missing_or_optional_conformance_never_admits(self):
         good = copy.deepcopy(self.jobs)
         for jobs in ([good[0], good[2]], good + [good[1]], [good[0], dict(good[1], runner=None), good[2]],
