@@ -356,6 +356,11 @@ mod neutral_secret;
 
 #[cfg(test)]
 #[allow(unsafe_code)]
+#[path = "tests/neutral_rotating_secret.rs"]
+mod neutral_rotating_secret;
+
+#[cfg(test)]
+#[allow(unsafe_code)]
 #[path = "tests/neutral_export.rs"]
 mod neutral_export;
 

@@ -1026,6 +1026,43 @@ summary = "A recoverable credential (a signed-request secret) minted by 1.5.5 is
 action = "Configure credentials.at_rest.key (a secret reference resolving to 32 random bytes) and reload; the row is re-sealed and no longer stored in the clear."
 
 [[diagnostic]]
+name = "UPSTREAM_CREDENTIAL_REFRESH_FAILED"
+doc = "A plane member's upstream credential could not be refreshed; the held value is kept until its lease ends."
+code = 8026
+class = "Governance"
+slug = "upstream-credential-refresh-failed"
+title = "A plane member's upstream credential could not be refreshed"
+severity = "Actionable"
+summary = "busbar renews each plane member's upstream_credential off the request path, at half its lease_ttl_ms (at most every five minutes). A renewal failed: the source could not be read (cause resolve: unavailable, internal fault, an empty or non-text value), or the value changed and the auth plugin refused the new one (cause reopen, at ERROR). The value already held is still presented until its lease ends, and the renewal is retried with a jittered backoff. Reported on the first failure, then at most once a minute per member (also after the lease has ended); members on the same source within that minute are counted in its others field. Each report is audited as upstream_credential.refresh, degraded. An A2A member whose lease ends meanwhile has its hops refused as BUSBAR-7013."
+action = "Check the source the reference field names (the file, the environment variable or the secret module) and the error field. For cause reopen, the value at the source is one the auth plugin cannot present (for example a header value with illegal characters): correct it at the source. The next successful refresh logs that it refreshed again and is audited as applied."
+
+[[diagnostic]]
+name = "UPSTREAM_CREDENTIAL_LAPSED"
+doc = "A plane member's upstream credential is no longer presented: its lease ended unrenewed, or its source confirmed it revoked."
+code = 8027
+class = "Governance"
+slug = "upstream-credential-lapsed"
+title = "A plane member's upstream credential lapsed or was revoked at its source"
+severity = "Actionable"
+summary = "A plane member's upstream credential is no longer presented, so every hop on the member is refused (credential_unavailable; for an A2A member, BUSBAR-7013). Cause lease-expired: its lease_ttl_ms ran out with no successful refresh (reported when the lease ends, whether or not a hop arrives). Cause revoked-at-source: the source answered not-found or permission-denied twice, one second apart, so busbar dropped the credential at once instead of riding out an outage. Reported once per lapse and audited as upstream_credential.refresh, rejected. Refreshes continue; the first that succeeds presents the credential again."
+action = "For revoked-at-source, this is expected after deleting the secret or removing busbar's access to it; restore it to resume. For lease-expired, see the BUSBAR-8026 lines for the member: they name the source and the error. A longer lease_ttl_ms rides out longer outages; a shorter one revokes faster."
+
+[[diagnostic]]
+name = "PLUGIN_CREDENTIAL_ROTATION_FAILED"
+doc = "A plugin instance's own rotated credential could not be applied; the running instance is kept."
+code = 8028
+class = "Governance"
+slug = "plugin-credential-rotation-failed"
+title = "A plugin's rotated credential could not be applied"
+severity = "Actionable"
+summary = "busbar re-reads the secret references a secret or auth plugin instance was opened with every 30 seconds. When one changed (a rotated token file, for example a workload-identity token), busbar hands the new material to the plugin's refresh, or, for a plugin with no refresh, opens a new instance from the same plugin artifact and swaps it in. This failed: the reference could not be re-read (cause unresolvable), the plugin refused the new material (cause refused, at ERROR), or the new instance did not open (cause reopen-failed, at ERROR). The running instance and the credentials it holds are kept and the change is retried on the next poll. Reported at most once a minute per instance and audited as plugin.credential.rotate, degraded; a later success is audited as applied."
+action = "Check the reference and the error field. For refused or reopen-failed, the plugin rejected the rotated material: fix it at the source. If the old material expires first, the plugin's own calls fail until the new material is accepted."
+
+[[diagnostic]]
+name = "PLUGIN_TICK_FAILED"
+reexport = "busbar_contract::diagnostic"
+
+[[diagnostic]]
 name = "STORE_SECRET_REF_UNRESOLVED"
 doc = "A store settings SecretRef does not resolve at boot; restart-to-apply, so it WILL fail next restart."
 code = 8015

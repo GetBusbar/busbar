@@ -160,6 +160,26 @@ macro_rules! diag_debug {
     };
 }
 
+/// A plugin instance's scheduled tick failed; the driver retries it with backoff instead of
+/// stopping. Emitted by the plugin loader's tick driver, which names no kernel catalog.
+pub const PLUGIN_TICK_FAILED: Diagnostic = Diagnostic {
+    code: 8029,
+    class: Class::Governance,
+    slug: "plugin-tick-failed",
+    title: "A plugin instance's scheduled tick failed",
+    severity: Severity::Actionable,
+    summary: "busbar drives the tick of each secret and auth plugin instance that asks for one \
+              (its own token refresh or version watch). A tick answered neither ready nor \
+              pending (it failed, faulted or timed out). The schedule does not stop: the tick is \
+              retried with a jittered backoff (1 second doubling to 60 seconds) until it succeeds \
+              or the instance closes. Reported on the first failure and then at most once a \
+              minute per instance.",
+    action: "Check the plugin's own log lines for the instance named. A tick that keeps failing \
+             usually means the plugin cannot reach the service it refreshes against.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// Usage tap: read_response could not decode a same-protocol 2xx body. Warn-once (latched).
 pub const USAGE_TAP_DECODE_FAILED: Diagnostic = Diagnostic {
     code: 5029,

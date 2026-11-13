@@ -295,7 +295,39 @@ impl LoginMethods {
                 &mut resolved,
             )?;
 
-            let opened = axis.open(&mc.module, &login_label(name), &resolved);
+            let reresolve = super::relender(
+                &mc.settings,
+                registry,
+                &mc.module,
+                secret_resolver,
+            )
+            .map(|base| -> super::relend::Reresolve {
+                let (name, module, browser) =
+                    (name.clone(), mc.module.clone(), mc.browser_login.clone());
+                let (slots, resolver) = (registry.secret_slots(&mc.module), secret_resolver.clone());
+                Box::new(move || {
+                    let mut resolved = base()?;
+                    if let Some(cid) = browser.as_ref().and_then(|bl| bl.client_id.clone()) {
+                        resolved.default_text("client_id", cid);
+                    }
+                    lend_browser_login_secret(
+                        &name,
+                        &module,
+                        browser.as_ref(),
+                        &slots,
+                        &resolver,
+                        &mut resolved,
+                    )?;
+                    Ok(resolved)
+                })
+            });
+            let opened = super::relend::open(
+                &axis,
+                &mc.module,
+                &login_label(name),
+                &resolved,
+                reresolve,
+            );
 
             drop(resolved);
             let calls = opened.map_err(&refused)?;

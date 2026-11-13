@@ -6,6 +6,11 @@ All notable changes to Busbar are documented here. The format is based on
 
 ## [1.6.0], unreleased
 
+- **A plane member's upstream credential rides out a source outage until its lease ends.**
+  1.6.0 Changed: a renewal that cannot read the source (unavailable, internal fault, an empty or non-text value) keeps the held credential until `lease_ttl_ms` runs out and retries with a jittered backoff, reported as `BUSBAR-8026`; a source that answers not-found or permission-denied twice, one second apart, drops it at once (`BUSBAR-8027`, cause `revoked-at-source`), and a lease that ends unrenewed reports `BUSBAR-8027` when it ends. Renewal runs at half the lease, at most every five minutes, on a bounded pool so one hung source never delays another member (owner-signed 2026-11-12).
+- **A secret or auth plugin's own rotating credential is re-lent without a reload.**
+  1.6.0 Changed: every 30 seconds busbar re-reads the secret references a secret or auth plugin instance was opened with (a workload-identity token file, for example); a changed value is handed to the plugin's `refresh`, or, for a plugin with no `refresh`, to a new instance of the same artifact that is swapped in. A refusal keeps the running instance (`BUSBAR-8028`). Secret plugins may open in two steps (PENDING), and their `tick` is driven; a failed tick is retried rather than ending the schedule (`BUSBAR-8029`).
+
 - **Hook API change:** configuration and admin writes require `module` and `phase`; use
   `phase: [response]` for a single stage. Hook responses omit `at`; clients read `fires_at`.
   One-shot configuration and overlay migration convert old `plugin`/`at` fields.
