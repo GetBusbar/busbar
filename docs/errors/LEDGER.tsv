@@ -1,0 +1,5 @@
+# Every BUSBAR-NNNN code ever published: code, slug, version introduced. Append-only.
+BUSBAR-8026	upstream-credential-refresh-failed	1.6.0
+BUSBAR-8027	upstream-credential-lapsed	1.6.0
+BUSBAR-8028	plugin-credential-rotation-failed	1.6.0
+BUSBAR-8029	plugin-tick-failed	1.6.0

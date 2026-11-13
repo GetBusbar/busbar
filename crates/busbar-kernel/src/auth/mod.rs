@@ -26,6 +26,7 @@ use busbar_kernel_identity::operator::Judgement;
 mod admin_sender_constraint;
 mod admitted;
 pub mod effect;
+pub mod relend;
 pub use admitted::{admitted_context, AdmittedContext, AdmittedRefusal};
 
 const AUTH_SCHEME_BEARER: &str = "bearer";
@@ -664,6 +665,32 @@ pub fn open_operator(
     .map(|operator| operator.with_carriers(carriers))
 }
 
+/// How an auth instance's settings are re-resolved for a re-lend: `None` when its plugin lends no
+/// secret reference (nothing it holds can rotate).
+pub(crate) fn relender(
+    settings: &busbar_contract::plugin_settings::Settings,
+    registry: &dyn busbar_contract::plugin_rows::PluginRows,
+    module: &str,
+    resolver: &crate::config::secret::SecretResolver,
+) -> Option<relend::Reresolve> {
+    let secrets = registry.secret_slots(module);
+    if secrets.is_empty() {
+        return None;
+    }
+    let references = registry.reference_slots(module);
+    let (settings, module, resolver) = (settings.clone(), module.to_string(), resolver.clone());
+    Some(Box::new(move || {
+        crate::config::secret::resolve_settings(
+            &settings,
+            &secrets,
+            &references,
+            &module,
+            &resolver,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+    }))
+}
+
 pub(crate) fn auth_refusal(
     registry: &dyn busbar_contract::plugin_rows::PluginRows,
     module: &str,
@@ -732,7 +759,14 @@ impl AdminAuthChain {
 
                     let label = format!("admin_auth.{name}");
 
-                    let calls = axis.open(other, &label, &resolved).map_err(refused)?;
+                    let calls = relend::open(
+                        &axis,
+                        other,
+                        &label,
+                        &resolved,
+                        relender(&entry.settings, registry.as_ref(), other, secret_resolver),
+                    )
+                    .map_err(refused)?;
 
                     modules.insert(name.to_string(), AdminModule { calls });
                 }
@@ -798,7 +832,13 @@ impl AuthMiddleware {
                     if !axis.answers(other) {
                         return Err(refused(auth_refusal(registry.as_ref(), other)));
                     }
-                    let opened = axis.open(other, &entry.name, &resolved);
+                    let opened = relend::open(
+                        &axis,
+                        other,
+                        &entry.name,
+                        &resolved,
+                        relender(&entry.settings, registry.as_ref(), other, secret_resolver),
+                    );
 
                     drop(resolved);
                     let calls = opened.map_err(refused)?;

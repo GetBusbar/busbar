@@ -340,6 +340,18 @@ pub trait AuthCalls: Send + Sync {
     /// `refresh` with a NEW generation and unchanged settings: the admin cache flush. The plugin
     fn refresh(&self) -> Result<u64, String>;
 
+    /// RE-LEND: take `settings` (this instance's settings re-resolved from what it was opened
+    /// over) and, when the secret material lent from them changed, hand it to the plugin's
+    /// `refresh`. `NotRefreshed` asks the caller to open a new instance and swap it in. A refusal
+    /// leaves the instance as it was.
+    fn relend(
+        &self,
+        settings: &crate::plugin_settings::ResolvedSettings,
+    ) -> Result<crate::secret::AuthRelent, String> {
+        let _ = settings;
+        Ok(crate::secret::AuthRelent::Unchanged)
+    }
+
     /// Validated presentation from the current successful lifecycle generation.
     /// Absence uses the configured instance name and the host's generic icon.
     fn login_presentation(&self) -> Option<LoginPresentation> {

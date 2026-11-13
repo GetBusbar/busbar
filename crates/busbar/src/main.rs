@@ -2329,6 +2329,10 @@ async fn shutdown_signal() {
         _ = ctrl_c => {}
         _ = terminate => {}
     }
+    // The drain has begun: the refresher starts nothing more, and a refresh in flight commits
+    // nothing and reports at debug (a renewal failing because the process is stopping is not an
+    // outage).
+    busbar_kernel::refresh::begin_stopping();
     tracing::info!("shutdown signal received; draining in-flight requests");
 }
 

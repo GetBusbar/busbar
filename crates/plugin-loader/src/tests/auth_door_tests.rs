@@ -1750,7 +1750,7 @@ fn an_auth_instance_holds_its_secrets_in_zeroising_buffers() {
     )
     .expect("the keyed plugin opens over its credential");
     let kept = a.kept_secrets();
-    wiped_when_dropped(kept);
+    wiped_when_dropped(&*kept);
     let shown = format!("{kept:?}");
     assert!(
         !shown.contains("s3cret") && !shown.contains("115, 51, 99"),
