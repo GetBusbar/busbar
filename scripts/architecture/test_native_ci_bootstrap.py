@@ -105,6 +105,13 @@ class Bootstrap(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), '/')
 
+    def test_candidate_uses_every_worker_cpu_and_refuses_small_workers(self):
+        self.assertEqual(bootstrap.candidate_cpus(lambda: 16), 16)
+        self.assertEqual(bootstrap.candidate_cpus(lambda: 4), 4)
+        for count in (2, None):
+            with self.assertRaisesRegex(ValueError, 'Use the size-m or size-l worker class'):
+                bootstrap.candidate_cpus(lambda: count)
+
     def test_candidate_memory_is_the_worker_minus_the_host_reserve(self):
         with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
             meminfo = Path(directory) / 'meminfo'
@@ -128,9 +135,11 @@ class Bootstrap(unittest.TestCase):
 
     def test_candidate_and_collector_identities_endpoints_and_storage_are_distinct(self):
         root = Path('/srv/busbar-native-ci/job-19')
-        with patch.object(bootstrap, 'candidate_memory_bytes', return_value=12 * 1024**3):
+        with patch.object(bootstrap, 'candidate_memory_bytes', return_value=12 * 1024**3), \
+                patch.object(bootstrap, 'candidate_cpus', return_value=16):
             config = bootstrap.runtime_configuration(root, 'unix:///private.sock', 'image@sha256:' + 'a' * 64, False)
         self.assertEqual(config['resources']['memory_bytes'], 12 * 1024**3)
+        self.assertEqual(config['resources']['cpus'], 16)
         self.assertEqual(config['isolation']['storage_bytes'], 24 * 1024**3)
         self.assertEqual(config['isolation']['storage_reserve_bytes'], 6 * 1024**3)
         self.assertEqual(config['isolation']['storage_kind'], 'loop-ext4')

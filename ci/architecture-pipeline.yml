@@ -33,7 +33,11 @@ stages: [build, qualify, website, release]
 # The protected controller every job runs: it fetches the approved core revision
 # named by the server-selected configuration and dispatches on CI_JOB_NAME.
 .controller:
-  tags: [busbar-native-admission]
+  # Jobs pick their GCP worker class by tag (size-s, size-m, size-l); the runners
+  # autoscale 0-50. Plugin jobs default to size-m; core build and test jobs use size-l.
+  variables:
+    BUSBAR_RUNNER_SIZE: size-m
+  tags: ["$BUSBAR_RUNNER_SIZE"]
   interruptible: true
   allow_failure: false
   retry: 0
@@ -138,6 +142,7 @@ stages: [build, qualify, website, release]
 core-build:
   extends: .controller
   stage: build
+  variables: {BUSBAR_RUNNER_SIZE: size-l}
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -149,6 +154,7 @@ core-build:
 core-clippy:
   extends: .controller
   stage: build
+  variables: {BUSBAR_RUNNER_SIZE: size-l}
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -163,6 +169,7 @@ core-clippy:
 core-test:
   extends: .controller
   stage: build
+  variables: {BUSBAR_RUNNER_SIZE: size-l}
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -174,7 +181,7 @@ core-test:
 core-conformance:
   extends: .controller
   stage: qualify
-  tags: [busbar-conformance]
+  variables: {BUSBAR_RUNNER_SIZE: size-l}
   rules:
     - !reference [.rules, core-dev]
     - !reference [.rules, core-qa]
@@ -189,7 +196,11 @@ native-qualification:
   extends: .controller
   stage: qualify
   rules:
-    - !reference [.rules, core-qa]
+    # Core QA builds and tests the whole product: the large worker class.
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "qa" && $CI_COMMIT_REF_PROTECTED == "true"'
+      variables: {BUSBAR_RUNNER_SIZE: size-l}
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"'
+      variables: {BUSBAR_RUNNER_SIZE: size-l}
     - !reference [.rules, plugin-dev]
     - when: never
 
@@ -198,7 +209,7 @@ native-qualification:
 core-conformance-debug:
   extends: .controller
   stage: qualify
-  tags: [busbar-conformance]
+  variables: {BUSBAR_RUNNER_SIZE: size-l}
   rules:
     - !reference [.rules, core-qa]
     - when: never

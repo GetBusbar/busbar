@@ -441,6 +441,17 @@ def candidate_memory_bytes(meminfo=Path('/proc/meminfo')):
     return usable
 
 
+CANDIDATE_CPU_FLOOR = 4
+
+
+def candidate_cpus(count=os.cpu_count):
+    """Every worker CPU: the host side is mostly idle while the candidate compiles."""
+    cpus = count() or 0
+    require(cpus >= CANDIDATE_CPU_FLOOR, 'worker has ' + str(cpus) + ' CPUs; the candidate needs '
+            + str(CANDIDATE_CPU_FLOOR) + '. Use the size-m or size-l worker class.')
+    return cpus
+
+
 def runtime_configuration(control, endpoint, image, diagnostic):
     isolation = {'storage_kind': 'tmpfs' if diagnostic else 'loop-ext4',
         'storage_root': str(control / 'store'),
@@ -455,7 +466,7 @@ def runtime_configuration(control, endpoint, image, diagnostic):
         'runtime': 'runc', 'uid': 1001, 'gid': 1002, 'python': '/usr/bin/python3',
         'environment': {'PATH': '/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin',
                         'CARGO_HOME': '/opt/busbar-native/cargo-seed', 'RUSTUP_HOME': '/usr/local/rustup'},
-        'resources': {'cpus': 2 if diagnostic else 4,
+        'resources': {'cpus': 2 if diagnostic else candidate_cpus(),
                       'memory_bytes': 1024**3 if diagnostic else candidate_memory_bytes(),
                       'pids': 256 if diagnostic else 1024},
         'isolation': isolation,
