@@ -801,30 +801,38 @@ def vendor_source_config(text, directory):
 
 
 def prune_unused_patches(manifest, lock):
-    """Omit [patch] git entries the vendored resolution never uses; return what was omitted.
+    """Omit the [patch] git entries Cargo itself reports unused; return what was omitted.
 
     Cargo loads every patch source, used or not, but `cargo vendor` copies only the
     used ones, so an unused git patch sends an offline seeded case to the network.
-    An unused patch never changes a resolution. Path and registry patches stay."""
-    used = {(package.get('name'), package.get('source', '')) for package in lock.get('package', [])}
+    Only Cargo's own `[[patch.unused]]` record may remove one: a URL spelled unlike
+    Cargo's normalised form is kept, which fails closed (seed failure, unseeded run).
+    Path and registry patches always stay."""
+    rows = (lock.get('patch') or {}).get('unused', [])
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise CompilerSeedFailure('unreadable [[patch.unused]] in the vendor lockfile')
+    unused = {(row.get('name'), row.get('source', '')) for row in rows}
     lines, section, pruned = [], None, []
     for line in manifest.read_text().splitlines():
         if line.startswith('['):
             section = line[len('[patch.'):-1] if line.startswith('[patch.') else None
         elif section is not None and line.strip():
-            ((name, cfg),) = tomllib.loads(line).items()
+            try:
+                ((name, cfg),) = tomllib.loads(line).items()
+                source_key = tomllib.loads('k = ' + section)['k'] if section[:1] in '\'"' else section
+            except (tomllib.TOMLDecodeError, ValueError) as error:
+                raise CompilerSeedFailure(f'unreadable harness patch entry: {error}') from None
             git = cfg.get('git') if isinstance(cfg, dict) else None
             package = cfg.get('package', name) if isinstance(cfg, dict) else name
-            if git and not any(found == package and (source.startswith('git+' + git + '?')
-                                                     or source.startswith('git+' + git + '#'))
-                               for found, source in used):
-                source_key = tomllib.loads('k = ' + section)['k'] if section[:1] in '\'"' else section
+            if isinstance(git, str) and any(found == package and isinstance(source, str)
+                                            and (source.startswith('git+' + git + '?')
+                                                 or source.startswith('git+' + git + '#'))
+                                            for found, source in unused):
                 pruned.append(source_key + ':' + name)
                 continue
         lines.append(line)
     manifest.write_text('\n'.join(lines) + '\n')
     return pruned
-
 
 def seed_compiler_dependencies(harness, scratch, cases):
     """Build the witness harness's dependency closure once, before any case runs.
