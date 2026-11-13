@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions, core_source_inventory, core_target_roots
+from check import Policy, Violation, check_graph, check_declared, dependency, dependency_tables, resolve_shipping, vector_revisions, core_source_inventory, core_target_roots, is_harness_unit
 
 ROOT = Path('/candidate')
 
@@ -44,6 +44,21 @@ class CoreSourceInventoryTests(unittest.TestCase):
             (root / 'crates/contract/src/escape.rs').symlink_to(outside)
             with self.assertRaisesRegex(Violation, 'escapes candidate'):
                 core_source_inventory(policy(), root)
+
+
+class HarnessUnitTests(unittest.TestCase):
+    def test_legacy_hashed_units_are_harness_units(self):
+        for name in ('architecture-compiler-witnesses-0123abcd', 'architecture_compiler_witnesses-0123abcd.d',
+                     'witness_case-0123abcd'):
+            self.assertTrue(is_harness_unit(name), name)
+
+    def test_cargo_1_100_unhashed_units_are_harness_units(self):
+        for name in ('architecture-compiler-witnesses', 'architecture_compiler_witnesses'):
+            self.assertTrue(is_harness_unit(name), name)
+
+    def test_dependency_units_are_kept_in_both_layouts(self):
+        for name in ('serde-0123abcd', 'serde', 'busbar-contract-0123abcd', 'busbar-contract'):
+            self.assertFalse(is_harness_unit(name), name)
 
 
 class CoreTargetRootTests(unittest.TestCase):
