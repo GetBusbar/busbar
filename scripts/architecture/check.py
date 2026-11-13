@@ -748,6 +748,14 @@ class CompilerSeedFailure(Violation):
 HARNESS_UNIT_PREFIXES = ('architecture-compiler-witnesses-', 'architecture_compiler_witnesses-', 'witness_')
 
 
+def is_harness_unit(name):
+    """Whether a build-directory entry is a harness unit, in either Cargo layout.
+
+    Before Cargo 1.100 entries are `<package>-<hash>` under deps/, .fingerprint/ and
+    build/. Cargo 1.100 uses build/<package>/<hash>/, so the entry is the bare package name."""
+    return name.startswith(HARNESS_UNIT_PREFIXES) or name in {prefix.rstrip('-') for prefix in HARNESS_UNIT_PREFIXES}
+
+
 def copy_candidate_tree(source, destination):
     """Snapshot disposed candidate output into a new controller-owned tree.
     Only directories and regular files are accepted. Contents are copied, so no
@@ -874,7 +882,7 @@ def seed_compiler_dependencies(harness, scratch, cases):
                 shutil.rmtree(profile / name)
         for name in ('.fingerprint', 'deps', 'build'):
             for path in (profile / name).iterdir() if (profile / name).is_dir() else ():
-                if path.name.startswith(HARNESS_UNIT_PREFIXES):
+                if is_harness_unit(path.name):
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
     files = [path for path in target.rglob('*') if path.is_file()]
     receipt = {'configurations': len(configurations), 'target_files': len(files),
