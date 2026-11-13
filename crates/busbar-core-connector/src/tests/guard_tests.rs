@@ -973,3 +973,62 @@ fn ipv6_link_local_is_refused_in_every_class_unless_an_ip_entry_names_it() {
         Some(DEST_METADATA)
     );
 }
+
+/// THE ONE POLICY, BY THE CLASS EACH FEATURE PLUGIN DIALS UNDER (plane-mcp and plane-a2a:
+/// `provider`; export-otlp and hook-webrequest: `loopback-allowed`; export-webhook and auth-oidc's
+/// documents: `open-web`; a need naming no configured target: `default`). In every one a private
+/// answer, IPv6 site-local included, is refused by default; `advanced.allow_destinations` admits
+/// it by host, address or network; cloud metadata stays refused even when a name or network
+/// entry covers it.
+#[test]
+fn every_feature_plugin_class_is_governed_by_the_one_allowlist() {
+    let classes = [
+        EGRESS_PROVIDER,
+        EGRESS_LOOPBACK_ALLOWED,
+        EGRESS_OPEN_WEB,
+        EGRESS_DEFAULT,
+    ];
+    let strict = Guard::default();
+    let listed = guard(
+        true,
+        &[
+            "collector.internal",
+            "10.2.3.4",
+            "fec0::/10",
+            "169.254.0.0/16",
+        ],
+    );
+    for class in classes {
+        for (host, addr) in [
+            ("collector.internal", "10.9.9.9"),
+            ("mcp.internal", "10.2.3.4"),
+            ("old.internal", "fec0::7"),
+        ] {
+            assert_eq!(
+                verdict(strict.judge_answer(host, &[ip(addr)], class)),
+                Some(DEST_INTERNAL),
+                "default refuses {host} -> {addr} in class {class}"
+            );
+            assert_eq!(
+                listed.judge_answer(host, &[ip(addr)], class),
+                Ok(()),
+                "the allowlist admits {host} -> {addr} in class {class}"
+            );
+        }
+        assert_eq!(
+            verdict(listed.judge_answer("collector.internal", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA),
+            "a host entry never admits a metadata answer, class {class}"
+        );
+        assert_eq!(
+            verdict(listed.judge_answer("svc.test", &[ip("169.254.169.254")], class)),
+            Some(DEST_METADATA),
+            "a network entry covering metadata never admits it, class {class}"
+        );
+        assert_eq!(
+            verdict(listed.judge_answer("svc.test", &[ip("fd00:ec2::254")], class)),
+            Some(DEST_METADATA),
+            "the v6 metadata address stays refused, class {class}"
+        );
+    }
+}

@@ -1448,7 +1448,7 @@ export:
 | `prometheus` | Metrics (PULL) | `buffer_seconds` (**required**), `key_gauge_limit` (default 2000) | Installs the recorder and serves `/metrics` (auth-gated, same rules as `/stats`). At most ONE instance: it owns the one well-known route, so a second is a boot error rather than a silent loss. `buffer_seconds: 0` is a boot error (it would retain nothing while still paying the recording cost); OMIT the instance to turn metrics off. |
 | `request-log-webhook` | Logs (PUSH) | `url` (**required**, `https://`-only), `auth_header: { name, value }`, `max_inflight_deliveries` (default 64), `delivery_timeout_secs` (default 2) | Fire-and-forget JSON POST per completed request: `{ts, ingress_protocol, pool, outcome, latency_ms}`. SSRF-guarded. Drops rather than queues when saturated. Timeout is PER INSTANCE; the in-flight bound is shared across instances and takes the maximum. |
 | `request-log-file` | Logs (PUSH) | `path` (**required**), `rotate_mb`, `keep` (default 9, max 64) | Appends each request-log line as JSONL. When due, renames the live file to `<path>.1` and shifts older archives through `<path>.<keep>`. `keep: 0` truncates in place, as in 1.5.5. If an archive shift or live rename fails, appends to the live file without truncating it. |
-| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. SSRF-guarded: rejects RFC-1918, link-local, CGNAT, metadata hosts. Each request-path span is POSTed as it closes (OTLP/HTTP protobuf, one span per request). At most ONE instance. |
+| `otlp` | Traces | `url` (**required**) | OTLP/HTTP trace exporter. Loopback `http://` is allowed (standard collector default); remote endpoints must use `https://`. Governed by the [destination guard](#advanced): a private, link-local, CGNAT or unique-local collector is refused unless `advanced.allow_destinations` names it; a metadata host is always refused. Each request-path span is POSTed as it closes (OTLP/HTTP protobuf, one span per request). At most ONE instance. |
 
 Export instance membership, `module`, `streams` and `fields` are **restart-to-apply** for push
 delivery: the process keeps its boot-opened sinks and their projections. Removing a definition
@@ -1975,7 +1975,8 @@ outbound connection busbar makes (provider upstreams, token endpoints, health pr
 plugin fetches, plane and plugin dials). With `block_private_addresses: true` (the default) a provider
 upstream (its `base_url` and `token_url` included), and a destination that comes from request data or
 the network (a target a caller or a plane names), is refused when it is, or resolves to, a private
-(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`) or IPv6 unique-local (`fc00::/7`) address,
+(RFC 1918), loopback, link-local, CGNAT (`100.64.0.0/10`), IPv6 unique-local (`fc00::/7`) or IPv6
+site-local (`fec0::/10`) address,
 unless `allow_destinations` names it: a provider on `localhost` or an internal name is listed there.
 Operator infrastructure a plugin's config names (a database, a secret service, a directory) may be
 private or loopback without an entry. A cloud-metadata address is refused for every destination,
@@ -1986,6 +1987,46 @@ wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`12
 address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are
 **boot-time** knobs. The 1.5.5 keys `security.allow_metadata_hosts`, `security.blocked_metadata_hosts`,
 `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` still load and feed the same check.
+
+**One setting governs every outbound connection, plugins included.** No plugin and no transport
+dials on its own: a plugin declares what it needs (a transport and an egress class), and busbar's
+connector resolves the name, applies this check to every answered address, and lets the transport
+open only the address it checked. So `block_private_addresses` and `allow_destinations` govern an
+export sink (OTLP, webhook), a hook's outbound call (`webrequest`), an identity provider fetch
+(OIDC), a plane's upstream (an MCP server, an A2A agent) and every other plugin dial alike; there
+is no per-plugin private-address switch (the 1.5.x `tools.<server>.allow_private` and
+`agents.<agent>.allow_private` are refused, BUSBAR-3027; `busbar --migrate-config` moves them here). The scheme a destination may use is part of the
+same check: an export sink or hook on the `loopback-allowed` class takes `https://`, or plaintext
+`http://` only to loopback; an `open-web` destination (a webhook sink, an identity provider's
+documents) takes `https://` only.
+
+An in-cluster OTLP collector on a private address:
+
+```yaml
+advanced:
+  allow_destinations:
+    - otel-collector.observability.svc.cluster.local   # exactly this host, any private address it answers
+export:
+  traces:
+    module: otlp
+    settings:
+      url: https://otel-collector.observability.svc.cluster.local:4318/v1/traces
+```
+
+An internal MCP server on a private network:
+
+```yaml
+advanced:
+  allow_destinations:
+    - mcp.tools.internal        # or its address, `10.20.30.40`, or its network, `10.20.30.0/24`
+tools:
+  search:
+    url: https://mcp.tools.internal/mcp
+    pin: { mechanism: cert_spki, key: "sha256/<base64 SPKI digest>" }
+```
+
+List the narrowest entry that works: an exact host before a `*.domain` wildcard, an address before
+a network. A cloud-metadata address stays refused whatever is listed.
 
 ### `providers_file`
 

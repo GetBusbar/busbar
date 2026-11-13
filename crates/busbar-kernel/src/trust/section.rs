@@ -95,9 +95,8 @@ fn read_entry(
             }
 
             TrustRole::PrivateReach => {
-                if value.is_some_and(|v| v.as_bool().is_none()) {
-                    let k = decl.key;
-                    shape::<()>(strict, format!("{at}: `{k}:` must be true or false"))?;
+                if value.is_some() {
+                    return Err(private_reach_retired(at, decl.key));
                 }
             }
             TrustRole::ItemApprovals => out.approved = item_approvals(decl, value),
@@ -110,12 +109,27 @@ fn read_entry(
     Ok(out)
 }
 
+/// THE RETIRED PER-REGISTRATION PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`). Every outbound
+/// connection is governed by one policy, `advanced.block_private_addresses` with
+/// `advanced.allow_destinations`; a registration that still writes the key a plane declares for it is
+/// refused, whatever its value, naming the registration and the one setting that replaced it.
 #[must_use]
-pub fn private_reach(entry: &serde_yaml::Value, keys: &[TrustKeyDecl]) -> bool {
-    keys.iter()
-        .filter(|k| k.role == TrustRole::PrivateReach)
-        .filter_map(|k| entry.as_mapping()?.get(k.key)?.as_bool())
-        .any(|b| b)
+pub fn private_reach_retired(at: &str, key: &str) -> String {
+    let code = crate::diagnostics::CONFIG_PRIVATE_REACH_RETIRED.banner();
+    format!(
+        "{at}: `{key}:` is retired ({code}). One setting governs every outbound connection: list \
+         this registration's host (or its address) in `advanced.allow_destinations` and remove \
+         `{key}:`; `busbar --migrate-config` does both. A cloud-metadata address stays refused \
+         whatever is listed."
+    )
+}
+
+/// Whether a registration holds a private reach: never, since the key is retired
+/// ([`private_reach_retired`]); a registration writing it is refused before it is served. The one
+/// policy, `advanced.allow_destinations`, decides every private destination.
+#[must_use]
+pub fn private_reach(_entry: &serde_yaml::Value, _keys: &[TrustKeyDecl]) -> bool {
+    false
 }
 
 fn item_approvals(

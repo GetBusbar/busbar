@@ -221,6 +221,17 @@ summary = "A plugin declares billable classes for a configured lane, but that la
 action = "Configure the named lane and classes in the plane's rate_card. Use an explicit zero only for deliberately free usage. Invalid rates, unknown class names and other structural mistakes still prevent startup."
 
 [[diagnostic]]
+name = "CONFIG_PRIVATE_REACH_RETIRED"
+doc = "A plane registration sets the retired `allow_private`; the one private-address policy is `advanced.allow_destinations`."
+code = 3027
+class = "Config"
+slug = "config-private-reach-retired"
+title = "A registration still carries the retired per-registration private-address switch"
+severity = "Fatal"
+summary = "A plane registration (an MCP server under `tools:`, an A2A agent under `agents:`) sets `allow_private`. 1.6.0 has one private-address policy for every outbound connection, `advanced.block_private_addresses` with `advanced.allow_destinations`; a per-registration switch that lifted it for one plugin is retired. The configuration is refused, naming the registration, rather than read with the switch ignored or applied."
+action = "Run `busbar --migrate-config`: it removes the key and lists exactly that registration's host in `advanced.allow_destinations`. Or do the same by hand: delete `allow_private` and add the host (or its address) to `advanced.allow_destinations`. A cloud-metadata address stays refused whatever is listed."
+
+[[diagnostic]]
 name = "CONFIG_PROVIDER_DESTINATION_REFUSED"
 doc = "A provider URL names a private or loopback host the destination guard refuses (1.5.5 upgrade)."
 code = 3025
