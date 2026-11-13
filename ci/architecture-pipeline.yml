@@ -4,8 +4,9 @@
 # Core runs in three tiers; plugin projects keep one (native-qualification + security).
 #   DEV  (dev merge requests, dev push, owner API pipelines on dev): core-build (fmt,
 #        deny/vet, the one plain `cargo build --release` of dist/default `busbar`) in
-#        parallel with core-clippy (lint-only, both workspaces, -D warnings), then
-#        core-conformance on that binary's sha256.
+#        parallel with core-clippy (lint-only, both workspaces, -D warnings) and
+#        core-test (root workspace doctests and nextest run), then core-conformance on
+#        that binary's sha256.
 #   QA   (protected qa push; owner "qa-nightly" schedule on dev): DEV + native-qualification
 #        (every test incl. the shipped default features, no-default clippy, witnesses,
 #        oracle, loom) + core-conformance-debug (the debug-assertion build) +
@@ -154,9 +155,22 @@ core-clippy:
     - !reference [.rules, core-qa]
     - when: never
 
+# The root workspace tests of every dev change: QA's `workspace-doctests` and
+# `root-runtime` steps (cargo test --doc and cargo nextest run --workspace with the
+# timing/openapi features and the trusted nextest config), with the same product
+# inputs, service peers and C witness, in parallel with core-build. QA keeps running
+# them inside native-qualification; this job is DEV tier only.
+core-test:
+  extends: .controller
+  stage: build
+  timeout: 2h
+  rules:
+    - !reference [.rules, core-dev]
+    - when: never
+
 # Every core conformance suite judges the core-build binary by sha256; no own build.
-# Stage order starts it once core-build and core-clippy passed; it reads core-build
-# through the API.
+# Stage order starts it once core-build, core-clippy and (DEV) core-test passed; it
+# reads core-build through the API.
 core-conformance:
   extends: .controller
   stage: qualify
@@ -242,7 +256,7 @@ plugin-dependency-units:
 
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness. Core's
-# dev evidence is its DEV tier (core-build, core-clippy, core-conformance receipts);
+# dev evidence is its DEV tier (core-build, core-clippy, core-test, core-conformance receipts);
 # stage ordering starts this only after every one of them passed.
 website-dev:
   stage: website

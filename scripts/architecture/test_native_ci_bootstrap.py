@@ -142,7 +142,7 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-mcp', 'native-qualification'), ['mcp'])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', 'core-conformance-debug'),
                          ['core', 'tls', 'oidf', 'release-engineering'])
-        for job in ('core-build', 'core-clippy'):
+        for job in ('core-build', 'core-clippy', 'core-test'):
             self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar', job), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-plane-decisions', 'native-qualification'), [])
         self.assertEqual(bootstrap.judge_selection(plan, 'GetBusbar/busbar-secret-c', 'native-qualification'), ['python-schema'])
@@ -154,6 +154,14 @@ class Bootstrap(unittest.TestCase):
                     row['archive_url'] + '?token=secret'):
             with self.subTest(url=bad), self.assertRaises(ValueError):
                 bootstrap.verify_judge_record('mcp', dict(row, archive_url=bad))
+
+    def test_core_test_is_a_core_mode_job_with_service_peers(self):
+        self.assertEqual(bootstrap.ci_environment(self.environment() | {'CI_JOB_NAME': 'core-test'})['CI_JOB_NAME'],
+                         'core-test')
+        # Dispatched as native.py --core-test; unlike build and lints its tests need the peers.
+        self.assertEqual(bootstrap.CORE_MODE_JOBS, ('core-build', 'core-clippy', 'core-test'))
+        self.assertNotIn('core-test', bootstrap.NO_SERVICE_JOBS)
+        self.assertNotIn('core-test', bootstrap.CONFORMANCE_JOBS)
 
     def test_core_judge_oidc_source_matches_distribution_lock(self):
         # The core archive's oidc-source bundle is refused by oidf.py when its

@@ -612,7 +612,8 @@ class PipelineRules(unittest.TestCase):
 
     def test_dev_pipelines_keep_their_jobs(self):
         env = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='dev', CI_COMMIT_REF_PROTECTED='true')
-        dev = {'core-build', 'core-clippy', 'core-conformance'}
+        # The root workspace tests run on every dev push too (core-test), not only in QA.
+        dev = {'core-build', 'core-clippy', 'core-test', 'core-conformance'}
         self.assertEqual(self.jobs(env), dev | {'plugin-dependency-units', 'website-dev'})
         self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='api')), dev)
         self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')), {'security-scans'})
@@ -623,7 +624,7 @@ class PipelineRules(unittest.TestCase):
         mr = dict(self.CORE, CI_PIPELINE_SOURCE='merge_request_event', CI_MERGE_REQUEST_TARGET_BRANCH_NAME='dev',
                   CI_COMMIT_REF_PROTECTED='false')
         self.assertTrue(self.workflow(mr))
-        self.assertEqual(self.jobs(mr), {'core-build', 'core-clippy', 'core-conformance'})
+        self.assertEqual(self.jobs(mr), {'core-build', 'core-clippy', 'core-test', 'core-conformance'})
         qa = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa', CI_COMMIT_REF_PROTECTED='true')
         everything = {'core-build', 'core-clippy', 'core-conformance', 'core-conformance-debug',
                       'native-qualification', 'security-scans'}
@@ -633,6 +634,8 @@ class PipelineRules(unittest.TestCase):
         nightly = dict(self.CORE, CI_PIPELINE_SOURCE='schedule', CI_COMMIT_BRANCH='dev',
                        CI_COMMIT_REF_PROTECTED='true', CI_PIPELINE_SCHEDULE_DESCRIPTION='qa-nightly')
         self.assertEqual(self.jobs(nightly), everything)
+        # QA keeps the full native qualification; its tests are not run twice.
+        self.assertNotIn('core-test', self.jobs(qa) | self.jobs(nightly))
         main = dict(qa, CI_COMMIT_BRANCH='main')
         self.assertTrue(self.workflow(main))
         self.assertEqual(self.jobs(main), {'release-certification'})
