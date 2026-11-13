@@ -2,6 +2,15 @@
 # Test double for the GitHub CLI release subcommands, over the world's state/releases.
 here=$(cd "$(dirname "$0")" && pwd)
 state="$here/../state"
+if [ "$1" = api ] && [ -f "$state/full_names.json" ]; then
+  # `gh api repos/<org>/<name> -q .full_name`: the repo GitHub redirects that name to. A world
+  # without full_names.json has no GitHub API at all (the lookup cannot run).
+  name=${2#repos/}
+  full=$(sed -n "s|.*\"$name\": *\"\([^\"]*\)\".*|\1|p" "$state/full_names.json" 2>/dev/null)
+  [ -n "$full" ] && { echo "$full"; exit 0; }
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
 [ "$1" = release ] || exit 2
 action=$2
 tag=$3

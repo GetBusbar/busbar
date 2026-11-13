@@ -20,7 +20,6 @@ pub const PVER: &str = "1.6.0";
 pub const PLUGIN_COMMIT: &str = "cccccccccccccccccccccccccccccccccccccccc";
 pub const CORE: &str = "GetBusbar/busbar";
 pub const MCI: &str = "https://eu-central.modernci.dev";
-pub const UPDATED_AT: &str = "2026-11-13T00:00:00Z";
 
 pub fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -41,13 +40,6 @@ pub fn pack() -> Option<String> {
         }
     }
     None
-}
-
-/// The Python differential driver, when the Python gate is still in the tree.
-pub fn python() -> Option<PathBuf> {
-    let p = crate_dir().join("tests/differential/py_gate.py");
-    let gate = crate_dir().join("../../scripts/release/publish_gate.py");
-    (p.is_file() && gate.is_file()).then_some(p)
 }
 
 pub fn sh(cmd: &[&str], cwd: Option<&Path>) -> Vec<u8> {
@@ -291,7 +283,8 @@ impl World {
             )
             .unwrap();
         }
-        std::fs::write(bin.join("docker.updated_at"), UPDATED_AT).unwrap();
+        // The scanner refuses a database older than its policy allows: it was "downloaded" now.
+        std::fs::write(bin.join("docker.updated_at"), now_utc()).unwrap();
         let mut w = World {
             dir,
             root,
@@ -844,7 +837,7 @@ impl World {
         );
     }
 
-    /// The release index, as the candidate renders it (with the Python renderer when present).
+    /// The release index, as the candidate renders it (the gate's own renderer).
     pub fn render_index(&self) {
         let spec = self.spec("index", "fixture", |d| {
             d.insert(
@@ -857,20 +850,12 @@ impl World {
                 ),
             );
         });
-        let o = match python() {
-            Some(py) => run_cmd(
-                Command::new("python3").arg(py).arg(&spec),
-                &self.root,
-                &self.bin,
-                &self.dir.join("tmp-fixture"),
-            ),
-            None => run_cmd(
-                Command::new(harness()).arg(&spec),
-                &self.root,
-                &self.bin,
-                &self.dir.join("tmp-fixture"),
-            ),
-        };
+        let o = run_cmd(
+            Command::new(harness()).arg(&spec),
+            &self.root,
+            &self.bin,
+            &self.dir.join("tmp-fixture"),
+        );
         assert_eq!(o.code, 0, "index render failed: {}{}", o.stdout, o.stderr);
     }
 
@@ -894,7 +879,7 @@ impl World {
     }
 
     /// The conformance-manifest slice: ModernCI's outputs fetched into the candidate, and the
-    /// manifest rendered from them (by the Python renderer when present).
+    /// manifest rendered from them.
     pub fn conformance(&self) {
         let _ = std::fs::remove_dir_all(self.cand.join("conformance"));
         let pins = [
@@ -953,35 +938,18 @@ impl World {
     }
 
     pub fn render_manifest(&self) {
-        let text = match python() {
-            Some(_) => {
-                let script = format!(
-                    "import sys; sys.path.insert(0, {:?}); import conformance_gate as cg; \
-                     from pathlib import Path; sys.stdout.write(cg.render(Path({:?}), Path({:?}), {:?}, {:?}))",
-                    crate_dir().join("../../scripts/release").to_string_lossy(),
-                    self.root.to_string_lossy(),
-                    self.cand.to_string_lossy(),
-                    self.commit,
-                    VERSION
-                );
-                String::from_utf8(sh(&["python3", "-c", &script], Some(&self.root))).unwrap()
-            }
-            None => {
-                let pins = busbar_publish_gate::conformance::shipped_pins(&self.root).unwrap();
-                let exc =
-                    busbar_publish_gate::conformance::read_exceptions(&self.root, VERSION).unwrap();
-                busbar_publish_gate::conformance::render_release(
-                    &self.root.join("conformance/registry.toml"),
-                    &self.cand.join("conformance"),
-                    VERSION,
-                    &self.commit,
-                    &pins,
-                    &exc,
-                    None,
-                )
-                .unwrap()
-            }
-        };
+        let pins = busbar_publish_gate::conformance::shipped_pins(&self.root).unwrap();
+        let exc = busbar_publish_gate::conformance::read_exceptions(&self.root, VERSION).unwrap();
+        let text = busbar_publish_gate::conformance::render_release(
+            &self.root.join("conformance/registry.toml"),
+            &self.cand.join("conformance"),
+            VERSION,
+            &self.commit,
+            &pins,
+            &exc,
+            None,
+        )
+        .unwrap();
         self.write("cand/conformance-manifest.json", text);
     }
 
@@ -1016,6 +984,30 @@ impl World {
         std::fs::write(&p, j(&Value::Dict(d))).unwrap();
         p
     }
+}
+
+/// The current UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
+pub fn now_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 pub fn chmod_x(p: &Path) {

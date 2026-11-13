@@ -9,7 +9,7 @@
 //!
 //! spec.json: {"command", "root", "cand", "trust", "pack", "out", "state", "require_hardware_k2",
 //! "security": "real"|"fixture", "confirm": str|null, "k1_sign_cmd", "k2_key", "repo", "tag",
-//! "plugins"}. tests/differential/py_gate.py read the same spec for the Python gate.
+//! "plugins"}.
 
 use busbar_publish_gate::gate::{self, Inputs};
 use busbar_publish_gate::py::{self, dict, Kind, PyErr, Value, R};

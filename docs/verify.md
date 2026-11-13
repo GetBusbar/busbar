@@ -170,8 +170,8 @@ Each item below is a gap, stated plainly; nothing on this site claims it.
 
 ## For builders: the candidate layout
 
-Our CI writes this layout for the owner's publish run. The gate, `scripts/release/publish_gate.py`,
-documents every rule it applies:
+Our CI writes this layout for the owner's publish run. The gate, `busbar-publish-gate`
+(tools/publish-gate), documents every rule it applies:
 
 ```
 candidate.json   {"version","commit","repo","test_kit":{"tag","commit"},"plugins":[{"repo","version","tag","commit"}]}

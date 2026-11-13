@@ -16,7 +16,7 @@ Design: docs/design/conformance-release.md.
           with its exact fetched artifact.tar and inspection copies verdicts/*.json;
         - DIR/conformance-manifest.json (scripts/conformance/sync.py's release render).
   conformance_gate.py gate --candidate DIR --release V --commit T --allowed-signers FILE
-      G-C on its own: the same rule publish_gate.py runs in `verify`.
+      G-C on its own: the same rule the release gate (busbar-publish-gate) runs in `verify`.
 
 G-C refuses the tag, one `REFUSED G-C ...` line each, when:
   - the manifest is not the render of the fetched outputs;

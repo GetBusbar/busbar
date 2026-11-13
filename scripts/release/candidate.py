@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
-"""candidate: build one release CANDIDATE in the layout scripts/release/publish_gate.py verifies.
+"""candidate: build one release CANDIDATE in the layout the release gate (tools/publish-gate) verifies.
 
 ModernCI runs this from `.ci/qa.yaml` on the qa -> main move. Each slice runs on a backend that can
 build it, and `assemble` merges the slices. Nothing here holds a key or publishes anything. Every
@@ -40,7 +40,9 @@ by the gate, which refuses by rule name; a mistake is never shipped.
       per-platform images into one multi-platform index (OUT/oci/busbar.oci.tar), copies the
       OpenAPI document, renders OUT/artifacts/plugin-index.json (the release index
       `busbar --migrate-config` fetches from this release's GitHub Release; read-only GitHub lookups
-      for renamed repos), and writes SHA256SUMS (which lists it), IMAGES and candidate.json.
+      for renamed repos) with the release gate's own renderer (`busbar-publish-gate plugin-index`,
+      so G-3 re-renders the same bytes), and writes SHA256SUMS (which lists it), IMAGES and
+      candidate.json.
 
 Tools: git, cargo (rust-toolchain.toml), python3; docker buildx for `image`; a C compiler for C plugins.
 Core SBOMs come from the final build capture and exact shipped archive members.
@@ -48,6 +50,7 @@ Core SBOMs come from the final build capture and exact shipped archive members.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -60,11 +63,68 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import conformance_gate as cg  # noqa: E402
-import publish_gate as pg  # noqa: E402
 import build_closure as bc  # noqa: E402
 import native_provenance as provenance  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
+REPO = "GetBusbar/busbar"
+INDEX = "plugin-index.json"
+# The plugin targets every release owes (tools/publish-gate/src/gate.rs, PLUGIN_TARGETS).
+PLUGIN_TARGETS = (
+    ("x86_64-unknown-linux-gnu", "so", "lib"),
+    ("aarch64-unknown-linux-gnu", "so", "lib"),
+    ("x86_64-apple-darwin", "dylib", "lib"),
+    ("aarch64-apple-darwin", "dylib", "lib"),
+    ("x86_64-pc-windows-msvc", "dll", ""),
+)
+GATE = ["cargo", "run", "-q", "--locked", "--manifest-path", str(ROOT / "tools/publish-gate/Cargo.toml"), "--"]
+
+
+def sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_sums(p: Path, files: list) -> None:
+    p.write_text("".join(f"{sha256_file(f)}  {f.name}\n" for f in sorted(files, key=lambda f: f.name)))
+
+
+def commit_key_list(root: Path) -> str:
+    m = re.search(r'^\s*BUSBAR_RELEASE_PUBKEY\s*=\s*"([^"]*)"', (root / ".cargo" / "config.toml").read_text(), re.M)
+    if not m:
+        raise ValueError(".cargo/config.toml sets no BUSBAR_RELEASE_PUBKEY")
+    return m.group(1)
+
+
+def release_targets(root: Path) -> list:
+    return json.loads((root / "release" / "release-targets.json").read_text())["targets"]
+
+
+def registry_entries(root: Path) -> list:
+    """The entries under `plugins:` in plugins.yaml, as {field: raw value}: each entry is a
+    `  - repo:` line followed by `    field: value` lines (the gate reads plugins.yaml the same way)."""
+    lines = (root / "plugins.yaml").read_text().splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if re.fullmatch(r"plugins:\s*", l))
+    except StopIteration:
+        raise ValueError("plugins.yaml has no top-level `plugins:` list") from None
+    entries: list = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith((" ", "#", "-")):
+            break
+        m = re.match(r"^  - repo:\s*([A-Za-z0-9._-]+)\s*$", line)
+        if m:
+            entries.append({"repo": m.group(1)})
+            continue
+        m = re.match(r"^    ([a-z_]+):\s*(.*?)\s*$", line)
+        if m and entries:
+            entries[-1][m.group(1)] = m.group(2)
+    if not entries:
+        raise ValueError("plugins.yaml lists no plugins")
+    return entries
 
 
 def sh(cmd, cwd=None, env=None, out=False):
@@ -82,7 +142,7 @@ def version() -> str:
 
 
 def target_row(target: str) -> dict:
-    for t in pg.release_targets(ROOT):
+    for t in release_targets(ROOT):
         if t["target"] == target:
             return t
     sys.exit(f"candidate: {target} is not a row of release/release-targets.json")
@@ -97,7 +157,7 @@ def sbom(triple: str, name: str, out: Path, package: str = "busbar", target: str
     closure = provenance.load(closure_path)
     artifact = out / ("artifacts" if row.get("published") else "internal") / archive
     plan = {"source_commit": sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip(),
-            "target": triple, "artifact_name": archive, "artifact_sha256": pg.sha256_file(artifact)}
+            "target": triple, "artifact_name": archive, "artifact_sha256": sha256_file(artifact)}
     bc.validate(closure, plan, artifact, prefix, version())
     (out / "sboms").mkdir(parents=True, exist_ok=True)
     (out / "closures").mkdir(parents=True, exist_ok=True)
@@ -111,7 +171,7 @@ def cmd_pgo_train(target: str, out: Path) -> None:
         sys.exit(f"candidate: {target} does not declare pgo in release/release-targets.json")
     out.mkdir(parents=True, exist_ok=True)
     prof = out / f"{target}.profdata"
-    env = {"BUSBAR_RELEASE_PUBKEY": pg.commit_key_list(ROOT), "PGO_TRAIN_ONLY": str(prof),
+    env = {"BUSBAR_RELEASE_PUBKEY": commit_key_list(ROOT), "PGO_TRAIN_ONLY": str(prof),
            "PGO_TARGET": row.get("triple", target)}
     if row.get("baseline"):
         env["BUSBAR_ARM64_BASELINE"] = "1"
@@ -119,7 +179,7 @@ def cmd_pgo_train(target: str, out: Path) -> None:
     toolchain = re.search(r'channel\s*=\s*"([^"]+)"', (ROOT / "rust-toolchain.toml").read_text()).group(1)
     commit = sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip()
     (out / f"{target}.profdata.meta").write_text(
-        f"target={target}\ntoolchain={toolchain}\ntrained_at_commit={commit}\nsha256={pg.sha256_file(prof)}\n")
+        f"target={target}\ntoolchain={toolchain}\ntrained_at_commit={commit}\nsha256={sha256_file(prof)}\n")
     print(f"candidate: {prof} trained at {commit} with {toolchain}; review and commit it to release/pgo/")
 
 
@@ -129,7 +189,7 @@ def cmd_core(target: str, out: Path) -> None:
         sys.exit(f"candidate: {target} is not a binary row")
     sub = "artifacts" if row.get("published") else "internal"
     (out / sub).mkdir(parents=True, exist_ok=True)
-    keys = pg.commit_key_list(ROOT)
+    keys = commit_key_list(ROOT)
     sh(["scripts/release-build.sh", target, "--out-dir", str(out / sub), "--evidence-dir", str(out / "evidence" / target)],
        cwd=ROOT, env={"BUSBAR_RELEASE_PUBKEY": keys, "SOURCE_DATE_EPOCH": sh(["git", "log", "-1", "--format=%ct"], cwd=ROOT, out=True).strip()})
     v = version()
@@ -183,7 +243,7 @@ def read_pins() -> list:
 
 def cmd_pins(kit: str) -> None:
     lines = [l for l in PINS.read_text().splitlines() if l.startswith("#")] if PINS.is_file() else []
-    for e in pg.registry_entries(ROOT):
+    for e in registry_entries(ROOT):
         if e.get("pending_crate", "false") == "true":
             continue
         tag, commit, src = plugin_tag(e["repo"], kit)
@@ -203,7 +263,7 @@ def clone_at(repo: str, tag: str, commit: str) -> Path:
 
 
 def cmd_plugins(target: str, out: Path) -> None:
-    spec = {t: (ext, prefix) for t, ext, prefix in pg.PLUGIN_TARGETS}
+    spec = {t: (ext, prefix) for t, ext, prefix in PLUGIN_TARGETS}
     if target not in spec:
         sys.exit(f"candidate: {target} is not a plugin target")
     ext, prefix = spec[target]
@@ -211,7 +271,7 @@ def cmd_plugins(target: str, out: Path) -> None:
     pack = str(ROOT / "target/release" / ("busbar-plugin-pack.exe" if os.name == "nt" else "busbar-plugin-pack"))
     (out / "plugins").mkdir(parents=True, exist_ok=True)
     rows = []
-    entries = {e["repo"]: e for e in pg.registry_entries(ROOT)}
+    entries = {e["repo"]: e for e in registry_entries(ROOT)}
     for pin in read_pins():
         repo, tag, commit = pin["repo"], pin["tag"], pin["commit"]
         if repo not in entries:
@@ -270,7 +330,7 @@ def require_buildkit() -> None:
 
 
 def cmd_image(arch: str, out: Path) -> None:
-    rows = [t for t in pg.release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
+    rows = [t for t in release_targets(ROOT) if t.get("kind") == "binary" and t.get("packaged_into") == f"image-linux-{arch}"]
     if len(rows) != 1:
         sys.exit(f"candidate: no single native row feeds image-linux-{arch} in release/release-targets.json")
     t = rows[0]
@@ -350,7 +410,7 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
                     parts.append(f)
                     continue
                 dest = out / sub / f.name
-                if dest.exists() and pg.sha256_file(dest) != pg.sha256_file(f):
+                if dest.exists() and sha256_file(dest) != sha256_file(f):
                     sys.exit(f"candidate: two slices built different {sub}/{f.name}")
                 shutil.copy(f, dest)
         if (s / "conformance-manifest.json").is_file():
@@ -367,20 +427,21 @@ def cmd_assemble(out: Path, slices: list, kit_tag: str, kit_commit: str) -> None
     v = version()
     shutil.copy(ROOT / "crates/busbar-core-admin/src/v1/json/openapi.json", out / "artifacts" / f"busbar-openapi-v{v}.json")
     released = sorted(plugins.values(), key=lambda r: r["repo"])
-    try:
-        index = pg.render_plugin_index(ROOT, out, released, pg.Net())
-    except (OSError, ValueError, KeyError, tarfile.TarError, pg.CannotRun) as e:
-        sys.exit(f"candidate: cannot render {pg.INDEX}: {e}")
-    (out / "artifacts" / pg.INDEX).write_bytes(index)
+    # The gate's own renderer writes the index, so G-3's re-render is the same bytes.
+    with tempfile.TemporaryDirectory() as tmp:
+        listed = Path(tmp) / "plugins.json"
+        listed.write_text(json.dumps(released))
+        sh([*GATE, "plugin-index", "--candidate", str(out), "--plugins", str(listed),
+            "--out", str(out / "artifacts" / INDEX)], cwd=ROOT)
     files = [f for sub in ("artifacts", "sboms") for f in (out / sub).iterdir()]
-    pg.write_sums(out / "SHA256SUMS", files)
+    write_sums(out / "SHA256SUMS", files)
     if len(parts) != 2:
         sys.exit(f"candidate: expected the amd64 and arm64 image slices, found {[p.name for p in parts]}")
     digest = join_images(sorted(parts), out / "oci" / "busbar.oci.tar")
     (out / "IMAGES").write_text(f"busbar {digest}\n")
     commit = sh(["git", "rev-parse", "HEAD"], cwd=ROOT, out=True).strip()
     (out / "candidate.json").write_text(json.dumps({
-        "version": v, "commit": commit, "repo": pg.REPO,
+        "version": v, "commit": commit, "repo": REPO,
         "test_kit": {"tag": kit_tag, "commit": kit_commit},
         "plugins": released}, indent=2) + "\n")
     print(f"candidate: assembled {v} at {commit} with {len(plugins)} plugins")

@@ -18,8 +18,11 @@ restored to reconstruct a release workflow.
   [registry](conformance/registry.toml): bind conformance evidence to the release
   and shipped plugin revisions. Consult the implementation for its required inputs
   and refusal behavior.
-- [Publish gate](scripts/release/publish_gate.py): verify/sign/upload entry points.
-  Use the current command help and owner-provided signing configuration.
+- [Publish gate](tools/publish-gate): `busbar-publish-gate`, the owner-run verify/sign/upload
+  entry points. Build it in your own clone at the release commit with
+  `cargo build --locked --release --manifest-path tools/publish-gate/Cargo.toml`, then run
+  `tools/publish-gate/target/release/busbar-publish-gate --help` for the commands. Use that help
+  and owner-provided signing configuration.
 - [Native provenance](scripts/release/native_provenance.py) and
   [stage verifier](scripts/release/provenance_stage.py): verify protected inventories
   and exact artifact statements. Main verification reuses the qualified QA plans.

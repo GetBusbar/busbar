@@ -3,13 +3,15 @@
 //! Every decision and message of the gate, over a fixture world per case: a good release that
 //! verifies, signs and uploads, and one broken thing at a time, each refused with its rule.
 //!
-//! Each case's exit code and output must equal tests/golden/<case>.txt, which records what the
-//! original Python gate (scripts/release/publish_gate.py) said over the same world. While that
-//! Python is in the tree, each case also runs it (tests/differential/py_gate.py) and requires the
-//! same exit code, the same output and the same evidence bytes from both.
+//! The gate was ported from Python (scripts/release/publish_gate.py). Until the Python was
+//! removed, every case here also ran it over the same world and required the same exit code, the
+//! same output and the same evidence bytes from both. tests/golden/<case>.txt is what the Python
+//! gate said; tests/golden/<case>.<file> pins the evidence an accepted case writes. A case passes
+//! only when the Rust gate still says exactly that (keys, digests, commits and paths, which differ
+//! per world, are masked).
 //!
 //! Needs busbar-plugin-pack ($PACK, or the repo's target/{debug,release}), openssl, ssh-keygen
-//! and git. `UPDATE_GOLDEN=1` rewrites the golden files from the Python gate's output.
+//! and git. `UPDATE_GOLDEN=1` rewrites the golden files: only for an intended, reviewed change.
 
 mod support;
 
@@ -33,37 +35,14 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-fn files(dir: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    fn walk(base: &Path, d: &Path, out: &mut Vec<String>) {
-        let Ok(rd) = std::fs::read_dir(d) else { return };
-        for e in rd {
-            let p = e.unwrap().path();
-            if p.is_dir() {
-                walk(base, &p, out);
-            } else {
-                out.push(p.strip_prefix(base).unwrap().to_string_lossy().into_owned());
-            }
-        }
-    }
-    walk(dir, dir, &mut out);
-    out.sort();
-    out
-}
-
-/// Paths and temporary names, which differ between the two runs over one world.
+/// Paths and temporary names, which differ run to run.
 fn local(w: &World, text: &str) -> String {
     let d = w.dir.to_string_lossy().into_owned();
-    let t = text
-        .replace(&format!("{d}/out-py"), "<OUT>")
-        .replace(&format!("{d}/out-rs"), "<OUT>");
-    let t = Regex::new(&format!(
-        r"{}/tmp-(py|rs)/[A-Za-z0-9_.-]+",
-        regex::escape(&d)
-    ))
-    .unwrap()
-    .replace_all(&t, "<TMP>")
-    .into_owned();
+    let t = text.replace(&format!("{d}/out-rs"), "<OUT>");
+    let t = Regex::new(&format!(r"{}/tmp-rs/[A-Za-z0-9_.-]+", regex::escape(&d)))
+        .unwrap()
+        .replace_all(&t, "<TMP>")
+        .into_owned();
     let t = t.replace(&d, "<W>");
     // The release manifest's version is the signing time, and its digest covers it.
     Regex::new(r"version=[0-9]+ entries=([0-9]+) signed-sha256=[0-9a-f]{64}")
@@ -106,135 +85,83 @@ struct Run {
     out: PathBuf,
 }
 
-fn side(w: &World, spec: &Path, py_side: bool, out: &Path) -> Run {
-    let tag = if py_side { "py" } else { "rs" };
+fn side(w: &World, spec: &Path) -> Run {
+    let out = w.dir.join("out-rs");
     let _ = std::fs::remove_dir_all(&w.state);
     copy_dir(&w.dir.join("state.orig"), &w.state);
-    let _ = std::fs::remove_dir_all(out);
+    let _ = std::fs::remove_dir_all(&out);
     let signed = w.dir.join("out-signed");
     if signed.is_dir() {
-        copy_dir(&signed, out);
+        copy_dir(&signed, &out);
     }
     let text = std::fs::read_to_string(spec).unwrap().replace(
         &w.dir.join("out").to_string_lossy().into_owned(),
         &out.to_string_lossy(),
     );
-    let spec2 = w.dir.join(format!("spec-{tag}.json"));
+    let spec2 = w.dir.join("spec-rs.json");
     std::fs::write(&spec2, text).unwrap();
-    let mut c = if py_side {
-        let mut c = Command::new("python3");
-        c.arg(python().unwrap());
-        c
-    } else {
-        Command::new(harness())
-    };
-    c.arg(&spec2);
-    let o = run_cmd(&mut c, &w.root, &w.bin, &w.dir.join(format!("tmp-{tag}")));
+    let o = run_cmd(
+        Command::new(harness()).arg(&spec2),
+        &w.root,
+        &w.bin,
+        &w.dir.join("tmp-rs"),
+    );
     Run {
         code: o.code,
         stdout: o.stdout,
         stderr: o.stderr,
-        out: out.to_path_buf(),
+        out,
     }
 }
 
-/// Files whose bytes carry a fresh signature or the signing time, so differ run to run.
-fn fresh(name: &str) -> bool {
-    name.ends_with(".sig")
-        || name.starts_with("signed/")
-        || name == "release-manifest.json"
-        || name == "SHA256SUMS.plugins"
-        || name == "released.tsv"
-}
+/// The evidence an accepted case writes, pinned alongside its output.
+const EVIDENCE: [&str; 4] = [
+    "release-evidence.json",
+    "plugins.tsv",
+    "plugin-security.json",
+    "released.tsv",
+];
 
-fn evidence_view(name: &str, bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes).into_owned();
-    let masked = |keys: &[&str]| -> String {
-        let mut v = py::loads(&text).unwrap();
-        if let Value::Dict(d) = &mut v {
-            for k in keys {
-                if d.contains(k) {
-                    d.insert(*k, Value::from("<fresh>"));
-                }
-            }
-        }
-        py::dumps(&v, py::Dump::SORTED)
-    };
-    match name {
-        "release-evidence.json" => masked(&["plugin_release_manifest", "sha256sums_plugins"]),
-        "plugin-security.json" => masked(&["signed_artifacts"]),
-        // A plugin release's sums list freshly sealed tarballs and evidence: compare the names.
-        "SHA256SUMS" => text
-            .lines()
-            .map(|l| l.split_whitespace().last().unwrap_or("").to_string())
-            .collect::<Vec<_>>()
-            .join("\n"),
-        _ => text,
-    }
-}
-
-fn compare_outputs(name: &str, rs: &Run, pyr: &Run) {
-    let (a, b) = (files(&rs.out), files(&pyr.out));
-    assert_eq!(a, b, "{name}: the two gates wrote different files");
-    for f in &a {
-        if fresh(f) {
-            continue;
-        }
-        let x = std::fs::read(rs.out.join(f)).unwrap();
-        let y = std::fs::read(pyr.out.join(f)).unwrap();
-        if x != y {
-            assert_eq!(
-                evidence_view(f, &x),
-                evidence_view(f, &y),
-                "{name}: {f} differs between the Rust and Python gates"
-            );
-        }
-    }
-}
-
-fn record(_name: &str, code: i32, text: &str) -> String {
+fn record(code: i32, text: &str) -> String {
     format!("exit {code}\n{}", golden(text))
 }
 
-fn check_golden(name: &str, got: &str, python_said: Option<&str>) {
-    let path = crate_dir().join("tests/golden").join(format!("{name}.txt"));
+fn check_golden(name: &str, file: &str, got: &str) {
+    let path = crate_dir().join("tests/golden").join(file);
     if std::env::var("UPDATE_GOLDEN").is_ok() {
-        let said = python_said.expect("UPDATE_GOLDEN needs the Python gate in the tree");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, said).unwrap();
+        std::fs::write(&path, got).unwrap();
     }
     let want = std::fs::read_to_string(&path)
         .unwrap_or_else(|_| panic!("{name}: no golden file {}", path.display()));
-    assert_eq!(
-        got, want,
-        "{name}: output differs from the recorded Python gate"
-    );
+    assert_eq!(got, want, "{name}: {file} differs from the recorded gate");
 }
 
-/// Run `command` over the world with both gates and require one answer.
+/// Run `command` over the world and require the recorded answer.
 fn judge(name: &str, w: &World, command: &str, security: &str, edit: impl FnOnce(&mut Dict)) {
     if !w.dir.join("state.orig").is_dir() {
         copy_dir(&w.state, &w.dir.join("state.orig"));
     }
     let spec = w.spec(command, security, edit);
-    let rs = side(w, &spec, false, &w.dir.join("out-rs"));
-    let rs_text = local(w, &rs.stdout);
-    let mine = record(name, rs.code, &rs_text);
-    let mut python_said = None;
-    if python().is_some() {
-        let pyr = side(w, &spec, true, &w.dir.join("out-py"));
-        let py_text = local(w, &pyr.stdout);
-        assert_eq!(
-            (pyr.code, &py_text),
-            (rs.code, &rs_text),
-            "{name}: Python and Rust gates disagree\n--- python stderr\n{}\n--- rust stderr\n{}",
-            pyr.stderr,
-            rs.stderr
-        );
-        compare_outputs(name, &rs, &pyr);
-        python_said = Some(record(name, pyr.code, &py_text));
+    let rs = side(w, &spec);
+    let text = record(rs.code, &local(w, &rs.stdout));
+    if !rs.stderr.is_empty() {
+        eprintln!("{name} stderr:\n{}", rs.stderr);
     }
-    check_golden(name, &mine, python_said.as_deref());
+    check_golden(name, &format!("{name}.txt"), &text);
+    if rs.code == 0 {
+        for f in EVIDENCE {
+            let p = rs.out.join(f);
+            if p.is_file() {
+                let db = std::fs::read_to_string(w.bin.join("docker.updated_at")).unwrap();
+                let body = std::fs::read_to_string(&p)
+                    .unwrap()
+                    .replace(&db, "<DATABASE TIME>");
+                let body = golden(&local(w, &body));
+                check_golden(name, &format!("{name}.{f}"), &body);
+            }
+        }
+    }
     let _ = std::fs::remove_dir_all(&w.dir);
 }
 
@@ -1145,36 +1072,19 @@ fn cli(name: &str, args: &[&str], cwd_in_repo: bool, trust_edit: impl FnOnce(&mu
             .replace("{out}", &w.dir.join("out").to_string_lossy())
     };
     let args: Vec<String> = args.iter().map(|a| fill(a)).collect();
-    let usage_rs = Regex::new(r"(?s)usage:\n.*?G-3 re-renders\.").unwrap();
-    let usage_py = Regex::new(r"(?s)usage:\n.*?from the YubiKey\)\.").unwrap();
+    // The usage text names this binary and its plugin-index command; the Python named itself.
+    let usage = Regex::new(r"(?s)usage:\n.*?G-3 re-renders\.").unwrap();
     let rs = run_cmd(
         Command::new(env!("CARGO_BIN_EXE_busbar-publish-gate")).args(&args),
         &cwd,
         &w.bin,
         &w.dir.join("tmp-rs"),
     );
-    let rs_text = local(&w, &usage_rs.replace_all(&rs.stdout, "<USAGE>"));
-    let mine = record(name, rs.code, &rs_text);
-    let mut python_said = None;
-    if python().is_some() {
-        let gate = crate_dir().join("../../scripts/release/publish_gate.py");
-        let pyr = run_cmd(
-            Command::new("python3").arg(gate).args(&args),
-            &cwd,
-            &w.bin,
-            &w.dir.join("tmp-py"),
-        );
-        let py_text = local(&w, &usage_py.replace_all(&pyr.stdout, "<USAGE>"));
-        assert_eq!(
-            (pyr.code, &py_text),
-            (rs.code, &rs_text),
-            "{name}: Python and Rust CLIs disagree\n{}\n{}",
-            pyr.stderr,
-            rs.stderr
-        );
-        python_said = Some(record(name, pyr.code, &py_text));
-    }
-    check_golden(name, &mine, python_said.as_deref());
+    let text = record(
+        rs.code,
+        &local(&w, &usage.replace_all(&rs.stdout, "<USAGE>")),
+    );
+    check_golden(name, &format!("{name}.txt"), &text);
     let _ = std::fs::remove_dir_all(&w.dir);
 }
 
@@ -1335,4 +1245,51 @@ fn cli_the_real_cli_requires_a_hardware_k2() {
         true,
         |_| {},
     );
+}
+
+#[test]
+fn cli_plugin_index_writes_the_bytes_the_gate_re_renders() {
+    let Some(w) = world("cli_plugin_index") else {
+        return;
+    };
+    w.write(
+        "repo/plugins.yaml",
+        format!(
+            "plugins:\n  - repo: {PLUGIN}\n    kind: store\n    alias: fake\n    \
+             former_names: [busbar-fake-db]\n"
+        ),
+    );
+    w.write(
+        "state/full_names.json",
+        format!("{{\"GetBusbar/store-fake\": \"GetBusbar/{PLUGIN}\", \"GetBusbar/fake-db\": \"GetBusbar/other\"}}"),
+    );
+    w.render_index();
+    let cj = py::loads(&w.read("cand/candidate.json")).unwrap();
+    w.write(
+        "plugins.json",
+        py::dumps(cj.item("plugins").unwrap(), py::Dump::PLAIN),
+    );
+    let out = w.dir.join("index.json");
+    let o = run_cmd(
+        Command::new(env!("CARGO_BIN_EXE_busbar-publish-gate")).args([
+            "plugin-index",
+            "--candidate",
+            &w.cand.to_string_lossy(),
+            "--plugins",
+            &w.dir.join("plugins.json").to_string_lossy(),
+            "--out",
+            &out.to_string_lossy(),
+        ]),
+        &w.root,
+        &w.bin,
+        &w.dir.join("tmp-rs"),
+    );
+    assert_eq!(o.code, 0, "{}{}", o.stdout, o.stderr);
+    let written = std::fs::read_to_string(&out).unwrap();
+    assert_eq!(written, w.read("cand/artifacts/plugin-index.json"));
+    assert!(
+        written.contains("\"former_repos\": [\n        \"GetBusbar/store-fake\"\n      ]"),
+        "{written}"
+    );
+    let _ = std::fs::remove_dir_all(&w.dir);
 }
