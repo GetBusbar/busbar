@@ -316,6 +316,9 @@ core-oracle-merge:
 # The marketing pipeline independently verifies source and binary freshness. Core's
 # dev evidence is its DEV tier (core-build, core-clippy, core-test, core-conformance receipts);
 # stage ordering starts this only after every one of them (and every core-oracle shard) passed.
+# The bridge only triggers the website; it does not mirror the downstream status (owner
+# decision, DECISIONS row 85): a website failure is red on the marketing pipeline, where it is
+# seen and fixed, and never turns a core or plugin pipeline red.
 website-dev:
   stage: website
   rules:
@@ -331,7 +334,6 @@ website-dev:
   trigger:
     project: BusbarInc/marketing
     branch: dev
-    strategy: mirror
     forward:
       yaml_variables: true
       pipeline_variables: false
