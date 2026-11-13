@@ -75,6 +75,10 @@ Docker client state stay outside that writable root. The original candidate
 checkout is read-only, except explicit Cargo/nextest target directories. Trusted
 policy and fetched immutable sources are read-only. Source symlinks refuse. Git
 history is copied without clone credentials, hooks or external object stores.
+A non-core job's assembled host checkout omits `scripts/architecture/`, `ci/` and
+`.gitlab/` from its working tree (sparse, still clean at its exact commit): the job
+runs the trusted policy copy of those, and its plugin host identity (README) relies
+on candidate code never reading the host's.
 
 Before execution, the controller inspects the exact container user, resources,
 mounts and network/IPC/PID/cgroup settings. The image entry verifies nonroot,

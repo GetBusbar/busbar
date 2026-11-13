@@ -22,7 +22,15 @@ Input identity (no Python AST, no interpreter-dependent data):
   * the approved policy revision (the whole trusted controller tree: pipeline
     YAML, toolchain/image pins, fixtures, nextest config and controller code);
   * job kind, project, protected ref; for non-core projects also the resolved
-    core host revision the job would assemble against.
+    core host revision the job would assemble against and its plugin host
+    identity (plugin_host_identity.py: exactly the core inputs the plugin job
+    reads from its policy and host trees).
+
+A non-core original qualified under another policy or host is retained only
+when its authenticated receipt records a plugin host identity, bound to its own
+policy and host revisions, equal to the current one (schema /2). Originals
+without a recorded identity are retained only on today's exact basis: the same
+policy and host revisions. Core keeps the exact policy basis.
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ import argparse
 import base64
 import datetime as dt
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -38,6 +47,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -45,6 +55,7 @@ import zipfile
 CORE = 'GetBusbar/busbar'
 SCHEMA = 'busbar.ci-retained-check/1'
 IDENTITY_SCHEMA = 'busbar.ci-input-identity/1'
+PLUGIN_IDENTITY_SCHEMA = 'busbar.ci-input-identity/2'
 RECEIPT_SCHEMAS = {'native-qualification': 'busbar.protected-native-admission/1',
                    'core-conformance': 'busbar.protected-conformance/1'}
 RETAINED = 0
@@ -79,6 +90,18 @@ REVIEWED_MARKDOWN_WALKERS = {
         'docs/evidence/1.6.0-audit-evidence.json': '7dd95dc226fad90ad925f6c2a1b78178f713757e',
     },
 }
+
+
+def _host_identity_module():
+    # The pipeline runs this file with -I: load the sibling trusted module by path.
+    spec = importlib.util.spec_from_file_location('plugin_host_identity',
+                                                  Path(__file__).with_name('plugin_host_identity.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+phi = _host_identity_module()
 
 
 class Fresh(Exception):
@@ -197,13 +220,51 @@ def tree_identity(tree, excluded):
     return sha256(canonical(rows))
 
 
-def identity(context, tree, excluded, host):
+def identity(context, tree, excluded, host, host_identity=None):
     value = {'schema': IDENTITY_SCHEMA, 'kind': context['kind'], 'project': context['project'],
              'project_id': context['project_id'], 'ref': 'dev', 'policy_revision': context['policy'],
              'tree_sha256': tree_identity(tree, excluded), 'content_excluded': sorted(excluded)}
     if context['project'] != CORE:
-        value['host_revision'] = host
+        require(isinstance(host_identity, str) and re.fullmatch(r'[0-9a-f]{64}', host_identity),
+                'no current plugin host identity', Fresh)
+        value.update(schema=PLUGIN_IDENTITY_SCHEMA, host_revision=host, plugin_host_identity=host_identity)
     return value
+
+
+def original_basis(context, receipt, host, host_identity):
+    """Why a verified non-core original's core inputs equal the current job's, or Fresh."""
+    if receipt.get('policy_revision') == context['policy'] and receipt.get('host_revision') == host:
+        return 'exact-policy-and-host'
+    try:
+        phi.accept(receipt, host_identity)
+    except phi.Unavailable as error:
+        raise Fresh('job ' + receipt.get('job_id', '?') + ' was qualified under policy '
+                    + str(receipt.get('policy_revision'))[:10] + ' against host '
+                    + str(receipt.get('host_revision'))[:10] + ': ' + str(error)) from None
+    return 'plugin-host-identity'
+
+
+def current_host_identity(context, host, env):
+    """The plugin host identity of this job: the trusted policy checkout and its host."""
+    trusted = Path(__file__).resolve().parents[2]
+    trees = phi.GitTrees(trusted)
+    try:
+        require(trees._git('rev-parse', 'HEAD').decode().strip() == context['policy'],
+                'trusted checkout is not the approved policy revision', Fresh)
+        if host == context['policy']:
+            return phi.compute(context['project'], trees, context['policy'], trees, host)['sha256']
+        with tempfile.TemporaryDirectory(prefix='busbar-host-identity-') as scratch:
+            server = env['CI_SERVER_URL'].rstrip('/')
+            auth = base64.b64encode(('gitlab-ci-token:' + env['CI_JOB_TOKEN']).encode()).decode()
+            git_env = {key: value for key, value in env.items() if key in ('PATH', 'HOME')}
+            git_env.update(GIT_CONFIG_COUNT='1', GIT_CONFIG_KEY_0='http.' + server + '/.extraheader',
+                           GIT_CONFIG_VALUE_0='Authorization: Basic ' + auth, GIT_TERMINAL_PROMPT='0')
+            host_trees = phi.GitTrees(scratch, env=git_env)
+            host_trees._git('init', '-q')
+            host_trees._git('fetch', '-q', '--depth', '1', '--no-tags', server + '/' + CORE + '.git', host)
+            return phi.compute(context['project'], trees, context['policy'], host_trees, host)['sha256']
+    except phi.Unavailable as error:
+        raise Fresh('plugin host identity unavailable: ' + str(error)) from None
 
 
 def changed_paths(before, after, excluded):
@@ -288,19 +349,28 @@ def download(api, context, job):
 
 
 def verify_original(context, job, raw):
-    """Verify an original fresh job's own archive; return its receipt and digests."""
+    """Verify an original fresh job's own archive; return its receipt and digests.
+
+    Core originals must name the current policy. A non-core original names its
+    own immutable policy here; original_basis() then decides whether that policy
+    and host give it the current job's core inputs.
+    """
     members = read_archive(raw)
     label = 'job ' + str(job['id'])
     require('boundary-evidence/retained.json' not in members, label + ' is not a fresh original')
     receipt_raw = members.get('boundary-evidence/receipt.json')
     require(receipt_raw is not None, label + ' archive has no receipt')
     receipt = json.loads(receipt_raw)
+    policy = context['policy']
+    if context['project'] != CORE and isinstance(receipt, dict):
+        policy = receipt.get('policy_revision')
+        require(isinstance(policy, str) and SHA1.fullmatch(policy), label + ' receipt has no immutable policy')
     uri = (context['server_host'] + '/' + context['project'] + '//ci/architecture-pipeline.yml@'
-           + CORE + ':' + context['policy'] + '@refs/heads/dev')
+           + CORE + ':' + policy + '@refs/heads/dev')
     expected = {'schema': RECEIPT_SCHEMAS[context['kind']], 'status': 'pass',
                 'repository': context['project'], 'source': job['commit']['id'],
                 'job_id': str(job['id']), 'pipeline_id': str(job['pipeline']['id']),
-                'policy_revision': context['policy'], 'config_uri': uri}
+                'policy_revision': policy, 'config_uri': uri}
     for key, value in expected.items():
         require(isinstance(receipt, dict) and receipt.get(key) == value,
                 label + ' receipt ' + key + ' differs from server/policy identity')
@@ -384,7 +454,7 @@ def context_from(env, policy):
             'source': env['CI_COMMIT_SHA'], 'policy': policy, 'server_host': env['CI_SERVER_HOST']}
 
 
-def decide(env, policy, git, api, *, now=None):
+def decide(env, policy, git, api, *, now=None, host_identity=None):
     """Return ('retained', receipt) or ('fresh', reasons). Never raises for evidence."""
     reasons = []
     try:
@@ -393,7 +463,10 @@ def decide(env, policy, git, api, *, now=None):
         excluded, notes = excluded_paths(context['project'], tree, git)
         reasons.extend(notes)
         host = current_host(context, env)
-        current = identity(context, tree, excluded, host)
+        plugin_identity = None
+        if context['project'] != CORE:
+            plugin_identity = (host_identity or current_host_identity)(context, host, env)
+        current = identity(context, tree, excluded, host, plugin_identity)
         verified = 0
         for page in range(1, MAX_PAGES + 1):
             jobs = api.json('projects/' + str(context['project_id'])
@@ -420,12 +493,24 @@ def decide(env, policy, git, api, *, now=None):
                     if 'boundary-evidence/retained.json' in read_archive(raw):
                         original, raw = follow_retained(api, context, job, raw)
                     receipt, digests = verify_original(context, original, raw)
-                    original_identity = identity(context, git.tree(original['commit']['id']), excluded,
-                                                 receipt.get('host_revision'))
-                    if original_identity != current:
-                        reasons.append('job ' + str(original['id']) + ' identity differs (host/policy/tree)')
-                        continue
-                except (Rejected, ValueError, KeyError, TypeError, AttributeError) as error:
+                    basis = 'exact-policy'
+                    if context['project'] == CORE:
+                        original_identity = identity(context, git.tree(original['commit']['id']), excluded, None)
+                        if original_identity != current:
+                            reasons.append('job ' + str(original['id']) + ' identity differs (policy/tree)')
+                            continue
+                    else:
+                        if tree_identity(git.tree(original['commit']['id']), excluded) != current['tree_sha256']:
+                            reasons.append('job ' + str(original['id']) + ' identity differs (tree)')
+                            continue
+                        basis = original_basis(context, receipt, host, plugin_identity)
+                except Rejected as error:
+                    reasons.append('rejected evidence: ' + str(error)[:200])
+                    continue
+                except Fresh as error:
+                    reasons.append(str(error)[:400])
+                    continue
+                except (ValueError, KeyError, TypeError, AttributeError) as error:
                     reasons.append('rejected evidence: ' + str(error)[:200])
                     continue
                 stamp = (now or dt.datetime.now(dt.timezone.utc)).isoformat()
@@ -441,7 +526,10 @@ def decide(env, policy, git, api, *, now=None):
                                  'runner_id': (original.get('runner') or {}).get('id'),
                                  'finished_at': original.get('finished_at'),
                                  'via_retained_job_id': job['id'] if job is not original else None,
-                                 **digests},
+                                 'policy_revision': receipt.get('policy_revision'),
+                                 'host_revision': receipt.get('host_revision'),
+                                 'plugin_host_identity': (receipt.get('plugin_host_identity') or {}).get('sha256'),
+                                 'basis': basis, **digests},
                     'notes': reasons}
             if len(jobs) < 100:
                 break
