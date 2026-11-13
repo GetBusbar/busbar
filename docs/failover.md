@@ -4,7 +4,7 @@ When a lane fails, Busbar reroutes the request to another pool member before the
 
 Cross-references: [Circuit breaker](/docs/circuit-breaker/) (how lanes trip) · [Pools](/docs/pools/) (structure) · [Configuration](/docs/configuration/) (field reference).
 
-This page is the **LLM plane's** failover. The MCP and A2A planes share the same neutral `pools:` map — a pool's kind is inferred from its members — and have their own answer when a target is tripped; see [MCP](/docs/mcp/#failover-pools-pools) and [A2A](/docs/a2a/#failover-pools-pools).
+This page is the **LLM plane's** failover. The MCP and A2A planes share the same neutral `pools:` map — a pool's kind is inferred from its members — and have their own answer when a target is tripped; see [MCP](/docs/mcp/#failover-pools-toolspools) and [A2A](/docs/a2a/#failover-pools-agentspools).
 
 ## The first-byte boundary
 

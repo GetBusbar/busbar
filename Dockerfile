@@ -60,8 +60,11 @@ COPY docker/config.yaml /etc/busbar/config.yaml
 # /plugins, as documented in the header.
 WORKDIR /
 
-ENV BUSBAR_PROVIDERS=/etc/busbar/providers.yaml \
-    BUSBAR_CONFIG=/etc/busbar/config.yaml
+# Only BUSBAR_CONFIG is set. The catalog resolves as providers.yaml beside the resolved config
+# (/etc/busbar/providers.yaml here) unless `providers_file:` or `--providers` names another one.
+# BUSBAR_PROVIDERS is a retired 1.5.x launch input that 1.6.0 serving never reads, so the image does
+# not set it; docs/migration-1.6.md covers migrating a 1.5.x container that relied on it.
+ENV BUSBAR_CONFIG=/etc/busbar/config.yaml
 
 EXPOSE 8080
 USER 65532:65532

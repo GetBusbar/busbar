@@ -179,7 +179,7 @@ artifacts/       busbar-<target>.<archive> per published target in release/relea
                  plugin-index.json (rendered from candidate.json's plugins and their tarballs' manifests)
 plugins/         <repo>-<version>-<target>.tar.gz, UNSIGNED, per plugins.yaml entry and plugin target
 sboms/           busbar-v<V>-<target>.cdx.json per published target and image platform
-internal/        busbar-<musl target>.tar.gz (the binaries inside the image)
+internal/        busbar-image-linux-<arch>.oci per unpublished image row (the image packages the published linux-gnu binary)
 oci/             busbar.oci.tar (OCI layout of the multi-platform image)
 SHA256SUMS       every file in artifacts/ and sboms/
 IMAGES           busbar sha256:<image index digest>

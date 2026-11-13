@@ -308,7 +308,7 @@ spec:
     spec:
       containers:
         - name: busbar
-          image: getbusbar/busbar:1.6.0
+          image: getbusbar/busbar@sha256:<index digest>   # the release's signed digest: docs/verify.md
           env:
             - { name: BUSBAR_CONFIG, value: /etc/busbar/config.yaml }
           envFrom:

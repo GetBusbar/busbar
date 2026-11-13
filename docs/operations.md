@@ -405,7 +405,7 @@ A successful active health probe (it tests the shared upstream) clears the break
 ### States
 
 The canonical Closed/Open/HalfOpen transition graph (the FSM itself) lives on
-[circuit-breaker.md](circuit-breaker.md#states), the source of truth. What an operator watching
+[circuit-breaker.md](circuit-breaker.md#breaker-state-machine), the source of truth. What an operator watching
 `/stats` and `/metrics` sees is not that graph but **two independent axes**: the breaker state and
 the lane's spare capacity, each exposed as its own field and never collapsed into one. The matrix
 below reads them together, so a saturated Open lane shows up as **both** open **and** at capacity.
@@ -652,7 +652,8 @@ durable revocation denylist immediately.
   billable units, including fee units; the kernel retains quantities and provenance, never money.
   Each read/check uses the applicable dated rates. A forward card change does not reprice earlier
   arrivals; an attributed backdated amendment affects only its declared window. `as_of` reads
-  reproduce an earlier history point. See [Store-owned rate-card history](store-card-history.md).
+  reproduce an earlier history point. Card history lives in the configured Store: a new card
+  activates only after the Store confirms it was saved, and boot refuses if it cannot confirm its card.
 - **Ledgers are in-memory under `store: memory`** (ephemeral; the `store:` block itself is required in 1.6.0); configure a durable store plugin
   (`store: { module: sqlite|postgres|mysql|valkey, settings: {...} }`) to persist keys, usage, and
   the denylist across restarts.
@@ -747,20 +748,21 @@ the quarantined records, because on-disk journals ship to the store as they writ
 
 ## Running on 64-bit ARM — two builds, one release
 
-Every release ships **two** 64-bit ARM Linux artifacts. They are the same code and the same
+From 1.6.0, every release ships **two** 64-bit ARM Linux artifacts (1.5.x shipped the default build only). They are the same code and the same
 release pipeline; the only difference is the CPU generation they target:
 
-| Build | ISA floor | Use it on | Binary asset | Docker tag |
+| Build | ISA floor | Use it on | Binary asset | Container image |
 | --- | --- | --- | --- | --- |
 | Default | ARMv8.1+ | AWS Graviton, Ampere, Google Axion, NVIDIA Grace, Raspberry Pi 5, Apple Silicon under Linux — anything 2016+ | `busbar-aarch64-unknown-linux-gnu.tar.gz` | `getbusbar/busbar` (the multi-arch manifest's `linux/arm64` entry) |
-| ARMv8.0 compat | ARMv8.0 | Raspberry Pi 4 / Pi 400 / CM4 and other Cortex-A72/A53-class boards | `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` | `getbusbar/busbar:armv8.0` (pin: `:X.Y.Z-armv8.0`) |
+| ARMv8.0 compat | ARMv8.0 | Raspberry Pi 4 / Pi 400 / CM4 and other Cortex-A72/A53-class boards | `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` | none: run the native archive |
 
 **Why two:** ARMv8.1 added native atomic read-modify-write instructions (LSE). Built for the
 ARMv8.0 baseline, every atomic operation compiles to a helper-function call instead — measured at
 about 12% of self-time under concurrent load on an ARM server — so the default build raises its
 floor to ARMv8.1 and gets the native instructions. A Docker multi-arch manifest cannot carry two
-`linux/arm64` variants under one tag, which is why the compat build has its own explicitly
-suffixed name rather than hiding inside `latest`.
+`linux/arm64` variants under one tag, so the image carries the default build only and no ARMv8.0
+image is published (`release/release-targets.json` packages only the default `aarch64` binary into
+`image-linux-arm64`). On an ARMv8.0 board, run the compat archive natively.
 
 **Symptoms of the wrong choice:** the default build on an ARMv8.0 board dies immediately with
 `SIGILL` / "illegal instruction" — switch to the `-armv8.0` artifact. The compat build on modern
@@ -769,7 +771,8 @@ A running binary identifies itself: `busbar --build-info` prints `target-feature
 or `target-features=default` (compat).
 
 Both artifacts are built by the same pipeline (PGO included), verified by the same per-artifact
-contract, cosign-signed/attested identically, and promoted in the same release step.
+contract, listed in the same release-key-signed `SHA256SUMS` (see [Verifying a busbar release](verify.md)),
+and promoted in the same release step.
 
 ## Running on Windows
 
