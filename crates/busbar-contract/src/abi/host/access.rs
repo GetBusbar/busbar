@@ -271,6 +271,13 @@ services! {
     WORK_STATUS: Work, Drain => [PlaneKind];
     OUTBOUND_AUTHORIZE: Unit, Active => [PlaneKind];
     HOOK_CHILD: Unit, Active => [HookKind];
+    DIRECTORY_GET: Records, Active => [AuthKind];
+    DIRECTORY_LOOKUP: Records, Active => [AuthKind];
+    DIRECTORY_SCAN: Records, Active => [AuthKind];
+    DIRECTORY_COUNT: Records, Active => [AuthKind];
+    DIRECTORY_CREATE: Records, Active => [AuthKind];
+    DIRECTORY_APPLY: Records, Active => [AuthKind];
+    DIRECTORY_DELETE: Records, Active => [AuthKind];
 }
 
 /// Lookup is exhaustive over the advertised service table; unknown codes fail closed.

@@ -19,7 +19,8 @@ fn current_abi_generations_are_explicit() {
     assert_eq!(MECHANISM_VERSION, 4);
     assert_eq!(store::ABI_VERSION, 3);
     assert_eq!(secret::ABI_VERSION, 2);
-    assert_eq!(auth::ABI_VERSION, 3);
+    // 1.6.0 GA: auth v4 appends the `serve` slot (the provisioning mount), once, before the tag.
+    assert_eq!(auth::ABI_VERSION, 4);
     assert_eq!(hook::ABI_VERSION, 2);
     assert_eq!(export::ABI_VERSION, 4);
     // Plane and Transport are new kinds since v1.5.5.
@@ -152,4 +153,36 @@ fn every_slot_type_is_extern_c() {
     assert!(raw().is_null());
     assert_eq!(door().magic(), DOOR_MAGIC);
     wake(HostCtx::NONE, Ticket::NONE);
+}
+
+#[test]
+fn auth_v4_appends_serve_after_target_and_nothing_else() {
+    use busbar_contract::abi::mechanism::lifecycle::LIFECYCLE_SLOTS;
+    use std::mem::{offset_of, size_of};
+    assert_eq!(auth::KIND_SLOTS, 8);
+    assert_eq!(auth::slot::SERVE, auth::slot::TARGET + 1);
+    assert_eq!(auth::slot::SERVE, LIFECYCLE_SLOTS + 7);
+    assert_eq!(
+        offset_of!(auth::Ops, serve),
+        8 + 8 * auth::slot::SERVE as usize
+    );
+    assert_eq!(size_of::<auth::Ops>(), 8 + 8 * auth::SLOTS as usize);
+    // `CAP_PROVISION` is a new caps bit; the old bits keep their values.
+    assert_eq!(
+        (auth::CAP_INBOUND, auth::CAP_LOGIN, auth::CAP_OUTBOUND, auth::CAP_PROVISION),
+        (1, 2, 4, 8)
+    );
+}
+
+#[test]
+fn the_auth_serve_in_is_the_hook_serve_in_plus_the_verified_client() {
+    use std::mem::{offset_of, size_of};
+    // Byte for byte the hook shape, then one appended `client`.
+    assert_eq!(offset_of!(auth::ServeIn, method), offset_of!(hook::ServeIn, method));
+    assert_eq!(offset_of!(auth::ServeIn, path), offset_of!(hook::ServeIn, path));
+    assert_eq!(offset_of!(auth::ServeIn, query), offset_of!(hook::ServeIn, query));
+    assert_eq!(offset_of!(auth::ServeIn, headers), offset_of!(hook::ServeIn, headers));
+    assert_eq!(offset_of!(auth::ServeIn, body), offset_of!(hook::ServeIn, body));
+    assert_eq!(offset_of!(auth::ServeIn, client), size_of::<hook::ServeIn>());
+    assert_eq!(size_of::<auth::ServeOut>(), size_of::<hook::ServeOut>());
 }

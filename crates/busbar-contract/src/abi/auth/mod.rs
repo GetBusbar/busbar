@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE AUTH KIND'S ABI (v3; design B.3): its version, its table, its Statement tail, its cancel
+//! THE AUTH KIND'S ABI (v4; design B.3, plus the provisioning `serve` slot): its version, its table, its Statement tail, its cancel
 
 use super::mechanism::call::{AbiStr, Op};
 use super::mechanism::door::KindTailHead;
@@ -11,6 +11,7 @@ mod check;
 mod inbound;
 mod outbound;
 mod points;
+mod serve;
 
 pub use check::{
     check_begin_login, check_complete_login, check_fields, check_identify, check_inbound_points,
@@ -25,6 +26,7 @@ pub use outbound::{
     FieldSpan, FieldsIn, FieldsOut, OpenOutboundIn, OpenOutboundOut, OutboundReadyIn,
     OutboundReadyOut, TargetIn, TargetOut,
 };
+pub use serve::{ServeIn, ServeOut};
 pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 
 /// Pure outbound settings validation support: Statement value `b"\x01"`; on lifecycle
@@ -32,16 +34,19 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 /// instance, resolving credentials, reading secrets, or performing network work.
 pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
 
-/// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
-pub const ABI_VERSION: u32 = 3;
+/// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`); 1.6.0 ships `4`, which
+/// appends [`Ops::serve`] (the provisioning mount) to the v3 table. A v3 door is refused at load
+/// with BUSBAR-6020 (`plugin-auth-abi-superseded`).
+pub const ABI_VERSION: u32 = 4;
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
-pub const LAYOUT_FINGERPRINT: u64 = 0x6438f190d7b44e09;
+pub const LAYOUT_FINGERPRINT: u64 = 0x5b57a4ca0d0cd422;
 
 /// The auth kind's shapes, in fold order ([`crate::layout_shape!`]): every `#[repr(C)]` struct
 pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(Ops =>
-        head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target
+        head, verify, begin_login, complete_login, open_outbound, outbound_ready, fields, target,
+        serve
     ),
     crate::layout_shape!(StyleDecl => name, flags, points),
     crate::layout_shape!(AuthTail =>
@@ -84,6 +89,10 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(FieldsOut => head, fields_len, needed_fields, needed_bytes),
     crate::layout_shape!(TargetIn => head, style, credential, settings, buf, buf_cap),
     crate::layout_shape!(TargetOut => head, target),
+    crate::layout_shape!(ServeIn => head, method, path, query, headers, headers_len, body, client),
+    crate::layout_shape!(ServeOut =>
+        head, status_code, _reserved, headers_out, headers_out_len, body
+    ),
 ];
 
 /// [`InHead::op`](super::mechanism::call::InHead) of each auth op: kind op `k` is at slot
@@ -101,6 +110,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
 ///     (slot::OUTBOUND_READY, offset_of!(Ops, outbound_ready)),
 ///     (slot::FIELDS, offset_of!(Ops, fields)),
 ///     (slot::TARGET, offset_of!(Ops, target)),
+///     (slot::SERVE, offset_of!(Ops, serve)),
 /// ];
 /// assert_eq!(order.len() as u32, KIND_SLOTS);
 /// for (k, (idx, off)) in order.into_iter().enumerate() {
@@ -128,11 +138,13 @@ pub mod slot {
     pub const FIELDS: u32 = LIFECYCLE_SLOTS + 5;
     /// `target`.
     pub const TARGET: u32 = LIFECYCLE_SLOTS + 6;
+    /// `serve` (auth v4).
+    pub const SERVE: u32 = LIFECYCLE_SLOTS + 7;
 }
 
 /// How many kind ops follow the lifecycle.
-pub const KIND_SLOTS: u32 = 7;
-/// [`OpsHead::slots`] for auth v3.
+pub const KIND_SLOTS: u32 = 8;
+/// [`OpsHead::slots`] for auth v4.
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
 /// The auth kind's ops table: the shared [`OpsHead`], then the kind's slots, contiguous.
@@ -195,6 +207,16 @@ pub struct Ops {
     /// rendered verbatim. REFUSED: the plugin does not serve `target` (the SDK's answer for a door
     /// that wires none): the style names no destination.
     pub target: Option<Op>,
+    /// THE PROVISIONING MOUNT (auth v4): one HTTP request under `/provision/<instance>/*`, from a
+    /// client the kernel ALREADY authenticated with this instance's own `verify` and found in the
+    /// instance's `provisioning.clients` allow-list. OFF-PATH; may pend (on `directory.*`);
+    /// `Call`. In [`ServeIn`] (the hook kind's `ServeIn`, byte for byte, plus the appended
+    /// [`ServeIn::client`]), out [`ServeOut`] (the hook kind's; headers and body under
+    /// `head.lease`, memory class iv). The kernel never forwards `Authorization` or any of the
+    /// instance's carrier fields, and calls `serve` only on an instance stating
+    /// [`CAP_PROVISION`]. NULL: the plugin serves no routes (every plugin without
+    /// [`CAP_PROVISION`]).
+    pub serve: Option<Op>,
 }
 
 /// [`AuthTail::caps`]: the plugin serves `verify`.
@@ -203,6 +225,9 @@ pub const CAP_INBOUND: u32 = 1;
 pub const CAP_LOGIN: u32 = 2;
 /// [`AuthTail::caps`]: the plugin serves `open_outbound`/`outbound_ready`/`fields`.
 pub const CAP_OUTBOUND: u32 = 4;
+/// [`AuthTail::caps`]: the plugin serves [`Ops::serve`] under `/provision/<instance>/*` and may call
+/// the `directory.*` host services (auth v4). A caps bit only: no layout change.
+pub const CAP_PROVISION: u32 = 8;
 
 /// [`AuthTail::facts`]: the plugin's verdicts may be cached. INFORMATIONAL (status, operators):
 pub const FACT_CACHEABLE: u32 = 1;
@@ -629,6 +654,7 @@ unsafe impl super::sdk::door::AbiIn for OpenOutboundIn {}
 unsafe impl super::sdk::door::AbiIn for OutboundReadyIn {}
 unsafe impl super::sdk::door::AbiIn for FieldsIn {}
 unsafe impl super::sdk::door::AbiIn for TargetIn {}
+unsafe impl super::sdk::door::AbiIn for ServeIn {}
 unsafe impl super::sdk::door::AbiOut for IdentifyOut {}
 unsafe impl super::sdk::door::AbiOut for BeginLoginOut {}
 unsafe impl super::sdk::door::AbiOut for OpenOutboundOut {}
@@ -681,6 +707,7 @@ super::sdk::door::slot_structs!(
         slot::OUTBOUND_READY => OutboundReadyIn, OutboundReadyOut;
         slot::FIELDS => FieldsIn, FieldsOut;
         slot::TARGET => TargetIn, TargetOut;
+        slot::SERVE => ServeIn, ServeOut;
     }
 );
 
