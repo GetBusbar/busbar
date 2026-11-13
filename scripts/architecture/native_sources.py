@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 import subprocess
 import tomllib
+from urllib.parse import urlsplit
 
 
 SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
@@ -22,6 +23,53 @@ SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?re
 FETCH_WORKERS = 8
 FETCH_TIMEOUT = 300
 CORE = 'GetBusbar/busbar'
+PUBLIC = 'https://github.com/'
+# Reviewed: the public read-only replica is never a build source. Each public fork
+# pinned by core's [patch.crates-io] has an exact private-forge copy; the public
+# URL in Cargo.toml/Cargo.lock is only a name, the locked commit pins the bytes.
+# No wildcard: any other github.com Git source refuses.
+UPSTREAM_FORKS = {
+    PUBLIC + 'MattJackson/aws-lc-sys': 'GetBusbar/upstream-forks/aws-lc-sys',
+    PUBLIC + 'MattJackson/jobserver-rs': 'GetBusbar/upstream-forks/jobserver-rs',
+    PUBLIC + 'MattJackson/rust-stringprep': 'GetBusbar/upstream-forks/rust-stringprep',
+    PUBLIC + 'MattJackson/dunce': 'GetBusbar/upstream-forks/dunce',
+    PUBLIC + 'MattJackson/fs_extra': 'GetBusbar/upstream-forks/fs_extra',
+    PUBLIC + 'MattJackson/h2': 'GetBusbar/upstream-forks/h2',
+    PUBLIC + 'MattJackson/tungstenite-rs': 'GetBusbar/upstream-forks/tungstenite-rs',
+}
+FORK_URLS = {repository: url for url, repository in UPSTREAM_FORKS.items()}
+FORK_CACHE = 'upstream-forks--'
+FORK_SOURCE = re.compile(r'git\+(https://github\.com/[^/?#]+/[^/?#]+?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
+# Every other public URL is rewritten to an unroutable host so a stray fetch fails
+# loudly. Git applies the longest matching insteadOf, so exact mappings still win.
+REFUSED = 'https://public-replica-refused.invalid/'
+REFUSAL = ('url.' + REFUSED + '.insteadOf', PUBLIC)
+
+
+def cache_name(repository):
+    """canonical-inputs directory; fork caches cannot collide with first-party names."""
+    if repository in FORK_URLS:
+        return FORK_CACHE + repository.rsplit('/', 1)[1]
+    owner, _, name = repository.partition('/')
+    if owner != 'GetBusbar' or not re.fullmatch('[A-Za-z0-9_.-]+', name) or name.startswith(FORK_CACHE):
+        raise ValueError('not a canonical input repository: ' + repository)
+    return name
+
+
+def forge_repository(url):
+    """Private-forge repository for a public Git URL, or None if unreviewed."""
+    url = url.removesuffix('.git')
+    if url in UPSTREAM_FORKS:
+        return UPSTREAM_FORKS[url]
+    name = url.removeprefix(PUBLIC + 'GetBusbar/')
+    if name != url and re.fullmatch('[A-Za-z0-9_.-]+', name) and not name.startswith(FORK_CACHE):
+        return 'GetBusbar/' + name
+    return None
+
+
+def public_urls(repository):
+    base = FORK_URLS.get(repository, PUBLIC + repository)
+    return (base, base + '.git')
 
 
 def standalone_products(repository, evaluation_only, vector):
@@ -52,7 +100,19 @@ def lock_inputs(text, policy):
     # revisions belong to this lock's inputs even without a resolved package.
     for package in lock.get('package', []) + lock.get('patch', {}).get('unused', []):
         source = package.get('source', '')
+        if not source.startswith('git+'):
+            continue
+        host = (urlsplit(source[4:]).hostname or '').rstrip('.')
+        if host != 'github.com' and not host.endswith('.github.com'):
+            continue
         if not source.startswith('git+https://github.com/GetBusbar/'):
+            if re.split('[?#]', source[4:], maxsplit=1)[0].removesuffix('.git') not in UPSTREAM_FORKS:
+                raise ValueError('unreviewed public replica Git source; build sources come only from '
+                                 'the private forge: ' + source)
+            match = FORK_SOURCE.fullmatch(source)
+            if not match or match[2] != match[3]:
+                raise ValueError('upstream fork source must be an exact immutable Git commit')
+            sources[UPSTREAM_FORKS[match[1]]].add(match[2])
             continue
         match = SOURCE.fullmatch(source)
         if not match or match[2] != match[3]:
@@ -60,8 +120,8 @@ def lock_inputs(text, policy):
         repository, revision = match[1], match[2]
         if repository in allowed:
             sources[repository].add(revision)
-        # Existing public third-party forks are governed by the dependency policy,
-        # not treated as unpublished first-party plugin candidates.
+        # Private or unclassified first-party repositories never enter a public
+        # map; the job seed then refuses them rather than fetching publicly.
     return sources
 
 
@@ -167,7 +227,7 @@ def prepare(q, host):
     # All listed products are public; private candidates never enter a public map.
     allowed = {CORE} | {name for name, row in q.policy.data['repositories'].items() if not row['private']}
     listed = {'GetBusbar/' + product['repo'] for product in vector['products']}
-    if (set(sources) | listed) - allowed:
+    if (set(sources) - set(FORK_URLS) | listed) - allowed:
         raise ValueError('unclassified or private repository in public product inputs')
     parent = q.work / 'canonical-inputs'
     parent.mkdir()
@@ -176,7 +236,7 @@ def prepare(q, host):
     local = local_core_stores(q, host)
     fetched = defaultdict(set)
     def fetch_one(repository, revisions):
-        cache = parent / repository.rsplit('/', 1)[1]
+        cache = parent / cache_name(repository)
         if not cache.exists():
             subprocess.run(['git', 'init', '--bare', '--quiet', str(cache)], check=True)
         # Group by source: one shallow fetch carries every exact revision.
@@ -213,12 +273,16 @@ def prepare(q, host):
     fetch(products)
     settings = []
     for repository in sorted(sources):
-        cache = parent / repository.rsplit('/', 1)[1]
-        for suffix in ('', '.git'):
-            settings.append(('url.' + cache.as_uri() + '.insteadOf', 'https://github.com/' + repository + suffix))
+        cache = parent / cache_name(repository)
+        for url in public_urls(repository):
+            settings.append(('url.' + cache.as_uri() + '.insteadOf', url))
+    settings.append(REFUSAL)
     q.env.update(GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_COUNT=str(len(settings)))
     for index, (key, value) in enumerate(settings):
         q.env['GIT_CONFIG_KEY_' + str(index)] = key
         q.env['GIT_CONFIG_VALUE_' + str(index)] = value
-    q.receipt['canonical_inputs'] = {name: sorted(revisions) for name, revisions in sorted(sources.items())}
+    q.receipt['canonical_inputs'] = {name: sorted(revisions) for name, revisions in sorted(sources.items())
+                                     if name not in FORK_URLS}
+    q.receipt['upstream_forks'] = {name: sorted(revisions) for name, revisions in sorted(sources.items())
+                                   if name in FORK_URLS}
     q.save()

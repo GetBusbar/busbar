@@ -59,6 +59,24 @@ class ManifestGraph(Fixture, unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'lock differs'):
                 lock_inputs(q, host, sdk, self.base / 'canonical', {'products': [product]})
 
+    def test_seed_git_sources_come_only_from_canonical_inputs_never_a_public_remote(self):
+        import native_seed
+        canonical = self.base / 'canonical'
+        for name in ('busbar-store-mysql', 'upstream-forks--h2', 'h2'):
+            (canonical / name).mkdir(parents=True)
+        for url, cache in (('https://github.com/GetBusbar/busbar-store-mysql', 'busbar-store-mysql'),
+                           ('https://github.com/GetBusbar/busbar-store-mysql.git', 'busbar-store-mysql'),
+                           ('https://github.com/MattJackson/h2', 'upstream-forks--h2'),
+                           ('https://github.com/MattJackson/h2.git', 'upstream-forks--h2')):
+            with self.subTest(url=url):
+                self.assertEqual(native_seed.canonical_remote(url, canonical), str(canonical / cache))
+        # A first-party cache that was never fetched, an unreviewed public repository
+        # (even one whose name collides with a cache directory), and any other host.
+        for url in ('https://github.com/GetBusbar/busbar-auth-ldap', 'https://github.com/someone/h2',
+                    'https://github.com/MattJackson/h2-other', 'https://github.com/GetBusbar/upstream-forks--h2'):
+            with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'public fetch refused.*' + url):
+                native_seed.canonical_remote(url, canonical)
+
     def test_original_graph_keeps_patches_without_staging_candidate_code_or_cargo_config(self):
         source = self.roots['checkout']
         manifest = '[workspace]\n[patch.crates-io]\nexample = { git = "https://github.com/example/crate", rev = "' + 'a' * 40 + '" }\n'

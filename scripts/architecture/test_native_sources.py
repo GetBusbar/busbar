@@ -1,4 +1,5 @@
 """Candidate sources qualify before their public stage branches can advance."""
+import re
 import tempfile
 import hashlib
 import json
@@ -238,6 +239,109 @@ class Sources(unittest.TestCase):
             with patch('native_sources.FETCH_WORKERS', 2):
                 fetches = self.run_prepare(q, host, heads, run=network)
             self.assertEqual(sum(argv[argv.index('1') + 1].startswith('https://') for argv in fetches), 2)
+
+
+H2, DUNCE = 'd6146a5c425e55653cdfebc5660e52d87430c588', 'bb4757b8dffd9bdc619ce1fda1a147bd53e7b29d'
+
+
+def fork_lock():
+    """Core's shape: one fork resolved as a package, one only as an unused patch."""
+    return ('[[package]]\nname="h2"\nversion="0.4.0"\nsource="git+https://github.com/MattJackson/h2?rev='
+            + H2 + '#' + H2 + '"\n[[patch.unused]]\nname="dunce"\nversion="1.0.5"\n'
+            'source="git+https://github.com/MattJackson/dunce.git?rev=' + DUNCE + '#' + DUNCE + '"\n')
+
+
+class PublicReplica(unittest.TestCase):
+    """Every build source comes from the private forge; github.com is never fetched."""
+    plugin_fixture, run_prepare = Sources.plugin_fixture, Sources.run_prepare
+
+    def test_reviewed_forks_in_packages_and_unused_patches_come_from_the_forge(self):
+        from native_sources import lock_inputs
+        self.assertEqual(lock_inputs(fork_lock(), {'repositories': {}}), {
+            'GetBusbar/upstream-forks/h2': {H2}, 'GetBusbar/upstream-forks/dunce': {DUNCE}})
+        for wrong in ('rev=' + H2 + '#' + 'a' * 40, 'rev=master#' + H2):
+            with self.assertRaisesRegex(ValueError, 'immutable'):
+                lock_inputs(fork_lock().replace('rev=' + H2 + '#' + H2, wrong), {'repositories': {}})
+
+    def test_unreviewed_public_git_source_refuses_and_names_the_source(self):
+        from native_sources import lock_inputs
+        for source in ('git+https://github.com/someone/h2?rev=' + H2 + '#' + H2,
+                       'git+https://github.com/MattJackson/h2-other?rev=' + H2 + '#' + H2,
+                       'git+https://GitHub.com/MattJackson/h2?rev=' + H2 + '#' + H2,
+                       'git+ssh://git@github.com/MattJackson/h2?rev=' + H2 + '#' + H2):
+            for table in ('[[package]]', '[[patch.unused]]'):
+                with self.subTest(source=source, table=table), \
+                     self.assertRaisesRegex(ValueError, 'public replica.*' + re.escape(source)):
+                    lock_inputs(table + '\nname="x"\nversion="1.0.0"\nsource="' + source + '"\n',
+                                {'repositories': {}})
+
+    def prepare_forks(self, root):
+        q, host, sdk, heads, revisions = self.plugin_fixture(root)
+        (q.root / 'Cargo.lock').write_text((q.root / 'Cargo.lock').read_text() + fork_lock())
+        fetches = self.run_prepare(q, host, heads)
+        settings = [(q.env['GIT_CONFIG_KEY_' + str(i)], q.env['GIT_CONFIG_VALUE_' + str(i)])
+                    for i in range(int(q.env['GIT_CONFIG_COUNT']))]
+        return q, fetches, settings, revisions
+
+    def test_forks_are_fetched_from_the_forge_path_into_noncolliding_caches_and_mapped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            q, fetches, settings, (sdk_rev, _, own, _, _) = self.prepare_forks(Path(directory))
+            parent = q.work / 'canonical-inputs'
+            by_remote = {argv[argv.index('1') + 1]: argv for argv in fetches}
+            for name, revision in (('h2', H2), ('dunce', DUNCE)):
+                argv = by_remote['https://github.com/GetBusbar/upstream-forks/' + name + '.git']
+                self.assertEqual(argv[2], str(parent / ('upstream-forks--' + name)))
+                self.assertEqual(argv[-1], revision + ':refs/heads/input-' + revision)
+                for suffix in ('', '.git'):
+                    self.assertIn(('url.' + (parent / ('upstream-forks--' + name)).as_uri() + '.insteadOf',
+                                   'https://github.com/MattJackson/' + name + suffix), settings)
+            self.assertFalse(any('github.com' in remote for remote in by_remote))
+            self.assertEqual(settings[-1], ('url.https://public-replica-refused.invalid/.insteadOf',
+                                            'https://github.com/'))
+            # First-party evidence is unchanged; fetched forks are recorded beside it.
+            self.assertEqual(q.receipt['canonical_inputs'], {
+                'GetBusbar/busbar': [sdk_rev], 'GetBusbar/busbar-store-memory': [own]})
+            self.assertEqual(q.receipt['upstream_forks'], {
+                'GetBusbar/upstream-forks/dunce': [DUNCE], 'GetBusbar/upstream-forks/h2': [H2]})
+
+    def test_real_git_resolves_mapped_sources_locally_and_refuses_every_other_public_url(self):
+        import os
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            q, _, settings, _ = self.prepare_forks(Path(directory))
+            parent = q.work / 'canonical-inputs'
+            seed = Path(directory) / 'seed'
+            git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main']
+            plain = {'PATH': os.environ['PATH'], 'HOME': directory, 'GIT_TERMINAL_PROMPT': '0',
+                     'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+            subprocess.run([*git, 'init', '--quiet', str(seed)], env=plain, check=True)
+            subprocess.run([*git, '-C', str(seed), 'commit', '--quiet', '--allow-empty', '-m', 'x'],
+                           env=plain, check=True)
+            for cache in ('upstream-forks--h2', 'upstream-forks--dunce', 'busbar-store-memory'):
+                subprocess.run([*git, 'clone', '--quiet', '--bare', str(seed), str(parent / cache)],
+                               env=plain, check=True)
+            env = {**plain, **q.env}
+            def ls(url, *flags):
+                return subprocess.run(['git', 'ls-remote', *flags, url], env=env, capture_output=True,
+                                      text=True, timeout=60)
+            for url, cache in (('https://github.com/MattJackson/h2', 'upstream-forks--h2'),
+                               ('https://github.com/MattJackson/dunce.git', 'upstream-forks--dunce'),
+                               ('https://github.com/GetBusbar/busbar-store-memory', 'busbar-store-memory')):
+                with self.subTest(url=url):
+                    self.assertEqual(ls(url, '--get-url').stdout.strip(), (parent / cache).as_uri())
+                    listed = ls(url)
+                    self.assertEqual(listed.returncode, 0, listed.stderr)
+                    self.assertIn('refs/heads/main', listed.stdout)
+            for url in ('https://github.com/someone/crate', 'https://github.com/MattJackson/other'):
+                with self.subTest(url=url):
+                    self.assertEqual(ls(url, '--get-url').stdout.strip(),
+                                     'https://public-replica-refused.invalid/' + url.removeprefix('https://github.com/'))
+                    self.assertNotEqual(ls(url).returncode, 0)
+            # insteadOf is a plain prefix: a name extending a mapped one lands on an
+            # absent local path, still never the public replica.
+            url = 'https://github.com/MattJackson/h2-other'
+            self.assertEqual(ls(url, '--get-url').stdout.strip(), (parent / 'upstream-forks--h2-other').as_uri())
+            self.assertNotEqual(ls(url).returncode, 0)
 
 
 if __name__ == '__main__':

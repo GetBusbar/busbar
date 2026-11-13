@@ -20,6 +20,7 @@ import threading
 import uuid
 
 import linux_job_isolation
+from native_sources import REFUSAL, UPSTREAM_FORKS
 
 # Same value as native_dep_cache.CARGO_HOME_PATH and confinement_entry; tests pin it.
 INVOCATION_CARGO_HOME = '/__busbar_cargo_home'
@@ -486,11 +487,17 @@ class Execution:
             )
             inputs = self.readonly_candidate_inputs or self.roots['candidate']
             prefix = "url." + (inputs / "canonical-inputs").as_uri() + "/"
+            # Exact canonical mappings (first-party or reviewed forks), plus the
+            # single refusal that sends any other public URL to an unroutable host.
             require(
-                key.startswith(prefix)
-                and key.endswith(".insteadOf")
-                and re.fullmatch(
-                    r"https://github.com/GetBusbar/[a-zA-Z0-9_.-]+", value
+                (key, value) == REFUSAL
+                or (
+                    key.startswith(prefix)
+                    and key.endswith(".insteadOf")
+                    and (
+                        re.fullmatch(r"https://github.com/GetBusbar/[a-zA-Z0-9_.-]+", value)
+                        or value.removesuffix(".git") in UPSTREAM_FORKS
+                    )
                 ),
                 "unexpected Git setting in candidate environment",
             )
