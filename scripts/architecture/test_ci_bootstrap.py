@@ -46,5 +46,23 @@ class ConfigReference(unittest.TestCase):
                 self.assertIsNone(self.match(bad))
 
 
+
+class ControllerArtifacts(unittest.TestCase):
+    """A later-stage job must start from a clean candidate checkout.
+
+    GitLab extracts every earlier-stage job's artifacts into CI_PROJECT_DIR unless the job
+    sets `dependencies`. core-conformance (stage qualify) then found core-build's
+    boundary-evidence/ in its checkout and refused it as dirty (pipeline 3016). Every
+    controller job reads earlier evidence through the API by job id, never from disk.
+    """
+
+    def test_controller_jobs_download_no_earlier_artifacts(self):
+        yaml = (Path(__file__).parents[2] / 'ci/architecture-pipeline.yml').read_text()
+        controller = yaml.split('\n.controller:\n', 1)[1].split('\n\n', 1)[0]
+        controller = controller.split('\n  script:', 1)[0]
+        self.assertIn('\n  dependencies: []', controller)
+        self.assertEqual(yaml.count('dependencies:'), 1, 'no job may re-enable artifact downloads')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -169,6 +169,11 @@ class EvidenceTests(unittest.TestCase):
             (b'.controller:\n', b'.controller:\n  stage: qualify\n'),
             (b'website-dev:\n  stage: website\n', b'website-dev:\n  stage: build\n'),
             (b'core-dev:\n', b'core-dev:\n    - when: on_success\n'),
+            # Only the shared controller's empty download list is recognized; it adds no edge.
+            (b'  dependencies: []\n', b'  dependencies: [core-build]\n'),
+            (b'  dependencies: []\n', b'  needs: []\n'),
+            (b'  dependencies: []\n', b'  dependencies: []\n  dependencies: []\n'),
+            (build, build + b'  dependencies: []\n'),
         ]
         for old, new in changes:
             with self.subTest(change=new), self.assertRaises(ValueError):

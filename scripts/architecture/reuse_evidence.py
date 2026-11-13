@@ -99,9 +99,30 @@ def pipeline_blocks(text):
     return dict(zip(names, blocks[2::2]))
 
 
+CONTROLLER_NO_DOWNLOADS = '\n  dependencies: []\n'
+
+
+def without_controller_download_opt_out(text):
+    """Drop the shared controller's one `dependencies: []` line, and only that one.
+
+    It stops GitLab extracting earlier-stage artifacts into the candidate checkout and
+    adds no prerequisite edge (jobs still wait on stage order). Any other dependencies
+    or needs key, anywhere, stays refused by the grammar below.
+    """
+    head, marker, rest = text.partition('\n.controller:\n')
+    if not marker:
+        return text
+    match = re.search(r'^[^\s#]', rest, re.M)
+    end = match.start() if match else len(rest)
+    block = rest[:end]
+    if block.count(CONTROLLER_NO_DOWNLOADS) == 1:
+        block = block.replace(CONTROLLER_NO_DOWNLOADS, '\n', 1)
+    return head + marker + block + rest[end:]
+
+
 def pipeline_tier(raw):
     """'single' (one qualify stage) or 'tiered' (build -> qualify); anything else fails closed."""
-    text = raw.decode('utf-8')
+    text = without_controller_download_opt_out(raw.decode('utf-8'))
     require(not re.search(r'^(?:include|default|workflow_defaults):', text, re.M)
             and not re.search(r'^\s*(?:needs|dependencies|<<):', text, re.M)
             and not re.search(r'^[^#\n]*[&*][A-Za-z_]', text, re.M),

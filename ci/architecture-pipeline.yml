@@ -37,6 +37,9 @@ stages: [build, qualify, website, release]
   allow_failure: false
   retry: 0
   timeout: 4h
+  # Earlier evidence is read through the API by job id, never from disk: downloading
+  # earlier-stage artifacts would put them in the candidate checkout and dirty it.
+  dependencies: []
   variables:
     GIT_DEPTH: "0"
     GIT_STRATEGY: clone
