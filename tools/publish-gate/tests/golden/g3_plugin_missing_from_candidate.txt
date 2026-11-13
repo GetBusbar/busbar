@@ -1,7 +1,0 @@
-exit 1
-REFUSED G-3 plugin busbar-auth-other: expected released with this version (plugins.yaml); found absent from candidate.json. Tag and build every first-party plugin, or remove it from plugins.yaml in a judged change.
-REFUSED G-3 artifacts/plugin-index.json: expected the index rendered from the candidate's plugins; found different bytes. Run candidate.py assemble again; the index is never edited by hand.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 3 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

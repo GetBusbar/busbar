@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-12 busbar-store-fake@<HEX>: expected .busbar-ref <HEX>; found <HEX>. Re-pin the plugin to the released test kit and re-tag it.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

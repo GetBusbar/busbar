@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-8 busbar-v1.6.0-x86_64-unknown-linux-gnu.cdx.json: expected CycloneDX for version 1.6.0; found bomFormat=CycloneDX version=1.5.5. Regenerate the SBOM for this build.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

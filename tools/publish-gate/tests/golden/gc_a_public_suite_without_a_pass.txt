@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-C suite tls: expected pass for GetBusbar/busbar@<HEX> on core <HEX>; found fail: the suite's verdict is fail. Green means green: fix it red-first and re-judge, or the owner signs an exception that records it as it is.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

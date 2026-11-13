@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-3 artifacts/busbar-x86_64-pc-windows-msvc.zip: expected present; found missing. Every declared target and plugin is owed; a missing one is never skipped.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 55 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,5 +1,0 @@
-exit 0
-REPORT G-13 busbar-openapi-v1.6.0.json: the second build differs (reproducibility is report-only in 1.6.0; not claimed)
-
-publish-gate: 58 checks over 14 rules; 0 refusal(s).
-publish-gate: VERIFIED.

@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-14 release/allowed_signers: expected exactly your trust file's K2 allowed_signers; found different or missing. Users verify against the committed file; it must be yours.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-C suite fake-store: expected pass for GetBusbar/busbar-store-fake@<HEX> on core <HEX>; found not-run: ModernCI has no conformance output for GetBusbar/busbar-store-fake@<HEX>: no check result or measurement of conformance at <HEX> kept outputs. Green means green: fix it red-first and re-judge, or the owner signs an exception that records it as it is.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

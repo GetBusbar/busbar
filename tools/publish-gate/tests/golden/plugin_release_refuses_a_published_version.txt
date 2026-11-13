@@ -1,5 +1,0 @@
-exit 1
-REFUSED G-2 busbar-store-fake v1.6.0: expected not yet published; found published. A plugin version is published once; tag a new one.
-
-publish-gate: 1 checks over 1 rules; 1 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.
