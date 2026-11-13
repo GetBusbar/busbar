@@ -6,7 +6,8 @@
 #        deny/vet, the one plain `cargo build --release` of dist/default `busbar`) in
 #        parallel with core-clippy (lint-only, both workspaces, -D warnings) and
 #        core-test (root workspace doctests and nextest run), then core-conformance on
-#        that binary's sha256.
+#        that binary's sha256 and the 1.5.5 oracle replay (core-oracle, 4 shards, then
+#        core-oracle-merge). QA runs the oracle too.
 #   QA   (protected qa push; owner "qa-nightly" schedule on dev): DEV + native-qualification
 #        (every test incl. the shipped default features, no-default clippy, witnesses,
 #        oracle, loom) + core-conformance-debug (the debug-assertion build) +
@@ -188,6 +189,33 @@ core-conformance:
     - !reference [.rules, core-qa]
     - when: never
 
+# The 1.5.5 oracle replay: the assembled product replays the 1.5.5 recording with the
+# same answers (only owner-signed differences, testing/shadow-oracle/accepted-differences.json).
+# A plain shell job, not the controller: it takes .controller's worker class, clone depth,
+# toolchain and no-download settings, and replaces the script. Four shards each record and
+# replay their share of cells.json --strict (ci/jobs/core-oracle.sh shard, bin/oracle ci-run)
+# with the signed judge pinned by ci/native-oracle.json. The golden is the tree named here, a
+# configuration value, never the candidate's to change; bin/oracle refuses any other tree.
+core-oracle:
+  extends: .controller
+  stage: qualify
+  parallel: 4
+  variables:
+    BUSBAR_RUNNER_SIZE: size-l
+    BUSBAR_GOLDEN_1_5_5_TREE: 5e33e76f77af35b01674da6dedf37e8dd434602c
+  timeout: 3h
+  rules:
+    - !reference [.rules, core-dev]
+    - !reference [.rules, core-qa]
+    - when: never
+  script:
+    - bash ci/jobs/core-oracle.sh shard
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 30 days
+    paths: [oracle-shards/]
+
 # ---- QA tier (core) and plugin qualification --------------------------------------------
 # Core: every test (root/dist workspaces incl. the shipped default features, doctests,
 # loader witnesses, loom), no-default clippy, compiler witnesses, the oracle replay and
@@ -270,10 +298,32 @@ plugin-dependency-units:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "ci/dep-cache" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PROJECT_PATH == "GetBusbar/busbar"'
     - when: never
 
+# One oracle verdict from the four core-oracle shard reports (bin/oracle shard-merge): green
+# only for shards 1..4, each once, each green, together judging every cell of cells.json.
+# Stage order downloads the shard artifacts (oracle-shards/<k>/); no judge or build runs here.
+core-oracle-merge:
+  stage: website
+  tags: [size-s]
+  interruptible: true
+  allow_failure: false
+  retry: 0
+  timeout: 15m
+  variables:
+    ORACLE_SHARDS: "4"
+  rules:
+    - !reference [.rules, core-dev]
+    - !reference [.rules, core-qa]
+    - when: never
+  script:
+    - bash ci/jobs/core-oracle.sh merge
+
 # Every qualified assembled-product dev change refreshes current website evidence.
 # The marketing pipeline independently verifies source and binary freshness. Core's
 # dev evidence is its DEV tier (core-build, core-clippy, core-test, core-conformance receipts);
-# stage ordering starts this only after every one of them passed.
+# stage ordering starts this only after every one of them (and every core-oracle shard) passed.
+# The bridge only triggers the website; it does not mirror the downstream status (owner
+# decision, DECISIONS row 85): a website failure is red on the marketing pipeline, where it is
+# seen and fixed, and never turns a core or plugin pipeline red.
 website-dev:
   stage: website
   rules:
@@ -289,7 +339,6 @@ website-dev:
   trigger:
     project: BusbarInc/marketing
     branch: dev
-    strategy: mirror
     forward:
       yaml_variables: true
       pipeline_variables: false
