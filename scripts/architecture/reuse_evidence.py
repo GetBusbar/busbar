@@ -82,14 +82,14 @@ POLICY_FILES = ('scripts/architecture/admission.py', 'scripts/architecture/nativ
 
 LEGACY_STAGES = re.compile(r'^stages: \[qualify, website\]$', re.M)
 TIERED_STAGES = re.compile(r'^stages: \[build, qualify, website, release\]$', re.M)
-# Core's DEV tier: the certified build and the lint-only clippy job, then
-# conformance of exactly the build's bytes.
-CORE_DEV_JOBS = ('core-build', 'core-clippy', 'core-conformance')
-TIERED_JOBS = {'core-build': 'build', 'core-clippy': 'build', 'core-conformance': 'qualify',
-               'native-qualification': 'qualify', 'security-scans': 'qualify'}
+# Core's DEV tier: the certified build, the lint-only clippy job and the root
+# workspace tests, then conformance of exactly the build's bytes.
+CORE_DEV_JOBS = ('core-build', 'core-clippy', 'core-test', 'core-conformance')
+TIERED_JOBS = {'core-build': 'build', 'core-clippy': 'build', 'core-test': 'build',
+               'core-conformance': 'qualify', 'native-qualification': 'qualify', 'security-scans': 'qualify'}
 # Approved build-stage job sets: core-build alone (before the lint-only job
-# split out of it), or core-build in parallel with core-clippy.
-BUILD_STAGE_SETS = (['core-build'], ['core-build', 'core-clippy'])
+# split out of it), core-build in parallel with core-clippy, and both with core-test.
+BUILD_STAGE_SETS = (['core-build'], ['core-build', 'core-clippy'], ['core-build', 'core-clippy', 'core-test'])
 
 
 def pipeline_blocks(text):
@@ -147,7 +147,7 @@ def independent_qualification_job(raw, job):
 
     single: one qualify stage, jobs extend native-qualification.
     tiered: every job extends the shared .controller template; core-build (and,
-    in newer policies, core-clippy) occupies the build stage, so a qualify job's
+    in newer policies, core-clippy and core-test) occupies the build stage, so a qualify job's
     prerequisites are exactly those successful jobs of the same pipeline (core)
     or nothing (plugins).
     Unknown DAG/include/default syntax fails closed, requiring fresh execution or
@@ -218,6 +218,7 @@ print(json.dumps({'required_external':admission.required_conformance_job(repo,p)
 RECEIPT_SCHEMAS = {'native-qualification': 'busbar.protected-native-admission/1',
                    'core-build': 'busbar.core-build/1',
                    'core-clippy': 'busbar.core-clippy/1',
+                   'core-test': 'busbar.core-test/1',
                    'core-conformance': 'busbar.protected-conformance/1'}
 
 
@@ -261,6 +262,21 @@ def validate_core_clippy(original, receipt, artifact, context, policy):
     require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps)
             and set(CORE_CLIPPY_STEPS) <= {s.get('name') for s in steps},
             'original core-clippy checks did not pass')
+    return True
+
+
+def validate_core_test(original, receipt, artifact, context, policy):
+    """Complete core-test validation: every test step passed, the nextest report is retained."""
+    from admission import CORE_TEST_SCHEMA, CORE_TEST_STEPS
+    require(original['repository'] == CORE and original['job'] == 'core-test'
+            and receipt.get('schema') == CORE_TEST_SCHEMA, 'core-test validator scope differs')
+    steps = receipt.get('steps') or []
+    require(all(s.get('status') == 'pass' and s.get('exit_code') == 0 for s in steps)
+            and set(CORE_TEST_STEPS) <= {s.get('name') for s in steps},
+            'original core-test checks did not pass')
+    root = [s for s in steps if s.get('name') == 'root-runtime']
+    require(len(root) == 1 and digest(artifact('root-runtime.xml')) == root[0].get('junit_sha256'),
+            'original core-test nextest report differs from its receipt')
     return True
 
 
@@ -1122,7 +1138,8 @@ class OwnerRuntime:
         def validate(original, receipt, artifact, context, original_policy):
             validator = (release if original['repository'] == REPOSITORY else
                          validate_core_build if original['job'] == 'core-build' else
-                         validate_core_clippy if original['job'] == 'core-clippy' else marketing)
+                         validate_core_clippy if original['job'] == 'core-clippy' else
+                         validate_core_test if original['job'] == 'core-test' else marketing)
             return validator(original, receipt, artifact, context, original_policy)
         self.resolver = ReleaseResolver(self.reads, group_api=self.groups, objects=self.objects,
             current_policy=self.policy, merge_users=self.principals, owner_users=self.principals,

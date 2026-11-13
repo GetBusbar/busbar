@@ -29,7 +29,7 @@ import tomllib
 import input_identity as identity
 
 KINDS = {'native': 'native-qualification', 'security': 'security-scans',
-         'build': 'core-build', 'clippy': 'core-clippy', 'conformance': 'core-conformance'}
+         'build': 'core-build', 'clippy': 'core-clippy', 'test': 'core-test', 'conformance': 'core-conformance'}
 LIVE = {'created', 'pending', 'running', 'preparing', 'waiting_for_resource',
         'scheduled', 'manual'}
 SCOPES = {'verify-execution-reuse': 'execution-equivalent',
@@ -59,12 +59,13 @@ def requirements(row, objects):
     from reuse_evidence import TIERED_STAGES
     if repository == identity.CORE and TIERED_STAGES.search(objects.blob(
             identity.CORE, row['policy'], 'ci/architecture-pipeline.yml').decode()):
-        # Core's DEV tier: the certified build, the lint-only clippy job and
-        # conformance of the build's bytes. Native qualification and security are
+        # Core's DEV tier: the certified build, the lint-only clippy job, the
+        # root workspace tests and conformance of the build's bytes. Native qualification and security are
         # its QA tier (qa / qa-nightly). The resolver still authenticates each
         # original against its own policy graph.
         return {'build': dict(job='core-build', suites=[]),
                 'clippy': dict(job='core-clippy', suites=[]),
+                'test': dict(job='core-test', suites=[]),
                 'conformance': dict(job='core-conformance', suites=sorted(suites))}
     result = {'native': dict(job='native-qualification',
                             suites=sorted(suites) if settings.get('required_conformance') else []),

@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import admission
-from admission import (CORE_BUILD_STEPS, CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS, expected_inputs, required_conformance_job, validate_merge,
+from admission import (CORE_BUILD_STEPS, CORE_CLIPPY_SCHEMA, CORE_CLIPPY_STEPS, CORE_TEST_SCHEMA, CORE_TEST_STEPS, expected_inputs, required_conformance_job, validate_merge,
                        validate_protection)
 
 # Native admission (plugins and the release generator). Its conformance branch is
@@ -186,7 +186,8 @@ class CoreDevTierAdmission(unittest.TestCase):
         self.pipeline = dict(id=100, project_id=3, source='merge_request_event', sha=self.source, status='success')
         self.jobs = [dict(id=101, name='core-build', status='success', allow_failure=False, runner={'id': 9}),
                      dict(id=102, name='core-conformance', status='success', allow_failure=False, runner={'id': 9}),
-                     dict(id=103, name='core-clippy', status='success', allow_failure=False, runner={'id': 9})]
+                     dict(id=103, name='core-clippy', status='success', allow_failure=False, runner={'id': 9}),
+                     dict(id=104, name='core-test', status='success', allow_failure=False, runner={'id': 9})]
         identity = dict(status='pass', repository='GetBusbar/busbar', source=self.source,
                         policy_revision=self.revision, pipeline_id='100', target_revision=self.target,
                         host_revision=self.host, sdk_revision=self.sdk)
@@ -200,10 +201,32 @@ class CoreDevTierAdmission(unittest.TestCase):
             steps=[dict(name='core-native-conformance', status='pass', exit_code=0)])
         self.clippy = dict(identity, schema=CORE_CLIPPY_SCHEMA, job_id='103',
             steps=[dict(name=name, status='pass', exit_code=0) for name in CORE_CLIPPY_STEPS])
+        self.tests = dict(identity, schema=CORE_TEST_SCHEMA, job_id='104',
+            steps=[dict(name=name, status='pass', exit_code=0) for name in CORE_TEST_STEPS])
 
     def validate(self):
         validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.build, self.revision,
-                       self.target, self.host, self.sdk, self.conformance, clippy_receipt=self.clippy)
+                       self.target, self.host, self.sdk, self.conformance, clippy_receipt=self.clippy,
+                       test_receipt=self.tests)
+
+    def test_workspace_tests_are_their_own_required_job(self):
+        good = copy.deepcopy(self.tests)
+        for change in (dict(schema=CORE_CLIPPY_SCHEMA), dict(job_id='103'), dict(status='fail'),
+                       dict(source='e' * 40), dict(pipeline_id='99'), dict(sdk_revision='e' * 40),
+                       dict(steps=[step for step in good['steps'] if step['name'] != 'root-runtime']),
+                       dict(steps=[step for step in good['steps'] if step['name'] != 'workspace-doctests']),
+                       dict(steps=[*good['steps'], good['steps'][0]]),
+                       dict(steps=[dict(good['steps'][0], status='fail', exit_code=100), *good['steps'][1:]])):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.tests = dict(good, **change)
+                self.validate()
+        self.tests = None
+        with self.assertRaisesRegex(ValueError, 'core-test receipt is missing'):
+            self.validate()
+        self.tests = good
+        self.jobs = [job for job in self.jobs if job['name'] != 'core-test']
+        with self.assertRaisesRegex(ValueError, 'core-test'):
+            self.validate()
 
     def test_lints_are_their_own_required_job(self):
         good = copy.deepcopy(self.clippy)
@@ -220,6 +243,21 @@ class CoreDevTierAdmission(unittest.TestCase):
         self.jobs = self.jobs[:2]
         with self.assertRaisesRegex(ValueError, 'core-clippy'):
             self.validate()
+
+    def test_merge_reads_every_dev_tier_receipt_of_the_pipeline(self):
+        from admission import core_dev_receipts
+
+        class Api:
+            def request(self, path):
+                return {'path': path}
+        receipts = core_dev_receipts(Api(), 'projects/3', self.jobs)
+        self.assertEqual([receipt['path'] for receipt in receipts],
+                         ['projects/3/jobs/%d/artifacts/boundary-evidence/receipt.json' % job
+                          for job in (101, 102, 103, 104)])
+        for jobs in ([job for job in self.jobs if job['name'] != 'core-test'],
+                     [dict(job, status='failed') if job['name'] == 'core-test' else job for job in self.jobs]):
+            with self.subTest(jobs=jobs), self.assertRaisesRegex(ValueError, 'core-test'):
+                core_dev_receipts(Api(), 'projects/3', jobs)
 
     def test_a_clippy_driver_build_is_not_the_certified_binary(self):
         self.build['certified_binary']['rustc_wrapper'] = 'clippy-driver'
@@ -289,7 +327,7 @@ class CoreDevTierAdmission(unittest.TestCase):
                 self.validate()
 
     def test_receipts_from_another_pipeline_source_policy_or_target_never_admit(self):
-        for receipt in ('build', 'conformance'):
+        for receipt in ('build', 'conformance', 'clippy', 'tests'):
             good = copy.deepcopy(getattr(self, receipt))
             for key in ('source', 'policy_revision', 'pipeline_id', 'job_id', 'repository', 'schema',
                         'target_revision', 'host_revision', 'sdk_revision'):
@@ -302,7 +340,8 @@ class CoreDevTierAdmission(unittest.TestCase):
         # Both jobs record the dev head they verified as an ancestor; dev has since moved.
         with self.assertRaisesRegex(ValueError, 'target_revision'):
             validate_merge(self.project, self.mr, self.pipeline, self.jobs, self.build, self.revision,
-                           'f' * 40, self.host, self.sdk, self.conformance, clippy_receipt=self.clippy)
+                           'f' * 40, self.host, self.sdk, self.conformance, clippy_receipt=self.clippy,
+                           test_receipt=self.tests)
 
     def test_same_project_dev_mr_pipeline_and_server_gates_still_apply(self):
         for target, change in ((self.mr, dict(source_project_id=99)), (self.mr, dict(target_project_id=99)),
@@ -324,6 +363,7 @@ class CoreDevTierAdmission(unittest.TestCase):
         self.assertEqual(set(CORE_BUILD_STEPS), {'root-fmt', 'default-fmt', 'certified-build',
                          'development-artifact-evidence', *(name for name, _, _ in native.CORE_POLICY_COMMANDS)})
         self.assertEqual(CORE_CLIPPY_STEPS, tuple(name for name, _ in native.CORE_CLIPPY_COMMANDS))
+        self.assertEqual(CORE_TEST_STEPS, tuple(name for name, _ in native.core_test_commands([])))
 
     def test_plugins_still_require_native_and_security(self):
         self.project['path_with_namespace'] = 'GetBusbar/busbar-store-memory'

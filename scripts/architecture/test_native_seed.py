@@ -258,6 +258,85 @@ class PreparationTiming(unittest.TestCase):
                     self.assertEqual(row[stream + '_sha256'],
                                      native.digest(q.evidence / (row['name'] + '.' + stream)))
 
+    def test_core_test_job_prepares_its_fixtures_and_runs_only_the_workspace_tests(self):
+        import native
+        q = native.Qualification.__new__(native.Qualification)
+        q.repository, q.evaluation_only, q.core_test_job = 'GetBusbar/busbar', False, True
+        q.control = q.work = q.root = Path('/unused-test-work')
+        q.policy, q.execution = object(), SimpleNamespace()
+        q.receipt = {'steps': []}
+        events = []
+        q.finish, q.core_regressions = Mock(), Mock()
+        q.host = Mock(return_value=Path('/host'))
+        q.preparation = Mock(side_effect=lambda name: (events.append(name), nullcontext())[1])
+        q.compile_recipe = Mock(return_value=None)
+        q.core_test = Mock(side_effect=lambda: events.append('core-test'))
+        q.core, q.core_build, q.core_clippy = Mock(), Mock(), Mock()
+        args = SimpleNamespace(conformance_only=False, conformance_capabilities=None, work=q.work)
+        with patch.dict(os.environ, {'CI_JOB_ID': '1', 'CI_PIPELINE_ID': '2', 'CI_PROJECT_ID': '3',
+                'CI_PROJECT_PATH': q.repository, 'CI_CONFIG_REF_URI': 'immutable'}), \
+             patch('native.argparse.ArgumentParser.parse_args', return_value=args), \
+             patch('native.Qualification', return_value=q), \
+             patch('native.requires_native_oracle', return_value=True) as oracle, \
+             patch('native_sources.prepare'), patch('native_seed.prepare'), \
+             patch('native_staged_fixtures.collect_required') as fixtures, \
+             patch('native_conformance_capabilities.prepare') as capabilities, \
+             patch('native.git', side_effect=native.Violation('stop after the job')):
+            with self.assertRaisesRegex(native.Violation, 'stop after the job'):
+                native.qualify()
+        # A dev-tier job: no controller regressions, oracle or conformance capabilities;
+        # the service peers still need the pinned migration fixture.
+        self.assertEqual(events, ['canonical-inputs', 'dependency-seed', 'staged-fixtures', 'core-test'])
+        q.core_regressions.assert_not_called()
+        oracle.assert_not_called()
+        capabilities.assert_not_called()
+        fixtures.assert_called_once_with(q)
+        for other in (q.core, q.core_build, q.core_clippy):
+            other.assert_not_called()
+
+    def test_core_test_runs_the_dev_steps_inside_the_shared_test_environment(self):
+        import native
+        q = native.Qualification.__new__(native.Qualification)
+        q.receipt = {'steps': []}
+        q.save = Mock()
+        events = []
+        nextest = ['--no-fail-fast', '--tool-config-file', 'admission:/trusted/ci/native-nextest.toml']
+        q.host = Mock(return_value=Path('/host'))
+
+        def environment():
+            events.append('environment-enter')
+            yield Path('/host'), nextest
+            events.append('environment-exit')
+        q.test_environment = lambda: native.contextmanager(environment)()
+        q.run = Mock(side_effect=lambda name, argv: events.append(name))
+        with patch('native.Path.read_text', return_value=json.dumps({'sdk': 'd' * 40})):
+            q.core_test()
+        self.assertEqual(events, ['environment-enter', 'workspace-doctests', 'root-runtime', 'environment-exit'])
+        self.assertEqual([call.args for call in q.run.call_args_list], native.core_test_commands(nextest))
+        self.assertEqual(q.receipt['sdk_revision'], 'd' * 40)
+        self.assertEqual(q.receipt['checks'], {'test': {'workspace-doctests': 'pass', 'root-runtime': 'pass'}})
+        # The receipt never claims checks a failed step did not pass.
+        q.receipt = {'steps': []}
+        q.run = Mock(side_effect=native.Violation('root-runtime failed; no automatic retry'))
+        with patch('native.Path.read_text', return_value=json.dumps({'sdk': 'd' * 40})), \
+             self.assertRaisesRegex(native.Violation, 'root-runtime'):
+            q.core_test()
+        self.assertNotIn('checks', q.receipt)
+
+    def test_core_test_mode_is_core_test_job_only(self):
+        import native
+        q = native.Qualification.__new__(native.Qualification)
+        for job, repository in (('core-clippy', 'GetBusbar/busbar'), ('core-test', 'GetBusbar/busbar-x')):
+            with self.subTest(job=job, repository=repository), \
+                 patch.dict(os.environ, {'CI_JOB_NAME': job}), \
+                 self.assertRaisesRegex(native.Violation, 'core-test'):
+                q.receipt, q.repository = {}, repository
+                native.require_core_test_job(q)
+        with patch.dict(os.environ, {'CI_JOB_NAME': 'core-test'}):
+            q.receipt, q.repository = {}, 'GetBusbar/busbar'
+            native.require_core_test_job(q)
+        self.assertEqual(q.receipt['schema'], 'busbar.core-test/1')
+
     def test_core_compiles_and_lints_every_target_before_compiler_witnesses(self):
         import native
         q = native.Qualification.__new__(native.Qualification)

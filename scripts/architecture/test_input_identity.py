@@ -302,6 +302,13 @@ class Reuse(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'core-native'):
             retained_check_identity(dict(self.original, repository=CORE, source=HOST), self.objects)
 
+    def test_core_dev_tier_tests_are_reusable_only_for_unchanged_sources(self):
+        from input_identity import checked_request, requires_changed_source_checks
+        request = checked_request(dict(self.original, repository=CORE, source=HOST, job='core-test'))
+        self.assertTrue(requires_changed_source_checks(request))
+        with self.assertRaisesRegex(ValueError, 'changed source checks'):
+            retained_check_identity(request, self.objects)
+
     def test_preparation_only_other_owner_branch_changes_retain_unchanged_owner_checks(self):
         for revision in (POLICY, HOST):
             self.objects.files[CORE, revision][PREPARATION_SELECTOR] = LEGACY_STANDALONE_SELECTOR

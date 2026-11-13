@@ -46,12 +46,15 @@ CI_KEYS = frozenset(('CI_JOB_ID CI_PIPELINE_ID CI_PROJECT_ID CI_PROJECT_PATH CI_
     'CI_JOB_URL CI_PIPELINE_SOURCE CI_COMMIT_SHA CI_COMMIT_BRANCH CI_COMMIT_REF_PROTECTED CI_CONFIG_REF_URI '
     'CI_SERVER_HOST CI_SERVER_URL CI_MERGE_REQUEST_TARGET_BRANCH_NAME '
     'CI_MERGE_REQUEST_SOURCE_PROJECT_ID CI_JOB_TOKEN BUSBAR_ADMISSION_CORE_REVISION').split())
-JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-conformance', 'core-conformance-debug',
-        'native-isolation-diagnostic'}
+JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-test', 'core-conformance',
+        'core-conformance-debug', 'native-isolation-diagnostic'}
 # Core jobs that judge conformance (and so stage judges and service peers).
 CONFORMANCE_JOBS = ('core-conformance', 'core-conformance-debug')
 # Core dev-tier jobs that start no service peer.
 NO_SERVICE_JOBS = ('core-build', 'core-clippy')
+# Core dev-tier jobs, each dispatched as its own native.py mode (`--<job name>`).
+# core-test runs the root workspace tests, so it stages the service peers.
+CORE_MODE_JOBS = (*NO_SERVICE_JOBS, 'core-test')
 
 
 def dependency_units_job(name):
@@ -794,7 +797,7 @@ def root_main():
                             command.append('--debug-subject')
                     elif dependency_units_job(env['CI_JOB_NAME']):
                         command.append('--dependency-units')
-                    elif env['CI_JOB_NAME'] in NO_SERVICE_JOBS:
+                    elif env['CI_JOB_NAME'] in CORE_MODE_JOBS:
                         require(env['CI_PROJECT_PATH'] == 'GetBusbar/busbar', env['CI_JOB_NAME'] + ' is core-only')
                         command.append('--' + env['CI_JOB_NAME'])
                     try:

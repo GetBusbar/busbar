@@ -133,6 +133,9 @@ CONFORMANCE_JOB = 'core-conformance'
 DEBUG_CONFORMANCE_JOB = 'core-conformance-debug'
 # Core's lint-only job (DEV and QA), parallel to core-build; it never touches the certified bytes.
 CLIPPY_JOB = 'core-clippy'
+# Core's DEV-tier root workspace tests, parallel to core-build and core-clippy (core_test_commands).
+TEST_JOB = 'core-test'
+CORE_TEST_SCHEMA = 'busbar.core-test/1'
 
 
 def evaluation_job(repository, conformance_only, debug_subject=False):
@@ -427,6 +430,23 @@ def qa_test_commands(nextest):
     ]
 
 
+# The DEV tier's core-test steps, by name: QA's root workspace doctests and nextest run.
+CORE_TEST_STEPS = ('workspace-doctests', 'root-runtime')
+
+
+def core_test_commands(nextest):
+    """core-test's steps: exactly QA's commands of the same names (features, nextest config)."""
+    steps = dict(qa_test_commands(nextest))
+    return [(name, steps[name]) for name in CORE_TEST_STEPS]
+
+
+def require_core_test_job(q):
+    """The workspace-test mode runs only as core's core-test job and records its own schema."""
+    if os.environ.get('CI_JOB_NAME') != TEST_JOB or q.repository != 'GetBusbar/busbar':
+        raise Violation("dev-tier workspace tests run only as core's core-test job")
+    q.receipt['schema'] = CORE_TEST_SCHEMA
+
+
 class Qualification:
     def __init__(self, args):
         self.conformance_only = args.conformance_only
@@ -439,6 +459,8 @@ class Qualification:
         self.core_build_job = getattr(args, 'core_build', False) is True
         # Dev and QA tiers: the lint-only clippy job.
         self.core_clippy_job = getattr(args, 'core_clippy', False) is True
+        # Dev tier: the root workspace tests (doctests and nextest), parallel to core-build.
+        self.core_test_job = getattr(args, 'core_test', False) is True
         self.root, self.trusted, self.work = args.checkout.resolve(), args.trusted.resolve(), args.work.resolve()
         self.control = self.work
         self.execution = None
@@ -509,6 +531,8 @@ class Qualification:
             if os.environ.get('CI_JOB_NAME') != CLIPPY_JOB or self.repository != 'GetBusbar/busbar':
                 raise Violation("lint-only clippy runs only as core's core-clippy job")
             self.receipt['schema'] = 'busbar.core-clippy/1'
+        if self.core_test_job:
+            require_core_test_job(self)
         if self.receipt['source'] != os.environ['CI_COMMIT_SHA']:
             raise Violation('candidate checkout is not the pipeline commit')
         tools_path = getattr(args, 'conformance_inputs', None)
@@ -822,6 +846,29 @@ class Qualification:
         self.run('sdk-source-identity', ['git', 'diff', '--exit-code', sdk, 'HEAD', '--',
             'crates/busbar-contract/src', 'crates/busbar-contract/include', 'crates/busbar-contract/Cargo.toml'])
         self.receipt['sdk_revision'] = sdk
+        with self.test_environment() as (host, nextest):
+            for name, command in qa_test_commands(nextest):
+                self.run(name, command)
+            # The QA tier certifies this pipeline's core-build binary: same bytes, no second build.
+            import native_certified
+            binary, _ = native_certified.stage(self)
+            self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
+            self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
+            self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
+            self.env['BUSBAR_BIN'] = str(binary)
+            self.save()
+            # Section 15 qualifies the native product and its boundary. Core's
+            # separate certification launcher includes the unimplemented ModernCI
+            # attestation producer; this cutover does not commission that project.
+
+    @contextmanager
+    def test_environment(self):
+        """What every core test step reads: product images and inputs, service peers, C witness.
+
+        Shared by QA's native qualification and the DEV tier's core-test job, so both
+        run their tests against the same prepared inputs. Yields (host, nextest args).
+        """
+        host = self.host()
         from native_fixtures import Services
         import native_product_images
         vector = json.loads((host / 'scripts/ci-product-pins.json').read_text())
@@ -860,19 +907,18 @@ class Qualification:
             self.env.update(BUSBAR_C_ABI_SOURCES=str(c_source / recipe['test-root']), BUSBAR_C_ABI_LIBRARY=str(library))
             nextest = ['--no-fail-fast', '--test-threads', str(self.receipt['native_scheduling']['test_threads']), '--tool-config-file',
                        'admission:' + str(self.trusted / 'ci/native-nextest.toml')]
-            for name, command in qa_test_commands(nextest):
+            yield host, nextest
+
+    def core_test(self):
+        """Dev tier: the root workspace doctests and nextest run, as QA runs them."""
+        # The same identity fields admission requires of every dev-tier receipt.
+        self.receipt['sdk_revision'] = json.loads((self.host() / 'scripts/ci-product-pins.json').read_text())['sdk']
+        with self.test_environment() as (_, nextest):
+            commands = core_test_commands(nextest)
+            for name, command in commands:
                 self.run(name, command)
-            # The QA tier certifies this pipeline's core-build binary: same bytes, no second build.
-            import native_certified
-            binary, _ = native_certified.stage(self)
-            self.receipt['dependency_vector'] = json.loads((host / 'scripts/ci-product-pins.json').read_text())
-            self.receipt['root_lock_sha256'] = digest(host / 'Cargo.lock')
-            self.receipt['distribution_lock_sha256'] = digest(host / 'dist/default/Cargo.lock')
-            self.env['BUSBAR_BIN'] = str(binary)
-            self.save()
-            # Section 15 qualifies the native product and its boundary. Core's
-            # separate certification launcher includes the unimplemented ModernCI
-            # attestation producer; this cutover does not commission that project.
+        self.receipt['checks'] = {'test': {name: 'pass' for name, _ in commands}}
+        self.save()
 
     def core_build(self):
         """Dev tier after formatting: dependency policy and the one certified product build."""
@@ -1158,6 +1204,8 @@ def qualify():
                        help="Core's dev tier: fmt, dependency policy and the one certified product build")
     modes.add_argument('--core-clippy', action='store_true',
                        help="Core's dev tier: lint-only clippy of both workspaces")
+    modes.add_argument('--core-test', action='store_true',
+                       help="Core's dev tier: root workspace doctests and nextest run")
     args = parser.parse_args()
     producer = getattr(args, 'dependency_units', False)
     if not all(os.environ.get(key) for key in ('CI_JOB_ID', 'CI_PIPELINE_ID', 'CI_PROJECT_PATH', 'CI_CONFIG_REF_URI')):
@@ -1170,7 +1218,8 @@ def qualify():
         # candidate and execution boundary before any regression command runs.
         build_only = getattr(qualification, 'core_build_job', False)
         clippy_only = getattr(qualification, 'core_clippy_job', False)
-        dev_tier_job = build_only or clippy_only
+        test_only = getattr(qualification, 'core_test_job', False)
+        dev_tier_job = build_only or clippy_only or test_only
         if qualification.repository == 'GetBusbar/busbar' and not qualification.evaluation_only \
                 and not producer and not dev_tier_job:
             qualification.core_regressions()
@@ -1190,10 +1239,12 @@ def qualify():
             from native_seed import prepare as prepare_seed
             with qualification.preparation('dependency-seed'):
                 prepare_seed(qualification)
-        if qualification.execution is not None and not dev_tier_job:
+        # core-test's service peers need the pinned migration fixture like native qualification.
+        if qualification.execution is not None and (not dev_tier_job or test_only):
             from native_staged_fixtures import collect_required
             with qualification.preparation('staged-fixtures'):
                 collect_required(qualification)
+        if qualification.execution is not None and not dev_tier_job:
             if not args.conformance_capabilities:
                 from native_conformance_capabilities import prepare as prepare_capabilities
                 with qualification.preparation('conformance-capabilities'):
@@ -1221,6 +1272,8 @@ def qualify():
                 qualification.core_build()
             elif clippy_only:
                 qualification.core_clippy()
+            elif test_only:
+                qualification.core_test()
             else:
                 qualification.core()
         elif qualification.repository == 'GetBusbar/busbar-release':
