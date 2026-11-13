@@ -263,8 +263,10 @@ def launch_fresh(api, groups, row):
     if row['repository'] != 'GetBusbar/busbar':
         key = 'BUSBAR_ADMISSION_CORE_REVISION'
         variables = [value for value in api.all(base + '/variables') if value['key'] == key]
-        if len(variables) != 1 or not variables[0]['protected'] or variables[0]['environment_scope'] != '*':
-            raise ValueError('protected host variable differs')
+        # Single trust level: the pin is not a secret, and every merge request
+        # pipeline (an unprotected ref) must receive it, so it must be unprotected.
+        if len(variables) != 1 or variables[0]['protected'] is not False or variables[0]['environment_scope'] != '*':
+            raise ValueError('host variable must be one unprotected, all-environment BUSBAR_ADMISSION_CORE_REVISION')
         old = variables[0]
         if old['value'] != row['host']:
             api.request(base + '/variables/' + key, 'PUT', {'value': row['host']})
