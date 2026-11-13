@@ -320,6 +320,25 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
     }
 }
 
+/// IPv6 site-local `fec0::/10` is internal: the one guard refuses it as hook-webrequest's own
+/// literal check did, so that copy can go without widening what a dial may reach.
+#[test]
+fn ipv6_site_local_is_internal_and_its_neighbours_keep_their_reading() {
+    for addr in ["fec0::1", "FEC0::a", "feff:ffff::1", "fef0::"] {
+        let v6: std::net::Ipv6Addr = addr.parse().unwrap();
+        assert!(is_site_local_v6(&v6), "{addr}");
+        assert!(ipv6_is_internal(&v6), "{addr}");
+        assert!(ip_is_internal(&IpAddr::V6(v6)), "{addr}");
+        assert!(!ip_is_cloud_metadata(&IpAddr::V6(v6)), "{addr}");
+    }
+    for addr in ["febf:ffff::1", "ff00::1", "2001:db8::1", "2606:4700::1111"] {
+        let v6: std::net::Ipv6Addr = addr.parse().unwrap();
+        assert!(!is_site_local_v6(&v6), "{addr}");
+    }
+    let public: std::net::Ipv6Addr = "2606:4700::1111".parse().unwrap();
+    assert!(!ipv6_is_internal(&public));
+}
+
 /// A SOCKET LITERAL is exactly what the standard parser accepts: every row agrees with
 #[test]
 fn a_socket_literal_is_exactly_what_the_standard_parser_accepts() {

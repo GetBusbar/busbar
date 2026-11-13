@@ -46,7 +46,11 @@ pub fn ipv6_is_internal(v6: &Ipv6Addr) -> bool {
     if let Some(v4) = embedded_ipv4(v6) {
         return ipv4_is_internal(&v4);
     }
-    v6.is_unspecified() || v6.is_multicast() || is_unique_local_v6(v6) || is_link_local_v6(v6)
+    v6.is_unspecified()
+        || v6.is_multicast()
+        || is_unique_local_v6(v6)
+        || is_link_local_v6(v6)
+        || is_site_local_v6(v6)
 }
 
 /// TRUE for an address that is a CLOUD-METADATA endpoint.
@@ -95,6 +99,12 @@ pub fn dns_name_is_internal(host: &str) -> bool {
 /// IPv6 unique-local range `fc00::/7`.
 pub fn is_unique_local_v6(addr: &Ipv6Addr) -> bool {
     (addr.segments()[0] & 0xfe00) == 0xfc00
+}
+
+/// IPv6 site-local range `fec0::/10`: deprecated by RFC 3879 but still routed on real networks, and
+/// covered by neither the unique-local nor the link-local mask.
+pub fn is_site_local_v6(addr: &Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xffc0) == 0xfec0
 }
 
 /// IPv6 link-local range `fe80::/10`.
