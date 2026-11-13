@@ -1,5 +1,0 @@
-exit 1
-REFUSED G-0 candidate.json: expected the candidate manifest; found Illegal trailing comma before end of object: line 1 column 20 (char 19). Fetch the candidate's outputs.
-
-publish-gate: 0 checks over 0 rules; 1 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

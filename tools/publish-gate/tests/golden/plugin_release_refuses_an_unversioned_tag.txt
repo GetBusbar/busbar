@@ -1,5 +1,0 @@
-exit 1
-REFUSED G-1 1.6.0: expected vX.Y.Z; found 1.6.0. Plugin releases are versioned tags.
-
-publish-gate: 1 checks over 1 rules; 1 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,2 +1,0 @@
-exit 3
-CANNOT RUN: ValueError: trust file <W>/keys/trust.json has no `keys_doc`

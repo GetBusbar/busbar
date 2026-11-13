@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-2 busbar-store-fake v1.6.0: expected no published release (a draft is fine); found published. A plugin version is published once; tag a new one.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

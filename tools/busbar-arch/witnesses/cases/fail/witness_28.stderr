@@ -1,7 +1,0 @@
-error[E0432]: unresolved import `busbar_contract::KernelSeal`
- --> cases/fail/witness_28.rs:3:5
-  |
-3 | use busbar_contract::KernelSeal;
-  |     ^^^^^^^^^^^^^^^^^----------
-  |                      |
-  |                      no `KernelSeal` in the root

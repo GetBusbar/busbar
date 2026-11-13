@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# RENDERED by `busbar-release plugin heal` from GetBusbar/busbar-release template/conformance/run.sh;
+# RENDERED by the fleet tool's `plugin heal` from its template/conformance/run.sh;
 # a hand edit is overwritten by the next sync.
 #
 # THE CONFORMANCE CHECK: every official suite this repo owns, run against the assembled
@@ -313,9 +313,9 @@ selftest() (
   judge <(printf '%s' '{"suite":"s1","status":"pass","armed":true}') s1 0 "$t/out.json" >/dev/null
   python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["repo"]=="selftest/repo" and v["core_pin"].startswith("0000") and v["evidence"].endswith("&head=1111111111111111111111111111111111111111"), v' "$t/out.json" \
     && echo "  ok: the stamp names the repo, the commit, the core pin and the move" || { echo "selftest FAILED: the stamp"; ok=1; }
-  export CI_SERVER_HOST=github.com CI_JOB_ID=2371 CI_PIPELINE_ID=1420 CI_JOB_URL=https://github.com/selftest/repo/-/jobs/2371
+  export CI_SERVER_HOST=ci.example.invalid CI_JOB_ID=2371 CI_PIPELINE_ID=1420 CI_JOB_URL=https://ci.example.invalid/selftest/repo/-/jobs/2371
   judge <(printf '%s' '{"suite":"s1","status":"pass","armed":true}') s1 0 "$t/out.json" >/dev/null
-  python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["run_id"]=="gitlab:selftest/repo@1111111111111111111111111111111111111111:pipeline:1420:job:2371" and v["evidence"]=="https://github.com/selftest/repo/-/jobs/2371", v' "$t/out.json" \
+  python3 -I -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["run_id"]=="gitlab:selftest/repo@1111111111111111111111111111111111111111:pipeline:1420:job:2371" and v["evidence"]=="https://ci.example.invalid/selftest/repo/-/jobs/2371", v' "$t/out.json" \
     && echo "  ok: native evidence names the actual GitLab job" || { echo "selftest FAILED: native stamp"; ok=1; }
   unset CI_PIPELINE_ID
   expect 1 "incomplete native identity cannot claim ModernCI evidence" '{"suite":"s1","status":"pass","armed":true}' 0

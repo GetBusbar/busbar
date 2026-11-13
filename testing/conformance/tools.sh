@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# RENDERED by `busbar-release plugin heal` from GetBusbar/busbar-release template/conformance/tools.sh;
+# RENDERED by the fleet tool's `plugin heal` from its template/conformance/tools.sh;
 # a hand edit is overwritten by the next sync.
 #
 # Sourced by testing/conformance/run.sh: `. testing/conformance/tools.sh rust node`. Puts each named

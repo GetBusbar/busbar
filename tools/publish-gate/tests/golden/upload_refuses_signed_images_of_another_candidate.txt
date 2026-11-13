@@ -1,5 +1,0 @@
-exit 1
-REFUSED G-10 IMAGES: expected the signed images match this verified candidate; found a different image set. Sign this candidate before uploading.
-
-publish-gate: 58 checks over 14 rules; 1 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

@@ -42,7 +42,7 @@ hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-aarch64-unknown-linux-gnu.ta
 hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-apple-darwin.tar.gz	800951b63418541672f84ae8bdb59ef5ae28950d55a0f132b75e9b12b23b5b29
 hashicorp-vault	v1.0.5	busbar-hashicorp-vault-1.0.5-x86_64-unknown-linux-gnu.tar.gz	da8f83080ff21b0f38e25f0acbaaad7b2022e3932cc0b8f87f4e38d664d742e1
 # THE 1.6 LINE IS UNRELEASED: its plugins are BUILT from the commit busbar pins (ARCHITECT Q1, 2026-10-05;
-# busbar-release recorder::plugin_build). `src:<commit>` + `build:<GetBusbar repo>`; the build follows the
+# oracle engine recorder::plugin_build). `src:<commit>` + `build:<GetBusbar repo>`; the build follows the
 # plugin's own release.yml recipe at that commit, is named as that release names its asset, and is signed
 # first-party (publisher busbar) by the run's throwaway oracle key, which the run's candidate embeds as its
 # release key (ARCHITECT ruling 2026-10-20, row 86: the oracle judges the production configuration). No

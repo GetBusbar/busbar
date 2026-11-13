@@ -1,3 +1,0 @@
-exit 3
-CANNOT RUN: G-S plugin SBOM evidence missing, mismatched or scan failed; no signing/publication allowed
-publish-gate: a rule could not run; this is never a pass.

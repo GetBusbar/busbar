@@ -22,7 +22,7 @@ own core pin, so there is no single anchor commit. Each suite entry carries its 
 registry tier and the status, and is null for anything but a pass.
 
 A RELEASE render (`--release`) reads no file of conformance/verdicts/. It reads DIR, which
-scripts/release/conformance_gate.py fetched from ModernCI: one `<owner>/<name>/receipt.json` per repo
+the release conformance gate (release tooling, outside this repository) fetched from ModernCI: one `<owner>/<name>/receipt.json` per repo
 (what ModernCI's `artifact` answered), selecting a complete generation whose artifact.tar hashes
 to that receipt. Verdicts are read from that exact archive; inspection JSON copies are not inputs. Every
 registered suite is rendered; a suite's verdict counts only when its stamp names the suite's registry
@@ -34,6 +34,7 @@ the ModernCI move of that commit. Anything else is `not-run`, with the reason. T
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -187,7 +188,7 @@ def shipped_pins(root):
     lock = root / "dist" / "default" / "Cargo.lock"
     if lock.is_file():
         for repo, sha in sorted(set(re.findall(
-                r'source = "git\+https://(?:github\.com|git\.getbusbar\.dev)/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
+                r'source = "git\+https://[A-Za-z0-9.-]+/GetBusbar/([A-Za-z0-9._-]+?)(?:\.git)?'
                 r'(?:\?[^#"]*)?#([0-9a-f]{40})"', lock.read_text()))):
             if repo != "busbar":
                 put(repo, sha, "dist/default/Cargo.lock")
@@ -205,7 +206,7 @@ def shipped_pins(root):
 
 def read_exceptions(root, release):
     """release/conformance-exceptions.json's suite exceptions for `release`, as {suite: {status,
-    reason}}. UNVERIFIED: the render only records them; G-C (scripts/release/conformance_gate.py)
+    reason}}. UNVERIFIED: the render only records them; G-C (the release conformance gate)
     checks the K2 signature and refuses the tag on a bad one."""
     f = Path(root) / "release" / "conformance-exceptions.json"
     if not f.is_file():
@@ -240,7 +241,7 @@ def archive_verdicts(data):
 
 
 def load_fetched(directory):
-    """{repo: {"receipt": {...}, "verdicts": {sid: raw}}} from what conformance_gate.py fetched. Only
+    """{repo: {"receipt": {...}, "verdicts": {sid: raw}}} from what the release conformance gate fetched. Only
     the complete archive generation selected by a matching receipt, with no `missing`, is read."""
     out = {}
     for rec_file in sorted(Path(directory).glob("*/*/receipt.json")):
@@ -293,7 +294,12 @@ def stamp_problem(v, repo, head, core):
         match = re.fullmatch(re.escape(f"gitlab:{repo}@{head}") + r":pipeline:([1-9][0-9]*):job:([1-9][0-9]*)", run_id)
         if not match:
             return "native CI run identity does not match the repository and source"
-        expected_url = f"https://github.com/{repo}/-/jobs/{match[2]}"
+        # The CI server is the one the judge ran on (run.sh stamps from the same CI_SERVER_HOST);
+        # with no server named, native evidence cannot be checked and is refused.
+        server = os.environ.get("CI_SERVER_HOST", "")
+        if not re.fullmatch(r"[A-Za-z0-9.-]+(?::[0-9]+)?", server):
+            return "native CI evidence cannot be checked: CI_SERVER_HOST names no CI server"
+        expected_url = f"https://{server}/{repo}/-/jobs/{match[2]}"
         if v.get("evidence") != expected_url:
             return "native CI evidence does not name the stamped job"
         return None

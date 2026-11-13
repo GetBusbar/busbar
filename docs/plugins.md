@@ -179,7 +179,7 @@ native requests. Accounting arithmetic, credential rules and plane relationships
 The backend also provides its clock and native bootstrap/inspection operations for automatic
 startup migration.
 
-Start with `busbar-release plugin new store <name>`. The canonical scaffold supplies the typed
+Start with the fleet generator's `plugin new store <name>`. The canonical scaffold supplies the typed
 kind, lifecycle, narrow ABI entry, export wrapper and linked/dropped conformance tests. Keep
 runtime modules private. The maintained `busbar-store-memory` repository is a worked example.
 See [SDK migration and authoring](plugin-sdk-migration-1.6.md#one-entry-seven-kinds).
@@ -381,8 +381,8 @@ or place the annotation on an integer alternative. The keyword accepts null only
 opaque settings are unaffected. The profile does not replace lifecycle checks for relationships
 between fields or deployment-wide constraints.
 
-The tooling's canonical implementation is `busbar-release/template/settings/integer_token.rs`,
-rendered byte-for-byte to `testing/settings/integer_token.rs`. Pack tooling compiles the declared
+The tooling's canonical implementation is its `template/settings/integer_token.rs`, rendered
+byte-for-byte to `testing/settings/integer_token.rs`. Pack tooling compiles the declared
 profile both for `--settings-schema-file` and for the actual Statement schema. Tests pair the
 profile with the real lifecycle parser using original JSON bytes, before any normalization.
 The parser, numeric runtime and SDK ABI are unchanged.

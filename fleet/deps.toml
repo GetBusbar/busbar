@@ -5,13 +5,13 @@
 #     [workspace.dependencies], exactly as they do for busbar's own members. No second copy here.
 #   - PLUGIN-ONLY crates, the git sources (GetBusbar forks at pinned revs), the banned list, the
 #     socket/TLS ban and the C-dependency allow-list live HERE.
-# A crate may not appear in both (`busbar-release plugin sync` refuses the render).
+# A crate may not appear in both (the fleet tool's `plugin sync` refuses the render).
 #
-# This file MOVES WITH THE BUSBAR PIN: GetBusbar/busbar-release's `busbar-release plugin sync` reads it
+# This file MOVES WITH THE BUSBAR PIN: the fleet tool's `plugin sync` reads it
 # (and the root table, the toolchain and Cargo.lock) at the busbar commit each plugin repo pins in
 # `.busbar-ref`, and renders it into that repo's root Cargo.toml [workspace.dependencies] and
-# [patch.crates-io], deny.toml and dependabot ignores. The plugin harness (busbar-release
-# ci/plugin/run.sh) enforces the rest at the same commit: the net ban, the C-dependency allow-list and Cargo.lock parity with busbar's lock (RED,
+# [patch.crates-io], deny.toml and dependabot ignores. The fleet tool's plugin
+# harness enforces the rest at the same commit: the net ban, the C-dependency allow-list and Cargo.lock parity with busbar's lock (RED,
 # ruling 3b). Adding a plugin-only crate is one reviewed row here; a plugin naming a crate in neither
 # table is a new row first.
 schema = 1
@@ -119,7 +119,7 @@ reason = "the HTTP/1 chunked transfer-coding decoder (parse_chunk_size) a refuse
 # the crates.io crate the fork replaces. `git` is a repository under https://github.com/GetBusbar/;
 # the sole external exception is the exact tungstenite URL/revision/WS-only row below, already
 # approved in core Cargo.lock. `rev` is a full 40-hex commit (no branch, no tag). Every other
-# outside repository, revision or consumer scope refuses the render. `busbar-release plugin sync` renders each row into the listed repos only: its
+# outside repository, revision or consumer scope refuses the render. The fleet tool's `plugin sync` renders each row into the listed repos only: its
 # `git` joins deny.toml's [sources] allow-git, and `name = { git, rev }` joins Cargo.toml's
 # [patch.crates-io]. busbar's `cargo xtask plugin-gates gitsources` validates the rows.
 # The str0m, dimpl and ring forks were dropped (the webrtc plugin builds from crates.io,
@@ -164,7 +164,7 @@ deny = [
     { crate = "serde_yaml", reason = "unmaintained; busbar uses serde_yaml_ng" },
 ]
 # Duplicate versions the fleet accepts beyond busbar's own. multiple-versions is "deny" (OWNER
-# 2026-10-02: no plugin may drag in a second version of anything busbar already uses); busbar-release's
+# 2026-10-02: no plugin may drag in a second version of anything busbar already uses); the fleet tool's
 # render adds a skip for every duplicate busbar's own Cargo.lock holds at the pin and bans every version
 # of a shared crate outside the line busbar resolves it to, so this list stays for a reviewed exception:
 # `{ crate = "name@<version>", reason = "..." }`.

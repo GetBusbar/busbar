@@ -1,5 +1,5 @@
 {
-  "registry_sha256": "80b8a98b7093617e131241703b3a4680b88dcbdb04123aeace738d15d1685aa0",
+  "registry_sha256": "7cafccc6f5587d05168bdc55c68ea624830fa0995ecd156b48805763d572b106",
   "schema": "busbar.conformance.ci-coverage/1",
   "scope": "Execution coverage only; suite verdicts and issued certifications are separate",
   "suites": {
