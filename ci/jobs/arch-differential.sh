@@ -65,7 +65,10 @@ reason() {  # reason <exit> <log>: the verdict line of one run
   if [ "$1" = 0 ]; then
     echo pass
   else
-    grep -m1 '^architecture: ' "$2" || echo "no 'architecture:' reason (exit $1; last line: $(tail -n1 "$2"))"
+    # CalledProcessError quotes the argv list on some Python versions and not on
+    # others; that quoting is the only part of a reason that is normalised.
+    { grep -m1 '^architecture: ' "$2" || echo "no 'architecture:' reason (exit $1; last line: $(tail -n1 "$2"))"; } |
+      sed -E "s/^architecture: Command '(\[.*\])' (returned|died)/architecture: Command \1 \2/"
   fi
 }
 
