@@ -456,6 +456,11 @@ pub struct RootCfg {
     pub allow_all_metadata: bool,
     /// The `advanced` destination-guard keys, as written ([`RootCfg::destinations`] adds the rest).
     pub guard: Destinations,
+    /// `advanced.tls`, the outbound TLS trust store, as written (the connector validates and
+    /// builds it at boot).
+    pub outbound_tls: tls::OutboundTlsCfg,
+    /// `advanced.proxy_resolution`.
+    pub proxy_resolution: tls::ProxyResolution,
     /// Fully-resolved operational limits ("NEVER CODED CAPS"), projected from the `limits:` /
     /// `observability:` / `governance:` / `metrics:` / `health:` / `routing:` config sections. Every
     /// value defaults to its historical hardcoded const, so an all-default config is unchanged. Read
@@ -1970,6 +1975,8 @@ pub fn resolve(
                 allow: deploy.advanced.allow_destinations.clone(),
                 ..Destinations::default()
             },
+            outbound_tls: deploy.advanced.tls.clone(),
+            proxy_resolution: deploy.advanced.proxy_resolution,
 
             limits: LimitsResolved::from_sections(
                 &deploy.limits,
@@ -2020,6 +2027,7 @@ pub mod plane_sections;
 pub mod pools;
 pub mod providers;
 pub mod sections;
+pub mod tls;
 
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
 /// stance: a broken/slow policy is indistinguishable from no policy and NEVER blocks or fails a

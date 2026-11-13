@@ -124,10 +124,64 @@ pub fn carrier_name(via: Option<&busbar_core_connector::compose::Via>) -> &'stat
 }
 
 pub fn dest_judge(cfg: &RootCfg) -> Arc<process::GuardJudge> {
-    guard_for(&cfg.destinations()).unwrap_or_else(|refusal| {
+    process::dest_judge_with(&cfg.destinations(), Some(trust_store(cfg))).unwrap_or_else(|refusal| {
         eprintln!("busbar: config errors:\n  - {refusal}");
         std::process::exit(2);
     })
+}
+
+/// THE OUTBOUND TLS TRUST STORE `cfg` states (`advanced.tls`), validated now. A refusal exits
+/// the process with every coded reason, before anything is dialled.
+pub fn trust_store(cfg: &RootCfg) -> Arc<busbar_core_connector::tls::store::TrustStore> {
+    trust_store_of(&cfg.outbound_tls).unwrap_or_else(|errors| {
+        eprintln!("busbar: config errors:\n  - {}", errors.join("\n  - "));
+        std::process::exit(2);
+    })
+}
+
+/// The trust store `tls` states, or every coded reason it is refused.
+pub fn trust_store_of(
+    tls: &busbar_kernel::config::tls::OutboundTlsCfg,
+) -> Result<Arc<busbar_core_connector::tls::store::TrustStore>, Vec<String>> {
+    busbar_core_connector::tls::store::TrustStore::build(
+        tls,
+        std::time::SystemTime::now(),
+        &busbar_core_connector::tls::store::process_env,
+    )
+    .map(Arc::new)
+}
+
+/// INSTALL `cfg`'s trust store on the process connector and, once logging is up, report it
+/// (BUSBAR-3138 per anchor, audited) and start its hourly sweep (expiry withdrawal, the daily
+/// expiry warning, anchor-file drift). Restart to apply a change: the store is boot-time.
+pub fn install_trust_store(cfg: &RootCfg, report: bool) {
+    let Some(connector) = installed() else {
+        return;
+    };
+    let store = trust_store(cfg);
+    connector.install_trust_store(Arc::clone(&store));
+    let by_address = cfg.proxy_resolution == busbar_kernel::config::tls::ProxyResolution::Local;
+    connector.set_proxy_by_address(by_address);
+    if !report {
+        return;
+    }
+    process::note_proxy_posture(by_address);
+    store.report_boot(std::time::SystemTime::now());
+    if store.is_default() {
+        return;
+    }
+    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+        let swept = Arc::clone(&store);
+        rt.spawn(async move {
+            let mut every =
+                tokio::time::interval(busbar_core_connector::tls::store::SWEEP_EVERY);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                swept.sweep(std::time::SystemTime::now());
+            }
+        });
+    }
 }
 
 pub fn guard_for(d: &Destinations) -> Result<Arc<process::GuardJudge>, String> {

@@ -199,6 +199,8 @@ fn walk_secret_refs_with_boot_token<'a>(
         allow_metadata_hosts: _,
         allow_all_metadata: _,
         guard: _,
+        outbound_tls: _,
+        proxy_resolution: _,
         upstream_credentials: _,
 
         plane_sections: _,

@@ -1055,7 +1055,12 @@ service! {
         if check::text(i.dest, "dest_judge.dest").is_err()
             || check::bits(
                 u64::from(i.flags),
-                u64::from(svc::DEST_RESOLVE | svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN),
+                u64::from(
+                    svc::DEST_RESOLVE
+                        | svc::DEST_REFUSE_PRIVATE
+                        | svc::DEST_EXPLAIN
+                        | svc::DEST_PLAINTEXT_INTENT,
+                ),
                 "dest_judge.flags",
             )
             .is_err()

@@ -90,6 +90,15 @@ pub trait DestJudge: Send + Sync {
 
     fn judge_answer(&self, host: &str, addrs: &[IpAddr], class: u32) -> Result<(), DestRefusal>;
 
+    /// THE PLAINTEXT RULE for `dest` (a URL or `host[:port]`): admitted only to loopback or to a
+    /// host an exact `advanced.tls.destinations` entry admits plaintext to. The default knows no
+    /// entries: loopback only.
+    fn plaintext_admitted(&self, dest: &str) -> bool {
+        busbar_contract::net::url_host(dest)
+            .or_else(|| Some(dest.to_owned()))
+            .is_some_and(|h| is_loopback_text(&h))
+    }
+
     fn judge_host(&self, host: &str, class: u32) -> Result<(), DestRefusal> {
         self.judge_name(host, class, false)
             .map_err(|verdict| DestRefusal {
@@ -2742,6 +2751,13 @@ impl HostServices for KernelServices {
         let Some(j) = &self.judge else {
             return Ran::Now(Stored::refused(NO_DEST_JUDGE));
         };
+        if flags & svc::DEST_PLAINTEXT_INTENT != 0 {
+            return Ran::Now(Stored::ready(if j.plaintext_admitted(dest) {
+                svc::DEST_ALLOWED
+            } else {
+                svc::DEST_PLAINTEXT
+            }));
+        }
         let named = j.judge_name(dest, class, refuse_private);
         match named {
             Err(v) => return Ran::Now(Stored::ready(v)),
@@ -4303,4 +4319,21 @@ pub fn caller_binding() -> Arc<dyn busbar_contract::services::CallerBinding> {
         }
     }
     Arc::new(Binding)
+}
+
+/// Whether `host` (a name or a literal, bracketed or not, with or without a port) is loopback by
+/// its spelling: `localhost` (or a name under it), or a loopback literal.
+fn is_loopback_text(host: &str) -> bool {
+    let h = host.trim();
+    let h = if let Some(inner) = h.strip_prefix('[') {
+        inner.split_once(']').map_or(inner, |(a, _)| a)
+    } else if h.matches(':').count() == 1 {
+        h.split_once(':').map_or(h, |(a, _)| a)
+    } else {
+        h
+    };
+    let h = h.strip_suffix('.').unwrap_or(h).to_ascii_lowercase();
+    h == "localhost"
+        || h.ends_with(".localhost")
+        || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }

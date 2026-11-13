@@ -13,6 +13,7 @@ pub mod compose;
 pub mod datagram;
 mod dialled;
 pub mod doors;
+pub mod egress_audit;
 pub mod dtls;
 pub mod endpoint;
 pub mod fetch;
@@ -49,7 +50,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::host::conn::connector::{
-    DIRECTION_OUTBOUND, EGRESS_LOOPBACK_ALLOWED, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
 };
 use busbar_contract::abi::host::service::{DEST_NO_ADDRESSES, DEST_UNRESOLVABLE};
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
@@ -212,9 +213,16 @@ fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
 
+///
+/// THE ONE PLAINTEXT RULE (every class): a dial that is not secured from its first byte is admitted
+/// only to loopback (by name or by the judged address) or to a destination an exact
+/// `advanced.tls.destinations` entry admits plaintext to (`plain_admitted`, which a carrier that
+/// upgrades later also carries: its cleartext window is held on the connection instead,
+/// [`compose::Connection::hold_clear_window`]). `open-web` never admits plaintext.
 fn class_admits(
     egress_class: u32,
     secure: bool,
+    plain_admitted: bool,
     within: &[IpAddr],
     authority: &str,
     addr: SocketAddr,
@@ -222,8 +230,12 @@ fn class_admits(
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            EGRESS_LOOPBACK_ALLOWED => secure || guard::names_loopback(&host_of(authority)),
-            _ => true,
+            _ => {
+                secure
+                    || plain_admitted
+                    || addr.ip().is_loopback()
+                    || guard::names_loopback(&host_of(authority))
+            }
         }
 }
 
@@ -437,6 +449,10 @@ struct Judging {
 struct Proxied {
     spec: Arc<proxy::ProxyHop>,
     target_judged: bool,
+    /// The address the guard judged for the target, when it resolved here: under
+    /// `advanced.proxy_resolution: local` (the default) the CONNECT names it, so what the guard
+    /// judged is what the proxy dials.
+    target_at: Option<SocketAddr>,
 }
 
 /// Whether a target judgement's refusal is only that the name does not resolve HERE: behind a
@@ -921,6 +937,14 @@ pub struct Connector {
     pairs: Mutex<HashMap<u64, Arc<datagram::Pairing>>>,
     /// HOW A PROGRAM'S ENVIRONMENT REFERENCES RESOLVE ([`spawn_env`]): the resolver the composition
     spawn_secrets: Option<spawn_env::SpawnSecretFn>,
+    /// THE OUTBOUND TLS TRUST STORE (`advanced.tls`), selected by the guard-judged dial host;
+    /// empty = the connector's own config (`tls`) for every dial.
+    trust: arc_swap::ArcSwapOption<tls::store::TrustStore>,
+    /// `advanced.proxy_resolution: local` (the default, `true`): behind a proxy the target must
+    /// resolve here, every address it answers is judged, and the CONNECT names the judged
+    /// address; `proxy` (`false`): a name that does not resolve here is CONNECTed by name and its
+    /// address check is the proxy's (BUSBAR-3149 at boot).
+    proxy_by_address: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for Connector {
@@ -952,6 +976,8 @@ impl Default for Connector {
             proxy: None,
             pairs: Mutex::new(HashMap::new()),
             spawn_secrets: None,
+            trust: arc_swap::ArcSwapOption::empty(),
+            proxy_by_address: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -1034,6 +1060,75 @@ impl Connector {
     pub fn resolving_spawn_secrets(mut self, secrets: spawn_env::SpawnSecretFn) -> Self {
         self.spawn_secrets = Some(secrets);
         self
+    }
+
+    /// INSTALL THE TRUST STORE every later dial selects its TLS configuration from (boot-time; a
+    /// second install replaces the first, as the effective configuration replaces the bootstrap
+    /// one).
+    pub fn install_trust_store(&self, store: Arc<tls::store::TrustStore>) {
+        egress_audit::install_store(Arc::clone(&store));
+        self.trust.store(Some(store));
+    }
+
+    /// THE CLIENT TLS CONFIG for a dial of `target` (the guard-judged target, `host:port` or a
+    /// URL): the trust store's selection for its host, else the connector's own. A destination no
+    /// anchor applies to is refused, coded and audited.
+    fn tls_for(&self, target: &str) -> Result<Option<Arc<rustls::ClientConfig>>, ConnError> {
+        let Some(store) = self.trust.load_full() else {
+            return Ok(self.tls.clone());
+        };
+        match store.config_for(&host_of(target)) {
+            Ok(Some(config)) => Ok(Some(config)),
+            Ok(None) => Ok(self.tls.clone()),
+            Err(refusal) => {
+                egress_audit::dial_refused(target, None, &refusal.to_string(), None);
+                Err(ConnError::Refused)
+            }
+        }
+    }
+
+    /// Set `advanced.proxy_resolution`: `true` = `local` (judge and CONNECT by address), `false`
+    /// = `proxy` (CONNECT by name; the proxy resolves a name busbar cannot).
+    pub fn set_proxy_by_address(&self, by_address: bool) {
+        self.proxy_by_address.store(by_address, Ordering::Relaxed);
+    }
+
+    fn proxy_delegated(&self) -> bool {
+        !self.proxy_by_address.load(Ordering::Relaxed)
+    }
+
+    /// What a CONNECT names for `planned`: the judged address under `proxy_resolution: local`,
+    /// else the target's own authority.
+    fn connect_target(&self, planned: &Planned, target_at: Option<SocketAddr>) -> String {
+        match target_at {
+            Some(at) if !self.proxy_delegated() => at.to_string(),
+            _ => planned.authority().to_owned(),
+        }
+    }
+
+    /// Whether an exact `advanced.tls.destinations` entry admits plaintext to `authority`'s host.
+    fn plaintext_admitted(&self, authority: &str) -> bool {
+        self.trust
+            .load()
+            .as_ref()
+            .is_some_and(|s| s.plaintext_admitted(&host_of(authority)))
+    }
+
+    /// Whether a dial of `planned` at `addr` is a carrier that must be secured before it carries
+    /// application bytes: not framed, not secure from its first byte, not to loopback, and not
+    /// to a destination plaintext is admitted to.
+    fn holds_clear_window(&self, planned: &Planned, addr: SocketAddr) -> bool {
+        !planned.framed()
+            && !planned.secure()
+            && !addr.ip().is_loopback()
+            && !guard::names_loopback(&host_of(planned.authority()))
+            && !self.plaintext_admitted(planned.authority())
+    }
+
+    /// Whether plaintext is admitted for `planned` beyond loopback: a carrier (held to its
+    /// cleartext window instead) or an exact plaintext entry.
+    fn plain_admitted(&self, planned: &Planned) -> bool {
+        !planned.framed() || self.plaintext_admitted(planned.authority())
     }
 
     /// The host I/O this connector's carriers are served from.
@@ -1386,11 +1481,30 @@ impl Connector {
                     if class_admits(
                         egress_class,
                         located.secure,
+                        door.facts().role == ROLE_CARRIER
+                            || self.plaintext_admitted(&located.authority),
                         &[],
                         &located.authority,
                         addr,
                     ) => {}
-                Some(_) => return Err(ConnError::Refused),
+                Some(Ok(_)) => {
+                    egress_audit::dial_refused(
+                        &located.authority,
+                        Some(egress_class),
+                        "plaintext",
+                        Some((u64::from(owner.0), need.0)),
+                    );
+                    return Err(ConnError::Refused);
+                }
+                Some(Err(v)) => {
+                    egress_audit::dial_refused(
+                        &located.authority,
+                        Some(egress_class),
+                        egress_audit::verdict_name(v),
+                        Some((u64::from(owner.0), need.0)),
+                    );
+                    return Err(ConnError::Refused);
+                }
                 None => {}
             }
         }
@@ -1743,18 +1857,28 @@ impl Connector {
             .planned
             .as_ref()
             .map_or_else(String::new, |p| p.authority().to_owned());
+        let plain = j.planned.as_ref().is_some_and(|p| self.plain_admitted(p));
         if let Some(p) = j.proxied.as_mut() {
             if !p.target_judged {
+                let delegated = !self.proxy_by_address.load(Ordering::Relaxed);
                 match got {
-                    Err(v) if !unresolved_here(v) => {
+                    Err(v) if !(delegated && unresolved_here(v)) => {
+                        egress_audit::dial_refused(
+                            &target,
+                            Some(j.egress_class),
+                            egress_audit::verdict_name(v),
+                            None,
+                        );
                         return Err(held.fail(judging, pended_verdict(v)));
                     }
-                    Ok(at) if !class_admits(j.egress_class, secure, &[], &target, at) => {
+                    Ok(at) if !class_admits(j.egress_class, secure, plain, &[], &target, at) => {
+                        egress_audit::dial_refused(&target, Some(j.egress_class), "plaintext", None);
                         return Err(held.fail(judging, ConnError::Refused));
                     }
                     _ => {}
                 }
                 p.target_judged = true;
+                p.target_at = got.ok();
                 let spec = Arc::clone(&p.spec);
                 let answer = Arc::clone(&j.answer);
                 let previous = {
@@ -1799,7 +1923,14 @@ impl Connector {
                             .and_then(|j| j.planned.take())
                             .ok_or(ConnError::Closed)?
                     };
-                    self.settle_proxy(held, planned, &spec, proxy_addr, waker)
+                    let target_at = held
+                        .judging
+                        .lock()
+                        .expect("judging")
+                        .as_ref()
+                        .and_then(|j| j.proxied.as_ref())
+                        .and_then(|p| p.target_at);
+                    self.settle_proxy(held, planned, &spec, proxy_addr, target_at, waker)
                 })());
             }
             let proxy_addr = match got {
@@ -1807,26 +1938,42 @@ impl Connector {
                 Err(v) => return Err(held.fail(judging, pended_verdict(v))),
             };
             let spec = Arc::clone(&p.spec);
+            let target_at = p.target_at;
             let planned = j.planned.take().ok_or(ConnError::Refused)?;
             let crossing = Crossing::begin(held, judging);
-            return crossing.finish(self.settle_proxy(held, planned, &spec, proxy_addr, waker));
+            return crossing.finish(self.settle_proxy(
+                held, planned, &spec, proxy_addr, target_at, waker,
+            ));
         }
         let addr = match got {
             Ok(at) => at,
-            Err(v) => return Err(held.fail(judging, pended_verdict(v))),
+            Err(v) => {
+                egress_audit::dial_refused(
+                    &target,
+                    Some(j.egress_class),
+                    egress_audit::verdict_name(v),
+                    None,
+                );
+                return Err(held.fail(judging, pended_verdict(v)));
+            }
         };
-        if !class_admits(j.egress_class, secure, &j.within, &target, addr) {
+        if !class_admits(j.egress_class, secure, plain, &j.within, &target, addr) {
+            egress_audit::dial_refused(&target, Some(j.egress_class), "plaintext", None);
             return Err(held.fail(judging, ConnError::Refused));
         }
 
         let also: Vec<SocketAddr> = also
             .into_iter()
-            .filter(|&at| class_admits(j.egress_class, secure, &j.within, &target, at))
+            .filter(|&at| class_admits(j.egress_class, secure, plain, &j.within, &target, at))
             .collect();
         let planned = j.planned.take().ok_or(ConnError::Refused)?;
+        let clear_window = self.holds_clear_window(&planned, addr);
         let crossing = Crossing::begin(held, judging);
         crossing.finish((|| {
-            let conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
+            let mut conn = planned.dial_at_any(addr, also).map_err(|f| map(&f))?;
+            if clear_window {
+                conn.hold_clear_window();
+            }
             self.ride(held, conn)?;
             self.replay_early(held, waker)
         })())
@@ -1839,9 +1986,10 @@ impl Connector {
         planned: Planned,
         spec: &proxy::ProxyHop,
         proxy_addr: SocketAddr,
+        target_at: Option<SocketAddr>,
         waker: Option<&Waker>,
     ) -> Result<bool, ConnError> {
-        let connect = proxy::connect_request(planned.authority(), spec);
+        let connect = proxy::connect_request(&self.connect_target(&planned, target_at), spec);
         let conn = planned
             .dial_through(proxy_addr, connect)
             .map_err(|f| map(&f))?;
@@ -1962,6 +2110,7 @@ impl Connector {
             let mut proxied = Proxied {
                 spec,
                 target_judged: false,
+                target_at: None,
             };
             match judged {
                 None => {
@@ -1978,21 +2127,37 @@ impl Connector {
                         }),
                     ));
                 }
-                Some(Err(v)) if !unresolved_here(v) => return Err(ConnError::Refused),
+                Some(Err(v)) if !(self.proxy_delegated() && unresolved_here(v)) => {
+                    egress_audit::dial_refused(
+                        planned.authority(),
+                        Some(egress_class),
+                        egress_audit::verdict_name(v),
+                        None,
+                    );
+                    return Err(ConnError::Refused);
+                }
                 Some(Ok(at))
                     if !class_admits(
                         egress_class,
                         planned.secure(),
+                        self.plain_admitted(&planned),
                         &[],
                         planned.authority(),
                         at,
                     ) =>
                 {
+                    egress_audit::dial_refused(
+                        planned.authority(),
+                        Some(egress_class),
+                        "plaintext",
+                        None,
+                    );
                     return Err(ConnError::Refused);
                 }
                 Some(_) => {}
             }
             proxied.target_judged = true;
+            proxied.target_at = judged.and_then(Result::ok);
             let answer: Answer = Arc::new(Mutex::new((None, None, Vec::new())));
             let proxy_authority = proxied.spec.endpoint();
             // The configured CONNECT hop is operator infrastructure; its plaintext socket does
@@ -2018,26 +2183,51 @@ impl Connector {
                 )),
                 Some(Err(_)) => Err(ConnError::Refused),
                 Some(Ok(at)) => {
-                    let connect = proxy::connect_request(planned.authority(), &proxied.spec);
+                    let connect = proxy::connect_request(
+                        &self.connect_target(&planned, proxied.target_at),
+                        &proxied.spec,
+                    );
                     let conn = planned.dial_through(at, connect).map_err(|f| map(&f))?;
                     Ok((Some(conn), None))
                 }
             };
         }
         Ok(match judged {
-            Some(Err(_)) => return Err(ConnError::Refused),
+            Some(Err(v)) => {
+                egress_audit::dial_refused(
+                    planned.authority(),
+                    Some(egress_class),
+                    egress_audit::verdict_name(v),
+                    None,
+                );
+                return Err(ConnError::Refused);
+            }
             Some(Ok(addr))
                 if !class_admits(
                     egress_class,
                     planned.secure(),
+                    self.plain_admitted(&planned),
                     within,
                     planned.authority(),
                     addr,
                 ) =>
             {
+                egress_audit::dial_refused(
+                    planned.authority(),
+                    Some(egress_class),
+                    "plaintext",
+                    None,
+                );
                 return Err(ConnError::Refused);
             }
-            Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
+            Some(Ok(addr)) => {
+                let clear_window = self.holds_clear_window(&planned, addr);
+                let mut conn = planned.dial_at(addr).map_err(|f| map(&f))?;
+                if clear_window {
+                    conn.hold_clear_window();
+                }
+                (Some(conn), None)
+            }
             None => (
                 None,
                 Some(Judging {
@@ -2293,6 +2483,35 @@ impl Connector {
     }
 }
 
+/// A PLUGIN USES A TLS VALUE RETIRED BEFORE 1.6.0 GA (a CA via `Need::trust_from`,
+/// `UPGRADE_VERIFY_OFF`): this transitional build still honours it, with one BUSBAR-6016 line and
+/// one `plugin.retired_tls_value` audit record per instance, need and value.
+fn retired_tls_value(owner: InstanceId, need: NeedId, value: &str) {
+    static SEEN: std::sync::OnceLock<Mutex<HashSet<(u64, u32, String)>>> = std::sync::OnceLock::new();
+    let first = SEEN
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((u64::from(owner.0), need.0, value.to_owned()));
+    if !first {
+        return;
+    }
+    busbar_kernel::diag_warn!(
+        busbar_kernel::diagnostics::PLUGIN_USES_RETIRED_TLS_VALUE,
+        instance = owner.0,
+        need = need.0,
+        value = %value,
+        "a plugin instance uses the retired TLS value {value}: CAs belong in advanced.tls and \
+         verification is never skipped; core refuses it before 1.6.0 GA (BUSBAR-6017)"
+    );
+    busbar_kernel::audit_ring::AUDIT.record_by(
+        "plugin.retired_tls_value",
+        &format!("instance:{}:need:{}:{value}", owner.0, need.0),
+        busbar_kernel::audit_ring::OUTCOME_DEGRADED,
+        "system",
+    );
+}
+
 /// The host name a dial target names: a URL's host, or a bare `host:port`'s host, unbracketed.
 fn host_of(target: &str) -> String {
     if target.contains("://") {
@@ -2449,8 +2668,11 @@ impl DeclaredConns for Connector {
             .plan(
                 &declared.door,
                 Dial {
+                    tls: match declared.tls {
+                        Some(own) => Some(own),
+                        None => self.tls_for(&target)?,
+                    },
                     target,
-                    tls: declared.tls.or_else(|| self.tls.clone()),
                     alpn: declared.alpn,
                     open_timeout: held.open_timeout,
                     anchors: None,
@@ -2512,6 +2734,7 @@ impl DeclaredConns for Connector {
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
             Some(pem) => tls::client::operator_ca_anchors(pem.as_bytes()).and_then(|roots| {
+                retired_tls_value(owner, need, &format!("trust_from CA ({})", spec.trust_from));
                 let policy = busbar_contract::transport::trust::EgressTrust {
                     extra_anchors: roots,
                     ..Default::default()
@@ -2579,7 +2802,8 @@ impl DeclaredConns for Connector {
             if class != Some(EGRESS_OPERATOR_INFRASTRUCTURE) {
                 return Err(ConnError::Refused);
             }
-            Arc::new(crate::tls::client::unverified_client_config())
+            retired_tls_value(caller, need, "UPGRADE_VERIFY_OFF");
+            Some(Arc::new(crate::tls::client::unverified_client_config()))
         } else {
             let declared = self.declared.lock().expect("declared needs");
             let trust_from = declared
@@ -2588,11 +2812,10 @@ impl DeclaredConns for Connector {
             if trust.is_some_and(|t| Some(t) != trust_from) {
                 return Err(ConnError::Refused);
             }
+            // The need's own (deprecated) CA config, when it declared one; otherwise the trust
+            // store selects by the guard-judged dial target below, never by the offered name.
             let over = self.over.lock().expect("needs");
-            over.get(&(caller, need))
-                .and_then(|d| d.tls.clone())
-                .or_else(|| self.tls.clone())
-                .ok_or(ConnError::Refused)?
+            over.get(&(caller, need)).and_then(|d| d.tls.clone())
         };
         let waker = self.waker(caller, ticket);
         held.watch_deadlines(DeadlineInterest::Ticket(ticket), &waker);
@@ -2601,9 +2824,14 @@ impl DeclaredConns for Connector {
             return Err(ConnError::Pending);
         }
         let (line, _) = held.line().ok_or(ConnError::Closed)?;
+        let dialled = line.target().ok_or(ConnError::Closed)?;
+        let config = match config {
+            Some(own) => own,
+            None => self.tls_for(&dialled)?.ok_or(ConnError::Refused)?,
+        };
         let name = match name {
             Some(n) => n.to_owned(),
-            None => host_of(&line.target().ok_or(ConnError::Closed)?),
+            None => host_of(&dialled),
         };
 
         let Some((mut reading, kept)) = Reading::begin(&held.rest, &waker) else {
@@ -2963,7 +3191,10 @@ impl Connector {
         endpoint::named(target).map_err(|_| ConnError::Refused)?;
         let dial = Dial {
             target: target.to_owned(),
-            tls: tls.or_else(|| self.tls.clone()),
+            tls: match tls {
+                Some(own) => Some(own),
+                None => self.tls_for(target)?,
+            },
             alpn,
             open_timeout,
             opening: (!prepare).then(|| {
