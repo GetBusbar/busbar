@@ -105,9 +105,32 @@ class Bootstrap(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), '/')
 
+    def test_candidate_memory_is_the_worker_minus_the_host_reserve(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as directory:
+            meminfo = Path(directory) / 'meminfo'
+            # n2d-standard-4: 16 GiB nominal, the kernel reports a little less.
+            meminfo.write_text('MemTotal:       16374708 kB\nMemFree:         1000 kB\n')
+            memory = bootstrap.candidate_memory_bytes(meminfo)
+            self.assertEqual(memory % (256 * 1024**2), 0)
+            self.assertGreaterEqual(16374708 * 1024 - memory, bootstrap.HOST_MEMORY_RESERVE_BYTES)
+            self.assertLess(16374708 * 1024 - memory, bootstrap.HOST_MEMORY_RESERVE_BYTES + 256 * 1024**2)
+            self.assertGreater(memory, 12 * 1024**3)
+            # A larger worker gets a larger candidate with no policy change.
+            meminfo.write_text('MemTotal:       65970000 kB\n')
+            self.assertGreater(bootstrap.candidate_memory_bytes(meminfo), 59 * 1024**3)
+            # Too small a worker is refused with the reason, never silently squeezed.
+            meminfo.write_text('MemTotal:        8000000 kB\n')
+            with self.assertRaisesRegex(ValueError, 'Use a larger worker machine'):
+                bootstrap.candidate_memory_bytes(meminfo)
+            meminfo.write_text('MemFree: 1 kB\n')
+            with self.assertRaisesRegex(ValueError, 'worker memory is unreadable'):
+                bootstrap.candidate_memory_bytes(meminfo)
+
     def test_candidate_and_collector_identities_endpoints_and_storage_are_distinct(self):
         root = Path('/srv/busbar-native-ci/job-19')
-        config = bootstrap.runtime_configuration(root, 'unix:///private.sock', 'image@sha256:' + 'a' * 64, False)
+        with patch.object(bootstrap, 'candidate_memory_bytes', return_value=12 * 1024**3):
+            config = bootstrap.runtime_configuration(root, 'unix:///private.sock', 'image@sha256:' + 'a' * 64, False)
+        self.assertEqual(config['resources']['memory_bytes'], 12 * 1024**3)
         self.assertEqual(config['isolation']['storage_bytes'], 24 * 1024**3)
         self.assertEqual(config['isolation']['storage_reserve_bytes'], 6 * 1024**3)
         self.assertEqual(config['isolation']['storage_kind'], 'loop-ext4')

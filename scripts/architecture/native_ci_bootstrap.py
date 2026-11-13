@@ -416,6 +416,31 @@ def subordinate_ids():
                 path.write_bytes(payload)
 
 
+# The candidate gets the worker's memory minus a fixed host reserve, so a larger worker
+# needs no policy change. The reserve covers the controller, the private and collector
+# Docker daemons and the kernel; the candidate cap keeps a runaway compile from reaching
+# them, so failure stays visible (OOMKilled at the recorded limit) instead of killing the
+# controller. A fixed 6 GiB left ~10 GiB of the 16 GiB worker idle and ran the certified
+# build on one compiler job under constant throttling (job 8181: 1343 s, 6113 memory.max
+# events) and OOMKilled test links (qa-nightly 3472, 3689).
+HOST_MEMORY_RESERVE_BYTES = 3 * 1024**3
+CANDIDATE_MEMORY_FLOOR_BYTES = 6 * 1024**3
+CANDIDATE_MEMORY_GRANULE_BYTES = 256 * 1024**2
+
+
+def candidate_memory_bytes(meminfo=Path('/proc/meminfo')):
+    match = re.search(r'^MemTotal:\s+(\d+) kB$', meminfo.read_text(), re.MULTILINE)
+    require(match, 'worker memory is unreadable: no MemTotal in ' + str(meminfo))
+    total = int(match.group(1)) * 1024
+    usable = total - HOST_MEMORY_RESERVE_BYTES
+    usable -= usable % CANDIDATE_MEMORY_GRANULE_BYTES
+    require(usable >= CANDIDATE_MEMORY_FLOOR_BYTES,
+            'worker has ' + str(total) + ' bytes of memory; the candidate needs '
+            + str(CANDIDATE_MEMORY_FLOOR_BYTES) + ' after the ' + str(HOST_MEMORY_RESERVE_BYTES)
+            + '-byte host reserve. Use a larger worker machine.')
+    return usable
+
+
 def runtime_configuration(control, endpoint, image, diagnostic):
     isolation = {'storage_kind': 'tmpfs' if diagnostic else 'loop-ext4',
         'storage_root': str(control / 'store'),
@@ -430,11 +455,8 @@ def runtime_configuration(control, endpoint, image, diagnostic):
         'runtime': 'runc', 'uid': 1001, 'gid': 1002, 'python': '/usr/bin/python3',
         'environment': {'PATH': '/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin',
                         'CARGO_HOME': '/opt/busbar-native/cargo-seed', 'RUSTUP_HOME': '/usr/local/rustup'},
-        # n2d-standard-4 workers have 16 GiB; the sandbox profile already reserves 12 GiB of the
-        # same machine. At 6 GiB the certified release build ran one compiler job with 6113
-        # memory.max throttle events (job 8181: 1343 s on one core) and test links were
-        # OOMKilled (qa-nightly 3472, 3689). 12 GiB leaves ~4 GiB for the host.
-        'resources': {'cpus': 2 if diagnostic else 4, 'memory_bytes': (1 if diagnostic else 12) * 1024**3,
+        'resources': {'cpus': 2 if diagnostic else 4,
+                      'memory_bytes': 1024**3 if diagnostic else candidate_memory_bytes(),
                       'pids': 256 if diagnostic else 1024},
         'isolation': isolation,
         'collector': {'docker_host': 'unix:///var/run/docker.sock', 'image': image, 'uid': SUBID + 1001, 'gid': SUBID + 1002}}
