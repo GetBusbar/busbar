@@ -161,6 +161,13 @@ including the old string `false`. These are migration rules; serving uses the co
 Remove the retired variables from launchers after conversion. The current `--providers` flag remains
 supported. A missing selected catalog remains an error during normal validation/startup.
 
+**Containers.** The 1.5.x image set `BUSBAR_PROVIDERS=/etc/busbar/providers.yaml`; the 1.6.0 image
+does not set it. With `config.yaml` at the image's default `/etc/busbar/config.yaml` the catalog
+still resolves to the image's `/etc/busbar/providers.yaml`, so nothing changes. If you mounted
+`config.yaml` somewhere else (with `BUSBAR_CONFIG` or `-c`), run `--migrate-config` with
+`-e BUSBAR_PROVIDERS=/etc/busbar/providers.yaml` so the migrated file records that catalog as
+`providers_file:`, or put a `providers.yaml` beside the mounted config.
+
 `BUSBAR_CONFIG_OVERLAY` selects old file-overlay migration input only; serving never reads it.
 The old `config.overlay` file/boolean field is refused by current configuration parsing. One-time
 migration removes that field while preserving `config.locked`; use `locked: true` to keep an
