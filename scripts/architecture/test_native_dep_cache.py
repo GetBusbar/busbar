@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -262,8 +263,14 @@ class Boundary(Fixture):
         (copy / 'debug/deps/libserde-0123456789abcdef.rlib').write_bytes(b'candidate poison')
         (copy / 'debug/deps/new').write_bytes(b'added')
         self.assertEqual(cache.inventory(seed), before)
-        with self.assertRaises(PermissionError):
-            (seed / 'debug/deps/libserde-0123456789abcdef.rlib').write_bytes(b'x')
+        sealed = seed / 'debug/deps/libserde-0123456789abcdef.rlib'
+        # The seal is the mode bits; root (the native controller) bypasses them,
+        # so assert the bits for every user and the refusal where it applies.
+        for path in (sealed, sealed.parent, seed):
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode) & 0o222, 0, path)
+        if os.geteuid() != 0:
+            with self.assertRaises(PermissionError):
+                sealed.write_bytes(b'x')
 
     def test_seed_inside_a_candidate_mounted_root_is_refused(self):
         for name in ('candidate', 'checkout', 'harness', 'trusted'):
