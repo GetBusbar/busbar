@@ -328,6 +328,9 @@ impl InFlight {
         }
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn claim_slot(&self, ceiling: Option<usize>) -> bool {
         match ceiling {
             None => {
@@ -464,6 +467,9 @@ impl SessionSlot {
             .copied()
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub fn add_upstream(&self) -> Result<usize, ReasonCode> {
         self.upstreams
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
@@ -514,6 +520,9 @@ impl Sessions {
         self.len() == 0
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub fn open(
         &self,
         id: SessionId,

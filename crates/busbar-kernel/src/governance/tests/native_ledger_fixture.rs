@@ -118,6 +118,9 @@ impl PersistenceBackend for FaultBackend {
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.inner.clock(dataset)
     }
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
         Box::pin(async move {
             assert!(

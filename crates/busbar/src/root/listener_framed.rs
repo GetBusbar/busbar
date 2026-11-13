@@ -86,7 +86,7 @@ fn configured_framer(
     let owner = door.instance().filter(|o| *o != 0)?;
     static LISTENERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let listener = LISTENERS
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::Relaxed,
             std::sync::atomic::Ordering::Relaxed,
             |n| n.checked_add(1),

@@ -1790,7 +1790,7 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
 
         let armed = me
             .holds
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
         if armed {
             let k = n(Ticked::HoldStarted).fetch_add(1, Ordering::SeqCst) as u32;

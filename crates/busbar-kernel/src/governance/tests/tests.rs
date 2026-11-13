@@ -4188,6 +4188,9 @@ impl busbar_contract::persistence::PersistenceBackend for NativeIdentityBackend 
     {
         self.inner.clock(dataset)
     }
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn commit(
         &self,
         candidate: busbar_contract::persistence::PreparedCandidate,

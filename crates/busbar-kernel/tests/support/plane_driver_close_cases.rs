@@ -62,6 +62,9 @@ impl busbar_contract::hooks::RoutingPolicy for Stuck {
         "stuck-rewrite"
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     async fn transform(
         &self,
         _req: &busbar_contract::hooks::RoutingRequest<'_>,

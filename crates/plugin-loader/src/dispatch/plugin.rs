@@ -1027,6 +1027,9 @@ impl Instance {
             _ => Phase::Bound,
         }
     }
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub(crate) fn advance_store_phase(
         &self,
         phase: busbar_contract::persistence::lifecycle::Phase,
@@ -1069,6 +1072,9 @@ impl Instance {
             && self.store_target.load(Ordering::Acquire)
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub(crate) fn acquire(&self, s: u32) -> Option<u32> {
         if self.kind == KindCode::Export
             && matches!(s, slot::REFRESH | slot::CANCEL | slot::RELEASE)
@@ -1099,6 +1105,9 @@ impl Instance {
         self.inflight.fetch_sub(units, Ordering::AcqRel);
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn enter_gate(&self, s: u32) -> bool {
         if s == slot::CLOSE {
             return self
