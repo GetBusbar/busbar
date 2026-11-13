@@ -33,7 +33,7 @@
 //! tool was built with, the same list the engine embeds); `verify` re-checks a sealed tarball.
 //! `keys-doc` writes the bytes of a keys document a root signs. The byte encoding of every
 //! document is `busbar_plugin_loader::release_trust::wire`'s alone; the release gate
-//! (busbar-publish-gate, tools/publish-gate) drives these commands and never spells a byte.
+//! (`busbar-publish-gate`, owner release tooling) drives these commands and never spells a byte.
 
 use busbar_plugin_loader::release_trust::{self, wire, ReleaseKey};
 use busbar_plugin_loader::settings_schema::validate_secret_fields;

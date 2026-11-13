@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-2 ghcr.io/getbusbar/busbar:1.6.0: expected absent or sha256:<HEX>; found sha256:<HEX>. That tag already holds another image; bump the version.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

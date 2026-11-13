@@ -36,7 +36,7 @@ Build with `panic = "unwind"`. The SDK trampolines contain panics and report fau
 
 ## Start from the canonical scaffold
 
-Use `busbar-release plugin new <kind> <name>` from the shared `busbar-release` generator.
+Use the shared fleet generator's `plugin new <kind> <name>`.
 Add `--enterprise` for private BusbarInc source. The command creates a local repository; its
 package identities must enter the trusted admission policy before publication through GitLab.
 Public mirrors follow qualified canonical dev publication. Private repositories and artifacts

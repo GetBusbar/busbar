@@ -1,2 +1,0 @@
-exit 3
-CANNOT RUN: FileNotFoundError: [Errno 2] No such file or directory: '<OUT>/SHA256SUMS'

@@ -1,8 +1,0 @@
-exit 1
-REFUSED G-14 K2 allowed_signers: expected namespaces="busbar-release" (files) or namespaces="git" (the version tag), one per line, nothing else; found no namespaces= restriction. Restrict each line to one namespace; statements (busbar-release-statement) are checked from ModernCI's own list.
-REFUSED G-15 K2 allowed_signers: expected a K2 line limited to namespaces="git"; found none. Add the release key's line for the version tag: busbar-release namespaces="git" <K2 key>.
-REFUSED G-0 G-15: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 56 checks over 12 rules; 4 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

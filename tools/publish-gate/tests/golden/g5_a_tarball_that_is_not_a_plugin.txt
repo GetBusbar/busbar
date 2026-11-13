@@ -1,6 +1,0 @@
-exit 1
-REFUSED G-5 busbar-store-fake-1.6.0-aarch64-apple-darwin.tar.gz: expected a plugin tarball; found error: '<W>/cand/plugins/busbar-store-fake-1.6.0-aarch64-apple-darwin.tar.gz' is not a plugin tarball: corrupt tar.gz archive: invalid gzip header. Rebuild it with busbar-plugin-pack pack.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 56 checks over 13 rules; 2 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

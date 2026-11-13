@@ -1,8 +1,0 @@
-exit 1
-REFUSED G-15 v1.6.0: expected the release commit <HEX>; found <HEX>. The version tag names the commit the candidate was built from.
-REFUSED G-11 dist/default pin busbar-store-fake: expected <HEX>; found <HEX>. The linked plugin must be the released plugin's commit; re-pin dist/default.
-REFUSED G-C conformance: expected a registry and shipped pins that render; found GetBusbar/busbar-store-fake ships at two commits: <HEX> and <HEX> (release/plugin-pins.tsv). Fix the tree at the release commit.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 4 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.
