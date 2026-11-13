@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> cases/fail/witness_03.rs:4:83
+  |
+4 | fn secret(loan: KindHostLoan<'_, SecretKind>) { let _ = Services::<PlaneKind>::of(loan); }
+  |                                                         ------------------------- ^^^^ expected `KindHostLoan<'_, PlaneKind>`, found `KindHostLoan<'_, SecretKind>`
+  |                                                         |
+  |                                                         arguments to this function are incorrect
+  |
+  = note: expected struct `KindHostLoan<'_, PlaneKind>`
+             found struct `KindHostLoan<'_, SecretKind>`
+note: associated function defined here
+ --> $BUSBAR_CONTRACT/src/abi/sdk/services.rs
+  |
+  |     pub fn of(tables: super::lent::KindHostLoan<'_, K>) -> Option<Self> {
+  |            ^^
