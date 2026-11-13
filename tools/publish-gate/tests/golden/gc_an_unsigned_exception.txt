@@ -1,0 +1,6 @@
+exit 1
+REFUSED G-C release/conformance-exceptions.json: expected a K2 signature beside it (.sig); found none. Sign it: ssh-keygen -Y sign -n busbar-release.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 57 checks over 13 rules; 2 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

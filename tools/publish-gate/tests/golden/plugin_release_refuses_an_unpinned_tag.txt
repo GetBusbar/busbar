@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-3 busbar-store-fake v1.6.1: expected pinned in release/plugin-pins.tsv at this commit; found ['busbar-store-fake', 'v1.6.0', '<HEX>']. Pin the plugin release in a judged change; the candidate-plugins checks build exactly the pins.
+
+publish-gate: 1 checks over 1 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

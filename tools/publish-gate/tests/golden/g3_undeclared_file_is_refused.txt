@@ -1,0 +1,6 @@
+exit 1
+REFUSED G-3 artifacts/extra.bin: expected absent (not declared); found present. Only declared artifacts ship; declare it in release-targets.json/plugins.yaml or drop it.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 58 checks over 13 rules; 2 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-3 artifacts/plugin-index.json: expected the index rendered from the candidate's plugins; found no render: busbar-store-fake-1.6.0-x86_64-unknown-linux-gnu.tar.gz holds no manifest.json. Every plugin's tarball must state its ABI version; rebuild the plugins slice.
+REFUSED G-5 busbar-store-fake-1.6.0-x86_64-unknown-linux-gnu.tar.gz: expected a plugin tarball; found error: '<W>/cand/plugins/busbar-store-fake-1.6.0-x86_64-unknown-linux-gnu.tar.gz' is not a plugin tarball: archive has no manifest.json. Rebuild it with busbar-plugin-pack pack.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 56 checks over 13 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

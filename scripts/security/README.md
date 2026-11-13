@@ -149,7 +149,7 @@ claim that the production runner or repository scan has passed.
 
 ## Standalone plugin-release evidence
 
-`publish_gate.py plugin-release` now refuses before either signer unless the
+`busbar-publish-gate plugin-release` now refuses before either signer unless the
 `--plugins` directory contains `security-sboms.json` and one nonempty CycloneDX
 SBOM per expected archive. The protected producer must generate these from the
 actual build dependency closure. It has not been wired to emit them by this

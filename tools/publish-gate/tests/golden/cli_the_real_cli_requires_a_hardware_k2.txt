@@ -1,0 +1,5 @@
+exit 3
+REFUSED G-14 K2: expected a hardware key type (sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com); found ssh-ed25519. K2 lives on the YubiKey (ssh-keygen -t ed25519-sk).
+REFUSED G-14 K2: expected a hardware key type (sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com); found ssh-ed25519. K2 lives on the YubiKey (ssh-keygen -t ed25519-sk).
+CANNOT RUN: gh api repos/GetBusbar/store-fake: 
+publish-gate: a rule could not run; this is never a pass.

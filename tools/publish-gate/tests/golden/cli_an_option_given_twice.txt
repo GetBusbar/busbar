@@ -1,0 +1,3 @@
+exit 2
+--out given twice
+<USAGE>

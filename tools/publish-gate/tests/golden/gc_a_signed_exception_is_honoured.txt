@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-C release/conformance-exceptions.json: expected suite exceptions that record fail or not-run; found {"suite": "x", "status": "pass"}. An exception records the real status and is never a pass.
+REFUSED G-C release/conformance-exceptions.json: expected pin exceptions naming repo, a 40-hex commit and a reason; found {"repo": "busbar-store-fake", "commit": "bad"}. Fix and re-sign it.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 57 checks over 13 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.
