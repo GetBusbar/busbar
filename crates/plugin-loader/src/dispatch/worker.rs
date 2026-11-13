@@ -684,6 +684,28 @@ pub(crate) fn drop_after_lock(value: Late) {
     drop(value);
 }
 
+/// A crossing's answer whose publication waits for the lease retirements queued before it
+/// (a recalled short answer's kept reply lease): dropped from the worker's late list, in order,
+/// after those RELEASEs returned and with no host lock held.
+/// Its op's [`Meta`] travels with it and is let go only after the answer is in place, since that
+/// drop settles an unanswered reply as FAULT.
+struct PublishAfterRetirement {
+    publish: Option<(Box<dyn Job>, Crossed)>,
+    meta: Option<Meta>,
+    write_behind: bool,
+    stats: Arc<Stats>,
+}
+impl Drop for PublishAfterRetirement {
+    fn drop(&mut self) {
+        if let Some((job, c)) = self.publish.take() {
+            if !job.finish(c, None) && self.write_behind {
+                self.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        drop(self.meta.take());
+    }
+}
+
 struct WakeAfterLock(Option<Waker>);
 impl Drop for WakeAfterLock {
     fn drop(&mut self) {
@@ -1367,8 +1389,16 @@ impl Worker {
 
         let recall = e.short_slot.take() == Some(cur.meta.slot);
         e.short_measurement = None;
-        e.short_reply = None;
+        // Retiring a kept short reply lease queues its RELEASE behind the worker lock (no plugin
+        // code under a host lock). The answer this crossing publishes must not become visible
+        // before that RELEASE returned, so such a publication is queued after it (below).
+        let mut retiring = e
+            .short_reply
+            .take()
+            .and_then(|owner| owner.0.as_ref().map(|kept| kept.id.load(Ordering::Acquire)))
+            .is_some_and(|id| id != 0);
         if c.short && recall {
+            retiring |= c.lease != 0 || c.short_lease != 0;
             let _lease = UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.lease);
             let _short =
                 UnhandedLease::new(&cur.meta.instance, cur.meta.framing.clone(), c.short_lease);
@@ -1391,16 +1421,25 @@ impl Worker {
         let mut cur = cur;
         let write_behind = cur.meta.class == DeadlineClass::WriteBehind;
         cur.meta.give_back();
+        let mut meta = Some(cur.meta);
         if let Some(job) = cur.job {
             let short = e.short_reply.as_ref().and_then(|owner| owner.0.clone());
-            if !job.finish(c, short) {
+            if retiring && short.is_none() {
+                // Queued after the RELEASEs above: the late list lets go in order, with no lock.
+                drop_after_lock(Box::new(PublishAfterRetirement {
+                    publish: Some((job, c)),
+                    meta: meta.take(),
+                    write_behind,
+                    stats: Arc::clone(&env.stats),
+                }));
+            } else if !job.finish(c, short) {
                 e.short_reply = None;
                 if write_behind {
                     env.stats.write_behind_late.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
-        drop(cur.meta);
+        drop(meta);
         if !e.queue.is_empty() {
             Self::schedule(st, idx, Action::Start);
         } else if e.recycle_when_idle {
