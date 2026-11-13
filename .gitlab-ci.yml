@@ -1,12 +1,10 @@
-# The project CI configuration must select the owner-approved immutable revision of
-# ci/architecture-pipeline.yml in GetBusbar/busbar. This file cannot grant admission.
-# Unregistered scaffolds fail closed until the canonical policy classifies their
-# repository, kind, package paths and open-source/enterprise distribution.
+# This repository does not carry its CI pipeline. The project's CI configuration is set by the
+# owner outside this tree; this file cannot grant admission and fails closed when it is run as is.
 workflow:
   rules:
     - when: always
 
 admission-not-configured:
   script:
-    - echo 'Configure the owner-approved immutable CI revision and protected GitLab admission.'
+    - echo "This project's CI configuration is set by the owner; this repository's .gitlab-ci.yml runs nothing."
     - exit 1

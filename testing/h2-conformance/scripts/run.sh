@@ -5,7 +5,7 @@
 # HTTP/2 CONFORMANCE (registry id `h2`): h2spec (RFC 9113 / RFC 7541) over TLS, ALPN h2, against the
 # `tls:` listener of a busbar built from this checkout. The listener is the root's hyper server over
 # the connector's rustls, so what h2spec grades is core's, not a plugin's. Three legs, as in every
-# conformance suite (busbar-release template/conformance/run.sh):
+# conformance suite (the fleet template's conformance/run.sh):
 #
 #   CONTROL           a known-good third-party h2 server (nghttpd, a digest-pinned docker image). It is
 #                     held to its committed per-case baseline (baselines/nghttpd-control.json): this

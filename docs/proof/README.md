@@ -2,9 +2,9 @@
 
 The Build Proof Dashboard manifest is collated by `cargo xtask proof-manifest`. The `proof-manifest`
 job that ran it (in the removed `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
-workflows, and `promote.yml` (the busbar-release hop) is deleted too: nothing refreshes the published
-copies until a ModernCI branch file runs the collator on a landing (`on.landed`). The last published
-manifests are on the `proof-manifests` branch.
+workflows, and `promote.yml` is deleted too: nothing in this repository refreshes the published
+copies; the project's CI runs the collator on a landing. The last published manifests are on the
+`proof-manifests` branch.
 
 Usage:
 
@@ -32,8 +32,8 @@ accident.
 ## Reading it
 
 Marketing (`GetBusbar/marketing` `deploy.yml`) checks the busbar repo out at `ref: proof-manifests`
-and renders `docs/proof/<stage>.json` for the stage it is deploying — `getbusbar.dev` reads
-`dev.json`, `getbusbar.qa` reads `qa.json`, `getbusbar.com` reads `main.json`. The stage mirroring is
+and renders `docs/proof/<stage>.json` for the stage it is deploying — the development site reads
+`dev.json`, the QA site reads `qa.json`, and the public site `getbusbar.com` reads `main.json`. The stage mirroring is
 in the file name, so one checkout serves all three deploys.
 
 ## The files in this directory

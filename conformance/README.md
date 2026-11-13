@@ -20,7 +20,7 @@ Each suite runs in the repo that implements what it judges. QA runs the product 
 `testing/conformance/run.sh` and each repo's `testing/conformance/suites.tsv`. Dev keeps fast
 checks; core's `certification-coverage` check verifies that every registered suite has an owner,
 source script and QA/main execution stage. `ci-coverage.json` records those bindings at the exact
-product pins; regenerate it with `scripts/conformance/ci_coverage.py --write --archive-root DIR`.
+product pins; the CI coverage tooling (outside this repository) regenerates it.
 
 Native qualification also requires all eight LLM/spec-and-audio suites and the decisions
 Jev suite. The protected policy selects their existing `ci-coverage.json` rows; removing a
