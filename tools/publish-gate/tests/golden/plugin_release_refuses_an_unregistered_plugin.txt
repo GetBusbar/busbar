@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-3 busbar-auth-other: expected a registered first-party plugin; found not in plugins.yaml. Register it in a judged change.
+
+publish-gate: 1 checks over 1 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

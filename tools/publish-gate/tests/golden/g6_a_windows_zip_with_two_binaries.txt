@@ -1,0 +1,6 @@
+exit 1
+REFUSED G-6 busbar-x86_64-pc-windows-msvc.zip: expected an archive holding the busbar binary; found busbar-x86_64-pc-windows-msvc.zip: expected one busbar binary, found ['busbar.exe', 'bin/busbar.exe']. Rebuild.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 56 checks over 13 rules; 2 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

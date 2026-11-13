@@ -1,0 +1,3 @@
+#!/bin/sh
+# Test double for rekor-cli upload.
+echo "Created entry at index 7, available at: https://rekor.sigstore.dev/api/v1/log/entries/fixture"

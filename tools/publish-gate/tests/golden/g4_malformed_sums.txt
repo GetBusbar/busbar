@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-4 SHA256SUMS: expected a well-formed sums file; found SHA256SUMS:1 is not `<sha256>  <name>`. The candidate must write it.
+REFUSED G-0 G-4: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 45 checks over 12 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

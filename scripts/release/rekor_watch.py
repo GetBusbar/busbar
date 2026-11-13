@@ -14,7 +14,7 @@ Exit 0 means the log and the list agree. Exit 1 means an alarm, and every line n
 the row. Exit 3 means Rekor could not be read, which is never a pass.
 
 release/released.tsv has one line per signed release file, `<version>\\t<file>\\t<sha256>`. The
-owner commits the rows that `publish_gate.py upload` writes to out/released.tsv.
+owner commits the rows that `busbar-publish-gate upload` writes to out/released.tsv.
 """
 
 from __future__ import annotations

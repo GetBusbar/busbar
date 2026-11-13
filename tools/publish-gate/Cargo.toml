@@ -1,0 +1,28 @@
+[package]
+name = "busbar-publish-gate"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The owner-run release gate: verify, sign and publish one busbar release, refusing anything it cannot prove."
+license = "Apache-2.0"
+
+# Owner tooling, not product: its own workspace, so the root workspace, dist/default and the
+# architecture policy never see it. Every dependency is already in the root Cargo.lock at the same
+# version (cargo-vet'd there).
+[workspace]
+
+[[bin]]
+name = "busbar-publish-gate"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+libc = "0.2"
+regex = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+tar = { version = "0.4", default-features = false }

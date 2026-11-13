@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-9 provenance/: expected no provenance (G-9 is not in 1.6.0's rule set); found present. Land G-9 with ModernCI's pinned builder key before shipping provenance; an unchecked file is never published.
+
+publish-gate: 58 checks over 14 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

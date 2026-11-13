@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-3 plugin busbar-store-fake: expected pinned ('v1.6.0', '<HEX>'); found ('v1.6.0', '<HEX>') version 1.6.0. The candidate must build exactly the committed pins.
+REFUSED G-11 dist/default pin busbar-store-fake: expected <HEX>; found <HEX>. The linked plugin must be the released plugin's commit; re-pin dist/default.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 57 checks over 13 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

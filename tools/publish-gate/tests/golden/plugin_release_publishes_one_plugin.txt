@@ -1,0 +1,8 @@
+exit 0
+release manifest: 5 tarballs, release-manifest version=<SIGNING TIME> entries=5 signed-sha256=<FRESH> -> <TMP>/release-manifest.signed
+release signer: sign the release manifest (once)
+K2: touch the YubiKey to sign SHA256SUMS
+K2: touch the YubiKey to sign plugin-security.json
+
+publish-gate: 8 checks over 4 rules; 0 refusal(s).
+publish-gate: VERIFIED.

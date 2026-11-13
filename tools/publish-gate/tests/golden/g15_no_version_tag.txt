@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-15 v1.6.0: expected a signed version tag in your clone; found no such tag. Sign it with K2 at the release commit: git tag -s v1.6.0 -m 'busbar 1.6.0' <HEX>.
+REFUSED G-0 G-15: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 56 checks over 12 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

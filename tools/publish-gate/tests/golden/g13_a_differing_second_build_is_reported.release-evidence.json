@@ -1,0 +1,168 @@
+{
+  "commit": "<HEX>",
+  "conformance": {
+    "excepted": [],
+    "public_pass": 2,
+    "rule": "G-C"
+  },
+  "conformance_manifest_sha256": "<HEX>",
+  "k1_keys": [
+    "busbar-plugins-root"
+  ],
+  "local_spot_rebuild": "not-run",
+  "not_run": {
+    "G-9": "no provenance producer for 1.6.0 (ModernCI phase 2b)"
+  },
+  "plugins_signed_by_hardware_key": "pending-sign",
+  "release_signed_by_hardware_key": "pending-sign",
+  "repo": "GetBusbar/busbar",
+  "reproducible": false,
+  "rules": {
+    "G-1": "pass",
+    "G-10": "pass",
+    "G-11": "pass",
+    "G-12": "pass",
+    "G-14": "pass",
+    "G-15": "pass",
+    "G-2": "pass",
+    "G-3": "pass",
+    "G-4": "pass",
+    "G-5": "pass",
+    "G-6": "pass",
+    "G-8": "pass",
+    "G-C": "pass",
+    "G-S": "pass"
+  },
+  "sbom": true,
+  "security_scans": {
+    "database": {
+      "metadata_sha256": "<HEX>",
+      "sha256": "<HEX>",
+      "updated_at": "<DATABASE TIME>"
+    },
+    "policy_files": {
+      "semgrep.yaml": "<HEX>",
+      "tools.json": "<HEX>",
+      "trivy-secret.yaml": "<HEX>",
+      "trivy.ignore": "<HEX>",
+      "trivy.yaml": "<HEX>"
+    },
+    "schema": "busbar.artifact-security/1",
+    "status": "pass",
+    "steps": [
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-audit-verify-v1.6.0-x86_64-pc-windows-msvc.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-audit-verify-v1.6.0-x86_64-unknown-linux-gnu.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-v1.6.0-image-linux-amd64.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-v1.6.0-image-linux-arm64.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-v1.6.0-x86_64-pc-windows-msvc.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "sboms/busbar-v1.6.0-x86_64-unknown-linux-gnu.cdx.json",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "image:linux/amd64",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      },
+      {
+        "diagnostics": [],
+        "diagnostics_omitted": 0,
+        "exit_code": 0,
+        "findings": 0,
+        "name": "image:linux/arm64",
+        "report_sha256": "<HEX>",
+        "status": "pass",
+        "stderr_sha256": "<HEX>",
+        "tool_image": "mirror.gcr.io/aquasec/trivy:0.76.2@sha256:<HEX>"
+      }
+    ],
+    "subjects": {
+      "artifacts/busbar-audit-verify-x86_64-pc-windows-msvc.zip": "<HEX>",
+      "artifacts/busbar-audit-verify-x86_64-unknown-linux-gnu.tar.gz": "<HEX>",
+      "artifacts/busbar-openapi-v1.6.0.json": "<HEX>",
+      "artifacts/busbar-x86_64-pc-windows-msvc.zip": "<HEX>",
+      "artifacts/busbar-x86_64-unknown-linux-gnu.tar.gz": "<HEX>",
+      "artifacts/plugin-index.json": "<HEX>",
+      "internal/busbar-aarch64-unknown-linux-musl.tar.gz": "<HEX>",
+      "internal/busbar-x86_64-unknown-linux-musl.tar.gz": "<HEX>",
+      "oci/busbar.oci.tar": "<HEX>",
+      "plugins/busbar-store-fake-1.6.0-aarch64-apple-darwin.tar.gz": "<HEX>",
+      "plugins/busbar-store-fake-1.6.0-aarch64-unknown-linux-gnu.tar.gz": "<HEX>",
+      "plugins/busbar-store-fake-1.6.0-x86_64-apple-darwin.tar.gz": "<HEX>",
+      "plugins/busbar-store-fake-1.6.0-x86_64-pc-windows-msvc.tar.gz": "<HEX>",
+      "plugins/busbar-store-fake-1.6.0-x86_64-unknown-linux-gnu.tar.gz": "<HEX>",
+      "sboms/busbar-audit-verify-v1.6.0-x86_64-pc-windows-msvc.cdx.json": "<HEX>",
+      "sboms/busbar-audit-verify-v1.6.0-x86_64-unknown-linux-gnu.cdx.json": "<HEX>",
+      "sboms/busbar-v1.6.0-image-linux-amd64.cdx.json": "<HEX>",
+      "sboms/busbar-v1.6.0-image-linux-arm64.cdx.json": "<HEX>",
+      "sboms/busbar-v1.6.0-x86_64-pc-windows-msvc.cdx.json": "<HEX>",
+      "sboms/busbar-v1.6.0-x86_64-unknown-linux-gnu.cdx.json": "<HEX>"
+    }
+  },
+  "slsa_provenance": "not-run",
+  "transparency_log": "pending-upload",
+  "version": "1.6.0"
+}
