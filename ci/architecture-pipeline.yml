@@ -216,6 +216,60 @@ core-oracle:
     expire_in: 30 days
     paths: [oracle-shards/]
 
+# ---- T1: the Rust architecture checker beside the Python one ---------------------------
+# Plain shell, no controller. tools/busbar-arch (its own workspace) runs its tests,
+# including the trybuild compiler witnesses (tools/busbar-arch/witnesses: each
+# negative must fail with its named rustc error, each positive must compile), then
+# ci/jobs/arch-differential.sh runs scripts/architecture/check.py and
+# `busbar-arch check` on this tree and fails on any difference in verdict, refusal
+# reason or receipt (plus `plan` for every repository and `lock-align`).
+arch-differential:
+  stage: build
+  tags: ["size-m"]
+  interruptible: true
+  allow_failure: false
+  retry: 0
+  timeout: 1h
+  dependencies: []
+  variables:
+    GIT_DEPTH: "0"
+    GIT_STRATEGY: clone
+    RUSTUP_TOOLCHAIN: "1.98.0"
+    CARGO_TERM_COLOR: never
+    PYTHONDONTWRITEBYTECODE: "1"
+  rules:
+    - !reference [.rules, core-dev]
+    - when: never
+  script:
+    - set -eu
+    - . ci/lib/forge.sh && forge_setup
+    - cargo test --locked --manifest-path tools/busbar-arch/Cargo.toml --workspace
+    - bash ci/jobs/arch-differential.sh --work "$CI_PROJECT_DIR/arch-differential"
+  artifacts:
+    when: always
+    access: developer
+    expire_in: 30 days
+    paths: [arch-differential/report/]
+
+# The T1 proof on demand: the same differential on every classified plugin at its
+# forge dev head, plus one planted violation per rule on a copy of this tree, each
+# of which both checkers must refuse with the same reason. Owner-started (cost rule).
+arch-differential-fleet:
+  extends: arch-differential
+  timeout: 4h
+  rules:
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "dev"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && ($CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "api") && $CI_COMMIT_BRANCH == "dev"'
+      when: manual
+      allow_failure: true
+    - when: never
+  script:
+    - set -eu
+    - . ci/lib/forge.sh && forge_setup
+    - bash ci/jobs/arch-differential.sh --work "$CI_PROJECT_DIR/arch-differential" --mutations --fleet
+
 # ---- QA tier (core) and plugin qualification --------------------------------------------
 # Core: every test (root/dist workspaces incl. the shipped default features, doctests,
 # loader witnesses, loom), no-default clippy, compiler witnesses, the oracle replay and

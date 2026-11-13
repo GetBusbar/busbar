@@ -1,0 +1,37 @@
+error[E0080]: evaluation panicked: SDK registration requires listen
+  --> cases/fail/witness_46.rs:13:1
+   |
+13 | / busbar_contract::plugin_door! {
+14 | |     ops: Ops,
+15 | |     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::transport:...
+16 | |     lifecycle: {
+...  |
+45 | |     },
+46 | | }
+   | |_^ evaluation of `door::__DOOR` failed inside this call
+   |
+note: inside `busbar_contract::abi::sdk::registration::check::<busbar_contract::abi::transport::Ops>`
+  --> $RUST/core/src/panic.rs
+   |
+   = note: the failure occurred here
+   |
+  ::: $BUSBAR_CONTRACT/src/abi/sdk/registration.rs
+   |
+   | /                 require!(o; listen, accept, dial, read, write, flush, shut, arrival, locate,
+   | |                     begin, ingest, emit, encode, refuse, finish, detach, adopt, timer);
+   | |______________________________________________________________________________________- in this macro invocation
+   = note: this error originates in the macro `busbar_contract::plugin_door` which comes from the expansion of the macro `require` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+note: erroneous constant encountered
+  --> cases/fail/witness_46.rs:13:1
+   |
+13 | / busbar_contract::plugin_door! {
+14 | |     ops: Ops,
+15 | |     statement: busbar_contract::abi::mechanism::door::Statement { kind_tail: std::ptr::from_ref(&busbar_contract::abi::transport::...
+16 | |     lifecycle: {
+...  |
+45 | |     },
+46 | | }
+   | |_^
+   |
+   = note: this note originates in the macro `busbar_contract::plugin_door` (in Nightly builds, run with -Z macro-backtrace for more info)

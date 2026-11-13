@@ -1,0 +1,25 @@
+error[E0277]: the trait bound `busbar_contract::abi::secret::Ops: busbar_contract::abi::sdk::door::table_seal::For<busbar_contract::abi::auth::Ops, 9>` is not satisfied
+ --> cases/fail/witness_08.rs:6:34
+  |
+6 |     let _ = kind_op::<auth::Ops, secret::Ops, S, H, {secret::slot::RESOLVE}>();
+  |                                  ^^^^^^^^^^^ unsatisfied trait bound
+  |
+help: the trait `For<busbar_contract::abi::auth::Ops, 9>` is not implemented for `busbar_contract::abi::secret::Ops`
+      but trait `For<busbar_contract::abi::secret::Ops, 9>` is implemented for it
+ --> $BUSBAR_CONTRACT/src/abi/sdk/door.rs
+  |
+  |         impl<const I: u32> table_seal::For<$ops, I> for $ops {}
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+  | bound_table!(crate::abi::secret::Ops, Lifecycle);
+  | ------------------------------------------------ in this macro invocation
+  = help: for that trait implementation, expected `busbar_contract::abi::secret::Ops`, found `busbar_contract::abi::auth::Ops`
+note: required by a bound in `kind_op`
+ --> $BUSBAR_CONTRACT/src/abi/sdk/door.rs
+  |
+  | pub const fn kind_op<O, T, S, H, const INDEX: u32>() -> Option<Op>
+  |              ------- required by a bound in this function
+...
+  |     T: KindSlot<INDEX> + table_seal::For<O, INDEX>,
+  |                          ^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `kind_op`
+  = note: this error originates in the macro `bound_table` (in Nightly builds, run with -Z macro-backtrace for more info)

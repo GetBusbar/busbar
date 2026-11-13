@@ -1,0 +1,10 @@
+error[E0308]: mismatched types
+ --> cases/fail/witness_21.rs:7:59
+  |
+7 | fn restore(host: &Host<ExportKind>) -> Option<Snapshot> { host.services() }
+  |                                        ----------------   ^^^^^^^^^^^^^^^ expected `Option<Services<PlaneKind>>`, found `Option<Services<ExportKind>>`
+  |                                        |
+  |                                        expected `Option<busbar_contract::abi::sdk::Services<PlaneKind>>` because of return type
+  |
+  = note: expected enum `Option<busbar_contract::abi::sdk::Services<PlaneKind>>`
+             found enum `Option<busbar_contract::abi::sdk::Services<ExportKind>>`

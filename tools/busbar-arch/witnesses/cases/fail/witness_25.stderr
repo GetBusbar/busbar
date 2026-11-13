@@ -1,0 +1,11 @@
+error[E0423]: cannot initialize a tuple struct which contains private fields
+ --> cases/fail/witness_25.rs:5:9
+  |
+5 | let _ = Incarnation(std::sync::Arc::new(()));
+  |         ^^^^^^^^^^^
+  |
+note: constructor is not visible here due to private fields
+ --> $BUSBAR_CONTRACT/src/services.rs
+  |
+  | pub struct Incarnation(Arc<()>);
+  |                        ^^^^^^^ private field
