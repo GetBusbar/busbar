@@ -161,8 +161,8 @@ class Bootstrap(unittest.TestCase):
         # before the conformance run, when a re-pin leaves the archive stale.
         # Republishing the archive means recording its staged OIDC rev below.
         staged_oidc_rev = {
-            'b548d9e3623df2cbdbd495c41dd6ff2f078c641315cd6b61f07a565a12853024':
-                '6c89d7c55ff8b14bf3907978afbaadf690677257',
+            '41bc2914aaaa6126c92d42d2f3fcbd7954231e5a6ee35a398240cf11257c9d90':
+                '82b7e3083bd1d2c764d711f3b8f3bf19a87b58c3',
         }
         checkout = Path(__file__).parents[2]
         plan = json.loads((checkout / 'ci/native-judge-inputs.json').read_text())
