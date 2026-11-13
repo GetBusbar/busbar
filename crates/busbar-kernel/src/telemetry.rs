@@ -468,6 +468,9 @@ pub(crate) fn request_phase_dropped() -> [u64; 2] {
     std::array::from_fn(|i| PHASE_DROPPED[i].load(Ordering::Relaxed))
 }
 
+// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+// MSRV floor is below 1.95, so keep the older name.
+#[allow(deprecated)]
 fn record_phase_duration(
     slots: Option<[HistogramSlot; OUTCOMES.len()]>,
     outcome: &str,

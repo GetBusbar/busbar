@@ -872,6 +872,9 @@ pub(crate) struct LookupPlace(&'static AtomicUsize);
 
 impl LookupPlace {
     /// Takes a place if fewer than `cap` are taken.
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub(crate) fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
         in_flight
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {

@@ -59,6 +59,9 @@ impl OpIds {
 
 // Exhaustion leaves the allocator exhausted. In particular, catching a panic
 // must not allow a subsequent call to reuse an identity under the same node.
+// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+// MSRV floor is below 1.95, so keep the older name.
+#[allow(deprecated)]
 fn next_counter(counter: &std::sync::atomic::AtomicU64) -> u64 {
     use std::sync::atomic::Ordering::Relaxed;
     counter

@@ -612,6 +612,9 @@ impl<K: Ord, V> Keyed<K, V> {
     }
 
     /// Run `f` over the entry `key` names, made with `make` when it has none and fewer than
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub fn with_or_insert_within<R>(
         &self,
         key: K,

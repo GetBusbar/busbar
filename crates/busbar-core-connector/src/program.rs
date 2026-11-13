@@ -269,6 +269,9 @@ impl Expected {
     }
 }
 
+// `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+// MSRV floor is below 1.95, so keep the older name.
+#[allow(deprecated)]
 fn next_supervision_key(counter: &std::sync::atomic::AtomicU64) -> Result<u64, ConnError> {
     counter
         .fetch_update(

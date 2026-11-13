@@ -278,6 +278,9 @@ pub struct Slot(Arc<std::sync::atomic::AtomicUsize>);
 
 impl Slot {
     /// Take a slot of `live` when fewer than `max` are held; `None` = the listener is full.
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     #[must_use]
     pub fn take(live: &Arc<std::sync::atomic::AtomicUsize>, max: usize) -> Option<Self> {
         use std::sync::atomic::Ordering;

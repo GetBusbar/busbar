@@ -65,6 +65,9 @@ impl std::fmt::Debug for FramingContext {
 }
 
 impl FramingContext {
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub fn new(
         owner: u64,
         listener: u64,
@@ -104,6 +107,9 @@ impl FramingContext {
         }))
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     pub fn adopt(
         owner: u64,
         source: Arc<dyn FramingScope>,

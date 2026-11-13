@@ -33,6 +33,9 @@ impl CappedGroup {
         self.live.load(Ordering::Acquire)
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn count_one(&self) -> Option<GroupCount> {
         self.live
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {

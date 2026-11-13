@@ -1392,6 +1392,9 @@ impl GovState {
         )
     }
 
+    // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
+    // MSRV floor is below 1.95, so keep the older name.
+    #[allow(deprecated)]
     fn admit_checked(
         &self,
         cost: &crate::cost::CostModel,

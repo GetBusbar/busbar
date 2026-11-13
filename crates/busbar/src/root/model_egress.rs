@@ -553,7 +553,7 @@ impl Breaker for WalkCells {
             };
             let ticket = self
                 .next_probe
-                .fetch_update(
+                .try_update(
                     std::sync::atomic::Ordering::Relaxed,
                     std::sync::atomic::Ordering::Relaxed,
                     |n| n.checked_add(1),
