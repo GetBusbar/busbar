@@ -35,9 +35,10 @@ stages: [build, qualify, website, release]
 .controller:
   # Jobs pick their GCP worker class by tag (size-s, size-m, size-l); the runners
   # autoscale 0-50. Plugin jobs default to size-m; core build and test jobs use size-l.
-  variables:
-    BUSBAR_RUNNER_SIZE: size-m
-  tags: ["$BUSBAR_RUNNER_SIZE"]
+  # Tags are literal per job: a mapping may hold only one `variables:` key (a second
+  # one silently replaces the first), and an unset variable leaves an unexpanded tag
+  # that no runner serves.
+  tags: [size-m]
   interruptible: true
   allow_failure: false
   retry: 0
@@ -142,7 +143,7 @@ stages: [build, qualify, website, release]
 core-build:
   extends: .controller
   stage: build
-  variables: {BUSBAR_RUNNER_SIZE: size-l}
+  tags: [size-l]
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -154,7 +155,7 @@ core-build:
 core-clippy:
   extends: .controller
   stage: build
-  variables: {BUSBAR_RUNNER_SIZE: size-l}
+  tags: [size-l]
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -169,7 +170,7 @@ core-clippy:
 core-test:
   extends: .controller
   stage: build
-  variables: {BUSBAR_RUNNER_SIZE: size-l}
+  tags: [size-l]
   timeout: 2h
   rules:
     - !reference [.rules, core-dev]
@@ -181,7 +182,7 @@ core-test:
 core-conformance:
   extends: .controller
   stage: qualify
-  variables: {BUSBAR_RUNNER_SIZE: size-l}
+  tags: [size-l]
   rules:
     - !reference [.rules, core-dev]
     - !reference [.rules, core-qa]
@@ -195,6 +196,10 @@ core-conformance:
 native-qualification:
   extends: .controller
   stage: qualify
+  # The one job whose worker class differs by rule (core QA size-l, plugins size-m):
+  # the variable is defined on the job itself, and rules only override it.
+  variables: {BUSBAR_RUNNER_SIZE: size-m}
+  tags: ["$BUSBAR_RUNNER_SIZE"]
   rules:
     # Core QA builds and tests the whole product: the large worker class.
     - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "qa" && $CI_COMMIT_REF_PROTECTED == "true"'
@@ -209,7 +214,7 @@ native-qualification:
 core-conformance-debug:
   extends: .controller
   stage: qualify
-  variables: {BUSBAR_RUNNER_SIZE: size-l}
+  tags: [size-l]
   rules:
     - !reference [.rules, core-qa]
     - when: never

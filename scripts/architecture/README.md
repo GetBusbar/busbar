@@ -35,7 +35,8 @@ not permission to provision a machine or borrow an unrelated deployment runner.
 
 SDK source and assembled-product revisions are separate identities. For an ABI cutover,
 the owner sets `BUSBAR_ADMISSION_CORE_REVISION` to the exact assembled cohort candidate
-in project settings. Ordinary pipelines cannot override it. Once admitted, remove the
+in project settings, unprotected so merge request pipelines receive it (the pin is not a
+secret; every internal ref is trusted). Ordinary pipelines cannot override it. Once admitted, remove the
 cohort override: the job resolves canonical dev once and records its actual revision.
 The selected host's SDK pin must match the plugin's `.busbar-ref`. Native conformance
 records the tested host commit, rather than mislabeling the SDK commit as a binary.
