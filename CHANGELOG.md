@@ -20,6 +20,20 @@ All notable changes to Busbar are documented here. The format is based on
   status, latency and failover reason, outcome, status and total latency. No body, header or
   credential is logged. At the default level none of it is computed.
 
+- **Credential sign-in attempt limiter (security).** Hosted LDAP/AD-style sign-in had no attempt
+  limit, so anyone could lock any directory account or guess passwords at line rate. Now:
+  - Hosted credential sign-in refuses the 4th failed attempt for one account within 15 minutes with 429 "Too many sign-in attempts" and Retry-After, without contacting the directory.
+  - Hosted credential sign-in limits each client source (20 failures per 15 minutes per IPv4 address or IPv6 /64, with /48 and /32 aggregates, 30 submissions per minute) and answers 429 with Retry-After.
+  - The admin API answers 429 rate_limited (BUSBAR-8108) with the real Retry-After to a source that presented 50 refused admin credentials within 5 minutes.
+  - Credential sign-in writes audit records auth.login_throttled, auth.login_failed and auth.login_succeeded (first per account and window, within a per-node budget, with a suppressed-count summary).
+  - Hosted credential sign-in answers 503 "Couldn't reach your provider" without contacting the directory when the core store or the signing key is unavailable, when the login plugin could not be started, or while a method's outage breaker is open.
+  - The hosted login cookie is __Host-busbar_login with Path=/, MACed with its issue time, and single-use: a forged, expired or replayed cookie is answered 400 "Sign-in session expired".
+  - Hosted credential sign-in forwards only the fields the login plugin declared, each once, and refuses a form that repeats a declared field with 400 "Sign-in didn't finish".
+  Configure with `auth.login_limits`, `identity-providers.<name>.browser_login.max_failures` /
+  `failure_window`, and `advanced.trusted_proxies` / `advanced.forwarded_header` (set these when an
+  ingress or load balancer fronts busbar). New codes BUSBAR-4032..4042 and BUSBAR-3133. A login
+  plugin may report `reject_hint: account_locked` on a declined credential.
+
 - Cross-dialect Bedrock document requests use a neutral attachment label when the source filename is not a valid native document name.
 - Cross-dialect Anthropic answers omit unrepresentable citations with a named warning and audit record instead of inventing source indices.
 - Cross-dialect Bedrock citations use source web locations without reinterpreting answer offsets as source-document coordinates.

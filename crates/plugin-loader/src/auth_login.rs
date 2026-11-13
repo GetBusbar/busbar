@@ -205,6 +205,10 @@ where
     fn faulted(&self) -> bool {
         self.any_fault()
     }
+
+    fn reject_hint(&self) -> Option<busbar_contract::auth_calls::RejectHint> {
+        self.door().reject_hint()
+    }
 }
 
 struct CompleteHeld {
@@ -371,6 +375,7 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
             request,
             held,
             recalled: false,
+            hint: None,
         },
     ))
 }
@@ -396,6 +401,7 @@ struct Complete {
     request: LoginCallback,
     held: Arc<CompleteHeld>,
     recalled: bool,
+    hint: Option<busbar_contract::auth_calls::RejectHint>,
 }
 
 impl Answering<CompleteLoginIn, IdentifyOut> for Complete {
@@ -419,8 +425,17 @@ impl Answering<CompleteLoginIn, IdentifyOut> for Complete {
             return Some(LoginOutcome::Reject);
         }
         Some(match out {
-            Some(o) => completed(done.outcome, &o, &self.held, &self.shared.plugin),
+            Some(o) => {
+                if done.outcome == Outcome::Ready && o.verdict == LOGIN_BAD_CREDENTIAL {
+                    self.hint = self.held.id.reject_hint(o.head.extensions);
+                }
+                completed(done.outcome, &o, &self.held, &self.shared.plugin)
+            }
             None => LoginOutcome::Reject,
         })
+    }
+
+    fn reject_hint(&self) -> Option<busbar_contract::auth_calls::RejectHint> {
+        self.hint
     }
 }

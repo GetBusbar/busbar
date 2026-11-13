@@ -936,6 +936,21 @@ impl GovState {
             .clone()
     }
 
+    /// The login attempt limiter's account key, derived from the configured signing key; `None`
+    /// without one (no boot-random fallback: per-node keys would split the shared budget).
+    pub(crate) fn login_account_keyer(
+        &self,
+    ) -> Option<crate::auth::login_limits::key::AccountKeyer> {
+        self.signing_material()
+            .map(|m| crate::auth::login_limits::key::AccountKeyer::derive(&m.signer.secret_bytes()))
+    }
+
+    /// The login-state cookie's MAC key, derived from the configured signing key.
+    pub(crate) fn login_state_key(&self) -> Option<crate::auth::login_limits::key::StateKey> {
+        self.signing_material()
+            .map(|m| crate::auth::login_limits::key::StateKey::derive(&m.signer.secret_bytes()))
+    }
+
     pub(super) fn signing_material(&self) -> Option<Arc<SigningMaterial>> {
         self.signing
             .read()

@@ -546,6 +546,9 @@ struct BodyTimeoutService {
     timeout: Duration,
     /// The listener's scheme, stated on every request it serves.
     scheme: busbar_kernel::plane_routes::ListenerScheme,
+    /// The connection's socket peer, stamped on every request it serves (the login attempt
+    /// limiter's and the admin door's client address).
+    peer: Option<SocketAddr>,
 }
 
 impl BodyTimeoutService {
@@ -553,11 +556,13 @@ impl BodyTimeoutService {
         router: Router,
         timeout: Duration,
         scheme: busbar_kernel::plane_routes::ListenerScheme,
+        peer: Option<SocketAddr>,
     ) -> Self {
         Self {
             inner: TowerToHyperService::new(router),
             timeout,
             scheme,
+            peer,
         }
     }
 }
@@ -573,6 +578,10 @@ impl hyper::service::Service<hyper::Request<hyper::body::Incoming>> for BodyTime
         let scheme = self.scheme;
         let mut req = req.map(|body| TimeoutBody::new(body, timeout));
         req.extensions_mut().insert(scheme);
+        if let Some(peer) = self.peer {
+            req.extensions_mut()
+                .insert(busbar_kernel::auth::login_limits::ClientAddr(peer));
+        }
         Box::pin(inner.call(req))
     }
 }
@@ -726,13 +735,7 @@ impl Served {
         self.raw(raw, peer, watcher, drain).await;
     }
 
-    async fn raw(
-        self,
-        raw: Box<dyn RawIo>,
-        peer: impl std::fmt::Display + Send,
-        watcher: Watcher,
-        drain: Drain,
-    ) {
+    async fn raw(self, raw: Box<dyn RawIo>, peer: SocketAddr, watcher: Watcher, drain: Drain) {
         let wrapped = match &self.security {
             None => raw,
             Some(security) => {
@@ -759,7 +762,7 @@ impl Served {
         .await;
     }
 
-    async fn io<I>(self, io: I, peer: impl std::fmt::Display, watcher: Watcher, drain: Drain)
+    async fn io<I>(self, io: I, peer: SocketAddr, watcher: Watcher, drain: Drain)
     where
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
@@ -772,6 +775,7 @@ impl Served {
                 secured,
                 body_read_timeout(),
                 drain.stop,
+                Some(peer),
             )
             .await;
             return;
@@ -780,6 +784,7 @@ impl Served {
             self.router,
             body_read_timeout(),
             listener_scheme(self.security.is_some()),
+            Some(peer),
         );
         let conn = self
             .builder

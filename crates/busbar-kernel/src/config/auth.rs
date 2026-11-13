@@ -397,6 +397,15 @@ pub struct BrowserLoginCfg {
     /// carry its own); shown on the login button when present.
     #[serde(default)]
     pub client_id: Option<String>,
+    /// This provider's per-account failure ceiling for credential sign-in (1..=100), overriding
+    /// `auth.login_limits.per_account.max_failures`. Set it below the directory's lockout
+    /// threshold: `max_failures × ceil(directory reset window / failure_window) < threshold`.
+    #[serde(default)]
+    pub max_failures: Option<u32>,
+    /// This provider's failure window (`15m`, `1h`; 1m..=24h), overriding
+    /// `auth.login_limits.per_account.window`.
+    #[serde(default)]
+    pub failure_window: Option<String>,
 }
 impl BrowserLoginCfg {
     /// Borrow the exact authoring representation under concrete kernel authority.
@@ -408,6 +417,10 @@ impl BrowserLoginCfg {
         struct View<'a, F0: Serialize> {
             client_secret: F0,
             client_id: &'a Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            max_failures: &'a Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            failure_window: &'a Option<String>,
         }
         View {
             client_secret: self
@@ -415,6 +428,8 @@ impl BrowserLoginCfg {
                 .as_ref()
                 .map(|value| value.authoring(seal)),
             client_id: &self.client_id,
+            max_failures: &self.max_failures,
+            failure_window: &self.failure_window,
         }
     }
 }
@@ -486,6 +501,67 @@ pub struct AuthDeployCfg {
     /// `Default` (no policy caps), unchanged behavior.
     #[serde(default)]
     pub policy: AuthPolicyCfg,
+    /// The `auth.login_limits:` block: the credential sign-in attempt limiter (see
+    /// [`LoginLimitsCfg`]). Absent ⇒ the owner-signed defaults; the limiter is always on.
+    #[serde(default)]
+    pub login_limits: LoginLimitsCfg,
+}
+
+/// `auth.login_limits:` as written. Every key is optional; absent keys take the defaults in
+/// `crate::auth::login_limits::policy`.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct LoginLimitsCfg {
+    /// Failures per account (keyed across every credential method). Cannot be disabled.
+    pub per_account: LoginLimitCfg,
+    /// Failures and submissions per client source.
+    pub per_source: SourceLimitCfg,
+    /// The global alarm.
+    pub global: GlobalLimitCfg,
+    /// The admin door: presented-and-refused admin credentials per source.
+    pub admin: LoginLimitCfg,
+}
+
+/// A failure ceiling as written: `max_failures` per `window` (a duration string).
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct LoginLimitCfg {
+    /// The ceiling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failures: Option<u32>,
+    /// The window (`15m`, `1h`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
+/// `auth.login_limits.per_source:` as written.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct SourceLimitCfg {
+    /// `false` disables per-source limits (logged at every boot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Failures per address (IPv4) or /64 (IPv6) per window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failures: Option<u32>,
+    /// The window.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// Submissions per minute per source, whatever their outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_submissions_per_minute: Option<u32>,
+}
+
+/// `auth.login_limits.global:` as written.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields, default)]
+pub struct GlobalLimitCfg {
+    /// `false` disables the global alarm (logged at every boot).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Failures per minute on one node that trip the alarm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_failures_per_minute: Option<u32>,
 }
 
 impl Default for AuthDeployCfg {
@@ -497,6 +573,7 @@ impl Default for AuthDeployCfg {
             role_bindings: RoleBindings::new(),
             key_ttl: None,
             policy: AuthPolicyCfg::default(),
+            login_limits: LoginLimitsCfg::default(),
         }
     }
 }

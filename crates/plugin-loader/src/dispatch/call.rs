@@ -103,6 +103,11 @@ pub(crate) trait Answering<I, O> {
     fn answer(&mut self, done: Done<I, O>, call: &mut Ticketed<I, O>) -> Option<Self::Out>;
 
     fn start(&mut self, _call: &mut Ticketed<I, O>) {}
+
+    /// Why the answer declined, when the door read a reply hint (a login decline only).
+    fn reject_hint(&self) -> Option<busbar_contract::auth_calls::RejectHint> {
+        None
+    }
 }
 
 pub(crate) struct Pending<I, O, A: Answering<I, O>> {
@@ -133,6 +138,10 @@ impl<I: InFrame, O: OutFrame, A: Answering<I, O>> Pending<I, O, A> {
 
     pub(crate) fn any_fault(&self) -> bool {
         self.faulted
+    }
+
+    pub(crate) fn door(&self) -> &A {
+        &self.door
     }
 
     fn step(&mut self, cx: &mut Context<'_>) -> Poll<A::Out> {

@@ -368,7 +368,7 @@ auth:
 | `settings` | map | no | `{}` | The module's own opaque config, pushed verbatim (SecretRef-typed values resolve first). |
 | `max_admin_scope` | string | no | `read-only` | This provider's ADMIN ceiling, regardless of what `role_bindings` grants. The accepted tokens are exactly `read-only` \| `full`; any other value (including `none`) is an unknown scope token and fails `--validate`/boot. OMIT the key to get the MOST RESTRICTIVE default (`read-only`). There is no lower ceiling to write. The built-in `admin-tokens` operator credential is exempt (full by definition). `full` from an external IdP is always an explicit opt-in. To give a provider NO admin authority at all, leave this omitted and grant no `admin_scope` under its `role_bindings`. |
 | `token` | secret reference | no | none | The operator ADMIN credential, only meaningful on a provider whose `module` is the built-in `admin-tokens`; anywhere else it is a boot error. |
-| `browser_login` | map | no | none | `{ client_id?, client_secret? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). |
+| `browser_login` | map | no | none | `{ client_id?, client_secret?, max_failures?, failure_window? }`. PRESENCE puts a button on the hosted login page; a provider without it is headless-only (still usable via `POST /auth/token`). `max_failures` (1..=100) and `failure_window` (1m..=24h) override `auth.login_limits.per_account` for this provider's credential sign-in (see [Login attempt limits](#login-attempt-limits)). |
 
 **Where did `auth.upstream_credentials` go?** To `pools.upstream_credentials` (1.5.3): whose credential reaches the provider is a ROUTING property, not an inbound-auth one. See [`pools`](#pools).
 
@@ -1940,6 +1940,40 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 
 ---
 
+### Login attempt limits
+
+Hosted credential sign-in (`POST /auth/token` from the login form: LDAP, Active Directory and any
+other `Credential` login plugin) is limited before the plugin is called, so busbar never forwards
+more guesses to the directory than it allows. The block is optional; absent, these defaults apply:
+
+```yaml
+auth:
+  login_limits:
+    per_account: { max_failures: 3, window: 15m }   # per account, across every credential method; cannot be disabled
+    per_source:  { enabled: true, max_failures: 20, window: 15m, max_submissions_per_minute: 30 }
+    global:      { enabled: true, max_failures_per_minute: 600 }  # an alarm that tightens per-source limits, never a refusal
+    admin:       { max_failures: 50, window: 5m }   # admin API: refused admin credentials per source
+```
+
+- **Per account.** The account is the plugin's first declared text field, normalised (Unicode
+  NFKC_Casefold, whitespace collapsed, one `DOMAIN\` prefix and one `@suffix` stripped), keyed by an
+  HMAC derived from `auth.signing_key` and counted in the core store, so the budget is fleet-wide.
+  Without a signing key, or while the store is unreachable, credential sign-in answers 503 without
+  calling the plugin (BUSBAR-4039, BUSBAR-4035). **Keep it below your directory's lockout:**
+  `max_failures × ceil(directory reset window / window) < directory threshold`; STIG domains use
+  `max_failures: 2`. Two names the normaliser cannot fold (a sAMAccountName and a UPN with a
+  different prefix) are two budgets; `CORP\alice` and `EMEA\alice` share one (only stricter).
+- **Per source.** An IPv4 address, or an IPv6 /64 with /48 (100) and /32 (500) aggregates. See
+  `advanced.trusted_proxies`. Unknown sources skip this limiter only.
+- **Answer.** 429 "Too many sign-in attempts" with `Retry-After` = the method's window in whole
+  minutes (60..=900), identical whichever limiter tripped and whether the account exists. A wrong
+  password stays 401. A method whose provider answered five outages in a minute is held 30 s (503).
+- **Plugins** may add the reply extension `reject_hint: account_locked` (or `throttled`) to a
+  declined credential; busbar then stops forwarding for that account for its window.
+- Rotating `auth.signing_key` resets every account's count (a rolling rotation briefly doubles it).
+
+Invalid values are refused with BUSBAR-3133.
+
 ### `advanced`
 
 Internal tuning knobs, normally omitted; each field defaults to its historical value.
@@ -1956,7 +1990,17 @@ advanced:
     route_policy: false             # `x-busbar-route-policy` / `x-busbar-route-target`
   block_private_addresses: true     # the destination guard: refuse private/loopback/link-local/CGNAT/ULA/metadata targets
   allow_destinations: []            # always allowed: hosts, `*.domain` wildcards, IPs, CIDRs
+  trusted_proxies: []               # ingresses/load balancers whose forwarded client address is believed (IPs, CIDRs)
+  forwarded_header: x-forwarded-for # the one header read from a trusted proxy: x-forwarded-for | forwarded
 ```
+
+`trusted_proxies` and `forwarded_header` decide **who sent a request** for the login attempt limiter
+and the admin door. A forwarding header is read only when the socket peer is inside
+`trusted_proxies`, only the one `forwarded_header` names, right to left past trusted hops; an
+unreadable hop makes the client unknown, never the proxy. A private or loopback peer that sends
+`X-Forwarded-For` or `Forwarded` while `trusted_proxies` is empty is unknown too, and warns
+BUSBAR-4036: **set `trusted_proxies` when an ingress fronts busbar**, or every user shares the
+ingress's budget. IPv4-mapped IPv6 peers are their IPv4 address. Both are boot-time knobs.
 
 `worker_threads`, `upstream_http1_only`, and `upstream_h2_prior_knowledge` are **boot-time** knobs (read
 once at process/client construction), so unlike `rate_sweep_interval` / `usage_flush_interval_ms` they are

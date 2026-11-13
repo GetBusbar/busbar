@@ -872,7 +872,27 @@ pub(crate) fn resolve_admin_token(
     if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }
+    warn_short_operator_token(token.expose(&crate::seal::lend()).trim().len());
     Ok(Some(token))
+}
+
+/// The operator token's entropy floor, bytes.
+pub(crate) const OPERATOR_TOKEN_MIN_BYTES: usize = 32;
+
+/// Warn (BUSBAR-4042) at every boot and reload when the operator token is shorter than
+/// [`OPERATOR_TOKEN_MIN_BYTES`]; `true` when it warned. Refused from 1.7.
+pub(crate) fn warn_short_operator_token(len: usize) -> bool {
+    if len >= OPERATOR_TOKEN_MIN_BYTES {
+        return false;
+    }
+    crate::diagnostics::diag_warn!(
+        crate::diagnostics::ADMIN_OPERATOR_TOKEN_SHORT,
+        bytes = len,
+        minimum = OPERATOR_TOKEN_MIN_BYTES,
+        "the operator token is shorter than {OPERATOR_TOKEN_MIN_BYTES} bytes; replace it with at \
+         least {OPERATOR_TOKEN_MIN_BYTES} random bytes (refused from 1.7)"
+    );
+    true
 }
 
 pub(crate) fn parse_signing_secret(bytes: &[u8]) -> Result<[u8; 32], String> {

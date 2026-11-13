@@ -1885,6 +1885,17 @@ fn forbidden_response(needed: busbar_contract::authz::Scope) -> Response {
         .expect("static forbidden response")
 }
 
+/// The admin door's 429: `rate_limited` (BUSBAR-8108) with the REAL time until the source's oldest
+/// refused credential leaves its window.
+fn rate_limited_after(retry_after_secs: u64) -> Response {
+    let mut response = rate_limited_response();
+    response.headers_mut().insert(
+        axum::http::header::RETRY_AFTER,
+        HeaderValue::from(retry_after_secs.max(1)),
+    );
+    response
+}
+
 fn rate_limited_response() -> Response {
     let e = crate::admin::gate::ApiError::RateLimited;
     let body = serde_json::json!({
@@ -2341,6 +2352,31 @@ pub(crate) async fn auth_middleware(
         .insert(CallerToken(client_token.clone()));
 
     if is_admin {
+        // THE ADMIN DOOR'S FAILURE BUDGET: a source that has presented too many refused admin
+        // credentials is answered 429 before any credential is judged.
+        let admin_source = app.login_guard.source_of(
+            req.extensions()
+                .get::<login_limits::ClientAddr>()
+                .map(|a| a.0.ip()),
+            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
+        );
+        let presented = carried_credential(
+            &header_names(app.admin_modules.operator.carriers()),
+            inbound_headers.as_ref().unwrap_or_else(|| req.headers()),
+        )
+        .is_some();
+        if let Some(retry_after) = app
+            .login_guard
+            .admin_throttled(admin_source, busbar_kernel::store::now())
+        {
+            if let Some(admission) = &inbound {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Admit,
+                    busbar_contract::caps::ReasonCode::RateLimited,
+                );
+            }
+            return Err(rate_limited_after(retry_after));
+        }
         let target = req.uri().path_and_query().map_or("/", |t| t.as_str());
         let mut strips = Vec::new();
         // The root deliberately defers core Admin routes to this verifier, independent
@@ -2391,6 +2427,10 @@ pub(crate) async fn auth_middleware(
         strike_named(&mut req, &mut consumed, &strips);
         req.extensions_mut().insert(consumed);
 
+        if presented && matches!(door, AdminDoor::Denied) {
+            app.login_guard
+                .admin_refused(admin_source, busbar_kernel::store::now());
+        }
         let principal = match admin_principal_or_response(door) {
             Ok(principal) => principal,
             Err(response) => {
@@ -2785,6 +2825,8 @@ pub mod self_keys;
 pub mod exchange;
 
 pub mod login;
+
+pub mod login_limits;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]
