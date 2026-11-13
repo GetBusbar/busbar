@@ -119,7 +119,7 @@ token ledger × the `rate_card` at read time; nothing dollar-shaped is stored.
 ### 1.5.2: the admin token no longer gates the data plane
 
 Data-plane admission is now decided **solely** by the shape of `auth.chain` (see
-[configuration.md](configuration.md#authauth) → "Three orthogonal axes"). The operator admin token
+[configuration.md](configuration.md#auth) → "Three orthogonal axes"). The operator admin token
 (`auth.admin_auth`) gates only `/api/v1/admin/*`. Two behavior changes fall out:
 
 - **`chain: []` + an admin token** now means **open (anonymous) relay + protected admin API**, the

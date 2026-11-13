@@ -167,7 +167,7 @@ walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
 > name. What it must be depends on `role_claim` (app role Value string vs. security group
 > Object ID GUID), and the redirect URI, client secret, and role/group setup have their own
 > gotchas too. This trips people up constantly; see
-> [Walkthrough: configuring OIDC with Microsoft Entra ID](configuration.md#auth-plugins) for the
+> [the Entra ID app-roles vs. security-groups note](configuration.md#authrole_bindings-provider-scoped-role-policy) and the [OIDC auth plugin](/plugins/auth/oidc/) Entra walkthrough for the
 > full click-by-click reference before you bind a role.
 
 ## Key facts

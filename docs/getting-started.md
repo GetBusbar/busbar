@@ -102,7 +102,7 @@ chmod +x busbar
 ./busbar --version
 ```
 
-**Or use Docker**: a minimal distroless image (the same binary as the Linux download, on a glibc base with no shell, plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size), cosign-signed with build provenance:
+**Or use Docker**: a minimal distroless image (the same binary as the Linux download, on a glibc base with no shell, plus the provider catalog, amd64 + arm64, see the image-size badge on the [repo](https://github.com/GetBusbar/busbar) for the current compressed size). Check its signed index digest before deploying it, as described in [Verifying a busbar release](verify.md#a-container-image):
 
 ```bash
 docker run -d -p 8080:8080 \
@@ -111,7 +111,7 @@ docker run -d -p 8080:8080 \
   getbusbar/busbar
 ```
 
-The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). Pin an exact version (`getbusbar/busbar:1.5.3`) or ride `latest`. **On 64-bit ARM the same two-build choice applies as for the binary** (see the table above): the multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5 — and for Raspberry Pi 4-class boards there is a first-class compat image under the `armv8.0` tag: `getbusbar/busbar:armv8.0` (or pin `getbusbar/busbar:X.Y.Z-armv8.0`). **If you want keys/usage/ledgers/audit to survive a restart, "a writable volume" is not the whole recipe** — see [Durable store: giving persistence a writable volume](#durable-store-giving-persistence-a-writable-volume) below for the complete four-key config plus the plugin tarball.
+The provider catalog ships inside the image at `/etc/busbar/providers.yaml`, so you only mount `config.yaml` (written in [Step 2](#step-2-write-a-minimal-config)). In production, deploy the release's signed index digest (`getbusbar/busbar@sha256:<index digest>`) rather than a tag. **On 64-bit ARM the image covers the default build only.** The multi-arch image's `linux/arm64` entry is the default (ARMv8.1+) build, right for every cloud ARM host and the Raspberry Pi 5. There is no ARMv8.0 container image: on a Raspberry Pi 4-class board, run the native `busbar-aarch64-unknown-linux-gnu-armv8.0.tar.gz` archive from the table above instead. **If you want keys/usage/ledgers/audit to survive a restart, "a writable volume" is not the whole recipe** — see [Durable store: giving persistence a writable volume](#durable-store-giving-persistence-a-writable-volume) below for the complete four-key config plus the plugin tarball.
 
 The `:ro` mount keeps the source configuration read-only. In 1.6, admin-API config changes persist
 through the configured `store:`; the config directory does not need to be writable. Use a durable

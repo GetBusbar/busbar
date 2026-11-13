@@ -65,7 +65,7 @@ The environment variables Busbar reads by design (excluding test-only `BUSBAR_T_
 | Variable | Where read | Purpose / default |
 |---|---|---|
 | `BUSBAR_CONFIG` | boot (config path) | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
-| `RUST_LOG` | logging init | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
+| `RUST_LOG` | logging init | Console log filter; logs always go to stderr. A bare level (`error`, `warn`, `info`, `debug`, `trace`, or `off`) or comma-separated per-target directives over a default level, e.g. `busbar=debug,hyper=warn` or `info,busbar::request=debug` (the per-request `request finished` summary alone). Default: `info`. A value that is not a filter stops boot with `BUSBAR-9007`. See [Observability](observability.md). |
 | *(each provider's `api_key: { env: VAR }` reference)* | secret resolution at boot | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider; unset is a fatal boot error (use `api_key: none` for a keyless upstream). |
 | *(any `${VAR}` in `config.yaml`)* | config load | Expanded before YAML is parsed. Unset → fatal boot error. |
 
@@ -591,7 +591,8 @@ groups:
 - **`tokens`** is best-effort post-paid: tokens land after each response, so the cap blocks the
   NEXT request once the ledgered total crosses it. Rejection: 429 + `Retry-After`.
 - **`budget`** derives at admission from the bucket's exact class ledger and dated rate-card history,
-  including fee units, in abstract cost units. Rejection: the vendor's native
+  including fee units. The `budget` amount is in MINOR units: hundredths of the abstract cost unit
+  the card is priced in (cents when you price in dollars), so `budget: 5000` is 50 cost units. Rejection: the vendor's native
   quota status (429 for most protocols; Bedrock's quota shape is 400-class), naming the bucket.
 - **`concurrent`** is an in-flight gauge: incremented at admission, released when the response
   stream completes. Rejection: 429, no `Retry-After`. Takes no `pool:` (the gauge is per group).
@@ -676,7 +677,8 @@ every spend figure is DERIVED at read time from exact class counts and the appli
 including fee units. A new card prices subsequent arrivals without repricing earlier usage.
 An attributed backdated amendment corrects only its declared window; `as_of` selects a reproducible
 history point. No derived money or rewritten booked row is stored. Card history and activation
-confirmation belong to the configured Store; see [Store-owned rate-card history](store-card-history.md).
+confirmation belong to the configured Store: a new card activates only after the Store confirms it
+was saved, and boot refuses if it cannot confirm its card.
 
 ```yaml
 rate_card:
@@ -698,7 +700,7 @@ per_request_fee: 0
 |---|---|---|---|
 | `rate_card` | map | absent (usage-based pricing off) | Rates keyed by configured model and plugin-declared unit. Startup and `--validate` warn about missing model entries and open-unit rates on each lane. Quantities are still recorded; a missing rate on a present card is unpriced, not free. Configure an explicit `0` for a free unit. Existing `*_utok` fields retain their zero defaults when omitted. Invalid rates, unknown model names and undeclared unit names remain errors. Rates use MICRO-units (1e-6 abstract cost unit); `*_utok` values must be exactly representable in whole nano-units, with at most three decimal places. |
 | `units` | map, per entry | `{}` | Rates for OPEN (non-reserved) billable classes, alongside a model's four `*_utok` tiers: `{ <class>: <rate> }`, same MICRO-units-per-unit scale. The wire form is a non-negative integer, or an exact decimal STRING (`"0.5"`); a bare YAML/JSON float is refused — it has already lost precision through a binary double by the time serde sees it. A rate finer than 0.001 micro-units per unit, negative, or past ~1.8e16 is refused at parse ("finer than one nano-unit, the finest rate the card holds; round it to three decimal places"). A reserved class name (`input`, `output`, `cache_read`, `cache_write`) under `units:` is refused — it already has its own `*_utok` field. An unpriced class under a card that IS configured for the model REFUSES at the point it is hit, rather than silently billing `0` (see [Virtual keys and enforcement](#virtual-keys-and-enforcement)). |
-| `per_request_fee` | integer | `0` | Flat charge per request in abstract cost units, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
+| `per_request_fee` | integer | `0` | Flat charge per request in MINOR units (hundredths of the abstract cost unit, the same unit as a `budget` limit), charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 
 Plugins report measurements, not prices. The host records each report under the current work's
 identity and computes cost from the ledger and applicable rate card. Unit names are plugin data:
