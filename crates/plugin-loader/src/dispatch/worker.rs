@@ -388,8 +388,9 @@ impl<T: 'static> ReplySlot<T> {
     /// and the caller returns before its lease's `RELEASE` crossed.
     ///
     /// So the slot is SETTLED here, under the lock — no deadline, drop or fault can settle it
-    /// again, and acceptance is decided now — but its value is published by a [`Publish`] queued
-    /// behind every retirement already queued on this worker thread, and so it lands after them.
+    /// again, and acceptance is decided now — but its value is published by a [`Publish`] that
+    /// the worker drops after every retirement it lets go in the same pass ([`PUBLISH`]),
+    /// including the op's own instance and framing holds released after this call.
     /// Off a worker (no queue armed) it publishes at once, exactly as `put`.
     fn put_after_retirement(self: &Arc<Self>, t: T) -> bool {
         let mut value = Some(t);
@@ -406,7 +407,7 @@ impl<T: 'static> ReplySlot<T> {
             drop(value);
             return false;
         }
-        drop_after_lock(Box::new(Publish {
+        publish_after_lock(Box::new(Publish {
             slot: Arc::clone(self),
             value: value.take(),
         }));
@@ -747,6 +748,25 @@ std::thread_local! {
     /// are kept here the same way: their close may cross into a transport door.
     static LET_GO: std::cell::RefCell<Option<Vec<Late>>> =
         const { std::cell::RefCell::new(None) };
+
+    /// THE ANSWERS A WORKER HANDS BACK ONCE ITS RETIREMENTS ARE DONE ([`publish_after_lock`]):
+    /// drained with [`LET_GO`], but always after every item on it, so an answer reaches its caller
+    /// only once everything its crossing held — admission, saved short lease, instance and
+    /// framing holds — has been let go (decision 43).
+    static PUBLISH: std::cell::RefCell<Vec<Late>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue `value` (a [`Publish`]) to be dropped after this worker's retirements; off a worker,
+/// drop it now.
+fn publish_after_lock(value: Late) {
+    let armed = LET_GO
+        .try_with(|list| list.borrow().is_some())
+        .unwrap_or(false);
+    let mut value = Some(value);
+    if armed {
+        let _ = PUBLISH.try_with(|list| list.borrow_mut().extend(value.take()));
+    }
+    drop(value);
 }
 
 type Late = Box<dyn std::any::Any>;
@@ -807,12 +827,15 @@ fn forget_conns(id: InstanceId, ticket: Ticket) -> usize {
 }
 
 fn let_go() -> Vec<Late> {
-    LET_GO.with(|l| {
+    let mut late = LET_GO.with(|l| {
         l.borrow_mut()
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
-    })
+    });
+    // A `Vec` drops front to back: the answers land after everything retired before them.
+    late.extend(PUBLISH.with(|p| std::mem::take(&mut *p.borrow_mut())));
+    late
 }
 
 struct LetGo;
@@ -828,6 +851,8 @@ impl Drop for LetGo {
     fn drop(&mut self) {
         let left = LET_GO.with(|l| l.borrow_mut().take());
         drop(left);
+        let answers = PUBLISH.with(|p| std::mem::take(&mut *p.borrow_mut()));
+        drop(answers);
     }
 }
 
