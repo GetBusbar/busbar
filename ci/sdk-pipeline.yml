@@ -11,7 +11,7 @@ stages: [verify]
 
 sdk-generation-and-tests:
   stage: verify
-  tags: [busbar-native-admission]
+  tags: [size-m]
   allow_failure: false
   interruptible: true
   retry: 0
