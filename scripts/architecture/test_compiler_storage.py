@@ -177,11 +177,19 @@ class CompilerWitnessStorage(unittest.TestCase):
                         self.assertEqual(argv[argv.index('--jobs') + 1], '4')
                     self.assertEqual(len(calls), 2)
                     self.assertIn('retained stderr', (root / 'scratch/compiler-witnesses/witness_01.log').read_text())
-                    rows = [json.loads(call.args[0].split(': ', 1)[1]) for call in progress.call_args_list]
+                    lines = [call.args[0] for call in progress.call_args_list]
+                    rows = [json.loads(line.split(': ', 1)[1]) for line in lines if line.startswith('architecture-progress: ')]
+                    # A failed case's own log reaches the job trace; a passing case prints none.
+                    failed_logs = [line for line in lines if line.startswith('compiler-witness-log: ')]
+                    passed_case = outcome == (1, 'E0624', 'witness_01')
+                    self.assertEqual(failed_logs, [] if passed_case else
+                                     ['compiler-witness-log: witness_01: retained stderr'] + (
+                                         ['compiler-witness-log: witness_01: retained diagnostic'] if outcome[1] and outcome[2] == 'witness_01' else []))
                     self.assertEqual([row['event'] for row in rows], ['start', 'finish'] * 2)
                     self.assertEqual([row['case'] for row in rows], ['witness_00'] * 2 + ['witness_01'] * 2)
                     self.assertTrue(all(row['build_jobs'] == 4 for row in rows))
-                    self.assertTrue(all(call.kwargs['flush'] for call in progress.call_args_list))
+                    self.assertTrue(all(call.kwargs['flush'] for call in progress.call_args_list
+                                        if call.args[0].startswith('architecture-progress: ')))
                     self.assertEqual(rows[-1]['passed'], outcome == (1, 'E0624', 'witness_01'))
                     self.assertEqual(len(rows[-1]['log_sha256']), 64)
             return receipt

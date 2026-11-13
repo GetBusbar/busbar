@@ -1024,6 +1024,10 @@ def check_compiler_witnesses(policy, candidate, trusted, scratch, *, parallel=Fa
                               elapsed_seconds=round(time.monotonic() - started, 3),
                               log_sha256=hashlib.sha256(log.encode()).hexdigest(), **details)
         if not passed:
+            # The case log lives in the disposed harness; put its tail in the job trace.
+            for line in [line for line in log.splitlines() if line.strip()][-SEED_LOG_TAIL_LINES:]:
+                print('compiler-witness-log: ' + name + ': ' + line[:4000], file=sys.stderr)
+            sys.stderr.flush()
             raise Violation(f'{name}: expected {expected or "successful positive control"}, received {sorted(codes)}; see {harness / (name + ".log")}')
     if pool:
         pool.map(compile_case, cases)
