@@ -146,10 +146,13 @@ def ci_environment(env):
     require(re.fullmatch(r'[0-9a-f]{40}', result.get('CI_COMMIT_SHA', '')), 'invalid source revision')
     require(result.get('CI_JOB_TOKEN'), 'controller job token is missing')
     host = result.get('BUSBAR_ADMISSION_CORE_REVISION')
-    require(host is None or re.fullmatch(r'[0-9a-f]{40}', host), 'protected host revision must be immutable')
+    require(host is None or re.fullmatch(r'[0-9a-f]{40}', host),
+            'BUSBAR_ADMISSION_CORE_REVISION must name an immutable host revision (a 40-hex core commit)')
     require(result.get('CI_COMMIT_REF_PROTECTED') in (None, 'true', 'false'), 'invalid ref protection')
     require(result['CI_PROJECT_PATH'] == 'GetBusbar/busbar' or host is not None,
-            'plugin qualification requires its protected immutable host revision')
+            'plugin qualification requires an immutable host revision: the project CI/CD variable '
+            'BUSBAR_ADMISSION_CORE_REVISION (unprotected, so merge request pipelines receive it) '
+            'must name the pinned 40-hex core commit')
     return result
 
 
