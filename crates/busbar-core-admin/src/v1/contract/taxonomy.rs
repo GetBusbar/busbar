@@ -95,6 +95,8 @@ pub enum Cond {
     IdempotencyInFlight,
     RecoveryConflict,
     AtKeyCap,
+    /// A PATCH would re-enable a revoked key. Revoked is terminal (BUSBAR-4044).
+    KeyRevoked,
     ParentWithoutGroup,
     KeyExpiryFields,
     RebindTargetMissing,
@@ -151,6 +153,7 @@ impl Cond {
             }
             Cond::IdempotencyInFlight => "an `Idempotency-Key` request is already in flight",
             Cond::AtKeyCap => "the group is at the `limits.max_keys_per_principal` cap",
+            Cond::KeyRevoked => "the key is revoked, and a revoked key is never re-enabled",
             Cond::ParentWithoutGroup => "`parent` was given without `group`",
             Cond::KeyExpiryFields => "bad `expires_in` / `expires_at`",
             Cond::RebindTargetMissing => "the rebind target group does not exist",
@@ -463,6 +466,7 @@ pub fn declared_errors(method: MethodTag, rel: &str) -> &'static [DocErr] {
             NotFound / UnknownResource,
             Conflict / GovernanceOff,
             Conflict / AtKeyCap,
+            Conflict / KeyRevoked,
             VersionConflict / StaleIfMatch,
         ],
         (Delete, "/keys/{id}") => de![

@@ -157,6 +157,9 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **Admin key actions stick; revoked is permanent.** 1.6.0 Breaking: an administrator's action on a self-serve key now sticks across the user's next sign-in or Refresh. A disabled key is no longer re-enabled by a login; a revoked key is permanent, and no login, Refresh or admin `PATCH {enabled:true}` brings it back; an admin rotation is not undone by a Refresh; an admin regroup is kept; and a second identity provider asserting the same subject is not handed the first provider's key. Each refusal answers 403 with `BUSBAR-4043` naming the reason (the hosted login shows a "Your key is on hold" page) and is recorded in the admin audit log; an admin `PATCH {enabled:true}` on a revoked key answers 409 with `BUSBAR-4044`. `DELETE` is still the reset: the next sign-in mints a new key and every old token stays dead. A 1.5.5 node that already
+  re-enabled a disabled self-serve key at a login cannot be detected after the upgrade: review
+  the self-serve keys you had disabled.
 - **Store-only plugin downgrade state and immutable bootstrap archives.** 1.6.0 Breaking: a dropped
   Store, secret plugin, transport or plane grammar probe needed before Store recovery must match the complete archive's
   SHA-256 in the operator's base `plugins.fetch` entry before native loading. Linked bootstrap

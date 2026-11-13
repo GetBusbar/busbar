@@ -793,6 +793,28 @@ A credential under a scheme configured with a credential-family table contains b
 
 **What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Requests omit the credential until it is fixed and may be refused by the upstream.
 
+<a id="self-mint-held"></a>
+### BUSBAR-4043 — Self-serve sign-in or refresh refused: the subject's key is on hold
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `self-mint-held`
+
+A self-serve sign-in (POST /auth/token or the hosted login) or a Refresh was refused because the subject's key is on hold: an administrator disabled it, an administrator revoked it, it was issued through a different identity provider, or the subject itself is held by a principal transition. Nothing is written: the key is not re-enabled, no sibling key is minted, and its old tokens stay dead. The caller gets a 403 that names the reason, and the admin audit log records `self_serve.mint` as `rejected` on `key:<id>#<reason>` (or `subject:<subject>#on_hold`). This is a client-side state, so it is emitted at debug.
+
+**What to do:** Nothing, if the hold is intended. To let the user back in: for a disabled key, PATCH /api/v1/admin/keys/{id} with `enabled: true` (the same key comes back and its earlier tokens work again). For a revoked key, or a key issued through another provider, DELETE /api/v1/admin/keys/{id}: the next sign-in issues a new key with a new id, and every old token stays dead. A revoked key is never re-enabled.
+
+<a id="revoked-key-reenable-refused"></a>
+### BUSBAR-4044 — Admin request to re-enable a revoked key refused (revoked is terminal)
+
+- **Severity:** benign_recurring
+- **Since:** 1.6.0
+- **Slug:** `revoked-key-reenable-refused`
+
+A PATCH /api/v1/admin/keys/{id} asked for `enabled: true` on a revoked key. Revoked is terminal: no admin request, sign-in or refresh ever re-enables a revoked key. The request is answered 409 `conflict` with this code, nothing is written, and the admin audit log records `key.patch` as `rejected`. This is a client-side request, so it is emitted at debug.
+
+**What to do:** Leave the key revoked. To give a self-serve user a working key again, DELETE the revoked key: their next sign-in issues a new key with a new id. For an admin-minted key, mint a new one.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>
