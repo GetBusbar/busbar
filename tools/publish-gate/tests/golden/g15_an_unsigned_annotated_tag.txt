@@ -1,0 +1,6 @@
+exit 1
+REFUSED G-15 v1.6.0: expected signed by K2 (a Good "git" signature for busbar-release); found error: no signature found. Sign the tag with the release key: git -c gpg.format=ssh -c user.signingkey=<K2 sk handle> tag -s v1.6.0.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 57 checks over 13 rules; 2 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

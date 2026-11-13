@@ -1,0 +1,3 @@
+exit 3
+CANNOT RUN: G-S security scans failed or could not complete; no signing/publication allowed
+publish-gate: a rule could not run; this is never a pass.

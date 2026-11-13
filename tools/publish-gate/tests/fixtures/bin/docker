@@ -1,0 +1,37 @@
+#!/bin/sh
+# Test double for the pinned scanner containers. Behaviour comes from files beside the world's
+# copy of this script (the scanner clears the environment): docker.mode and docker.updated_at.
+here=$(cd "$(dirname "$0")" && pwd)
+mode=$(cat "$here/docker.mode" 2>/dev/null)
+[ "$1" = "--host" ] && shift 2
+case "$1" in
+  image)
+    image=$5
+    digest=${image#*@}
+    [ "$mode" = "wrong-digest" ] && digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    printf '["%s@%s"]\n' "${image%%@*}" "$digest"
+    exit 0 ;;
+  pull|rm) exit 0 ;;
+  run) ;;
+  *) exit 2 ;;
+esac
+cache=""
+db=0
+for a in "$@"; do
+  case "$a" in
+    type=bind,src=*,dst=/cache*) cache=${a#type=bind,src=}; cache=${cache%%,dst=*} ;;
+    --download-db-only) db=1 ;;
+  esac
+done
+echo "fake scanner" >&2
+if [ "$db" = 1 ]; then
+  mkdir -p "$cache/db"
+  printf '{"Version":2,"UpdatedAt":"%s"}' "$(cat "$here/docker.updated_at")" > "$cache/db/metadata.json"
+  printf 'fixture vulnerability database' > "$cache/db/trivy.db"
+  exit 0
+fi
+if [ "$mode" = "finding" ]; then
+  printf '{"SchemaVersion":2,"Results":[{"Target":"x","Vulnerabilities":[{"VulnerabilityID":"CVE-2026-0001","Severity":"HIGH"}]}]}'
+  exit 1
+fi
+printf '{"SchemaVersion":2,"Results":[{"Target":"busbar","Vulnerabilities":null}]}'

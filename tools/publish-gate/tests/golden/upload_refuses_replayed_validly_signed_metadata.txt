@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-4 published SHA256SUMS: expected the exact signed metadata for this candidate; found different bytes. Restore this candidate's signed metadata.
+
+publish-gate: 58 checks over 14 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

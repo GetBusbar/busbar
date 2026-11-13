@@ -1,0 +1,4 @@
+exit 0
+
+publish-gate: 58 checks over 14 rules; 0 refusal(s).
+publish-gate: VERIFIED.

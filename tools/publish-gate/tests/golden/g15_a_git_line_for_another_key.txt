@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-15 K2 allowed_signers: expected each git line to name a release key (busbar-release line); found ssh-ed25519 <KEY>…. Only K2 signs the version tag.
+REFUSED G-0 G-15: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 56 checks over 12 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

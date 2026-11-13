@@ -1,0 +1,6 @@
+exit 1
+REFUSED G-6 busbar-audit-verify-x86_64-pc-windows-msvc.zip: expected the standalone verifier with instructions; found expected exactly the verifier and audit-verify.md. Rebuild the verifier package.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 56 checks over 13 rules; 2 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

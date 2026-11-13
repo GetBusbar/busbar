@@ -1,0 +1,7 @@
+exit 1
+REFUSED G-10 oci/busbar.oci.tar: expected a readable OCI layout of the image; found index.json holds 2 descriptors, expected the one image index. Rebuild the image archive.
+REFUSED G-0 G-10: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
+
+publish-gate: 55 checks over 12 rules; 3 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

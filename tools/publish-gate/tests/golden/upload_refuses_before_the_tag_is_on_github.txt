@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-15 GetBusbar/busbar v1.6.0: expected the signed tag object <HEX>; found None. Push your signed tag to GitHub (GetBusbar/busbar) first: git push <github remote> v1.6.0.
+
+publish-gate: 58 checks over 14 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.

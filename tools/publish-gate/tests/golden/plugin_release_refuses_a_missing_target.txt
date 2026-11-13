@@ -1,0 +1,5 @@
+exit 1
+REFUSED G-3 busbar-store-fake-1.6.0-x86_64-apple-darwin.tar.gz: expected present in --plugins; found missing. Every plugin target is owed; fetch every candidate-plugins slice.
+
+publish-gate: 1 checks over 1 rules; 1 refusal(s).
+publish-gate: REFUSED. Nothing may be signed or published.
