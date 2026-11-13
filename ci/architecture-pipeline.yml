@@ -35,8 +35,9 @@ stages: [build, qualify, website, release]
 .controller:
   # Jobs pick their GCP worker class by tag (size-s, size-m, size-l); the runners
   # autoscale 0-50. Plugin jobs default to size-m; core build and test jobs use size-l.
-  variables:
-    BUSBAR_RUNNER_SIZE: size-m
+  # GitLab expands tags from job variables (this block, a job's own `variables:`) and
+  # project variables, never from `rules:variables`; core QA's native-qualification
+  # gets size-l from core's project variable BUSBAR_RUNNER_SIZE=size-l.
   tags: ["$BUSBAR_RUNNER_SIZE"]
   interruptible: true
   allow_failure: false
@@ -45,7 +46,9 @@ stages: [build, qualify, website, release]
   # Earlier evidence is read through the API by job id, never from disk: downloading
   # earlier-stage artifacts would put them in the candidate checkout and dirty it.
   dependencies: []
+  # One variables block: a second `variables:` key silently replaces the first.
   variables:
+    BUSBAR_RUNNER_SIZE: size-m
     GIT_DEPTH: "0"
     GIT_STRATEGY: clone
     RUSTUP_TOOLCHAIN: "1.98.0"
@@ -196,11 +199,9 @@ native-qualification:
   extends: .controller
   stage: qualify
   rules:
-    # Core QA builds and tests the whole product: the large worker class.
-    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "qa" && $CI_COMMIT_REF_PROTECTED == "true"'
-      variables: {BUSBAR_RUNNER_SIZE: size-l}
-    - if: '$CI_PROJECT_PATH == "GetBusbar/busbar" && $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "dev" && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SCHEDULE_DESCRIPTION == "qa-nightly"'
-      variables: {BUSBAR_RUNNER_SIZE: size-l}
+    # Core QA builds and tests the whole product on the large worker class, selected by
+    # core's project variable (rules:variables never reach tags).
+    - !reference [.rules, core-qa]
     - !reference [.rules, plugin-dev]
     - when: never
 

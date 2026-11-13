@@ -64,5 +64,40 @@ class ControllerArtifacts(unittest.TestCase):
         self.assertEqual(yaml.count('dependencies:'), 1, 'no job may re-enable artifact downloads')
 
 
+class ControllerRunnerSize(unittest.TestCase):
+    """Every controller job must name a worker class GitLab can route.
+
+    A second `variables:` key in .controller replaced the first, so jobs without their own
+    size kept the literal tag `$BUSBAR_RUNNER_SIZE` and no runner picked them (pipelines
+    3826-3876 on 2fc9887ddd). GitLab also never expands tags from `rules:variables`.
+    """
+
+    def yaml(self):
+        return (Path(__file__).parents[2] / 'ci/architecture-pipeline.yml').read_text()
+
+    def blocks(self):
+        # Top-level mappings: a column-0 key, then its indented body up to the next one.
+        return re.findall(r'^([.\w-]+):\n((?:(?:  .*|#.*)?\n)*)', self.yaml(), re.M)
+
+    def test_no_block_repeats_a_key(self):
+        for name, body in self.blocks():
+            keys = re.findall(r'^  ([\w-]+):', body, re.M)
+            with self.subTest(block=name):
+                self.assertEqual(sorted(set(keys)), sorted(keys))
+
+    def test_controller_defaults_the_size_in_its_one_variables_block(self):
+        body = dict(self.blocks())['.controller']
+        self.assertIn('\n  tags: ["$BUSBAR_RUNNER_SIZE"]\n', '\n' + body)
+        variables = body.split('\n  variables:\n', 1)[1].split('\n  script:', 1)[0]
+        self.assertIn('\n    BUSBAR_RUNNER_SIZE: size-m\n', '\n' + variables + '\n')
+
+    def test_size_is_never_set_through_rules_variables(self):
+        # Rule entries sit at four spaces, so their variables sit at six.
+        for name, body in self.blocks():
+            for rule_vars in re.findall(r'^      variables:(.*\n(?:        .*\n)*)', body, re.M):
+                with self.subTest(block=name):
+                    self.assertNotIn('BUSBAR_RUNNER_SIZE', rule_vars)
+
+
 if __name__ == '__main__':
     unittest.main()
