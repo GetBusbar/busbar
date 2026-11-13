@@ -140,7 +140,7 @@ reason = "Existing core-approved tungstenite patch, matching core Cargo.lock and
 # is RED on a declared line it refused.
 [parity-lines]
 allow = [
-    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar holds 0.10" },
+    { crate = "sha2", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "postgres-protocol >= 0.6.11 (SCRAM-SHA-256; 0.6.10 carries RUSTSEC-2026-0179/0180) is on the sha2 0.11 line; busbar's own rows hold 0.10 (its lock also carries 0.11, only through ed25519-dalek 3)" },
     { crate = "digest", line = "0.11", repos = ["busbar-store-postgres"], use = "shipped", reason = "sha2 0.11's digest line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "block-buffer", line = "0.12", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's block-buffer line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
