@@ -339,8 +339,8 @@ BINARY, DEVELOPMENT = b'certified-binary', b'{"development": true}'
 
 
 class TieredCoreSelection(SelectionFixture, unittest.TestCase):
-    """Core's tiered policy: dev evidence is core-build, core-clippy and conformance of the bytes."""
-    CORE_JOBS = ('core-build', 'core-clippy', 'core-conformance')
+    """Core's tiered policy: dev evidence is core-build, core-clippy, core-test and conformance of the bytes."""
+    CORE_JOBS = ('core-build', 'core-clippy', 'core-conformance', 'core-test')
     TIER = 'tiered'
 
     def setUp(self):
@@ -374,6 +374,18 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
                 receipt.pop(key, None)
             files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
                      for name in CORE_CLIPPY_STEPS for stream in ('stdout', 'stderr')}
+        elif request['job'] == 'core-test':
+            from admission import CORE_TEST_SCHEMA, CORE_TEST_STEPS
+            report = b'<testsuites><testsuite><testcase name="t"/></testsuite></testsuites>'
+            receipt.update(schema=CORE_TEST_SCHEMA,
+                           steps=[dict(receipt['steps'][0], name=name, **(
+                               {'junit_sha256': digest(report)} if name == 'root-runtime' else {}))
+                                  for name in CORE_TEST_STEPS])
+            for key in ('required_conformance_suites', 'binary_sha256', 'certified_binary'):
+                receipt.pop(key, None)
+            files = {name + '.' + stream: (b'checked' if stream == 'stdout' else b'')
+                     for name in CORE_TEST_STEPS for stream in ('stdout', 'stderr')}
+            files['root-runtime.xml'] = report
         else:
             receipt.update(binary_sha256=record['sha256'], certified_binary=dict(
                 sha256=record['sha256'], bytes=len(BINARY), core_build_job_id=self.build_jobs[pipeline],
@@ -387,6 +399,9 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
         if original['job'] == 'core-clippy':
             from reuse_evidence import validate_core_clippy
             return validate_core_clippy(original, receipt, artifact, context, policy)
+        if original['job'] == 'core-test':
+            from reuse_evidence import validate_core_test
+            return validate_core_test(original, receipt, artifact, context, policy)
         return super().validate(original, receipt, artifact, context, policy)
 
     def core_row(self, **inputs):
@@ -394,19 +409,19 @@ class TieredCoreSelection(SelectionFixture, unittest.TestCase):
 
     def test_identical_inputs_retain_both_dev_tier_jobs_and_launch_nothing(self):
         row = self.plan(self.core_row(source=HOST, host=HOST, policy=HOST))[0]
-        self.assertEqual(set(row['required']), {'build', 'clippy', 'conformance'})
+        self.assertEqual(set(row['required']), {'build', 'clippy', 'test', 'conformance'})
         self.assertEqual(row['state'], 'retained')
         self.assertEqual(row['fresh_kinds'], [])
-        for kind in ('build', 'clippy', 'conformance'):
+        for kind in ('build', 'clippy', 'test', 'conformance'):
             self.assertEqual(row['qualifications'][kind]['scope'], 'execution-equivalent')
             self.assertEqual(row['qualifications'][kind]['origin']['pipeline'], 100)
 
     def test_changed_source_rebuilds_the_certified_binary(self):
-        # Only a regression test changed: conformance may be retained, the build
-        # and the lints (which cover tests too) never are.
+        # Only a regression test changed: conformance may be retained, the build,
+        # the lints (which cover tests too) and the workspace tests never are.
         row = self.plan(self.core_row())[0]
         self.assertEqual(row['state'], 'selected')
-        self.assertEqual(row['fresh_kinds'], ['build', 'clippy'])
+        self.assertEqual(row['fresh_kinds'], ['build', 'clippy', 'test'])
         self.assertEqual(row['qualifications']['conformance']['scope'], 'retained-check')
 
     def test_forged_binary_or_conformance_of_other_bytes_is_never_retained(self):

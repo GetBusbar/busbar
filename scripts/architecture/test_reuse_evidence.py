@@ -15,6 +15,7 @@ import zipfile
 from admission import CORE_BUILD_STEPS
 from reuse_evidence import (Archive, Resolver, dev_required_jobs, independent_qualification_job,
                             OwnerRuntime, ReleaseValidator, pipeline_tier, validate_core_build,
+                            validate_core_test,
                             verify_release_dispatch, expected_loader)
 from input_identity import (encoded, TRIVY_METADATA_CONTRACT_IMAGE,
                             TRIVY_METADATA_CONTRACT_SCANNER)
@@ -242,7 +243,8 @@ class EvidenceTests(unittest.TestCase):
         self.tiered_core()
         self.assertTrue(self.verify())
         self.assertTrue(self.verify_conformance())
-        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'tiered'), {'core-build', 'core-clippy', 'core-conformance'})
+        self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'tiered'),
+                         {'core-build', 'core-clippy', 'core-test', 'core-conformance'})
         self.assertEqual(dev_required_jobs('GetBusbar/busbar', 'single', 'core-conformance'),
                          {'native-qualification', 'security-scans', 'core-conformance'})
         self.assertEqual(dev_required_jobs('GetBusbar/busbar-x', 'tiered'),
@@ -252,6 +254,53 @@ class EvidenceTests(unittest.TestCase):
         self.job['name'] = 'native-qualification'
         with self.assertRaisesRegex(ValueError, 'not required'):
             self.resolver().resolve(self.original, dict(self.receipt, schema='busbar.protected-native-admission/1'))
+
+    def test_core_test_is_a_build_stage_job_of_the_tiered_graph(self):
+        text = (Path(__file__).resolve().parents[2] / 'ci/architecture-pipeline.yml').read_bytes()
+        for job in ('core-build', 'core-clippy', 'core-test', 'core-conformance'):
+            self.assertTrue(independent_qualification_job(text, job))
+        block = b'core-test:\n  extends: .controller\n  stage: build\n'
+        self.assertIn(block, text)
+        for new in (block.replace(b'stage: build', b'stage: qualify'), block + b'  when: always\n',
+                    block.replace(b'.controller', b'native-qualification')):
+            with self.subTest(change=new), self.assertRaises(ValueError):
+                independent_qualification_job(text.replace(block, new, 1), 'core-test')
+        # A build-stage core-test that may run after failures is no prerequisite of conformance.
+        with self.assertRaises(ValueError):
+            independent_qualification_job(text.replace(block, block + b'  when: always\n', 1), 'core-conformance')
+        # Earlier policies (core-build alone, core-build with core-clippy) stay recognized.
+        older = text.replace(block, b'core-test-removed:\n  extends: .controller\n  stage: qualify\n', 1)
+        self.assertTrue(independent_qualification_job(older, 'core-conformance'))
+
+    def test_core_test_validation_requires_every_passing_test_step_and_its_report(self):
+        from admission import CORE_TEST_SCHEMA, CORE_TEST_STEPS
+        report = b'<testsuites><testsuite><testcase name="t"/></testsuite></testsuites>'
+        original = dict(repository='GetBusbar/busbar', job='core-test')
+        steps = [dict(name=name, status='pass', exit_code=0) for name in CORE_TEST_STEPS]
+        steps[CORE_TEST_STEPS.index('root-runtime')]['junit_sha256'] = hashlib.sha256(report).hexdigest()
+        good = dict(schema=CORE_TEST_SCHEMA, steps=steps)
+        files = {'root-runtime.xml': report}
+
+        def artifact(name):
+            if name not in files:
+                raise ValueError('required artifact missing: ' + name)
+            return files[name]
+        self.assertTrue(validate_core_test(original, good, artifact, {}, {}))
+        root = CORE_TEST_STEPS.index('root-runtime')
+        for receipt in (dict(good, schema='busbar.core-clippy/1'),
+                        dict(good, steps=[s for s in steps if s['name'] != 'root-runtime']),
+                        dict(good, steps=[s for s in steps if s['name'] != 'workspace-doctests']),
+                        dict(good, steps=[dict(s, status='fail', exit_code=100) if i == root else s
+                                          for i, s in enumerate(steps)]),
+                        dict(good, steps=[dict(s, junit_sha256='0' * 64) if i == root else s
+                                          for i, s in enumerate(steps)])):
+            with self.subTest(receipt=receipt), self.assertRaises(ValueError):
+                validate_core_test(original, receipt, artifact, {}, {})
+        with self.assertRaises(ValueError):
+            validate_core_test(dict(original, job='core-clippy'), good, artifact, {}, {})
+        files.clear()
+        with self.assertRaises(ValueError):
+            validate_core_test(original, good, artifact, {}, {})
 
     def test_tiered_core_build_refuses_other_bytes_or_failed_checks(self):
         self.tiered_core()

@@ -127,6 +127,24 @@ class Recipe(unittest.TestCase):
             with self.assertRaisesRegex(Violation, 'differs'):
                 certified.profile_environment(env, {'path': profile, 'sha256': '0' * 64})
 
+    def test_dev_tier_tests_are_exactly_the_qa_root_workspace_steps(self):
+        nextest = ['--no-fail-fast', '--test-threads', '4', '--tool-config-file', 'admission:/t/ci/native-nextest.toml']
+        qa = dict(native.qa_test_commands(nextest))
+        dev = native.core_test_commands(nextest)
+        self.assertEqual([name for name, _ in dev], ['workspace-doctests', 'root-runtime'])
+        # The same commands, features and nextest configuration as QA's steps.
+        for name, command in dev:
+            self.assertEqual(command, qa[name])
+        root = dict(dev)['root-runtime']
+        self.assertEqual(root[:6], ['cargo', 'nextest', 'run', '--workspace', '--locked', '--features'])
+        self.assertEqual(root[6], 'busbar-kernel/timing,busbar-kernel/openapi-schema,busbar-core-admin/openapi-schema')
+        self.assertEqual(root[7:], nextest)
+        # Test steps keep the wider test compiler slot.
+        scheduling = native.native_scheduling(None)
+        scheduling.update(build_jobs=1, unoptimized_build_jobs=3, test_build_jobs=2)
+        for name, command in dev:
+            self.assertEqual(native.step_build_jobs(name, command, scheduling), 2)
+
     def test_lints_are_their_own_job_and_qa_tests_the_shipped_features(self):
         self.assertEqual([name for name, _ in native.CORE_CLIPPY_COMMANDS], ['root-clippy', 'default-clippy'])
         for _, command in native.CORE_CLIPPY_COMMANDS:
