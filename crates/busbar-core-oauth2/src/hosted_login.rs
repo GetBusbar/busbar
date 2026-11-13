@@ -279,13 +279,17 @@ async fn issue_and_render(
     principal: Principal,
     refresh: bool,
 ) -> Response {
-    match issue_self_key(app, handle, module_name, principal, refresh).await {
+    let issue = issue_self_key(app, handle, module_name, principal, refresh).await;
+    issue_page(app.public_url.as_deref().unwrap_or(""), module_name, issue)
+}
+
+fn issue_page(base_url: &str, module_name: &str, issue: SelfKeyIssue) -> Response {
+    match issue {
         SelfKeyIssue::Issued {
             subject,
             group,
             secret,
         } => {
-            let base_url = app.public_url.as_deref().unwrap_or("");
             let page = render_key_issued(
                 &subject,
                 &group,
@@ -303,7 +307,7 @@ async fn issue_and_render(
              Busbar admin to review your access.",
         ),
 
-        SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound => error_page(
+        SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound | SelfKeyIssue::Held(_) => error_page(
             StatusCode::FORBIDDEN,
             "No access yet",
             "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \

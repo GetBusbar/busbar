@@ -164,7 +164,7 @@ fn refusal(e: ExchangeError) -> Response {
             StatusCode::FORBIDDEN,
             "self-serve minting is disabled by policy",
         ),
-        ExchangeError::Unbound => (
+        ExchangeError::Unbound | ExchangeError::Held(_) => (
             StatusCode::FORBIDDEN,
             "no self-serve grant for this identity",
         ),

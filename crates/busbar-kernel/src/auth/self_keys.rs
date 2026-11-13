@@ -246,6 +246,8 @@ pub(crate) enum ExchangeError {
     /// [`crate::governance::SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE`] on) the subject's self-serve
     /// binding is disabled or was minted by another identity provider → 403.
     Unbound,
+    /// The subject's self-serve key is on hold → 403.
+    Held(crate::governance::SelfMintRefusal),
     /// The principal id is not a safe self-serve subject (reserved/ambiguous) → 403.
     BadSubject,
     /// The key this identity would mint is over the deployment's mint ceiling (`auth.policy`: the

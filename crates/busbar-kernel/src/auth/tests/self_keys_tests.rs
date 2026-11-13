@@ -10,7 +10,7 @@ use super::super::self_keys::{
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::{RoleBindingCfg, RoleBindings};
-use crate::governance::GovState;
+use crate::governance::{GovState, SelfMintOp, SelfMintRefusal};
 use busbar_contract::persistence::{
     BackendInfo, Call, ClockObservation, DatasetId, Decision, Failure, Page, PersistenceBackend,
     PreparedCandidate, Read, ReadResult, Scan,
@@ -916,65 +916,63 @@ async fn row(gov: &GovState, id: &str) -> crate::governance::VirtualKey {
         .expect("the row exists")
 }
 
-#[tokio::test]
-async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
-    let gov = gov().await;
+/// Every non-tombstoned self-serve row of `sub`, enabled or not, in whatever group an admin put it.
+async fn subject_rows(gov: &GovState, sub: &str) -> Vec<crate::governance::VirtualKey> {
+    gov.all_keys_async()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|k| k.deleted_at.is_none() && k.idp_subject.as_deref() == Some(sub))
+        .collect()
+}
 
-    let mint_now = busbar_kernel::store::now();
-
-    gov.hold_self_mint_state();
-    let alice = principal("oidc:alice", &["eng"]);
-    let ttl = Duration::from_secs(3600);
-
-    let t0 = mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Issue,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("first login issues");
+async fn login(
+    gov: &Arc<GovState>,
+    who: &Principal,
+    provider: &str,
+    op: SelfMintOp,
+) -> Result<super::super::self_keys::IssuedKey, ExchangeError> {
     let now = busbar_kernel::store::now();
-    assert!(gov
-        .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
-        .is_some());
+    mint_provisioned_self_key(gov.clone(), op, who, provider, None, now + 3600, now).await
+}
+
+fn live(gov: &GovState, token: &super::super::self_keys::IssuedKey) -> bool {
+    gov.verify_token(
+        token.secret.expose(&crate::seal::lend()),
+        busbar_kernel::store::now(),
+        None,
+    )
+    .is_some()
+}
+
+#[tokio::test]
+async fn an_admin_disable_is_not_undone_by_the_next_login() {
+    let gov = gov().await;
+    let alice = principal("oidc:alice", &["eng"]);
+
+    let t0 = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .expect("first login issues");
+    assert!(live(&gov, &t0));
 
     gov.update_key_outcome_async(&t0.key_id, Some(false), None)
         .await
         .unwrap()
         .expect("the key exists");
+    let before = subject_rows(&gov, "oidc:alice").await;
 
     assert_eq!(
-        mint_provisioned_self_key(
-            gov.clone(),
-            crate::governance::SelfMintOp::Issue,
-            &alice,
-            "corp",
-            None,
-            mint_now.saturating_add(ttl.as_secs()),
-            mint_now
-        )
-        .await
-        .unwrap_err(),
-        ExchangeError::Unbound,
+        login(&gov, &alice, "corp", SelfMintOp::Issue)
+            .await
+            .map(|k| k.key_id),
+        Err(ExchangeError::Held(SelfMintRefusal::Disabled)),
         "a login while the key is disabled is refused, not re-enabled"
     );
     assert_eq!(
-        mint_provisioned_self_key(
-            gov.clone(),
-            crate::governance::SelfMintOp::Refresh,
-            &alice,
-            "corp",
-            None,
-            mint_now.saturating_add(ttl.as_secs()),
-            mint_now
-        )
-        .await
-        .unwrap_err(),
-        ExchangeError::Unbound,
+        login(&gov, &alice, "corp", SelfMintOp::Refresh)
+            .await
+            .map(|k| k.key_id),
+        Err(ExchangeError::Held(SelfMintRefusal::Disabled)),
         "a refresh while the key is disabled is refused too"
     );
     assert!(
@@ -982,100 +980,262 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         "the admin's disable still stands"
     );
     assert!(
-        gov.verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
-            .is_none(),
+        !live(&gov, &t0),
         "the pre-disable token must NOT come back to life"
     );
-    assert!(
-        self_rows(&gov, "oidc:alice").await.is_empty(),
+    assert_eq!(
+        subject_rows(&gov, "oidc:alice").await,
+        before,
         "no fresh key was minted beside the disabled one"
     );
 }
 
 #[tokio::test]
-async fn a_login_after_an_admin_disable_mints_as_1_5_5_minted() {
+async fn a_disable_at_a_skipped_epoch_mints_no_sibling() {
     let gov = gov().await;
-
-    let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
-    let ttl = Duration::from_secs(3600);
-
-    let t0 = mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Issue,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("first login issues");
-    gov.update_key_outcome_async(&t0.key_id, Some(false), None)
+    login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .unwrap();
+    let mut current = None;
+    for _ in 0..3 {
+        current = Some(
+            login(&gov, &alice, "corp", SelfMintOp::Refresh)
+                .await
+                .unwrap(),
+        );
+    }
+    let current = current.unwrap();
+    gov.update_key_outcome_async(&current.key_id, Some(false), None)
         .await
         .unwrap()
-        .expect("the key exists");
+        .expect("the live key exists");
 
-    let again = mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Issue,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("1.5.5 minted a key on the next login");
-    assert_eq!(again.key_id, t0.key_id, "1.5.5 wrote the derived row back");
-    assert!(row(&gov, &t0.key_id).await.enabled, "and wrote it enabled");
-    mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Refresh,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("1.5.5 minted on a refresh too");
+    assert_eq!(
+        login(&gov, &alice, "corp", SelfMintOp::Issue)
+            .await
+            .map(|k| k.key_id),
+        Err(ExchangeError::Held(SelfMintRefusal::Disabled)),
+        "a disable at an epoch the probe skips is not routed around"
+    );
+    let rows = subject_rows(&gov, "oidc:alice").await;
+    assert_eq!(
+        rows.iter().map(|k| k.id.as_str()).collect::<Vec<_>>(),
+        vec![current.key_id.as_str()],
+        "still exactly the one disabled key: {rows:?}"
+    );
 }
 
 #[tokio::test]
-async fn a_second_provider_asserting_the_same_subject_is_handed_its_key_as_1_5_5_did() {
+async fn a_revoked_self_key_is_refused_403_not_500() {
+    for refreshes in [0usize, 3] {
+        let gov = gov().await;
+        let alice = principal("oidc:alice", &["eng"]);
+        let mut current = login(&gov, &alice, "corp", SelfMintOp::Issue)
+            .await
+            .unwrap();
+        for _ in 0..refreshes {
+            current = login(&gov, &alice, "corp", SelfMintOp::Refresh)
+                .await
+                .unwrap();
+        }
+        gov.revoke_async(&current.key_id, "operator revoked")
+            .await
+            .unwrap();
+        for op in [SelfMintOp::Issue, SelfMintOp::Refresh] {
+            assert_eq!(
+                login(&gov, &alice, "corp", op).await.map(|k| k.key_id),
+                Err(ExchangeError::Held(SelfMintRefusal::Revoked)),
+                "after {refreshes} refreshes, {op:?} on a revoked key is a coded 403, never a 500 \
+                 or a fresh sibling key"
+            );
+        }
+        let rows = subject_rows(&gov, "oidc:alice").await;
+        assert_eq!(
+            rows.iter().map(|k| k.id.as_str()).collect::<Vec<_>>(),
+            vec![current.key_id.as_str()],
+            "no sibling key was minted beside the revoked one: {rows:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_self_key_is_never_re_enabled_and_delete_resets() {
     let gov = gov().await;
-
-    let mint_now = busbar_kernel::store::now();
     let alice = principal("oidc:alice", &["eng"]);
-    let ttl = Duration::from_secs(3600);
+    let t0 = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .unwrap();
+    gov.revoke_async(&t0.key_id, "operator revoked")
+        .await
+        .unwrap();
 
-    let corp = mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Issue,
-        &alice,
-        "corp",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("corp issues");
-    let partner = mint_provisioned_self_key(
-        gov.clone(),
-        crate::governance::SelfMintOp::Issue,
-        &alice,
-        "partner",
-        None,
-        mint_now.saturating_add(ttl.as_secs()),
-        mint_now,
-    )
-    .await
-    .expect("1.5.5 minted for the second provider");
-    assert_eq!(
-        partner.key_id, corp.key_id,
-        "the subject's one key, as in 1.5.5"
+    assert!(
+        matches!(
+            gov.update_key_outcome_async(&t0.key_id, Some(true), None)
+                .await,
+            Err(crate::governance::KeyMutationError::Revoked { ref key_id }) if *key_id == t0.key_id
+        ),
+        "an admin PATCH {{enabled:true}} on a revoked key is refused"
     );
+    assert!(
+        !row(&gov, &t0.key_id).await.enabled,
+        "the revoked key stays disabled"
+    );
+    for op in [SelfMintOp::Issue, SelfMintOp::Refresh, SelfMintOp::Issue] {
+        assert_eq!(
+            login(&gov, &alice, "corp", op).await.map(|k| k.key_id),
+            Err(ExchangeError::Held(SelfMintRefusal::Revoked)),
+            "{op:?}: revoked is terminal"
+        );
+    }
+    assert!(!live(&gov, &t0), "the revoked token never verifies again");
+
+    // The admin's DELETE is the reset: tombstone, then the next login mints a NEW key.
+    gov.delete_key(&t0.key_id).await.unwrap();
+    let fresh = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .expect("a login after the admin's delete mints a fresh key");
+    assert_ne!(fresh.key_id, t0.key_id, "a new id, never the revoked one");
+    assert!(live(&gov, &fresh));
+    assert!(
+        !live(&gov, &t0),
+        "the revoked-then-deleted key's token never verifies again"
+    );
+    assert!(
+        gov.update_key_outcome_async(&t0.key_id, Some(true), None)
+            .await
+            .unwrap()
+            .is_none(),
+        "the tombstone cannot be re-enabled either"
+    );
+    assert!(!live(&gov, &t0));
+}
+
+#[tokio::test]
+async fn an_admin_re_enable_lets_the_next_login_reshow_the_same_key() {
+    let gov = gov().await;
+    let alice = principal("oidc:alice", &["eng"]);
+    let t0 = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .unwrap();
+    gov.update_key_outcome_async(&t0.key_id, Some(false), None)
+        .await
+        .unwrap()
+        .unwrap();
+    gov.update_key_outcome_async(&t0.key_id, Some(true), None)
+        .await
+        .unwrap()
+        .expect("an admin re-enables a disabled (not revoked) key");
+    let again = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .expect("the admin cleared the hold");
+    assert_eq!(again.key_id, t0.key_id, "the same key is re-shown");
+    assert!(live(&gov, &t0), "the admin chose to revive its tokens");
+}
+
+#[tokio::test]
+async fn an_admin_regroup_is_kept_across_login_and_refresh() {
+    let gov = gov().await;
+    let alice = principal("oidc:alice", &["eng"]);
+    let t0 = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .unwrap();
+    gov.update_key_outcome_async(&t0.key_id, None, Some(Some("quarantine".into())))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let again = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .expect("a regrouped key still logs in");
+    assert_eq!(again.key_id, t0.key_id, "the same key, not a second one");
+    assert_eq!(again.group, "quarantine");
+    assert_eq!(
+        row(&gov, &t0.key_id).await.group.as_deref(),
+        Some("quarantine"),
+        "the login did not move the key back to user:<sub>"
+    );
+
+    let refreshed = login(&gov, &alice, "corp", SelfMintOp::Refresh)
+        .await
+        .expect("a regrouped key refreshes");
+    assert_ne!(refreshed.key_id, t0.key_id);
+    assert_eq!(
+        row(&gov, &refreshed.key_id).await.group.as_deref(),
+        Some("quarantine"),
+        "the refresh carries the admin's group"
+    );
+    let rows = subject_rows(&gov, "oidc:alice").await;
+    assert_eq!(
+        rows.iter()
+            .filter(|k| k.enabled)
+            .map(|k| k.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![refreshed.key_id.as_str()],
+        "one live key for the subject: {rows:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_disable_racing_a_login_is_a_403_not_a_500() {
+    let gov = gov().await;
+    let alice = principal("oidc:alice", &["eng"]);
+    let t0 = login(&gov, &alice, "corp", SelfMintOp::Issue)
+        .await
+        .unwrap();
+
+    let waiting = gov.observe_identity_mutation_wait();
+    let claim = gov.identity_key_guard(&t0.key_id).await;
+    let racer = {
+        let gov = gov.clone();
+        let alice = alice.clone();
+        tokio::spawn(async move { login(&gov, &alice, "corp", SelfMintOp::Issue).await })
+    };
+    while !waiting.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    gov.update_key_outcome_claimed_async(&t0.key_id, Some(false), None, &claim)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(claim);
+    assert_eq!(
+        racer.await.unwrap().map(|k| k.key_id),
+        Err(ExchangeError::Held(SelfMintRefusal::Disabled)),
+        "a disable landing while the login waits is the same coded 403"
+    );
+}
+
+#[tokio::test]
+async fn a_held_refusal_is_audited() {
+    crate::audit::auditlog::ensure_global_audit_stream_registered().await;
+    let gov = gov().await;
+    let sub = format!("oidc:audited-{}", busbar_kernel::door::op_id().counter());
+    let who = principal(&sub, &["eng"]);
+    let t0 = login(&gov, &who, "corp", SelfMintOp::Issue).await.unwrap();
+    gov.update_key_outcome_async(&t0.key_id, Some(false), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(login(&gov, &who, "corp", SelfMintOp::Issue).await.is_err());
+    crate::audit::auditlog::flush_pending()
+        .await
+        .expect("the refusal's audit record is confirmed");
+    let resource = format!("key:{}#disabled", t0.key_id);
+    let sealed = crate::audit::auditlog::AUDIT_LOG.list_filtered(
+        0,
+        usize::MAX,
+        Some("self_serve.mint"),
+        Some(&resource),
+    );
+    assert_eq!(
+        sealed.len(),
+        1,
+        "one admin-log record per refusal: {sealed:?}"
+    );
+    assert_eq!(sealed[0].outcome, "rejected");
+    assert_eq!(sealed[0].principal, sub, "attributed to the subject");
 }
 
 #[tokio::test]
@@ -1140,7 +1300,6 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
 
     let mint_now = busbar_kernel::store::now();
 
-    gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
@@ -1174,7 +1333,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::Held(SelfMintRefusal::OtherProvider),
         "another provider asserting the subject is refused"
     );
     assert_eq!(
@@ -1189,7 +1348,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::Held(SelfMintRefusal::OtherProvider),
         "and cannot refresh corp's key away"
     );
 
@@ -1223,7 +1382,6 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
 
     let mint_now = busbar_kernel::store::now();
 
-    gov.hold_self_mint_state();
     let alice = principal("oidc:alice", &["eng"]);
     let ttl = Duration::from_secs(3600);
 
@@ -1282,7 +1440,7 @@ async fn a_legacy_self_serve_binding_adopts_the_first_provider_that_logs_in() {
         )
         .await
         .unwrap_err(),
-        ExchangeError::Unbound,
+        ExchangeError::Held(SelfMintRefusal::OtherProvider),
         "after the adoption, any other provider is refused"
     );
 }
