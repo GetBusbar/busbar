@@ -363,7 +363,9 @@ class Pipeline(unittest.TestCase):
         self.assertIn("if decision.returncode == 0 and retained.is_file() and not retained.is_symlink():\n"
                       "                  command = None", script)
         self.assertEqual(self.text.count('ci_retention.py'), 1)
-        self.assertNotRegex(self.text, r'(?m)^\s*(needs|dependencies|include|default):')
+        # The controller's one empty artifact download list is the only dependencies key.
+        self.assertEqual(re.findall(r'(?m)^\s*dependencies:.*$', self.text), ['  dependencies: []'])
+        self.assertNotRegex(self.text, r'(?m)^\s*(needs|include|default):')
         self.assertNotRegex(self.text, r'\$(BUSBAR_)?(SKIP|RETAIN)')
 
     def test_owner_workstation_grammar_accepts_the_tiered_graph(self):
