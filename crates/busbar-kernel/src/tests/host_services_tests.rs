@@ -1870,6 +1870,39 @@ fn dest_judge_answers_the_installed_guard_refusal() {
     assert_eq!(guard.names.lock().unwrap().len(), 3);
 }
 
+/// BUSBAR-6014: the operator-infrastructure egress class is a property of a config-declared target,
+/// never a plugin's choice, so `dest.judge` refuses it from a plugin before the guard is asked;
+/// every other class is judged as before.
+#[test]
+fn dest_judge_refuses_the_operator_infrastructure_class() {
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_OPEN_WEB, EGRESS_OPERATOR_INFRASTRUCTURE,
+    };
+    let guard = Arc::new(FakeGuard::default());
+    let s = KernelServices::new().with_dest_judge(guard.clone());
+    for flags in [0, svc::DEST_RESOLVE, svc::DEST_REFUSE_PRIVATE | svc::DEST_EXPLAIN] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge(
+            "https://db.internal/",
+            EGRESS_OPERATOR_INFRASTRUCTURE,
+            flags,
+            Some(later),
+        ));
+        assert_eq!(got.outcome, Outcome::Refused, "flags {flags}");
+        assert!(got.error.starts_with("BUSBAR-6014: "), "{}", got.error);
+        assert!(got.error.contains("operator-infrastructure"), "{}", got.error);
+    }
+    assert!(
+        guard.names.lock().unwrap().is_empty(),
+        "the guard is never asked"
+    );
+    for class in [EGRESS_DEFAULT, EGRESS_OPEN_WEB] {
+        let (_, later) = recorder();
+        let got = verdict_now(s.dest_judge("https://api.example.com/", class, 0, Some(later)));
+        assert_eq!(got.value, svc::DEST_ALLOWED, "class {class}");
+    }
+}
+
 #[test]
 fn dest_judge_answers_the_installed_guard_admission() {
     let guard = Arc::new(FakeGuard::default());

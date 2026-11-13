@@ -182,7 +182,7 @@ async fn a_completed_candidate_refusal_is_returned_before_a_reload_can_replace_t
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
+            candidate.blocked_metadata_hosts = config.blocked_metadata_hosts.clone();
             candidate.public_url = config.public_url.clone();
             candidate
         },
@@ -280,10 +280,10 @@ async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         .expect("the product deployment resolves");
     let plugin_config = crate::root::test_plugins::trusted_config(&directory);
     let mut config = config;
-    config.allow_all_metadata = true;
+    config.blocked_metadata_hosts = vec!["imds.example.test".to_string()];
     let expected = config.destinations();
     assert!(
-        expected.allow_all_metadata,
+        !expected.blocked.is_empty(),
         "the configuration states a destination fact"
     );
     let hearing = Arc::new(Hearing::default());
@@ -293,7 +293,7 @@ async fn a_kept_build_raises_its_destinations_to_the_rules_it_was_judged_by() {
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
+            candidate.blocked_metadata_hosts = config.blocked_metadata_hosts.clone();
             candidate.public_url = config.public_url.clone();
             candidate
         },
@@ -410,7 +410,7 @@ async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
             {
                 let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                     .expect("the same product deployment resolves");
-                candidate.allow_all_metadata = config.allow_all_metadata;
+                candidate.blocked_metadata_hosts = config.blocked_metadata_hosts.clone();
                 candidate.public_url = config.public_url.clone();
                 candidate
             },
@@ -432,7 +432,7 @@ async fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
         {
             let mut candidate = busbar_kernel::config::resolve(&deploy, &Default::default())
                 .expect("the same product deployment resolves");
-            candidate.allow_all_metadata = config.allow_all_metadata;
+            candidate.blocked_metadata_hosts = config.blocked_metadata_hosts.clone();
             candidate.public_url = config.public_url.clone();
             candidate
         },

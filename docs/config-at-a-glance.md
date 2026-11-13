@@ -203,7 +203,7 @@ pools:                                      # a pool is weighted lanes with shar
 
 ```yaml
 security:                       # SSRF metadata denylist tuning  → #security
-  { allow_metadata_hosts: [], allow_all_metadata: false }
+  { blocked_metadata_hosts: [] }  # extends the denylist; nothing admits cloud metadata
 export:                         # THE telemetry-egress surface, a NAMED map, so SEVERAL instances
                                 #   of one module are legal. 1.5.3 DELETED `observability:` and the
                                 #   top-level `metrics:` block into it.  → #export

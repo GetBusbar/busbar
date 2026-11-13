@@ -573,3 +573,53 @@ fn a_declared_security_upgrade_can_outlive_the_default_ten_seconds() {
         drop(peer);
     });
 }
+
+/// BUSBAR-6014 (R2.2.5): the offered name (`UpgradeIn::offered_name`, the SNI and the name verified)
+/// must be the dialled host when the dial names a host (compared as the guard maps names: case,
+/// a trailing dot, IDNA); a dial to an IP literal may offer any name (libpq `hostaddr` + `host`).
+#[test]
+fn an_offered_name_must_be_the_dialled_host_unless_the_dial_is_an_ip_literal() {
+    for (target, offered) in [
+        ("db.internal:5432", "db.internal"),
+        ("DB.Internal.:5432", "db.internal"),
+        ("db.internal:5432", "DB.INTERNAL."),
+        ("bücher.example:443", "xn--bcher-kva.example"),
+        ("127.0.0.1:5432", "db.internal"),
+        ("[::1]:5432", "db.internal"),
+        ("10.0.0.5:6379", "cache.internal"),
+    ] {
+        assert!(
+            crate::offered_name_admitted(target, offered),
+            "{target} offering {offered}"
+        );
+    }
+    for (target, offered) in [
+        ("prod-db.internal:5432", "lab.internal"),
+        ("db.internal:5432", "db.internal.evil.test"),
+        ("db.internal:5432", ""),
+        ("db.internal:5432", "%zz"),
+    ] {
+        assert!(
+            !crate::offered_name_admitted(target, offered),
+            "{target} offering {offered}"
+        );
+    }
+}
+
+/// BUSBAR-6015: an honoured `UPGRADE_VERIFY_OFF` is flagged once per instance (a coded warning and
+/// an audit record), however many connections it upgrades.
+#[test]
+fn an_honoured_verify_off_is_flagged_once_per_instance() {
+    let (leaf, key) = self_signed();
+    worker().block_on(async move {
+        let far = far_end(leaf, key, b"").await;
+        let c = raw_connector();
+        declare_class(&c, "", None, EGRESS_OPERATOR_INFRASTRUCTURE);
+        assert!(c.abi_flags().is_empty());
+        for _ in 0..2 {
+            let id = open(&c, &far);
+            assert_eq!(upgrade_with(&c, id, None, true).await, Ok(()));
+        }
+        assert_eq!(c.abi_flags(), vec![(OWNER, 6015)]);
+    });
+}

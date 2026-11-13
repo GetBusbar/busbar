@@ -270,7 +270,7 @@ once and update clients that submit or read retired fields.
 
 - **`tools.<server>.allow_private` and `agents.<agent>.allow_private` → `advanced.allow_destinations`.**
   One setting governs every outbound connection busbar and its plugins make; the per-registration
-  switch is retired and a configuration that still sets it is refused (BUSBAR-3027), naming the
+  switch is retired and a configuration that still sets it is refused (BUSBAR-3135), naming the
   registration. `busbar --migrate-config` removes the key and lists exactly the hosts that
   registration dials (its `url`, and a token endpoint it names), never a wildcard or a network:
 
@@ -288,8 +288,21 @@ once and update clients that submit or read retired fields.
       url: https://mcp.tools.internal/mcp
   ```
 
-  `allow_private: false` is simply removed. A cloud-metadata host is never listed. A registration
-  whose URL is plaintext `http://` is reported, because `allow_private` also admitted plaintext.
+  `allow_private: false` is simply removed. A cloud-metadata host is never listed. Every line the
+  migration writes for it carries BUSBAR-3410. A registration whose URL is plaintext `http://` to a
+  host other than loopback is reported: it is refused at 1.6.0 (the MCP and A2A planes admit `http://`
+  to loopback only), so move it to `https://`; a per-destination `plaintext: true` entry arrives
+  after 1.6.0.
+
+- **`security.allow_metadata_hosts`, `security.allow_all_metadata` and
+  `providers.<p>.allow_metadata_hosts` are retired.** Cloud metadata is refused for every outbound
+  connection, in every egress class, and no configuration admits it; a configuration that still
+  carves an exception is refused at startup (BUSBAR-3136). `busbar --migrate-config` removes the keys
+  and names each removed entry (BUSBAR-3411). `security.blocked_metadata_hosts` stays and still
+  extends the denylist. An `advanced.allow_destinations` entry that names a cloud-metadata host or
+  address is refused too (BUSBAR-3134). A workload that needs cloud credentials uses
+  workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation)
+  through a projected token file.
 
 ---
 

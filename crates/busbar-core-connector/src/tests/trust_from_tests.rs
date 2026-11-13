@@ -298,3 +298,38 @@ fn an_absent_settings_trust_anchor_declares_the_need_over_the_public_roots_alone
         );
     });
 }
+
+/// BUSBAR-6013: an operator-infrastructure need over a FRAMED transport must name its target from
+/// config (`target_from`); without one the plugin would pick any destination and the class would be
+/// its own choice, so the declaration is refused. A config-declared target declares, and a CARRIER
+/// need without one (postgres, valkey, mysql, ldap name the host per connection) is still admitted:
+/// that shape is deprecated and refused from 1.7.0.
+#[test]
+fn a_framed_operator_infrastructure_need_without_a_declared_target_is_refused() {
+    use busbar_contract::abi::host::conn::connector::EGRESS_OPERATOR_INFRASTRUCTURE;
+    let c = secure_connector();
+    let unnamed = ReadNeed {
+        egress_class: EGRESS_OPERATOR_INFRASTRUCTURE,
+        ..trusting_need("")
+    };
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &unnamed, None, None),
+        Err(ConnError::Refused)
+    );
+    let named = ReadNeed {
+        target_from: "settings.addr".to_owned(),
+        ..unnamed.clone()
+    };
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(1), &named, Some("127.0.0.1:8200"), None),
+        Ok(())
+    );
+    let carried = ReadNeed {
+        transport: "carrier".to_owned(),
+        ..unnamed
+    };
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(2), &carried, None, None),
+        Ok(())
+    );
+}

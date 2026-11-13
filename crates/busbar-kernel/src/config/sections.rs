@@ -182,9 +182,9 @@ pub struct AdvancedCfg {
     /// CGNAT or unique-local address, unless `allow_destinations` names it; judged after resolution
     /// and dialled at the judged address. Operator infrastructure (a database, secret service or
     /// directory a plugin's config names) is allowed private and loopback (§5 egress-class table).
-    /// Default `true`. Cloud metadata is refused for every target, and stays refused when `false`,
-    /// unless an IP/CIDR entry of `allow_destinations` names it. BOOT-TIME (the connector is built
-    /// once).
+    /// Default `true`. Cloud metadata is refused for every target, in every class, and stays
+    /// refused when `false`; no entry of `allow_destinations` admits it (an entry naming it is
+    /// refused at boot, BUSBAR-3134). BOOT-TIME (the connector is built once).
     #[serde(default = "default_block_private_addresses")]
     pub block_private_addresses: bool,
     /// Destinations always allowed, checked before any refusal: an exact host, a `*.domain`
@@ -208,40 +208,19 @@ pub struct Destinations {
     pub block_private_addresses: bool,
     /// `advanced.allow_destinations`, as written (each entry validated by the guard at boot).
     pub allow: Vec<String>,
-    /// `security.allow_metadata_hosts`: the 1.5.5 carve-outs for every provider dial (read in the
-    /// provider class only, as 1.5.5 read them for provider URLs only).
-    pub legacy_allow: Vec<String>,
-    /// Each URL a provider names (its `base_url`, and its `token_url`), with that provider's own
-    /// `allow_metadata_hosts` (by provider name): carve-outs for a provider dial of the host the URL
-    /// names, and no other.
-    pub url_allow: Vec<(String, Vec<String>)>,
     /// `security.blocked_metadata_hosts`: extra refusals inside the one guard.
     pub blocked: Vec<String>,
-    /// `security.allow_all_metadata`: every cloud-metadata name and address admitted for a
-    /// provider dial, as 1.5.5.
-    pub allow_all_metadata: bool,
 }
 
 impl super::RootCfg {
+    /// The guard's inputs. The 1.5.5 cloud-metadata carve-outs (`security.allow_metadata_hosts`,
+    /// `security.allow_all_metadata`, a provider's `allow_metadata_hosts`) are retired and refused
+    /// at validation (BUSBAR-3136): cloud metadata is refused for every outbound connection, so none
+    /// reaches the guard.
     #[must_use]
     pub fn destinations(&self) -> Destinations {
-        let mut providers: Vec<_> = self.providers.iter().collect();
-        providers.sort_by(|a, b| a.0.cmp(b.0));
-        let url_allow = providers
-            .into_iter()
-            .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
-            .flat_map(|(_, p)| {
-                std::iter::once(&p.base_url)
-                    .chain(&p.token_url)
-                    .map(|url| busbar_kernel_egress::trust::net::strip_userinfo(url).into_owned())
-                    .map(|url| (url, p.allow_metadata_hosts.clone()))
-            })
-            .collect();
         Destinations {
-            legacy_allow: self.allow_metadata_hosts.clone(),
-            url_allow,
             blocked: self.blocked_metadata_hosts.clone(),
-            allow_all_metadata: self.allow_all_metadata,
             ..self.guard.clone()
         }
     }
