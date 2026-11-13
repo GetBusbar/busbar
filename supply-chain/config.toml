@@ -326,7 +326,7 @@ version = "1.0.18"
 criteria = "safe-to-deploy"
 
 [[exemptions.js-sys]]
-version = "0.3.99"
+version = "0.3.107"
 criteria = "safe-to-deploy"
 
 [[exemptions.jsonschema]]
@@ -342,7 +342,7 @@ version = "0.49.9"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
-version = "0.2.189"
+version = "0.2.191"
 criteria = "safe-to-deploy"
 
 [[exemptions.lock_api]]
@@ -394,7 +394,7 @@ version = "0.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.mio]]
-version = "1.2.1"
+version = "1.2.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.munge]]
@@ -522,6 +522,10 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rand]]
+version = "0.9.5"
+criteria = "safe-to-deploy"
+
+[[exemptions.rand]]
 version = "0.10.2"
 criteria = "safe-to-deploy"
 
@@ -530,7 +534,7 @@ version = "0.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.rapidhash]]
-version = "4.4.1"
+version = "4.5.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.raw-cpuid]]
@@ -729,6 +733,10 @@ criteria = "safe-to-deploy"
 version = "2.0.18"
 criteria = "safe-to-deploy"
 
+[[exemptions.thread_local]]
+version = "1.1.10"
+criteria = "safe-to-deploy"
+
 [[exemptions.tikv-jemalloc-ctl]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
@@ -750,7 +758,7 @@ version = "0.2.29"
 criteria = "safe-to-deploy"
 
 [[exemptions.tinyvec]]
-version = "1.11.0"
+version = "1.13.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio]]
@@ -854,23 +862,23 @@ version = "0.11.1+wasi-snapshot-preview1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen]]
-version = "0.2.122"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-futures]]
-version = "0.4.72"
+version = "0.4.80"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-macro]]
-version = "0.2.122"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-macro-support]]
-version = "0.2.122"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-bindgen-shared]]
-version = "0.2.122"
+version = "0.2.130"
 criteria = "safe-to-deploy"
 
 [[exemptions.wasm-streams]]
@@ -878,7 +886,7 @@ version = "0.4.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.web-sys]]
-version = "0.3.99"
+version = "0.3.107"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-roots]]
@@ -958,11 +966,11 @@ version = "0.6.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerocopy]]
-version = "0.8.49"
+version = "0.8.63"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerocopy-derive]]
-version = "0.8.49"
+version = "0.8.63"
 criteria = "safe-to-deploy"
 
 [[exemptions.zeroize]]
