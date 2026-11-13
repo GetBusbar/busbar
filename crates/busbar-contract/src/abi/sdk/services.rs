@@ -15,6 +15,7 @@ use super::lent::HostSource;
 use crate::abi::auth::{FieldSpan, FIELD_QUERY, FIELD_SENSITIVE};
 use crate::abi::hook::{MessageView, PromptView};
 use crate::abi::host::conn::connector::WITHIN_SEPARATOR;
+use crate::abi::host::directory::DirectoryResult;
 use crate::abi::host::service::{
     check_auth_call, check_unit_hand_in, check_unit_refuse, AuthAnswer, AuthCallIn, AuthRef,
     HeadView, RefusalAnswer, UnitHandInIn, UnitRef, UnitRefuseIn,
@@ -1422,6 +1423,256 @@ impl<K: KindMarker> Services<K> {
         }))
     }
 
+    /// `directory.get`: the caller's own record `id` of `kind`. READY + `DIR_OK`: the record is
+    /// row 0 of the answer (key = id, value = document), its index values the rows after it.
+    pub fn directory_get<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        id: &str,
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<DirectoryAnswer<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_GET }>,
+    {
+        use crate::abi::host::directory::DirectoryGetIn;
+        use crate::abi::host::service::check_directory_get;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryGetIn {
+            head: head::<DirectoryGetIn>(op::DIRECTORY_GET, handle),
+            kind,
+            _reserved: 0,
+            id: text(id),
+            result: &mut result,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(op::DIRECTORY_GET, |t| t.directory_get, &input, check_directory_get);
+        directory_rows(crossed, &result, buf, spans)
+    }
+
+    /// `directory.lookup`: the id the unique index `index` maps `value` to (row 0's key).
+    pub fn directory_lookup<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        index: &str,
+        value: &[u8],
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<DirectoryAnswer<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_LOOKUP }>,
+    {
+        use crate::abi::host::directory::DirectoryLookupIn;
+        use crate::abi::host::service::check_directory_lookup;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryLookupIn {
+            head: head::<DirectoryLookupIn>(op::DIRECTORY_LOOKUP, handle),
+            kind,
+            _reserved: 0,
+            index: text(index),
+            value: raw(value),
+            result: &mut result,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_LOOKUP,
+            |t| t.directory_lookup,
+            &input,
+            check_directory_lookup,
+        );
+        directory_rows(crossed, &result, buf, spans)
+    }
+
+    /// `directory.scan`: rows of `kind` in id order after `after` (for members, of the group
+    /// `scope`), at most `limit`. `result.more` says whether another page follows.
+    #[allow(clippy::too_many_arguments)]
+    pub fn directory_scan<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        scope: Option<&str>,
+        after: Option<&str>,
+        limit: u32,
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<DirectoryAnswer<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_SCAN }>,
+    {
+        use crate::abi::host::directory::DirectoryScanIn;
+        use crate::abi::host::service::check_directory_scan;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryScanIn {
+            head: head::<DirectoryScanIn>(op::DIRECTORY_SCAN, handle),
+            kind,
+            limit,
+            scope: scope.map_or(NO_TEXT, text),
+            after: after.map_or(NO_TEXT, text),
+            result: &mut result,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_SCAN,
+            |t| t.directory_scan,
+            &input,
+            check_directory_scan,
+        );
+        directory_rows(crossed, &result, buf, spans)
+    }
+
+    /// `directory.count`: the maintained count of `kind` (members: of the group `scope`).
+    pub fn directory_count(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        scope: Option<&str>,
+    ) -> Pend<DirectoryResult>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_COUNT }>,
+    {
+        use crate::abi::host::directory::DirectoryCountIn;
+        use crate::abi::host::service::check_directory_count;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryCountIn {
+            head: head::<DirectoryCountIn>(op::DIRECTORY_COUNT, handle),
+            kind,
+            _reserved: 0,
+            scope: scope.map_or(NO_TEXT, text),
+            result: &mut result,
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_COUNT,
+            |t| t.directory_count,
+            &input,
+            check_directory_count,
+        );
+        directory_scalar(crossed, &result)
+    }
+
+    /// `directory.create`: a new record; READY + `DIR_OK`: row 0's key is the kernel-minted id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn directory_create<'b>(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        state: u32,
+        source: u32,
+        document: &[u8],
+        indexes: &[(&str, &[u8])],
+        (buf, spans): (&'b mut [u8], &'b mut [ItemSpan]),
+    ) -> Pend<DirectoryAnswer<'b>>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_CREATE }>,
+    {
+        use crate::abi::host::directory::DirectoryCreateIn;
+        use crate::abi::host::service::check_directory_create;
+        let pairs = interleave(indexes);
+        let mut result = DirectoryResult::default();
+        let input = DirectoryCreateIn {
+            head: head::<DirectoryCreateIn>(op::DIRECTORY_CREATE, handle),
+            kind,
+            state,
+            source,
+            _reserved: 0,
+            document: blob(document, BLOB_OCTETS),
+            indexes: pairs.as_ptr(),
+            indexes_len: pairs.len(),
+            result: &mut result,
+            into: bufs(buf, spans),
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_CREATE,
+            |t| t.directory_create,
+            &input,
+            check_directory_create,
+        );
+        directory_rows(crossed, &result, buf, spans)
+    }
+
+    /// `directory.apply`: ONE conditional write ([`DirectoryWrite`]); all of it or none of it.
+    pub fn directory_apply(
+        &self,
+        handle: CompletionHandle,
+        write: &DirectoryWrite<'_>,
+    ) -> Pend<DirectoryResult>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_APPLY }>,
+    {
+        use crate::abi::host::directory::DirectoryApplyIn;
+        use crate::abi::host::service::check_directory_apply;
+        let pairs = interleave(write.indexes.unwrap_or(&[]));
+        let add: Vec<AbiStr> = write.members_add.iter().map(|m| text(m)).collect();
+        let remove: Vec<AbiStr> = write.members_remove.iter().map(|m| text(m)).collect();
+        let replace: Vec<AbiStr> = write
+            .members_replace
+            .unwrap_or(&[])
+            .iter()
+            .map(|m| text(m))
+            .collect();
+        let flags = u32::from(write.document.is_some()) * crate::abi::host::directory::APPLY_DOCUMENT
+            | u32::from(write.indexes.is_some()) * crate::abi::host::directory::APPLY_INDEXES
+            | u32::from(write.state.is_some()) * crate::abi::host::directory::APPLY_STATE
+            | u32::from(write.members_replace.is_some())
+                * crate::abi::host::directory::APPLY_REPLACE_MEMBERS;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryApplyIn {
+            head: head::<DirectoryApplyIn>(op::DIRECTORY_APPLY, handle),
+            kind: write.kind,
+            flags,
+            state: write.state.unwrap_or(0),
+            _reserved: 0,
+            id: text(write.id),
+            expected_version: write.expected_version,
+            document: write.document.map_or(NO_BLOB, |d| blob(d, BLOB_OCTETS)),
+            indexes: pairs.as_ptr(),
+            indexes_len: pairs.len(),
+            members_add: add.as_ptr(),
+            members_add_len: add.len(),
+            members_remove: remove.as_ptr(),
+            members_remove_len: remove.len(),
+            members_replace: replace.as_ptr(),
+            members_replace_len: replace.len(),
+            result: &mut result,
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_APPLY,
+            |t| t.directory_apply,
+            &input,
+            check_directory_apply,
+        );
+        directory_scalar(crossed, &result)
+    }
+
+    /// `directory.delete`: remove `id` (compare-and-set on `expected_version`, `0` = any).
+    pub fn directory_delete(
+        &self,
+        handle: CompletionHandle,
+        kind: u32,
+        id: &str,
+        expected_version: u64,
+    ) -> Pend<DirectoryResult>
+    where
+        K: crate::abi::host::access::Permitted<{ op::DIRECTORY_DELETE }>,
+    {
+        use crate::abi::host::directory::DirectoryDeleteIn;
+        use crate::abi::host::service::check_directory_delete;
+        let mut result = DirectoryResult::default();
+        let input = DirectoryDeleteIn {
+            head: head::<DirectoryDeleteIn>(op::DIRECTORY_DELETE, handle),
+            kind,
+            _reserved: 0,
+            id: text(id),
+            expected_version,
+            result: &mut result,
+        };
+        let crossed = self.cross(
+            op::DIRECTORY_DELETE,
+            |t| t.directory_delete,
+            &input,
+            check_directory_delete,
+        );
+        directory_scalar(crossed, &result)
+    }
+
     /// Run the configured child of this admitted hook invocation. Poll with the same handle
     /// and payload. The host memoizes one child even if another handle is attempted.
     pub fn hook_child<'b>(
@@ -2470,4 +2721,81 @@ mod snapshot {
             }
         }
     }
+}
+
+/// A `directory.*` answer: the kernel's [`DirectoryResult`] and the rows it wrote.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectoryAnswer<'b> {
+    /// The kernel's result: its `code` first.
+    pub result: DirectoryResult,
+    /// The rows: `(key, value)` in the op's order.
+    pub rows: Records<'b>,
+}
+
+/// One `directory.apply`: every `Some` part replaces, the member deltas apply, all at once.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DirectoryWrite<'a> {
+    /// `DIR_SUBJECT` | `DIR_GROUP`.
+    pub kind: u32,
+    /// The record id.
+    pub id: &'a str,
+    /// The version read; `0` = any.
+    pub expected_version: u64,
+    /// The new document.
+    pub document: Option<&'a [u8]>,
+    /// The full new index set.
+    pub indexes: Option<&'a [(&'a str, &'a [u8])]>,
+    /// The new state.
+    pub state: Option<u32>,
+    /// Subject ids to add (groups).
+    pub members_add: &'a [&'a str],
+    /// Subject ids to remove (groups).
+    pub members_remove: &'a [&'a str],
+    /// The whole new member set (groups).
+    pub members_replace: Option<&'a [&'a str]>,
+}
+
+/// Name/value pairs, interleaved, borrowed for one call.
+fn interleave(pairs: &[(&str, &[u8])]) -> Vec<AbiStr> {
+    pairs
+        .iter()
+        .flat_map(|(name, value)| [text(name), raw(value)])
+        .collect()
+}
+
+/// A rows answer: PENDING held; READY the result and the rows written.
+fn directory_rows<'b>(
+    crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>,
+    result: &DirectoryResult,
+    buf: &'b [u8],
+    spans: &'b [ItemSpan],
+) -> Pend<DirectoryAnswer<'b>> {
+    if let Ok((Outcome::Pending, ..)) = crossed {
+        return Poll::Pending;
+    }
+    Poll::Ready(crossed.and_then(ready).and_then(|out| {
+        let rows = Records {
+            bytes: &buf[..out.len as usize],
+            spans: &spans[..out.items as usize],
+        };
+        if rows.records().count() == rows.spans.len() {
+            Ok(DirectoryAnswer {
+                result: *result,
+                rows,
+            })
+        } else {
+            Err(ServiceError::Broken)
+        }
+    }))
+}
+
+/// A scalar answer: PENDING held; READY the result.
+fn directory_scalar(
+    crossed: Result<(Outcome, ServiceOut, Filled), ServiceError>,
+    result: &DirectoryResult,
+) -> Pend<DirectoryResult> {
+    if let Ok((Outcome::Pending, ..)) = crossed {
+        return Poll::Pending;
+    }
+    Poll::Ready(crossed.and_then(ready).map(|_| *result))
 }

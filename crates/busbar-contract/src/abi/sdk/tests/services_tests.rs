@@ -92,6 +92,13 @@ fn table(slot: Option<ServiceFn>) -> HostSlots {
         work_status: None,
         outbound_authorize: None,
         hook_child: None,
+        directory_get: None,
+        directory_lookup: None,
+        directory_scan: None,
+        directory_count: None,
+        directory_create: None,
+        directory_apply: None,
+        directory_delete: None,
     }
 }
 

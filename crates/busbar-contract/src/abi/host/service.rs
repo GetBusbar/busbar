@@ -323,10 +323,24 @@ pub mod op {
     pub const OUTBOUND_AUTHORIZE: u32 = 35;
     /// Invocation-scoped, configured hook child dispatch.
     pub const HOOK_CHILD: u32 = 36;
+    /// `directory.get` ([`super::directory`]).
+    pub const DIRECTORY_GET: u32 = 37;
+    /// `directory.lookup`.
+    pub const DIRECTORY_LOOKUP: u32 = 38;
+    /// `directory.scan`.
+    pub const DIRECTORY_SCAN: u32 = 39;
+    /// `directory.count`.
+    pub const DIRECTORY_COUNT: u32 = 40;
+    /// `directory.create`.
+    pub const DIRECTORY_CREATE: u32 = 41;
+    /// `directory.apply`.
+    pub const DIRECTORY_APPLY: u32 = 42;
+    /// `directory.delete`.
+    pub const DIRECTORY_DELETE: u32 = 43;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 37;
+pub const SERVICES: u32 = 44;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for a service that always answers at once.
 #[must_use]
@@ -1857,6 +1871,20 @@ pub struct HostSlots {
     pub outbound_authorize: Option<ServiceFn>,
     /// [`op::HOOK_CHILD`], optional size-checked tail.
     pub hook_child: Option<ServiceFn>,
+    /// [`op::DIRECTORY_GET`], in [`super::directory::DirectoryGetIn`]. A tail addition (1.6.0).
+    pub directory_get: Option<ServiceFn>,
+    /// [`op::DIRECTORY_LOOKUP`], in [`super::directory::DirectoryLookupIn`]. A tail addition.
+    pub directory_lookup: Option<ServiceFn>,
+    /// [`op::DIRECTORY_SCAN`], in [`super::directory::DirectoryScanIn`]. A tail addition.
+    pub directory_scan: Option<ServiceFn>,
+    /// [`op::DIRECTORY_COUNT`], in [`super::directory::DirectoryCountIn`]. A tail addition.
+    pub directory_count: Option<ServiceFn>,
+    /// [`op::DIRECTORY_CREATE`], in [`super::directory::DirectoryCreateIn`]. A tail addition.
+    pub directory_create: Option<ServiceFn>,
+    /// [`op::DIRECTORY_APPLY`], in [`super::directory::DirectoryApplyIn`]. A tail addition.
+    pub directory_apply: Option<ServiceFn>,
+    /// [`op::DIRECTORY_DELETE`], in [`super::directory::DirectoryDeleteIn`]. A tail addition.
+    pub directory_delete: Option<ServiceFn>,
 }
 
 /// The head of an `in` for `service`, whose `in` type is `in_size` bytes: the op is the slot's, and
@@ -3038,3 +3066,156 @@ pub unsafe fn check_unit_refuse(
 #[cfg(test)]
 #[path = "../tests/host_service_tests.rs"]
 mod tests;
+
+/// A `directory.*` answer: the common rules, the caller's buffers where the op writes any (get,
+/// lookup, scan, create), and READY's `value` is the record version (`0` when none).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// On READY, if the reported span count is nonzero and within `into.spans_cap`, a non-NULL
+/// `into.spans` must point to that many aligned, initialized `ItemSpan`s, readable without
+/// concurrent writes for this call. Counts and NULL are checked first.
+pub unsafe fn check_directory(
+    service: u32,
+    head: &ServiceHead,
+    bufs: Option<ServiceBufs>,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let shape = match bufs {
+        Some(bufs) => into(service, bufs, ANY),
+        None => bare(service, ANY),
+    };
+    // SAFETY: inherited from the caller's initialized result buffers.
+    unsafe { answer(ret, head, out, shape) }
+}
+
+/// `directory.get`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_get(
+    i: &super::directory::DirectoryGetIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_GET, &i.head, Some(i.into), ret, out) }
+}
+
+/// `directory.lookup`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_lookup(
+    i: &super::directory::DirectoryLookupIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_LOOKUP, &i.head, Some(i.into), ret, out) }
+}
+
+/// `directory.scan`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_scan(
+    i: &super::directory::DirectoryScanIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_SCAN, &i.head, Some(i.into), ret, out) }
+}
+
+/// `directory.count`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_count(
+    i: &super::directory::DirectoryCountIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_COUNT, &i.head, None, ret, out) }
+}
+
+/// `directory.create`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_create(
+    i: &super::directory::DirectoryCreateIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_CREATE, &i.head, Some(i.into), ret, out) }
+}
+
+/// `directory.apply`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_apply(
+    i: &super::directory::DirectoryApplyIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_APPLY, &i.head, None, ret, out) }
+}
+
+/// `directory.delete`'s answer ([`check_directory`]).
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+///
+/// # Safety
+///
+/// As [`check_directory`].
+pub unsafe fn check_directory_delete(
+    i: &super::directory::DirectoryDeleteIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    // SAFETY: the caller's contract.
+    unsafe { check_directory(op::DIRECTORY_DELETE, &i.head, None, ret, out) }
+}

@@ -613,6 +613,13 @@ fn every_service_field_sits_at_its_op_index() {
             op::OUTBOUND_AUTHORIZE,
         ),
         (offset_of!(HostSlots, hook_child), op::HOOK_CHILD),
+        (offset_of!(HostSlots, directory_get), op::DIRECTORY_GET),
+        (offset_of!(HostSlots, directory_lookup), op::DIRECTORY_LOOKUP),
+        (offset_of!(HostSlots, directory_scan), op::DIRECTORY_SCAN),
+        (offset_of!(HostSlots, directory_count), op::DIRECTORY_COUNT),
+        (offset_of!(HostSlots, directory_create), op::DIRECTORY_CREATE),
+        (offset_of!(HostSlots, directory_apply), op::DIRECTORY_APPLY),
+        (offset_of!(HostSlots, directory_delete), op::DIRECTORY_DELETE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1867,4 +1874,34 @@ fn outbound_body_publication_and_revision_zero_revocation_keep_distinct_shapes()
     input.action = OUTBOUND_PUBLISH_BODY;
     input.field_name = text("Authorization");
     assert!(check_outbound_authorize_in(&input).is_err());
+}
+
+/// The `directory` services: appended after `hook.child`, auth-only, every one may pend.
+#[test]
+fn the_directory_services_follow_hook_child_are_auth_only_and_may_pend() {
+    use crate::abi::host::access::service;
+    use crate::abi::mechanism::KindCode;
+    let ops = [
+        op::DIRECTORY_GET,
+        op::DIRECTORY_LOOKUP,
+        op::DIRECTORY_SCAN,
+        op::DIRECTORY_COUNT,
+        op::DIRECTORY_CREATE,
+        op::DIRECTORY_APPLY,
+        op::DIRECTORY_DELETE,
+    ];
+    assert_eq!(ops, [37, 38, 39, 40, 41, 42, 43]);
+    assert_eq!(SERVICES, 44);
+    for o in ops {
+        let policy = service(o).expect("a policy row");
+        assert!(may_pend(o), "{} may pend", policy.name);
+        for kind in KindCode::ALL {
+            assert_eq!(
+                policy.admits(kind),
+                kind == KindCode::Auth,
+                "{} admits {kind:?}",
+                policy.name
+            );
+        }
+    }
 }
