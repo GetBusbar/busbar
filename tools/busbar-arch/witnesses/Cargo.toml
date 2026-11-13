@@ -1,0 +1,12 @@
+[package]
+name = "busbar-arch-witnesses"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+busbar-contract = { path = "../../../crates/busbar-contract" }
+busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
+
+[dev-dependencies]
+trybuild = "1"
