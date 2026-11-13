@@ -36,6 +36,8 @@ UPSTREAM_FORKS = {
     PUBLIC + 'MattJackson/fs_extra': 'GetBusbar/upstream-forks/fs_extra',
     PUBLIC + 'MattJackson/h2': 'GetBusbar/upstream-forks/h2',
     PUBLIC + 'MattJackson/tungstenite-rs': 'GetBusbar/upstream-forks/tungstenite-rs',
+    # busbar-hook-headroom's upstream library.
+    PUBLIC + 'headroomlabs-ai/headroom': 'GetBusbar/upstream-forks/headroom',
 }
 FORK_URLS = {repository: url for url, repository in UPSTREAM_FORKS.items()}
 FORK_CACHE = 'upstream-forks--'
