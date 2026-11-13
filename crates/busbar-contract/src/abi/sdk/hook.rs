@@ -1090,7 +1090,10 @@ fn decide_in_breaks_a_rule(input: &DecideIn) -> bool {
 hook_op!(
     /// `decide`: PENDING while the hook waits on its exchange, re-entered on the wake. A short answer's
     /// re-call answers the verdict the first run lowered ([`Shorted`]).
-    Decide, DecideIn, DecideOut, |held, i, input, out| {
+    Decide,
+    DecideIn,
+    DecideOut,
+    |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -1103,7 +1106,11 @@ hook_op!(
                 let Poll::Ready(v) = call.hook.decide(&Decoded::of(input), &op) else {
                     if let Some(expiry) = op.wake_at_ns() {
                         let earlier = out.raw().head.wake_at_ns;
-                        out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                        out.wake_at(if earlier == 0 {
+                            expiry
+                        } else {
+                            earlier.min(expiry)
+                        });
                     }
                     call.park(&i);
                     return Outcome::Pending;
@@ -1125,7 +1132,10 @@ hook_op!(
 
 hook_op!(
     /// `transform`: PENDING while the hook waits on its exchange, re-entered on the wake.
-    Transform, DecideIn, TransformOut, |held, i, input, out| {
+    Transform,
+    DecideIn,
+    TransformOut,
+    |held, i, input, out| {
         if decide_in_breaks_a_rule(&input) {
             return Outcome::Fault;
         }
@@ -1138,7 +1148,11 @@ hook_op!(
                 let Poll::Ready(v) = call.hook.transform(&Decoded::of(input), &op) else {
                     if let Some(expiry) = op.wake_at_ns() {
                         let earlier = out.raw().head.wake_at_ns;
-                        out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                        out.wake_at(if earlier == 0 {
+                            expiry
+                        } else {
+                            earlier.min(expiry)
+                        });
                     }
                     call.park(&i);
                     return Outcome::Pending;
@@ -1160,7 +1174,10 @@ hook_op!(
 
 hook_op!(
     /// `notify`: PENDING while the hook waits on its exchange, re-entered on the wake.
-    Notify, NotifyIn, OutHead, |held, i, input, out| {
+    Notify,
+    NotifyIn,
+    OutHead,
+    |held, i, input, out| {
         if check_notify_in(&input).is_err() {
             return Outcome::Fault;
         }
@@ -1171,7 +1188,11 @@ hook_op!(
             Poll::Pending => {
                 if let Some(expiry) = op.wake_at_ns() {
                     let earlier = out.raw().wake_at_ns;
-                    out.wake_at(if earlier == 0 { expiry } else { earlier.min(expiry) });
+                    out.wake_at(if earlier == 0 {
+                        expiry
+                    } else {
+                        earlier.min(expiry)
+                    });
                 }
                 call.park(&i);
                 Outcome::Pending
@@ -1182,7 +1203,10 @@ hook_op!(
 
 hook_op!(
     /// `configure`: a refusal is FAILED with the hook's reason (READY must ack the pushed version).
-    Configure, ConfigureIn, ConfigureOut, |held, _i, input, out| {
+    Configure,
+    ConfigureIn,
+    ConfigureOut,
+    |held, _i, input, out| {
         let bytes = input.field(|i| &i.settings).bytes();
         let bytes = if bytes.is_empty() { &b"{}"[..] } else { bytes };
         let settings = match serde_json::from_slice::<JsonValue>(bytes) {
@@ -1213,7 +1237,10 @@ hook_op!(
 
 hook_op!(
     /// `status`: the 1.5.5 envelope, held under a lease.
-    Status, InHead, StatusOut, |held, _i, _input, out| {
+    Status,
+    InHead,
+    StatusOut,
+    |held, _i, _input, out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let status = JsonValue(held.life().hook().status());
         let mut bytes = crate::abi::sdk::secret_bytes::SecretBytes::default();
@@ -1221,14 +1248,19 @@ hook_op!(
             return out.fail(Refusal::failed(format!("status: {e}")));
         }
         let o = out.raw();
-        o.status = held.leases().secret_blob(&mut o.head, bytes.into_vec(), BLOB_JSON);
+        o.status = held
+            .leases()
+            .secret_blob(&mut o.head, bytes.into_vec(), BLOB_JSON);
         Outcome::Ready
     }
 );
 
 hook_op!(
     /// `describe`: the 1.5.5 envelope, held under a lease.
-    Describe, InHead, DescribeOut, |held, _i, _input, out| {
+    Describe,
+    InHead,
+    DescribeOut,
+    |held, _i, _input, out| {
         // A blob that will not serialise is a FAILED answer saying so, never an empty READY.
         let bytes = match serde_json::to_vec(&held.life().hook().describe()) {
             Ok(bytes) => bytes,
