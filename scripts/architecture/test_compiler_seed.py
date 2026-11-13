@@ -23,11 +23,16 @@ directory = "/candidate/witness-vendor"
 '''
 
 
+USED_REV = '1' * 40
+VENDOR_LOCK = ('version = 4\n\n[[package]]\nname = "used"\nversion = "1.0.0"\n'
+               f'source = "git+https://github.com/Example/used?rev={USED_REV}#{USED_REV}"\n')
+
+
 def write_vendor_lock(argv):
     setting = next(arg for arg in argv if arg.startswith('resolver.lockfile-path='))
     lock = Path(json.loads(setting.split('=', 1)[1]))
     lock.parent.mkdir(parents=True)
-    lock.write_text('version = 4\n')
+    lock.write_text(VENDOR_LOCK)
 
 
 def artifact(name, fresh):
@@ -58,7 +63,7 @@ class Fixture:
                      'busbar-plugin-loader': {'manifest': 'crates/loader/Cargo.toml'}},
             'compiler_witnesses': [{'source': source, 'markers': ['WITNESS'], 'count': 1}
                                    for source, _, _ in sources]})
-        self.events, self.seed_calls, self.case_targets = [], [], {}
+        self.events, self.seed_calls, self.case_targets, self.manifests = [], [], {}, []
         self.vendor_returncode, self.seed_returncode = 0, 0
         self.case_outcome = {'witness_00': (0, [artifact('witness_00', False)]),
                              'witness_01': (101, [error('witness_01', 'E0624')]),
@@ -68,6 +73,7 @@ class Fixture:
         # The parent confined execution: vendor, then one check per feature set.
         self.assertTrue(kwargs['discard_harness_target'])
         self.events.append(('seed', argv[1]))
+        self.manifests.append((argv[1], (self.root / 'scratch/compiler-witnesses/Cargo.toml').read_text()))
         self.seed_calls.append(argv)
         if argv[1] == 'vendor':
             output = Path(argv[-1])
@@ -77,7 +83,7 @@ class Fixture:
             return subprocess.CompletedProcess(argv, self.vendor_returncode, VENDOR_CONFIG, 'vendor log')
         self.assertEqual(argv[argv.index('--example') + 1], check.WITNESS_SEED)
         # Every seeded invocation receives the vendor resolution via the harness.
-        self.assertEqual((self.root / 'scratch/compiler-witnesses/Cargo.lock').read_text(), 'version = 4\n')
+        self.assertEqual((self.root / 'scratch/compiler-witnesses/Cargo.lock').read_text(), VENDOR_LOCK)
         self.assertEqual(argv[argv.index('--jobs') + 1], '4')
         target = Path(argv[argv.index('--target-dir') + 1])
         self.assertTrue(target.is_relative_to(self.root / 'candidate'))
@@ -107,6 +113,7 @@ class Fixture:
                 name = argv[argv.index('--example') + 1]
                 test.events.append(('case', name))
                 harness = test.root / 'scratch/compiler-witnesses'
+                test.manifests.append(('case', (harness / 'Cargo.toml').read_text()))
                 # Only seeded (vendored) cases skip the job Cargo seed copy.
                 test.assertEqual(kwargs.get('vendored_sources'), '--target-dir' in argv)
                 if '--target-dir' not in argv:
@@ -236,6 +243,46 @@ class CompilerSeed(Fixture, unittest.TestCase):
                      '[source.crates-io]\nreplace-with = "vendored-sources"\n'):
             with self.subTest(text=text), self.assertRaises(check.Violation):
                 check.vendor_source_config(text, Path('/seed/vendor'))
+
+
+class UnusedPatches(Fixture, unittest.TestCase):
+    """Cargo loads every [patch] source, used or not, but `cargo vendor` copies only
+    the used ones, so an unused git patch made every offline seeded case fail
+    ("can't checkout ... offline mode", job 6767). Unused patches never change a
+    resolution, so the seeded harness omits them; the fallback keeps the original."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / 'Cargo.toml').write_text(
+            "[workspace]\n[patch.'https://github.com/GetBusbar/busbar']\n"
+            'busbar-contract = { path = "crates/contract" }\n[patch.crates-io]\n'
+            f'used = {{ git = "https://github.com/Example/used", rev = "{USED_REV}" }}\n'
+            f'unused = {{ git = "https://github.com/Example/unused", rev = "{"2" * 40}" }}\n')
+
+    def test_seeded_checks_and_cases_omit_only_unused_git_patches(self):
+        receipt = self.run_witnesses()
+        self.assertEqual(receipt['compiler_dependency_seed']['pruned_patches'], ['crates-io:unused'])
+        vendor = [text for kind, text in self.manifests if kind == 'vendor']
+        self.assertEqual(len(vendor), 1)
+        self.assertIn('Example/unused', vendor[0])
+        later = [text for kind, text in self.manifests if kind != 'vendor']
+        self.assertEqual(len(later), 2 + 3)
+        for text in later:
+            self.assertNotIn('Example/unused', text)
+            self.assertIn('Example/used', text)
+            self.assertIn('busbar-contract', text)
+        lines = [call.args[0] for call in self.printed.call_args_list]
+        self.assertTrue(any('"pruned_patches": ["crates-io:unused"]' in line for line in lines))
+
+    def test_fallback_cases_see_the_original_patches(self):
+        self.seed_returncode = 101
+        with patch.object(check, 'EVIDENCE', None):
+            receipt = self.run_witnesses()
+        self.assertEqual(receipt['compiler_dependency_seed']['status'], 'failed')
+        cases = [text for kind, text in self.manifests if kind == 'case']
+        self.assertEqual(len(cases), 3)
+        for text in cases:
+            self.assertIn('Example/unused', text)
 
 
 if __name__ == '__main__':

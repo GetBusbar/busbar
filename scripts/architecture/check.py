@@ -800,6 +800,32 @@ def vendor_source_config(text, directory):
     return '\n'.join(lines) + '\n'
 
 
+def prune_unused_patches(manifest, lock):
+    """Omit [patch] git entries the vendored resolution never uses; return what was omitted.
+
+    Cargo loads every patch source, used or not, but `cargo vendor` copies only the
+    used ones, so an unused git patch sends an offline seeded case to the network.
+    An unused patch never changes a resolution. Path and registry patches stay."""
+    used = {(package.get('name'), package.get('source', '')) for package in lock.get('package', [])}
+    lines, section, pruned = [], None, []
+    for line in manifest.read_text().splitlines():
+        if line.startswith('['):
+            section = line[len('[patch.'):-1] if line.startswith('[patch.') else None
+        elif section is not None and line.strip():
+            ((name, cfg),) = tomllib.loads(line).items()
+            git = cfg.get('git') if isinstance(cfg, dict) else None
+            package = cfg.get('package', name) if isinstance(cfg, dict) else name
+            if git and not any(found == package and (source.startswith('git+' + git + '?')
+                                                     or source.startswith('git+' + git + '#'))
+                               for found, source in used):
+                source_key = tomllib.loads('k = ' + section)['k'] if section[:1] in '\'"' else section
+                pruned.append(source_key + ':' + name)
+                continue
+        lines.append(line)
+    manifest.write_text('\n'.join(lines) + '\n')
+    return pruned
+
+
 def seed_compiler_dependencies(harness, scratch, cases):
     """Build the witness harness's dependency closure once, before any case runs.
 
@@ -854,6 +880,9 @@ def seed_compiler_dependencies(harness, scratch, cases):
     except tomllib.TOMLDecodeError as error:
         raise CompilerSeedFailure(f'unreadable cargo vendor lockfile: {error}') from None
     shutil.copyfile(lock, harness / 'Cargo.lock', follow_symlinks=False)
+    # Keep the original manifest so an unseeded fallback sees exactly its inputs.
+    shutil.copyfile(harness / 'Cargo.toml', root / 'Cargo.toml.unpruned')
+    pruned = prune_unused_patches(harness / 'Cargo.toml', tomllib.loads(lock.read_text()))
     shutil.rmtree(lock.parent)
     copy_candidate_tree(output, root / 'vendor')
     shutil.rmtree(output)
@@ -885,7 +914,7 @@ def seed_compiler_dependencies(harness, scratch, cases):
                 if is_harness_unit(path.name):
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
     files = [path for path in target.rglob('*') if path.is_file()]
-    receipt = {'configurations': len(configurations), 'target_files': len(files),
+    receipt = {'configurations': len(configurations), 'pruned_patches': pruned, 'target_files': len(files),
                'target_bytes': sum(path.stat().st_size for path in files),
                'vendor_config_sha256': hashlib.sha256(config.read_bytes()).hexdigest()}
     architecture_progress('compiler-seed', 'finish', elapsed_seconds=round(time.monotonic() - started, 3), **receipt)
@@ -912,6 +941,8 @@ def abandon_compiler_seed(harness, scratch, failure):
     for path in (harness / 'Cargo.lock', harness / 'examples' / (WITNESS_SEED + '.rs')):
         path.unlink(missing_ok=True)
     root = scratch / 'compiler-witness-seed'
+    if (root / 'Cargo.toml.unpruned').is_file():
+        shutil.copyfile(root / 'Cargo.toml.unpruned', harness / 'Cargo.toml')
     for name in ('vendor', 'target'):
         if (root / name).exists():
             shutil.rmtree(root / name)
