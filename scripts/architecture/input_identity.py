@@ -20,13 +20,14 @@ import tomllib
 
 
 CORE = 'GetBusbar/busbar'
-JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-conformance', 'security-scans'}
+JOBS = {'native-qualification', 'core-build', 'core-clippy', 'core-test', 'core-conformance', 'security-scans'}
 
 
 def requires_changed_source_checks(request):
-    """Security, core-native, the certified core build and core lints rerun on any changed source."""
+    """Security, core-native, the certified core build, core lints and tests rerun on any changed source."""
     return request['job'] == 'security-scans' or (
-        request['repository'] == CORE and request['job'] in ('native-qualification', 'core-build', 'core-clippy'))
+        request['repository'] == CORE and request['job'] in ('native-qualification', 'core-build', 'core-clippy',
+                                                             'core-test'))
 FIELDS = {'repository', 'source', 'policy', 'host', 'sdk', 'job'}
 SCHEMA = 'busbar.protected-input-reuse/1'
 REUSE_CONTROLLERS = {'scripts/architecture/input_identity.py', 'scripts/architecture/reuse_evidence.py',

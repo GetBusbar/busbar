@@ -8,9 +8,9 @@ This controller additionally admits only the trusted native job for the exact so
 target, host, SDK and policy revision. Fork/external-status pipelines cannot impersonate it.
 
 Core is admitted to dev on its DEV-tier receipts: the core-build job (fmt, deny/vet and
-the one plain certified release build), the lint-only core-clippy job, and the
-core-conformance job that judged exactly that binary by sha256, all from the current
-MR pipeline. Native qualification and security
+the one plain certified release build), the lint-only core-clippy job, the core-test
+job (root workspace doctests and nextest run), and the core-conformance job that judged
+exactly that binary by sha256, all from the current MR pipeline. Native qualification and security
 are core's QA tier and are not dev admission inputs. Plugins keep native + security.
 """
 from __future__ import annotations
@@ -286,6 +286,9 @@ CORE_BUILD_STEPS = ('root-fmt', 'default-fmt', 'dependency-policy', 'dependency-
 # Checks every passing core-clippy receipt must contain (native.CORE_CLIPPY_COMMANDS).
 CORE_CLIPPY_STEPS = ('root-clippy', 'default-clippy')
 CORE_CLIPPY_SCHEMA = 'busbar.core-clippy/1'
+# Checks every passing core-test receipt must contain (native.CORE_TEST_STEPS).
+CORE_TEST_STEPS = ('workspace-doctests', 'root-runtime')
+CORE_TEST_SCHEMA = 'busbar.core-test/1'
 
 
 def passing_steps(receipt, label):
@@ -301,7 +304,7 @@ def passing_steps(receipt, label):
 
 
 def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conformance_receipt,
-                           revision, target, host, sdk, clippy_receipt=None):
+                           revision, target, host, sdk, clippy_receipt=None, test_receipt=None):
     """Core's dev admission: this pipeline's certified build and the conformance of those bytes."""
     from native_certified import JOB, verify_receipt
 
@@ -312,12 +315,14 @@ def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conforman
         return rows[0]
 
     build, evaluation, lint = required_job(JOB), required_job('core-conformance'), required_job('core-clippy')
+    tests = required_job('core-test')
     identity = {'status': 'pass', 'repository': project['path_with_namespace'], 'source': mr['sha'],
                 'policy_revision': revision, 'pipeline_id': str(pipeline['id']),
                 'target_revision': target, 'host_revision': host, 'sdk_revision': sdk}
     for label, receipt, job in (('core-build', build_receipt, build),
                                 ('conformance', conformance_receipt, evaluation),
-                                ('core-clippy', clippy_receipt, lint)):
+                                ('core-clippy', clippy_receipt, lint),
+                                ('core-test', test_receipt, tests)):
         if not isinstance(receipt, dict):
             raise ValueError(label + ' receipt is missing')
         for key, value in dict(identity, job_id=str(job['id'])).items():
@@ -334,6 +339,11 @@ def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conforman
     missing = set(CORE_CLIPPY_STEPS) - passing_steps(clippy_receipt, 'core-clippy')
     if missing:
         raise ValueError('core-clippy receipt omits required checks: ' + ', '.join(sorted(missing)))
+    if test_receipt.get('schema') != CORE_TEST_SCHEMA:
+        raise ValueError('core-test receipt mismatch: schema')
+    missing = set(CORE_TEST_STEPS) - passing_steps(test_receipt, 'core-test')
+    if missing:
+        raise ValueError('core-test receipt omits required checks: ' + ', '.join(sorted(missing)))
     if conformance_receipt.get('schema') != 'busbar.protected-conformance/1':
         raise ValueError('conformance receipt mismatch: schema')
     passing_steps(conformance_receipt, 'conformance')
@@ -347,12 +357,12 @@ def validate_core_dev_tier(project, mr, pipeline, jobs, build_receipt, conforman
 
 def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host, sdk,
                    conformance_receipt=None, security_receipt=None, secret_fixture_policy=None,
-                   clippy_receipt=None):
+                   clippy_receipt=None, test_receipt=None):
     """Finite admission predicate, shared by the controller and bypass regressions.
 
     For core, receipt is the core-build receipt, conformance_receipt the
-    core-conformance receipt and clippy_receipt the core-clippy receipt (DEV
-    tier); security_receipt is not consulted.
+    core-conformance receipt, clippy_receipt the core-clippy receipt and
+    test_receipt the core-test receipt (DEV tier); security_receipt is not consulted.
     For every other project, receipt is the native-qualification receipt.
     """
     if project['ci_config_path'] != 'ci/architecture-pipeline.yml@GetBusbar/busbar:' + revision:
@@ -367,7 +377,7 @@ def validate_merge(project, mr, pipeline, jobs, receipt, revision, target, host,
         raise ValueError('pipeline contains a nonpassing or optional job')
     if project['path_with_namespace'] == CORE:
         validate_core_dev_tier(project, mr, pipeline, jobs, receipt, conformance_receipt,
-                               revision, target, host, sdk, clippy_receipt)
+                               revision, target, host, sdk, clippy_receipt, test_receipt)
         return
     security = [job for job in jobs if job['name'] == 'security-scans']
     if len(security) != 1 or not security[0].get('runner'):
@@ -420,9 +430,9 @@ def job_receipt(api, identity, job, filename='receipt.json'):
 
 
 def core_dev_receipts(api, identity, jobs):
-    """Core DEV tier: this pipeline's core-build, core-conformance and core-clippy receipts."""
+    """Core DEV tier: this pipeline's core-build, core-conformance, core-clippy and core-test receipts."""
     receipts = []
-    for job_name in ('core-build', 'core-conformance', 'core-clippy'):
+    for job_name in ('core-build', 'core-conformance', 'core-clippy', 'core-test'):
         rows = [job for job in jobs if job['name'] == job_name and job['status'] == 'success']
         if len(rows) != 1:
             raise ValueError('current ' + job_name + ' is not successful')
@@ -526,15 +536,16 @@ def main():
             jobs = api.all(identity + '/pipelines/' + str(pipeline['id']) + '/jobs')
             target = api.request(identity + '/repository/branches/dev')['commit']['id']
             host, sdk = expected_inputs(api, project, mr['sha'])
-            clippy_receipt = None
+            clippy_receipt = test_receipt = None
             if name == CORE:
-                receipt, conformance_receipt, clippy_receipt = core_dev_receipts(api, identity, jobs)
+                receipt, conformance_receipt, clippy_receipt, test_receipt = core_dev_receipts(api, identity, jobs)
                 security_receipt = secret_fixture_policy = None
             else:
                 receipt, conformance_receipt, security_receipt, secret_fixture_policy = native_receipts(
                     api, identity, jobs, name, args.policy_revision)
             validate_merge(project, mr, pipeline, jobs, receipt, args.policy_revision, target, host, sdk,
-                           conformance_receipt, security_receipt, secret_fixture_policy, clippy_receipt)
+                           conformance_receipt, security_receipt, secret_fixture_policy, clippy_receipt,
+                           test_receipt)
             result = api.request(identity + '/merge_requests/' + str(args.merge_request) + '/merge', 'PUT', {'sha': mr['sha'], 'should_remove_source_branch': True, 'squash': False})
             report['projects'].append({'project': name, 'source': mr['sha'], 'target_before': target, 'merge_commit_sha': result.get('merge_commit_sha'), 'state': result['state']})
         args.output.write_text(json.dumps(report, indent=2) + '\n')
