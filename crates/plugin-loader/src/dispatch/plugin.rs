@@ -550,6 +550,16 @@ struct Tables(Box<HostTables>);
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
 
+#[cfg(test)]
+thread_local! {
+    /// TEST-ONLY: how many plugin crossings entered plugin code INLINE on THIS thread rather than
+    /// on a permanent FFI worker. A per-load crossing left inline arms the plugin image's
+    /// thread-exit key on a thread that may retire after the image is unloaded (`ffi_thread`), and
+    /// that crash fires only at thread exit, racing process exit; counting is what makes the
+    /// routing observable. Thread-local for the reason `UNLOADS_ON_WORKER` is.
+    pub(crate) static INLINE_CROSSINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 thread_local! {
     /// The instance whose crossing is on this thread (innermost first), for what a host entry needs
     /// it for (#74): the instance a context must name, and the quarantine of a forged one.
@@ -1050,6 +1060,16 @@ impl Instance {
 
     fn store_bootstrap(&self, slot: u32) -> bool {
         self.kind == KindCode::Store && slot == busbar_contract::abi::store::v4::slot::BOOTSTRAP
+    }
+
+    /// A secret door's `check`: instance-free, configuration-time, and run on a checker image that
+    /// is never opened, so it is that image's FIRST and ONLY crossing. Inline it would arm the
+    /// image's own `std` thread-exit key on the CALLER's thread (every kind op enters the image's
+    /// per-thread call capture), and a caller that retires after the checker is replaced or removed
+    /// jumps into the unmapped image from `__nptl_deallocate_tsd` (`ffi_thread`). It is per load,
+    /// not per request, so it is confined like `validate`.
+    fn secret_check(&self, slot: u32) -> bool {
+        self.kind == KindCode::Secret && slot == busbar_contract::abi::secret::slot::CHECK
     }
     fn store_prepared(&self) -> bool {
         self.kind == KindCode::Store
@@ -2003,6 +2023,7 @@ impl Instance {
         let (raw, _head_snapshot) = if s == slot::VALIDATE
             || is_lifecycle(s)
             || self.store_bootstrap(s)
+            || self.secret_check(s)
         {
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
@@ -2090,6 +2111,8 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
+            #[cfg(test)]
+            INLINE_CROSSINGS.with(|n| n.set(n.get() + 1));
             let raw = super::export_bindings::crossing(binding, || {
                 with_crossing(Some(self), || {
                     op(instance, input.cast_const().cast(), out.cast())
