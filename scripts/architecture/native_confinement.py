@@ -20,7 +20,7 @@ import threading
 import uuid
 
 import linux_job_isolation
-from native_sources import REFUSAL, UPSTREAM_FORKS
+from native_sources import NAME, REFUSAL, UPSTREAM_FORKS
 
 # Same value as native_dep_cache.CARGO_HOME_PATH and confinement_entry; tests pin it.
 INVOCATION_CARGO_HOME = '/__busbar_cargo_home'
@@ -494,8 +494,9 @@ class Execution:
                 or (
                     key.startswith(prefix)
                     and key.endswith(".insteadOf")
+                    and re.fullmatch(NAME, key[len(prefix):-len(".insteadOf")])
                     and (
-                        re.fullmatch(r"https://github.com/GetBusbar/[a-zA-Z0-9_.-]+", value)
+                        re.fullmatch(r"https://github.com/GetBusbar/" + NAME, value)
                         or value.removesuffix(".git") in UPSTREAM_FORKS
                     )
                 ),
@@ -529,6 +530,9 @@ class Execution:
             HOME=str(self.roots["candidate"] / "home"),
             GIT_CONFIG_GLOBAL="/dev/null",
             GIT_CONFIG_NOSYSTEM="1",
+            # Every legitimate candidate Git source is a file:// canonical cache;
+            # any network transport, however the URL is spelled, refuses.
+            GIT_ALLOW_PROTOCOL="file",
             CARGO_NET_OFFLINE="true",
             PYTHONDONTWRITEBYTECODE="1",
         )

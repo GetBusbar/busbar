@@ -17,7 +17,9 @@ import tomllib
 from urllib.parse import urlsplit
 
 
-SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/[^/?#]+?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
+# One path segment that is never `.`, `..` or hidden: names become directories.
+NAME = r'[A-Za-z0-9_][A-Za-z0-9_.-]*'
+SOURCE = re.compile(r'git\+https://github.com/(GetBusbar/' + NAME + r'?)(?:\.git)?\?rev=([0-9a-f]{40})#([0-9a-f]{40})')
 # Each forge fetch is latency-bound (several HTTP round trips, tiny packs).
 # Bounded concurrency keeps one job from monopolizing the forge.
 FETCH_WORKERS = 8
@@ -53,7 +55,7 @@ def cache_name(repository):
     if repository in FORK_URLS:
         return FORK_CACHE + repository.rsplit('/', 1)[1]
     owner, _, name = repository.partition('/')
-    if owner != 'GetBusbar' or not re.fullmatch('[A-Za-z0-9_.-]+', name) or name.startswith(FORK_CACHE):
+    if owner != 'GetBusbar' or not re.fullmatch(NAME, name) or name.startswith(FORK_CACHE):
         raise ValueError('not a canonical input repository: ' + repository)
     return name
 
@@ -64,7 +66,7 @@ def forge_repository(url):
     if url in UPSTREAM_FORKS:
         return UPSTREAM_FORKS[url]
     name = url.removeprefix(PUBLIC + 'GetBusbar/')
-    if name != url and re.fullmatch('[A-Za-z0-9_.-]+', name) and not name.startswith(FORK_CACHE):
+    if name != url and re.fullmatch(NAME, name) and not name.startswith(FORK_CACHE):
         return 'GetBusbar/' + name
     return None
 
@@ -122,8 +124,10 @@ def lock_inputs(text, policy):
         repository, revision = match[1], match[2]
         if repository in allowed:
             sources[repository].add(revision)
-        # Private or unclassified first-party repositories never enter a public
-        # map; the job seed then refuses them rather than fetching publicly.
+        elif repository not in policy['repositories']:
+            raise ValueError('unclassified first-party Git source: ' + repository)
+        # Private first-party repositories never enter a public map; the job
+        # seed then refuses them rather than fetching publicly.
     return sources
 
 
