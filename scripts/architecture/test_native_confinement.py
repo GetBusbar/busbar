@@ -196,6 +196,29 @@ class Boundary(Fixture, unittest.TestCase):
                 execution.environment({'GIT_CONFIG_COUNT': '1',
                     'GIT_CONFIG_KEY_0': 'safe.directory', 'GIT_CONFIG_VALUE_0': value})
 
+    def test_canonical_fork_mappings_and_public_refusal_cross_but_nothing_wider(self):
+        execution = self.execution()
+        prefix = 'url.' + (self.roots['candidate'] / 'canonical-inputs').as_uri() + '/'
+        def environment(*settings):
+            env = {'GIT_CONFIG_COUNT': str(len(settings))}
+            for index, (key, value) in enumerate(settings):
+                env['GIT_CONFIG_KEY_' + str(index)], env['GIT_CONFIG_VALUE_' + str(index)] = key, value
+            return execution.environment(env)
+        accepted = [(prefix + 'busbar-store-mysql.insteadOf', 'https://github.com/GetBusbar/busbar-store-mysql'),
+                    (prefix + 'upstream-forks--h2.insteadOf', 'https://github.com/MattJackson/h2'),
+                    (prefix + 'upstream-forks--h2.insteadOf', 'https://github.com/MattJackson/h2.git'),
+                    ('url.https://public-replica-refused.invalid/.insteadOf', 'https://github.com/')]
+        result = environment(*accepted)
+        self.assertEqual([(result['GIT_CONFIG_KEY_' + str(i)], result['GIT_CONFIG_VALUE_' + str(i)])
+                          for i in range(len(accepted))], accepted)
+        for setting in ((prefix + 'x.insteadOf', 'https://github.com/someone/h2'),
+                        (prefix + 'x.insteadOf', 'https://github.com/'),
+                        (prefix + 'x.insteadOf', 'https://github.com/MattJackson/h2-other'),
+                        ('url.https://elsewhere.example/.insteadOf', 'https://github.com/'),
+                        ('url.https://public-replica-refused.invalid/.insteadOf', 'https://github.com/GetBusbar/')):
+            with self.subTest(setting=setting), self.assertRaisesRegex(ValueError, 'Git setting'):
+                environment(setting)
+
     def test_git_reads_registered_root_but_rejects_other_owner_repository(self):
         execution = self.execution()
         other = self.base / 'unregistered'

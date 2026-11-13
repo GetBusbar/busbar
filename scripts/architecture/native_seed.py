@@ -112,6 +112,21 @@ def lock_inputs(q, host, sdk, canonical, vector):
     return locks, inputs
 
 
+def canonical_remote(url, canonical):
+    """The verified canonical-inputs cache for a locked Git URL; never the URL itself.
+
+    Every Git source (first-party and reviewed upstream forks) was fetched from
+    the private forge at an exact revision by native_sources.prepare. The public
+    replica is only a name in the lock: anything not already cached refuses.
+    """
+    from native_sources import cache_name, forge_repository
+    repository = forge_repository(url)
+    known = canonical / cache_name(repository) if repository else None
+    if known is None or not known.is_dir():
+        raise Violation('job seed Git source is not in canonical-inputs; public fetch refused: ' + url)
+    return str(known)
+
+
 def prepare(q):
     execution = q.execution
     if execution is None:
@@ -155,14 +170,7 @@ def prepare(q):
         destination = context / 'git' / str(index)
         destination.parent.mkdir(exist_ok=True)
         subprocess.run(['git', 'init', '--bare', '--quiet', str(destination)], check=True)
-        name = url.rsplit('/', 1)[1].removesuffix('.git')
-        known = canonical / name
-        if url.startswith('https://github.com/GetBusbar/') and known.is_dir():
-            remote = str(known)
-        else:
-            # No job token or credential helper is available to public GitHub
-            # fetches, and the lock parser permits only exact GitHub commit URLs.
-            remote = url
+        remote = canonical_remote(url, canonical)
         environment = {'PATH': '/usr/bin:/bin', 'HOME': str(root), 'GIT_TERMINAL_PROMPT': '0',
                        'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
         for revision in sorted(revisions):
