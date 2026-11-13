@@ -1062,14 +1062,21 @@ impl Instance {
         self.kind == KindCode::Store && slot == busbar_contract::abi::store::v4::slot::BOOTSTRAP
     }
 
-    /// A secret door's `check`: instance-free, configuration-time, and run on a checker image that
-    /// is never opened, so it is that image's FIRST and ONLY crossing. Inline it would arm the
-    /// image's own `std` thread-exit key on the CALLER's thread (every kind op enters the image's
-    /// per-thread call capture), and a caller that retires after the checker is replaced or removed
-    /// jumps into the unmapped image from `__nptl_deallocate_tsd` (`ffi_thread`). It is per load,
-    /// not per request, so it is confined like `validate`.
-    fn secret_check(&self, slot: u32) -> bool {
-        self.kind == KindCode::Secret && slot == busbar_contract::abi::secret::slot::CHECK
+    /// A configuration-time kind op, confined to the permanent FFI workers like `validate`:
+    ///
+    /// * a secret door's `check`, run on a checker image that is never opened, so it is that
+    ///   image's FIRST and ONLY crossing;
+    /// * a transport's `locate` before its instance opens (instance-free, per load);
+    /// * an export door's `check`, which judges configuration and states recorder requirements
+    ///   when the export opens, never per record.
+    ///
+    /// Inline, each would arm the image's own `std` thread-exit key on the CALLER's thread (every
+    /// kind op enters the image's per-thread call capture), and a caller that retires after the
+    /// image is replaced or removed jumps into the unmapped image from `__nptl_deallocate_tsd`
+    /// (`ffi_thread`). None is per request, so each pays the handoff only per load or check.
+    fn confined_kind_op(&self, slot: u32) -> bool {
+        self.instance_free(slot)
+            || (self.kind == KindCode::Export && slot == busbar_contract::abi::export::slot::CHECK)
     }
     fn store_prepared(&self) -> bool {
         self.kind == KindCode::Store
@@ -2023,7 +2030,7 @@ impl Instance {
         let (raw, _head_snapshot) = if s == slot::VALIDATE
             || is_lifecycle(s)
             || self.store_bootstrap(s)
-            || self.secret_check(s)
+            || self.confined_kind_op(s)
         {
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
