@@ -60,7 +60,7 @@ ARCHIVE_LIMIT = 1024**3
 # dist/default/tests/docs_examples.rs walks docs/**/*.md and README.md, and
 # several tests include_str!/read docs/*.md (audit digests, admin-api.md,
 # diagnostics.md). CHANGELOG.md and RELEASE.md are candidates but are named by
-# scripts/release/publish_gate.py, so the reference guard keeps them hashed.
+# the release gate (tools/publish-gate), so the reference guard keeps them hashed.
 EXCLUDED_PREFIXES = ('.gitlab/issue_templates/', '.gitlab/merge_request_templates/', 'org-profile/')
 # A markdown-walking marker in code could read excluded files without naming
 # them. Each reviewed occurrence is pinned to its exact blob; any other marker

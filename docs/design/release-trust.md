@@ -12,7 +12,7 @@ release artifacts still require owner-controlled provisioning and separate quali
 
 Code: `crates/plugin-loader/src/release_trust/` (the chain and the encoding),
 `crates/plugin-loader/src/sign.rs` (`first_party_signer`, `evaluate`), `crates/plugin-loader/src/pack.rs`
-(the release tooling), `scripts/release/publish_gate.py` (the release gate). Tests:
+(the release tooling), `tools/publish-gate` (the release gate, `busbar-publish-gate`). Tests:
 `crates/plugin-loader/src/tests/release_trust_tests.rs` and `release_seal_tests.rs`.
 
 ## 1. The chain
@@ -263,7 +263,7 @@ separate qualification results, not implied by this source integration.
    - For each tarball, `busbar-plugin-pack seal <tarball> --keys-doc keys.json --release release-manifest.json --target <t> --keys <root list> --out signed/<tarball>`.
      It refuses unless the result verifies through the whole chain for its target.
    - `busbar-plugin-pack verify` runs again on the written bytes.
-3. The owner's gate (`publish_gate.py sign` / `plugin-release`) runs the same sequence through
+3. The owner's gate (`busbar-publish-gate sign` / `plugin-release`) runs the same sequence through
    `seal_release`, with `--k1-sign-cmd` as the signer command. Its trust file names the root list
    (`k1`), the release signer (`release_signer`) and the current keys document (`keys_doc`).
 

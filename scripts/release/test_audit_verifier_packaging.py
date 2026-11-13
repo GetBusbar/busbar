@@ -17,25 +17,15 @@ CHANGED_SOURCE_EPOCH = SOURCE_EPOCH + 3600
 FAILED_BUILD_EXIT = 7
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import publish_gate as pg
 import candidate
 
 
 class AuditVerifierPackaging(unittest.TestCase):
-    def test_published_rows_owe_tool_archive_and_package_sbom(self):
-        rows = [dict(target="fixture", kind="binary", published=True, archive="tar.gz"),
-                dict(target="internal", kind="binary", published=False, archive="tar.gz")]
-        with patch.object(pg, "release_targets", return_value=rows):
-            files, sboms, internal, _ = pg.expected_files(type("Inputs", (), {"root": Path(".")})(), {"version": "1.6.0", "plugins": []})
-        self.assertIn("busbar-audit-verify-fixture.tar.gz", files)
-        self.assertIn("busbar-audit-verify-v1.6.0-fixture.cdx.json", sboms)
-        self.assertNotIn("busbar-audit-verify-internal.tar.gz", internal)
-
     def test_candidate_produces_verifier_package_sbom_on_published_rows(self):
         row = dict(target="fixture", kind="binary", published=True, archive="tar.gz")
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(candidate, "target_row", return_value=row), \
-                patch.object(candidate.pg, "commit_key_list", return_value="fixture"), \
+                patch.object(candidate, "commit_key_list", return_value="fixture"), \
                 patch.object(candidate, "sh", return_value="0\n"), \
                 patch.object(candidate, "version", return_value="1.6.0"), \
                 patch.object(candidate, "sbom") as produce:
@@ -62,7 +52,7 @@ class AuditVerifierPackaging(unittest.TestCase):
                     self.assertEqual((context / "binaries/amd64/busbar").read_bytes(), b"published native bytes")
                     self.assertIn("FROM gcr.io/distroless/cc-debian12:nonroot@sha256:", (context / "Dockerfile").read_text())
                 return "1700000000"
-            with patch.object(candidate.pg, "release_targets", return_value=[row]), \
+            with patch.object(candidate, "release_targets", return_value=[row]), \
                  patch.object(candidate, "cmd_core") as core, \
                  patch.object(candidate, "require_buildkit"), patch.object(candidate, "sh", side_effect=command):
                 candidate.cmd_image("amd64", root)

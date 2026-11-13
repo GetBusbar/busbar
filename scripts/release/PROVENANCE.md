@@ -181,7 +181,7 @@ Activation prerequisites and existing release fence
 4. Provision pinned Cosign, Sigstore root and signing configuration in the
    trusted signing step, and approve the exact public metadata/identity.
 5. Invoke the QA/main checks through protected native/ModernCI stage routing.
-6. Replace publish_gate.py's current explicit G-9 provenance refusal only as
+6. Replace the publish gate's (tools/publish-gate) current explicit G-9 provenance refusal only as
    part of the owner-authorized QA/main activation, with this verification gate
    mandatory for every published artifact. Preserve all other release gates.
    The current release fence was deliberately left intact; this packet cannot
@@ -472,7 +472,7 @@ scripts/verify-artifact.py's attestation row now calls this same verifier with
 name, target and version to a verified inventory subject. Absent activation
 inputs fail closed. The obsolete GitHub workflow identity/environment override
 is removed; the contract default now points to release/artifact-contract.json.
-The existing publish_gate.py G-9 refusal is unchanged.
+The existing publish gate G-9 refusal (tools/publish-gate) is unchanged.
 
 Prepared OCI consumer extension
 

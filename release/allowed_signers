@@ -14,7 +14,7 @@
 # The same key signs ModernCI release STATEMENTS under "busbar-release-statement", which is checked
 # from a separate, statements-only list, so no two signature kinds can stand in for each other.
 #
-# EMPTY UNTIL THE KEY CEREMONY. The publish gate (scripts/release/publish_gate.py, rule G-14) refuses
+# EMPTY UNTIL THE KEY CEREMONY. The publish gate (busbar-publish-gate, tools/publish-gate, rule G-14) refuses
 # a release while this file differs from the owner's own trust file, so an empty file means nothing
 # can be published. Format of each line:
 #   busbar-release namespaces="busbar-release",valid-after="YYYYMMDD" sk-ssh-ed25519@openssh.com AAAA... busbar-release-2026a
