@@ -348,8 +348,47 @@ pub(crate) struct Crossed {
     pub(crate) unread: u64,
 }
 
+/// Why the host refuses an op [`Instance::refuse`] judges does not fit.
+pub(crate) const DOES_NOT_FIT: &str =
+    "the op does not fit this instance (an op it lacks, a short frame, or not open)";
+/// Why the host refuses an input its kind's admission rejects.
+pub(crate) const KIND_REFUSED: &str = "the kind's admission rejected this input before crossing";
+/// Why the host refuses a lifecycle op while another one runs.
+pub(crate) const LIFECYCLE_BUSY: &str = "another lifecycle op is in progress on this instance";
+/// Why the host refuses an op that finds no room.
+pub(crate) const AT_CAP: &str =
+    "the instance is at its max_inflight cap (or, for close, ops are still in flight)";
+
 impl Crossed {
+    /// An outcome the host decided without the plugin answering. A host REFUSED always says why
+    /// (decision 43, "nothing silent"): a refusal with no text leaves its caller unable to tell a
+    /// held admission from an unknown slot from a closed instance. Prefer [`Crossed::refused`]
+    /// with the specific reason; this one still names who refused.
     pub(crate) fn host(outcome: Outcome) -> Self {
+        if outcome == Outcome::Refused {
+            return Self::refused("the call does not fit this instance's current state");
+        }
+        Self::bare(outcome)
+    }
+
+    /// The host refused this call before the plugin answered it, for `why`.
+    pub(crate) fn refused(why: &str) -> Self {
+        Self {
+            error: Some(format!("the host refused this call: {why}").into_bytes()),
+            ..Self::bare(Outcome::Refused)
+        }
+    }
+
+    /// The host judged `outcome`; a refusal carries `why`.
+    pub(crate) fn judged(outcome: Outcome, why: &str) -> Self {
+        if outcome == Outcome::Refused {
+            Self::refused(why)
+        } else {
+            Self::bare(outcome)
+        }
+    }
+
+    fn bare(outcome: Outcome) -> Self {
         Self {
             outcome,
             error: None,
@@ -510,6 +549,16 @@ struct Tables(Box<HostTables>);
 // and every pointer in them is to `'static` host tables.
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
+
+#[cfg(test)]
+thread_local! {
+    /// TEST-ONLY: how many plugin crossings entered plugin code INLINE on THIS thread rather than
+    /// on a permanent FFI worker. A per-load crossing left inline arms the plugin image's
+    /// thread-exit key on a thread that may retire after the image is unloaded (`ffi_thread`), and
+    /// that crash fires only at thread exit, racing process exit; counting is what makes the
+    /// routing observable. Thread-local for the reason `UNLOADS_ON_WORKER` is.
+    pub(crate) static INLINE_CROSSINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 thread_local! {
     /// The instance whose crossing is on this thread (innermost first), for what a host entry needs
@@ -1012,6 +1061,23 @@ impl Instance {
     fn store_bootstrap(&self, slot: u32) -> bool {
         self.kind == KindCode::Store && slot == busbar_contract::abi::store::v4::slot::BOOTSTRAP
     }
+
+    /// A configuration-time kind op, confined to the permanent FFI workers like `validate`:
+    ///
+    /// * a secret door's `check`, run on a checker image that is never opened, so it is that
+    ///   image's FIRST and ONLY crossing;
+    /// * a transport's `locate` before its instance opens (instance-free, per load);
+    /// * an export door's `check`, which judges configuration and states recorder requirements
+    ///   when the export opens, never per record.
+    ///
+    /// Inline, each would arm the image's own `std` thread-exit key on the CALLER's thread (every
+    /// kind op enters the image's per-thread call capture), and a caller that retires after the
+    /// image is replaced or removed jumps into the unmapped image from `__nptl_deallocate_tsd`
+    /// (`ffi_thread`). None is per request, so each pays the handoff only per load or check.
+    fn confined_kind_op(&self, slot: u32) -> bool {
+        self.instance_free(slot)
+            || (self.kind == KindCode::Export && slot == busbar_contract::abi::export::slot::CHECK)
+    }
     fn store_prepared(&self) -> bool {
         self.kind == KindCode::Store
             && self.store_phase.load(Ordering::Acquire) != 0
@@ -1504,7 +1570,7 @@ impl Instance {
                     .exports
                     .finish_refresh(self.wake, unsafe { (*input).ticket });
             }
-            return Crossed::host(o);
+            return Crossed::judged(o, DOES_NOT_FIT);
         }
         let _extensions =
             if self.kind == KindCode::Export && s == busbar_contract::abi::export::slot::DELIVER {
@@ -1707,7 +1773,7 @@ impl Instance {
                 .as_ref()
                 .is_some_and(super::measurement::Reservation::may_invoke)
         {
-            return Crossed::host(Outcome::Refused);
+            return Crossed::refused("no measurement reservation admits this crossing");
         }
         // SAFETY: the host owns the checked input head. Plugins never select the cursor.
         unsafe {
@@ -1891,7 +1957,7 @@ impl Instance {
         }
         let op = match (s, self.ready) {
             (slot::READY, Some(ready)) => ready,
-            (slot::READY, None) => return Crossed::host(Outcome::Refused),
+            (slot::READY, None) => return Crossed::refused("this plugin states no READY op"),
             _ => self.slots[s as usize],
         };
         self.crossings.fetch_add(1, Ordering::Relaxed);
@@ -1926,13 +1992,13 @@ impl Instance {
             )
         } {
             Ok(loan) => loan,
-            Err(()) => return Crossed::host(Outcome::Refused),
+            Err(()) => return Crossed::refused("its conditional-record input could not be lent"),
         };
         // SAFETY: this crossing owns the input; the guard restores its previous extension loan.
         let _observation_input =
             match unsafe { super::observation::prepare(self.wake, s, input, unit) } {
                 Ok(loan) => loan,
-                Err(()) => return Crossed::host(Outcome::Refused),
+                Err(()) => return Crossed::refused("its observation input could not be lent"),
             };
         // SAFETY: the host owns the frame; this final input loan restores prior extensions.
         let completion_input =
@@ -1964,6 +2030,7 @@ impl Instance {
         let (raw, _head_snapshot) = if s == slot::VALIDATE
             || is_lifecycle(s)
             || self.store_bootstrap(s)
+            || self.confined_kind_op(s)
         {
             let acting = super::worker::worker_mark();
             let runtime = tokio::runtime::Handle::try_current().ok();
@@ -2051,6 +2118,8 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
+            #[cfg(test)]
+            INLINE_CROSSINGS.with(|n| n.set(n.get() + 1));
             let raw = super::export_bindings::crossing(binding, || {
                 with_crossing(Some(self), || {
                     op(instance, input.cast_const().cast(), out.cast())
@@ -3123,12 +3192,18 @@ impl<K: Kind> Plugin<K> {
         frame: &mut Frame<I, O>,
     ) -> Called {
         if token.instance != self.instance_id() || token.slot != s {
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Called::from(Crossed::refused(
+                "the recall token names another instance or op",
+            ));
         }
         let _reference = match token.kept.as_ref() {
             Some(kept) => match unsafe { RecallInput::new(frame.heads().0, kept.id) } {
                 Ok(reference) => Some(reference),
-                Err(()) => return Called::from(Crossed::host(Outcome::Refused)),
+                Err(()) => {
+                    return Called::from(Crossed::refused(
+                        "the recalled short answer could not be lent back",
+                    ))
+                }
             },
             None => None,
         };
@@ -3161,7 +3236,9 @@ impl<K: Kind> Plugin<K> {
             .and_then(|route| route.inline());
         if let Some(tickets) = &inline {
             if !tickets.starting(ticket, self.inner.instance, s, resume) {
-                return Called::from(Crossed::host(Outcome::Refused));
+                return Called::from(Crossed::refused(
+                    "its inline ticket is not starting this op",
+                ));
             }
         }
         let context = super::measurement::current_context();
@@ -3174,7 +3251,11 @@ impl<K: Kind> Plugin<K> {
             .unwrap_or_else(|| self.inner.reserve_measurements(context.as_ref(), s))
         {
             Ok(measurement) => measurement,
-            Err(_) => return Called::from(Crossed::host(Outcome::Refused)),
+            Err(_) => {
+                return Called::from(Crossed::refused(
+                    "no measurement reservation admits this call",
+                ))
+            }
         };
         let called = super::measurement::with_reservation(measurement.clone(), || {
             self.call_on(s, frame, ticket, resume, measurement.clone())
@@ -3206,7 +3287,7 @@ impl<K: Kind> Plugin<K> {
     ) -> Called {
         let inst = &*self.inner;
         if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
-            return Called::from(Crossed::host(o));
+            return Called::from(Crossed::judged(o, DOES_NOT_FIT));
         }
 
         if let Some(o) = self
@@ -3215,12 +3296,15 @@ impl<K: Kind> Plugin<K> {
                 facts.admit_direction(s, frame.heads().0.cast_const(), size_of::<I>())
             })
         {
-            return Called::from(Crossed::host(o));
+            return Called::from(Crossed::judged(
+                o,
+                "the transport direction is not admitted for this connection",
+            ));
         }
 
         let owner = super::handle::instance_id(inst.ctx()).0;
         if let Some(o) = K::admit(s, frame.heads().0.cast_const(), size_of::<I>(), owner) {
-            return Called::from(Crossed::host(o));
+            return Called::from(Crossed::judged(o, KIND_REFUSED));
         }
         let context = super::measurement::current_context();
         let measurement = match retained_measurement
@@ -3229,17 +3313,23 @@ impl<K: Kind> Plugin<K> {
             .unwrap_or_else(|| inst.reserve_measurements(context.as_ref(), s))
         {
             Ok(measurement) => measurement,
-            Err(_) => return Called::from(Crossed::host(Outcome::Refused)),
+            Err(_) => {
+                return Called::from(Crossed::refused(
+                    "no measurement reservation admits this call",
+                ))
+            }
         };
         let lifecycle = is_lifecycle(s);
         if lifecycle && !inst.enter_lifecycle() {
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Called::from(Crossed::refused(
+                "another lifecycle op is in progress on this instance",
+            ));
         }
         if lifecycle {
             // The first check ran before the lifecycle was ours: a concurrent open may have won.
             if let Some(o) = inst.refuse(s, size_of::<I>(), size_of::<O>()) {
                 inst.leave_lifecycle();
-                return Called::from(Crossed::host(o));
+                return Called::from(Crossed::judged(o, DOES_NOT_FIT));
             }
         }
         let admission = if resume {
@@ -3251,13 +3341,16 @@ impl<K: Kind> Plugin<K> {
             if lifecycle {
                 inst.leave_lifecycle();
             }
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Called::from(Crossed::refused(
+                "a binding refresh holds this instance's connection bindings, or (for a refresh) \
+                 another call still holds its binding admission",
+            ));
         };
         let Some(units) = inst.acquire(s) else {
             if lifecycle {
                 inst.leave_lifecycle();
             }
-            return Called::from(Crossed::host(Outcome::Refused));
+            return Called::from(Crossed::refused(AT_CAP));
         };
 
         if !ticket.is_none() && !resume {

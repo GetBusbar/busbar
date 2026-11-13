@@ -200,6 +200,34 @@ fn replacing_or_removing_a_dropped_set_retires_its_cached_checker() {
     }
 }
 
+/// The thread that asks a dropped-in checker to `check` retires AFTER the checker's image is
+/// unloaded: every libtest test thread does, and so does any host thread that validates
+/// configuration and exits. If `check` entered the plugin on that thread, the image's own `std`
+/// armed its thread-exit key there, and the exit jumps into the unmapped image from
+/// `__nptl_deallocate_tsd` (`ffi_thread`). That crash races process exit, so it surfaced only as an
+/// occasional SIGSEGV of `replacing_or_removing_a_dropped_set_retires_its_cached_checker` under
+/// CPU contention; counting the crossings that entered plugin code on this thread pins the cause.
+#[test]
+fn a_dropped_checker_never_enters_plugin_code_on_the_checking_thread() {
+    let candidate = dropped_secret_candidate();
+    std::thread::spawn(move || {
+        let inline = || crate::dispatch::plugin::INLINE_CROSSINGS.with(std::cell::Cell::get);
+        let rows = SecretRows::new(dispatcher, || None);
+        rows.set_dropped([candidate]);
+        let before = inline();
+        assert_eq!(rows.check(NAME, &reference_settings()), Ok(()));
+        assert_eq!(
+            inline(),
+            before,
+            "the checker's `check` ran on the caller thread, not a permanent FFI worker"
+        );
+        rows.set_dropped(std::iter::empty());
+        assert!(!rows.answers(NAME));
+    })
+    .join()
+    .expect("the checking thread finishes and retires after its checker is unloaded");
+}
+
 #[test]
 fn same_name_candidates_are_checked_using_the_exact_selected_row() {
     let mut good = dropped_secret_candidate();

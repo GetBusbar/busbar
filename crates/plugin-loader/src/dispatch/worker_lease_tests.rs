@@ -891,3 +891,65 @@ fn dropped_call_does_not_count_as_late_writebehind() {
     assert_eq!(d.stats().write_behind_late, 0);
     d.recycle(ticket);
 }
+
+/// Decision 43: the worker hands an answer back only after it has retired what that crossing
+/// held. Here the retirement is the saved short answer's lease, whose `RELEASE` the worker owes
+/// once the recall reads it; the waiting caller must not see the recall's answer while that
+/// `RELEASE` is still in the plugin. A blocking `wait` is woken by the slot's condvar, so before
+/// the fix it returned the moment the answer was stored, deterministically ahead of the release.
+#[test]
+fn a_recall_answer_is_handed_back_only_after_its_saved_short_lease_is_released() {
+    let (d, p, ptr) = rig();
+    let state = unsafe { &*ptr };
+    let ticket = d.mint(0).unwrap();
+    assert!(
+        d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0)
+            .wait(WAIT)
+            .unwrap()
+            .short
+    );
+    assert_eq!(state.released.load(Ordering::SeqCst), 0);
+    let gate = Arc::new((Mutex::new((false, false)), std::sync::Condvar::new()));
+    let held = gate.clone();
+    *state.probe.lock().unwrap() = Some(Arc::new(move || {
+        let (lock, cv) = &*held;
+        let mut g = lock.lock().unwrap();
+        g.0 = true;
+        cv.notify_all();
+        while !g.1 {
+            g = cv.wait(g).unwrap();
+        }
+    }));
+    let (answered, answer) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let reply = d.submit(&p, ticket, slot::TICK, frame(4), DeadlineClass::Call, 0);
+        scope.spawn(move || {
+            let done = reply.wait(WAIT);
+            answered.send(done.map(|d| d.outcome)).unwrap();
+        });
+        let (lock, cv) = &*gate;
+        let g = cv
+            .wait_timeout_while(lock.lock().unwrap(), WAIT, |g| !g.0)
+            .unwrap()
+            .0;
+        assert!(g.0, "the recall's saved short lease reached RELEASE");
+        drop(g);
+        let early = answer.recv_timeout(Duration::from_millis(500));
+        let mut g = lock.lock().unwrap();
+        g.1 = true;
+        cv.notify_all();
+        drop(g);
+        assert!(
+            early.is_err(),
+            "the answer was handed back while its saved short lease was still in RELEASE"
+        );
+        assert_eq!(
+            answer.recv_timeout(WAIT).unwrap(),
+            Some(Outcome::Ready),
+            "the recall answers once the release returns"
+        );
+    });
+    assert_eq!(state.released.load(Ordering::SeqCst), 1);
+    *state.probe.lock().unwrap() = None;
+    d.recycle(ticket);
+}
