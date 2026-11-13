@@ -247,11 +247,10 @@ fn every_service_is_the_installed_services_answer() {
     assert_eq!(values, (2..=11).collect::<Vec<u64>>());
 }
 
-fn kernel(blocked: &[&str], allow_all: bool) -> KernelServices {
+fn kernel(blocked: &[&str]) -> KernelServices {
     let d = busbar_kernel::config::Destinations {
         block_private_addresses: true,
         blocked: blocked.iter().map(|h| (*h).to_string()).collect(),
-        allow_all_metadata: allow_all,
         ..Default::default()
     };
     kernel_services(crate::root::connector::guard_for(&d).expect("the guard"))
@@ -267,7 +266,7 @@ fn verdict(s: &dyn HostServices, dest: &str, class: u32) -> Stored {
 #[test]
 fn dest_judge_asks_the_deployments_one_guard() {
     let late = LateServices::new();
-    late.install(Arc::new(kernel(&["metadata.corp.example"], false)))
+    late.install(Arc::new(kernel(&["metadata.corp.example"])))
         .expect("the install");
     let served = late.served();
     let judged = |dest| verdict(&*served, dest, DEFAULT_EGRESS_CLASS).value;
@@ -288,39 +287,20 @@ fn dest_judge_asks_the_deployments_one_guard() {
         "a class the guard does not know dials nothing"
     );
 
-    let open = kernel(&["metadata.corp.example"], true);
     let provider = busbar_contract::abi::host::conn::connector::EGRESS_PROVIDER;
-    let admitted = |dest| verdict(&open, dest, provider).value;
-    assert_eq!(
-        verdict(
-            &open,
+    let shut = kernel(&["metadata.corp.example"]);
+    for class in [DEFAULT_EGRESS_CLASS, provider] {
+        for dest in [
             "https://169.254.169.254/latest/meta-data/",
-            DEFAULT_EGRESS_CLASS
-        )
-        .value,
-        svc::DEST_METADATA,
-        "allow_all_metadata speaks for provider dials only"
-    );
-    assert_eq!(
-        admitted("https://metadata.corp.example/"),
-        svc::DEST_ALLOWED
-    );
-    assert_eq!(
-        admitted("https://169.254.169.254/latest/meta-data/"),
-        svc::DEST_ALLOWED,
-        "allow_all_metadata admits the metadata address, as 1.5.5 did"
-    );
-    let shut = kernel(&[], false);
-    assert_eq!(
-        verdict(
-            &shut,
-            "https://169.254.169.254/latest/meta-data/",
-            DEFAULT_EGRESS_CLASS
-        )
-        .value,
-        svc::DEST_METADATA,
-        "without the override the metadata address is refused"
-    );
+            "https://metadata.corp.example/",
+        ] {
+            assert_eq!(
+                verdict(&shut, dest, class).value,
+                svc::DEST_METADATA,
+                "no carve-out exists: {dest} is refused in class {class}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -510,13 +490,13 @@ async fn an_ingress_head_the_wire_cannot_carry_is_a_plane_fault() {
 fn the_composed_kernel_services_are_kept_for_the_driver() {
     let late = LateServices::new();
     assert!(late.kernel().is_none(), "nothing before the compose");
-    let composed = Arc::new(kernel(&[], false));
+    let composed = Arc::new(kernel(&[]));
     late.install_kernel(Arc::clone(&composed), composed.clone())
         .expect("the install");
     assert!(Arc::ptr_eq(&late.kernel().expect("kept"), &composed));
     assert!(late.is_installed());
     assert_eq!(
-        late.install_kernel(Arc::new(kernel(&[], false)), Arc::new(kernel(&[], false))),
+        late.install_kernel(Arc::new(kernel(&[])), Arc::new(kernel(&[]))),
         Err(AlreadyInstalled)
     );
 }
@@ -568,7 +548,7 @@ async fn the_late_attach_serves_sign_and_writes_trust_changes_down() {
     use busbar_kernel::trust::reverify::Policy;
     use busbar_kernel::trust::section::TrustEntry;
     let late = LateServices::new();
-    let k = Arc::new(kernel(&[], false));
+    let k = Arc::new(kernel(&[]));
     late.install_kernel(Arc::clone(&k), k).expect("the install");
     let k = late.kernel().expect("kept");
 

@@ -351,43 +351,6 @@ fn allow_all_metadata_admits_metadata_on_the_dial_and_on_dest_judge() {
     assert_eq!(*pinned.lock().unwrap(), Some(Ok(imds)));
 }
 
-/// A CARVE-OUT lifts exactly what it names: `allow_metadata_hosts: [169.254.169.254]` admits that
-#[test]
-fn a_metadata_carve_out_admits_only_what_it_names() {
-    let r = Arc::new(HandResolver::default());
-    let s = services(
-        Arc::clone(&r),
-        Destinations {
-            legacy_allow: vec!["169.254.169.254".to_string()],
-            ..Destinations::default()
-        },
-    );
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", P, Box::new(|_| {})),
-        Some(Ok("169.254.169.254:80".parse().unwrap()))
-    );
-    assert_eq!(
-        s.judge_dial("169.254.169.254:80", 0, Box::new(|_| {})),
-        Some(Err(svc::DEST_METADATA))
-    );
-    assert_eq!(
-        s.judge_dial("100.100.100.200:80", P, Box::new(|_| {})),
-        Some(Err(svc::DEST_METADATA))
-    );
-    let pinned = Arc::new(Mutex::new(None));
-    let slot = Arc::clone(&pinned);
-    assert!(s
-        .judge_dial(
-            "rebind.example:80",
-            P,
-            Box::new(move |v| *slot.lock().unwrap() = Some(v))
-        )
-        .is_none());
-    let done = r.held.lock().unwrap().pop().expect("resolved");
-    done(Ok(vec!["100.100.100.200".parse().unwrap()]));
-    assert_eq!(*pinned.lock().unwrap(), Some(Err(svc::DEST_METADATA)));
-}
-
 /// With no override nothing changes: metadata is refused on the dial, by literal and by answer.
 #[test]
 fn without_an_override_metadata_stays_refused_on_the_dial() {

@@ -169,7 +169,7 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
   [plugin security](docs/plugins.md#security-model).
 
 - **A metadata host-list entry is read the way the destination it guards is read.**
-  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` or `allow_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
+  1.6.0 Changed: a Unicode-written `blocked_metadata_hosts` entry matches the ASCII host it maps to, a destination host holding a `%` outside an IPv6 zone id is refused as `DEST_NO_HOST`, and a metadata host-list entry that names no usable host refuses startup with an error naming the entry.
   On 1.5.5 the lists compared raw strings, so `１０.９９.９９.９９` matched nothing and
   `https://10.99.99.99/` was dialled; now it is blocked. A `://` URL's host is decoded first and an
   IPv6 zone id (`fe80::1%eth0`) is judged as its address, as before. The entries refused at startup are a `%`
@@ -712,9 +712,20 @@ Details are in [the 1.6.0 migration guide](docs/migration-1.6.md).
   `Retry-After` needs no change. A client that treated a `401` from a failing IdP as "discard the
   token" now keeps a valid token through the outage.
 - 1.6.0 Breaking: the destination guard now also judges an A2A peer's fetches, a streaming upstream and a duplex or WebSocket dial, so a private, loopback or cloud-metadata destination there is refused unless the configuration allows it, as a private provider host is.
-  **Migration:** name an internal peer or upstream in `advanced.allow_destinations` (an A2A
-  registration may also set its own `allow_private: true`), as a provider on an internal DNS name
-  already needs.
+  **Migration:** name an internal peer or upstream in `advanced.allow_destinations`, as a provider
+  on an internal DNS name already needs.
+- 1.6.0 Breaking: `tools.<server>.allow_private` and `agents.<agent>.allow_private` are retired and refused (BUSBAR-3135); `advanced.allow_destinations` is the one private-address policy for every outbound connection.
+  `busbar --migrate-config` removes the key and lists exactly the hosts that registration dials
+  (BUSBAR-3410). The MCP and A2A planes admit plaintext `http://` to a loopback host only; a host a
+  tool argument names is never admitted to a private address.
+- 1.6.0 Breaking: `security.allow_metadata_hosts`, `security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` are retired and refused at startup (BUSBAR-3136); cloud metadata is refused for every outbound connection and no configuration admits it.
+  `busbar --migrate-config` removes the keys and names each removed entry (BUSBAR-3411). An
+  `advanced.allow_destinations` entry that names a cloud-metadata host, address, or /32 or /128 equal
+  to one refuses startup (BUSBAR-3134). `security.blocked_metadata_hosts` still extends the
+  denylist. BUSBAR-5045 is retired. Signed by the owner on 2026-11-13.
+- 1.6.0 Breaking: plugin ABI rules frozen for 1.6.0: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) or an operator-infrastructure need over a framed transport without `target_from` is refused (BUSBAR-6013); `dest.judge` refuses the operator-infrastructure class and a mid-stream upgrade refuses an offered name that is not the dialled host (BUSBAR-6014).
+  `UPGRADE_VERIFY_OFF` and a CA PEM through `trust_from` stay honoured in 1.6.x, deprecated and
+  refused from 1.7.0; a used `UPGRADE_VERIFY_OFF` is flagged once per instance (BUSBAR-6015).
 - 1.6.0 Breaking: `POST /api/v1/admin/ledger/amend-rate-history` is served on every node and needs only a `full` admin grant, with no operator key or signature.
   1.5.5 had no such route, and its router answered the path `404 not_found`; a 1.6.0 node answers
   with the verb's own result, so a malformed correction is `400 invalid_request`. No admin verb

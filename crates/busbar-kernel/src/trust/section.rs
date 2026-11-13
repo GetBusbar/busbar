@@ -80,6 +80,12 @@ fn read_entry(
         approved: BTreeMap::new(),
     };
     let map = entry.as_mapping();
+    if map
+        .and_then(|m| m.get(RETIRED_PRIVATE_REACH_KEY))
+        .is_some_and(|v| !v.is_null())
+    {
+        return Err(private_reach_retired(at, RETIRED_PRIVATE_REACH_KEY));
+    }
     for decl in keys {
         let value = map.and_then(|m| m.get(decl.key)).filter(|v| !v.is_null());
         match decl.role {
@@ -108,6 +114,11 @@ fn read_entry(
     }
     Ok(out)
 }
+
+/// The key 1.5.5 and the 1.6 betas wrote a registration's private reach under (`tools.<server>`,
+/// `agents.<agent>`): refused BY NAME in every plane registration, whatever its plane declares, so
+/// the coded refusal (BUSBAR-3135) survives the planes dropping the retired trust role.
+pub const RETIRED_PRIVATE_REACH_KEY: &str = "allow_private";
 
 /// THE RETIRED PER-REGISTRATION PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`). Every outbound
 /// connection is governed by one policy, `advanced.block_private_addresses` with

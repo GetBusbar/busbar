@@ -155,6 +155,33 @@ fn plane_context_refuses_nested_pin_counts_before_forming_a_slice() {
     );
 }
 
+/// BUSBAR-6013: a plane declaring the retired trust role `TRUST_PRIVATE_REACH` (4) is refused at
+/// load, the refusal naming the key and the role.
+#[test]
+fn plane_context_refuses_the_retired_private_reach_role() {
+    use busbar_contract::abi::plane::{TrustKey, TRUST_PRIVATE_REACH};
+    let key = TrustKey {
+        key: AbiStr {
+            ptr: b"allow_private".as_ptr(),
+            len: 13,
+        },
+        role: TRUST_PRIVATE_REACH,
+        flags: 0,
+        default: z(),
+        mechanisms: null(),
+        mechanisms_len: 0,
+    };
+    let refused = bounded_tail_context(|tail| {
+        tail.trust_keys = &key;
+        tail.trust_keys_len = 1;
+    })
+    .err()
+    .expect("a retired trust role refuses the plane");
+    for part in ["BUSBAR-6013", "`allow_private`", "TRUST_PRIVATE_REACH (4)", "retired"] {
+        assert!(refused.contains(part), "{part}: {refused}");
+    }
+}
+
 #[test]
 fn plane_context_keeps_a_valid_openapi_blob() {
     let document = b"{\"openapi\":\"3.1.0\"}";

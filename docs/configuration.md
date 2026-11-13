@@ -868,7 +868,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 | `scope` | string | no | Catalog value | OAuth scope for `oauth-client-credentials`. |
 | `subject` | string | no | Catalog value | JWT-bearer assertion `sub` claim (RFC 7523 §3) for `jwt-bearer`. Opt-in. See the catalog `subject` row above; unset means no `sub` claim, the correct default for a plain Vertex AI service account. |
 | `health` | object | no | Catalog value | Override the catalog's health probe config. |
-| `allow_metadata_hosts` | list<string> | no | `[]` | Per-provider surgical exception: hosts/IPs to unblock from the cloud-metadata SSRF denylist for **this provider only**. See [Security: Provider upstreams & SSRF](/docs/security/#the-control-matrix). |
+| `allow_metadata_hosts` | list<string> | no | — | **Retired in 1.6.0 and refused** (BUSBAR-3136): cloud metadata is refused for every outbound connection and no configuration admits it. `busbar --migrate-config` removes it (BUSBAR-3411). |
 
 **Credential format by protocol** (the VALUE the `api_key` reference resolves to):
 
@@ -1573,24 +1573,21 @@ Module-level `open()` configuration for `kind: secret` plugins, keyed by module 
 
 ### `security`
 
-Optional. Extends or overrides the hardcoded cloud-metadata SSRF denylist. When absent, only the built-in denylist applies. See [Security: Provider upstreams & SSRF](https://getbusbar.com/docs/security/) for the full threat model, the complete denylist, and worked examples.
+Optional. Extends the hardcoded cloud-metadata SSRF denylist. When absent, only the built-in denylist applies. Cloud metadata is refused for every outbound connection, in every egress class, and no configuration admits it. See [Security: Provider upstreams & SSRF](https://getbusbar.com/docs/security/) for the full threat model, the complete denylist, and worked examples.
 
 ```yaml
 security:
   blocked_metadata_hosts:
     - "169.254.100.1"
-  allow_metadata_hosts:
-    - "metadata.google.internal"
-  allow_all_metadata: false   # default; set true only for dev, logs a startup WARNING
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `blocked_metadata_hosts` | list<string> | `[]` | Additional hosts/IPs appended to the hardcoded denylist. Entries may be IP literals or DNS hostnames. Matched with the same obfuscation-aware canonicalization as the built-in list. |
-| `allow_metadata_hosts` | list<string> | `[]` | Hosts/IPs to **unblock globally**: removed from the effective denylist for all providers. Use per-provider `allow_metadata_hosts` for a narrower exception. |
-| `allow_all_metadata` | bool | `false` | Disables the SSRF guard entirely. Every cloud-metadata endpoint becomes reachable by every provider. **Logs a startup WARNING.** Development use only. |
+| `allow_metadata_hosts` | list<string> | — | **Retired in 1.6.0 and refused** (BUSBAR-3136). `busbar --migrate-config` removes it, naming each removed entry (BUSBAR-3411). |
+| `allow_all_metadata` | bool | — | **Retired in 1.6.0 and refused** when `true` (BUSBAR-3136). `busbar --migrate-config` removes it. |
 
-**Precedence:** a host is blocked iff it is in the denylist (hardcoded union `blocked_metadata_hosts`) **and not** in any allow-override (`security.allow_metadata_hosts` union that provider's `allow_metadata_hosts`) **and not** `allow_all_metadata`. Allow always wins.
+A workload that needs cloud credentials uses workload-identity federation (IRSA, AKS workload identity, GKE workload identity federation) through a projected token file, never the instance metadata endpoint.
 
 ---
 
@@ -1983,10 +1980,14 @@ private or loopback without an entry. A cloud-metadata address is refused for ev
 configured ones included (a configured name that later resolves to one is refused). The check runs after name resolution, and the connection is
 made to the address that was checked; an IP address written in a URL is checked as that address. Through an HTTP(S)/ALL_PROXY CONNECT proxy, the target is checked before the proxy is asked: its name always, and its addresses when the name resolves locally; a name that does not resolve locally is passed to the proxy, and what it reaches behind the proxy is the proxy's boundary. `allow_destinations` lists what is always allowed: an exact host (`ollama.internal`), a
 wildcard (`*.corp.example.com` matches names under it, not the apex), an IP (`127.0.0.1`), or a CIDR
-(`10.20.0.0/16`). A host entry never admits a cloud-metadata answer; only an IP or CIDR entry naming the
-address does. With `block_private_addresses: false`, cloud metadata is still refused. Both are
-**boot-time** knobs. The 1.5.5 keys `security.allow_metadata_hosts`, `security.blocked_metadata_hosts`,
-`security.allow_all_metadata` and `providers.<p>.allow_metadata_hosts` still load and feed the same check.
+(`10.20.0.0/16`). Cloud metadata (the built-in metadata names and addresses, IPv4 and IPv6 link-local,
+and `security.blocked_metadata_hosts`) is refused in every egress class and no entry admits it: an
+entry that names a metadata host, a metadata address or a /32 or /128 equal to one refuses startup
+(BUSBAR-3134), and a wider network that merely covers a metadata address (`169.254.0.0/16`) loads but
+never admits it. With `block_private_addresses: false`, cloud metadata is still refused. Both are
+**boot-time** knobs. Of the 1.5.5 keys, `security.blocked_metadata_hosts` still loads and extends the
+same check; `security.allow_metadata_hosts`, `security.allow_all_metadata` and
+`providers.<p>.allow_metadata_hosts` are retired and refused (BUSBAR-3136).
 
 **One setting governs every outbound connection, plugins included.** No plugin and no transport
 dials on its own: a plugin declares what it needs (a transport and an egress class), and busbar's
@@ -1995,7 +1996,7 @@ open only the address it checked. So `block_private_addresses` and `allow_destin
 export sink (OTLP, webhook), a hook's outbound call (`webrequest`), an identity provider fetch
 (OIDC), a plane's upstream (an MCP server, an A2A agent) and every other plugin dial alike; there
 is no per-plugin private-address switch (the 1.5.x `tools.<server>.allow_private` and
-`agents.<agent>.allow_private` are refused, BUSBAR-3027; `busbar --migrate-config` moves them here). The scheme a destination may use is part of the
+`agents.<agent>.allow_private` are refused, BUSBAR-3135; `busbar --migrate-config` moves them here). The scheme a destination may use is part of the
 same check: an export sink or hook on the `loopback-allowed` class takes `https://`, or plaintext
 `http://` only to loopback; an `open-web` destination (a webhook sink, an identity provider's
 documents) takes `https://` only.

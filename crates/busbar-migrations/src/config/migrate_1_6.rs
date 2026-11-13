@@ -8,6 +8,7 @@ const LEGACY_UNPRICED_BILLABLE_UNIT_RATE: i32 = 0;
 pub(super) fn migrate(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     migrate_bootstrap(root, changes);
     drop_hostless_metadata_entries(root, changes);
+    retire_metadata_carve_outs(root, changes, warnings);
     price_open_units(root, changes);
     bind_ungoverned_principals(root, changes, warnings);
     retire_private_reach(root, changes, warnings);
@@ -56,8 +57,54 @@ fn drop_hostless(m: &mut Mapping, list_key: &str, path: &str, changes: &mut Vec<
 
 fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>) {
     if let Some(security) = mapping_mut(root, "security") {
-        for key in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
-            drop_hostless(security, key, &format!("security.{key}"), changes);
+        drop_hostless(
+            security,
+            "blocked_metadata_hosts",
+            "security.blocked_metadata_hosts",
+            changes,
+        );
+    }
+}
+
+/// The 1.5.5 cloud-metadata carve-outs, retired in 1.6.0 (BUSBAR-3136): `security.allow_metadata_hosts`,
+/// `security.allow_all_metadata` and each provider's `allow_metadata_hosts` are removed, whatever
+/// they hold, and each entry that admitted something is named in a BUSBAR-3411 warning: cloud
+/// metadata is refused for every outbound connection, so a destination it reached is now refused.
+fn retire_metadata_carve_outs(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
+    let mut report = |path: &str, value: Value| {
+        let entries: Vec<String> = match &value {
+            Value::Sequence(list) => list
+                .iter()
+                .map(|e| e.as_str().map_or_else(|| format!("{e:?}"), str::to_owned))
+                .collect(),
+            Value::Bool(true) => vec!["true".to_owned()],
+            _ => Vec::new(),
+        };
+        if entries.is_empty() {
+            changes.push(format!(
+                "{CODE}: {path}: removed (it admitted nothing; 1.6.0 refuses the key: cloud metadata \
+                 is refused for every outbound connection)"
+            ));
+        }
+        for entry in entries {
+            warnings.push(format!(
+                "{CODE}: {path}: removed entry '{entry}'; 1.6.0 refuses cloud metadata for every \
+                 outbound connection and no configuration admits it, so a destination it reached \
+                 is now refused (use workload-identity federation for instance credentials)"
+            ));
+        }
+    };
+    if let Some(security) = mapping_mut(root, "security") {
+        for key in ["allow_metadata_hosts", "allow_all_metadata"] {
+            if let Some(value) = security.remove(Value::from(key)) {
+                report(&format!("security.{key}"), value);
+            }
         }
     }
     if let Some(providers) = mapping_mut(root, "providers") {
@@ -65,8 +112,9 @@ fn drop_hostless_metadata_entries(root: &mut Mapping, changes: &mut Vec<String>)
             let (Some(name), Value::Mapping(provider)) = (name.as_str(), provider) else {
                 continue;
             };
-            let path = format!("providers.{name}.allow_metadata_hosts");
-            drop_hostless(provider, "allow_metadata_hosts", &path, changes);
+            if let Some(value) = provider.remove(Value::from("allow_metadata_hosts")) {
+                report(&format!("providers.{name}.allow_metadata_hosts"), value);
+            }
         }
     }
 }
@@ -89,6 +137,8 @@ const PRIVATE_REACH_URLS: &[&[&str]] = &[
 /// and EXACTLY the hosts that registration dials are listed there (no wildcard, no network). A
 /// metadata or unjudgeable host is never listed. `allow_private: false` said nothing and is dropped.
 fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::MIGRATE_PRIVATE_REACH_TO_ALLOWLIST.banner();
     let mut hosts: Vec<(String, String, bool)> = Vec::new();
     for section in PRIVATE_REACH_SECTIONS {
         let Some(registrations) = mapping_mut(root, section) else {
@@ -104,7 +154,7 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
             };
             if value.as_bool() != Some(true) {
                 changes.push(format!(
-                    "{at}.{PRIVATE_REACH_KEY}: removed (it was not `true`, so it admitted nothing; \
+                    "{CODE}: {at}.{PRIVATE_REACH_KEY}: removed (it was not `true`, so it admitted nothing; \
                      1.6.0 refuses the key)"
                 ));
                 continue;
@@ -122,7 +172,7 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
                 .collect();
             if urls.is_empty() {
                 changes.push(format!(
-                    "{at}.{PRIVATE_REACH_KEY}: removed; the registration names no URL it dials, so \
+                    "{CODE}: {at}.{PRIVATE_REACH_KEY}: removed; the registration names no URL it dials, so \
                      nothing was added to advanced.allow_destinations"
                 ));
             }
@@ -133,12 +183,11 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
     }
     for (at, url, plaintext) in hosts {
         allow_registration_host(root, &at, &url, changes, warnings);
-        if plaintext {
+        if plaintext && !crate::config::migrate_1_6::names_loopback_url(&url) {
             warnings.push(format!(
-                "{at}: `{url}` is plaintext http://, which `{PRIVATE_REACH_KEY}: true` also let the \
-                 registration use; the scheme a destination may use is now decided by the one \
-                 destination guard for every connection. Serve it over https://, or check \
-                 docs/configuration.md#advanced for whether plaintext to this host is admitted"
+                "{CODE}: {at}: `{url}` is plaintext http:// to a host other than loopback, which \
+                 `{PRIVATE_REACH_KEY}: true` also let the registration use; it is refused at GA; \
+                 use https (a per-destination `plaintext: true` entry arrives after 1.6.0)"
             ));
         }
     }
@@ -152,13 +201,15 @@ fn allow_registration_host(
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
+    const CODE: busbar_contract::diagnostic::Banner =
+        busbar_kernel::diagnostics::MIGRATE_PRIVATE_REACH_TO_ALLOWLIST.banner();
     use busbar_contract::net::{host_is_cloud_metadata, is_alternate_ipv4_encoding, judged_host};
     let host = busbar_contract::net::target_host(url)
         .and_then(|h| judged_host(&h).ok())
         .filter(|h| !h.is_empty());
     let Some(host) = host else {
         warnings.push(format!(
-            "{at}.{PRIVATE_REACH_KEY}: removed; its URL names no host the destination guard can \
+            "{CODE}: {at}.{PRIVATE_REACH_KEY}: removed; its URL names no host the destination guard can \
              judge, so nothing was added to advanced.allow_destinations; add the host by hand"
         ));
         return;
@@ -169,7 +220,7 @@ fn allow_registration_host(
         .to_owned();
     if host_is_cloud_metadata(&host) || is_alternate_ipv4_encoding(&host) {
         warnings.push(format!(
-            "{at}.{PRIVATE_REACH_KEY}: removed; '{host}' was not added to \
+            "{CODE}: {at}.{PRIVATE_REACH_KEY}: removed; '{host}' was not added to \
              advanced.allow_destinations: a cloud-metadata host or an alternate IPv4 spelling is \
              refused whatever the list says (it was refused under `{PRIVATE_REACH_KEY}` too)"
         ));
@@ -177,18 +228,36 @@ fn allow_registration_host(
     }
     if crate::config::migrate_plugins::already_allowed(root, &host) {
         changes.push(format!(
-            "{at}.{PRIVATE_REACH_KEY}: removed; '{host}' is already listed in \
+            "{CODE}: {at}.{PRIVATE_REACH_KEY}: removed; '{host}' is already listed in \
              advanced.allow_destinations, which now governs it"
         ));
         return;
     }
     match crate::config::migrate_plugins::push_allowed(root, at, &host) {
         Ok(_) => changes.push(format!(
-            "{at}.{PRIVATE_REACH_KEY}: replaced by advanced.allow_destinations: '{host}' (one \
+            "{CODE}: {at}.{PRIVATE_REACH_KEY}: replaced by advanced.allow_destinations: '{host}' (one \
              setting governs every outbound connection in 1.6.0; exactly this host is allowed, \
              not every private address)"
         )),
-        Err(todo) => warnings.push(todo),
+        Err(todo) => warnings.push(format!("{CODE}: {todo}")),
+    }
+}
+
+/// Whether `url` names a LOOPBACK host (`localhost`, `*.localhost`, `127/8`, `::1`): a plaintext
+/// registration to one keeps working at GA, so the retirement warns about every other.
+pub(crate) fn names_loopback_url(url: &str) -> bool {
+    let Some(host) = busbar_contract::net::target_host(url)
+        .and_then(|h| busbar_contract::net::judged_host(&h).ok())
+    else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match busbar_contract::net::host_ip(host) {
+        Some(std::net::IpAddr::V4(v4)) => v4.is_loopback(),
+        Some(std::net::IpAddr::V6(v6)) => {
+            v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback())
+        }
+        None => host == "localhost" || host.ends_with(".localhost"),
     }
 }
 

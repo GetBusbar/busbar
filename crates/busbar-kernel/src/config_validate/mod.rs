@@ -41,6 +41,19 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     validate_with_plugins(cfg, unset_env_vars, false)
 }
 
+/// BUSBAR-3136: a retired 1.5.5 cloud-metadata carve-out key (`security.allow_metadata_hosts`,
+/// `security.allow_all_metadata: true`, a provider's `allow_metadata_hosts`) is refused: cloud
+/// metadata is refused for every outbound connection and no configuration admits it.
+#[must_use]
+pub fn metadata_carve_out_retired(key: &str) -> String {
+    let code = crate::diagnostics::CONFIG_METADATA_CARVE_OUT_RETIRED.banner();
+    format!(
+        "{key} is retired ({code}): cloud metadata is refused for every outbound connection and no \
+         configuration admits it; remove the key (`busbar --migrate-config` does). \
+         security.blocked_metadata_hosts still extends the denylist"
+    )
+}
+
 /// Validate the metadata policy used before Store recovery or plugin fetching. Listener,
 /// authentication and application definitions are validated after overlay recovery.
 pub fn validate_bootstrap_security(cfg: &RootCfg) -> Result<(), Vec<String>> {
@@ -50,20 +63,16 @@ pub fn validate_bootstrap_security(cfg: &RootCfg) -> Result<(), Vec<String>> {
         &cfg.blocked_metadata_hosts,
         &mut errors,
     );
-    reject_cidr_metadata_entries(
-        "security.allow_metadata_hosts",
-        &cfg.allow_metadata_hosts,
-        &mut errors,
-    );
+    if !cfg.allow_metadata_hosts.is_empty() {
+        errors.push(metadata_carve_out_retired("security.allow_metadata_hosts"));
+    }
+    if cfg.allow_all_metadata {
+        errors.push(metadata_carve_out_retired("security.allow_all_metadata"));
+    }
 
     reject_unmappable_metadata_entries(
         "security.blocked_metadata_hosts",
         &cfg.blocked_metadata_hosts,
-        &mut errors,
-    );
-    reject_unmappable_metadata_entries(
-        "security.allow_metadata_hosts",
-        &cfg.allow_metadata_hosts,
         &mut errors,
     );
 
@@ -1697,14 +1706,12 @@ fn validate_token_endpoint_fields(
             host
         }
     });
-    if let Some(host) = ssrf_blocked_host(
+    if let Some(host) = metadata_blocked(
         authority.as_deref().unwrap_or(target),
-        &posture.allow_overrides,
-        posture.allow_all,
         &posture.blocked_hosts,
     ) {
         let target = busbar_kernel_egress::trust::net::redact_userinfo(target);
-        errors.push(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"));
+        errors.push(format!("provider '{provider_name}' token_url '{target}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied and no configuration admits them)"));
     }
 }
 
@@ -1769,31 +1776,18 @@ fn validate_providers_with(
         let style_flags = style.map_or(0, crate::preflight::style_flags);
         let style = style.unwrap_or_default();
 
-        reject_cidr_metadata_entries(
-            &format!("provider '{provider_name}' allow_metadata_hosts"),
-            &provider_cfg.allow_metadata_hosts,
-            errors,
-        );
-        reject_unmappable_metadata_entries(
-            &format!("provider '{provider_name}' allow_metadata_hosts"),
-            &provider_cfg.allow_metadata_hosts,
-            errors,
-        );
-        let allow_overrides: Vec<String> = provider_cfg
-            .allow_metadata_hosts
-            .iter()
-            .chain(cfg.allow_metadata_hosts.iter())
-            .cloned()
-            .collect();
+        if !provider_cfg.allow_metadata_hosts.is_empty() {
+            errors.push(metadata_carve_out_retired(&format!(
+                "provider '{provider_name}' allow_metadata_hosts"
+            )));
+        }
 
         let base_url = &provider_cfg.base_url;
         let concrete_target = !is_env_placeholder(base_url);
         if let Some(host) = concrete_target
             .then(|| {
-                ssrf_blocked_host(
+                metadata_blocked(
                     base_url,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 )
             })
@@ -1801,7 +1795,7 @@ fn validate_providers_with(
         {
             let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(format!(
-                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
+                "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them; security.blocked_metadata_hosts extends the denylist)"
             ));
         }
 
@@ -1812,15 +1806,13 @@ fn validate_providers_with(
                 ));
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path);
-                if let Some(host) = ssrf_blocked_host(
+                if let Some(host) = metadata_blocked(
                     &composed,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(format!(
-                        "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
+                        "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them)"
                     ));
                 }
             }
@@ -1833,15 +1825,13 @@ fn validate_providers_with(
                 ));
             } else if concrete_target {
                 let composed = format!("{}{}", provider_cfg.base_url, path_base);
-                if let Some(host) = ssrf_blocked_host(
+                if let Some(host) = metadata_blocked(
                     &composed,
-                    &allow_overrides,
-                    cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
                     let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(format!(
-                        "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
+                        "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them)"
                     ));
                 }
             }
@@ -1929,8 +1919,6 @@ fn validate_providers_with(
                     vet_token_uri(
                         &uri,
                         &MetadataPosture {
-                            allow_overrides: allow_overrides.clone(),
-                            allow_all: cfg.allow_all_metadata,
                             blocked_hosts: cfg.blocked_metadata_hosts.clone(),
                         },
                     )
@@ -1960,18 +1948,13 @@ fn validate_providers_with(
     }
 }
 
-/// ONE PROVIDER'S METADATA POSTURE, owned: the hosts its destinations may reach past the
-/// cloud-metadata denylist (its own `allow_metadata_hosts` and the global
-/// `security.allow_metadata_hosts`, the union every destination check here builds), the nuclear
-/// `security.allow_all_metadata`, and the operator's extra `security.blocked_metadata_hosts`. The
-/// composition root carries it to the seal, where a resolved credential's own token endpoint is
-/// judged under it ([`vet_token_uri`]), as 1.5.5's boot judged it (`main.rs`, v1.5.5).
+/// ONE PROVIDER'S METADATA POSTURE, owned: the operator's extra `security.blocked_metadata_hosts`
+/// beside the built-in denylist. Nothing lifts a refusal: the 1.5.5 carve-outs
+/// (`allow_metadata_hosts`, `allow_all_metadata`) are retired (BUSBAR-3136). The composition root
+/// carries it to the seal, where a resolved credential's own token endpoint is judged under it
+/// ([`vet_token_uri`]), as 1.5.5's boot judged it (`main.rs`, v1.5.5).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetadataPosture {
-    /// The provider's allow-overrides, then the global ones.
-    pub allow_overrides: Vec<String>,
-    /// `security.allow_all_metadata`.
-    pub allow_all: bool,
     /// `security.blocked_metadata_hosts`.
     pub blocked_hosts: Vec<String>,
 }
@@ -1980,25 +1963,19 @@ impl MetadataPosture {
     #[must_use]
     pub fn global(cfg: &RootCfg) -> Self {
         Self {
-            allow_overrides: cfg.allow_metadata_hosts.clone(),
-            allow_all: cfg.allow_all_metadata,
             blocked_hosts: cfg.blocked_metadata_hosts.clone(),
         }
     }
 
     #[must_use]
-    pub fn for_provider(&self, provider: &crate::config::ResolvedProvider) -> Self {
-        Self {
-            allow_overrides: provider
-                .allow_metadata_hosts
-                .iter()
-                .chain(self.allow_overrides.iter())
-                .cloned()
-                .collect(),
-            allow_all: self.allow_all,
-            blocked_hosts: self.blocked_hosts.clone(),
-        }
+    pub fn for_provider(&self, _provider: &crate::config::ResolvedProvider) -> Self {
+        self.clone()
     }
+}
+
+/// The metadata denylist judged with no carve-out: `url`'s blocked host, if it names one.
+fn metadata_blocked(url: &str, blocked: &[String]) -> Option<String> {
+    ssrf_blocked_host(url, &[], false, blocked)
 }
 
 fn outbound_credential_refusals(
@@ -2100,15 +2077,10 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));
     }
-    if let Some(host) = ssrf_blocked_host(
-        token_uri,
-        &posture.allow_overrides,
-        posture.allow_all,
-        &posture.blocked_hosts,
-    ) {
+    if let Some(host) = metadata_blocked(token_uri, &posture.blocked_hosts) {
         let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
-            "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
+            "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied and no configuration admits them)"
         ));
     }
     Ok(())

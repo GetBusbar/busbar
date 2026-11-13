@@ -126,13 +126,10 @@ pub fn validate_provider_destinations(
                 continue;
             }
             // Shared authority normalization retains the existing metadata override ordering.
-            if let Some(blocked) = ssrf_blocked_host(
-                &destination.authority,
-                &posture.allow_overrides,
-                posture.allow_all,
-                &posture.blocked_hosts,
-            ) {
-                errors.push(format!("{prefix} targets a blocked cloud-metadata host '{blocked}' (cloud-metadata/IMDS endpoints are denied; override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"));
+            if let Some(blocked) =
+                ssrf_blocked_host(&destination.authority, &[], false, &posture.blocked_hosts)
+            {
+                errors.push(format!("{prefix} targets a blocked cloud-metadata host '{blocked}' (cloud-metadata/IMDS endpoints are denied and no configuration admits them)"));
             }
         }
     }
