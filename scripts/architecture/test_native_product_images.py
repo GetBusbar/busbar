@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -261,7 +262,7 @@ class TrustedScript(Fixture):
                 root, entry = self.staged(data, **changes)
                 with self.assertRaises(Violation):
                     product_artifacts.install_prebuilt(entry, ROW, self.image_path, root=root)
-                os.system('rm -rf ' + str(root))
+                shutil.rmtree(root)
 
     def test_build_skips_cargo_only_for_indexed_products(self):
         root, entry = self.staged()
