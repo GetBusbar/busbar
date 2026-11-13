@@ -613,7 +613,8 @@ class PipelineRules(unittest.TestCase):
     def test_dev_pipelines_keep_their_jobs(self):
         env = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='dev', CI_COMMIT_REF_PROTECTED='true')
         # The root workspace tests run on every dev push too (core-test), not only in QA.
-        dev = {'core-build', 'core-clippy', 'core-test', 'core-conformance'}
+        # The 1.5.5 oracle replay judges every dev change (core-oracle shards and their merge).
+        dev = {'core-build', 'core-clippy', 'core-test', 'core-conformance', 'core-oracle', 'core-oracle-merge'}
         self.assertEqual(self.jobs(env), dev | {'plugin-dependency-units', 'website-dev'})
         self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='api')), dev)
         self.assertEqual(self.jobs(dict(env, CI_PIPELINE_SOURCE='schedule')), {'security-scans'})
@@ -624,10 +625,11 @@ class PipelineRules(unittest.TestCase):
         mr = dict(self.CORE, CI_PIPELINE_SOURCE='merge_request_event', CI_MERGE_REQUEST_TARGET_BRANCH_NAME='dev',
                   CI_COMMIT_REF_PROTECTED='false')
         self.assertTrue(self.workflow(mr))
-        self.assertEqual(self.jobs(mr), {'core-build', 'core-clippy', 'core-test', 'core-conformance'})
+        self.assertEqual(self.jobs(mr), {'core-build', 'core-clippy', 'core-test', 'core-conformance',
+                                         'core-oracle', 'core-oracle-merge'})
         qa = dict(self.CORE, CI_PIPELINE_SOURCE='push', CI_COMMIT_BRANCH='qa', CI_COMMIT_REF_PROTECTED='true')
         everything = {'core-build', 'core-clippy', 'core-conformance', 'core-conformance-debug',
-                      'native-qualification', 'security-scans'}
+                      'core-oracle', 'core-oracle-merge', 'native-qualification', 'security-scans'}
         self.assertTrue(self.workflow(qa))
         # Only a qa push retains the certified evidence for main.
         self.assertEqual(self.jobs(qa), everything | {'qa-certification'})
