@@ -405,7 +405,7 @@ A successful active health probe (it tests the shared upstream) clears the break
 ### States
 
 The canonical Closed/Open/HalfOpen transition graph (the FSM itself) lives on
-[circuit-breaker.md](circuit-breaker.md#states), the source of truth. What an operator watching
+[circuit-breaker.md](circuit-breaker.md#breaker-state-machine), the source of truth. What an operator watching
 `/stats` and `/metrics` sees is not that graph but **two independent axes**: the breaker state and
 the lane's spare capacity, each exposed as its own field and never collapsed into one. The matrix
 below reads them together, so a saturated Open lane shows up as **both** open **and** at capacity.
