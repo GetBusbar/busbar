@@ -777,8 +777,6 @@ pub struct GovState {
     #[cfg(test)]
     identity_wait_observer: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 
-    self_mint_holds: std::sync::atomic::AtomicBool,
-
     transition_self_holds: RwLock<std::collections::BTreeSet<String>>,
 
     caller_refs: crate::plane_driver::CallerRefs,
@@ -910,22 +908,75 @@ pub enum SelfMintOp {
     Refresh,
 }
 
-pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
-
-/// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
-/// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
+/// Why the self-serve mint refused to issue: an admin's, another provider's or the subject's own
+/// hold, never a store failure. The token exchange answers each one 403 with BUSBAR-4043 and the
+/// reason ([`SelfMintRefusal::message`]); the hosted login shows it on its own page. Only an admin
+/// clears a hold: `PATCH {enabled:true}` for a disabled key, `DELETE` (the reset) for any key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfMintRefusal {
-    /// The subject holds a self-serve binding an admin disabled (or revoked) and has not deleted. A
-    /// login or refresh must not re-enable it or route around it with a fresh key.
+    /// The subject holds a self-serve binding an admin disabled and has not deleted. A login or
+    /// refresh must not re-enable it or route around it with a fresh key.
     Disabled,
     /// The subject's binding was minted through a different identity provider
     /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
-    /// The subject's binding was revoked (denylisted).
+    /// The subject's binding was revoked (denylisted). Revoked is terminal: no login, refresh or
+    /// admin PATCH brings that key back; only an admin DELETE resets the subject.
     Revoked,
-    /// The subject itself is held (a principal transition today).
+    /// The subject itself is held (a principal transition today), whatever its keys say.
     Held,
+}
+
+impl SelfMintRefusal {
+    /// The stable token naming this hold in the admin log (`key:<id>#<token>`) and in diagnostics.
+    #[must_use]
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::OtherProvider => "other_provider",
+            Self::Revoked => "revoked",
+            Self::Held => "on_hold",
+        }
+    }
+
+    /// The user-facing reason. Names no other party: not the admin, not the other provider.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Disabled => {
+                "an administrator disabled it; ask your Busbar administrator to re-enable or \
+                 delete it"
+            }
+            Self::Revoked => {
+                "an administrator revoked it, and a revoked key is never re-enabled; ask your \
+                 Busbar administrator to delete it so your next sign-in issues a new key"
+            }
+            Self::OtherProvider => {
+                "it was issued through a different sign-in provider; sign in with that provider, \
+                 or ask your Busbar administrator to delete it"
+            }
+            Self::Held => "your account is on hold; ask your Busbar administrator",
+        }
+    }
+
+    /// The coded refusal the exchange body and the hosted page carry (BUSBAR-4043).
+    #[must_use]
+    pub fn message(self) -> String {
+        crate::diagnostics::coded(
+            &crate::diagnostics::SELF_MINT_HELD,
+            format_args!("your self-serve key is on hold: {}", self.reason()),
+        )
+    }
+
+    /// Which hold a subject with several held rows answers: the most final one.
+    pub(crate) fn precedence(self) -> u8 {
+        match self {
+            Self::OtherProvider => 1,
+            Self::Disabled => 2,
+            Self::Revoked => 3,
+            Self::Held => 4,
+        }
+    }
 }
 
 /// A self-serve mint failure: a typed refusal, or the store failing underneath the mint.

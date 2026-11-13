@@ -307,7 +307,12 @@ fn issue_page(base_url: &str, module_name: &str, issue: SelfKeyIssue) -> Respons
              Busbar admin to review your access.",
         ),
 
-        SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound | SelfKeyIssue::Held(_) => error_page(
+        SelfKeyIssue::Held(reason) => error_page(
+            StatusCode::FORBIDDEN,
+            "Your key is on hold",
+            &reason.message(),
+        ),
+        SelfKeyIssue::NoGrant | SelfKeyIssue::Unbound => error_page(
             StatusCode::FORBIDDEN,
             "No access yet",
             "Your account isn't granted a self-serve key yet. Ask your Busbar admin to assign \

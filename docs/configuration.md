@@ -329,7 +329,9 @@ Giving a provider definition a `browser_login:` block also lets developers **sel
 budgeted key by signing in. Busbar exposes a `GET`/`POST /auth/token` exchange automatically. (1.5.3
 folded the retired parallel `auth.methods:` map into the provider definition: a client id/secret
 belongs to ONE IdP registration, so it belongs on that provider.) See
-[Token exchange (self-serve keys)](token-exchange.md).
+[Token exchange (self-serve keys)](token-exchange.md). A sign-in never undoes an administrator's
+action on a self-serve key: a disabled key stays disabled, a revoked key is permanent, and an admin
+regroup or rotation stands ([Admin actions and self-service](token-exchange.md#admin-actions-and-self-service)).
 
 ```yaml
 identity-providers:
@@ -1513,7 +1515,7 @@ group exists, and boot re-checks every stored key.
 |---|---|---|
 | `/api/v1/admin/keys` | `POST` | Mint a key. Returns the signed token once (`"issue_aws_credential": true` adds the AWS pair, also shown once). |
 | `/api/v1/admin/keys` | `GET` | List key metadata: `{id, name, allowed_pools, group, enabled, created_at, labels}` (never a secret). |
-| `/api/v1/admin/keys/{id}` | `PATCH` | `{enabled?, group??}`: freeze/unfreeze the binding, or rebind/unbind the group (three-state: absent = unchanged, `null` = unbind, value = rebind to an existing group). |
+| `/api/v1/admin/keys/{id}` | `PATCH` | `{enabled?, group??}`: freeze/unfreeze the binding, or rebind/unbind the group (three-state: absent = unchanged, `null` = unbind, value = rebind to an existing group). `enabled: true` on a revoked key is refused `409` with `BUSBAR-4044`: revoked is permanent. |
 | `/api/v1/admin/keys/{id}/usage` | `GET` | The key's all-time attribution counters (derived spend, tokens, requests) plus chain-derived `rate_headroom`. |
 | `/api/v1/admin/keys/{id}` | `DELETE` | Revoke: adds the subject to the durable denylist (enforced immediately, survives restart). Returns 404 if not found. |
 

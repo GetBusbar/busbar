@@ -170,6 +170,30 @@ walkthroughs) lives on the plugin page: [OIDC](/plugins/auth/oidc/) ·
 > [Walkthrough: configuring OIDC with Microsoft Entra ID](configuration.md#auth-plugins) for the
 > full click-by-click reference before you bind a role.
 
+## Admin actions and self-service
+
+A sign-in or a Refresh never undoes what an administrator did to a self-serve key. It only
+re-shows the subject's live key, updates its scopes in place, rotates it to a new id on Refresh,
+or mints the first key when none exists (or when every key of the subject is deleted).
+
+| Admin action on the key | The user's next sign-in or Refresh | How the admin lets the user back in |
+|---|---|---|
+| `PATCH /keys/{id} {"enabled": false}` (disable) | Refused, 403 `BUSBAR-4043`: "an administrator disabled it". Earlier tokens stay dead | `PATCH {"enabled": true}`: the same key comes back and its earlier tokens work again. Or `DELETE` |
+| `POST /keys/{id}/revoke` | Refused, 403 `BUSBAR-4043`: "an administrator revoked it". **Revoked is permanent**: no sign-in, Refresh or `PATCH {"enabled": true}` (409 `BUSBAR-4044`) brings it back | `DELETE`: the next sign-in mints a new key with a new id |
+| `POST /keys/{id}/rotate` | A Refresh mints a new key at a new id; the pre-rotate token stays dead | Nothing to clear |
+| `PATCH /keys/{id} {"group": ...}` (regroup) | The key stays in the admin's group, on sign-in and on Refresh | Nothing to clear |
+| `DELETE /keys/{id}` | The reset: a new key with a new id. Every token of the deleted key stays dead | Nothing to clear |
+
+A second identity provider that asserts the same subject is refused (403 `BUSBAR-4043`, "it was
+issued through a different sign-in provider") and never handed the first provider's key; to move
+a user to a new provider, delete the old key and let them sign in through the new one. A subject
+held by a principal transition is refused too, and its existing self-serve keys stop verifying.
+
+Every refusal is recorded in the admin audit log as `self_serve.mint` / `rejected` on
+`key:<id>#<reason>` (`disabled`, `revoked`, `other_provider`), or `subject:<subject>#on_hold`. The
+headless body keeps the flat shape: `{"error": "BUSBAR-4043: your self-serve key is on hold: ...
+See https://getbusbar.com/docs/1.6/errors/BUSBAR-4043"}`.
+
 ## Key facts
 
 - **One key per person.** Deterministic from the verified identity, so it re-shows on every

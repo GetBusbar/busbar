@@ -188,6 +188,16 @@ fn json_str(s: &str) -> String {
     out
 }
 
+/// Where every code's docs page lives: `<base>BUSBAR-NNNN`.
+pub const ERROR_DOCS_BASE: &str = "https://getbusbar.com/docs/1.6/errors/";
+
+/// A message a user or operator reads under `diag`: `BUSBAR-NNNN: <detail>. See <docs page>`.
+/// The same shape `Diagnostic::coded` renders on the operator-error-codes registry.
+pub fn coded(diag: &Diagnostic, detail: impl std::fmt::Display) -> String {
+    let banner = diag.banner();
+    format!("{banner}: {detail}. See {ERROR_DOCS_BASE}{banner}")
+}
+
 /// `warn!` carrying the `diag = "BUSBAR-NNNN"` field. First arg is the [`Diagnostic`] const.
 #[macro_export]
 macro_rules! diag_warn {
