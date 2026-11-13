@@ -1,5 +1,0 @@
-exit 1
-REFUSED G-4 published busbar-x86_64-unknown-linux-gnu.tar.gz: expected <HEX>; found missing. Restore the complete verified artifact set.
-
-publish-gate: 58 checks over 14 rules; 1 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

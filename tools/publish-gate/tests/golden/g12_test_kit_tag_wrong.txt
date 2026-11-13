@@ -1,7 +1,0 @@
-exit 1
-REFUSED G-12 test kit: expected test-kit-v1.6.0 with its commit; found {'tag': 'test-kit-v9', 'commit': ''}. Tag the test kit on dev.
-REFUSED G-0 G-12: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 56 checks over 12 rules; 3 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.

@@ -1,8 +1,0 @@
-exit 1
-REFUSED G-3 release/plugin-pins.tsv: expected <repo>\t<tag>\t<commit> lines; found not enough values to unpack (expected 3, got 2). Run candidate.py pins and commit it.
-REFUSED G-3 plugin busbar-store-fake: expected pinned None; found ('v1.6.0', '<HEX>') version 1.6.0. The candidate must build exactly the committed pins.
-REFUSED G-C conformance: expected a registry and shipped pins that render; found release/plugin-pins.tsv:1 is not <repo>\t<tag>\t<40-hex commit>. Fix the tree at the release commit.
-REFUSED G-0 G-S: expected at least one subject checked; found none. A rule that checked nothing is not a pass.
-
-publish-gate: 57 checks over 13 rules; 4 refusal(s).
-publish-gate: REFUSED. Nothing may be signed or published.
