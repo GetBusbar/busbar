@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Targeted native OIDF staging and process-adapter checks; no complete suite run."""
-import importlib.util
+"""Targeted native OIDF process-adapter checks; no complete suite run. The image stager is release
+tooling outside this repository and is tested there."""
 import http.server
-import io
 import json
 import os
 from pathlib import Path
@@ -10,7 +9,6 @@ import sys
 import ssl
 import stat
 import subprocess
-import tarfile
 import tempfile
 import threading
 import unittest
@@ -20,10 +18,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import oidf
 
-spec = importlib.util.spec_from_file_location("stage_oidf", Path(__file__).resolve().parents[2]
-                                            / "scripts/architecture/stage_oidf_conformance.py")
-stage = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(stage)
 
 
 class NativeAdapter(unittest.TestCase):
@@ -152,12 +146,6 @@ class NativeAdapter(unittest.TestCase):
                 oidf.native_wheels(directory, str(Path(directory) / "deps"))
             self.assertFalse((Path(directory) / "deps").exists())
 
-    def test_stager_pins_match_adapter(self):
-        self.assertEqual(stage.SUITE_COMMIT, oidf.SUITE_COMMIT)
-        self.assertEqual(list(stage.IMAGES.values()), [oidf.SERVER_IMAGE, oidf.NGINX_IMAGE,
-                                                      oidf.MONGO_IMAGE, oidf.PYTHON_IMAGE])
-        self.assertEqual(stage.WHEELS, oidf.WHEELS)
-
 
 class NativeSuiteTLS(unittest.TestCase):
     def setUp(self):
@@ -223,78 +211,6 @@ class NativeSuiteTLS(unittest.TestCase):
         with mock.patch.object(oidf, "SUITE_BASE", f"https://localhost:{self.port}/"):
             with self.assertRaisesRegex(urllib.error.URLError, "CERTIFICATE_VERIFY_FAILED"):
                 self.suite.request("api/runner/available")
-
-
-class ImageFlattening(unittest.TestCase):
-    def archive(self, path, entries):
-        with tarfile.open(path, "w") as archive:
-            for name, kind, value in entries:
-                info = tarfile.TarInfo(name)
-                info.mode = 0o755
-                if kind == "file":
-                    info.size = len(value)
-                    archive.addfile(info, io.BytesIO(value))
-                else:
-                    info.type = {"dir": tarfile.DIRTYPE, "link": tarfile.SYMTYPE,
-                                 "hard": tarfile.LNKTYPE}[kind]
-                    info.linkname = value
-                    archive.addfile(info)
-
-    def test_absolute_image_links_are_resolved_inside_archive(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.archive(root / "image.tar", [("usr", "dir", ""), ("usr/lib", "dir", ""),
-                         ("usr/lib/real.so", "file", b"image library"),
-                         ("usr/lib/alias.so", "link", "real.so"), ("lib", "link", "/usr/lib"),
-                         ("copy.so", "hard", "usr/lib/real.so")])
-            files = stage.ImageFiles(root / "image.tar")
-            try:
-                files.copy("lib", root / "out")
-                files.copy("copy.so", root / "hard-copy")
-            finally:
-                files.close()
-            self.assertEqual((root / "out/alias.so").read_bytes(), b"image library")
-            self.assertFalse((root / "out/alias.so").is_symlink())
-            self.assertEqual((root / "hard-copy").stat().st_nlink, 1)
-
-    def test_oci_whiteouts_preserve_opaque_directory_and_new_layer_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            self.archive(root / "lower.tar", [("lib", "dir", ""), ("lib/old.so", "file", b"old"),
-                         ("removed", "file", b"old")])
-            self.archive(root / "upper.tar", [("lib/.wh..wh..opq", "file", b""),
-                         ("lib/new.so", "file", b"new"), (".wh.removed", "file", b"")])
-            files = stage.ImageFiles([root / "lower.tar", root / "upper.tar"])
-            try:
-                files.copy("lib", root / "out")
-                self.assertNotIn("removed", files.members)
-            finally:
-                files.close()
-            self.assertEqual([path.name for path in (root / "out").iterdir()], ["new.so"])
-            self.assertEqual((root / "out/new.so").read_bytes(), b"new")
-
-    def test_oci_digest_mismatch_is_not_published(self):
-        with tempfile.TemporaryDirectory() as directory, \
-                mock.patch.object(stage.urllib.request, "urlopen", return_value=io.BytesIO(b"wrong")):
-            registry = object.__new__(stage.PublicRegistry)
-            registry.host, registry.repository, registry.token = "registry.invalid", "public", "anonymous"
-            destination = Path(directory) / "blob"
-            with self.assertRaisesRegex(ValueError, "digest or length differs"):
-                registry.fetch("blobs", "sha256:" + "0" * 64, destination)
-            self.assertFalse(destination.exists())
-            self.assertEqual(list(Path(directory).iterdir()), [])
-
-    def test_escape_and_cycle_are_refused(self):
-        for target in ("../../outside", "alias"):
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                self.archive(root / "image.tar", [("alias", "link", target)])
-                files = stage.ImageFiles(root / "image.tar")
-                try:
-                    with self.assertRaises(ValueError):
-                        files.copy("alias", root / "out")
-                finally:
-                    files.close()
 
 
 if __name__ == "__main__":

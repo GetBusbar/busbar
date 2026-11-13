@@ -15,23 +15,14 @@ it does not claim OpenID-provider certification. The rig shares the record only
 when subject revision, tracked changes, rig bytes, pinned suite revision and
 plan and mounted instrument manifest match. The driver clears its output before each invocation.
 
-Isolated native CI stages instruments before candidate admission:
-
-```sh
-python3 scripts/architecture/stage_oidf_conformance.py \
-  /controller-owned/oidf-inputs --architecture amd64 --image-source oci
-```
-
-The protected controller merges the resulting `inputs.json` with the other
-measured bundles and supplies `--conformance-inputs` and its SHA-256 to the
-native worker. OCI staging verifies the fixed image index, the selected Linux/amd64 manifest,
-config and every layer digest, then applies layer whiteouts and resolves image
-links inside the image. It records every regular file's hash and executable mode.
-The alternate `--image-source docker` uses cached digest-pinned images or one
-bounded pull and exports never-started containers. It also stages
-the official runner at the pinned Git commit and verifies each runner wheel.
-This controller step requires Git and public download access; the Docker source
-option also requires Docker 29.1.3.
+Isolated native CI stages the instruments before candidate admission. The stager is
+release tooling and is not part of this repository; it is the source of the measured
+`inputs.json` that the native worker receives with `--conformance-inputs` and its
+SHA-256. It verifies the fixed image index, the selected Linux/amd64 manifest, config
+and every layer digest, then applies layer whiteouts and resolves image links inside
+the image, recording every regular file's hash and executable mode. It also stages
+the official runner at the pinned Git commit and verifies each runner wheel. Its
+pins must match the ones in `oidf.py`.
 
 The candidate receives `/opt/busbar-conformance/oidf` read-only. Its JVM, MongoDB,
 nginx, Python runner and subject run as unprivileged processes in the same
