@@ -137,6 +137,9 @@ class Inputs(unittest.TestCase):
             "git+https://github.com/example/repo?branch=main#" + "a" * 40,
             "git+https://github.com/example/repo?rev=" + "a" * 40 + "#" + "b" * 40,
             "registry+https://evil.invalid/index",
+            # Dot segments are path traversal, not repository names.
+            *("git+https://github.com/" + path + "?rev=" + "a" * 40 + "#" + "a" * 40
+              for path in ("GetBusbar/..", "GetBusbar/.", "GetBusbar/.hidden", "../busbar", "./x")),
         ):
             with self.assertRaises(ValueError):
                 prepare.packages({"package": [dict(self.package, source=source)]})

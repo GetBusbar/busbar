@@ -215,9 +215,28 @@ class Boundary(Fixture, unittest.TestCase):
                         (prefix + 'x.insteadOf', 'https://github.com/'),
                         (prefix + 'x.insteadOf', 'https://github.com/MattJackson/h2-other'),
                         ('url.https://elsewhere.example/.insteadOf', 'https://github.com/'),
+                        (prefix + '../x.insteadOf', 'https://github.com/GetBusbar/x'),
+                        (prefix + 'x.insteadOf', 'https://github.com/GetBusbar/..'),
                         ('url.https://public-replica-refused.invalid/.insteadOf', 'https://github.com/GetBusbar/')):
             with self.subTest(setting=setting), self.assertRaisesRegex(ValueError, 'Git setting'):
                 environment(setting)
+
+    def test_candidate_git_transport_is_local_files_only_whatever_the_spelling(self):
+        execution = self.execution()
+        bare = self.base / 'local.git'
+        subprocess.run(['git', 'init', '-q', '--bare', str(bare)], check=True)
+        env = execution.environment({})
+        self.assertEqual(env['GIT_ALLOW_PROTOCOL'], 'file')
+        env['PATH'] = os.environ['PATH']
+        local = subprocess.run(['git', 'ls-remote', bare.as_uri()], env=env, capture_output=True, text=True)
+        self.assertEqual(local.returncode, 0, local.stderr)
+        for url in ('https://github.com/GetBusbar/busbar', 'https://GitHub.com/x/y', 'http://github.com/x/y',
+                    'ssh://git@github.com/x/y', 'git@github.com:x/y', 'git://github.com/x/y'):
+            with self.subTest(url=url):
+                result = subprocess.run(['git', 'ls-remote', url], env=env, capture_output=True,
+                                        text=True, timeout=60)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('not allowed', result.stderr)
 
     def test_git_reads_registered_root_but_rejects_other_owner_repository(self):
         execution = self.execution()

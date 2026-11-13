@@ -14,7 +14,8 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
 GIT = re.compile(
-    r"git\+(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\?rev=([0-9a-f]{40})#([0-9a-f]{40})"
+    r"git\+(https://github\.com/[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*)"
+    r"\?rev=([0-9a-f]{40})#([0-9a-f]{40})"
 )
 
 

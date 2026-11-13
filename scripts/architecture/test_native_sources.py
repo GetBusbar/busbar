@@ -275,6 +275,26 @@ class PublicReplica(unittest.TestCase):
                     lock_inputs(table + '\nname="x"\nversion="1.0.0"\nsource="' + source + '"\n',
                                 {'repositories': {}})
 
+    def test_dot_segment_and_unclassified_first_party_sources_refuse(self):
+        from native_sources import cache_name, forge_repository, lock_inputs
+        policy = {'repositories': {'GetBusbar/busbar-store-memory': {'private': False},
+                                   'GetBusbar/busbar-store-mssql': {'private': True}}}
+        def lock(path):
+            return ('[[patch.unused]]\nname="x"\nversion="1.0.0"\nsource="git+https://github.com/'
+                    + path + '?rev=' + H2 + '#' + H2 + '"\n')
+        for path in ('GetBusbar/..', 'GetBusbar/.', 'GetBusbar/.hidden', 'GetBusbar/...git'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'immutable'):
+                lock_inputs(lock(path), policy)
+        with self.assertRaisesRegex(ValueError, 'unclassified first-party.*GetBusbar/busbar-unknown'):
+            lock_inputs(lock('GetBusbar/busbar-unknown'), policy)
+        # A classified private repository stays out of the public map (and the seed refuses it).
+        self.assertEqual(lock_inputs(lock('GetBusbar/busbar-store-mssql'), policy), {})
+        for name in ('..', '.', '.hidden'):
+            with self.subTest(name=name):
+                self.assertIsNone(forge_repository('https://github.com/GetBusbar/' + name))
+                with self.assertRaisesRegex(ValueError, 'not a canonical input'):
+                    cache_name('GetBusbar/' + name)
+
     def prepare_forks(self, root):
         q, host, sdk, heads, revisions = self.plugin_fixture(root)
         (q.root / 'Cargo.lock').write_text((q.root / 'Cargo.lock').read_text() + fork_lock())

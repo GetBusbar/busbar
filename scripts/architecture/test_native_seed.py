@@ -4,6 +4,7 @@ import json
 import hashlib
 import io
 import os
+import re
 import tempfile
 from contextlib import nullcontext, redirect_stdout
 from types import SimpleNamespace
@@ -62,20 +63,31 @@ class ManifestGraph(Fixture, unittest.TestCase):
     def test_seed_git_sources_come_only_from_canonical_inputs_never_a_public_remote(self):
         import native_seed
         canonical = self.base / 'canonical'
-        for name in ('busbar-store-mysql', 'upstream-forks--h2', 'h2'):
+        revision, other = 'a' * 40, 'b' * 40
+        for name in ('busbar-store-mysql', 'upstream-forks--h2', 'h2', 'busbar-auth-ldap'):
             (canonical / name).mkdir(parents=True)
+        receipt = {'canonical_inputs': {'GetBusbar/busbar-store-mysql': [revision]},
+                   'upstream_forks': {'GetBusbar/upstream-forks/h2': [revision]}}
         for url, cache in (('https://github.com/GetBusbar/busbar-store-mysql', 'busbar-store-mysql'),
                            ('https://github.com/GetBusbar/busbar-store-mysql.git', 'busbar-store-mysql'),
                            ('https://github.com/MattJackson/h2', 'upstream-forks--h2'),
                            ('https://github.com/MattJackson/h2.git', 'upstream-forks--h2')):
             with self.subTest(url=url):
-                self.assertEqual(native_seed.canonical_remote(url, canonical), str(canonical / cache))
-        # A first-party cache that was never fetched, an unreviewed public repository
-        # (even one whose name collides with a cache directory), and any other host.
-        for url in ('https://github.com/GetBusbar/busbar-auth-ldap', 'https://github.com/someone/h2',
-                    'https://github.com/MattJackson/h2-other', 'https://github.com/GetBusbar/upstream-forks--h2'):
-            with self.subTest(url=url), self.assertRaisesRegex(ValueError, 'public fetch refused.*' + url):
-                native_seed.canonical_remote(url, canonical)
+                self.assertEqual(native_seed.canonical_remote(url, {revision}, canonical, receipt),
+                                 str(canonical / cache))
+        # A cache directory this job did not fetch (even one that exists, or the
+        # candidate-writable parent via a dot segment), an unreviewed public
+        # repository colliding with a cache name, and a revision never fetched.
+        for url, revisions in (('https://github.com/GetBusbar/busbar-auth-ldap', {revision}),
+                               ('https://github.com/GetBusbar/..', {revision}),
+                               ('https://github.com/GetBusbar/.', {revision}),
+                               ('https://github.com/someone/h2', {revision}),
+                               ('https://github.com/MattJackson/h2-other', {revision}),
+                               ('https://github.com/GetBusbar/upstream-forks--h2', {revision}),
+                               ('https://github.com/GetBusbar/busbar-store-mysql', {revision, other})):
+            with self.subTest(url=url, revisions=revisions), \
+                 self.assertRaisesRegex(ValueError, 'public fetch refused.*' + re.escape(url)):
+                native_seed.canonical_remote(url, revisions, canonical, receipt)
 
     def test_original_graph_keeps_patches_without_staging_candidate_code_or_cargo_config(self):
         source = self.roots['checkout']

@@ -112,19 +112,20 @@ def lock_inputs(q, host, sdk, canonical, vector):
     return locks, inputs
 
 
-def canonical_remote(url, canonical):
+def canonical_remote(url, revisions, canonical, receipt):
     """The verified canonical-inputs cache for a locked Git URL; never the URL itself.
 
     Every Git source (first-party and reviewed upstream forks) was fetched from
-    the private forge at an exact revision by native_sources.prepare. The public
-    replica is only a name in the lock: anything not already cached refuses.
+    the private forge at an exact revision by native_sources.prepare, which
+    records them in the receipt. The public replica is only a name in the lock:
+    a repository or revision this job did not fetch refuses, whatever exists on disk.
     """
     from native_sources import cache_name, forge_repository
+    fetched = {**receipt.get('canonical_inputs', {}), **receipt.get('upstream_forks', {})}
     repository = forge_repository(url)
-    known = canonical / cache_name(repository) if repository else None
-    if known is None or not known.is_dir():
+    if repository is None or not set(revisions) <= set(fetched.get(repository, ())):
         raise Violation('job seed Git source is not in canonical-inputs; public fetch refused: ' + url)
-    return str(known)
+    return str(canonical / cache_name(repository))
 
 
 def prepare(q):
@@ -170,7 +171,7 @@ def prepare(q):
         destination = context / 'git' / str(index)
         destination.parent.mkdir(exist_ok=True)
         subprocess.run(['git', 'init', '--bare', '--quiet', str(destination)], check=True)
-        remote = canonical_remote(url, canonical)
+        remote = canonical_remote(url, revisions, canonical, q.receipt)
         environment = {'PATH': '/usr/bin:/bin', 'HOME': str(root), 'GIT_TERMINAL_PROMPT': '0',
                        'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
         for revision in sorted(revisions):
