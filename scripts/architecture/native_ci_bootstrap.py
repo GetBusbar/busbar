@@ -430,7 +430,11 @@ def runtime_configuration(control, endpoint, image, diagnostic):
         'runtime': 'runc', 'uid': 1001, 'gid': 1002, 'python': '/usr/bin/python3',
         'environment': {'PATH': '/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin',
                         'CARGO_HOME': '/opt/busbar-native/cargo-seed', 'RUSTUP_HOME': '/usr/local/rustup'},
-        'resources': {'cpus': 2 if diagnostic else 4, 'memory_bytes': (1 if diagnostic else 6) * 1024**3,
+        # n2d-standard-4 workers have 16 GiB; the sandbox profile already reserves 12 GiB of the
+        # same machine. At 6 GiB the certified release build ran one compiler job with 6113
+        # memory.max throttle events (job 8181: 1343 s on one core) and test links were
+        # OOMKilled (qa-nightly 3472, 3689). 12 GiB leaves ~4 GiB for the host.
+        'resources': {'cpus': 2 if diagnostic else 4, 'memory_bytes': (1 if diagnostic else 12) * 1024**3,
                       'pids': 256 if diagnostic else 1024},
         'isolation': isolation,
         'collector': {'docker_host': 'unix:///var/run/docker.sock', 'image': image, 'uid': SUBID + 1001, 'gid': SUBID + 1002}}
