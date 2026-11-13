@@ -24,8 +24,12 @@ directory = "/candidate/witness-vendor"
 
 
 USED_REV = '1' * 40
+UNUSED_REV = '2' * 40
 VENDOR_LOCK = ('version = 4\n\n[[package]]\nname = "used"\nversion = "1.0.0"\n'
-               f'source = "git+https://github.com/Example/used?rev={USED_REV}#{USED_REV}"\n')
+               f'source = "git+https://github.com/Example/used?rev={USED_REV}#{USED_REV}"\n'
+               # Cargo's own record of the patches it did not apply.
+               '\n[[patch.unused]]\nname = "unused"\nversion = "1.0.0"\n'
+               f'source = "git+https://github.com/Example/unused?rev={UNUSED_REV}#{UNUSED_REV}"\n')
 
 
 def write_vendor_lock(argv):
@@ -257,7 +261,10 @@ class UnusedPatches(Fixture, unittest.TestCase):
             "[workspace]\n[patch.'https://github.com/GetBusbar/busbar']\n"
             'busbar-contract = { path = "crates/contract" }\n[patch.crates-io]\n'
             f'used = {{ git = "https://github.com/Example/used", rev = "{USED_REV}" }}\n'
-            f'unused = {{ git = "https://github.com/Example/unused", rev = "{"2" * 40}" }}\n')
+            f'unused = {{ git = "https://github.com/Example/unused", rev = "{UNUSED_REV}" }}\n'
+            # Used, but spelled differently from Cargo's normalised lockfile URL:
+            # only Cargo's [[patch.unused]] list may remove a patch, so it stays.
+            f'spelled = {{ git = "https://GitHub.com:443/Example/spelled", rev = "{USED_REV}" }}\n')
 
     def test_seeded_checks_and_cases_omit_only_unused_git_patches(self):
         receipt = self.run_witnesses()
@@ -271,8 +278,22 @@ class UnusedPatches(Fixture, unittest.TestCase):
             self.assertNotIn('Example/unused', text)
             self.assertIn('Example/used', text)
             self.assertIn('busbar-contract', text)
+            self.assertIn('Example/spelled', text)
         lines = [call.args[0] for call in self.printed.call_args_list]
         self.assertTrue(any('"pruned_patches": ["crates-io:unused"]' in line for line in lines))
+
+    def test_unreadable_lock_patch_table_falls_back_unseeded(self):
+        global VENDOR_LOCK
+        saved = VENDOR_LOCK
+        VENDOR_LOCK = 'version = 4\n[patch]\nunused = "not a table list"\n'
+        try:
+            with patch.object(check, 'EVIDENCE', None):
+                receipt = self.run_witnesses()
+        finally:
+            VENDOR_LOCK = saved
+        self.assertEqual(receipt['compiler_dependency_seed']['status'], 'failed')
+        for text in [text for kind, text in self.manifests if kind == 'case']:
+            self.assertIn('Example/unused', text)
 
     def test_fallback_cases_see_the_original_patches(self):
         self.seed_returncode = 101
