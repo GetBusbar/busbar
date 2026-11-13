@@ -1280,6 +1280,14 @@ fs_extra = { git = "https://github.com/MattJackson/fs_extra", rev = "70f47864db8
 h2 = { git = "https://github.com/MattJackson/h2", rev = "d6146a5c425e55653cdfebc5660e52d87430c588" }
 tungstenite = { git = "https://github.com/MattJackson/tungstenite-rs", rev = "893a21f1f98011a2665840231330c473836c9a0a" }
 
+[profile.dev]
+# The assembled distribution links every first-party plugin into one `busbar` test executable.
+# With full debuginfo that single link exhausted the 6 GiB native candidate boundary (qa-nightly
+# 3689 job 8075 default-runtime, OOMKilled at 2 compile jobs). Line tables keep file:line in
+# panics and backtraces; debug assertions, overflow checks and every test are unchanged. Release
+# and the certified build use their own profiles.
+debug = "line-tables-only"
+
 [profile.release]
 # Tuned for the shipped "deploy-and-done" binary: max optimization and smallest size,
 # at the cost of slower release compiles (fine — releases are built in CI, not in the loop).
