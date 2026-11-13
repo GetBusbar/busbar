@@ -109,7 +109,7 @@ fn open(
         rx.recv_timeout(Duration::from_secs(10))
             .expect("the judgement answered")
     })?;
-    if crate::class_admits(class, secure, &[], authority, at) {
+    if crate::class_admits(class, secure, false, &[], authority, at) {
         Ok(at)
     } else {
         Err(DEST_PLAINTEXT)
@@ -483,4 +483,29 @@ fn a_spelling_of_a_public_address_is_the_collector_it_spells() {
             );
         }
     }
+}
+
+/// THE ONE PLAINTEXT RULE, in every class: a dial that is not secured from its first byte reaches
+/// loopback, or a host an exact `plaintext: true` entry names; nothing else. (Before the trust
+/// store, the default, provider and operator-infrastructure classes admitted plaintext anywhere.)
+#[test]
+fn plaintext_reaches_loopback_or_an_exact_plaintext_entry_in_every_class() {
+    use busbar_contract::abi::host::conn::connector::{
+        EGRESS_DEFAULT, EGRESS_OPERATOR_INFRASTRUCTURE, EGRESS_PROVIDER,
+    };
+    let private: SocketAddr = "10.0.0.5:4318".parse().unwrap();
+    let lo: SocketAddr = "127.0.0.1:4318".parse().unwrap();
+    for class in [EGRESS_DEFAULT, EGRESS_PROVIDER, EGRESS_OPERATOR_INFRASTRUCTURE, LA] {
+        assert!(
+            !crate::class_admits(class, false, false, &[], "otel.internal:4318", private),
+            "class {class}: plaintext to a private host without an entry is refused"
+        );
+        assert!(crate::class_admits(class, false, true, &[], "otel.internal:4318", private));
+        assert!(crate::class_admits(class, false, false, &[], "otel.internal:4318", lo));
+        assert!(crate::class_admits(class, true, false, &[], "otel.internal:4318", private));
+    }
+    assert!(
+        !crate::class_admits(EGRESS_OPEN_WEB, false, true, &[], "a.example:80", private),
+        "open-web never admits plaintext, whatever an entry says"
+    );
 }

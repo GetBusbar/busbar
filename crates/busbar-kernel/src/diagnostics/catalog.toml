@@ -1745,3 +1745,291 @@ title = "--generate-signing-key could not mint a key (OS entropy source unavaila
 severity = "Actionable"
 summary = "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written."
 action = "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment."
+
+# ---- outbound TLS trust store and plaintext rule (outbound-guard-and-trust-store.md R2) ----
+
+[[diagnostic]]
+name = "CONFIG_TLS_ANCHOR_INVALID"
+doc = "An `advanced.tls` trust anchor fails boot validation."
+code = 3137
+class = "Config"
+slug = "config-tls-anchor-invalid"
+title = "An advanced.tls trust anchor is not a usable CA"
+severity = "Fatal"
+summary = "A trust anchor listed under `advanced.tls.trust_anchors` or `advanced.tls.destinations[].trust_anchors` was refused at boot: it could not be read, does not parse as PEM, holds no certificate or holds a private key, is not an X.509 v3 CA (`basicConstraints CA:TRUE`, and `keyCertSign` when `keyUsage` is present), is not yet valid (more than five minutes before `notBefore`) or has expired, or rustls does not accept it. busbar refuses to boot rather than open connections with a trust set the operator did not intend. The line names the key, the index, the source (file, env or inline) and the destination it scopes; never the certificate bytes."
+action = "List the CA that issued the server's certificate (not the server's own certificate), as a PEM file, environment variable or inline PEM. Rotate an expired CA before restarting. A self-signed server certificate (`CA:FALSE`) is not a trust anchor: issue the server a certificate from a CA you control and list that CA."
+
+[[diagnostic]]
+name = "CONFIG_TLS_ANCHOR_ACCEPTED"
+doc = "One accepted `advanced.tls` trust anchor, or the base set loaded, with its fingerprint (info)."
+code = 3138
+class = "Config"
+slug = "config-tls-anchor-accepted"
+title = "An advanced.tls trust anchor was accepted"
+severity = "BenignRecurring"
+summary = "Logged once at boot for each operator trust anchor busbar accepted (SHA-256 of the DER certificate, subject, issuer, notAfter, and the scope: `global` or the destination entry), and once for the base set (`roots`: its count and a SHA-256 over the sorted set, and the bundle path for `system`). Each accepted anchor also writes one `config.tls_trust_anchor` audit record."
+action = "Nothing to do. Compare the fingerprints with the CAs you intended to trust."
+
+[[diagnostic]]
+name = "CONFIG_TLS_ANCHOR_EXPIRING"
+doc = "An `advanced.tls` trust anchor expires within 30 days."
+code = 3139
+class = "Config"
+slug = "config-tls-anchor-expiring"
+title = "An advanced.tls trust anchor expires within 30 days"
+severity = "Actionable"
+summary = "An operator trust anchor's notAfter is within 30 days. The warning is logged at boot and repeated once a day by the hourly trust-store sweep. When the anchor expires, the sweep withdraws it from new connections (BUSBAR-5048) and the next boot refuses it (BUSBAR-3137)."
+action = "Rotate the CA: list the new CA beside the old one, restart, then remove the old one once every server presents a chain to the new CA."
+
+[[diagnostic]]
+name = "CONFIG_TLS_TRUST_EMPTY"
+doc = "No trust anchor applies: `roots: none` with nothing listed, or an empty system bundle."
+code = 3140
+class = "Config"
+slug = "config-tls-trust-empty"
+title = "No trust anchor applies to a TLS destination"
+severity = "Fatal"
+summary = "`advanced.tls.roots: system` found no usable certificate in the operating system's CA bundle (refused at boot), or `advanced.tls.roots: none` is set and a TLS dial matched neither a global trust anchor nor a destination entry listing one (the dial is refused; a pinned destination is refused the same way, never a panic). busbar never opens a TLS connection it cannot verify."
+action = "Install the distribution's ca-certificates package or set SSL_CERT_FILE for `roots: system`; with `roots: none`, list the CA under `advanced.tls.trust_anchors` or a matching `advanced.tls.destinations` entry; or use `roots: bundled` (the default)."
+
+[[diagnostic]]
+name = "CONFIG_PLAINTEXT_NOT_ADMITTED"
+doc = "Plaintext to a destination that is neither loopback nor an exact `plaintext: true` entry."
+code = 3141
+class = "Config"
+slug = "config-plaintext-not-admitted"
+title = "Plaintext to a destination that is not admitted for it"
+severity = "Fatal"
+summary = "One rule for every outbound transport (framed HTTP, and carriers that upgrade later: postgres, valkey/redis, mysql, ldap): a connection without TLS is admitted only to a loopback destination, or to a host named exactly by an `advanced.tls.destinations` entry with `plaintext: true`. This destination is neither, so busbar refuses it at declaration or at the dial. Credentials are never sent in clear to a host that is not loopback, whatever the entry says (BUSBAR-3146)."
+action = "Use TLS (https://, rediss://, sslmode=require or stronger, ldaps:// or StartTLS). If the destination really must be reached in clear and carries no credential, add `{match: <exact host or IP>, plaintext: true}` to `advanced.tls.destinations`."
+
+[[diagnostic]]
+name = "STORE_POSTGRES_SSLMODE_OPPORTUNISTIC_REFUSED"
+doc = "A postgres store URL asks for opportunistic TLS (`sslmode=prefer`/`allow`) or names no sslmode."
+code = 3142
+class = "Config"
+slug = "store-postgres-sslmode-opportunistic-refused"
+title = "A postgres store URL does not require encryption"
+severity = "Fatal"
+summary = "Owner sign-off 2026-11-13: encryption required. The postgres store's URL sets `sslmode=prefer` or `sslmode=allow`, or sets no sslmode. Each lets an on-path attacker answer the SSLRequest with `N` and strip the session, password included, to plaintext; busbar has no opportunistic mode. The store plugin refuses the URL at parse."
+action = "Set `sslmode=require` (or `verify-ca`/`verify-full`; all are verified against busbar's trust store, `advanced.tls`). `busbar --migrate-config` rewrites `prefer` and a missing sslmode to `require`. For a loopback database or one named by an exact `plaintext: true` entry, `sslmode=disable` is accepted."
+
+[[diagnostic]]
+name = "STORE_VALKEY_INSECURE_REFUSED"
+doc = "A valkey store URL carries the retired `#insecure` fragment."
+code = 3143
+class = "Config"
+slug = "store-valkey-insecure-refused"
+title = "A valkey store URL asks to skip certificate verification"
+severity = "Fatal"
+summary = "The valkey store's URL carries `#insecure`, which in 1.5.5 skipped certificate verification of a `rediss://` server. busbar 1.6 never skips verification, so the store plugin refuses the URL at parse."
+action = "Remove `#insecure` and list the server's CA under `advanced.tls.destinations` (`match: <the valkey host>`). `busbar --migrate-config` removes the fragment from a literal URL and writes a TODO for a URL held in a secret."
+
+[[diagnostic]]
+name = "CONFIG_PLAINTEXT_ENTRY_NOT_EXACT"
+doc = "A `plaintext: true` destination entry names a wildcard or a CIDR."
+code = 3144
+class = "Config"
+slug = "config-plaintext-entry-not-exact"
+title = "A plaintext destination entry is not an exact host or IP"
+severity = "Fatal"
+summary = "`plaintext: true` on an `advanced.tls.destinations` entry is accepted only on an exact host name or an exact IP. A wildcard or a CIDR would admit cleartext to destinations nobody named."
+action = "Write one entry per host or IP that must be reached in clear."
+
+[[diagnostic]]
+name = "CONFIG_WILDCARD_OVER_PUBLIC_SUFFIX"
+doc = "An `advanced.tls.destinations` wildcard covers a single label."
+code = 3145
+class = "Config"
+slug = "config-wildcard-over-public-suffix"
+title = "A destination wildcard is too wide"
+severity = "Fatal"
+summary = "An `advanced.tls.destinations` `match` is a wildcard over a single label (for example `*.com` or `*.internal`), which would scope the entry's CAs, pins or identity to names nobody named. Public-suffix-list wildcards (for example `*.co.uk`) are not detected in 1.6.0."
+action = "Name the domain you own: `*.corp.example.com`."
+
+[[diagnostic]]
+name = "CONFIG_CREDENTIALS_OVER_PLAINTEXT"
+doc = "A plugin setting would send credentials in clear to a host that is not loopback."
+code = 3146
+class = "Config"
+slug = "config-credentials-over-plaintext"
+title = "Credentials would be sent in clear"
+severity = "Fatal"
+summary = "A setting asks to send a credential (an LDAP bind password, a token) over a connection without TLS to a host that is not loopback; for example auth-ldap's retired `allow_insecure_transport`. busbar never sends a credential in clear to a non-loopback host, whatever `plaintext: true` says."
+action = "Use TLS: ldaps:// or StartTLS for LDAP, https:// for HTTP. `busbar --migrate-config` removes `allow_insecure_transport` and writes a TODO."
+
+[[diagnostic]]
+name = "CONFIG_TLS_BASE_ROOTS_DROPPED"
+doc = "`roots: system` dropped certificates from the OS bundle (expired, not a CA, unreadable)."
+code = 3147
+class = "Config"
+slug = "config-tls-base-roots-dropped"
+title = "System CA bundle entries were not used"
+severity = "Actionable"
+summary = "With `advanced.tls.roots: system`, certificates in the operating system's CA bundle that are expired, are not CA certificates, or do not parse are not used as trust anchors. One warning at boot carries the count and the first reason. Operating-system bundles routinely carry such entries, so the boot continues."
+action = "Usually nothing. If a CA you rely on is in the count, update the base image's ca-certificates package or list the CA under `advanced.tls.trust_anchors`."
+
+[[diagnostic]]
+name = "CONFIG_TLS_DESTINATION_INVALID"
+doc = "An `advanced.tls.destinations` entry is malformed (match, pin, client identity or shape)."
+code = 3148
+class = "Config"
+slug = "config-tls-destination-invalid"
+title = "An advanced.tls destination entry is invalid"
+severity = "Fatal"
+summary = "An `advanced.tls.destinations` entry was refused at boot: its `match` is not a host, `*.domain`, IP or CIDR; a `pin_spki_sha256` is not `sha256/<base64>` of 32 bytes; its `client_identity` certificate or key cannot be read or do not belong together; or a `plaintext: true` entry also lists TLS settings. The line names the index and the key, never key material."
+action = "Correct the entry. Client identity keys are read by core from a file or environment variable and are never handed to a plugin."
+
+[[diagnostic]]
+name = "CONFIG_PROXY_DELEGATES_ADDRESS_CHECK"
+doc = "An outbound proxy is configured: the guard judges names, and addresses where they resolve locally."
+code = 3149
+class = "Config"
+slug = "config-proxy-delegates-address-check"
+title = "Outbound connections go through a proxy"
+severity = "BenignRecurring"
+summary = "HTTP(S)_PROXY / ALL_PROXY is set. busbar judges every target's name, and when the name resolves locally it judges every address it answers and refuses a private or metadata answer even behind the proxy. A name that does not resolve locally is reached through the proxy's own resolution, so the address check is delegated to the proxy for it. One line at boot (proxy endpoint redacted, NO_PROXY) and one audit record. Trust anchors are selected by the target, never by the proxy hop."
+action = "Nothing, if the proxy is yours. Make sure the proxy enforces your egress policy for names it resolves."
+
+[[diagnostic]]
+name = "MIGRATE_SSLMODE_PREFER_TO_REQUIRE"
+doc = "--migrate-config rewrote a postgres store URL's opportunistic sslmode to `require`."
+code = 3412
+class = "Config"
+slug = "migrate-sslmode-prefer-to-require"
+title = "A postgres URL's sslmode was rewritten to require"
+severity = "Actionable"
+summary = "busbar 1.6 refuses opportunistic TLS for postgres (BUSBAR-3142). The migration rewrote `sslmode=prefer`, `sslmode=allow` or a missing sslmode in a literal store URL to `sslmode=require`. A server that does not offer TLS, or whose certificate does not verify against `advanced.tls`, now fails the connection instead of falling back to plaintext. A URL held in a secret or environment reference cannot be rewritten: a TODO names it."
+action = "Make sure the database offers TLS and list its CA under `advanced.tls.destinations` if it is not publicly trusted. For a loopback database, `sslmode=disable` is accepted."
+
+[[diagnostic]]
+name = "MIGRATE_VALKEY_INSECURE_REMOVED"
+doc = "--migrate-config removed `#insecure` from a valkey store URL."
+code = 3413
+class = "Config"
+slug = "migrate-valkey-insecure-removed"
+title = "The #insecure fragment was removed from a valkey URL"
+severity = "Actionable"
+summary = "busbar 1.6 never skips certificate verification (BUSBAR-3143). The migration removed `#insecure` from a literal valkey store URL, so the connection is now verified against `advanced.tls`. A URL held in a secret or environment reference cannot be rewritten: a TODO names it."
+action = "List the valkey server's CA under `advanced.tls.destinations` (`match: <valkey host>`), then validate."
+
+[[diagnostic]]
+name = "MIGRATE_PLAINTEXT_ENTRY_WRITTEN"
+doc = "--migrate-config wrote a `plaintext: true` destination entry for a destination reached in clear."
+code = 3414
+class = "Config"
+slug = "migrate-plaintext-entry-written"
+title = "A plaintext destination entry was written"
+severity = "Actionable"
+summary = "A literal store or plugin URL reaches a non-loopback host without TLS (postgres `sslmode=disable`). busbar 1.6 admits plaintext only to loopback or an exact `plaintext: true` entry (BUSBAR-3141), so the migration wrote `{match: <host>, plaintext: true}` under `advanced.tls.destinations` to keep today's behaviour visible. Credentials are still never sent in clear to that host."
+action = "Prefer TLS to that destination and remove the entry."
+
+[[diagnostic]]
+name = "MIGRATE_CA_CERT_PEM_TO_TLS_DESTINATIONS"
+doc = "--migrate-config moved a plugin's `ca_cert_pem` to an exact-host `advanced.tls.destinations` entry."
+code = 3415
+class = "Config"
+slug = "migrate-ca-cert-pem-to-tls-destinations"
+title = "A plugin CA moved to the trust store"
+severity = "Actionable"
+summary = "Plugins no longer carry their own CA settings (auth-ldap, auth-github, auth-oidc, secret-vault `ca_cert_pem`; plane-mcp `tools.<s>.tls.ca_cert_pem`). The migration removed the setting and added `advanced.tls.destinations: [{match: <exact host of the plugin's target>, trust_anchors: [<the same value>]}]`, merging into an existing entry with the same match. Destination anchors replace the public roots for that host. A value held in a secret reference cannot be copied: a TODO names it."
+action = "Validate the result. If the CA is a corporate root used for many hosts, move it to `advanced.tls.trust_anchors` instead."
+
+[[diagnostic]]
+name = "MIGRATE_DISCOVERED_HOST_TODO"
+doc = "--migrate-config cannot know the hosts an OIDC issuer's discovery document names."
+code = 3416
+class = "Config"
+slug = "migrate-discovered-host-todo"
+title = "OIDC discovered hosts need a trust entry"
+severity = "Actionable"
+summary = "auth-oidc's `ca_cert_pem` moved to an entry for the issuer's host, but the discovery document may name other hosts (`jwks_uri`, `token_endpoint`) that need the same CA. They cannot be known offline."
+action = "Add `advanced.tls.destinations` entries for the discovered hosts, or move the CA to `advanced.tls.trust_anchors` if it is a corporate root. A TLS failure at the first JWKS fetch names the host (BUSBAR-5047)."
+
+[[diagnostic]]
+name = "MIGRATE_INSECURE_TRANSPORT_REFUSED_TODO"
+doc = "--migrate-config removed auth-ldap `allow_insecure_transport`."
+code = 3417
+class = "Config"
+slug = "migrate-insecure-transport-refused-todo"
+title = "LDAP plaintext binds are no longer possible"
+severity = "Actionable"
+summary = "auth-ldap's `allow_insecure_transport` let a bind password cross in clear. busbar 1.6 never sends credentials in clear to a non-loopback host (BUSBAR-3146), so the migration removed the key and wrote a TODO."
+action = "Use ldaps:// or StartTLS (`start_tls: true`), and list the directory's CA under `advanced.tls.destinations` if it is not publicly trusted."
+
+[[diagnostic]]
+name = "MIGRATE_ANCHOR_NOT_A_CA"
+doc = "--migrate-config moved a `ca_cert_pem` that is not a CA certificate."
+code = 3418
+class = "Config"
+slug = "migrate-anchor-not-a-ca"
+title = "A migrated CA is a server certificate"
+severity = "Actionable"
+summary = "The `ca_cert_pem` the migration moved is a certificate without `basicConstraints CA:TRUE` (a self-signed server certificate, as mkcert, Vault or LDAP appliances generate). 1.5.5 accepted it as a trust anchor; busbar 1.6 refuses it at boot (BUSBAR-3137)."
+action = "List the CA that issued the server's certificate instead, or re-issue the server's certificate from a CA you control and list that CA."
+
+[[diagnostic]]
+name = "EGRESS_DIAL_REFUSED"
+doc = "An outbound dial was refused (destination guard, plaintext rule or trust store)."
+code = 5046
+class = "Proxy"
+slug = "egress-dial-refused"
+title = "An outbound dial was refused"
+severity = "BenignRecurring"
+summary = "busbar refused an outbound connection: the destination guard refused the host or an address it answered, plaintext was not admitted to it (BUSBAR-3141), or no trust anchor applies (BUSBAR-3140). The line carries the verdict, the class, the host, the owning plugin and need; it is rate-limited per host and reason, and each refusal writes one `egress.dial_refused` audit record."
+action = "If the destination is intended, add it to `advanced.allow_destinations` (private hosts), use TLS, or list its CA under `advanced.tls`."
+
+[[diagnostic]]
+name = "EGRESS_TLS_VERIFICATION_FAILED"
+doc = "An outbound TLS handshake failed certificate or key-pin verification."
+code = 5047
+class = "Proxy"
+slug = "egress-tls-verification-failed"
+title = "An outbound TLS connection failed verification"
+severity = "Actionable"
+summary = "The far end's certificate did not verify: unknown issuer, wrong host name, expired, or a key that is not the pinned one. The line and the `egress.tls_verification_failed` audit record carry the dialled host, the `advanced.tls.destinations` entries that matched, the fingerprints of the operator anchors in force, and the reason; never the certificate body. busbar never skips verification."
+action = "List the CA that issued the server's certificate under `advanced.tls.destinations` for that host (or `trust_anchors` for a corporate root), fix the server's certificate, or update the pin."
+
+[[diagnostic]]
+name = "EGRESS_TLS_ANCHOR_EXPIRED_WITHDRAWN"
+doc = "An `advanced.tls` trust anchor expired at runtime and was withdrawn."
+code = 5048
+class = "Proxy"
+slug = "egress-tls-anchor-expired-withdrawn"
+title = "An expired trust anchor was withdrawn"
+severity = "Actionable"
+summary = "The hourly trust-store sweep found an operator trust anchor past its notAfter and withdrew it from new connections (audited as `egress.tls_anchor_withdrawn`). A dial whose matching destination entry has no anchor left is refused. Connections already open are unaffected."
+action = "Rotate the CA, list the new one, and restart."
+
+[[diagnostic]]
+name = "EGRESS_TLS_ANCHOR_FILE_CHANGED"
+doc = "An `advanced.tls` anchor file changed on disk since boot."
+code = 5049
+class = "Proxy"
+slug = "egress-tls-anchor-file-changed"
+title = "A trust anchor file changed; restart to apply"
+severity = "Actionable"
+summary = "The hourly trust-store sweep found that a trust anchor file's contents differ from what busbar loaded at boot (for example cert-manager trust-manager rotated the bundle). The trust store is boot-time, so the change is not applied until restart. Logged once per change and audited as `egress.tls_anchor_file_changed`."
+action = "Restart busbar to apply the new anchors (validate first)."
+
+[[diagnostic]]
+name = "PLUGIN_USES_RETIRED_TLS_VALUE"
+doc = "A plugin uses a TLS value retired before 1.6.0 GA: a CA via `trust_from`, or `UPGRADE_VERIFY_OFF`."
+code = 6016
+class = "Plugins"
+slug = "plugin-uses-retired-tls-value"
+title = "A plugin uses a retired TLS setting"
+severity = "Actionable"
+summary = "A plugin declared a need whose `trust_from` names a CA certificate setting (for example `ca_cert_pem`), or asked the host to upgrade a connection without verifying the far end (`UPGRADE_VERIFY_OFF`). Both are retired: CAs live only in the core trust store (`advanced.tls`) and verification is never skipped. This transitional build still honours the value, once per plugin instance with this warning and an audit record; the first-party plugins have dropped it, and core refuses it before 1.6.0 GA (BUSBAR-6017)."
+action = "Move the CA to `advanced.tls.destinations` (`busbar --migrate-config` does it) and upgrade the plugin to a release that no longer declares the value."
+
+[[diagnostic]]
+name = "PLUGIN_RETIRED_TLS_VALUE_REFUSED"
+doc = "A plugin uses a retired TLS value (CA via `trust_from`, `UPGRADE_VERIFY_OFF`); refused."
+code = 6017
+class = "Plugins"
+slug = "plugin-retired-tls-value-refused"
+title = "A plugin's retired TLS setting was refused"
+severity = "Fatal"
+summary = "A plugin declared a need whose `trust_from` names a CA certificate, or asked the host to upgrade a connection without verifying the far end (`UPGRADE_VERIFY_OFF`). busbar 1.6 refuses both: CAs live only in the core trust store (`advanced.tls`), and verification is never skipped. The refusal names the plugin and the value."
+action = "Upgrade the plugin to a 1.6 release, and move the CA to `advanced.tls.destinations` (`busbar --migrate-config` does it)."

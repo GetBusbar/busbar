@@ -343,8 +343,12 @@ pub(crate) fn validate_config_command() -> i32 {
         config::overlay::merge_into(&mut cfg, doc);
     }
 
-    let destination_guard =
-        |c: &config::RootCfg| crate::root::connector::guard_for(&c.destinations()).map(|_| ());
+    let destination_guard = |c: &config::RootCfg| {
+        crate::root::connector::guard_for(&c.destinations())?;
+        crate::root::connector::trust_store_of(&c.outbound_tls)
+            .map(|_| ())
+            .map_err(|errors| errors.join("\n  - "))
+    };
     let registry = match config_validate::check(
         &cfg,
         config_validate::Check {

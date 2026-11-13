@@ -380,6 +380,7 @@ dependencies = [
  "rustls-pki-types",
  "rustls-webpki",
  "serde_json",
+ "serde_yaml_ng",
  "sha2",
  "socket2",
  "tokio",
@@ -389,6 +390,7 @@ dependencies = [
  "url",
  "webpki-roots",
  "windows-sys 0.61.2",
+ "x509-parser",
  "zeroize",
 ]
 
@@ -544,6 +546,7 @@ dependencies = [
  "serde_yaml_ng",
  "sha2",
  "tokio",
+ "x509-parser",
  "zeroize",
 ]
 
