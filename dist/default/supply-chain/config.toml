@@ -107,7 +107,8 @@ criteria = "safe-to-deploy"
 
 [[exemptions.block-buffer]]
 version = "0.12.1"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.borrow-or-share]]
 version = "0.2.4"
@@ -127,19 +128,17 @@ criteria = "safe-to-deploy"
 
 [[exemptions.cmov]]
 version = "0.5.4"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
 
 [[exemptions.combine]]
 version = "4.6.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.const-oid]]
-version = "0.9.6"
-criteria = "safe-to-deploy"
-
-[[exemptions.const-oid]]
 version = "0.10.2"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
 
 [[exemptions.core_affinity]]
 version = "0.8.3"
@@ -175,15 +174,18 @@ criteria = "safe-to-deploy"
 
 [[exemptions.crypto-common]]
 version = "0.2.2"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.ctutils]]
 version = "0.4.8"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): digest 0.11 under ed25519-dalek 3 now reaches the shipped graph, so the existing safe-to-run exemption is raised to safe-to-deploy; no imported audit covers this version yet."
 
 [[exemptions.curve25519-dalek]]
-version = "4.1.3"
+version = "5.0.0"
 criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.curve25519-dalek-derive]]
 version = "0.1.1"
@@ -203,7 +205,8 @@ criteria = "safe-to-deploy"
 
 [[exemptions.digest]]
 version = "0.11.3"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.dimpl]]
 version = "0.7.4"
@@ -218,12 +221,14 @@ version = "1.0.20"
 criteria = "safe-to-deploy"
 
 [[exemptions.ed25519]]
-version = "2.2.3"
+version = "3.0.0"
 criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.ed25519-dalek]]
-version = "2.2.0"
+version = "3.0.0"
 criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.email_address]]
 version = "0.2.9"
@@ -327,7 +332,8 @@ criteria = "safe-to-deploy"
 
 [[exemptions.hybrid-array]]
 version = "0.4.15"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.hyper]]
 version = "1.11.1"
@@ -555,10 +561,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.pin-project-lite]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
-
-[[exemptions.pkcs8]]
-version = "0.10.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.portable-atomic]]
@@ -831,11 +833,17 @@ criteria = "safe-to-deploy"
 
 [[exemptions.sha2]]
 version = "0.11.1"
-criteria = "safe-to-run"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.signal-hook-registry]]
 version = "1.4.8"
 criteria = "safe-to-deploy"
+
+[[exemptions.signature]]
+version = "3.0.0"
+criteria = "safe-to-deploy"
+notes = "ed25519-dalek 3 line (busbar's ONE Ed25519; deny.toml [bans]): replaces the exempted ed25519-dalek 2 stack to drop der 0.7/pkcs8 0.10; no imported audit covers this version yet."
 
 [[exemptions.simd-adler32]]
 version = "0.3.10"
@@ -867,10 +875,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.sonic-simd]]
 version = "0.1.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.spki]]
-version = "0.7.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.sqlite-wasm-rs]]
