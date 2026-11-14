@@ -37,7 +37,11 @@ impl PersistenceBackend for LoseOneCommittedReply {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.inner.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let usage = candidate.candidate().mutations.iter().any(|mutation| {
                 matches!(mutation, Mutation::Put { address, .. } if address.key.first() == Some(&b'U'))
@@ -47,7 +51,7 @@ impl PersistenceBackend for LoseOneCommittedReply {
             }
             self.in_flight.fetch_add(1, Ordering::SeqCst);
             let fingerprint = candidate.fingerprint();
-            let result = self.inner.commit(candidate).await;
+            let result = self.inner.commit(candidate, key).await;
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             if usage && matches!(result, Ok(Decision::Applied(_))) {
                 let mut commits = self.committed.lock().unwrap();

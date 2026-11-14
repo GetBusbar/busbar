@@ -118,7 +118,14 @@ impl NativeFixture {
         })
         .unwrap();
         assert!(matches!(
-            self.faults.actual.commit(candidate).await.unwrap(),
+            self.faults
+                .actual
+                .commit(
+                    candidate,
+                    busbar_contract::persistence::CommitKey::for_tests()
+                )
+                .await
+                .unwrap(),
             Decision::Applied(_)
         ));
     }

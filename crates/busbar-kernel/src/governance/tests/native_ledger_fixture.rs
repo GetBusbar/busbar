@@ -121,7 +121,11 @@ impl PersistenceBackend for FaultBackend {
     // `fetch_update` is deprecated in favour of `try_update` (Rust 1.95+); this crate's
     // MSRV floor is below 1.95, so keep the older name.
     #[allow(deprecated)]
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             assert!(
                 !self.faults.readonly.load(Ordering::SeqCst),
@@ -186,7 +190,7 @@ impl PersistenceBackend for FaultBackend {
             {
                 return Err(Failure::Unknown);
             }
-            let result = self.inner.commit(prepared).await;
+            let result = self.inner.commit(prepared, key).await;
             if !changes.is_empty()
                 && result.is_ok()
                 && self.faults.lose_usage_reply.swap(false, Ordering::SeqCst)

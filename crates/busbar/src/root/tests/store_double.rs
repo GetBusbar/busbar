@@ -105,7 +105,11 @@ impl PersistenceBackend for NativeFaults {
             self.actual.scan(request).await
         })
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             self.ready().await;
             self.requests.lock().unwrap().push(candidate.clone());
@@ -116,7 +120,7 @@ impl PersistenceBackend for NativeFaults {
             if self.refusing.load(Ordering::Acquire) {
                 return Err(Failure::Refused);
             }
-            let answer = self.actual.commit(candidate).await?;
+            let answer = self.actual.commit(candidate, key).await?;
             if matches!(answer, Decision::Applied(_)) {
                 self.applied.fetch_add(1, Ordering::AcqRel);
                 if self.lose_acks.load(Ordering::Acquire) {

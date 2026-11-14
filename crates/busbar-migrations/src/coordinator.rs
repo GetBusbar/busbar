@@ -789,8 +789,8 @@ impl Coordinator {
             .ok_or(Error::Bounds)?;
         let snapshot = candidate_codec::encode(&candidate, budget, &crate::seal::lend())
             .map_err(|_| Error::Bounds)?;
-        let attempt =
-            Attempt::new(candidate, self.backend.clone()).map_err(|_| Error::IdentityMismatch)?;
+        let attempt = Attempt::migration(candidate, self.backend.clone(), &crate::seal::lend())
+            .map_err(|_| Error::IdentityMismatch)?;
         self.pending = Some(Pending {
             next,
             attempt,

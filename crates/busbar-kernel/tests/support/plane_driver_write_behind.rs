@@ -70,10 +70,14 @@ impl PersistenceBackend for Gated {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.actual.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             self.gate.pass().await;
-            self.actual.commit(candidate).await
+            self.actual.commit(candidate, key).await
         })
     }
 }

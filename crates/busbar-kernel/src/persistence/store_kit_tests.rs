@@ -95,7 +95,11 @@ impl PersistenceBackend for Mock {
     fn clock(&self, _: DatasetId) -> Call<'_, ClockObservation> {
         Box::pin(async { Ok(observed()) })
     }
-    fn commit(&self, prepared: PreparedCandidate) -> Call<'_, Decision> {
+    fn commit(
+        &self,
+        prepared: PreparedCandidate,
+        _key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
         Box::pin(async move {
             let mut state = self.state.lock().unwrap();
             let digest = prepared.fingerprint();
@@ -208,8 +212,12 @@ impl PersistenceBackend for EmptyReads {
     fn scan(&self, request: Arc<Scan>) -> Call<'_, Page> {
         self.0.scan(request)
     }
-    fn commit(&self, candidate: PreparedCandidate) -> Call<'_, Decision> {
-        self.0.commit(candidate)
+    fn commit(
+        &self,
+        candidate: PreparedCandidate,
+        key: busbar_contract::persistence::CommitKey,
+    ) -> Call<'_, Decision> {
+        self.0.commit(candidate, key)
     }
     fn clock(&self, dataset: DatasetId) -> Call<'_, ClockObservation> {
         self.0.clock(dataset)

@@ -318,7 +318,7 @@ impl ColdWriterRegistration {
             })
             .map_err(|_| Error::Corrupt)?;
             self.pending = Some(
-                Attempt::new(candidate, self.backend.clone())
+                Attempt::migration(candidate, self.backend.clone(), &crate::seal::lend())
                     .map_err(|_| Error::IdentityMismatch)?,
             );
         }
@@ -905,7 +905,7 @@ impl StoreIntent {
             state,
             desired_guard,
             desired_payload,
-            attempt: Attempt::new(candidate, self.backend.clone())
+            attempt: Attempt::migration(candidate, self.backend.clone(), &crate::seal::lend())
                 .map_err(|_| Error::IdentityMismatch)?,
         })
     }
@@ -1050,7 +1050,7 @@ impl StoreIntent {
                 operation: header.operation,
                 writer: header.original.writer,
                 next,
-                attempt: Attempt::new(candidate, self.backend.clone())
+                attempt: Attempt::migration(candidate, self.backend.clone(), &crate::seal::lend())
                     .map_err(|_| Error::IdentityMismatch)?,
             });
         }
@@ -1133,7 +1133,8 @@ impl IntentStore for StoreIntent {
         }
         // Root generations and retired execution floors never move backwards.
         // The original candidate now cannot execute for the first time. This
-        // direct crossing is solely a receipt lookup; no Attempt/Instant is reset.
+        // direct crossing is solely a receipt lookup; no Attempt/Instant is reset. Its key is the
+        // migration library's own (a self-fenced commit, LINT-RULES R9).
         *recovery = None;
         let snapshot = Secret::new(
             observed
@@ -1147,7 +1148,10 @@ impl IntentStore for StoreIntent {
         let marker = super::witness::expected(&candidate, migration)?;
         let decision = self
             .backend
-            .commit(candidate.clone())
+            .commit(
+                candidate.clone(),
+                busbar_contract::persistence::CommitKey::migration(&crate::seal::lend()),
+            )
             .await
             .map_err(Error::Backend)?;
         let mut applied_result = None;
