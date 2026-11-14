@@ -288,6 +288,8 @@ pub struct RootHost {
     runtime_only: std::cell::Cell<bool>,
 }
 
+/// Why a migration validation probe stopped: a declared reference this process cannot resolve.
+const UNRESOLVABLE_REFERENCE: &str = "migration validation reference could not be resolved";
 const STAGING_RANDOM_BYTES: usize = 16;
 const STAGING_DIRECTORY_PREFIX: &str = "busbar-migrate-";
 #[cfg(unix)]
@@ -328,7 +330,7 @@ impl RootHost {
         &self,
         settings: &serde_json::Value,
         statement: &busbar_contract::abi::mechanism::rendering::Read,
-    ) -> Result<busbar_contract::abi::sdk::cred::SettingsValue, String> {
+    ) -> Result<Option<busbar_contract::abi::sdk::cred::SettingsValue>, String> {
         use busbar_contract::secret_fields;
         let reference = statement.reference_fields()?;
         if secret_fields::contradiction(&statement.secret_refs, &reference).is_some() {
@@ -371,10 +373,11 @@ impl RootHost {
             }
         }
         let scope = busbar_contract::config_time::ConfigScope::config_time();
+        let mut unresolvable = false;
         // Both declared path classes reach VALIDATE as scalars. Resolution is
         // confined to this wiping probe; authored references and the plugin's
         // actual secret/reference classifications remain unchanged.
-        secret_fields::resolve_references(
+        let resolved = secret_fields::resolve_references(
             probe.pointer_mut("").expect("the JSON document has a root"),
             &[],
             &allowed,
@@ -393,12 +396,26 @@ impl RootHost {
                     }
                     return Ok(text.to_owned());
                 }
-                busbar_kernel::config::secret::resolve_linked_string_at_config(reference, &scope)
-                    .map(|value| value.into_exposed(&busbar_kernel::seal::lend()))
-                    .map_err(|_| "migration validation reference could not be resolved".into())
+                match busbar_kernel::config::secret::resolve_linked_string_at_config(
+                    reference, &scope,
+                ) {
+                    Ok(value) => Ok(value.into_exposed(&busbar_kernel::seal::lend())),
+                    Err(_) => {
+                        unresolvable = true;
+                        Err(UNRESOLVABLE_REFERENCE.into())
+                    }
+                }
             },
-        )?;
-        Ok(probe)
+        );
+        match resolved {
+            Ok(()) => Ok(Some(probe)),
+            // A declared reference whose source this process cannot read (an unset variable,
+            // a file only the serving host has) is not a decision for the operator: the
+            // settings cannot be judged here, so judging them is left to the boot reader,
+            // which resolves and validates them and refuses an unresolvable reference itself.
+            Err(_) if unresolvable => Ok(None),
+            Err(error) => Err(error),
+        }
     }
     #[must_use]
     pub fn for_document(raw: &str, config: &std::path::Path) -> Self {
@@ -705,7 +722,9 @@ impl MigrateHost for RootHost {
                 .map_err(|_| "current migration plugin statement is unavailable")?;
             let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
                 .map_err(|_| "current migration plugin statement is invalid")?;
-            let probe = self.validation_probe(settings, &statement)?;
+            let Some(probe) = self.validation_probe(settings, &statement)? else {
+                return Ok(());
+            };
             return crate::root::loader::dispatch::migrate::validate_migrated_door(
                 crate::root::loader::dispatch::load::raw(door),
                 &probe,
@@ -721,7 +740,9 @@ impl MigrateHost for RootHost {
                 .ok_or("current migration plugin statement is unavailable")?;
             let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
                 .map_err(|_| "current migration plugin statement is invalid")?;
-            let probe = self.validation_probe(settings, &statement)?;
+            let Some(probe) = self.validation_probe(settings, &statement)? else {
+                return Ok(());
+            };
             return row.validate_migrated(&probe);
         }
         let fetched = self.fetch(kind, module)?;
@@ -734,7 +755,9 @@ impl MigrateHost for RootHost {
             .ok_or("current migration plugin statement is unavailable")?;
         let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
             .map_err(|_| "current migration plugin statement is invalid")?;
-        let probe = self.validation_probe(settings, &statement)?;
+        let Some(probe) = self.validation_probe(settings, &statement)? else {
+            return Ok(());
+        };
         row.validate_migrated(&probe)
     }
 
