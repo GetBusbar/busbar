@@ -1,6 +1,7 @@
 # dist/default known-red list (decision 314). Seeded from dev pipeline 5219; calibrated once (decision 315)
-# from the three-run evidence of pipelines 5219, 5815 (job 14547) and 5819 (job 14561): the nondeterministic
-# families admin_application_admin_custody_outcomes, admin_application_admin_credential_cache and
+# from the four-run evidence of pipelines 5219, 5815 (job 14547), 5819 (job 14561) and 5822 (job 14572): the nondeterministic
+# families admin_application_admin_custody_outcomes, admin_application_admin_credential_cache,
+# admin_application_admin_config_history_and_overlay and
 # mcp_stdio_serve are flaky (they still run; pass or fail is tolerated). Shrink-only from here on.
 busbar-default::bin/busbar distribution::admin_application_admin_stuck_key_sentinel::a_stuck_mint_or_rotate_is_refused_in_flight_however_old_its_sentinel	CDT-KNOWN-RED	stable
 busbar-default::bin/busbar distribution::admin_configuration_contracts::test_admin_v1_put_auth_refuses_clearing_a_protected_chain	CDT-KNOWN-RED	stable
@@ -169,3 +170,6 @@ busbar-default::mcp_stdio_serve a_shutdown_signal_ends_a_live_line_session_clean
 busbar-default::mcp_stdio_serve common::lines::line_child_is_stopped_and_reaped_when_the_caller_unwinds	CDT-FLAKY-MCP-STDIO	flaky
 busbar-default::mcp_stdio_serve the_catalog_sections_are_required_only_when_a_linked_plane_requires_them	CDT-FLAKY-MCP-STDIO	flaky
 busbar-default::mcp_stdio_serve the_line_flag_with_no_plane_claiming_the_carrier_refuses_and_binds_nothing	CDT-FLAKY-MCP-STDIO	flaky
+busbar-default::bin/busbar distribution::admin_application_admin_config_history_and_overlay::test_admin_v1_config_apply_preserves_the_persisted_overlay	CDT-FLAKY-ADMIN-CUSTODY	flaky
+busbar-default::bin/busbar distribution::admin_application_admin_config_history_and_overlay::test_admin_v1_config_plane_golden_path	CDT-FLAKY-ADMIN-CUSTODY	flaky
+busbar-default::bin/busbar distribution::admin_application_admin_config_history_and_overlay::test_admin_v1_config_versions_rollback_and_diff	CDT-FLAKY-ADMIN-CUSTODY	flaky
