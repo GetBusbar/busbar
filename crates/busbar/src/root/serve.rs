@@ -1192,12 +1192,14 @@ impl DoorApply {
         } else {
             handed_settings(settings_path(&self.served_facts), handed)?
         };
-        let owned = owned_bytes(owned)?;
-        // Every step that can refuse the section without the plugin's next generation runs
-        // BEFORE the plugin refreshes: a READY refresh installs the instance's next connection
-        // binding, which only `bind_fetches` below completes, so a refusal after it (a member
-        // secret gone, say) would leave the retained generation serving through a binding whose
-        // member routes are never bound, and its calls would wait on them forever.
+        crate::root::loader::dispatch::kinds::plane::refresh_door_on(
+            &self.plugin,
+            &self.dispatcher,
+            &settings,
+            &owned_bytes(owned)?,
+            generation,
+        )?;
+        let binding = self.plugin.connection_binding();
         let (table, catalog_entry) = routes_of(
             section,
             self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
@@ -1211,7 +1213,8 @@ impl DoorApply {
             &pools,
             catalog_entry.as_deref(),
         );
-        let routes = match &self.reach {
+        let mut fetches = None;
+        let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
                     providers: &r.providers,
@@ -1223,41 +1226,13 @@ impl DoorApply {
                     upgrades: r.upgrades.clone(),
                     models: None,
                 };
-                Some(crate::root::door_steps::member_routes(
+                let routes = crate::root::door_steps::member_routes(
                     &table,
                     &pools,
                     &self.served_facts,
                     &reach,
                     scope,
-                )?)
-            }
-            None => None,
-        };
-        let observations = observations::parse(
-            self.plugin
-                .service_caller()
-                .ok_or_else(|| "unbound plane caller".to_owned())?
-                .namespace(),
-            section,
-            &facts,
-            &pools,
-        )?;
-        if !observations.is_empty() && !self.observations_supported {
-            return Err("usage observations require an atomic durable store"
-                .to_owned()
-                .into());
-        }
-        crate::root::loader::dispatch::kinds::plane::refresh_door_on(
-            &self.plugin,
-            &self.dispatcher,
-            &settings,
-            &owned,
-            generation,
-        )?;
-        let binding = self.plugin.connection_binding();
-        let mut fetches = None;
-        let egress = match (&self.reach, routes) {
-            (Some(r), Some(routes)) => {
+                )?;
                 let egress = crate::root::door_steps::compose_egress(
                     &facts,
                     &pools,
@@ -1272,7 +1247,7 @@ impl DoorApply {
                 fetches = Some(routes);
                 Some(Arc::new(egress))
             }
-            _ => None,
+            None => None,
         };
         admission
             .commit_typed()
@@ -1286,6 +1261,20 @@ impl DoorApply {
                 &routes,
                 &self.units,
             );
+        }
+        let observations = observations::parse(
+            self.plugin
+                .service_caller()
+                .ok_or_else(|| "unbound plane caller".to_owned())?
+                .namespace(),
+            section,
+            &facts,
+            &pools,
+        )?;
+        if !observations.is_empty() && !self.observations_supported {
+            return Err("usage observations require an atomic durable store"
+                .to_owned()
+                .into());
         }
         Ok(DoorLive {
             observations,
