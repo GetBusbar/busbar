@@ -35,6 +35,26 @@ impl GovState {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
         let observed = self.observation_total_async(bucket_id, window).await?;
+        self.viewed_usage(
+            cost,
+            bucket_id,
+            budget_period,
+            include_request_fee,
+            cell,
+            observed,
+        )
+    }
+
+    /// One bucket's viewed usage from a cell and observation total already read.
+    fn viewed_usage(
+        &self,
+        cost: &crate::cost::CostModel,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        cell: BudgetCell,
+        observed: crate::persistence::observations::BudgetTotal,
+    ) -> RecordStoreResult<DerivedUsage> {
         if observed.spent_nanos != 0 || !observed.units.is_empty() {
             return self
                 .price_observed_cell(cost, include_request_fee, cell, &observed)?
@@ -52,20 +72,6 @@ impl GovState {
         priced.map_err(|error| money_refusal(bucket_id, &error))
     }
 
-    pub async fn viewed_usage_for_async(
-        &self,
-        cost: &crate::cost::CostModel,
-        id: &str,
-        now: u64,
-    ) -> RecordStoreResult<Option<DerivedUsage>> {
-        if self.core_store()?.identity().get_key(id).await?.is_none() {
-            return Ok(None);
-        }
-        self.viewed_bucket_usage_async(cost, id, super::super::WINDOW_TOTAL, true, now)
-            .await
-            .map(Some)
-    }
-
     pub async fn bucket_model_tokens_async(
         &self,
         bucket_id: &str,
@@ -74,20 +80,6 @@ impl GovState {
     ) -> RecordStoreResult<Vec<(String, std::collections::BTreeMap<String, Count>)>> {
         let window = budget_window(budget_period, now);
         let cell = self.bucket_cell_async(bucket_id, window).await?;
-        let overflow = std::cell::Cell::new(false);
-        let models = cell
-            .models
-            .iter()
-            .map(|model| (&*model.model, model.cur.clone()));
-        let by_lane = busbar_kernel_ledger::usage::by_lane(models, |a, b| {
-            a.checked_add(b).unwrap_or_else(|_| {
-                overflow.set(true);
-                Count::ZERO
-            })
-        });
-        if overflow.get() {
-            return Err(RecordStoreError("lane count total overflow".into()));
-        }
         let observed = self.observation_total_async(bucket_id, window).await?;
         // Lane names are unique in `by_lane`: order it by name (the answer's order) and merge the
         // observed lanes in place rather than rebuilding it through a map.
@@ -112,6 +104,114 @@ impl GovState {
         Ok(by_lane)
     }
 
+    /// The /metrics view of many buckets (keys or group buckets, each with its
+    /// budget period) in one pass: the accounting marker once, each bucket's
+    /// usage cell once (shared by spend, tokens and per-model lanes) and the
+    /// observation budgets in batches. A key listing the caller just read is
+    /// the authority for this scrape, so no key record is re-read.
+    pub async fn scrape_usage_async(
+        &self,
+        cost: &crate::cost::CostModel,
+        buckets: &[(&str, &str)],
+        now: u64,
+    ) -> RecordStoreResult<Vec<KeyScrape>> {
+        let mut cells = Vec::with_capacity(buckets.len());
+        let mut windows = Vec::with_capacity(buckets.len());
+        for (id, period) in buckets {
+            let window = budget_window(period, now);
+            cells.push(self.bucket_cell_async(id, window).await?);
+            windows.push((*id, window));
+        }
+        let observed = self.observation_totals_async(&windows).await?;
+        buckets
+            .iter()
+            .zip(cells)
+            .zip(observed)
+            .map(|((&(id, period), cell), observed)| {
+                let models = model_lanes(&cell, &observed)?;
+                let usage = self.viewed_usage(cost, id, period, true, cell, observed)?;
+                Ok(KeyScrape { usage, models })
+            })
+            .collect()
+    }
+
+    /// Observation totals for many (bucket, window) pairs: one store open, one
+    /// accounting-marker read, budgets read in batches of the store scan limit.
+    async fn observation_totals_async(
+        &self,
+        buckets: &[(&str, u64)],
+    ) -> RecordStoreResult<Vec<crate::persistence::observations::BudgetTotal>> {
+        use crate::persistence::observations::{BudgetTotal, ObservationStore};
+        let none = || buckets.iter().map(|_| BudgetTotal::default()).collect();
+        if buckets.is_empty() || !ObservationStore::supports(&self.core) {
+            return Ok(none());
+        }
+        let store = ObservationStore::open(self.core.clone())
+            .map_err(|e| RecordStoreError(e.to_string()))?;
+        if !store
+            .has_accounting()
+            .await
+            .map_err(|e| RecordStoreError(e.to_string()))?
+        {
+            return Ok(none());
+        }
+        let ids: Vec<String> = buckets
+            .iter()
+            .map(|(bucket, window)| crate::plane_driver::observation_budget_id(bucket, *window))
+            .collect();
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let totals = store
+            .budgets(&ids)
+            .await
+            .map_err(|e| RecordStoreError(e.to_string()))?;
+        for ((bucket, window), total) in buckets.iter().zip(&totals) {
+            self.cache_observation_total(bucket, *window, total.clone());
+        }
+        Ok(totals)
+    }
+}
+
+/// One key's scrape view: its viewed usage and per-model lane totals, both
+/// folded from the same cell and observation total.
+pub struct KeyScrape {
+    pub usage: DerivedUsage,
+    pub models: Vec<(String, std::collections::BTreeMap<String, Count>)>,
+}
+
+/// Per-model lane totals of one bucket: the cell's model counts plus the
+/// observed lanes. Shared by the per-key view and the scrape so they agree.
+fn model_lanes(
+    cell: &BudgetCell,
+    observed: &crate::persistence::observations::BudgetTotal,
+) -> RecordStoreResult<Vec<(String, std::collections::BTreeMap<String, Count>)>> {
+    let overflow = std::cell::Cell::new(false);
+    let models = cell
+        .models
+        .iter()
+        .map(|model| (&*model.model, model.cur.clone()));
+    let by_lane = busbar_kernel_ledger::usage::by_lane(models, |a, b| {
+        a.checked_add(b).unwrap_or_else(|_| {
+            overflow.set(true);
+            Count::ZERO
+        })
+    });
+    if overflow.get() {
+        return Err(RecordStoreError("lane count total overflow".into()));
+    }
+    let mut by_lane: BTreeMap<String, BTreeMap<String, Count>> = by_lane.into_iter().collect();
+    for (lane, units) in &observed.units {
+        let counts = by_lane.entry(lane.clone()).or_default();
+        for (class, count) in units {
+            let entry = counts.entry(class.clone()).or_default();
+            *entry = entry
+                .checked_add(*count)
+                .map_err(|_| RecordStoreError("observation lane count overflow".into()))?;
+        }
+    }
+    Ok(by_lane.into_iter().collect())
+}
+
+impl GovState {
     pub async fn derived_bucket_usage_async(
         &self,
         cost: &crate::cost::CostModel,
