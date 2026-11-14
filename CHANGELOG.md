@@ -157,6 +157,38 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 
 ### Security
 
+- **A self-serve login no longer undoes an administrator's decision or crosses identity providers.**
+  1.6.0 Breaking: self-serve login and token exchange now refuse, with a 403 and a reason-specific
+  explanation, a user whose self-serve key an administrator disabled or revoked, whose disable or
+  revocation carried over through an identity change, whose subject is bound through a different
+  identity provider, whose key predates identity-provider tracking when more than one identity
+  provider that can issue self-serve keys is configured, or whose self-serve group holds a key that
+  was not issued to them. Previously a new login re-enabled, reused or took over the key. To restore
+  access: for a disabled key, an administrator re-enables it; for a revoked key, an administrator
+  deletes it and the next login mints a new one in the same group; for a key in the user's group
+  that is not theirs, an administrator moves it out. A login no longer reverses an administrator's
+  regroup: a user whose self-serve key was moved to another group keeps that key, in that group,
+  under that group's limits. Each refusal is written to the admin audit log as `self_mint.refused`
+  (resource `self_key:<subject>;provider=<module>;reason=<reason>`) and emits
+  [BUSBAR-4032](docs/diagnostics.md#self-mint-refused); the hosted-login page names the reason.
+  The identity provider recorded on a self-serve key is the configured identity module's name, not
+  the OIDC issuer: two modules that front the same issuer count as two providers. A self-serve key
+  created before 1.6.0 is recognised as the user's wherever an administrator has moved it, including
+  after a rotation or revocation, so the administrator's disable, revocation and group stand.
+  Modules whose role bindings grant no group (for example an admin-only sign-in module) do not
+  count toward "more than one identity provider".
+  Risks, accepted and stated: a self-serve key's group (`user:<subject>`) and key id are keyed on
+  the subject alone, not on the identity provider, so deleting a key refused as bound to a
+  different provider, or as predating provider tracking, gives the next person who asserts that
+  subject through any configured provider the group's limits headroom and spend history; delete
+  such a key only after confirming that person is its original owner. Deployments that changed
+  identity provider (or module name) while keeping the same `sub`, and upgraded deployments with
+  more than one mint-capable module, see these 403s until an administrator resolves each key. A
+  pre-1.6.0 self key whose generation an administrator rewrote is recognised only within its
+  derived-id window (every key 1.5.5 could write, while Busbar's tombstones remain); after direct
+  store surgery that removed tombstones, such a key past the window is not recognised and the next
+  login mints a fresh key beside it (the old key keeps its own disable or revocation).
+
 - **Store-only plugin downgrade state and immutable bootstrap archives.** 1.6.0 Breaking: a dropped
   Store, secret plugin, transport or plane grammar probe needed before Store recovery must match the complete archive's
   SHA-256 in the operator's base `plugins.fetch` entry before native loading. Linked bootstrap

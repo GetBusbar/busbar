@@ -777,8 +777,6 @@ pub struct GovState {
     #[cfg(test)]
     identity_wait_observer: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 
-    self_mint_holds: std::sync::atomic::AtomicBool,
-
     transition_self_holds: RwLock<std::collections::BTreeSet<String>>,
 
     caller_refs: crate::plane_driver::CallerRefs,
@@ -892,6 +890,8 @@ pub mod group_provision;
 mod state;
 pub use state::identity_runtime::{IdentityClaimKey, IdentityMutationGuard};
 pub(crate) use state::key_row_expired;
+#[cfg(test)]
+pub(crate) use state::self_serve::{SelfEpoch, SelfWrite};
 pub use state::{
     metering_lane, AdjustRefused, Adjustment, KeyMutationError, MintError, PricedBucket,
     UsageAdjustment, ADJUST_DOWN_BUCKET, ADJUST_UP_BUCKET,
@@ -910,18 +910,53 @@ pub enum SelfMintOp {
     Refresh,
 }
 
-pub const SELF_MINT_HOLDS_ADMIN_AND_PROVIDER_STATE: bool = false;
-
-/// Why the self-serve mint refused to issue. Each one is an admin's or another provider's hold on the
-/// subject, never a store failure; the token exchange maps every one to `Unbound` (403).
+/// Why the self-serve mint refused to issue. Each one is an admin's decision, a transition hold or
+/// another provider's claim on the subject, never a store failure. The kernel audits each one
+/// (`self_mint.refused`) and maps it to `ExchangeError::SelfMintRefused`, a reason-specific 403.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfMintRefusal {
-    /// The subject holds a self-serve binding an admin disabled (or revoked) and has not deleted. A
-    /// login or refresh must not re-enable it or route around it with a fresh key.
+    /// A principal transition carried an admin disable or revocation onto this subject.
+    TransitionHeld,
+    /// A live key in the subject's self group (`user:<sub>`) was not issued to this subject (another
+    /// subject's self key, an admin-minted key, or a legacy key whose id is not derived for it).
+    ForeignKeyInGroup,
+    /// An administrator revoked the subject's self-serve key (its id is denylisted).
+    Revoked,
+    /// An administrator disabled the subject's self-serve key and has not deleted it. A login or
+    /// refresh must not re-enable it or route around it with a fresh key.
     Disabled,
-    /// The subject's binding was minted through a different identity provider
+    /// The subject's binding was minted through a different identity module
     /// ([`busbar_contract::records::VirtualKey::idp_provider`]).
     OtherProvider,
+    /// The subject's binding predates identity-provider tracking and more than one configured module
+    /// can mint self-serve keys, so the login cannot tell whose it is.
+    Unattributed,
+}
+
+impl SelfMintRefusal {
+    /// The stable lowercase token written to the audit record and the diagnostic.
+    #[must_use]
+    pub fn reason(self) -> &'static str {
+        match self {
+            SelfMintRefusal::TransitionHeld => "transition_held",
+            SelfMintRefusal::ForeignKeyInGroup => "foreign_key_in_group",
+            SelfMintRefusal::Revoked => "revoked",
+            SelfMintRefusal::Disabled => "disabled",
+            SelfMintRefusal::OtherProvider => "other_provider",
+            SelfMintRefusal::Unattributed => "unattributed",
+        }
+    }
+}
+
+/// What a self-serve mint does with a matched binding that carries no `idp_provider` (a row written
+/// before provider tracking). Every production caller passes it explicitly (no default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnattributedBinding {
+    /// Exactly one configured module can mint self-serve keys, so it is the only one that can assert
+    /// the subject: stamp the row with it.
+    Adopt,
+    /// More than one module can mint: refuse with [`SelfMintRefusal::Unattributed`].
+    Refuse,
 }
 
 /// A self-serve mint failure: a typed refusal, or the store failing underneath the mint.
@@ -942,21 +977,39 @@ impl From<RecordStoreError> for SelfMintError {
 impl std::fmt::Display for SelfMintError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SelfMintError::Refused(SelfMintRefusal::Disabled) => {
-                f.write_str("self-serve mint refused: the subject's binding is disabled")
-            }
-            SelfMintError::Refused(SelfMintRefusal::OtherProvider) => f.write_str(
-                "self-serve mint refused: the subject's binding was minted by another identity \
-                 provider",
-            ),
+            SelfMintError::Refused(r) => f.write_str(match r {
+                SelfMintRefusal::TransitionHeld => {
+                    "self-serve mint refused: an admin disable or revocation carried over through \
+                     an identity change"
+                }
+                SelfMintRefusal::ForeignKeyInGroup => {
+                    "self-serve mint refused: the subject's self group holds a key not issued to it"
+                }
+                SelfMintRefusal::Revoked => {
+                    "self-serve mint refused: the subject's binding is revoked"
+                }
+                SelfMintRefusal::Disabled => {
+                    "self-serve mint refused: the subject's binding is disabled"
+                }
+                SelfMintRefusal::OtherProvider => {
+                    "self-serve mint refused: the subject's binding was minted by another identity \
+                     provider"
+                }
+                SelfMintRefusal::Unattributed => {
+                    "self-serve mint refused: the subject's binding predates provider tracking and \
+                     more than one identity provider can mint"
+                }
+            }),
             SelfMintError::Store(e) => e.fmt(f),
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn mint_self_offloaded(
     gov: Arc<GovState>,
     op: SelfMintOp,
+    unattributed: UnattributedBinding,
     user_sub: String,
     provider: String,
     allowed_scopes: Option<Vec<busbar_contract::records::ScopeRef>>,
@@ -965,11 +1018,11 @@ pub async fn mint_self_offloaded(
 ) -> Result<(VirtualKey, String), SelfMintError> {
     match op {
         SelfMintOp::Issue => {
-            gov.issue_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.issue_self_scoped(&user_sub, &provider, unattributed, allowed_scopes, exp, now)
                 .await
         }
         SelfMintOp::Refresh => {
-            gov.refresh_self_scoped(&user_sub, &provider, allowed_scopes, exp, now)
+            gov.refresh_self_scoped(&user_sub, &provider, unattributed, allowed_scopes, exp, now)
                 .await
         }
     }

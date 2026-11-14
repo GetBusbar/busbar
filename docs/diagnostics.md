@@ -793,6 +793,17 @@ A credential under a scheme configured with a credential-family table contains b
 
 **What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Requests omit the credential until it is fixed and may be refused by the upstream.
 
+<a id="self-mint-refused"></a>
+### BUSBAR-4032 — Self-serve login refused: an admin decision or another provider holds the key
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `self-mint-refused`
+
+A self-serve login (hosted login or token exchange) authenticated a subject but was refused with a 403, because the subject's self-serve key was disabled or revoked by an administrator, a disable or revocation carried over through an identity change, the key is bound to a different identity module, the key predates identity-provider tracking while more than one module can mint self-serve keys, or the subject's self group holds a key not issued to it. Nothing was written; the refusal is also recorded in the admin audit log as self_mint.refused with the subject, provider and reason.
+
+**What to do:** By reason. disabled: re-enable the key. revoked: delete the key so the next login mints a fresh one. other_provider / unattributed: confirm the person is the key's original owner before deleting it (the self group and key id are keyed on the subject alone). transition_held: review the identity change that carried the hold. foreign_key_in_group: move the named key out of user:<subject>.
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>

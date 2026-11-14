@@ -85,6 +85,15 @@ impl RevocationSync {
             .insert(sub.to_string());
     }
 
+    /// A node whose in-memory denylist has not caught up with the store yet.
+    #[cfg(test)]
+    pub(crate) fn forget(&self, sub: &str) {
+        self.set
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(sub);
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn synced_at(&self) -> u64 {
         self.synced_at.load(Ordering::Relaxed)
