@@ -429,3 +429,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
 
 #[path = "serve_door_far_caller_secret.rs"]
 mod caller_secret;
+
+#[cfg(linked_every_transport)]
+#[path = "serve_door_far_outbound_head.rs"]
+mod outbound_head;
