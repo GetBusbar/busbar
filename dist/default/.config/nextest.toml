@@ -3,3 +3,9 @@
 [[profile.default.overrides]]
 filter = 'test(/work_budget::/)'
 success-output = "immediate"
+
+# cap.perf.streams-2000 holds ~4,500 threads and ~4,500 sockets for its whole run; it runs alone so
+# it neither starves nor is starved by the tests beside it.
+[[profile.default.overrides]]
+filter = 'binary(cap_perf_streams_2000)'
+threads-required = "num-test-threads"

@@ -100,6 +100,17 @@ pub(crate) struct NodeRigOpts {
     pub fee_cents: i64,
     /// One limit on the key's group (`None`: the key has no group).
     pub group_limit: Option<busbar_kernel::config::groups::LimitCfg>,
+    /// The member's dialect (`None`: the door words' `dialect`).
+    pub dialect: Option<&'static str>,
+    /// The card history a unit is pinned to at its door (`None`: the root's own card).
+    pub pin: Option<fn() -> Option<crate::root::kernel::PinnedHistory>>,
+    /// The `rate_card:` exactly as written: the plane's billable classes are not added to it, so a
+    /// card silent about a class stays silent.
+    pub card_as_written: bool,
+    /// The door asks no caller credential (an open front door).
+    pub open_door: bool,
+    /// A global gate seated before the member is chosen (`None`: no gate).
+    pub gate: Option<Arc<dyn busbar_contract::hooks::RoutingPolicy>>,
 }
 
 /// The composed door and what its cells read back.
@@ -110,6 +121,8 @@ pub(crate) struct NodeRig {
     pub gov: Arc<busbar_kernel::governance::GovState>,
     pub key: busbar_contract::records::VirtualKey,
     pub group: String,
+    /// The node's book: its journal and the audit records it sealed.
+    pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
 }
 
 impl NodeRig {
@@ -119,13 +132,25 @@ impl NodeRig {
         path: &str,
         body: &serde_json::Value,
     ) -> axum::response::Response {
+        self.open_raw(path, body.to_string(), true).await
+    }
+
+    /// One request through the router carrying `body` as written, with the key's bearer token or
+    /// with no credential at all.
+    pub(crate) async fn open_raw(
+        &self,
+        path: &str,
+        body: String,
+        bearer: bool,
+    ) -> axum::response::Response {
         use tower::ServiceExt as _;
-        let request = axum::http::Request::builder()
-            .method("POST")
-            .uri(path)
-            .header("authorization", format!("Bearer {}", self.token))
+        let mut request = axum::http::Request::builder().method("POST").uri(path);
+        if bearer {
+            request = request.header("authorization", format!("Bearer {}", self.token));
+        }
+        let request = request
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(body.to_string()))
+            .body(axum::body::Body::from(body))
             .expect("a request");
         self.router
             .clone()
@@ -199,19 +224,26 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         std::env::var("BUSBAR_GOVERNANCE_TEST_STORE_SETTINGS").unwrap_or_else(|_| "{}".to_string());
     let store_settings: serde_json::Value =
         serde_json::from_str(&store_settings).expect("the actual Store settings are JSON");
+    let auth = if opts.open_door {
+        "auth:\n  chain: []\n  admin_auth: []\n".to_string()
+    } else {
+        format!(
+            "auth:\n  chain: [keys]\n  admin_auth: []\n  signing_key: {{ file: '{}' }}\n",
+            signing_file.display()
+        )
+    };
     let yaml = format!(
         "providers:\n  oai0:\n    api_key: {{ file: '{key}' }}\n\
          models:\n  {LANE}:\n    provider: oai0\n\
          pools:\n  {POOL}:\n    members:\n      - model: {LANE}\n        weight: 1\n\
-         auth:\n  chain: [keys]\n  admin_auth: []\n  signing_key: {{ file: '{signing}' }}\n\
+         {auth}\
          store:\n  module: {store_module}\n  settings: {store_settings}\n",
         key = key_file.display(),
-        signing = signing_file.display(),
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the deployment");
     let defs: HashMap<String, busbar_kernel::config::ProviderDef> = serde_yaml::from_str(&format!(
         "oai0:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",
-        word("dialect")
+        opts.dialect.unwrap_or_else(|| word("dialect"))
     ))
     .expect("the providers");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &defs)
@@ -251,8 +283,14 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         .collect();
     cfg.groups = groups.clone();
     cfg.per_request_fee = opts.fee_cents;
+    let card_as_written = opts.card_as_written;
     let rate_card = opts.rate_card.map(|mut card| {
-        for entry in card.values_mut() {
+        let fill = if card_as_written {
+            None
+        } else {
+            Some(card.values_mut())
+        };
+        for entry in fill.into_iter().flatten() {
             for class in &plane.served().billable_classes {
                 if !busbar_contract::records::RESERVED_UNITS.contains(class)
                     && !plane.served().fee_units.contains(class)
@@ -343,6 +381,20 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     app.amendments = Arc::clone(gov.amendments());
     app.governance = Some(Arc::clone(&gov));
     app.cost = Arc::new(cost);
+    if let Some(policy) = opts.gate {
+        app.global_gates = vec![(
+            0u16,
+            busbar_kernel::hooks::ResolvedPolicy::Policy {
+                policy,
+                on_error: busbar_kernel::config::PolicyOnError::default(),
+                on_error_chain: Vec::new(),
+                timeout: std::time::Duration::from_millis(500),
+                send_prompt: false,
+                send_user: false,
+                on_empty: busbar_kernel::config::PolicyOnError::Reject,
+            },
+        )];
+    }
     let app = Arc::new(app);
 
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> = app.secret_resolver.clone();
@@ -403,7 +455,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
     served.post = Some(Arc::clone(&post));
     let mounts = door_mounts(
         served,
-        || crate::root::kernel::ROOT_CARD.pin(),
+        opts.pin.unwrap_or(|| crate::root::kernel::ROOT_CARD.pin()),
         &[],
         &busbar_kernel::base_data_core_lines(&app),
         &[],
@@ -426,5 +478,6 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         gov,
         key,
         group,
+        book: durability,
     }
 }

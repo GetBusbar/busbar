@@ -6,13 +6,15 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 const STREAMS: usize = 2000;
 
@@ -62,8 +64,15 @@ fn cap_perf_streams_2000() {
 }
 
 fn cap_perf_streams_2000_body() {
+    // The callers and the far end are tasks on one small runtime, not a thread each: the cell
+    // measures busbar holding the streams, so it must not need thousands of host threads itself.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("the cell's runtime");
     let dir = fixture_dir();
-    let upstream = Upstream::spawn();
+    let upstream = runtime.block_on(Upstream::spawn());
     let data_port = common::boot::free_port();
     let admin_port = common::boot::free_port();
     write_configs(&dir, data_port, admin_port, upstream.port);
@@ -101,20 +110,18 @@ fn cap_perf_streams_2000_body() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let callers: Vec<_> = (0..STREAMS)
-        .map(|i| {
-            std::thread::Builder::new()
-                .stack_size(128 * 1024)
-                .spawn(move || stream_chat(data_port, i))
-                .expect("a caller thread")
-        })
-        .collect();
-    let answers: Vec<Answer> = callers
-        .into_iter()
-        .map(|h| h.join().expect("a caller did not panic"))
-        .collect();
+    let answers: Vec<Answer> = runtime.block_on(async {
+        let callers: Vec<_> = (0..STREAMS)
+            .map(|i| tokio::spawn(stream_chat(data_port, i)))
+            .collect();
+        let mut answers = Vec::with_capacity(STREAMS);
+        for caller in callers {
+            answers.push(caller.await.expect("a caller did not panic"));
+        }
+        answers
+    });
     let peak = upstream.peak.load(Ordering::SeqCst);
-    let barrier_failed = upstream.arrived.0.lock().unwrap().failed;
+    let barrier_failed = upstream.arrived.lock().unwrap().failed;
     let _ = child.kill();
     let _ = child.wait();
 
@@ -156,7 +163,7 @@ fn cap_perf_streams_2000_body() {
 struct Upstream {
     port: u16,
     peak: Arc<AtomicUsize>,
-    arrived: Arc<(Mutex<ArrivalState>, Condvar)>,
+    arrived: Arc<Mutex<ArrivalState>>,
 }
 
 #[derive(Default)]
@@ -166,35 +173,46 @@ struct ArrivalState {
     failed: bool,
 }
 
+/// The barrier's phase, published to every held stream.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Waiting,
+    Released,
+    Failed,
+}
+
 struct LiveStream<'a> {
-    arrived: &'a (Mutex<ArrivalState>, Condvar),
+    arrived: &'a Mutex<ArrivalState>,
     registered: bool,
 }
 
 impl Drop for LiveStream<'_> {
     fn drop(&mut self) {
         if self.registered {
-            let mut state = self.arrived.0.lock().unwrap_or_else(|p| p.into_inner());
+            let mut state = self.arrived.lock().unwrap_or_else(|p| p.into_inner());
             state.live -= 1;
         }
     }
 }
 
 impl Upstream {
-    fn spawn() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    async fn spawn() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let peak = Arc::new(AtomicUsize::new(0));
-        let arrived = Arc::new((Mutex::new(ArrivalState::default()), Condvar::new()));
+        let arrived = Arc::new(Mutex::new(ArrivalState::default()));
+        let (phase, _) = tokio::sync::watch::channel(Phase::Waiting);
+        let phase = Arc::new(phase);
         let held = Arc::clone(&arrived);
         let p = Arc::clone(&peak);
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                let Ok(stream) = conn else { continue };
-                let (p, arrived) = (Arc::clone(&p), Arc::clone(&arrived));
-                let _ = std::thread::Builder::new()
-                    .stack_size(128 * 1024)
-                    .spawn(move || serve(stream, &p, &arrived));
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    continue;
+                };
+                let (p, arrived, phase) =
+                    (Arc::clone(&p), Arc::clone(&arrived), Arc::clone(&phase));
+                tokio::spawn(async move { serve(stream, &p, &arrived, &phase).await });
             }
         });
         Upstream {
@@ -205,12 +223,17 @@ impl Upstream {
     }
 }
 
-fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalState>, Condvar)) {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
+async fn serve(
+    stream: tokio::net::TcpStream,
+    peak: &AtomicUsize,
+    arrived: &Mutex<ArrivalState>,
+    phase: &tokio::sync::watch::Sender<Phase>,
+) {
+    let mut reader = tokio::io::BufReader::new(stream);
     let mut content_length = 0usize;
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
             return;
         }
         if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
@@ -221,23 +244,25 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalStat
         }
     }
     let mut body = vec![0u8; content_length];
-    if reader.read_exact(&mut body).is_err() {
+    if reader.read_exact(&mut body).await.is_err() {
         return;
     }
+    let mut stream = reader.into_inner();
     let events = events();
     let (head, tail) = events.split_at(2);
     if stream
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")
+        .await
         .is_err()
     {
         return;
     }
     for e in head {
-        if stream.write_all(e.as_bytes()).is_err() {
+        if stream.write_all(e.as_bytes()).await.is_err() {
             return;
         }
     }
-    if stream.flush().is_err() {
+    if stream.flush().await.is_err() {
         return;
     }
 
@@ -245,34 +270,41 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<ArrivalStat
         arrived,
         registered: false,
     };
-    let (count, all) = arrived;
-    let mut state = count.lock().unwrap();
-    if state.failed {
-        return;
+    let mut watching = phase.subscribe();
+    {
+        let mut state = arrived.lock().unwrap();
+        if state.failed {
+            return;
+        }
+        state.live += 1;
+        live.registered = true;
+        peak.fetch_max(state.live, Ordering::SeqCst);
+        if state.live == STREAMS {
+            state.released = true;
+            drop(state);
+            phase.send_replace(Phase::Released);
+        }
     }
-    state.live += 1;
-    live.registered = true;
-    peak.fetch_max(state.live, Ordering::SeqCst);
-    if state.live == STREAMS {
-        state.released = true;
-        drop(state);
-        all.notify_all();
-    } else {
-        let (mut state, _) = all
-            .wait_timeout_while(state, ARRIVAL_WAIT, |state| {
-                !state.released && !state.failed
-            })
-            .unwrap();
+    let released = matches!(
+        tokio::time::timeout(
+            ARRIVAL_WAIT,
+            watching.wait_for(|phase| *phase != Phase::Waiting)
+        )
+        .await,
+        Ok(Ok(seen)) if *seen == Phase::Released
+    );
+    if !released {
+        let mut state = arrived.lock().unwrap();
         if !state.released {
             state.failed = true;
             drop(state);
-            all.notify_all();
-            return;
+            phase.send_replace(Phase::Failed);
         }
+        return;
     }
     for e in tail {
-        let _ = stream.write_all(e.as_bytes());
-        let _ = stream.flush();
+        let _ = stream.write_all(e.as_bytes()).await;
+        let _ = stream.flush().await;
     }
 }
 
@@ -302,26 +334,29 @@ struct Answer {
     body: Vec<u8>,
 }
 
-fn stream_chat(port: u16, i: usize) -> Answer {
+async fn stream_chat(port: u16, i: usize) -> Answer {
     let body = format!(
         r#"{{"model":"cap-model","stream":true,"stream_options":{{"include_usage":true}},"messages":[{{"role":"user","content":"stream {i}"}}]}}"#
     );
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+    let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
         return Answer {
             status: 0,
             body: Vec::new(),
         };
     };
-    let _ = stream.set_read_timeout(Some(CALLER_BUDGET));
     let head = format!(
         "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body.as_bytes());
-    let _ = stream.flush();
+    let _ = stream.write_all(head.as_bytes()).await;
+    let _ = stream.write_all(body.as_bytes()).await;
+    let _ = stream.flush().await;
     let mut raw = Vec::new();
-    let _ = stream.read_to_end(&mut raw);
+    let mut buf = vec![0u8; 16 * 1024];
+    // Each read waits at most the caller's budget, as a blocking read timeout would.
+    while let Ok(Ok(n @ 1..)) = tokio::time::timeout(CALLER_BUDGET, stream.read(&mut buf)).await {
+        raw.extend_from_slice(&buf[..n]);
+    }
     parse(&raw)
 }
 

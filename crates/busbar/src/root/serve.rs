@@ -7352,6 +7352,10 @@ mod work_budget;
 #[path = "tests/node_arrival.rs"]
 mod node_arrival;
 
+#[cfg(all(test, linked_section_pools, linked_driver_proofs))]
+#[path = "tests/node_door_cells.rs"]
+mod node_door_cells;
+
 #[cfg(all(test, linked_section_pools))]
 #[path = "tests/serve_framed.rs"]
 mod framed_tests;
