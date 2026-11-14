@@ -3886,7 +3886,6 @@ mod refresher {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn refresh_all() {
         let live: Vec<Arc<PerHop>> = kept_book()
             .kept
@@ -3903,7 +3902,6 @@ mod refresher {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 pub(crate) fn refresh_credentials() {
     refresher::refresh_all();
 }
