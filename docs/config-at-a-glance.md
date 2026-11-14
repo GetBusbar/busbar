@@ -100,7 +100,7 @@ and ANDs every limit (atomic, all-or-nothing); a rejection names the exact block
 groups:
   acme:                                    # an org/team/user are the same primitive (a user = a leaf)
     limits:
-      - { requests: 500, per: minute }     # requests|tokens|budget need a `per:` window
+      - { requests: 500, per: minute }     # requests|tokens|tokens_*|budget need a `per:` window
       - { budget: 1000000, per: month }
       - { concurrent: 20 }                 # instantaneous in-flight cap: no `per:`, no `pool:`
   search-team:
