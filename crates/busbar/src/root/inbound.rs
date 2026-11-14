@@ -31,7 +31,7 @@ pub fn host() -> &'static Arc<Inbound> {
                 Ok(rt) => drop(rt.spawn(f)),
 
                 Err(_) => drop(std::thread::spawn(move || {
-                    tokio::runtime::Builder::new_current_thread()
+                    busbar_kernel::rt::current_thread()
                         .enable_all()
                         .build()
                         .map(|rt| rt.block_on(f))
