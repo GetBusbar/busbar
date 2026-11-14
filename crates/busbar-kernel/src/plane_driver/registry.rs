@@ -207,6 +207,7 @@ pub fn publish_planes(registered: &[&'static PlaneDecl]) {
     );
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn scope_kind_at(idx: u32) -> Option<&'static str> {
     let mut seen: Vec<&'static str> = Vec::new();
     std::iter::once("pool")
