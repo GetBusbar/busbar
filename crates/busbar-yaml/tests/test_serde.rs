@@ -1,4 +1,4 @@
-// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against busbar-yaml:
+// serde_yaml_ng 0.10.0's own test suite (MIT; see this crate's NOTICE), run against yaml_serde:
 // the same inputs must give the same values, the same output bytes and the same error texts.
 #![allow(
     clippy::decimal_literal_representation,
@@ -10,35 +10,35 @@
 #[macro_use]
 mod common;
 
-use busbar_yaml::{Mapping, Number, Value};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::iter;
+use yaml_serde::{Mapping, Number, Value};
 
 fn test_serde<T>(thing: &T, yaml: &str)
 where
     T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + Debug,
 {
-    let serialized = busbar_yaml::to_string(&thing).unwrap();
+    let serialized = yaml_serde::to_string(&thing).unwrap();
     assert_eq!(yaml, serialized);
 
-    let value = busbar_yaml::to_value(thing).unwrap();
-    let serialized = busbar_yaml::to_string(&value).unwrap();
+    let value = yaml_serde::to_value(thing).unwrap();
+    let serialized = yaml_serde::to_string(&value).unwrap();
     assert_eq!(yaml, serialized);
 
-    let deserialized: T = busbar_yaml::from_str(yaml).unwrap();
+    let deserialized: T = yaml_serde::from_str(yaml).unwrap();
     assert_eq!(*thing, deserialized);
 
-    let value: Value = busbar_yaml::from_str(yaml).unwrap();
+    let value: Value = yaml_serde::from_str(yaml).unwrap();
     let deserialized = T::deserialize(&value).unwrap();
     assert_eq!(*thing, deserialized);
 
-    let deserialized: T = busbar_yaml::from_value(value).unwrap();
+    let deserialized: T = yaml_serde::from_value(value).unwrap();
     assert_eq!(*thing, deserialized);
 
-    busbar_yaml::from_str::<serde::de::IgnoredAny>(yaml).unwrap();
+    yaml_serde::from_str::<serde::de::IgnoredAny>(yaml).unwrap();
 }
 
 #[test]
@@ -126,7 +126,7 @@ fn test_float() {
     "};
     test_serde(&thing, yaml);
 
-    let float: f64 = busbar_yaml::from_str(indoc! {"
+    let float: f64 = yaml_serde::from_str(indoc! {"
         .nan
     "})
     .unwrap();
@@ -153,7 +153,7 @@ fn test_float32() {
     "};
     test_serde(&thing, yaml);
 
-    let single_float: f32 = busbar_yaml::from_str(indoc! {"
+    let single_float: f32 = yaml_serde::from_str(indoc! {"
         .nan
     "})
     .unwrap();
@@ -166,19 +166,19 @@ fn test_char() {
     let yaml = indoc! {"
         '.'
     "};
-    assert_eq!(yaml, busbar_yaml::to_string(&ch).unwrap());
+    assert_eq!(yaml, yaml_serde::to_string(&ch).unwrap());
 
     let ch = '#';
     let yaml = indoc! {"
         '#'
     "};
-    assert_eq!(yaml, busbar_yaml::to_string(&ch).unwrap());
+    assert_eq!(yaml, yaml_serde::to_string(&ch).unwrap());
 
     let ch = '-';
     let yaml = indoc! {"
         '-'
     "};
-    assert_eq!(yaml, busbar_yaml::to_string(&ch).unwrap());
+    assert_eq!(yaml, yaml_serde::to_string(&ch).unwrap());
 }
 
 #[test]
@@ -224,7 +224,7 @@ fn test_map_key_value() {
     let yaml = indoc! {"
         k: v
     "};
-    assert_eq!(yaml, busbar_yaml::to_string(&Map).unwrap());
+    assert_eq!(yaml, yaml_serde::to_string(&Map).unwrap());
 }
 
 #[test]
