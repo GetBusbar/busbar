@@ -9,25 +9,17 @@ use busbar_contract::caps::{DurabilityLost, DurableWrite, Grant, StepName};
 use foldhash::{HashMap, HashSet};
 use ring::digest::{Context, SHA256};
 
+use crate::note::{Bridge, QuarantineNote};
 use crate::record::Record;
-use crate::recover::{Bridge, QuarantineNote};
-use crate::ship::Shipper;
-use crate::wal::{BatchAck, Clock, Mode, OpenError, Wal};
 
 /// The four bytes every journal record's header opens with.
-pub const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
+pub(crate) const JOURNAL_MAGIC: [u8; 4] = *b"BJRN";
 
 /// The journal record layout version. A reader that meets one it does not know stops rather than
-pub const JOURNAL_VERSION: u16 = 1;
+pub(crate) const JOURNAL_VERSION: u16 = 1;
 
 /// How long a journal record's fixed header is. The body follows it.
 pub const JOURNAL_HEADER_BYTES: usize = 160;
-
-/// How many records the memory-buffered journal will hold for a store that has not acknowledged
-pub const MEMORY_BUFFER_RECORDS: usize = 8192;
-
-/// How many overflows the in-memory history names in detail.
-pub const OVERFLOW_HISTORY_RECORDS: usize = 16;
 
 /// Where in the header each field sits. Offsets are named rather than spelled at each use so that a
 mod at {
@@ -128,50 +120,6 @@ impl RecordClass {
             14 => FleetOutage,
             _ => return None,
         })
-    }
-
-    /// Its name, for a report a person reads.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        use RecordClass::*;
-        match self {
-            Transaction => "Transaction",
-            Access => "Access",
-            Slice => "Slice",
-            Lease => "Lease",
-            Policy => "Policy",
-            Checkpoint => "Checkpoint",
-            Reconciliation => "Reconciliation",
-            Migration => "Migration",
-            Bootstrap => "Bootstrap",
-            Purge => "Purge",
-            Load => "Load",
-            ChainBreak => "ChainBreak",
-            StoreRestore => "StoreRestore",
-            FleetOutage => "FleetOutage",
-        }
-    }
-
-    /// Every class, so a test can say "the set did not change" rather than listing it again.
-    #[must_use]
-    pub fn all() -> &'static [RecordClass] {
-        use RecordClass::*;
-        &[
-            Transaction,
-            Access,
-            Slice,
-            Lease,
-            Policy,
-            Checkpoint,
-            Reconciliation,
-            Migration,
-            Bootstrap,
-            Purge,
-            Load,
-            ChainBreak,
-            StoreRestore,
-            FleetOutage,
-        ]
     }
 }
 
@@ -527,6 +475,9 @@ impl std::fmt::Display for JournalBreak {
 impl std::error::Error for JournalBreak {}
 
 /// Whether a run of journal records links and digests correctly, oldest first.
+///
+/// The run may skip numbers or a link only across a hole that a quarantine `ChainBreak` record on
+/// the run itself names, anchored on the record it names as kept before the hole.
 pub fn verify(records: &[JournalRecord]) -> Result<(), JournalBreak> {
     verify_bridged(records, &[])
 }
@@ -616,7 +567,7 @@ fn bridges_of(records: &[JournalRecord], known: &[Bridge]) -> (Vec<Bridge>, Hash
 }
 
 impl Bridge {
-    /// Whether `record`, coming after `prev` in a run, crosses this hole. See [`verify_bridged`].
+    /// Whether `record`, coming after `prev` in a run, crosses this hole. See [`verify`].
     fn crosses(
         &self,
         prev: &JournalRecord,

@@ -197,23 +197,31 @@ fn hash(record: &Record) -> [u8; 32] {
     JournalRecord::decode(&record.body).unwrap().hash
 }
 
+/// A `journal-quarantine` ChainBreak body, in the field order the old engine wrote, naming the
+/// hole between `before` and `after`.
+fn quarantine_body(before: u64, after: u64) -> Vec<u8> {
+    let mut body = busbar_kernel_wal::BodyWriter::new();
+    body.text(busbar_kernel_wal::QUARANTINE_BODY_TAG)
+        .text("")
+        .num(0)
+        .num(0)
+        .num(0)
+        .num(1)
+        .text("in-process")
+        .num(0)
+        .num(1)
+        .num(1)
+        .num(7)
+        .num(before)
+        .num(1)
+        .num(7)
+        .num(after);
+    body.finish()
+}
+
 fn chain_break(seq: u64, previous: [u8; 32], before: u64, after: u64) -> Record {
-    let note = busbar_kernel_wal::Quarantine {
-        segment: 0,
-        segment_file: None,
-        offset: 0,
-        damage_at: 0,
-        bytes: 1,
-        why: None,
-        identities: vec![(7, before + 1)],
-        unverified: Vec::new(),
-        damaged: Vec::new(),
-        at_unix_ms: 0,
-        kept: busbar_kernel_wal::QuarantineKept::Memory,
-        before: Some((7, before)),
-        after: Some((7, after)),
-    };
-    let mut frame = JournalRecord::decode(&record(seq, previous, note.body()).body).unwrap();
+    let mut frame =
+        JournalRecord::decode(&record(seq, previous, quarantine_body(before, after)).body).unwrap();
     frame.class = RecordClass::ChainBreak;
     frame.hash = frame.digest_of_chain();
     Record::new(7, seq, frame.encode())

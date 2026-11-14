@@ -17,29 +17,22 @@
     )
 )]
 
-//! # busbar-kernel-wal — the write-ahead log unit
+//! # busbar-kernel-wal — the journal codec
+//!
+//! The fixed journal record, the hash chain over it, the length-prefixed body fields, and the
+//! quarantine note a written journal can carry. The store journal seals and verifies with these.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-pub mod backend;
 pub mod journal;
+pub mod note;
 pub mod record;
-pub mod recover;
-pub mod segment;
-pub mod ship;
-pub mod wal;
 
-pub use backend::{
-    DirectoryFactory, FileSegment, MemoryFactory, MemorySegment, QuarantinedBytes, SegmentBackend,
-    SegmentFactory, SharedBytes,
-};
 pub use journal::{
-    body_digest, decode_run, tail_of, verify as verify_journal, verify_bridged, BodyReader,
-    BodyWriter, Entry, Journal, JournalAck, JournalBreak, JournalBreakKind, JournalRecord,
-    Overflow, RecordClass, JOURNAL_HEADER_BYTES, JOURNAL_MAGIC, JOURNAL_VERSION,
-    MEMORY_BUFFER_RECORDS,
+    body_digest, decode_run, verify as verify_journal, BodyReader, BodyWriter, Entry, JournalBreak,
+    JournalBreakKind, JournalRecord, RecordClass, JOURNAL_HEADER_BYTES,
 };
 pub use record::{
     decode_frame, FrameError, FrameHeader, Record, FRAME_BYTES, FRAME_END_MARK, FRAME_HEADER_BYTES,

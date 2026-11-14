@@ -3,10 +3,4 @@
 
 //! The batteries.
 
-mod dir_fsync;
-mod fixtures;
-pub(crate) mod hooks;
-mod journal_chain;
-mod no_disk;
-mod quarantine_numbering;
-mod record_layout;
+mod codec;
