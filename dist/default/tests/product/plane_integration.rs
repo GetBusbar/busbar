@@ -1515,7 +1515,7 @@ async fn plane_router(
     ] {
         if !transports
             .iter()
-            .any(|present| (present.key)() == (row.key)())
+            .any(|present| (present.claims)()[0] == (row.claims)()[0])
         {
             transports.push(row);
         }

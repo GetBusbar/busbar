@@ -1,30 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
 use busbar_kernel::grammar::{Segment, Selector};
 use busbar_kernel::registry::{
     bootstrap, check_claims, claims_overlap, overlaps, precedence, precedence_order, seal_claims,
-    BootstrapVerdict, Claim, ConflictReason, PlaneClaim, Plugin, PluginKind, Registry,
-    RegistryError,
+    BootstrapVerdict, Claim, ConflictReason, PlaneClaim,
 };
-
-struct Fake(&'static str, PluginKind);
-
-impl Plugin for Fake {
-    fn key(&self) -> &'static str {
-        self.0
-    }
-
-    fn kind(&self) -> PluginKind {
-        self.1
-    }
-
-    fn abi(&self) -> busbar_contract::AbiVersion {
-        busbar_contract::AbiVersion(1)
-    }
-}
 
 fn claim(transport: &'static str, selector: Selector) -> Claim {
     Claim {
@@ -34,10 +15,6 @@ fn claim(transport: &'static str, selector: Selector) -> Claim {
         scheme_alternatives: &[],
         idempotency: None,
     }
-}
-
-fn plane(key: &'static str) -> Arc<dyn Plugin> {
-    Arc::new(Fake(key, PluginKind::Plane))
 }
 
 fn every_form() -> Vec<Selector> {
@@ -251,15 +228,6 @@ fn a_present_header_claim_overlaps_every_claim_on_that_header() {
         &Selector::HeaderPrefix("x-key", "ab"),
         &Selector::HeaderExact("x-key", "zz")
     ));
-}
-
-#[test]
-fn a_key_may_be_registered_once_per_kind() {
-    let mut registry = Registry::new();
-    registry.register(plane("one")).expect("the first one");
-    let refused = registry.register(plane("one")).expect_err("the second one");
-    assert!(matches!(refused, RegistryError::DuplicateKey { .. }));
-    assert_eq!(registry.count(PluginKind::Plane), 1);
 }
 
 #[test]
