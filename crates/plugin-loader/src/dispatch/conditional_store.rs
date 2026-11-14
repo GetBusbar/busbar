@@ -512,7 +512,7 @@ impl ServiceStore {
                 || k.finished
                 || !k.settlement_lent
                 || k.receipt.is_none()
-                || *current != *request
+                || *current != request
             {
                 return Err(());
             }
