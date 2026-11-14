@@ -3,6 +3,7 @@
 
 //! The batteries.
 
+mod codec;
 mod dir_fsync;
 mod fixtures;
 pub(crate) mod hooks;
