@@ -59,7 +59,7 @@ pub fn download(
                     clippy::disallowed_methods,
                     reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
                 )]
-                let rt = tokio::runtime::Builder::new_current_thread()
+                let rt = busbar_kernel::rt::current_thread()
                     .enable_all()
                     .build()
                     .map_err(|e| format!("fetch runtime: {e}"))?;
@@ -115,7 +115,9 @@ async fn get(table: &Table, url: &str, secured: bool, cap: usize) -> Result<Vec<
         clippy::disallowed_methods,
         reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
     )]
-    let sending = || format!("GET {url}: error sending request for url ({url})");
+    let sending =
+        |cause: &str| format!("GET {url}: error sending request for url ({url}): {cause}");
+    let refused = |why: Option<NeedRefusal>| why.map(|w| w.render(|t| scrub(t, url)));
     #[expect(
         clippy::disallowed_methods,
         reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
@@ -268,7 +270,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, E
                     clippy::disallowed_methods,
                     reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
                 )]
-                return Err(Some(format!(
+                return Err(Early::Said(format!(
                     "read body {url}: connection failed mid-download"
                 )));
             }
@@ -295,7 +297,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, E
                             clippy::disallowed_methods,
                             reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
                         )]
-                        return Err(Some(format!(
+                        return Err(Early::Said(format!(
                             "GET {url}: declared Content-Length {len} exceeds the {cap}-byte \
                              plugins.fetch download cap"
                         )));
@@ -312,7 +314,7 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, E
                         clippy::disallowed_methods,
                         reason = "boot: the plugins.fetch download runs once, at boot stage 3c"
                     )]
-                    return Err(Some(format!(
+                    return Err(Early::Said(format!(
                         "GET {url}: response exceeded the {cap}-byte plugins.fetch download cap; \
                          refusing to buffer a truncated download"
                     )));
