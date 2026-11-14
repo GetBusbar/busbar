@@ -937,3 +937,82 @@ fn expr_attrs(expr: &Expr) -> &[Attribute] {
         _ => &[],
     }
 }
+
+/// The test-only predicate, pinned on a table: code compiled only under `cfg(test)` or the
+/// dev-dependency-only `test-support` feature is test code, alone or in any combination that
+/// requires one of them; anything a production build can compile is production.
+#[test]
+fn test_only_cfg_is_test_or_the_test_support_feature_exactly() {
+    let table: &[(&str, bool)] = &[
+        // Test-only: no production build compiles these.
+        ("#[cfg(test)]", true),
+        ("#[cfg(feature = \"test-support\")]", true),
+        ("#[cfg(any(test, feature = \"test-support\"))]", true),
+        ("#[cfg(all(test, feature = \"test-support\"))]", true),
+        ("#[cfg(all(unix, test))]", true),
+        (
+            "#[cfg(all(feature = \"openapi-schema\", any(test, feature = \"test-support\")))]",
+            true,
+        ),
+        ("#[cfg(not(not(feature = \"test-support\")))]", true),
+        ("#[cfg(not(any(not(test), unix)))]", true),
+        ("#[cfg(unix)] #[cfg(feature = \"test-support\")]", true),
+        (
+            "#[cfg_attr(not(test), cfg(feature = \"test-support\"))]",
+            true,
+        ),
+        (
+            "#[cfg_attr(not(test), cfg_attr(not(unix), cfg(test)), cfg(feature = \"test-support\"))]",
+            true,
+        ),
+        ("#![cfg(any(test, feature = \"test-support\"))]", true),
+        // Production: some production build compiles these.
+        ("#[inline]", false),
+        ("#[cfg(unix)]", false),
+        ("#[cfg(not(test))]", false),
+        ("#[cfg(not(feature = \"test-support\"))]", false),
+        ("#[cfg(not(any(test, feature = \"test-support\")))]", false),
+        ("#[cfg(any(test, feature = \"openapi-schema\"))]", false),
+        (
+            "#[cfg(any(test, feature = \"openapi-schema\", feature = \"test-support\"))]",
+            false,
+        ),
+        ("#[cfg(any(test, not(feature = \"test-support\")))]", false),
+        ("#[cfg(feature = \"test-seal\")]", false),
+        ("#[cfg(feature = \"test-supports\")]", false),
+        ("#[cfg(test_support)]", false),
+        ("#[cfg_attr(test, allow(dead_code))]", false),
+        (
+            "#[cfg_attr(feature = \"test-support\", allow(dead_code))]",
+            false,
+        ),
+        ("#[cfg_attr(unix, cfg(test))]", false),
+        ("#[cfg_attr(unix, cfg_attr(windows, cfg(test)), cfg(test))]", false),
+        ("#![cfg(unix)]", false),
+    ];
+    let mut wrong = Vec::new();
+    for (attrs, test_only) in table {
+        let file = syn::parse_file(&format!("{attrs}\nfn f() {{}}")).expect("table entry parses");
+        let found = needs_test(&file.attrs)
+            || file
+                .items
+                .first()
+                .is_some_and(|item| needs_test(item_attrs(item)));
+        if found != *test_only {
+            wrong.push(format!(
+                "  {attrs}: test-only {found}, expected {test_only}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the test-only predicate is wrong for:\n{}",
+        wrong.join("\n")
+    );
+
+    // The consumers see it: `unsafe` behind `test-support` is not production, `unsafe` behind a
+    // cfg a production build can turn on is.
+    let source = "#[cfg(feature = \"test-support\")]\nfn a() { unsafe {} }\n\
+                  #[cfg(any(test, feature = \"other\"))]\nfn b() { unsafe {} }\n";
+    assert_eq!(Parsed::new(source).unsafe_keywords(), 1);
+}
