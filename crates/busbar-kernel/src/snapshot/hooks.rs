@@ -342,14 +342,8 @@ fn render_labels(
 }
 
 fn sample_name(name: &str, suffix: &str) -> String {
-    let capacity = name
-        .len()
-        .checked_add(suffix.len())
-        .expect("metric name size overflow");
-    let mut out = Zeroizing::new(String::with_capacity(capacity));
-    out.push_str(name);
-    out.push_str(suffix);
-    std::mem::take(&mut *out)
+    // One exact allocation (LINT-RULES LR-117).
+    [name, suffix].concat()
 }
 
 fn fmt_f64(v: f64) -> String {

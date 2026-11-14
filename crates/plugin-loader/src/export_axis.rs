@@ -254,7 +254,7 @@ impl<'r> ExportRows<'r> {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(vec![error.to_string()]),
             };
-            listed.push((name.clone(), bytes.expose(seal).clone()));
+            busbar_contract::secure::push(&mut listed, (name.clone(), bytes.expose(seal).clone()));
         }
         let none = [(module.to_string(), b"{}".to_vec())];
         let candidates = if listed.is_empty() {

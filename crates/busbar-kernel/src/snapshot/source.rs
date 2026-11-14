@@ -387,13 +387,8 @@ fn put(out: &mut Building, kind: u8, key: &Key, lines: Vec<(&str, Option<String>
         let mut sample_labels = (*labels).clone();
         sample_labels.extend(quantile.map(|q| (QUANTILE_LABEL.to_string(), q)));
         Sample {
-            name: {
-                let mut full =
-                    zeroize::Zeroizing::new(String::with_capacity(name.0.len() + suffix.len()));
-                full.push_str(&name.0);
-                full.push_str(suffix);
-                std::mem::take(&mut *full)
-            },
+            // One exact allocation (LINT-RULES LR-117).
+            name: [name.0.as_str(), suffix].concat(),
             labels: sample_labels,
             value,
         }

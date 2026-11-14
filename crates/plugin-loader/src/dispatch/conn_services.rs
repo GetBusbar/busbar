@@ -1844,15 +1844,17 @@ extern "C" fn write_request(
                     }
                     if body.len().saturating_add(bytes.len()) > body.capacity() {
                         let needed = body.len().saturating_add(bytes.len());
-                        let mut grown = Zeroizing::new(Vec::with_capacity(
+                        // A fresh block of the final capacity; the old one is wiped as its
+                        // `Zeroizing` drops (LINT-RULES LR-117).
+                        let mut grown = Vec::with_capacity(
                             needed
                                 .max(body.capacity().saturating_mul(2))
                                 .min(REQUEST_HELD_MAX),
-                        ));
-                        grown.extend_from_slice(body);
-                        *body = grown;
+                        );
+                        grown.extend_from_slice(&body[..]);
+                        *body = Zeroizing::new(grown);
                     }
-                    body.extend_from_slice(bytes);
+                    busbar_contract::secure::append(body, bytes);
                     Answered::ready(0, bytes.len() as u64)
                 }
                 (REQUEST_END, true) => {

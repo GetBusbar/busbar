@@ -142,7 +142,7 @@ fn copy(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
     result
         .try_reserve_exact(bytes.len())
         .map_err(|_| CodecError::Allocation)?;
-    result.extend_from_slice(bytes);
+    busbar_contract::secure::append(&mut result, bytes);
     Ok(std::mem::take(&mut *result))
 }
 

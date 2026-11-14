@@ -17,19 +17,7 @@ impl SecretBytes {
     }
 
     pub(crate) fn extend_from_slice(&mut self, bytes: &[u8]) {
-        let len = self
-            .0
-            .len()
-            .checked_add(bytes.len())
-            .expect("encoder length");
-        if len > self.0.capacity() {
-            let capacity = len.max(self.0.capacity().saturating_mul(2)).max(8);
-            let mut next = Zeroizing::new(Vec::with_capacity(capacity));
-            next.extend_from_slice(&self.0);
-
-            self.0 = next;
-        }
-        self.0.extend_from_slice(bytes);
+        crate::secure::append(&mut self.0, bytes);
         #[cfg(test)]
         watch(&self.0);
     }

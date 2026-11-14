@@ -11,12 +11,12 @@ impl Cred {
     /// `<scheme> <credential>`, or the bare `<scheme>` when the credential is empty (a scheme that
     pub fn scheme(&self, scheme: impl AsRef<[u8]>) -> Seal {
         let scheme = scheme.as_ref();
-        let mut v = Zeroizing::new(Vec::with_capacity(scheme.len() + 1 + self.len()));
-        v.extend_from_slice(scheme);
-        if !self.is_empty() {
-            v.push(b' ');
-            v.extend_from_slice(self.wire());
-        }
+        // Exact size in one allocation (`concat`): the wiping buffer never grows (LR-117).
+        let v = if self.is_empty() {
+            Zeroizing::new(scheme.to_vec())
+        } else {
+            Zeroizing::new([scheme, b" ", self.wire()].concat())
+        };
         self.seal(v)
     }
 }

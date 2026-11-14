@@ -103,7 +103,7 @@ fn copy(bytes: &[u8]) -> Result<Secret<Vec<u8>>, ObjectError> {
     value
         .try_reserve_exact(bytes.len())
         .map_err(|_| ObjectError::Allocation)?;
-    value.extend_from_slice(bytes);
+    busbar_contract::secure::append(&mut value, bytes);
     Ok(Secret::new(std::mem::take(&mut *value)))
 }
 impl ObjectId {
@@ -475,7 +475,7 @@ async fn verify<S: KernelSeal + ?Sized>(
                 return Err(ObjectError::Corrupt);
             }
             hash.update(bytes);
-            output.extend_from_slice(bytes);
+            busbar_contract::secure::append(&mut output, bytes);
         }
         index += n;
     }

@@ -50,15 +50,18 @@ impl ConfigureCheckpoint {
     #[must_use]
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
         let length = HEADER + self.settings.len();
-        let mut bytes =
-            Zeroizing::new(Vec::with_capacity(extensions::entry_len(KEY, &[]) + length));
-        bytes.extend_from_slice(&(KEY.len() as u16).to_le_bytes());
-        bytes.extend_from_slice(KEY.as_bytes());
-        bytes.extend_from_slice(&(length as u32).to_le_bytes());
-        bytes.extend_from_slice(&self.revision.to_le_bytes());
-        bytes.extend_from_slice(&self.settings_version.to_le_bytes());
-        bytes.extend_from_slice(&self.settings);
-        bytes
+        // One exact allocation (`concat`): the wiping buffer never grows (LINT-RULES LR-117).
+        Zeroizing::new(
+            [
+                &(KEY.len() as u16).to_le_bytes()[..],
+                KEY.as_bytes(),
+                &(length as u32).to_le_bytes(),
+                &self.revision.to_le_bytes(),
+                &self.settings_version.to_le_bytes(),
+                &self.settings[..],
+            ]
+            .concat(),
+        )
     }
 
     /// Copy one checkpoint out of a still-leased extensions blob. Unknown entries are ignored;
