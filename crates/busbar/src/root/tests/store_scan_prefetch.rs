@@ -47,12 +47,29 @@ impl PersistenceBackend for ReadView {
     }
     fn read(&self, request: Arc<Read>) -> Call<'_, ReadResult> {
         Box::pin(async move {
-            let record = self.enabled.load(Ordering::SeqCst)
-                && request
+            // Count original-record ADDRESSES, not read calls: a replay may read several
+            // consecutive originals in one call. The fault lands on the 300th original wherever
+            // it falls in the request.
+            let originals = if self.enabled.load(Ordering::SeqCst) {
+                request
                     .addresses
                     .iter()
-                    .any(|at| at.key.get(24) == Some(&b'R'));
-            let inject = record && self.records.fetch_add(1, Ordering::SeqCst) == 299;
+                    .filter(|at| at.key.get(24) == Some(&b'R'))
+                    .count()
+            } else {
+                0
+            };
+            let before = self.records.fetch_add(originals, Ordering::SeqCst);
+            let at = (originals > 0 && before <= 299 && 299 < before + originals).then(|| {
+                request
+                    .addresses
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, at)| at.key.get(24) == Some(&b'R'))
+                    .nth(299 - before)
+                    .map_or(0, |(index, _)| index)
+            });
+            let inject = at.is_some();
             if inject {
                 match self.fault {
                     ReadFault::Overloaded => return Err(Failure::Overloaded),
@@ -64,9 +81,10 @@ impl PersistenceBackend for ReadView {
             let mut answer = self.actual.read(request).await?;
             if inject {
                 if let ReadResult::Values { values, .. } = &mut answer {
+                    let at = at.unwrap_or(0);
                     match self.fault {
-                        ReadFault::Malformed => values[0] = Some(Secret::new(vec![0])),
-                        ReadFault::Missing => values[0] = None,
+                        ReadFault::Malformed => values[at] = Some(Secret::new(vec![0])),
+                        ReadFault::Missing => values[at] = None,
                         _ => {}
                     }
                 }

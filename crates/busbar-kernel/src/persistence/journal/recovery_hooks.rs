@@ -208,6 +208,7 @@ impl<'a> StoreJournal<'a> {
             failed: false,
             historical: true,
             records_seal: [0; 32],
+            ahead: Default::default(),
         };
         let mut found = None;
         let mut ordinal = 0u64;
@@ -442,7 +443,7 @@ impl<'a> StoreJournal<'a> {
                 namespace: selection.address.namespace,
                 operation: selection.operation_id,
             },
-            digest.finalize().into(),
+            digest.finish(),
         )? {
             LogicalClaim::Prepare(permit) => permit,
             LogicalClaim::Retained(id) => {
