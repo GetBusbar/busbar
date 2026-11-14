@@ -6371,8 +6371,9 @@ impl<'d> DoorFar<'d, '_> {
         self.far
             .get_or_init(|| {
                 let egress = self.egress?;
-                let routed = self.steps.routed()?;
-                let pool = egress_pool(self.steps.plane(), &routed);
+                let pool = self
+                    .steps
+                    .with_routed(|routed| egress_pool(self.steps.plane(), routed))?;
                 let described = self.shown.and_then(|s| s.described.get(&pool).cloned());
                 let mut far = egress.unit(UnitRoute {
                     allowed_member: self.steps.child_member(),
@@ -6413,14 +6414,12 @@ impl FarEnd for DoorFar<'_, '_> {
     }
 
     fn scope(&self, _token: &Pass<Route>) -> Option<RoutedScope> {
-        let routed = self.steps.routed()?;
-        let container = match &routed {
-            (label, _) if !label.is_empty() => label.clone(),
-            (_, members) => members.first().cloned().unwrap_or_default(),
-        };
-        Some(RoutedScope {
-            pool: egress_pool(self.steps.plane(), &routed),
-            container,
+        self.steps.with_routed(|routed| RoutedScope {
+            pool: egress_pool(self.steps.plane(), routed),
+            container: match routed {
+                (label, _) if !label.is_empty() => label.clone(),
+                (_, members) => members.first().cloned().unwrap_or_default(),
+            },
         })
     }
 

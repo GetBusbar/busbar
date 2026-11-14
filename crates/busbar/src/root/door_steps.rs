@@ -246,6 +246,19 @@ impl DoorPools {
         class: u8,
         named: Option<&[u8]>,
     ) -> bool {
+        self.granted_known(kind, key, class, named, None)
+    }
+
+    /// [`DoorPools::granted`], given verify's answer for a `ROUTE_DIRECT` name (`entry_known`:
+    /// whether it is one of this section's entries, SP-V1); `None` re-scans the entries.
+    fn granted_known(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        class: u8,
+        named: Option<&[u8]>,
+        entry_known: Option<bool>,
+    ) -> bool {
         let Some(key) = key else {
             return true;
         };
@@ -260,7 +273,7 @@ impl DoorPools {
             return true;
         }
 
-        if class == ROUTE_DIRECT && !self.has_entry(name) {
+        if class == ROUTE_DIRECT && !entry_known.unwrap_or_else(|| self.has_entry(name)) {
             return true;
         }
         let fallback = (class == ROUTE_POOL)
@@ -286,8 +299,9 @@ impl DoorPools {
         key: Option<&VirtualKey>,
         (class, named): (u8, Option<&[u8]>),
         counterparty: Option<&[u8]>,
+        entry_known: Option<bool>,
     ) -> bool {
-        if !self.granted(kind, key, class, named) {
+        if !self.granted_known(kind, key, class, named, entry_known) {
             return false;
         }
         let (Some(kind), Some(key)) = (kind, key) else {
@@ -533,6 +547,9 @@ struct DoorUnit {
     /// The walk's affinity position its `arrive`'s sticky key names.
     affinity: Option<u64>,
     routed: Option<Routed>,
+    /// A `ROUTE_DIRECT` unit's named entry as verify resolved it: whether it is one of the
+    /// section's entries. Approve judges the grant over it rather than re-scanning (SP-V1).
+    entry_known: Option<bool>,
     /// The governance book's grant: its in-flight holds, released when the unit's steps drop.
     grant: Option<Arc<AdmitGrant>>,
     charged_unit: Option<busbar_contract::caps::UnitKey>,
@@ -758,6 +775,11 @@ impl<'s> DoorSteps<'s> {
     #[must_use]
     pub fn routed(&self) -> Option<Routed> {
         self.lock().routed.clone()
+    }
+
+    /// Read the unit's route in place (SP-V1): no copy of its label and members.
+    pub fn with_routed<R>(&self, read: impl FnOnce(&Routed) -> R) -> Option<R> {
+        self.lock().routed.as_ref().map(read)
     }
 
     #[must_use]
@@ -1132,7 +1154,11 @@ impl DriverSteps for DoorSteps<'_> {
                 }
             }
         }
+        let direct = named
+            .as_ref()
+            .is_some_and(|(class, _)| *class == ROUTE_DIRECT);
         let mut routed = named.and_then(|(class, n)| self.pools.resolve(class, n.as_deref()));
+        let entry_known = direct.then_some(routed.is_some());
         self.child_live()?;
         if let Some(c) = &self.child_constraints {
             if let Some((_, members)) = &mut routed {
@@ -1152,7 +1178,10 @@ impl DriverSteps for DoorSteps<'_> {
             .filter_map(|member| (self.lanes)(&plane_lane(&self.facts.plane, member)))
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();
-        self.lock().routed = routed;
+        let mut u = self.lock();
+        u.routed = routed;
+        u.entry_known = entry_known;
+        drop(u);
         Ok(sealed)
     }
 
@@ -1165,6 +1194,7 @@ impl DriverSteps for DoorSteps<'_> {
         let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
         let counterparty = self.lock().counterparty.clone();
         let selected = self.lock().resolved.clone();
+        let entry_known = self.lock().entry_known;
         if class == ROUTE_SCOPE_LOCAL
             && named.is_some()
             && selected.as_ref().is_some_and(|entry| {
@@ -1198,6 +1228,7 @@ impl DriverSteps for DoorSteps<'_> {
                 self.key.as_deref(),
                 (class, named.as_deref()),
                 counterparty.as_deref(),
+                entry_known,
             )
         {
             Ok(busbar_contract::ScopeFacts::default())
@@ -1539,6 +1570,7 @@ impl DriverSteps for DoorSteps<'_> {
         let mut u = self.lock();
         u.op = Some(op);
         u.named = Some((route, pool.map(<[u8]>::to_vec)));
+        u.entry_known = None;
     }
 
     fn request_span(
