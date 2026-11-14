@@ -42,6 +42,7 @@ def qualify_plugin(q, host, sdk):
         return
     q.run('fmt', ['cargo', 'fmt', '--all', '--check'])
     q.run('clippy', ['cargo', 'clippy', '--locked', '--workspace', '--all-targets', '--all-features', '--', '-D', 'warnings'])
+    q.bad_patterns()
     meta_file = q.run('metadata', ['cargo', 'metadata', '--locked', '--format-version', '1'])
     metadata = json.loads(meta_file.read_text())
     wrappers = [p for p in entry['packages'] if p['role'] in ('wrapper', 'combined')]

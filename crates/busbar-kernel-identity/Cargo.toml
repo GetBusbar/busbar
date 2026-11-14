@@ -19,3 +19,6 @@ ring = { workspace = true }
 [features]
 # Exposes only explicit metadata injection; fixture values and auth rows remain caller-owned.
 test-support = []
+
+[lints]
+workspace = true
