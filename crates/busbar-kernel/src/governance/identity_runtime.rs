@@ -476,14 +476,6 @@ impl GovState {
         }
         Ok(())
     }
-    pub async fn revoke_credential_async(&self, id: &str, reason: &str) -> RecordStoreResult<()> {
-        let _claim = self
-            .identity_claim(IdentityClaimKey::Credential(id.into()))
-            .await;
-        let commit = self.core.identity().revoke_credential(id, reason).await?;
-        self.publish_identity(commit);
-        Ok(())
-    }
     pub async fn rewrap_credentials_async(
         &self,
         now: u64,

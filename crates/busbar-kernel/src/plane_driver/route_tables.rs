@@ -31,43 +31,6 @@ pub trait EngineTablesView {
     fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds;
 }
 
-pub struct EmptyEngineTablesView;
-
-pub static EMPTY_VIEW: EmptyEngineTablesView = EmptyEngineTablesView;
-
-impl EngineTablesView for EmptyEngineTablesView {
-    fn pools(&self) -> Vec<(&str, Vec<usize>)> {
-        Vec::new()
-    }
-    fn pool_exists(&self, _pool: &str) -> bool {
-        false
-    }
-    fn model_indices(&self) -> Vec<(&str, usize)> {
-        Vec::new()
-    }
-    fn model_index(&self, _model: &str) -> Option<usize> {
-        None
-    }
-    fn lane_view(&self, _idx: usize) -> Option<LaneView<'_>> {
-        None
-    }
-    fn lane_count(&self) -> usize {
-        0
-    }
-    fn pool_members(&self, _pool: &str) -> Vec<(usize, u32)> {
-        Vec::new()
-    }
-    fn queued_depth(&self, _pool: &str) -> u64 {
-        0
-    }
-    fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
-        None
-    }
-    fn upstream_creds(&self) -> busbar_contract::config::UpstreamCreds {
-        busbar_contract::config::UpstreamCreds::default()
-    }
-}
-
 /// THE KERNEL'S OWN TABLES VIEW over the pools and lanes it resolved: the lanes in the lane table's
 /// order (the order the lane store and the telemetry bank are indexed by), the direct-lane index,
 /// each pool's members and its fallback pool, and the all-pools upstream-credential default. `/stats`,

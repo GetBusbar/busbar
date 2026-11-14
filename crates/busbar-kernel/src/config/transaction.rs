@@ -145,32 +145,6 @@ impl<T, E> Outcome<T, E> {
         }
     }
 
-    pub fn commit_then<P, F>(next: Arc<App>, persist: P, then: F) -> Self
-    where
-        P: FnOnce() -> Result<(), String> + Send + 'static,
-        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
-    {
-        Outcome::Commit {
-            next,
-            persist: Box::new(persist),
-            rates: None,
-            then: Then::Blocking(Box::new(then)),
-        }
-    }
-
-    pub fn commit_then_async<P, F>(next: Arc<App>, persist: P, then: F) -> Self
-    where
-        P: FnOnce() -> Result<(), String> + Send + 'static,
-        F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
-    {
-        Outcome::Commit {
-            next,
-            persist: Box::new(persist),
-            rates: None,
-            then: Then::Async(Box::pin(then)),
-        }
-    }
-
     pub fn asynchronous<F>(future: F) -> Self
     where
         F: std::future::Future<Output = Result<Outcome<T, E>, E>> + Send + 'static,
@@ -220,25 +194,6 @@ impl<T, E> Outcome<T, E> {
             persist: Box::pin(persist),
             rates: Some(Box::new((limits, origin))),
             then: Box::pin(then),
-        }
-    }
-
-    pub fn commit_rates_then<P, F>(
-        next: Arc<App>,
-        persist: P,
-        limits: crate::appbuild::InstalledLimits,
-        origin: String,
-        then: F,
-    ) -> Self
-    where
-        P: FnOnce() -> Result<(), String> + Send + 'static,
-        F: FnOnce() -> Result<Outcome<T, E>, E> + Send + 'static,
-    {
-        Outcome::Commit {
-            next,
-            persist: Box::new(persist),
-            rates: Some(Box::new((limits, origin))),
-            then: Then::Blocking(Box::new(then)),
         }
     }
 
