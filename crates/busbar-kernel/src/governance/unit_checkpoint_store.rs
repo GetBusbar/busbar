@@ -92,14 +92,11 @@ impl UnitCheckpointEvidence {
             audit_driving: tokio::sync::Mutex::new(()),
         }
     }
+    /// The runtime journal's verified head, after driving this owner's staged runs (W1 step 1).
+    /// It replays nothing; every use either commits under the owned H/O predicates or confirms
+    /// them with `confirm_owned_with`, so a stale head fails closed exactly as a replayed one did.
     async fn proof(&self) -> RecordStoreResult<Arc<VerifiedHead>> {
-        self.journal.flush().await.map_err(error)?;
-        let journal = StoreJournal::new(&self.store, self.node).map_err(error)?;
-        let mut replay = journal.historical_replay().await.map_err(error)?;
-        while replay.next().await.map_err(error)?.is_some() {}
-        let proof = Arc::new(replay.finish().map_err(error)?);
-        journal.confirm_owned(&proof).await.map_err(error)?;
-        Ok(proof)
+        self.journal.verified_head().await.map_err(error)
     }
     pub fn pending_audit(&self, unit: u64, incarnation: u64) -> Option<AuditRecord> {
         self.audit_pending
@@ -286,9 +283,14 @@ impl StoreUnitCheckpoints {
         if head.version != 1 || head.node != self.evidence.node || head.sequence == 0 {
             return Err(refusal("invalid running money head"));
         }
+        let ordinal = self
+            .evidence
+            .journal
+            .locate(proof, head.sequence)
+            .map_err(error)?;
         let original = StoreJournal::new(&self.evidence.store, head.node)
             .map_err(error)?
-            .read_verified_record(proof, head.sequence)
+            .read_verified_record_at(proof, head.sequence, ordinal)
             .await
             .map_err(error)?;
         let record = JournalRecord::decode(&original.body).map_err(error)?;
@@ -376,12 +378,22 @@ impl StoreUnitCheckpoints {
                     p.selection_proof = Some(self.evidence.proof().await?);
                     self.save(Pending::Persist(p.clone()));
                 }
+                let proof = p
+                    .selection_proof
+                    .as_ref()
+                    .expect("retained selection proof");
+                let ordinals = p
+                    .run
+                    .records()
+                    .iter()
+                    .map(|record| self.evidence.journal.locate(proof, record.node_seq))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(error)?;
                 journal
-                    .select_verified(
-                        p.selection_proof
-                            .as_ref()
-                            .expect("retained selection proof"),
+                    .select_verified_at(
+                        proof,
                         p.run.records(),
+                        &ordinals,
                         Selection {
                             operation_id: p.operation,
                             address: self.address(&p.snapshot.id),
@@ -392,16 +404,24 @@ impl StoreUnitCheckpoints {
                     .await
                     .map_err(error)?
             }
-            Pending::Remove(p) => journal
-                .delete_verified(
-                    &p.proof,
-                    std::slice::from_ref(&p.record),
-                    p.operation,
-                    self.address(&p.snapshot.id),
-                    duplicate_expected(&p.expected),
-                )
-                .await
-                .map_err(error)?,
+            Pending::Remove(p) => {
+                let ordinal = self
+                    .evidence
+                    .journal
+                    .locate(&p.proof, p.record.node_seq)
+                    .map_err(error)?;
+                journal
+                    .delete_verified_at(
+                        &p.proof,
+                        &p.record,
+                        ordinal,
+                        p.operation,
+                        self.address(&p.snapshot.id),
+                        duplicate_expected(&p.expected),
+                    )
+                    .await
+                    .map_err(error)?
+            }
         };
         match outcome(result) {
             Ok(()) => {
