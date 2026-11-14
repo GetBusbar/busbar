@@ -7,9 +7,7 @@ use std::time::Instant;
 use axum::{http::StatusCode, response::IntoResponse};
 use busbar_contract::records::{PlaneRequestCtx, ScopeRef, VirtualKey};
 use busbar_kernel as kernel;
-use kernel::ingress::{
-    destination_guard, finish_admitted, finish_rejected, governance_guard, pool_label,
-};
+use kernel::ingress::{destination_guard, finish_admitted, finish_rejected, pool_label};
 use kernel::state::App;
 
 use crate::root::test_plugins as plugins;
@@ -159,7 +157,7 @@ async fn a_destination_refusal_ends_the_unit_exactly_once() {
     let app = deployment(pool).await;
     let proto = "ingress-terminal-acl-proto";
     let before = terminals(proto);
-    let Err(refused) = governance_guard(
+    let Err(refused) = destination_guard(
         &app,
         &caller(&["some-other-pool"]),
         proto,
@@ -184,8 +182,16 @@ async fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
     let proto = "ingress-terminal-admitted-proto";
     let gov = caller(&[pool]);
     let before = terminals(proto);
-    let (grant, downgraded) = governance_guard(&app, &gov, proto, pool, Instant::now(), 0)
+    destination_guard(&app, &gov, proto, pool, Instant::now(), 0)
         .expect("the key holds a grant on the pool");
+    let grant = match (&app.governance, &gov.key) {
+        (Some(governance), Some(key)) => Some(
+            governance
+                .try_admit(&app.cost, key, pool, 0)
+                .expect("the key is within its limits"),
+        ),
+        _ => None,
+    };
     assert_eq!(
         terminals(proto),
         before,
@@ -195,7 +201,7 @@ async fn an_admitted_unit_ends_once_at_its_finish_and_never_at_the_door() {
         &app,
         &gov,
         proto,
-        downgraded.as_deref().unwrap_or(pool),
+        pool,
         Instant::now(),
         0,
         StatusCode::BAD_GATEWAY.into_response(),

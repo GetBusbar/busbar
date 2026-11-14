@@ -146,6 +146,7 @@ pub fn render_markdown_for(catalog: &[&Diagnostic]) -> String {
     out
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn render_json_for(catalog: &[&Diagnostic]) -> String {
     let mut items = Vec::new();
     let mut sorted = catalog.to_vec();
@@ -171,6 +172,7 @@ pub fn render_json_for(catalog: &[&Diagnostic]) -> String {
     format!("[\n{}\n]\n", items.join(",\n"))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn class_key(c: Class) -> &'static str {
     match c {
         Class::Durability => "durability",
@@ -185,6 +187,7 @@ fn class_key(c: Class) -> &'static str {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn json_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
