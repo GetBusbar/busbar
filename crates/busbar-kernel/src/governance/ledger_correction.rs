@@ -2213,13 +2213,13 @@ fn capture_target(
                 .any(|model| model.model == base.model && model.era == base.era)
             {
                 // busbar:expect(bp::clone_alloc, reason = "config: operator-issued ledger correction, run once per correction step (control plane)")
-                before.models.push(ModelCell {
-                    model: base.model,
-                    era: base.era,
-                    cur: BTreeMap::new(),
-                    flushed: base.cur.clone(),
-                    flushed_era: base.cur,
-                });
+                before.models.extend(ModelCell::new(
+                    base.model,
+                    base.era,
+                    BTreeMap::new(),
+                    base.cur.clone(),
+                    base.cur,
+                ));
             }
         }
         before.dirty = has_debt(&before);
