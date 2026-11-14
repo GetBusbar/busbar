@@ -340,7 +340,7 @@ pub const LAYOUT_SHAPES: &[&[u64]] = &[
     crate::layout_shape!(PlaneCancelOut => cancel, records_written, _reserved, arena_written),
     crate::layout_shape!(PlaneDriveOut => head, sessions_written, sessions_needed),
     crate::layout_shape!(ProjectIn =>
-        head, claim, _reserved, target, fields, fields_len, body, signals_buf, signals_cap,
+        head, claim, flags, target, fields, fields_len, body, signals_buf, signals_cap,
         arena_buf, arena_cap, rewrite, messages_buf, messages_cap, unit
     ),
     crate::layout_shape!(ProjectOut =>
@@ -2586,6 +2586,11 @@ const _: () = assert!(one_bit_each(&[
     PROJECT_FAULT_UNPARSEABLE,
 ]));
 
+/// [`ProjectIn::flags`]: no hook core bound to this unit stops, changes or routes the request,
+/// so the plane forwards it unaltered. Clear (the zero a host that states nothing sends) means a
+/// bound hook may stop, change or route the request on what `project` publishes.
+pub const PROJECT_IN_OBSERVE_ONLY: u32 = 1 << 0;
+
 /// `project`'s `in`: the arrival `arrive` classified, and HOST buffers for the view.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -2594,8 +2599,9 @@ pub struct ProjectIn {
     pub head: InHead,
     /// Index into the snapshot's claims the arrival matched.
     pub claim: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// Statements about the hooks core bound to this unit ([`PROJECT_IN_OBSERVE_ONLY`]); every
+    /// other bit is zero. 0 states nothing.
+    pub flags: u32,
     /// The request target.
     pub target: AbiStr,
     /// The head fields.
