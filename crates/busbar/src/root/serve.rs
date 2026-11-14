@@ -5199,7 +5199,10 @@ impl DataRoutes {
     /// Resume one Store page per opened plane through the ordinary unit machinery. Recovery
     /// carries host-owned identity only: no caller credential is reconstructed or lent.
     /// The scheduler owns cadence/shutdown; each individual poll has a finite deadline.
-    pub(crate) async fn recover_work(self: &Arc<Self>, app: Arc<busbar_kernel::state::App>) -> usize {
+    pub(crate) async fn recover_work(
+        self: &Arc<Self>,
+        app: Arc<busbar_kernel::state::App>,
+    ) -> usize {
         use busbar_kernel::guest::{Claimant, Matched};
         if app.governance.is_none() {
             return 0;
@@ -6774,7 +6777,10 @@ impl IngressReply {
     }
 
     #[must_use]
-    pub(crate) fn with_trailers(mut self, trailers: oneshot::Receiver<axum::http::HeaderMap>) -> Self {
+    pub(crate) fn with_trailers(
+        mut self,
+        trailers: oneshot::Receiver<axum::http::HeaderMap>,
+    ) -> Self {
         self.trailers = Some(trailers);
         self
     }

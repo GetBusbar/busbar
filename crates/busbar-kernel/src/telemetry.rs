@@ -567,7 +567,8 @@ pub const DISPOSITION_TRANSIENT: &str =
 
 pub(crate) const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
 
-pub(crate) const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
+pub(crate) const DISPOSITION_HARD_DOWN: &str =
+    busbar_contract::upstream::Disposition::HardDown.label();
 
 pub(crate) const DISPOSITIONS: [&str; 4] = [
     DISPOSITION_TRANSIENT,
