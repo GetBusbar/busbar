@@ -84,22 +84,18 @@ pub mod node {
     pub type Drive = fn(Handed) -> Pin<Box<dyn Future<Output = PlaneAnswer> + Send>>;
 }
 
-/// One linked wire, as its door's Statement states it: the registry key, the layers it declares it
-/// can be built over, and its build, handed the deployment's transport settings. Every field is read
+/// One linked wire, as its door's Statement states it: the layers it declares, its claims (its
+/// own, which is its registry key, first), its upgrade and first-line claims and the auth points it
+/// offers. Every field is read
 /// off the row's bare `door` (`linked_transport!`): no row reads a constant of its crate's, so a
 /// door-root crate whose only public item is `door` (`BUSBAR-1.6.0.md` l.3560) links exactly as a
 /// crate with a `linked` module does (l.3561: a linked row holds the same `door` pointer).
 #[derive(Clone, Copy)]
 pub struct LinkedTransport {
-    /// The wire's registry key: its door's own claim, which is its Statement's name.
-    pub key: KeyOf,
     /// The layers its door's tail declares, in the order it would take one.
     pub composes_over: LayersOf,
-    /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
-    /// names another).
-    pub build: BuildTransport,
     /// Every scheme its entry claims, its own first: a door row's are read off the door's
-    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
+    /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the connector serves each.
     pub claims: ClaimsOf,
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`).
@@ -114,16 +110,11 @@ pub struct LinkedTransport {
 
 pub type ClaimsOf = fn() -> Vec<&'static str>;
 
-pub type KeyOf = fn() -> &'static str;
-
 pub type LayersOf = fn() -> &'static [&'static str];
 
-/// The linked transport row is built
-/// from its bare `door`: its key,
-/// layers, and session are read once
-/// Statement's name held equal to its own claim, the tail's `composes_over`, the claim rows'
-/// `session`), and its build, claims, upgrade lines, first-line claims and offered points are read
-/// off the same door. The generated linked table expands one per `transport` row, so every
+/// The linked transport row is built from its bare `door`: its layers are read once (the
+/// Statement's name held equal to its own claim, the tail's `composes_over`), and its claims,
+/// upgrade lines, first-line claims and offered points are read off the same door. The generated linked table expands one per `transport` row, so every
 /// transport, whatever its crate exports beside `door`, is linked through this one path. Core alone
 /// links no transport, so it expands nowhere there.
 #[allow(unused_macros)]
@@ -134,16 +125,8 @@ macro_rules! linked_transport {
                 ::std::sync::OnceLock::new();
             FACTS.get_or_init(|| $crate::root::doors::row_facts($door))
         }
-        fn key() -> &'static str {
-            facts().key
-        }
         fn composes_over() -> &'static [&'static str] {
             facts().composes_over.as_slice()
-        }
-        fn build(
-            settings: &::busbar_contract::transport::TransportSettings,
-        ) -> ::std::sync::Arc<::busbar_core_connector::wire::HostWire> {
-            $crate::root::doors::build(key(), $door, settings)
         }
         fn claims() -> ::std::vec::Vec<&'static str> {
             $crate::root::doors::claims_of($door)
@@ -158,9 +141,7 @@ macro_rules! linked_transport {
             $crate::root::doors::offered_of($door)
         }
         $crate::root::linked::LinkedTransport {
-            key,
             composes_over,
-            build,
             claims,
             upgrades,
             lines,
@@ -172,10 +153,6 @@ macro_rules! linked_transport {
 pub(crate) use linked_transport;
 
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
-
-pub type BuildTransport = fn(
-    &busbar_contract::transport::TransportSettings,
-) -> Arc<busbar_core_connector::wire::HostWire>;
 
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.

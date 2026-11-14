@@ -126,7 +126,7 @@ fn linked_rows() -> (Vec<Row>, Vec<String>) {
         skipped.push(format!(
             "linked transport '{}': a wire is keyed by its scheme, not a registry row with a \
              manifest name",
-            (t.key)()
+            (t.claims)()[0]
         ));
     }
     (rows, skipped)

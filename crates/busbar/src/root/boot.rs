@@ -1353,14 +1353,13 @@ pub(crate) fn open_dropped_transports(
                         let composes_over = facts.composes_over;
                         let offered = facts.offered;
                         let upgrades = facts.upgrades;
-                        let (door, wire) = crate::root::doors::served(plugin, settings)?;
+                        let door = crate::root::doors::served(plugin, settings)?;
                         Ok(crate::root::registry::DroppedDoor {
                             key,
                             claims,
                             composes_over,
                             offered,
                             upgrades,
-                            wire,
                             door,
                         })
                     })
