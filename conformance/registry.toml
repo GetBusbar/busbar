@@ -6,7 +6,7 @@
 # `conformance` check runs the suite (its testing/conformance/suites.tsv lists the id); the release
 # fetches the suite's verdict from that repo's check only (docs/design/conformance-release.md).
 # Status is DERIVED: each repo's ModernCI `conformance` check (testing/conformance/run.sh, from the
-# busbar-release template) writes one verdict per suite it judged, stamped with its repo, commit and
+# shared release-tooling template) writes one verdict per suite it judged, stamped with its repo, commit and
 # core pin; `scripts/conformance/import.sh` brings them into conformance/verdicts/<id>.json, and
 # `python3 scripts/conformance/sync.py --write` renders conformance/manifest.json from this file and
 # those verdicts. A registered suite with no verdict is not-run and renders nothing. A release reads

@@ -303,15 +303,20 @@ def cosign_trust(config):
         config.get("identity") and config.get("issuer"),
         "existing identity and issuer must be pinned",
     )
+    # The exact issuer and identity come from the approved, digest-pinned trust
+    # configuration; here they must have the only accepted shape: a bare https
+    # GitLab origin, and that origin's protected-main CI configuration identity.
+    issuer = config["issuer"]
     require(
-        config["issuer"] == "https://github.com"
+        isinstance(issuer, str)
+        and re.fullmatch(r"https://[a-z0-9]+(?:[.-][a-z0-9]+)*\.[a-z]{2,}", issuer)
         and isinstance(config["identity"], str)
         and re.fullmatch(
-            r"https://git\.getbusbar\.dev/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+"
-            r"//\.gitlab-ci\.yml@refs/heads/main",
+            re.escape(issuer) + r"/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+"
+            r"//[A-Za-z0-9_./-]+\.yml(?:@[A-Za-z0-9_./-]+:[0-9a-f]{40})?@refs/heads/main",
             config["identity"],
         ),
-        "exact local GitLab issuer and protected main configuration identity required",
+        "exact GitLab issuer and protected main configuration identity required",
     )
     return [
         "--certificate-identity",
