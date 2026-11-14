@@ -672,3 +672,54 @@ async fn rest_is_not_store_time() {
         "the rest is capped by the maximum, not by store seconds"
     );
 }
+
+/// 8.7: a sweep tick on a full slot queue gets Overloaded and keeps its prepared
+/// page unregistered; once a slot frees, the next tick submits and completes.
+#[tokio::test]
+async fn sweep_on_a_full_queue_is_overloaded_then_completes_next_tick() {
+    use busbar_contract::persistence::{Candidate, Mutation, CANDIDATE_VERSION};
+    let (backend, store) = fixture(20, 4096).await;
+    let claims = Claims::authorized(&store, "owner", "kind");
+    let address = insert(&backend, &claims, "token", 99);
+    let mut held = Vec::new();
+    for n in 0..4u8 {
+        backend.0.lock().unwrap().unknown_before = true;
+        let candidate = PreparedCandidate::new(Candidate {
+            id: store.next_id().unwrap(),
+            codec: CANDIDATE_VERSION,
+            predicates: vec![],
+            mutations: vec![Mutation::Put {
+                address: Address {
+                    namespace: [7; 16],
+                    key: vec![n],
+                },
+                value: Secret::new(vec![n]),
+            }],
+            time: None,
+            result: Secret::new(vec![]),
+        })
+        .unwrap();
+        held.push(store.submit(candidate).await.unwrap().id);
+    }
+    let mut sweep = claims.sweep().unwrap();
+    assert!(matches!(
+        sweep.advance().await,
+        Err(Error::Access(
+            crate::persistence::facade::AccessError::Overloaded
+        ))
+    ));
+    assert!(store.exhausted());
+    assert!(matches!(
+        store.retry(held[0]).await.unwrap().result,
+        crate::persistence::commit::SubmitResult::Decided(_)
+    ));
+    assert_eq!(
+        sweep.advance().await.unwrap(),
+        SweepOutcome::Page {
+            scanned: 1,
+            deleted: 1,
+            complete: true
+        }
+    );
+    assert!(!backend.0.lock().unwrap().rows.contains_key(&address));
+}
