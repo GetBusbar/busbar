@@ -120,7 +120,7 @@ impl PersistenceBackend for Backend {
             let mut state = self.state.lock().unwrap();
             let candidate = prepared.candidate();
             if self.expire_receipt.swap(false, Ordering::SeqCst) {
-                return Ok(Decision::ExpiredUnknown);
+                return Ok(Decision::Fenced);
             }
             if let Some(digest) = state.receipts.get(&candidate.id.operation) {
                 return Ok(if *digest == prepared.fingerprint() {

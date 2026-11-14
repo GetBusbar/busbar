@@ -192,7 +192,7 @@ impl PersistenceBackend for Backend {
             if root.writer_epoch != candidate.id.writer_epoch
                 || !writer.admits(candidate.id.execution_epoch)
             {
-                return Ok(Decision::ExpiredUnknown);
+                return Ok(Decision::Fenced);
             }
             if candidate
                 .time
@@ -488,8 +488,19 @@ async fn native_writer_retirement_unknown_retries_exact_fence_and_blocks_delayed
         2
     );
     assert!(matches!(
-        backend.commit(delayed).await.unwrap(),
-        Decision::ExpiredUnknown
+        backend
+            .commit(
+                delayed,
+                busbar_contract::persistence::CommitKey::slotted(
+                    65_535,
+                    1,
+                    &busbar_contract::caps::SlotSeal::acquire_for_tests()
+                )
+                .unwrap()
+            )
+            .await
+            .unwrap(),
+        Decision::Fenced
     ));
 }
 

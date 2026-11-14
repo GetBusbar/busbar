@@ -110,7 +110,7 @@ impl PersistenceBackend for FaultBackend {
             };
             match action {
                 REFUSE => return Err(Failure::Refused),
-                EXPIRED => return Ok(Decision::ExpiredUnknown),
+                EXPIRED => return Ok(Decision::Fenced),
                 BLOCK => {
                     self.publication.store(NORMAL, Ordering::SeqCst);
                     self.entered.notify_one();

@@ -133,7 +133,7 @@ impl PersistenceBackend for Backend {
     fn commit(
         &self,
         prepared: PreparedCandidate,
-        key: busbar_contract::persistence::CommitKey,
+        _key: busbar_contract::persistence::CommitKey,
     ) -> Call<'_, Decision> {
         Box::pin(async move {
             if self.hang.load(Ordering::Acquire) {
