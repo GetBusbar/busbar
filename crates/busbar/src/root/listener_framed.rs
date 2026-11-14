@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::Router;
-use busbar_contract::abi::transport::{
-    fields, CLOSE_DRAIN, CLOSE_NORMAL, ROLE_FRAMER, SIDE_ACCEPT,
-};
+use busbar_contract::abi::transport::{fields, CLOSE_DRAIN, CLOSE_NORMAL, SIDE_ACCEPT};
 use busbar_core_connector::framer::{
     self, Established, FramerDoor, Framing, Got, GuestLines, Head, Yielded,
 };
@@ -48,13 +46,13 @@ pub type DispatchFor = Arc<
 /// side offers (what its stated agreed position names).
 #[derive(Clone)]
 pub struct DataFramer {
-    door: Arc<dyn FramerDoor>,
-    owner: u64,
-    scheme: String,
-    listener: Arc<crate::root::inbound::ListenerRegistration>,
-    dispatch: Option<DispatchFor>,
-    inbound_limit: Option<Arc<tokio::sync::Semaphore>>,
-    upgrade: FramerFor,
+    pub(in crate::root) door: Arc<dyn FramerDoor>,
+    pub(in crate::root) owner: u64,
+    pub(in crate::root) scheme: String,
+    pub(in crate::root) listener: Arc<crate::root::inbound::ListenerRegistration>,
+    pub(in crate::root) dispatch: Option<DispatchFor>,
+    pub(in crate::root) inbound_limit: Option<Arc<tokio::sync::Semaphore>>,
+    pub(in crate::root) upgrade: FramerFor,
 }
 
 impl std::fmt::Debug for DataFramer {
@@ -66,55 +64,8 @@ impl std::fmt::Debug for DataFramer {
     }
 }
 
-pub fn listener_framer(
-    framer_for: FramerFor,
-    scheme: &str,
-    policy: crate::root::inbound::ListenerPolicy,
-) -> Option<DataFramer> {
-    configured_framer(framer_for, scheme, Some(policy))
-}
-
-fn configured_framer(
-    framer_for: FramerFor,
-    scheme: &str,
-    policy: Option<crate::root::inbound::ListenerPolicy>,
-) -> Option<DataFramer> {
-    let door = framer_for(scheme)?;
-    let facts = door.facts();
-    if facts.role != ROLE_FRAMER || facts.datagram || !door.accepts() {
-        return None;
-    }
-    let owner = door.instance().filter(|o| *o != 0)?;
-    static LISTENERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let listener = LISTENERS
-        .try_update(
-            std::sync::atomic::Ordering::Relaxed,
-            std::sync::atomic::Ordering::Relaxed,
-            |n| n.checked_add(1),
-        )
-        .ok()?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: the listener's scheme is copied once, when its framer is configured"
-    )]
-    let scheme = scheme.to_owned();
-    Some(DataFramer {
-        door,
-        owner,
-        scheme,
-        listener: match policy {
-            Some(policy) => crate::root::inbound::ListenerRegistration::with_policy(
-                owner,
-                listener,
-                Some(policy),
-            ),
-            None => crate::root::inbound::ListenerRegistration::new(owner, listener),
-        },
-        dispatch: None,
-        inbound_limit: None,
-        upgrade: framer_for,
-    })
-}
+pub(crate) use crate::root::off_path::listener::configured_framer;
+pub use crate::root::off_path::listener::listener_framer;
 
 impl DataFramer {
     #[cfg(test)]
@@ -811,8 +762,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         {
             return false;
         }
-        let mut buf = [0_u8; READ_CHUNK];
-        let mut rb = ReadBuf::new(&mut buf);
+        let mut buf = [std::mem::MaybeUninit::<u8>::uninit(); READ_CHUNK];
+        let mut rb = ReadBuf::uninit(&mut buf);
         match Pin::new(&mut self.io).poll_read(cx, &mut rb) {
             Poll::Ready(Ok(())) => {
                 let n = rb.filled().len();
@@ -824,7 +775,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let Some(framing) = self.framing.as_mut() else {
                     return false;
                 };
-                let r = framing.ingest(&buf[..n], end);
+                let r = framing.ingest(rb.filled(), end);
                 self.took(r);
                 if end {
                     self.finish_read_bodies();
@@ -874,8 +825,8 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             .staged
             .as_ref()
             .map_or(0, |stage| WRITE_ROOM - stage.incoming.len());
-        let mut bytes = [0_u8; READ_CHUNK];
-        let mut buffer = ReadBuf::new(&mut bytes[..remaining.min(READ_CHUNK)]);
+        let mut bytes = [std::mem::MaybeUninit::<u8>::uninit(); READ_CHUNK];
+        let mut buffer = ReadBuf::uninit(&mut bytes[..remaining.min(READ_CHUNK)]);
         match Pin::new(&mut self.io).poll_read(cx, &mut buffer) {
             Poll::Ready(Ok(())) if buffer.filled().is_empty() => {
                 self.read_done = true;
@@ -995,11 +946,7 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 }
                 if piece.failed {
                     if let Some(body) = inflow.body.take() {
-                        #[expect(
-                            clippy::disallowed_methods,
-                            reason = "error: a failed body piece hands its reason to the reader once, as the stream ends"
-                        )]
-                        let reason = String::from_utf8_lossy(&piece.bytes).into_owned();
+                        let reason = crate::root::cold::failed_piece_reason(&piece.bytes);
                         let _ = body.send(Err(BodyError::from(reason)));
                     }
                     inflow.task.abort();

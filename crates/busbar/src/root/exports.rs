@@ -45,12 +45,7 @@ impl ExportAxis for RootExports {
         label: &str,
         settings: &busbar_contract::export_calls::PreparedExport,
     ) -> Result<Arc<dyn ExportCalls>, String> {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "error: the refusal text is spelled only when no export plugin answers"
-        )]
-        let rows =
-            rows().ok_or_else(|| format!("no `kind: export` plugin answers to '{module}'"))?;
+        let rows = rows().ok_or_else(|| crate::root::cold::no_export_plugin(module))?;
         let conns: Arc<dyn busbar_contract::conn::DeclaredConns> =
             crate::root::connector::the().clone();
         rows.with_disk(
