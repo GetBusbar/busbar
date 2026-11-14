@@ -2026,3 +2026,7 @@ mod root_rules_hearing_tests;
 #[cfg(test)]
 #[path = "tests/config_store_recovery_tests.rs"]
 mod config_store_recovery_tests;
+
+#[cfg(test)]
+#[path = "tests/plugins_fetch_refusal_tests.rs"]
+mod plugins_fetch_refusal_tests;
