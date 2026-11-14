@@ -271,14 +271,6 @@ pub(crate) fn legacy_head_address(
     Ok(address(operation))
 }
 
-pub(crate) fn legacy_head_authorizes(candidate: &Address) -> bool {
-    candidate.key.len() == 32
-        && candidate.key[..16] == RECOVERY.0
-        && candidate.key[16..]
-            .try_into()
-            .is_ok_and(|operation: &[u8; 16]| address(operation) == *candidate)
-}
-
 fn address(operation: &[u8; 16]) -> Address {
     // One allocation at the final size: the namespace tag, then the operation id.
     let mut key = vec![0u8; RECOVERY.0.len() + operation.len()];
@@ -1318,7 +1310,7 @@ impl RecoverySink for StoreRecovery {
         self.persist_at(event).await
     }
     async fn replay_selections(&self) -> Result<Vec<RecoverySelection>, RecoveryError> {
-        self.adopt_imported().await?;
+        self.adopt_pending().await?;
         let local = self.owned().await?;
         // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut result = Vec::new();
@@ -1337,7 +1329,7 @@ impl RecoverySink for StoreRecovery {
         Ok(result)
     }
     async fn replay(&self) -> Result<Vec<RecoveryEvent>, RecoveryError> {
-        self.adopt_imported().await?;
+        self.adopt_pending().await?;
         let local = self.owned().await?;
         // busbar:expect(bp::fresh_buffer, reason = "boot: recovery heads are read only by startup replay and operator inspection")
         let mut events = Vec::new();
@@ -1445,147 +1437,3 @@ impl RecoverySink for StoreRecovery {
 #[cfg(test)]
 #[path = "recovery_tests.rs"]
 mod tests;
-
-/// Frozen indexed originals from a completely verified historical node run.
-/// Implementations are trusted migration adapters over the admitted source;
-/// they never synthesize a record or substitute a currently serving Store.
-pub(crate) trait LegacyRecoveryHistory {
-    fn verified_node(
-        &self,
-        node: u64,
-    ) -> Option<&crate::persistence::journal::migration::VerifiedNode>;
-    fn original(&mut self, node: u64, sequence: u64) -> Result<JournalRecord, RecoveryError>;
-    fn selected_head(
-        &mut self,
-        operation: &[u8; 16],
-    ) -> Result<Option<Secret<Vec<u8>>>, RecoveryError>;
-}
-fn frozen_selection(
-    source: &mut impl LegacyRecoveryHistory,
-    operation: &[u8; 16],
-    tip: &Head,
-    mut visit: impl FnMut(&Head, &Candidate) -> Result<(), RecoveryError>,
-) -> Result<RecoverySelection, RecoveryError> {
-    let mut next = tip.clone();
-    let mut selected = None;
-    let mut selected_origin = None;
-    let mut child: Option<CompactCandidate> = None;
-    loop {
-        let at = next;
-        let proof = source
-            .verified_node(at.node)
-            .ok_or_else(|| invalid("recovery predecessor has no verified original node run"))?;
-        if at.version != 1
-            || at.node == 0
-            || at.sequence == 0
-            || proof.node() != at.node
-            || at.sequence > proof.tail().0
-        {
-            return Err(invalid("invalid frozen recovery predecessor"));
-        }
-        let original = source.original(at.node, at.sequence)?;
-        if original.identity() != (at.node, at.sequence)
-            || original.body_hash != busbar_kernel_wal::body_digest(&original.body)
-            || original.hash != original.digest_of_chain()
-        {
-            return Err(invalid(
-                "frozen recovery original identity or digest differs",
-            ));
-        }
-        let candidate = candidate(&original)?
-            .ok_or_else(|| invalid("selected frozen frame is not a recovery candidate"))?;
-        if candidate.event.operation_id != *operation
-            || candidate.event.revision != at.revision
-            || candidate.event.fingerprint()? != at.event_digest
-        {
-            return Err(invalid("frozen selected recovery identity differs"));
-        }
-        let origin = candidate.event.origin_reference()?;
-        if let Some(expected) = &selected_origin {
-            if *expected != origin {
-                return Err(invalid(
-                    "frozen recovery origin changed within selected ancestry",
-                ));
-            }
-        } else {
-            selected_origin = Some(origin);
-        }
-        if selected.is_none() {
-            selected = Some(candidate.event.clone());
-        }
-        if let Some(child) = &child {
-            child.link.follows(Some(&candidate.event))?;
-            if child.head.node == at.node {
-                if child.adoption.is_some() || at.sequence >= child.head.sequence {
-                    return Err(invalid(
-                        "frozen recovery predecessor is not an earlier owned frame",
-                    ));
-                }
-            } else {
-                child
-                    .adoption
-                    .as_ref()
-                    .ok_or_else(|| {
-                        invalid("frozen recovery ownership changed without attestation")
-                    })?
-                    .validate_compact(&at, &candidate.event, child)?;
-            }
-        }
-        visit(&at, &candidate)?;
-        match &candidate.previous_head {
-            Some(previous)
-                if previous.revision.checked_add(1) == Some(at.revision)
-                    && candidate.event.previous_event == Some(previous.event_digest) =>
-            {
-                next = previous.clone()
-            }
-            None if at.revision == 0
-                && candidate.event.previous_event.is_none()
-                && candidate.adoption.is_none() =>
-            {
-                candidate.event.follows(None)?;
-                return Ok(RecoverySelection {
-                    initial: candidate.event,
-                    selected: selected.expect("selected frozen endpoint"),
-                });
-            }
-            _ => return Err(invalid("invalid frozen selected predecessor")),
-        }
-        let newer = child.as_ref().map(CompactCandidate::tag);
-        child = Some(CompactCandidate::of(&at, &candidate, newer));
-    }
-}
-
-/// Validate one frozen source operation without opening or granting a writer.
-/// The migration provider streams the head inventory and keeps only the returned
-/// endpoints, plus its independently verified original node-run metadata.
-pub(crate) fn inspect_legacy_recovery_operation(
-    operation: [u8; 16],
-    head_bytes: &[u8],
-    source: &mut impl LegacyRecoveryHistory,
-) -> Result<RecoverySelection, RecoveryError> {
-    let head: Head = serde_json::from_slice(head_bytes)
-        .map_err(|_| invalid("invalid frozen recovery selection head"))?;
-    let selection = frozen_selection(source, &operation, &head, |_, _| Ok(()))?;
-    if selection.selected.origin_reference()? != selection.initial.origin_reference()? {
-        return Err(invalid("frozen selected recovery origin changed"));
-    }
-    if let Some(origin) = selection.initial.origin_reference()? {
-        let parent = source
-            .selected_head(&origin.operation_id)?
-            .ok_or_else(|| invalid("frozen child origin has no selected parent"))?;
-        let parent: Head = serde_json::from_slice(parent.expose(&crate::seal::lend()))
-            .map_err(|_| invalid("invalid frozen parent head"))?;
-        let mut checkpoint = None;
-        frozen_selection(source, &origin.operation_id, &parent, |at, candidate| {
-            if at.event_digest == origin.event_fingerprint {
-                checkpoint = Some(candidate.event.clone())
-            }
-            Ok(())
-        })?;
-        checkpoint
-            .ok_or_else(|| invalid("frozen parent checkpoint is outside selected ancestry"))?
-            .authorizes_child(&selection.initial)?;
-    }
-    Ok(selection)
-}
