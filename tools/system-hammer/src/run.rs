@@ -1046,4 +1046,11 @@ mod tests {
         assert_eq!(v["g"], "grp");
         assert_eq!(v["sub"], "k1");
     }
+
+    #[test]
+    fn contains_docs_do_not_claim_sampling() {
+        for src in [include_str!("scenario.rs"), include_str!("mock/llm.rs")] {
+            assert!(!src.contains("sampled answer") && !src.contains("checks sampled bodies"));
+        }
+    }
 }

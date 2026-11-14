@@ -44,7 +44,8 @@ pub struct Req {
     pub headers: Vec<(HeaderName, HeaderValue)>,
     pub body: Bytes,
     pub expect_status: u16,
-    /// Bytes EVERY response body must contain: a request that states it has each body checked.
+    /// Bytes each response with `expect_status` must contain; every such body is checked. A miss
+    /// counts as `body_miss` only in the measured window; warmup and late misses are only logged.
     pub expect_contains: Option<Vec<u8>>,
     /// Relative weight in the case's mix.
     pub weight: u32,
