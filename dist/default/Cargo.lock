@@ -439,8 +439,10 @@ version = "1.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "busbar-crypto",
  "bytes",
  "ciborium",
+ "foldhash 0.2.0",
  "futures",
  "hex",
  "http",
@@ -451,7 +453,10 @@ dependencies = [
  "serde",
  "serde-saphyr",
  "serde_json",
+ "serde_path_to_error",
  "smallvec",
+ "subtle",
+ "time",
  "tracing",
  "tracing-core",
  "tracing-log",
@@ -489,9 +494,13 @@ dependencies = [
  "busbar-plugin-loader",
  "crc32fast",
  "dimpl",
+ "foldhash 0.2.0",
  "futures",
  "hex",
+ "http",
+ "hyper-util",
  "libc",
+ "mime",
  "rustls",
  "rustls-pki-types",
  "serde_json",
@@ -502,6 +511,8 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+ "windows-sys 0.61.2",
+ "x509-parser",
  "zeroize",
 ]
 
@@ -514,10 +525,11 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "bytes",
+ "form_urlencoded",
  "hex",
  "http",
- "http-body-util",
  "oauth-as",
+ "percent-encoding",
  "psl",
  "serde",
  "serde_json",
@@ -623,7 +635,6 @@ dependencies = [
  "lexopt",
  "metrics",
  "opentelemetry-proto",
- "proc-macro2",
  "prost",
  "reqwest",
  "rustls",
@@ -631,7 +642,6 @@ dependencies = [
  "serde",
  "serde_json",
  "socket2",
- "syn 2.0.117",
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
@@ -744,7 +754,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-webrequest"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=bb14cb796e4409d708853211ab8ff901410bbaab#bb14cb796e4409d708853211ab8ff901410bbaab"
+source = "git+https://github.com/GetBusbar/busbar-hook-webrequest?rev=6571192080c0c838d81849a6c1f81ed9b2f639cb#6571192080c0c838d81849a6c1f81ed9b2f639cb"
 dependencies = [
  "busbar-contract",
  "http",
@@ -771,15 +781,11 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
  "bytes",
- "crc32fast",
- "ed25519-dalek",
  "foldhash 0.2.0",
  "futures",
  "hex",
  "http",
- "http-body",
  "http-body-util",
- "httpdate",
  "indexmap",
  "libc",
  "loom",
@@ -788,7 +794,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "serde_urlencoded",
+ "smallvec",
  "sonic-rs",
  "tikv-jemalloc-sys",
  "tokio",
@@ -797,6 +803,7 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "unicode-normalization",
  "url",
  "zeroize",
 ]
@@ -806,9 +813,8 @@ name = "busbar-kernel-audit"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "ed25519-dalek",
+ "foldhash 0.2.0",
  "hex",
- "ring",
  "serde_json",
  "zeroize",
 ]
@@ -818,7 +824,7 @@ name = "busbar-kernel-breaker"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "fnv",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -827,7 +833,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
- "futures",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -835,6 +841,7 @@ name = "busbar-kernel-identity"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash 0.2.0",
  "hex",
 ]
 
@@ -843,6 +850,7 @@ name = "busbar-kernel-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash 0.2.0",
  "hex",
  "serde",
 ]
@@ -851,7 +859,8 @@ dependencies = [
 name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
- "ring",
+ "busbar-contract",
+ "foldhash 0.2.0",
 ]
 
 [[package]]
@@ -862,15 +871,13 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-kernel-audit",
  "busbar-kernel-identity",
- "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
  "tokio",
+ "x509-parser",
  "zeroize",
 ]
 
@@ -959,6 +966,7 @@ dependencies = [
  "arc-swap",
  "busbar-contract",
  "flate2",
+ "foldhash 0.2.0",
  "futures",
  "hex",
  "libc",
@@ -1001,7 +1009,6 @@ dependencies = [
  "busbar-contract",
  "getrandom 0.3.4",
  "serde_json",
- "smallvec",
  "zeroize",
 ]
 
@@ -3435,7 +3442,6 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
- "indexmap",
  "itoa",
  "memchr",
  "serde",
