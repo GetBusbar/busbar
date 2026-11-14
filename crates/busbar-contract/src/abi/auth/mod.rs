@@ -33,7 +33,7 @@ pub use points::{AuthPoint, AuthPoints, POINT_FRAME, POINT_HEAD, POINT_HEAD_BODY
 pub const EXT_OUTBOUND_SETTINGS_CHECK: &str = "auth.outbound-settings-check";
 
 /// The auth kind's ABI version: v1.5.5 shipped `2` (`AUTH_ABI_VERSION`), so 1.6.0 ships `3`.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = super::versions::AUTH.raw();
 
 /// The auth kind's layout fingerprint ([`crate::abi::mechanism::layout`]): the fold of
 pub const LAYOUT_FINGERPRINT: u64 = 0x6438f190d7b44e09;
