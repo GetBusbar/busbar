@@ -1,0 +1,37 @@
+name: store-postgres
+group: stores
+description: openai>openai with keys auth, the postgres store plugin against postgres in docker.
+plugins: [busbar-store-postgres]
+docker:
+  - { var: PG_PORT, image: "postgres:16", port: 5432, env: { POSTGRES_PASSWORD: hammer }, ready_log: "database system is ready to accept connections", ready_count: 2 }
+config: |
+  listen: "{LISTEN}"
+  admin_listen: "{ADMIN}"
+  public_url: "http://{LISTEN}"
+  identity-providers:
+    admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  auth:
+    chain: [keys]
+    admin_auth: [admin-tokens]
+    signing_key: { file: "{WORK}/signing.key" }
+  groups:
+    bench:
+      limits:
+        - { requests: 1000000000, per: minute }
+  advanced:
+    allow_destinations: ["127.0.0.1"]
+  providers:
+    openai: { api_key: { env: HAMMER_UPSTREAM_KEY } }
+  models:
+    m-openai: { provider: openai }
+  plugins:
+    enabled: true
+    dir: "{WORK}/plugins"
+    trust: { allow_unsigned: true }
+  store: { module: postgres, settings: { url: "postgres://postgres:hammer@127.0.0.1:{PG_PORT}/postgres" } }
+providers: |
+  openai: { protocol: openai, base_url: "{MOCK}" }
+setup:
+  - mint_key: { as: KEY, group: bench }
+llm_matrix:
+  - { ingress: [openai], egress: [openai], key: "{KEY}", shape: { closed: 32 } }
