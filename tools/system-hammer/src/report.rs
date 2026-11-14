@@ -242,7 +242,7 @@ pub fn table(r: &RunReport) -> String {
             f(x.latency_us.p999),
             x.added_p50_us.map_or("-".into(), f),
             x.added_p99_us.map_or("-".into(), f),
-            f(x.cpu_us_per_req),
+            x.cpu_us_per_req.map_or("-".into(), f),
             format!(
                 "{:.0}/{:.0}/{:.0}/{:.0}",
                 x.rss.idle_mib, x.rss.steady_mib, x.rss.peak_mib, x.rss.post_mib
