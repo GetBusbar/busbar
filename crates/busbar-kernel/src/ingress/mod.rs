@@ -364,8 +364,6 @@ fn finish_inner(
     resp: Response,
     refund_on_non_2xx: Option<&crate::governance::FeeCharge>,
 ) -> Response {
-    let _fin = crate::profile::start(crate::profile::Stage::Finish);
-
     let outcome = crate::telemetry::outcome_of(resp.status().as_u16());
 
     let elapsed = crate::store::elapsed(started);
