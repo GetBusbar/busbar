@@ -9,6 +9,9 @@ use busbar_contract::abi::transport::route::{METHOD_POST, PATH_EXACT};
 use busbar_contract::auth_calls::Verifying;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "inbound_single_path.rs"]
+mod single_path;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Seen {
     name: &'static str,

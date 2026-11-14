@@ -37,3 +37,6 @@ pub(crate) mod scan;
 pub mod scoped;
 mod slot_seal;
 pub mod startup;
+// The store kit: kernel-level Startup conformance a store's own CI runs against itself.
+#[cfg(any(test, feature = "test-support"))]
+pub mod store_kit;
