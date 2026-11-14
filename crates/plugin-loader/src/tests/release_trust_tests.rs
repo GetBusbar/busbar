@@ -722,6 +722,46 @@ fn canonical_json_is_sorted_compact_and_matches_python() {
     );
 }
 
+/// DEPENDENCY-LADDER C16 (olpc-cjson) pins the canonical bytes before the hand writer goes:
+/// byte-ordered keys at every depth, empty containers, `u64::MAX`, and `\` and `"` escaped in keys
+/// and values. Green on the hand writer; the crate must give the same bytes.
+#[test]
+fn canonical_json_bytes_are_pinned_before_the_crate_swap() {
+    let v = serde_json::json!({
+        "z": [],
+        "_type": "targets",
+        "B": {},
+        "a": [{"y": 18_446_744_073_709_551_615_u64, "x": 0}],
+        "k\\": "v\\\"",
+        "A": false,
+    });
+    assert_eq!(
+        String::from_utf8(wire::canonical(&v).unwrap()).unwrap(),
+        r#"{"A":false,"B":{},"_type":"targets","a":[{"x":0,"y":18446744073709551615}],"k\\":"v\\\"","z":[]}"#
+    );
+}
+
+/// DEPENDENCY-LADDER C16: olpc-cjson orders keys by their escaped bytes, which differs from the
+/// Python (securesystemslib) order only for a key holding `"` or a key followed by a longer key
+/// that continues with a space or `!`. So such keys leave the canonical subset: refused and
+/// explained, never signed in an order a Python verifier would not reproduce. Named change, red on
+/// the hand writer, which accepted them.
+#[test]
+fn canonical_json_refuses_keys_whose_byte_order_differs_from_python() {
+    for key in ["a b", "a!", "a\"", " ", "!"] {
+        let mut map = serde_json::Map::new();
+        map.insert(key.to_owned(), serde_json::json!(1));
+        let err = wire::canonical(&serde_json::Value::Object(map))
+            .expect_err("a key outside the canonical key set is refused");
+        assert!(err.contains("key"), "{key:?}: {err}");
+    }
+    // Values keep the whole printable-ASCII subset.
+    assert_eq!(
+        String::from_utf8(wire::canonical(&serde_json::json!({"a": "x y!\""})).unwrap()).unwrap(),
+        r#"{"a":"x y!\""}"#
+    );
+}
+
 #[test]
 fn times_are_utc_seconds_both_ways() {
     assert_eq!(wire::parse_time("1970-01-01T00:00:00Z"), Ok(0));
