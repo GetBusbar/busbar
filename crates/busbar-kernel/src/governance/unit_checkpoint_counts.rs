@@ -330,7 +330,11 @@ impl GovState {
             if cell.window_start < window {
                 cell.roll(window);
             }
-            cell.accrue_raw(lane, era, units)?;
+            // No counts, no row: a row in the cell is a hit on its lane (#42). An
+            // exhausted pool unit reports the empty lane with no counts.
+            if has_units(units) {
+                cell.accrue_raw(lane, era, units)?;
+            }
             fn finish(
                 cell: &mut BudgetCell,
                 lane: &str,
@@ -360,7 +364,7 @@ impl GovState {
                     })?;
                 }
                 if durable {
-                    let model = cell
+                    match cell
                         .models
                         .iter_mut()
                         .find(|m| m.model.as_ref() == lane && m.era == era)
