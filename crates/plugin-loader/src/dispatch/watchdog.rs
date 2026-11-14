@@ -60,7 +60,11 @@ fn breach(pool: &Pool, inst: &Instance) -> bool {
     true
 }
 
-pub(crate) fn spawn(pool: Weak<Pool>, period: Duration) {
+/// Wakes at the earliest deadline its own last scan saw, never sooner than `period` and never later
+/// than `min_budget` (the smallest class budget), so a crossing that started after a scan is seen no
+/// later than today's fixed-period poll would: its deadline is at least `min_budget` away. Workers
+/// publish nothing new; only this thread computes its wake.
+pub(crate) fn spawn(pool: Weak<Pool>, period: Duration, min_budget: Duration) {
     std::thread::Builder::new()
         .name("busbar-dispatch-watchdog".into())
         .spawn(move || {
@@ -90,6 +94,9 @@ fn scan(pool: &Pool, live: &mut Vec<Arc<Instance>>) {
         let budget = w.crossing_budget.load(Ordering::Relaxed);
         if started != 0 && now.saturating_sub(started) > budget {
             replace(pool, i, &w, started);
+        } else {
+            let left = Duration::from_nanos(budget - elapsed);
+            earliest = Some(earliest.map_or(left, |e| e.min(left)));
         }
     }
     ticketless(pool, now, live);
@@ -123,6 +130,9 @@ fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) {
                 {
                     *counted = true;
                     fresh += 1;
+                } else {
+                    let left = budget - elapsed;
+                    earliest = Some(earliest.map_or(left, |e| e.min(left)));
                 }
             }
             fresh
@@ -137,6 +147,7 @@ fn ticketless(pool: &Pool, now: u64, live: &mut Vec<Arc<Instance>>) {
             inst.let_go_held();
         }
     }
+    earliest
 }
 
 fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: u64) {

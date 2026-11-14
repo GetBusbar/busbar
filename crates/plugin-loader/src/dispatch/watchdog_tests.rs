@@ -43,3 +43,45 @@ fn tiny_budget_never_wakes_faster_than_period() {
         "the period floors the wake whatever the budgets: {scans} scans in 1 s"
     );
 }
+
+#[test]
+fn wake_is_the_earliest_deadline_floored_by_the_period() {
+    let period = Duration::from_millis(50);
+    let min_budget = Duration::from_secs(1);
+    // Idle: the smallest budget, since no crossing can start and breach sooner.
+    assert_eq!(super::next_wake(period, min_budget, None), min_budget);
+    // A crossing in flight with 200 ms left: wake at its deadline.
+    assert_eq!(
+        super::next_wake(period, min_budget, Some(Duration::from_millis(200))),
+        Duration::from_millis(200)
+    );
+    // A deadline closer than the period never wakes faster than today.
+    assert_eq!(
+        super::next_wake(period, min_budget, Some(Duration::from_millis(1))),
+        period
+    );
+    // A deadline beyond the smallest budget still wakes by the smallest budget, so a crossing
+    // started right after this scan is seen within its own budget plus the period.
+    assert_eq!(
+        super::next_wake(period, min_budget, Some(Duration::from_secs(25))),
+        min_budget
+    );
+    // Budgets below the period: the period floors it.
+    assert_eq!(
+        super::next_wake(period, Duration::from_millis(5), None),
+        period
+    );
+}
+
+#[test]
+fn smallest_budget_bounds_every_class() {
+    let budgets = Budgets {
+        call: Duration::from_millis(900),
+        stream: Duration::from_millis(700),
+        connection: Duration::from_millis(800),
+        write_behind: Duration::from_millis(300),
+        lifecycle: Duration::from_secs(30),
+    };
+    assert_eq!(budgets.min(), Duration::from_millis(300));
+    assert_eq!(Budgets::default().min(), Duration::from_secs(1));
+}
