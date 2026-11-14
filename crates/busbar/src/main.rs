@@ -1571,10 +1571,7 @@ async fn run(
     }));
 
     if let Some(post) = door_post {
-        let (auths, live) = (
-            std::sync::Arc::clone(&door_auths),
-            std::sync::Arc::clone(&door_live_handle),
-        );
+        let live = std::sync::Arc::clone(&door_live_handle);
         let upgrades = root::serve::upgrade_carriers(LINKED.transports, &dropped_doors);
         app_handle.on_apply(Box::new(move |next| {
             let Some(cfg) = next
@@ -1940,6 +1937,49 @@ async fn run(
         std::process::exit(1);
     }
     lease_result.unwrap_or_else(|error| die(error));
+}
+
+/// A door egress's model serving over `app`'s lanes; boot and every apply build it here.
+fn model_serving(
+    pools: root::model_egress::ModelPools,
+    app: &Arc<busbar_kernel::state::App>,
+    live: &Arc<std::sync::OnceLock<std::sync::Weak<busbar_kernel::state::AppHandle>>>,
+) -> root::model_egress::ModelServing {
+    root::model_egress::ModelServing {
+        pools,
+        lanes: app
+            .engine_tables_view()
+            .model_indices()
+            .into_iter()
+            .map(|(model, lane)| (model.to_string(), lane))
+            .collect(),
+        app: root::model_egress::LiveApp::new(Arc::clone(live), Arc::clone(app)),
+    }
+}
+
+/// The one construction of a door's reach, for boot and every apply.
+fn door_reach_of<'a>(
+    app: &busbar_kernel::state::App,
+    providers: &'a std::collections::BTreeMap<String, root::door_steps::ProviderRoute>,
+    models: &'a root::model_egress::ModelServing,
+    catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+    limits: Option<&busbar_kernel::config::LimitsResolved>,
+    upgrades: Vec<&'static str>,
+) -> root::door_steps::DoorReach<'a> {
+    root::door_steps::DoorReach {
+        providers,
+        secrets: Arc::clone(&app.secret_resolver)
+            as Arc<dyn busbar_contract::secret::SecretResolve>,
+        auths: root::door_steps::process_auths(),
+        conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
+        stream_ceiling_secs: limits.map_or(
+            busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
+            |l| l.upstream_request_timeout_secs,
+        ),
+        catalog,
+        models: Some(models),
+        upgrades,
+    }
 }
 
 async fn refresh_node_lease(
