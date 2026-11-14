@@ -150,14 +150,16 @@ fn an_export_with_preencoded_metric_semantics_is_refused() {
     let dir = tmpdir("preencoded-export");
     let mut m = manifest("export-prior-generation", "prior-generation", "busbar");
     m.kind = "export".into();
-    m.abi_version = 3;
+    // The generation before the current export ABI: its metric semantics are pre-encoded.
+    let prior = busbar_contract::abi::export::ABI_VERSION - 1;
+    m.abi_version = prior;
     let m = sign(&release, m, b"prior export image");
     write_tarball(&dir, "prior.tar.gz", &m, b"prior export image");
     let errors = scan_and_validate(&dir, &policy(&release))
         .expect_err("unchanged layout cannot admit incompatible metric semantics");
     assert_eq!(errors.len(), 1);
     assert!(
-        errors[0].contains("abi_version 3 is not supported"),
+        errors[0].contains(&format!("abi_version {prior} is not supported")),
         "{errors:?}"
     );
     assert!(
