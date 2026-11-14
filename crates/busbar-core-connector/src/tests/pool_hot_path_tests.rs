@@ -52,3 +52,133 @@ fn pool_release_allocates_nothing() {
         );
     });
 }
+
+/// A hasher that records what is written to it.
+#[derive(Default)]
+struct Recording {
+    writes: usize,
+    bytes: usize,
+}
+
+impl std::hash::Hasher for Recording {
+    fn finish(&self) -> u64 {
+        0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.writes += 1;
+        self.bytes += bytes.len();
+    }
+}
+
+/// T9b: a key's fields are hashed once, when it is built; every lookup after that (two in a lend,
+/// one in a release) hashes only the one `u64`.
+#[test]
+fn pool_key_hashed_once() {
+    worker().block_on(async {
+        let (far, _, _) = keeping_far_end().await;
+        let c = pooled_messages(Duration::from_secs(60));
+        let (_, key, _) = one_idle_line(&c, &far).await;
+        let mut lookup = Recording::default();
+        std::hash::Hash::hash(&key, &mut lookup);
+        assert_eq!(
+            (lookup.writes, lookup.bytes),
+            (1, 8),
+            "a pool lookup hashes the key's one u64, never its fields again"
+        );
+        let mut again = Recording::default();
+        std::hash::Hash::hash(&key.clone(), &mut again);
+        assert_eq!(
+            (again.writes, again.bytes),
+            (1, 8),
+            "a copy of the key carries its hash"
+        );
+    });
+}
+
+/// T9b: two keys whose hashes collide are still two keys: a line is never lent across them.
+#[test]
+fn pool_key_collision_never_lends() {
+    worker().block_on(async {
+        let (far, _, _) = keeping_far_end().await;
+        let c = pooled_messages(Duration::from_secs(60));
+        let (shard, key, line) = one_idle_line(&c, &far).await;
+        let mut elsewhere = key.clone();
+        elsewhere.authority = "elsewhere.invalid:443".to_owned();
+        let mut other_owner = key.clone();
+        other_owner.owner = OTHER;
+        for (what, colliding) in [("authority", elsewhere), ("owner", other_owner)] {
+            assert_eq!(colliding.hash, key.hash, "{what}: a forced collision");
+            assert_ne!(
+                colliding, key,
+                "{what}: the same hash with another field is another key"
+            );
+            assert!(
+                c.pools.lend(shard, &colliding).is_none(),
+                "{what}: the line is never lent to a key whose hash collides with its own"
+            );
+        }
+        let lent = c
+            .pools
+            .lend(shard, &key)
+            .expect("control: the line is lent to its own key");
+        assert!(Arc::ptr_eq(&lent, &line), "control: the kept line itself");
+    });
+}
+
+/// A far end that answers one ask on each connection and then closes it.
+async fn answering_once_far_end() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let (l, far) = far_end().await;
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&accepted);
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0_u8; 3];
+                if s.read_exact(&mut buf).await.is_ok() {
+                    let _ = s.write_all(b"xe").await;
+                }
+            });
+        }
+    });
+    (far, accepted)
+}
+
+/// A kept line whose far end went away meanwhile is never handed back as live: the next open is
+/// answered on a fresh dial, or refused, never left hanging and never answered from the dead line.
+#[test]
+fn pool_stale_line_is_retried_or_refused() {
+    worker().block_on(async {
+        let (far, accepted) = answering_once_far_end().await;
+        let c = pooled_messages(Duration::from_secs(60));
+        c.declare_over(OWNER, NeedId(0), "messages")
+            .expect("a served scheme declares");
+        assert_eq!(
+            pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await,
+            (b"x".to_vec(), true, None),
+            "the first exchange finishes whole"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (got, whole, failed) = pooled_exchange(&c, (OWNER, 0), &far, b"ask", true).await;
+        match failed {
+            None => {
+                assert_eq!(
+                    (got, whole),
+                    (b"x".to_vec(), true),
+                    "retried: the next open is answered whole, not left to its deadline"
+                );
+                assert_eq!(
+                    accepted.load(Ordering::SeqCst),
+                    2,
+                    "retried: on a fresh dial, not the closed line"
+                );
+            }
+            Some(e) => assert!(
+                got.is_empty(),
+                "refused ({e:?}): nothing is read from the closed line"
+            ),
+        }
+    });
+}
