@@ -6,8 +6,10 @@
 //! Targets come from `cargo metadata`, never from guesses. Each target root is walked by
 //! following `mod x;`, `#[path]` and `include!("literal")` exactly as rustc resolves them, so
 //! every reached file is classified as production (reached from a lib, bin or build-script root
-//! outside any `cfg(test)` region) or test. Lines are counted with `proc-macro2`, which drops
-//! comments; `syn` finds the `cfg(test)` and doc-attribute ranges. No regex.
+//! outside any test-only region) or test. Test-only means only a build with `cfg(test)` or the
+//! dev-dependency-only `test-support` feature compiles it ([`needs_test`]). Lines are counted with
+//! `proc-macro2`, which drops comments; `syn` finds the test-only and doc-attribute ranges. No
+//! regex.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -218,6 +220,9 @@ impl Workspace {
             let Ok(source) = std::fs::read_to_string(&path) else {
                 continue;
             };
+            let file = Parsed::new(&source);
+            // A file-level test-only `#![cfg]` gates the file like the same cfg on its `mod` line.
+            let production = job.production && !file.whole_file_test;
             let owner = self.owner_of(&path).unwrap_or(job.package);
             let entry = self.files.entry(path.clone()).or_insert(Reached {
                 package: owner,
@@ -227,20 +232,17 @@ impl Workspace {
                 lines: 0,
                 generated: Vec::new(),
             });
-            if job.production && !entry.production {
+            if production && !entry.production {
                 entry.module = job.module.clone();
             }
-            entry.production |= job.production;
+            entry.production |= production;
             entry.build_script |= job.build_script;
-            let file = Parsed::new(&source);
             let dir = path.parent().expect("file dir").to_path_buf();
             let child_dir = if job.mod_rs {
                 dir.clone()
             } else {
                 dir.join(path.file_stem().expect("file stem"))
             };
-            let whole_test = file.whole_file_test;
-            let production = job.production && !whole_test;
             if production {
                 let generated = file
                     .includes()
@@ -475,34 +477,149 @@ fn path_attribute(attrs: &[Attribute]) -> Option<String> {
     })
 }
 
-/// True when the attributes hold a `cfg` that can only be on in a test build.
+/// True when the attributes compile their item only in a test build: no build with `test` off
+/// and the dev-dependency-only `test-support` feature off compiles it, whatever every other cfg
+/// is. Every `cfg` and every `cfg` inside a (nested) `cfg_attr` gates the item; a gate the
+/// parser cannot read is left out, so it can only make the item count as production.
 pub fn needs_test(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        attr.path().is_ident("cfg")
-            && attr
-                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-                .is_ok_and(|metas| metas.iter().any(cfg_needs_test))
-    })
-}
-
-fn cfg_needs_test(meta: &Meta) -> bool {
-    match meta {
-        Meta::Path(path) => path.is_ident("test"),
-        Meta::List(list) => {
-            let Ok(inner) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
-            else {
-                return false;
-            };
-            if list.path.is_ident("all") {
-                inner.iter().any(cfg_needs_test)
-            } else if list.path.is_ident("any") {
-                !inner.is_empty() && inner.iter().all(cfg_needs_test)
-            } else {
-                false
+    let mut gates = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+            // An unreadable attribute only drops a gate, which errs towards production.
+            if let Some(found) = gates_of(&attr.meta) {
+                gates.extend(found);
             }
         }
-        Meta::NameValue(_) => false,
     }
+    !gates.is_empty() && test_only(&Cfg::All(gates))
+}
+
+/// A cfg predicate, with `test` and `feature = "test-support"` folded to `Off`.
+enum Cfg {
+    All(Vec<Cfg>),
+    Any(Vec<Cfg>),
+    Not(Box<Cfg>),
+    /// Off in every production build.
+    Off,
+    /// Any other cfg, which a production build may set either way.
+    Free(String),
+}
+
+impl Cfg {
+    fn parse(meta: &Meta) -> Option<Cfg> {
+        match meta {
+            Meta::Path(path) if path.is_ident("test") => Some(Cfg::Off),
+            Meta::Path(path) => Some(Cfg::Free(path_name(path))),
+            Meta::NameValue(pair) => {
+                let Expr::Lit(lit) = &pair.value else {
+                    return None;
+                };
+                let syn::Lit::Str(value) = &lit.lit else {
+                    return None;
+                };
+                let value = value.value();
+                Some(
+                    if pair.path.is_ident("feature") && value == "test-support" {
+                        Cfg::Off
+                    } else {
+                        Cfg::Free(format!("{} = {value:?}", path_name(&pair.path)))
+                    },
+                )
+            }
+            Meta::List(list) => {
+                let inner = list
+                    .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                    .ok()?;
+                let mut parts = inner.iter().map(Cfg::parse).collect::<Option<Vec<_>>>()?;
+                if list.path.is_ident("all") {
+                    Some(Cfg::All(parts))
+                } else if list.path.is_ident("any") {
+                    Some(Cfg::Any(parts))
+                } else if list.path.is_ident("not") && parts.len() == 1 {
+                    Some(Cfg::Not(Box::new(parts.pop()?)))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn free<'a>(&'a self, out: &mut BTreeSet<&'a str>) {
+        match self {
+            Cfg::All(parts) | Cfg::Any(parts) => parts.iter().for_each(|part| part.free(out)),
+            Cfg::Not(inner) => inner.free(out),
+            Cfg::Off => {}
+            Cfg::Free(name) => {
+                out.insert(name.as_str());
+            }
+        }
+    }
+
+    fn holds(&self, on: &dyn Fn(&str) -> bool) -> bool {
+        match self {
+            Cfg::All(parts) => parts.iter().all(|part| part.holds(on)),
+            Cfg::Any(parts) => parts.iter().any(|part| part.holds(on)),
+            Cfg::Not(inner) => !inner.holds(on),
+            Cfg::Off => false,
+            Cfg::Free(name) => on(name),
+        }
+    }
+}
+
+fn path_name(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// The gates one `cfg` or `cfg_attr` attribute puts on its item: `cfg(p)` gates on `p`;
+/// `cfg_attr(p, cfg(q))` gates on `any(not(p), q)`, nested `cfg_attr` likewise. `None` when the
+/// attribute cannot be read.
+fn gates_of(meta: &Meta) -> Option<Vec<Cfg>> {
+    let Meta::List(list) = meta else {
+        return None;
+    };
+    let mut args = list
+        .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .ok()?
+        .into_iter();
+    if list.path.is_ident("cfg") {
+        let predicate = Cfg::parse(&args.next()?)?;
+        return args.next().is_none().then_some(vec![predicate]);
+    }
+    let condition = args.next()?;
+    let mut gates = Vec::new();
+    for attr in args {
+        if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+            for gate in gates_of(&attr)? {
+                gates.push(Cfg::Any(vec![
+                    Cfg::Not(Box::new(Cfg::parse(&condition)?)),
+                    gate,
+                ]));
+            }
+        }
+    }
+    Some(gates)
+}
+
+/// True when no production build satisfies `cfg`: it is false for every setting of its other
+/// cfgs (exhaustive, so `any(test, feature = "x")` is production and `not(not(test))` is not).
+fn test_only(cfg: &Cfg) -> bool {
+    let mut free = BTreeSet::new();
+    cfg.free(&mut free);
+    let free: Vec<&str> = free.into_iter().collect();
+    if free.len() > 16 {
+        return false;
+    }
+    (0u32..1 << free.len()).all(|setting| {
+        !cfg.holds(&|name| {
+            free.iter()
+                .position(|known| *known == name)
+                .is_some_and(|bit| (setting >> bit) & 1 == 1)
+        })
+    })
 }
 
 struct Include {
@@ -936,4 +1053,83 @@ fn expr_attrs(expr: &Expr) -> &[Attribute] {
         Expr::Yield(e) => &e.attrs,
         _ => &[],
     }
+}
+
+/// The test-only predicate, pinned on a table: code compiled only under `cfg(test)` or the
+/// dev-dependency-only `test-support` feature is test code, alone or in any combination that
+/// requires one of them; anything a production build can compile is production.
+#[test]
+fn test_only_cfg_is_test_or_the_test_support_feature_exactly() {
+    let table: &[(&str, bool)] = &[
+        // Test-only: no production build compiles these.
+        ("#[cfg(test)]", true),
+        ("#[cfg(feature = \"test-support\")]", true),
+        ("#[cfg(any(test, feature = \"test-support\"))]", true),
+        ("#[cfg(all(test, feature = \"test-support\"))]", true),
+        ("#[cfg(all(unix, test))]", true),
+        (
+            "#[cfg(all(feature = \"openapi-schema\", any(test, feature = \"test-support\")))]",
+            true,
+        ),
+        ("#[cfg(not(not(feature = \"test-support\")))]", true),
+        ("#[cfg(not(any(not(test), unix)))]", true),
+        ("#[cfg(unix)] #[cfg(feature = \"test-support\")]", true),
+        (
+            "#[cfg_attr(not(test), cfg(feature = \"test-support\"))]",
+            true,
+        ),
+        (
+            "#[cfg_attr(not(test), cfg_attr(not(unix), cfg(test)), cfg(feature = \"test-support\"))]",
+            true,
+        ),
+        ("#![cfg(any(test, feature = \"test-support\"))]", true),
+        // Production: some production build compiles these.
+        ("#[inline]", false),
+        ("#[cfg(unix)]", false),
+        ("#[cfg(not(test))]", false),
+        ("#[cfg(not(feature = \"test-support\"))]", false),
+        ("#[cfg(not(any(test, feature = \"test-support\")))]", false),
+        ("#[cfg(any(test, feature = \"openapi-schema\"))]", false),
+        (
+            "#[cfg(any(test, feature = \"openapi-schema\", feature = \"test-support\"))]",
+            false,
+        ),
+        ("#[cfg(any(test, not(feature = \"test-support\")))]", false),
+        ("#[cfg(feature = \"test-seal\")]", false),
+        ("#[cfg(feature = \"test-supports\")]", false),
+        ("#[cfg(test_support)]", false),
+        ("#[cfg_attr(test, allow(dead_code))]", false),
+        (
+            "#[cfg_attr(feature = \"test-support\", allow(dead_code))]",
+            false,
+        ),
+        ("#[cfg_attr(unix, cfg(test))]", false),
+        ("#[cfg_attr(unix, cfg_attr(windows, cfg(test)), cfg(test))]", false),
+        ("#![cfg(unix)]", false),
+    ];
+    let mut wrong = Vec::new();
+    for (attrs, test_only) in table {
+        let file = syn::parse_file(&format!("{attrs}\nfn f() {{}}")).expect("table entry parses");
+        let found = needs_test(&file.attrs)
+            || file
+                .items
+                .first()
+                .is_some_and(|item| needs_test(item_attrs(item)));
+        if found != *test_only {
+            wrong.push(format!(
+                "  {attrs}: test-only {found}, expected {test_only}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "the test-only predicate is wrong for:\n{}",
+        wrong.join("\n")
+    );
+
+    // The consumers see it: `unsafe` behind `test-support` is not production, `unsafe` behind a
+    // cfg a production build can turn on is.
+    let source = "#[cfg(feature = \"test-support\")]\nfn a() { unsafe {} }\n\
+                  #[cfg(any(test, feature = \"other\"))]\nfn b() { unsafe {} }\n";
+    assert_eq!(Parsed::new(source).unsafe_keywords(), 1);
 }
