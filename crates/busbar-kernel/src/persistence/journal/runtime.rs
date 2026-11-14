@@ -164,10 +164,6 @@ impl RuntimeJournal {
             return Err(RuntimeError::Invalid);
         }
         let journal = StoreJournal::new(&store, node).map_err(RuntimeError::from)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: the one replay that builds the live head"
-        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -353,10 +349,6 @@ impl RuntimeJournal {
         budget: BufferBudget,
     ) -> std::result::Result<Vec<JournalRecord>, RuntimeError> {
         let journal = StoreJournal::new(&self.store, node).map_err(RuntimeError::from)?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "read-only history of a foreign node, off the live path"
-        )]
         let mut replay = journal
             .historical_replay()
             .await
@@ -593,20 +585,25 @@ impl RuntimeJournal {
     ///
     /// A `prior` proof of this node taken earlier in the same observation must
     /// be a prefix of the current verified head: same dataset, node and owner,
-    /// and no later sequence. Appends are guarded Absent-key writes by one
-    /// admitted owner, so records already read against `prior` remain in the
-    /// current history. A cold cutover, fence or epoch change fails admission.
+    /// and no later sequence. The originals appended after `prior` (only those)
+    /// are then read and must link to it and reproduce this owner's verified
+    /// head and original-byte seal exactly, so a forked, rewritten or damaged
+    /// tail refuses. A cold cutover, fence or epoch change fails admission.
     pub(crate) async fn confirm_live_owned(
         &self,
         prior: Option<&VerifiedHead>,
     ) -> std::result::Result<(), RuntimeError> {
         let _driver = self.driving.lock().await;
         let verified = self.live_head()?;
+        let journal = StoreJournal::new(&self.store, self.node).map_err(RuntimeError::from)?;
         if let Some(prior) = prior {
             prefix_of(prior, &verified)?;
+            journal
+                .confirm_extends(prior, &verified)
+                .await
+                .map_err(RuntimeError::from)?;
         }
-        StoreJournal::new(&self.store, self.node)
-            .map_err(RuntimeError::from)?
+        journal
             .confirm_owned(&verified)
             .await
             .map_err(RuntimeError::from)
