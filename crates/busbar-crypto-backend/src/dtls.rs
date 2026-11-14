@@ -20,12 +20,9 @@ use dimpl::crypto::{
     SupportedDtls13CipherSuite, SupportedKxGroup, TmpBuf,
 };
 use dimpl::{CryptoError, CryptoOperation};
-use foldhash::HashMap;
-use ring::aead::{self, LessSafeKey, UnboundKey};
-use ring::agreement::{self, EphemeralPrivateKey, UnparsedPublicKey};
-use ring::rand::{SecureRandom as _, SystemRandom};
-use ring::{digest, hmac, signature};
-use std::sync::{Arc, Mutex, OnceLock};
+use zeroize::Zeroizing;
+
+use crate::Error;
 
 /// What a key handle starts with; anything else is refused as a private key.
 const HANDLE_TAG: &[u8] = b"busbar-dtls-key-handle:";
@@ -33,7 +30,7 @@ const HANDLE_TAG: &[u8] = b"busbar-dtls-key-handle:";
 /// The random id a handle carries after [`HANDLE_TAG`]; the registry is keyed by it.
 type KeyId = [u8; 16];
 
-type KeyRegistry = Mutex<HashMap<KeyId, Arc<signature::EcdsaKeyPair>>>;
+type KeyRegistry = Mutex<HashMap<KeyId, Arc<EcdsaKeyPair>>>;
 
 fn key_registry() -> &'static KeyRegistry {
     static REGISTRY: OnceLock<KeyRegistry> = OnceLock::new();
@@ -48,15 +45,9 @@ fn key_id(handle: &[u8]) -> Option<KeyId> {
 }
 
 /// Park `pair` and answer the handle dimpl carries in its place.
-pub(crate) fn register_key(pair: Arc<signature::EcdsaKeyPair>) -> Result<Vec<u8>, CryptoError> {
+fn register_key(pair: Arc<EcdsaKeyPair>) -> Result<Vec<u8>, Error> {
     let mut id: KeyId = [0_u8; 16];
-    SystemRandom::new()
-        .fill(&mut id)
-        .map_err(|_| CryptoError::OperationFailed(CryptoOperation::FillRandom))?;
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "boot: dimpl carries the key handle owned; one is minted per session certificate"
-    )]
+    SystemRandom::new().fill(&mut id).map_err(|_| Error::Rng)?;
     let mut handle = HANDLE_TAG.to_vec();
     handle.extend_from_slice(&id);
     key_registry()
@@ -67,7 +58,7 @@ pub(crate) fn register_key(pair: Arc<signature::EcdsaKeyPair>) -> Result<Vec<u8>
 }
 
 /// Forget the key a handle names.
-pub(crate) fn unregister_key(handle: &[u8]) {
+fn unregister_key(handle: &[u8]) {
     let Some(id) = key_id(handle) else {
         return;
     };

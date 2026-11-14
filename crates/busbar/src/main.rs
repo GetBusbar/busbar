@@ -74,7 +74,7 @@ pub(crate) fn build_info_line() -> String {
 
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!("[error] {}", diagnostics::BOOT_FATAL_ERROR.coded(msg));
-    std::process::exit(1);
+    root::exit::exit(1);
 }
 
 /// [`die`] over a list: the coded head line, then one `  - <item>` line per error, each item
@@ -85,7 +85,7 @@ fn die_list<T: std::fmt::Display>(head: &str, items: impl IntoIterator<Item = T>
         out.push_str(&format!("\n  - {item}"));
     }
     eprintln!("{out}");
-    std::process::exit(1);
+    root::exit::exit(1);
 }
 
 const OPTION_IGNORE_OVERLAY: &str = "--ignore-overlay";
@@ -645,7 +645,7 @@ async fn run(
         let detail = match documents.take_debt() {
             Some(todos) => root::startup_upgrade::documents::explain_debt(
                 &todos,
-                root::cli::validate_judged(&config_path, providers_override.as_deref(), safe_mode)
+                root::cli::validate_judged(&config_path, providers_override.as_deref(), ignore_overlay)
                     .err()
                     .as_ref(),
                 &config_path,
@@ -919,13 +919,13 @@ async fn run(
         // Serving never reads a 1.5.5 file overlay: refuse while one holds un-imported settings.
         if let Some(legacy) = legacy_overlay.as_ref() {
             if let Err(line) =
-                root::overlay_migrate::admit_legacy(legacy, &anchor_store, safe_mode).await
+                root::overlay_migrate::admit_legacy(legacy, &anchor_store, ignore_overlay).await
             {
                 eprintln!("{line}");
-                std::process::exit(1);
+                root::exit::exit(1);
             }
         }
-        let overlay_doc = if safe_mode {
+        let overlay_doc = if ignore_overlay {
             None
         } else if let Some(store) = overlay_path.as_ref() {
             store

@@ -1453,3 +1453,138 @@ async fn definite_no_effect_with_transient_verify_keeps_pending() {
     recovery.persist(&event).await.unwrap();
     recovery.confirm_owned_checkpoint(&event).await.unwrap();
 }
+
+/// A candidate that puts or deletes a recovery selected-head row.
+fn selects_recovery_row(prepared: &PreparedCandidate) -> bool {
+    prepared
+        .candidate()
+        .mutations
+        .iter()
+        .any(|mutation| match mutation {
+            Mutation::Put { address, .. } | Mutation::Delete(address) => {
+                address.key.starts_with(&RECOVERY.0)
+            }
+            Mutation::DeleteRange { .. } => false,
+        })
+}
+
+/// `(operation id, expected selected-head bytes)` of every recovery-row
+/// selection the backend received, in order.
+fn recovery_selections(backend: &Backend, node: u64) -> Vec<([u8; 16], Vec<u8>)> {
+    let head = [b"busbar.journal4\0".as_slice(), &node.to_be_bytes(), b"H"].concat();
+    backend
+        .state
+        .lock()
+        .unwrap()
+        .sent
+        .iter()
+        .filter(|prepared| selects_recovery_row(prepared))
+        .map(|prepared| {
+            let candidate = prepared.candidate();
+            let expected = candidate
+                .predicates
+                .iter()
+                .find(|predicate| {
+                    predicate.address.key.len() == head.len() + 8
+                        && predicate.address.key.starts_with(&head)
+                })
+                .map(|predicate| match &predicate.expected {
+                    ExpectedValue::Absent => Vec::new(),
+                    ExpectedValue::Exact(value) => value.expose(&crate::seal::lend()).clone(),
+                })
+                .expect("a recovery selection pins the selected journal head");
+            (candidate.id.operation, expected)
+        })
+        .collect()
+}
+
+/// Drop a recovery `persist` while its selection candidate is parked in the
+/// backend, so the native crossing is cancelled with no backend effect.
+async fn cancel_parked_selection(
+    backend: &Backend,
+    recovery: &StoreRecovery,
+    event: &RecoveryEvent,
+) {
+    backend.park_selection.store(true, Ordering::SeqCst);
+    tokio::select! {
+        result = recovery.persist(event) => panic!("the parked selection must not return: {result:?}"),
+        _ = async {
+            while recovery_selections(backend, 7).is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        } => {}
+    }
+    assert_eq!(recovery_selections(backend, 7).len(), 1);
+}
+
+/// WHO: the recovery owner re-driving a selection whose crossing was cancelled.
+/// DOES: the proof it selects against is retained before any native claim, so
+/// the re-drive presents the exact same attempt (same operation id, same head
+/// predicate) even after another append moved the head.
+/// WHY: re-proving against the moved head would change the claim digest for the
+/// same operation id and wedge it as an operation conflict.
+#[tokio::test]
+async fn cancelled_recovery_selection_resumes_exact_attempt() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        cancel_parked_selection(&backend, &recovery, &event).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            live_append(&recovery.journal),
+        )
+        .await
+        .expect("a cancelled selection releases the journal's publication driver");
+        let refused = recovery.persist(&event).await.unwrap_err();
+        let selections = recovery_selections(&backend, 7);
+        assert_eq!(selections.len(), 2);
+        assert_eq!(
+            selections[1], selections[0],
+            "the re-drive presents the exact retained attempt"
+        );
+        // The cancelled crossing left the attempt uncertain; with the head
+        // moved the backend's condition conflict cannot resolve it.
+        let RecoveryError::Unavailable(why) = &refused else {
+            panic!("expected the retained-and-unconfirmed refusal, got {refused:?}");
+        };
+        assert!(
+            why.contains("recovery candidate remains retained and unconfirmed"),
+            "{why}"
+        );
+        assert!(!why.contains("Corrupt") && !why.contains("OperationConflict"));
+        let again = recovery.persist(&event).await.unwrap_err();
+        assert!(
+            matches!(&again, RecoveryError::Unavailable(why) if why.contains("recovery candidate remains retained and unconfirmed")),
+            "{again:?}"
+        );
+        assert_eq!(
+            recovery_selections(&backend, 7).len(),
+            2,
+            "a reconciling attempt is not resubmitted"
+        );
+    })
+    .await
+    .expect("no hang");
+}
+
+/// WHO: the recovery owner re-driving a cancelled selection whose head did
+/// not move. DOES: the exact retained attempt applies. WHY: a cancelled
+/// selection that can still apply must apply, exactly once.
+#[tokio::test]
+async fn cancelled_recovery_selection_without_append_applies() {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let backend = Arc::new(Backend::default());
+        let recovery = sink(Arc::new(attach(backend.clone(), 1).await), 7).await;
+        let event = intent();
+        cancel_parked_selection(&backend, &recovery, &event).await;
+        recovery.persist(&event).await.unwrap();
+        let selections = recovery_selections(&backend, 7);
+        assert_eq!(selections.len(), 2);
+        assert_eq!(selections[1], selections[0]);
+        assert!(recovery.state.lock().unwrap().pending.is_empty());
+        recovery.confirm_owned_checkpoint(&event).await.unwrap();
+    })
+    .await
+    .expect("no hang");
+}
