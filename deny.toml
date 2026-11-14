@@ -140,7 +140,7 @@ skip = [
     { crate = "windows-sys@0.52", reason = "follows ring's getrandom 0.2; windows only" },
     { crate = "syn@2", reason = "compile time only; the ecosystem is mid-migration to syn 3" },
     { crate = "hashbrown@0.15", reason = "petgraph (prost-build), build time only" },
-    { crate = "hashbrown@0.16", reason = "metrics-util (metrics-exporter-prometheus)" },
+    { crate = "hashbrown@0.16", reason = "metrics-util (the kernel's recency metrics registry)" },
     { crate = "foldhash@0.1", reason = "follows hashbrown 0.15 (petgraph, build time only)" },
     { crate = "rand_core@0.10", reason = "rand 0.10 via chacha20, forced by busbar-store-postgres's postgres-protocol; dist/default only" },
     # The RustCrypto 0.11 hash line. ed25519-dalek 3 (and, in dist/default, postgres-types) hash on

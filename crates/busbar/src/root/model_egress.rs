@@ -326,7 +326,7 @@ impl ModelServing {
                 ))
             })
             .collect();
-        members.sort_unstable_by_key(|(_, m)| m.index);
+        members.sort_by_key(|(_, m)| m.index);
         // busbar:expect(bp::state_scan, reason = "config: the lane count is read once, when probes are armed for a configuration")
         (self.lanes.values().max().map_or(0, |m| m + 1), members)
     }
