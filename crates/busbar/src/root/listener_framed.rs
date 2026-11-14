@@ -144,7 +144,7 @@ impl DataFramer {
 enum Op {
     Head {
         status: u32,
-        fields: Block,
+        fields: Vec<u8>,
         end: bool,
         done: oneshot::Sender<bool>,
     },
@@ -156,9 +156,29 @@ enum Op {
     },
 
     Trailers {
-        fields: Block,
+        fields: Vec<u8>,
         done: oneshot::Sender<bool>,
     },
+
+    /// A head whose field list the stream task moved to its connection, which encodes it into
+    /// its thread's reused block buffer: `timing` replaces every same-named field, written last.
+    FieldHead {
+        status: u32,
+        fields: busbar_kernel::plane_driver::HeadFields,
+        timing: Option<String>,
+        end: bool,
+        done: oneshot::Sender<bool>,
+    },
+
+    /// Trailers as a moved field list, encoded like [`Op::FieldHead`].
+    FieldTrailers {
+        fields: busbar_kernel::plane_driver::HeadFields,
+        done: oneshot::Sender<bool>,
+    },
+
+    /// A queued op already taken out of the middle of the pending queue: the slot it leaves, so
+    /// a take never shifts the queue. The queue's front is never `Taken`.
+    Taken,
 
     Admit {
         permit: Option<busbar_kernel::inbound::UpgradePermit>,
@@ -179,43 +199,43 @@ enum Op {
     },
 }
 
-/// A head or trailer block as a stream task hands it to its connection: one the operator adapter
-/// already encoded, or the moved field list the connection encodes into its reused block buffer.
-enum Block {
-    Encoded(Vec<u8>),
-    Fields {
-        fields: busbar_kernel::plane_driver::HeadFields,
-        /// A `Server-Timing` value that replaces every same-named field, written last.
-        timing: Option<String>,
-    },
+thread_local! {
+    /// The block a moved field list is encoded into for the framer, reused by every connection
+    /// this thread drives (the framer copies what it keeps before the call returns).
+    static BLOCK: std::cell::Cell<Vec<u8>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
-impl Block {
-    fn moved(fields: busbar_kernel::plane_driver::HeadFields) -> Self {
-        Block::Fields {
-            fields,
-            timing: None,
+/// A field list's wire block written into `block` (cleared first): a `Server-Timing` value
+/// replaces every same-named field and is written last.
+fn encode_fields(
+    block: &mut Vec<u8>,
+    fields: &busbar_kernel::plane_driver::HeadFields,
+    timing: Option<&str>,
+) {
+    let timing_name = busbar_kernel::router::ServerTiming::HEADER.as_bytes();
+    block.clear();
+    for (name, value) in fields {
+        if timing.is_none() || !name.eq_ignore_ascii_case(timing_name) {
+            put_field(block, name, value);
         }
     }
+    if let Some(value) = timing {
+        put_field(block, timing_name, value.as_bytes());
+    }
+}
 
-    /// The block's wire form: the encoded bytes, or the fields written into `scratch`.
-    fn encoded<'a>(&'a self, scratch: &'a mut Vec<u8>) -> &'a [u8] {
-        let (fields, timing) = match self {
-            Block::Encoded(block) => return block,
-            Block::Fields { fields, timing } => (fields, timing),
-        };
-        let timing_name = busbar_kernel::router::ServerTiming::HEADER.as_bytes();
-        scratch.clear();
-        for (name, value) in fields {
-            if timing.is_none() || !name.eq_ignore_ascii_case(timing_name) {
-                put_field(scratch, name, value);
-            }
-        }
-        if let Some(value) = timing {
-            put_field(scratch, timing_name, value.as_bytes());
-        }
-        scratch
-    }
+/// Hand `emit` the wire block of a moved field list, encoded into this thread's reused buffer.
+fn with_block<R>(
+    fields: &busbar_kernel::plane_driver::HeadFields,
+    timing: Option<&str>,
+    emit: impl FnOnce(&[u8]) -> R,
+) -> R {
+    // Taken, not borrowed: a nested use (never expected) encodes into a fresh buffer instead.
+    let mut block = BLOCK.take();
+    encode_fields(&mut block, fields, timing);
+    let r = emit(block.as_slice());
+    BLOCK.set(block);
+    r
 }
 
 fn put_field(block: &mut Vec<u8>, name: &[u8], value: &[u8]) {
@@ -244,7 +264,7 @@ impl Emitter {
         let (done, said) = oneshot::channel();
         let op = Op::Head {
             status,
-            fields: Block::Encoded(fields),
+            fields,
             end,
             done,
         };
@@ -258,14 +278,7 @@ impl Emitter {
 
     async fn trailers(&self, fields: Vec<u8>) -> bool {
         let (done, said) = oneshot::channel();
-        self.ask(
-            Op::Trailers {
-                fields: Block::Encoded(fields),
-                done,
-            },
-            said,
-        )
-        .await
+        self.ask(Op::Trailers { fields, done }, said).await
     }
 
     fn send(&self, op: Op) {
@@ -474,8 +487,6 @@ pub(super) async fn serve<I>(
         staged: None,
         prewire: false,
         full: HashSet::default(),
-        blocked: HashSet::default(),
-        block: Vec::new(),
         deadline: None,
         session: None,
         stopping: *stop.borrow(),
@@ -513,9 +524,7 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     tasks: tokio::task::JoinSet<()>,
     ops: mpsc::UnboundedReceiver<(u64, Op)>,
     tx: mpsc::UnboundedSender<(u64, Op)>,
-    /// Queued ops in arrival order. An op taken out of the middle leaves `None` behind, so a take
-    /// never shifts the queue; the front is kept live (never `None`).
-    pending: VecDeque<Option<(u64, Op)>>,
+    pending: VecDeque<(u64, Op)>,
 
     admission_tx: mpsc::UnboundedSender<busbar_kernel::plane_routes::SessionAdmission>,
     admissions: mpsc::UnboundedReceiver<busbar_kernel::plane_routes::SessionAdmission>,
@@ -523,10 +532,6 @@ struct Conn<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> {
     prewire: bool,
 
     full: HashSet<u64>,
-    /// `apply_front`'s per-pass set of streams whose earlier op waits, cleared per pass.
-    blocked: HashSet<u64>,
-    /// The head or trailer block a moved field list is encoded into, reused per op.
-    block: Vec<u8>,
     deadline: Option<Pin<Box<tokio::time::Sleep>>>,
     session: Option<Session>,
 
@@ -598,16 +603,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 self.abandon_stage();
             }
             while let Poll::Ready(Some(admission)) = self.admissions.poll_recv(cx) {
-                self.pending.push_back(Some((
+                self.pending.push_back((
                     admission.stream,
                     Op::Admit {
                         permit: admission.permit,
                         reply: admission.reply,
                     },
-                )));
+                ));
             }
             while let Poll::Ready(Some(op)) = self.ops.poll_recv(cx) {
-                self.pending.push_back(Some(op));
+                self.pending.push_back(op);
             }
             while let Poll::Ready(Some(_)) = self.tasks.poll_join_next(cx) {
                 moved = true;
@@ -1020,13 +1025,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                         inflow.refused = true;
                         inflow.body = None;
                         inflow.task.abort();
-                        self.pending.push_back(Some((
+                        self.pending.push_back((
                             piece.stream,
                             Op::Refuse {
                                 status: BODY_LIMIT_REFUSAL,
                                 head_sent: inflow.head_sent,
                             },
-                        )));
+                        ));
                         return;
                     }
                     inflow.received = received.expect("checked above");
@@ -1102,9 +1107,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 // Queue only the bounded refusal, never an overflow execution task. The
                 // StreamEnd below follows these messages in the same stream's FIFO.
                 let (done, _) = oneshot::channel();
-                out.send(Op::Head {
+                out.send(Op::FieldHead {
                     status: rendered.status,
-                    fields: Block::moved(rendered.fields),
+                    fields: rendered.fields,
+                    timing: None,
                     end: rendered.body.is_empty(),
                     done,
                 });
@@ -1196,20 +1202,25 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
     }
 
     fn apply_front(&mut self) -> Step {
-        self.blocked.clear();
+        let mut blocked = HashSet::default();
         let mut next = None;
         let framing = self.framing.as_ref();
-        for (index, entry) in self.pending.iter().enumerate() {
-            let Some((stream, op)) = entry else {
+        for (index, (stream, op)) in self.pending.iter().enumerate() {
+            if matches!(op, Op::Taken) {
                 continue;
-            };
+            }
             if self
                 .inflows
                 .get(stream)
                 .is_some_and(|inflow| inflow.refused)
                 && matches!(
                     op,
-                    Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. } | Op::Switch { .. }
+                    Op::Head { .. }
+                        | Op::FieldHead { .. }
+                        | Op::Data { .. }
+                        | Op::Trailers { .. }
+                        | Op::FieldTrailers { .. }
+                        | Op::Switch { .. }
                 )
             {
                 next = Some(index);
@@ -1223,10 +1234,16 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 break;
             }
             let waits = framing.is_some_and(|framing| framing.holds(*stream))
-                || matches!(op, Op::Head { .. } | Op::Data { .. } | Op::Trailers { .. })
-                    && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
-            if waits || self.blocked.contains(stream) {
-                self.blocked.insert(*stream);
+                || matches!(
+                    op,
+                    Op::Head { .. }
+                        | Op::FieldHead { .. }
+                        | Op::Data { .. }
+                        | Op::Trailers { .. }
+                        | Op::FieldTrailers { .. }
+                ) && (self.out.len() >= WRITE_ROOM || self.full.contains(stream));
+            if waits || blocked.contains(stream) {
+                blocked.insert(*stream);
                 continue;
             }
             next = Some(index);
@@ -1235,10 +1252,13 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         let Some(index) = next else {
             return Step::Wait;
         };
-        let Some((stream, op)) = self.pending.get_mut(index).and_then(Option::take) else {
+        // Take the op out of its slot without shifting the queue; the front stays live.
+        let Some((stream, slot)) = self.pending.get_mut(index) else {
             return Step::Wait;
         };
-        while matches!(self.pending.front(), Some(None)) {
+        let stream = *stream;
+        let op = std::mem::replace(slot, Op::Taken);
+        while matches!(self.pending.front(), Some((_, Op::Taken))) {
             self.pending.pop_front();
         }
         if self
@@ -1247,7 +1267,11 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             .is_some_and(|inflow| inflow.refused)
         {
             match op {
-                Op::Head { done, .. } | Op::Data { done, .. } | Op::Trailers { done, .. } => {
+                Op::Head { done, .. }
+                | Op::FieldHead { done, .. }
+                | Op::Data { done, .. }
+                | Op::Trailers { done, .. }
+                | Op::FieldTrailers { done, .. } => {
                     let _ = done.send(false);
                     return Step::Done;
                 }
@@ -1263,7 +1287,10 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
             self.stage_upgrade(stream, permit.as_ref(), reply);
             return Step::Done;
         }
-        if matches!(op, Op::Head { .. } | Op::Refuse { .. }) {
+        if matches!(
+            op,
+            Op::Head { .. } | Op::FieldHead { .. } | Op::Refuse { .. }
+        ) {
             self.staged.take();
         }
         let Some(framing) = self.framing.as_mut() else {
@@ -1271,13 +1298,32 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
         };
         match op {
             Op::Admit { .. } => unreachable!("admission is processed before the framing borrow"),
+            Op::Taken => unreachable!("a taken slot is skipped, never chosen"),
             Op::Head {
                 status,
                 fields,
                 end,
                 done,
             } => {
-                let r = framing.emit_head(stream, fields.encoded(&mut self.block), end, status);
+                let r = framing.emit_head(stream, &fields, end, status);
+                let ok = self.took(r);
+                if ok {
+                    if let Some(inflow) = self.inflows.get_mut(&stream) {
+                        inflow.head_sent = true;
+                    }
+                }
+                let _ = done.send(ok);
+            }
+            Op::FieldHead {
+                status,
+                fields,
+                timing,
+                end,
+                done,
+            } => {
+                let r = with_block(&fields, timing.as_deref(), |block| {
+                    framing.emit_head(stream, block, end, status)
+                });
                 let ok = self.took(r);
                 if ok {
                     if let Some(inflow) = self.inflows.get_mut(&stream) {
@@ -1292,7 +1338,12 @@ impl<I: AsyncRead + AsyncWrite + Unpin + Send + 'static> Conn<I> {
                 let _ = done.send(ok);
             }
             Op::Trailers { fields, done } => {
-                let r = framing.emit_trailers(stream, fields.encoded(&mut self.block));
+                let r = framing.emit_trailers(stream, &fields);
+                let ok = self.took(r);
+                let _ = done.send(ok);
+            }
+            Op::FieldTrailers { fields, done } => {
+                let r = with_block(&fields, None, |block| framing.emit_trailers(stream, block));
                 let ok = self.took(r);
                 let _ = done.send(ok);
             }
@@ -1618,9 +1669,10 @@ impl ActorCaller {
         // place of any same-named field (the connection writes it last when it encodes the block).
         let timing = busbar_kernel::router::ServerTiming::current_value();
         let (done, _) = oneshot::channel();
-        self.out.send(Op::Head {
+        self.out.send(Op::FieldHead {
             status,
-            fields: Block::Fields { fields, timing },
+            fields,
+            timing,
             end,
             done,
         });
@@ -1644,7 +1696,8 @@ impl busbar_kernel::plane_driver::SessionCaller for ActorCaller {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(body) = first {
-            return Some(body.to_vec());
+            // A uniquely held body hands over its allocation; a shared one is copied once.
+            return Some(Vec::from(body));
         }
         // Request-body completion does not close the response-side session.
         // Stream cancellation aborts its inflow task; connection closure drops the receiver.
@@ -1692,10 +1745,7 @@ impl crate::root::serve::neutral::Output for ActorCaller {
             return;
         }
         let (done, _) = oneshot::channel();
-        self.out.send(Op::Trailers {
-            fields: Block::moved(fields),
-            done,
-        });
+        self.out.send(Op::FieldTrailers { fields, done });
     }
 }
 
@@ -1735,11 +1785,18 @@ pub(in crate::root) async fn serve_admitted_body_test(
                     status: stated,
                     done,
                     ..
+                }
+                | Op::FieldHead {
+                    status: stated,
+                    done,
+                    ..
                 } => {
                     status = Some(stated);
                     let _ = done.send(true);
                 }
-                Op::Data { done, .. } | Op::Trailers { done, .. } => {
+                Op::Data { done, .. }
+                | Op::Trailers { done, .. }
+                | Op::FieldTrailers { done, .. } => {
                     let _ = done.send(true);
                 }
                 Op::Refuse { status: stated, .. } => {

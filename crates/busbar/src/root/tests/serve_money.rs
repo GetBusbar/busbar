@@ -1159,7 +1159,7 @@ fn session_custody_routes(g: &mut Governed, pools_plane: bool) -> Arc<super::Dat
         );
     }
     let mut lines = Vec::new();
-    let mut of_line = foldhash::HashMap::default();
+    let mut of_line = std::collections::HashMap::new();
     for (plane, served) in served.planes.iter().enumerate() {
         for (claim, snapshot) in served.snapshot.claims.iter().enumerate() {
             let claim = u32::try_from(claim).expect("fixture claim");

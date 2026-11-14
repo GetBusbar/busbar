@@ -1353,10 +1353,7 @@ async fn run(
             .into_iter()
             .map(|(model, lane)| (model.to_string(), lane))
             .collect(),
-        app: root::model_egress::LiveApp::new(
-            std::sync::Arc::clone(&door_live_handle),
-            std::sync::Arc::clone(&app),
-        ),
+        app: root::model_egress::LiveApp::new(std::sync::Arc::clone(&door_live_handle), &app),
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
@@ -1564,10 +1561,7 @@ async fn run(
                     .into_iter()
                     .map(|(model, lane)| (model.to_string(), lane))
                     .collect(),
-                app: root::model_egress::LiveApp::new(
-                    std::sync::Arc::clone(&live),
-                    std::sync::Arc::clone(next),
-                ),
+                app: root::model_egress::LiveApp::new(std::sync::Arc::clone(&live), next),
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
