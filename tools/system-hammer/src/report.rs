@@ -309,3 +309,15 @@ pub fn table(r: &RunReport) -> String {
     );
     out
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stem_part_is_char_safe_and_path_safe() {
+        assert_eq!(super::stem_part("abcdefghiéx", 10), "abcdefghi-");
+        assert_eq!(
+            super::stem_part("busbar 1.6/../x\n", 64),
+            "busbar-1.6-..-x-"
+        );
+    }
+}
