@@ -1067,6 +1067,24 @@ fn prepare_config_store_refusal_goes_through_store_boot_refusal() {
 }
 
 #[test]
+fn main_runs_the_crypto_self_test_before_anything_else() {
+    let source: String = include_str!("../main.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let head = concat!(
+        "fnmain(){",
+        "ifletErr(e)=busbar_contract::crypto::self_test(){",
+        "die(e);"
+    );
+    assert!(
+        source.contains(head),
+        "main must run crypto::self_test() first, before anything touches crypto, and refuse \
+         to boot on Err (#172: the FIPS backend's power-on self-test gates boot)"
+    );
+}
+
+#[test]
 fn store_boot_refusal_passes_the_inner_error_through_on_an_ordinary_boot() {
     let inner = "plugins.fetch failed:\n  - sha256 mismatch: expected 11, got 22 (not written)";
     assert_eq!(
