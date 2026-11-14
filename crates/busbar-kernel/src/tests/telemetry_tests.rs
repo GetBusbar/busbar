@@ -1080,3 +1080,99 @@ static TELEMETRY_MOUNTED_PHASE: crate::plane_driver::registry::PlaneDecl =
         resolve_provider: None,
         door: None,
     };
+
+/// OBSERVABILITY-HOT-PATH S3 (test 10): a full histogram buffer is parked for the maintenance
+/// thread, not replayed into the recorder on the request thread. A third full buffer on one slot,
+/// or one past the process-wide park budget, replays as before and is counted; after the tick the
+/// count and sum are what was recorded either way.
+#[test]
+fn a_full_histogram_buffer_parks_for_the_maintenance_thread_and_overflow_is_counted() {
+    const REPLAYS: &str = "busbar_telemetry_overflow_replays_total";
+    crate::snapshot::init_for_test(std::time::Duration::from_secs(3600));
+    let slot_for = |pool: &str| {
+        let slot = histogram_slot(
+            crate::snapshot::REQUEST_DURATION_SECONDS,
+            &[("ingress_protocol", "acme"), ("pool", pool)],
+        );
+        assert!(slot.is_valid(), "slot table must not be full in tests");
+        slot
+    };
+    let count_of = |pool: &str| {
+        metric_sum(
+            "busbar_request_duration_seconds_count",
+            &[("ingress_protocol", "acme"), ("pool", pool)],
+        )
+        .round() as u64
+    };
+    let sum_of = |pool: &str| {
+        metric_sum(
+            "busbar_request_duration_seconds_sum",
+            &[("ingress_protocol", "acme"), ("pool", pool)],
+        )
+    };
+    let fill = |slots: Vec<HistogramSlot>, buffers: usize| {
+        std::thread::spawn(move || {
+            for slot in slots {
+                for _ in 0..buffers * HIST_DRAIN_THRESHOLD {
+                    slot.record(0.5);
+                }
+            }
+            bank_internals::REQUEST_THREAD_RECORDS.with(std::cell::Cell::get)
+        })
+        .join()
+        .expect("the recording thread exits cleanly")
+    };
+    let buffer = HIST_DRAIN_THRESHOLD as u64;
+
+    // One full buffer: parked, so the request thread makes no recorder call.
+    let one = slot_for("tel-park-one-pool");
+    let replays0 = metric_sum(REPLAYS, &[]).round() as u64;
+    assert_eq!(
+        fill(vec![one], 1),
+        0,
+        "a full buffer must park for the maintenance thread, not replay on the request thread"
+    );
+    assert_eq!(count_of("tel-park-one-pool"), buffer);
+    assert!((sum_of("tel-park-one-pool") - 0.5 * buffer as f64).abs() < 1e-6);
+
+    // A third full buffer on one slot: two park, the third replays and is counted.
+    let three = slot_for("tel-park-three-pool");
+    assert_eq!(fill(vec![three], 3), buffer);
+    let replays1 = metric_sum(REPLAYS, &[]).round() as u64;
+    assert_eq!(replays1 - replays0, 1, "the one replay must be counted");
+    assert_eq!(count_of("tel-park-three-pool"), 3 * buffer);
+    assert!((sum_of("tel-park-three-pool") - 1.5 * buffer as f64).abs() < 1e-6);
+
+    // The 8 MiB budget holds 16 parked buffers: 8 slots x 2 park, the 17th buffer replays.
+    let pools: Vec<String> = (0..9)
+        .map(|i| format!("tel-park-budget-{i}-pool"))
+        .collect();
+    let slots: Vec<_> = pools.iter().map(|p| slot_for(p)).collect();
+    let (full, last) = slots.split_at(8);
+    let mut all = full.to_vec();
+    all.push(last[0]);
+    let replayed = std::thread::spawn(move || {
+        for slot in &all[..8] {
+            for _ in 0..2 * HIST_DRAIN_THRESHOLD {
+                slot.record(0.25);
+            }
+        }
+        for _ in 0..HIST_DRAIN_THRESHOLD {
+            all[8].record(0.25);
+        }
+        bank_internals::REQUEST_THREAD_RECORDS.with(std::cell::Cell::get)
+    })
+    .join()
+    .expect("the recording thread exits cleanly");
+    assert_eq!(replayed, buffer, "only the buffer past the budget replays");
+    let replays2 = metric_sum(REPLAYS, &[]).round() as u64;
+    assert_eq!(replays2 - replays1, 1, "the budget replay must be counted");
+    for (i, pool) in pools.iter().enumerate() {
+        let want = if i < 8 { 2 * buffer } else { buffer };
+        assert_eq!(
+            count_of(pool),
+            want,
+            "{pool}: every sample reaches the recorder"
+        );
+    }
+}
