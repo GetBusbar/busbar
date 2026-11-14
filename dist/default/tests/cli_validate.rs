@@ -1452,7 +1452,11 @@ fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
         .output()
         .expect("run busbar");
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(1), "boot refuses the bad key: {stderr}");
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "boot refuses the bad key: {stderr}"
+    );
     let lines: Vec<&str> = stderr.lines().collect();
     let notice = lines
         .iter()
@@ -1460,9 +1464,7 @@ fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
             line.starts_with(&ignored_notice("BUSBAR_WORKER_THREADS"))
                 && line.contains("advanced.worker_threads")
         })
-        .unwrap_or_else(|| {
-            panic!("boot must report the ignored BUSBAR_WORKER_THREADS: {stderr}")
-        });
+        .unwrap_or_else(|| panic!("boot must report the ignored BUSBAR_WORKER_THREADS: {stderr}"));
     let refusal_code = busbar_kernel::diagnostics::BOOT_FATAL_ERROR
         .banner()
         .to_string();
@@ -1481,9 +1483,17 @@ fn boot_reports_a_set_retired_worker_threads_variable_as_ignored() {
 #[test]
 fn validate_reports_each_retired_launch_variable_as_ignored() {
     const RETIRED: [(&str, &str, &str); 4] = [
-        ("BUSBAR_PROVIDERS", "/nonexistent/old.yaml", "providers_file"),
+        (
+            "BUSBAR_PROVIDERS",
+            "/nonexistent/old.yaml",
+            "providers_file",
+        ),
         ("BUSBAR_WORKER_THREADS", "4", "advanced.worker_threads"),
-        ("BUSBAR_UPSTREAM_HTTP1_ONLY", "", "advanced.upstream_http1_only"),
+        (
+            "BUSBAR_UPSTREAM_HTTP1_ONLY",
+            "",
+            "advanced.upstream_http1_only",
+        ),
         (
             "BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE",
             "1",
@@ -1514,7 +1524,11 @@ fn validate_reports_each_retired_launch_variable_as_ignored() {
         .banner()
         .to_string();
     let notices: Vec<&str> = stderr.lines().filter(|l| l.contains(&banner)).collect();
-    assert_eq!(notices.len(), RETIRED.len(), "one notice per variable: {stderr}");
+    assert_eq!(
+        notices.len(),
+        RETIRED.len(),
+        "one notice per variable: {stderr}"
+    );
     for (line, (name, _, key)) in notices.iter().zip(RETIRED) {
         assert!(
             line.starts_with(&ignored_notice(name)) && line.contains(key),
@@ -1531,7 +1545,10 @@ fn validate_reports_each_retired_launch_variable_as_ignored() {
 
     let (code, stderr) = run(&[]);
     assert_eq!(code, 0, "{stderr}");
-    assert!(!stderr.contains(&banner), "nothing set, nothing reported: {stderr}");
+    assert!(
+        !stderr.contains(&banner),
+        "nothing set, nothing reported: {stderr}"
+    );
 
     let (code, stderr) = run(&[("BUSBAR_PROVIDERS", "")]);
     assert_eq!(code, 0, "{stderr}");

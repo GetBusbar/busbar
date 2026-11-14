@@ -740,9 +740,10 @@ with the old deployment's environment and working directory before starting 1.6.
 old effective values into `providers_file:` and the corresponding `advanced` keys, preserving
 old precedence, false/empty upstream settings and worker-count fallback/capping. Launch-relative
 provider overrides become absolute paths. The `--providers` flag remains supported. Remove the
-retired variables from the launcher after conversion. **Breaking:** the old `config.overlay`
-file/boolean selector is refused by current parsing, and serving does not read
-`BUSBAR_CONFIG_OVERLAY`. One-time migration removes the field while preserving `config.locked`
+retired variables from the launcher after conversion. A retired variable that is still set is
+reported as BUSBAR-3029 ("set but ignored") at boot and by `--validate`; it has no effect.
+**Breaking:** the old `config.overlay` file/boolean selector is refused by current parsing, and
+serving does not read `BUSBAR_CONFIG_OVERLAY`. One-time migration removes the field while preserving `config.locked`
 and imports old file-overlay state; runtime configuration is persisted through Store.
 The obsolete `configuration.values.sections.config.legacy_overlay_configured` readback leaf
 is removed; `config.locked` remains the management policy. See [the migration guide](docs/migration-1.6.md).
