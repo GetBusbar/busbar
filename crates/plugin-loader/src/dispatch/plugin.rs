@@ -3277,6 +3277,7 @@ impl<K: Kind> Plugin<K> {
         );
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn targets_from_settings(&self) -> bool {
         self.inner.targets_from_settings
     }

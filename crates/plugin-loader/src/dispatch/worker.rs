@@ -2536,6 +2536,7 @@ impl Dispatcher {
         self.pool.env.runtime.get()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_services(
         config: DispatchConfig,
         provider: Arc<dyn HostServices>,

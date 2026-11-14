@@ -369,6 +369,7 @@ pub fn install_native_load_guard(guard: NativeLoadGuard) -> Result<(), &'static 
         .map_err(|_| "a native load guard is already installed")
 }
 
+#[cfg(any(test, feature = "test-support", feature = "pack"))]
 pub(crate) fn allow_standalone_path_load() -> Result<(), String> {
     if NATIVE_LOAD_GUARD.get().is_some() {
         return Err("this host requires a retained admitted archive before native loading; direct path loading is unavailable".into());
