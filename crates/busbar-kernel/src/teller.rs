@@ -350,25 +350,7 @@ pub fn run_unit<U: Units + ?Sized>(
     run: Run<'_>,
 ) -> Ended {
     let blocking = Blocking(units);
-    block_on(run_unit_async(kernel, units, ctx, run, &blocking))
-}
-
-fn block_on<T>(f: impl Future<Output = T>) -> T {
-    struct Unpark(std::thread::Thread);
-    impl std::task::Wake for Unpark {
-        fn wake(self: std::sync::Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
-    let mut cx = std::task::Context::from_waker(&waker);
-    let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            std::task::Poll::Ready(value) => break value,
-            std::task::Poll::Pending => std::thread::park(),
-        }
-    }
+    futures::executor::block_on(run_unit_async(kernel, units, ctx, run, &blocking))
 }
 
 pub async fn run_unit_async<U: Units + ?Sized, R: RouteAwait + Sync>(
