@@ -174,20 +174,29 @@ impl DataRoutes {
     ) -> (SessionDoor, Arrival) {
         let AdmittedContext {
             app,
-            head,
+            mut head,
             gov,
             consumed,
             ..
         } = context;
+        // The served head is this request's own copy: its fields move into the arrival rather
+        // than being copied again (SINGLE-PATH SP-A2). A field the arrival does not keep is wiped
+        // here, as the head's own drop would have wiped it.
+        let target = target_of(&head);
         let arrival = Arrival {
             claim,
-            method: head.method.as_bytes().to_vec(),
-            target: target_of(&head),
-            fields: head
-                .fields
-                .iter()
-                .filter(|(name, _)| keep_arrival_field(name.as_bytes()))
-                .map(|(name, value)| (name.as_bytes().to_vec(), value.clone()))
+            method: std::mem::take(&mut head.method).into_bytes(),
+            target,
+            fields: std::mem::take(&mut head.fields)
+                .into_iter()
+                .filter_map(|(name, mut value)| {
+                    if keep_arrival_field(name.as_bytes()) {
+                        Some((name.into_bytes(), value))
+                    } else {
+                        zeroize::Zeroize::zeroize(&mut value);
+                        None
+                    }
+                })
                 .collect(),
             body,
         };
@@ -228,7 +237,7 @@ impl DataRoutes {
         if rendered.body.is_empty() {
             caller.complete_head(rendered.status, rendered.fields);
         } else {
-            caller.head(rendered.status, rendered.fields);
+            caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
         }
         if !rendered.body.is_empty() && !caller.write(&rendered.body).await {
             admission.refuse(
@@ -401,6 +410,8 @@ impl DataRoutes {
                 if response.body.is_empty() {
                     caller.complete_head(response.status, response.fields);
                 } else {
+                    // lint-exempt(whole-body-states-length): `streams__sdp__calls` pins this
+                    // datagram whole response as chunked, pending the owner's ruling.
                     caller.head(response.status, response.fields);
                     let _ = caller.write_owned(response.body).await;
                 }
@@ -508,7 +519,7 @@ pub(crate) async fn render<C: Output>(caller: &C, rendered: Rendered) {
     if rendered.body.is_empty() {
         caller.complete_head(rendered.status, rendered.fields);
     } else {
-        caller.head(rendered.status, rendered.fields);
+        caller.head_whole(rendered.status, rendered.fields, rendered.body.len());
         let _ = caller.write(&rendered.body).await;
     }
 }
