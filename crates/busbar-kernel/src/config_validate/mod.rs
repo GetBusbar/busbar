@@ -1170,6 +1170,49 @@ fn priced_classes(
         .filter(|c| !d.fee_units.contains(c))
 }
 
+/// The refusal for lanes a PRESENT card does not name, with a paste-ready zero stub.
+/// `missing` is sorted (it comes from a BTreeSet), so the stub order is the 1.5.5 order.
+fn unnamed_lanes_refusal(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    missing: &[&str],
+) -> String {
+    let has = if missing.len() == 1 { " has" } else { "s have" };
+    if d.fallback {
+        let width = missing.iter().map(|m| m.len()).max().unwrap_or(0) + 1;
+        let stub: String = missing
+            .iter()
+            .map(|m| {
+                format!(
+                    "    {:width$} {{ input_utok: 0, output_utok: 0, cache_read_utok: 0, cache_write_utok: 0 }}\n",
+                    format!("{m}:")
+                )
+            })
+            .collect();
+        return format!(
+            "rate_card is present but {} configured model{has} no rate entry (rate_card is \
+             AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+             Paste these under rate_card and fill in your rates (micro-units per token):\n\n{stub}",
+            missing.len()
+        );
+    }
+    let zero = priced_classes(d)
+        .map(|c| format!("{c}: 0"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let stub: String = missing
+        .iter()
+        .map(|l| format!("    {l}: {{ units: {{ {zero} }} }}\n"))
+        .collect();
+    format!(
+        "{section}.rate_card is present but {n} {noun}{has} no rate entry (a present card is \
+         AUTHORITATIVE and COMPLETE: you either price nothing or price everything).\n\
+         Paste these under {section}.rate_card and fill in your rates:\n\n{stub}",
+        section = d.config_section,
+        n = missing.len(),
+        noun = d.subject_noun
+    )
+}
+
 fn validate_plane_card(
     d: &crate::plane_driver::registry::PlaneDeclaration,
     card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
@@ -1197,9 +1240,16 @@ fn validate_plane_card(
         .chain(on.iter().map(|(key, _)| key.as_str()))
         .filter(|key| split_plane_lane(key).0 == own && !split_plane_lane(key).1.is_empty())
         .collect();
+    let mut unnamed: Vec<&str> = Vec::new();
     for key in lanes {
         let lane = split_plane_lane(key).1;
         let rate = card.get(key);
+        // A present card is the whole card: a lane it does not name is a refusal in the money
+        // layer (LaneUnpriced -> 409 unpriced_class) for spend already served, so refuse it here.
+        if present && rate.is_none() {
+            unnamed.push(lane);
+            continue;
+        }
         let missing: Vec<_> = declared
             .clone()
             .filter(|class| {
@@ -1229,6 +1279,9 @@ fn validate_plane_card(
              (0 explicitly makes it free).",
             d.config_section, lane, missing.join(", "), pricing
         );
+    }
+    if !unnamed.is_empty() {
+        errors.push(unnamed_lanes_refusal(d, &unnamed));
     }
 
     let unknown: std::collections::BTreeSet<&str> = (on.iter())
@@ -1322,15 +1375,6 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 );
             }
         }
-
-        for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
-            if !cfg.models.contains_key(model) {
-                errors.push(format!(
-                    "rate_card names model '{model}', which is not defined under models: \
-                     (a rate entry is keyed by the CONFIG model name); remove it or fix the name"
-                ));
-            }
-        }
     }
 
     // Absence is advisory too: installed planes declare the classes, while their
@@ -1354,6 +1398,17 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     }
     for d in crate::plane_driver::registry::plane_decls() {
         validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
+    }
+    // After completeness, as 1.5.5 ordered it: the stub for unnamed models prints first.
+    if let Some(card) = cfg.rate_card.as_ref() {
+        for model in card.keys().filter(|k| !k.contains(PLANE_LANE_SEP)) {
+            if !cfg.models.contains_key(model) {
+                errors.push(format!(
+                    "rate_card names model '{model}', which is not defined under models: \
+                     (a rate entry is keyed by the CONFIG model name); remove it or fix the name"
+                ));
+            }
+        }
     }
 
     if cfg.per_request_fee < 0 {

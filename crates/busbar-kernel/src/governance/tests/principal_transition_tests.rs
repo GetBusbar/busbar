@@ -2426,3 +2426,12 @@ async fn native_startup_does_not_infer_principal_freshness_from_missing_records(
             .is_none()
     );
 }
+
+#[test]
+fn linked_product_digest_hashes_the_running_image() {
+    let path = std::env::current_exe().expect("test binary path");
+    let expected = hex::encode(Sha256::digest(
+        std::fs::read(path).expect("test binary bytes"),
+    ));
+    assert_eq!(executable_sha256().expect("running image digest"), expected);
+}

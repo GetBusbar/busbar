@@ -302,6 +302,7 @@ impl LoadedPersistence {
     }
 
     async fn submit<R: Request>(&self, request: R) -> Result<R::Value, Failure> {
+        busbar_contract::work_count::tally(busbar_contract::work_count::Work::StoreRoundTrip);
         let worker =
             self.next_worker.fetch_add(1, Ordering::Relaxed) % self.dispatcher.workers().max(1);
         let ticket = self.dispatcher.mint(worker).ok_or(Failure::Overloaded)?;

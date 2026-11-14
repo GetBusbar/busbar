@@ -918,9 +918,10 @@ pub struct DeployCfg {
     #[serde(default)]
     pub groups: std::collections::BTreeMap<String, GroupCfg>,
     /// The legacy model rate card. Plugins report quantities; the host
-    /// prices them by model and declared unit. Absent disables legacy usage-based pricing. Missing
-    /// entries or open-unit rates warn at validation and remain unpriced on a present card;
-    /// explicit zero rates are free. Usage quantities are retained independently of pricing.
+    /// prices them by model and declared unit. Absent disables legacy usage-based pricing. A
+    /// present card must name every configured model (boot, `--validate` and apply refuse
+    /// otherwise, with a paste-ready stub); a named model missing an open-unit rate warns and that
+    /// class stays unpriced on a present card; explicit zero rates are free. Usage quantities are retained independently of pricing.
     /// The numbers are ABSTRACT cost units (no currency, no FX).
     #[serde(default)]
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,

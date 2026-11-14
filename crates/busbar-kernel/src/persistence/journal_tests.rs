@@ -725,7 +725,8 @@ async fn shared_runtime_reserves_one_original_chain_and_unknown_keeps_exact_pref
         let state = backend.state.lock().unwrap();
         assert_eq!(state.sent[0].candidate().id, state.sent[1].candidate().id);
         assert_eq!(state.sent[0].fingerprint(), state.sent[1].fingerprint());
-        assert_eq!(state.sent.len(), 3);
+        // Both pending runs went out as one group; its exact replay applied both.
+        assert_eq!(state.sent.len(), 2);
     }
     let other = RuntimeJournal::open(
         store,
@@ -1296,4 +1297,145 @@ async fn verified_original_prefix_survives_append_without_granting_stale_selecti
         journal.read_verified_record(&proof, 1).await,
         Err(Error::Corrupt)
     ));
+}
+
+/// Group commit (WASTE-EXPORT-HOOKS change A): runs already pending when the
+/// driver takes its lock go to the store in one append, bounded by the store's
+/// scan limit (4 in `attach`), and a submitted group is replayed unchanged.
+async fn group_owner(backend: &Arc<Backend>) -> Arc<RuntimeJournal> {
+    let store = Arc::new(attach(backend.clone(), 4).await);
+    RuntimeJournal::open(
+        store,
+        7,
+        BufferBudget {
+            records: 64,
+            bytes: 64 * 1024,
+        },
+    )
+    .await
+    .unwrap()
+}
+fn stage(owner: &RuntimeJournal, count: u8) -> Vec<Arc<StagedRun>> {
+    (0..count)
+        .map(|n| {
+            owner
+                .stage_run(&[busbar_kernel_wal::Entry::new(
+                    RecordClass::Transaction,
+                    vec![n],
+                )])
+                .unwrap()
+        })
+        .collect()
+}
+fn appended(backend: &Backend) -> Vec<PreparedCandidate> {
+    std::mem::take(&mut backend.state.lock().unwrap().sent)
+}
+fn record_puts(candidate: &PreparedCandidate) -> usize {
+    candidate
+        .candidate()
+        .mutations
+        .iter()
+        .filter(
+            |m| matches!(m, Mutation::Put { address, .. } if address.key.get(24) == Some(&b'R')),
+        )
+        .count()
+}
+
+#[tokio::test]
+async fn drive_through_groups_pending_runs() {
+    let backend = Arc::new(Backend::default());
+    let owner = group_owner(&backend).await;
+    let runs = stage(&owner, 3);
+    appended(&backend);
+    owner.confirm(runs.last().unwrap()).await.unwrap();
+    let sent = appended(&backend);
+    assert_eq!(sent.len(), 1, "3 pending runs need one store append");
+    assert_eq!(record_puts(&sent[0]), 3);
+    assert!(runs.iter().all(|run| owner.is_confirmed(run).unwrap()));
+    assert_eq!(owner.pending_records(), 0);
+}
+
+#[tokio::test]
+async fn group_is_cut_at_the_store_scan_limit() {
+    let backend = Arc::new(Backend::default());
+    let owner = group_owner(&backend).await;
+    let runs = stage(&owner, 8);
+    appended(&backend);
+    owner.flush().await.unwrap();
+    let sent = appended(&backend);
+    assert_eq!(
+        sent.len(),
+        2,
+        "8 runs over a scan limit of 4 need two appends"
+    );
+    assert!(sent.iter().all(|append| record_puts(append) == 4));
+    assert!(runs.iter().all(|run| owner.is_confirmed(run).unwrap()));
+}
+
+#[tokio::test]
+async fn group_retry_after_uncertain_is_exact() {
+    let backend = Arc::new(Backend::default());
+    let owner = group_owner(&backend).await;
+    let first = stage(&owner, 3);
+    appended(&backend);
+    backend.lose_reply.store(true, Ordering::SeqCst);
+    assert_eq!(
+        owner.confirm(first.last().unwrap()).await,
+        Err(RuntimeError::Pending)
+    );
+    let later = stage(&owner, 2);
+    owner.confirm(later.last().unwrap()).await.unwrap();
+    let sent = appended(&backend);
+    assert_eq!(sent.len(), 3, "first group, its exact retry, the new group");
+    assert_eq!(sent[0].candidate().id, sent[1].candidate().id);
+    assert_eq!(sent[0].fingerprint(), sent[1].fingerprint());
+    assert_eq!(record_puts(&sent[1]), 3);
+    assert_eq!(record_puts(&sent[2]), 2);
+    assert!(first
+        .iter()
+        .chain(&later)
+        .all(|run| owner.is_confirmed(run).unwrap()));
+}
+
+#[tokio::test]
+async fn group_retry_after_cancel_is_exact() {
+    let backend = Arc::new(Backend::default());
+    let owner = group_owner(&backend).await;
+    let first = stage(&owner, 3);
+    appended(&backend);
+    backend.hang.store(true, Ordering::SeqCst);
+    let driving = tokio::spawn({
+        let (owner, run) = (owner.clone(), first.last().unwrap().clone());
+        async move { owner.confirm(&run).await }
+    });
+    while backend.state.lock().unwrap().sent.is_empty() {
+        tokio::task::yield_now().await;
+    }
+    driving.abort();
+    let _ = driving.await;
+    backend.hang.store(false, Ordering::SeqCst);
+    let later = stage(&owner, 2);
+    owner.confirm(later.last().unwrap()).await.unwrap();
+    let sent = appended(&backend);
+    assert_eq!(record_puts(&sent[0]), 3, "the cancelled group");
+    let fresh: Vec<_> = sent[1..]
+        .iter()
+        .filter(|append| append.candidate().id != sent[0].candidate().id)
+        .collect();
+    for replay in sent[1..]
+        .iter()
+        .filter(|append| append.candidate().id == sent[0].candidate().id)
+    {
+        assert_eq!(replay.fingerprint(), sent[0].fingerprint());
+    }
+    assert_eq!(
+        fresh.len(),
+        1,
+        "runs staged after the cancel form one group"
+    );
+    assert_eq!(record_puts(fresh[0]), 2);
+    assert!(first
+        .iter()
+        .chain(&later)
+        .all(|run| owner.is_confirmed(run).unwrap()));
 }

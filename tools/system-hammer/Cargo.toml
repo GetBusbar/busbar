@@ -1,0 +1,40 @@
+[package]
+name = "busbar-system-hammer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+publish = false
+license = "Apache-2.0"
+description = "Dev load tool: drives a real busbar binary (real plugins, every plane and kind) against in-process mock upstreams and reports rps, added latency, CPU per request, RSS and drift per scenario. A report, not a gate."
+
+# Its own workspace: a dev tool's dependencies (HDR histograms, a load driver, mock upstreams) stay
+# out of the product lock, the supply-chain audit and the architecture checks of the root
+# workspace. Run it from this directory: `cargo run -p busbar-system-hammer --release -- ...`.
+[workspace]
+
+[[bin]]
+name = "busbar-system-hammer"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "sync", "io-util"] }
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "http1", "http2"] }
+http-body-util = "0.1"
+http = "1"
+bytes = "1"
+hdrhistogram = { version = "7", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = { package = "serde_yaml_ng", version = "0.10" }
+ring = "0.17"
+base64 = "0.22"
+crc32fast = "1"
+libc = "0.2"
+# The mock's TLS listener (MCP cert_spki pins, https JWKS): ring only, as the product uses.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[profile.release]
+debug = "line-tables-only"
