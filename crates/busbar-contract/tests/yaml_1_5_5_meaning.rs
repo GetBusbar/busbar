@@ -141,10 +141,11 @@ fn duplicate_keys_are_refused_with_line_and_column() {
     assert_eq!(error.location().map(|l| l.line()), Some(2), "{error}");
 }
 
-/// Row 19: an application tag is refused, not silently dropped.
+/// Row 19: an application tag is accepted, as 1.5.5 accepted it; an untyped read gives the
+/// tagged node's value.
 #[test]
-fn application_tags_are_refused() {
-    assert!(yaml::from_str::<Value>("k: !Variant payload\n").is_err());
+fn application_tags_are_accepted() {
+    assert_eq!(tree("k: !Variant payload\n").at("k"), &text("payload"));
 }
 
 /// The tree keeps key order, after reading and after edits.
@@ -211,4 +212,27 @@ fn leading_zero_into_an_integer_field_reads_as_decimal_until_upstream_274() {
         mode: u32,
     }
     assert_eq!(yaml::from_str::<Mode>("mode: 0644\n").unwrap().mode, 644);
+}
+
+/// Tags are found anywhere in a document, keys included, for readers that must refuse or carry
+/// them; core-schema tags are not application tags.
+#[test]
+fn application_tags_are_found_wherever_they_are() {
+    assert_eq!(
+        yaml::first_application_tag("a: 1\nb: [x, {c: d}]\n").unwrap(),
+        None
+    );
+    assert_eq!(yaml::first_application_tag("a: !!str 1\n").unwrap(), None);
+    assert_eq!(
+        yaml::first_application_tag("a: {b: [x, !Deep y]}\n")
+            .unwrap()
+            .as_deref(),
+        Some("!Deep")
+    );
+    assert_eq!(
+        yaml::first_application_tag("!Key k: v\n")
+            .unwrap()
+            .as_deref(),
+        Some("!Key")
+    );
 }

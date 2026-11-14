@@ -93,6 +93,12 @@ fn normalize(
         return Err("configuration must be a YAML mapping".into());
     }
     check_tree(&before)?;
+    if yaml::first_application_tag(raw)
+        .map_err(|_| "configuration is not valid YAML".to_owned())?
+        .is_some()
+    {
+        return Err("configuration YAML tags are not supported".into());
+    }
     let decisions = required_security_decisions(&before);
     let detection = detection_yaml.unwrap_or(raw);
     if detection.len() > MAX_AUTHORED_BYTES {
