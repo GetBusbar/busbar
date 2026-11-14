@@ -1467,6 +1467,36 @@ fn a_non_fallback_planes_card_is_checked_per_lane_including_absent_cards() {
 }
 
 #[test]
+fn a_model_lane_the_card_leaves_out_is_refused_while_no_card_only_warns() {
+    let model = || serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap();
+    let mut cfg = make_root_cfg(
+        HashMap::new(),
+        [("m1".into(), model())].into(),
+        HashMap::new(),
+    );
+    cfg.rate_card = Some(card_yaml(
+        "m2: { input_utok: 1, units: { search_units: 0, images: 0 } }",
+    ));
+    let errors = validate_cost_metadata(&cfg, &[&FLAT_PLANE])
+        .expect_err("a present card that leaves model 'm1' out is refused");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("rate_card is present but") && e.contains("m1:")),
+        "the unnamed lane is refused: {errors:?}"
+    );
+
+    cfg.rate_card = None;
+    let (result, warnings) = capture_rate_warnings(|| validate_cost_metadata(&cfg, &[&FLAT_PLANE]));
+    assert!(result.is_ok(), "no card is advisory only: {result:?}");
+    assert!(
+        warnings
+            .contains("no rate card is configured for this plane; usage-based pricing is disabled"),
+        "{warnings}"
+    );
+}
+
+#[test]
 fn a_present_card_refuses_every_configured_lane_it_does_not_name() {
     let model = || serde_json::from_value(serde_json::json!({"provider": "standin"})).unwrap();
     let mut cfg = make_root_cfg(
