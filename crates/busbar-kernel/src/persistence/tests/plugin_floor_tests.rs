@@ -93,3 +93,27 @@ fn decimal_version_order_preserves_large_components_and_legacy_suffix_semantics(
     assert!(!version_at_least("1.2.2", "1.2.3"));
     assert!(!version_at_least("1.2.3", "malformed"));
 }
+
+#[tokio::test]
+async fn mixed_keys_set_holds_the_floor_at_its_lowest_member_across_restarts() {
+    let backend = Arc::new(Backend::default());
+    let owner = PluginFloor::new(Arc::new(attach(backend.clone()).await)).unwrap();
+    owner
+        .enforce_release_keys("host", &[7, 5], true)
+        .await
+        .unwrap();
+    assert_eq!(owner.release_keys_floor("host").await.unwrap(), 5);
+    owner
+        .enforce_release_keys("host", &[5, 7], true)
+        .await
+        .expect("a restart with an unchanged mixed set must not trip the keys floor");
+    owner
+        .enforce_release_keys("host", &[7], true)
+        .await
+        .unwrap();
+    assert_eq!(owner.release_keys_floor("host").await.unwrap(), 7);
+    assert!(owner
+        .enforce_release_keys("host", &[5, 7], false)
+        .await
+        .is_err());
+}

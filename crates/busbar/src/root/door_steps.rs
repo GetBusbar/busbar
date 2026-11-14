@@ -361,7 +361,7 @@ impl DoorPools {
             return true;
         }
 
-        if class == ROUTE_DIRECT && !self.has_entry(name) {
+        if class == ROUTE_DIRECT && !entry_known.unwrap_or_else(|| self.has_entry(name)) {
             return true;
         }
         let fallback = (class == ROUTE_POOL)
