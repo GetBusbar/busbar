@@ -70,8 +70,8 @@ impl ConsumedCredentials {
     /// Strip consumed carriers without imposing HTTP field syntax on the remaining head.
     pub(crate) fn strip_neutral(&self, head: &mut crate::inbound::Head) {
         use zeroize::Zeroize as _;
-        // busbar:expect(bp::state_scan, reason = "config: the carrier names are the configured credential headers, a fixed handful per chain")
         head.fields.retain_mut(|(name, value)| {
+            // busbar:expect(bp::state_scan, reason = "config: the carrier names are the configured credential headers, a fixed handful per chain")
             let keep = !self
                 .names
                 .iter()
