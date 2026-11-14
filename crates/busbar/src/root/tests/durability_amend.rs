@@ -288,13 +288,17 @@ async fn store_drained(book: &Arc<Mutex<Durability>>) {
     assert_eq!(journal.pending_records(), 0);
 }
 
+/// The size of one segment of the retired on-disk engine. Native history past it must survive a
+/// restart.
+const OLD_SEGMENT_BYTES: u64 = 64 * 1024 * 1024;
+
 async fn store_phase() {
     let core = crate::root::real_store::core().await;
     {
         let app = application(core.clone()).await;
         let book = store_boot(core.clone(), &app.amendments).await;
         access(&app, HOOK).await;
-        let pads = usize::try_from(busbar_kernel_wal::SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
+        let pads = usize::try_from(OLD_SEGMENT_BYTES).expect("fits") / PAD_BODY + 1;
         let runtime = book
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -315,7 +319,7 @@ async fn store_phase() {
             .expect("complete native history");
         let bytes: usize = records.iter().map(|record| record.body.len()).sum();
         assert!(
-            bytes > busbar_kernel_wal::SEGMENT_BYTES as usize,
+            bytes > OLD_SEGMENT_BYTES as usize,
             "native history exceeds the old memory-segment boundary"
         );
     }
