@@ -10,7 +10,7 @@ use crate::mock::{self, Mock};
 use crate::procstat;
 use crate::scenario::{self, CaseSpec, Listener, ReqSpec, Scenario, Step};
 use serde::Serialize;
-use serde_json::Value;
+use sonic_rs::{JsonContainerTrait as _, JsonValueTrait as _, Value};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -310,26 +310,26 @@ fn audience_token(signing_key_hex: &str, plain: &str, aud: &str) -> Result<Strin
     let rest = plain
         .strip_prefix("bbk_")
         .ok_or("the minted key is not a bbk_ key")?;
-    let claims: Value = serde_json::from_slice(
+    let claims: Value = sonic_rs::from_slice(
         &e.decode(rest.split('.').next().unwrap_or("").trim_end_matches('='))
             .map_err(|x| x.to_string())?,
     )
     .map_err(|x| x.to_string())?;
-    let mut out = serde_json::Map::new();
+    let mut out = sonic_rs::Object::new();
     for k in ["sub", "exp", "kid"] {
         out.insert(
-            k.into(),
+            k,
             claims
                 .get(k)
                 .cloned()
                 .ok_or(format!("the minted key carries no `{k}`"))?,
         );
     }
-    out.insert("a".into(), Value::String(aud.into()));
+    out.insert("a", aud);
     if let Some(g) = claims.get("g") {
-        out.insert("g".into(), g.clone());
+        out.insert("g", g.clone());
     }
-    let body = serde_json::to_vec(&Value::Object(out)).map_err(|x| x.to_string())?;
+    let body = sonic_rs::to_vec(&Value::from(out)).map_err(|x| x.to_string())?;
     let kp =
         ring::signature::Ed25519KeyPair::from_seed_unchecked(&seed).map_err(|x| x.to_string())?;
     Ok(format!(
@@ -355,7 +355,7 @@ fn service_account(token_uri: &str) -> Result<String, String> {
     }
     let pem = String::from_utf8_lossy(&out.stdout).into_owned();
     Ok(
-        serde_json::json!({"type": "service_account", "project_id": "hammer",
+        sonic_rs::json!({"type": "service_account", "project_id": "hammer",
         "private_key_id": "hammer", "private_key": pem,
         "client_email": "hammer@hammer.iam.gserviceaccount.com", "token_uri": token_uri})
         .to_string(),
@@ -398,10 +398,10 @@ fn run_steps(
                 if r.status != 200 && r.status != 201 {
                     return Err(format!("mint_key: {} {}", r.status, r.text()));
                 }
-                let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+                let v: Value = sonic_rs::from_slice(&r.body).map_err(|e| e.to_string())?;
                 let token = v
                     .get("token")
-                    .and_then(Value::as_str)
+                    .and_then(|t| t.as_str())
                     .ok_or(format!("mint_key: no token in {}", r.text()))?;
                 vars.insert(save_as.clone(), token.into());
             }
@@ -463,7 +463,7 @@ fn run_steps(
                     ));
                 }
                 if !save.is_empty() {
-                    let v: Value = serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+                    let v: Value = sonic_rs::from_slice(&r.body).map_err(|e| e.to_string())?;
                     for (var, field) in save {
                         let got = v
                             .get(field)
@@ -633,7 +633,7 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     vars.insert("MOCK_SPKI".into(), mock.spki_pin.clone());
     vars.insert(
         "MOCK_CA_PEM_JSON".into(),
-        serde_json::to_string(&mock.cert_pem).unwrap_or_default(),
+        sonic_rs::to_string(&mock.cert_pem).unwrap_or_default(),
     );
     vars.insert("WORK".into(), work.display().to_string());
     vars.insert("CARD_ISSUER_KEY".into(), mock::card_issuer_key());
@@ -838,16 +838,17 @@ fn run_case(
                 pct_us(&probe.latency, 0.99) - pct_us(&d.latency, 0.99),
             )
         });
-    let mut hits = serde_json::Map::new();
-    if let (Value::Object(after), Value::Object(before)) = (mock.stats.snapshot(), hits_before) {
+    let mut hits = sonic_rs::Object::new();
+    let after = mock.stats.snapshot();
+    if let (Some(after), Some(before)) = (after.as_object(), hits_before.as_object()) {
         for (k, v) in after {
-            if v.is_string() {
-                hits.insert(k, v);
+            if v.is_str() {
+                hits.insert(k, v.clone());
                 continue;
             }
-            let d = v.as_u64().unwrap_or(0) - before.get(&k).and_then(Value::as_u64).unwrap_or(0);
+            let d = v.as_u64().unwrap_or(0) - before.get(&k).and_then(|b| b.as_u64()).unwrap_or(0);
             if d > 0 {
-                hits.insert(k, d.into());
+                hits.insert(k, d);
             }
         }
     }
@@ -902,7 +903,7 @@ fn run_case(
             latency_us: Pcts::of(&b.latency),
             errors: b.errors.clone(),
         }),
-        mock_hits: Value::Object(hits),
+        mock_hits: Value::from(hits),
     }
 }
 
@@ -1048,7 +1049,7 @@ mod tests {
         let body = e
             .decode(t.trim_start_matches("bbk_").split('.').next().unwrap())
             .unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
+        let v: Value = sonic_rs::from_slice(&body).unwrap();
         assert_eq!(v["a"], "http://a/mcp");
         assert_eq!(v["g"], "grp");
     }

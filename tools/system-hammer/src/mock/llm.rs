@@ -11,7 +11,7 @@
 //! frames.
 
 use bytes::Bytes;
-use serde_json::{json, Value};
+use sonic_rs::{json, Value};
 
 pub const IN_TOK: i64 = 11;
 pub const OUT_TOK: i64 = 7;
@@ -176,7 +176,7 @@ impl Dialect {
 }
 
 fn j(v: &Value) -> Vec<u8> {
-    serde_json::to_vec(v).expect("json")
+    sonic_rs::to_vec(v).expect("json")
 }
 
 fn tool_args() -> Value {
@@ -544,7 +544,7 @@ mod tests {
         let b = Bodies::build(100, 4);
         for d in Dialect::ALL {
             let x = b.of(d);
-            let v: Value = serde_json::from_slice(&x.whole).unwrap();
+            let v: Value = sonic_rs::from_slice(&x.whole).unwrap();
             assert!(v.to_string().contains(MARKER), "{d:?}");
             assert!(
                 String::from_utf8_lossy(&x.tool).contains(TOOL_NAME),

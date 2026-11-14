@@ -366,7 +366,7 @@ fn main() {
         rep.binary.version.replace(' ', "-"),
         &rep.binary.git_sha[..rep.binary.git_sha.len().min(10)]
     );
-    match serde_json::to_string_pretty(&rep) {
+    match sonic_rs::to_string_pretty(&rep) {
         Ok(j) => match write_report(&a.out, &stem, &j, &table) {
             Ok((json_path, txt_path)) => {
                 eprintln!("report: {} and {}", json_path.display(), txt_path.display())

@@ -28,7 +28,7 @@ use http_body_util::BodyExt;
 use hyper::body::{Body, Frame, Incoming, SizeHint};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use llm::{Bodies, Dialect};
-use serde_json::{json, Value};
+use sonic_rs::{json, JsonValueTrait as _, Value, ValueRef};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -107,17 +107,14 @@ impl Stats {
         self.counts[r as usize].fetch_add(1, Ordering::Relaxed);
     }
     pub fn snapshot(&self) -> Value {
-        let mut m = serde_json::Map::new();
+        let mut m = sonic_rs::Object::new();
         for (r, name) in ROLES {
-            m.insert(
-                name.into(),
-                json!(self.counts[r as usize].load(Ordering::Relaxed)),
-            );
+            m.insert(name, self.counts[r as usize].load(Ordering::Relaxed));
         }
         if let Some(u) = self.unknown.lock().unwrap().clone() {
-            m.insert("unknown_last".into(), json!(u));
+            m.insert("unknown_last", u.as_str());
         }
-        Value::Object(m)
+        Value::from(m)
     }
 }
 
@@ -140,18 +137,18 @@ pub fn card_issuer_key() -> String {
 
 /// RFC 8785 canonical JSON for agent-card values.
 fn jcs(v: &Value) -> String {
-    match v {
-        Value::Object(m) => {
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            let parts: Vec<String> = keys
+    match v.as_ref() {
+        ValueRef::Object(m) => {
+            let mut pairs: Vec<(&str, &Value)> = m.iter().collect();
+            pairs.sort_by(|a, b| a.0.cmp(b.0));
+            let parts: Vec<String> = pairs
                 .iter()
-                .map(|k| format!("{}:{}", Value::String((*k).clone()), jcs(&m[*k])))
+                .map(|(k, x)| format!("{}:{}", Value::from(*k), jcs(x)))
                 .collect();
             format!("{{{}}}", parts.join(","))
         }
-        Value::Array(a) => format!("[{}]", a.iter().map(jcs).collect::<Vec<_>>().join(",")),
-        other => other.to_string(),
+        ValueRef::Array(a) => format!("[{}]", a.iter().map(jcs).collect::<Vec<_>>().join(",")),
+        _ => v.to_string(),
     }
 }
 
@@ -399,13 +396,13 @@ fn json_reply(v: &Value) -> Response<MockBody> {
 }
 
 fn rpc_id(body: &[u8]) -> (String, Value) {
-    let v: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let v: Value = sonic_rs::from_slice(body).unwrap_or_default();
     let m = v
         .get("method")
-        .and_then(Value::as_str)
+        .and_then(|x| x.as_str())
         .unwrap_or("")
         .to_string();
-    (m, v.get("id").cloned().unwrap_or(Value::Null))
+    (m, v.get("id").cloned().unwrap_or_default())
 }
 
 /// Answer `req`; `tls` says which listener it arrived on.
