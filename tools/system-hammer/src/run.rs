@@ -933,6 +933,7 @@ fn merged_errors(load: &Outcome, probe: &Outcome) -> BTreeMap<String, u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     /// SELFTEST (design mcp-issuer §3.4, §4): a case with `contains:` checks EVERY body, not one
     /// in 97, and fails on any miss. A local far end answers one body in a hundred without the
@@ -1049,7 +1050,7 @@ mod tests {
         let body = e
             .decode(t.trim_start_matches("bbk_").split('.').next().unwrap())
             .unwrap();
-        let v: Value = sonic_rs::from_slice(&body).unwrap();
+        let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["a"], "http://a/mcp");
         assert_eq!(v["g"], "grp");
     }
