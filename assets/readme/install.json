@@ -1,0 +1,32 @@
+{
+ "_generator": "assets/readme/install-sizes.py",
+ "images": {
+  "busbar": {
+   "image": "getbusbar/busbar:latest",
+   "platform": "linux/amd64",
+   "compressed_bytes": 6022218,
+   "compressed_mib": 5.74,
+   "compressed_mb": 6.02,
+   "layers": 3
+  },
+  "litellm": {
+   "image": "berriai/litellm:main-latest",
+   "platform": "linux/amd64",
+   "compressed_bytes": 378298760,
+   "compressed_mib": 360.77,
+   "compressed_mb": 378.3,
+   "layers": 21
+  }
+ },
+ "hand_measured": {
+  "note": "Not derivable from a registry manifest: these need a real install on a real machine. --check leaves them alone. Re-run the commands below and restamp measured_at when they move.",
+  "busbar_binary_mib": 12.39,
+  "busbar_binary_bytes": 12995472,
+  "busbar_binary_version": "1.5.3",
+  "busbar_binary_command": "website/metrics/measure.sh (release binary of the tagged artifact)",
+  "litellm_venv_mib": 558,
+  "litellm_venv_packages": 107,
+  "litellm_venv_command": "pip install 'litellm[proxy]' into a clean virtualenv",
+  "measured_at": "2026-08-13"
+ }
+}

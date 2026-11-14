@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "busbar-export-example-plugin"
+version = "1.5.0"
+publish = false            # internal TEST-support cdylib; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "A hermetic trivial kind:export plugin cdylib: declares it carries the metrics stream and drops every delivered batch. The first in-tree over-the-ABI coverage of the DynExport dlopen seam, mirroring busbar-secret-example-plugin's role for kind:secret."
+license = "Apache-2.0"
+
+[lib]
+# cdylib for the C ABI delivery; rlib is REQUIRED for `cargo test` to actually emit the cdylib
+# artifact at all when this crate has no in-crate #[test]s of its own — identical to
+# secret-example-plugin (see that crate's Cargo.toml comment). plugin-loader's tests dlopen the
+# real built cdylib and would silently find nothing under a scoped test run otherwise.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+busbar-plugin-sdk = { path = "../plugin-sdk" }

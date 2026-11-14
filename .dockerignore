@@ -4,5 +4,6 @@
 # failed when docker/config.yaml joined the Dockerfile without joining this list).
 *
 !binaries/
+!plugins/
 !providers.yaml
 !docker/
