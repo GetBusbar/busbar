@@ -21,6 +21,7 @@ const KEY_ID_BYTES: usize = 8;
 /// The exact bytes an ed25519 signature over one record's digest is computed over.
 #[must_use]
 pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
+    // busbar:expect(bp::fresh_buffer, reason = "error: only a digest longer than a SHA-256 in hex is framed here; sealing frames on the stack")
     let mut preimage = Vec::with_capacity(SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
     preimage.extend_from_slice(SIGNATURE_DOMAIN.as_bytes());
     preimage.push(0);
@@ -28,14 +29,37 @@ pub fn signing_preimage(digest_hex: &str) -> Vec<u8> {
     preimage
 }
 
+/// How long a record preimage over a SHA-256 in hex is: the domain, a NUL, and 64 characters.
+const RECORD_PREIMAGE_BYTES: usize = SIGNATURE_DOMAIN.len() + 1 + 64;
+
+/// Hand [`signing_preimage`]'s bytes to `use_it`, framed on the stack when the digest is a SHA-256
+/// in hex — which every digest this crate seals is.
+fn with_signing_preimage<R>(digest_hex: &str, use_it: impl FnOnce(&[u8]) -> R) -> R {
+    let len = SIGNATURE_DOMAIN.len() + 1 + digest_hex.len();
+    if len > RECORD_PREIMAGE_BYTES {
+        return use_it(&signing_preimage(digest_hex));
+    }
+    let mut preimage = [0u8; RECORD_PREIMAGE_BYTES];
+    preimage[..SIGNATURE_DOMAIN.len()].copy_from_slice(SIGNATURE_DOMAIN.as_bytes());
+    preimage[SIGNATURE_DOMAIN.len() + 1..len].copy_from_slice(digest_hex.as_bytes());
+    use_it(&preimage[..len])
+}
+
+/// How long a checkpoint preimage is: the domain, a NUL, and the body's SHA-256 in hex.
+pub const CHECKPOINT_PREIMAGE_BYTES: usize = CHECKPOINT_SIGNATURE_DOMAIN.len() + 1 + 64;
+
 /// The exact bytes a checkpoint signature is computed over.
 #[must_use]
-pub fn checkpoint_preimage(body: &[u8]) -> Vec<u8> {
-    let digest_hex = crate::digest::sha256_hex(body);
-    let mut preimage = Vec::with_capacity(CHECKPOINT_SIGNATURE_DOMAIN.len() + 1 + digest_hex.len());
-    preimage.extend_from_slice(CHECKPOINT_SIGNATURE_DOMAIN.as_bytes());
-    preimage.push(0);
-    preimage.extend_from_slice(digest_hex.as_bytes());
+pub fn checkpoint_preimage(body: &[u8]) -> [u8; CHECKPOINT_PREIMAGE_BYTES] {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = ring::digest::digest(&ring::digest::SHA256, body);
+    let mut preimage = [0u8; CHECKPOINT_PREIMAGE_BYTES];
+    let domain = CHECKPOINT_SIGNATURE_DOMAIN.len();
+    preimage[..domain].copy_from_slice(CHECKPOINT_SIGNATURE_DOMAIN.as_bytes());
+    for (i, byte) in digest.as_ref().iter().enumerate() {
+        preimage[domain + 1 + 2 * i] = HEX[usize::from(byte >> 4)];
+        preimage[domain + 2 + 2 * i] = HEX[usize::from(byte & 0x0f)];
+    }
     preimage
 }
 
@@ -131,15 +155,16 @@ fn nibble(c: u8) -> Result<u8, KeyError> {
 /// The identifier for one public key: the first [`KEY_ID_BYTES`] bytes of its SHA-256, in lowercase
 #[must_use]
 pub fn key_id_of(public_key: &VerifyingKey) -> String {
-    let digest = crate::digest::sha256_hex(public_key.as_bytes());
+    let mut digest = crate::digest::sha256_hex(public_key.as_bytes());
 
-    digest[..KEY_ID_BYTES * 2].to_string()
+    digest.truncate(KEY_ID_BYTES * 2);
+    digest
 }
 
 /// THE NODE'S AUDIT SIGNING KEY. The secret half never leaves this type.
 pub struct AuditSigningKey {
     inner: SigningKey,
-    key_id: String,
+    key_id: std::sync::Arc<str>,
 }
 
 /// PRINTS THE IDENTIFIER AND NOTHING ELSE.
@@ -157,7 +182,8 @@ impl AuditSigningKey {
     #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let inner = SigningKey::from_bytes(seed);
-        let key_id = key_id_of(&inner.verifying_key());
+        // busbar:expect(bp::into_alloc, reason = "config: the signing key is loaded once, when the node is configured")
+        let key_id = std::sync::Arc::from(key_id_of(&inner.verifying_key()));
         AuditSigningKey { inner, key_id }
     }
 
@@ -173,6 +199,11 @@ impl AuditSigningKey {
     #[must_use]
     pub fn key_id(&self) -> &str {
         &self.key_id
+    }
+
+    /// The key id, shared: every record this key signs names it without a copy.
+    pub(crate) fn key_id_shared(&self) -> std::sync::Arc<str> {
+        std::sync::Arc::clone(&self.key_id)
     }
 
     /// A 32-BYTE SECRET DERIVED FROM THIS KEY under `label`: HMAC-SHA256 keyed by the seed, over
@@ -199,7 +230,7 @@ impl AuditSigningKey {
     /// Sign one record's digest. The answer is 128 lowercase hex characters.
     #[must_use]
     pub fn sign_digest(&self, digest_hex: &str) -> String {
-        to_hex(&self.inner.sign(&signing_preimage(digest_hex)).to_bytes())
+        to_hex(&with_signing_preimage(digest_hex, |preimage| self.inner.sign(preimage)).to_bytes())
     }
 }
 
@@ -253,9 +284,10 @@ impl AuditVerifyingKey {
         let raw =
             from_hex_exact::<64>(signature_hex.trim()).map_err(|_| KeyError::MalformedSignature)?;
         let signature = ed25519_dalek::Signature::from_bytes(&raw);
-        self.inner
-            .verify_strict(&signing_preimage(digest_hex), &signature)
-            .map_err(|_| KeyError::BadSignature)
+        with_signing_preimage(digest_hex, |preimage| {
+            self.inner.verify_strict(preimage, &signature)
+        })
+        .map_err(|_| KeyError::BadSignature)
     }
 }
 
@@ -265,9 +297,24 @@ impl AuditVerifyingKey {
 /// key and a verifier reading a year of history needs all of them. Keys are only ever ADDED: a key
 /// removed from this set makes every record it signed unverifiable, which is indistinguishable from
 /// those records having been forged.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct AuditKeySet {
     keys: Vec<AuditVerifyingKey>,
+    /// Where each key sits in `keys`, by its identifier's bytes.
+    by_id: foldhash::HashMap<[u8; KEY_ID_BYTES * 2], usize>,
+}
+
+impl std::fmt::Debug for AuditKeySet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuditKeySet")
+            .field("keys", &self.keys)
+            .finish()
+    }
+}
+
+/// A key identifier as the fixed bytes the set indexes it by, or `None` for text no key has.
+fn id_bytes(key_id: &str) -> Option<[u8; KEY_ID_BYTES * 2]> {
+    key_id.as_bytes().try_into().ok()
 }
 
 impl AuditKeySet {
@@ -279,7 +326,11 @@ impl AuditKeySet {
 
     /// Add a key. A key already in the set is not added twice.
     pub fn insert(&mut self, key: AuditVerifyingKey) {
-        if !self.keys.iter().any(|k| k.key_id == key.key_id) {
+        let Some(id) = id_bytes(&key.key_id) else {
+            return;
+        };
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.by_id.entry(id) {
+            slot.insert(self.keys.len());
             self.keys.push(key);
         }
     }
@@ -287,7 +338,8 @@ impl AuditKeySet {
     /// The key one identifier names, if the set holds it.
     #[must_use]
     pub fn get(&self, key_id: &str) -> Option<&AuditVerifyingKey> {
-        self.keys.iter().find(|k| k.key_id == key_id)
+        let at = *self.by_id.get(&id_bytes(key_id)?)?;
+        self.keys.get(at)
     }
 
     /// Every key in the set, in the order they were added.
@@ -303,6 +355,7 @@ impl AuditKeySet {
             .map_err(|_| KeyError::MalformedSignature)?;
         let signature = ed25519_dalek::Signature::from_bytes(&raw);
         let preimage = checkpoint_preimage(body);
+        // busbar:expect(bp::state_scan, reason = "config: a checkpoint names no key, so each configured verifying key is tried")
         if self
             .keys
             .iter()

@@ -3,47 +3,64 @@
 
 //! THE THREE READS. What the node answers with; it never asks anyone anything.
 
+use std::fmt::Write as _;
+
 use crate::heads::SignedHead;
-use crate::recipe::{digest_fields, DigestField, DigestValue, DIGEST_RECIPE, DIGEST_RECIPE_V6};
+use crate::recipe::{visit_fields, FieldSink, DIGEST_RECIPE, DIGEST_RECIPE_V6};
 use crate::record::{AuditChain, AuditRecord};
 use crate::sign::{AuditKeySet, SIGNATURE_ALGORITHM, SIGNATURE_DOMAIN};
 
-/// Append one JSON string literal, escaped.
-fn push_json_string(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+/// Escapes text into a JSON string body as it is written.
+struct JsonEscaped<'a>(&'a mut String);
+
+impl std::fmt::Write for JsonEscaped<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        for c in s.chars() {
+            match c {
+                '"' => self.0.push_str("\\\""),
+                '\\' => self.0.push_str("\\\\"),
+                '\n' => self.0.push_str("\\n"),
+                '\r' => self.0.push_str("\\r"),
+                '\t' => self.0.push_str("\\t"),
+                '\u{08}' => self.0.push_str("\\b"),
+                '\u{0c}' => self.0.push_str("\\f"),
+                c if (c as u32) < 0x20 => {
+                    write!(self.0, "\\u{:04x}", c as u32)?;
+                }
+                c => self.0.push(c),
             }
-            c => out.push(c),
         }
+        Ok(())
     }
+}
+
+/// A JSON string, escaped.
+fn push_json_string(out: &mut String, s: &str) {
+    push_json_fmt(out, format_args!("{s}"));
+}
+
+/// A JSON string whose text is `value`, formatted and escaped as it is written.
+fn push_json_fmt(out: &mut String, value: std::fmt::Arguments<'_>) {
+    out.push('"');
+    let _ = JsonEscaped(out).write_fmt(value);
     out.push('"');
 }
 
-/// `"name":"value"`, escaped.
+/// `"name":"value"`.
 fn member_str(out: &mut String, name: &str, value: &str) {
     push_json_string(out, name);
     out.push(':');
     push_json_string(out, value);
 }
 
-/// `"name":<number>` — envelope positions and whole seconds only, never a recipe number.
+/// `"name":value`, the number bare.
 fn member_num(out: &mut String, name: &str, value: u64) {
     push_json_string(out, name);
     out.push(':');
-    out.push_str(&value.to_string());
+    let _ = write!(out, "{value}");
 }
 
-/// `"name":"value"` or `"name":null` — the shape every optional member takes.
+/// `"name":"value"` or `"name":null`.
 fn member_opt(out: &mut String, name: &str, value: Option<&str>) {
     push_json_string(out, name);
     out.push(':');
@@ -53,37 +70,130 @@ fn member_opt(out: &mut String, name: &str, value: Option<&str>) {
     }
 }
 
-/// The repeated groups, as `(count field, group name)`.
+/// The count fields whose following fields the range read nests, and the array each goes under.
 const GROUPS: &[(&str, &str)] = &[
     ("lines_count", "lines"),
     ("hooks_count", "hooks"),
     ("children_count", "children"),
 ];
 
-/// ONE RECORD, rendered as the fields its digest ate, plus the digest and the signature.
-fn push_record(out: &mut String, record: &AuditRecord) {
-    out.push('{');
-    let fields = digest_fields(record);
-    let mut i = 0;
-    let mut first = true;
-    while i < fields.len() {
-        let field = &fields[i];
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        push_json_string(out, field.name);
-        out.push(':');
-        push_value(out, &field.value);
-        i += 1;
+/// The array a count field opened, as the range read is filling it.
+struct OpenGroup {
+    /// The array's name: `lines` carries `lines[]` and `lines[].<member>`.
+    group: &'static str,
+    /// The field name every element starts with: the first one seen.
+    first_member: Option<&'static str>,
+    /// Whether an element object is open.
+    in_object: bool,
+    /// How many elements have been written.
+    elements: usize,
+}
 
-        if let Some((_, group)) = GROUPS.iter().find(|(count, _)| *count == field.name) {
-            out.push(',');
-            push_json_string(out, group);
-            out.push(':');
-            i = push_group(out, &fields, i, group);
+/// Prints a record's digest fields as the range read's JSON object, nesting each group's fields.
+struct JsonFields<'a> {
+    out: &'a mut String,
+    first: bool,
+    open: Option<OpenGroup>,
+}
+
+impl JsonFields<'_> {
+    /// Write one field value: every value goes out as a JSON string.
+    fn value(&mut self, value: std::fmt::Arguments<'_>) {
+        push_json_fmt(self.out, value);
+    }
+
+    /// Route one field: into the open group when it belongs there, else at the top level.
+    fn field(&mut self, name: &'static str, value: std::fmt::Arguments<'_>) {
+        if let Some(open) = &mut self.open {
+            let member = name
+                .strip_prefix(open.group)
+                .and_then(|rest| rest.strip_prefix("[]"))
+                .filter(|rest| rest.is_empty() || rest.starts_with('.'));
+            let starts_element = open.first_member.is_none_or(|first| first == name);
+            if let Some(rest) =
+                member.filter(|rest| starts_element || (open.in_object && !rest.is_empty()))
+            {
+                if starts_element {
+                    open.first_member = Some(name);
+                    if open.in_object {
+                        self.out.push('}');
+                        open.in_object = false;
+                    }
+                    if open.elements > 0 {
+                        self.out.push(',');
+                    }
+                    open.elements += 1;
+                    if rest.is_empty() {
+                        self.value(value);
+                        return;
+                    }
+                    self.out.push('{');
+                    open.in_object = true;
+                } else {
+                    self.out.push(',');
+                }
+                push_json_string(self.out, &rest[1..]);
+                self.out.push(':');
+                self.value(value);
+                return;
+            }
+            self.close_group();
+        }
+        if !self.first {
+            self.out.push(',');
+        }
+        self.first = false;
+        push_json_string(self.out, name);
+        self.out.push(':');
+        self.value(value);
+        if let Some((_, group)) = GROUPS.iter().find(|(count, _)| *count == name) {
+            self.out.push(',');
+            push_json_string(self.out, group);
+            self.out.push_str(":[");
+            self.open = Some(OpenGroup {
+                group,
+                first_member: None,
+                in_object: false,
+                elements: 0,
+            });
         }
     }
+
+    /// End the open group's array, and its last element object.
+    fn close_group(&mut self) {
+        if let Some(open) = self.open.take() {
+            if open.in_object {
+                self.out.push('}');
+            }
+            self.out.push(']');
+        }
+    }
+}
+
+impl FieldSink for JsonFields<'_> {
+    fn text(&mut self, name: &'static str, value: &str) {
+        self.field(name, format_args!("{value}"));
+    }
+
+    fn text_fmt(&mut self, name: &'static str, value: std::fmt::Arguments<'_>) {
+        self.field(name, value);
+    }
+
+    fn num(&mut self, name: &'static str, value: u64) {
+        self.field(name, format_args!("{value}"));
+    }
+}
+
+/// One record as the range read prints it: the digest fields, grouped, then the seal.
+fn push_record(out: &mut String, record: &AuditRecord) {
+    out.push('{');
+    let mut fields = JsonFields {
+        out,
+        first: true,
+        open: None,
+    };
+    visit_fields(record, &mut fields);
+    fields.close_group();
     out.push(',');
     member_str(out, "hash", &record.hash);
     out.push(',');
@@ -94,60 +204,6 @@ fn push_record(out: &mut String, record: &AuditRecord) {
     out.push(',');
     member_str(out, "recipe", record.recipe.name());
     out.push('}');
-}
-
-/// One repeated group as a JSON array, from the flat recipe. Returns where the group ended.
-fn push_group(out: &mut String, fields: &[DigestField], mut i: usize, group: &str) -> usize {
-    let scalar = format!("{group}[]");
-    let member_prefix = format!("{group}[].");
-    out.push('[');
-    let mut elements = 0;
-    let first_member = fields
-        .get(i)
-        .map(|f| f.name)
-        .filter(|n| *n == scalar || n.starts_with(&member_prefix));
-    while let Some(field) = fields.get(i) {
-        if Some(field.name) != first_member {
-            break;
-        }
-        if elements > 0 {
-            out.push(',');
-        }
-        elements += 1;
-        if field.name == scalar {
-            push_value(out, &field.value);
-            i += 1;
-            continue;
-        }
-        out.push('{');
-        let mut members = 0;
-        while let Some(member) = fields.get(i) {
-            if !member.name.starts_with(&member_prefix)
-                || (members > 0 && Some(member.name) == first_member)
-            {
-                break;
-            }
-            if members > 0 {
-                out.push(',');
-            }
-            members += 1;
-            push_json_string(out, &member.name[member_prefix.len()..]);
-            out.push(':');
-            push_value(out, &member.value);
-            i += 1;
-        }
-        out.push('}');
-    }
-    out.push(']');
-    i
-}
-
-/// One recipe value, as JSON. Text is a string; a number is its canonical decimal text in a string
-fn push_value(out: &mut String, value: &DigestValue) {
-    match value {
-        DigestValue::Text(s) => push_json_string(out, s),
-        DigestValue::Num(n) => push_json_string(out, &n.to_string()),
-    }
 }
 
 /// One head, as JSON.
@@ -181,7 +237,7 @@ pub fn head_body(chain: &AuditChain) -> String {
     push_json_string(&mut out, "head");
     out.push(':');
     match chain.heads().tip() {
-        Some(head) => push_head(&mut out, head),
+        Some(head) => push_head(&mut out, &head),
         None => out.push_str("null"),
     }
     out.push('}');
@@ -225,7 +281,7 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
     out.push(',');
     push_json_string(&mut out, "records");
     out.push(':');
-    out.push_str(&range_records_body(records, from, to));
+    push_records(&mut out, records, from, to);
     out.push('}');
     out
 }
@@ -233,17 +289,23 @@ pub fn range_body(chain: &AuditChain, records: &[AuditRecord], from: u64, to: u6
 /// The records of a bounded range, using the same lossless digest-field wire format.
 #[must_use]
 pub fn range_records_body(records: &[AuditRecord], from: u64, to: u64) -> String {
-    let mut out = String::from("[");
+    let mut out = String::new();
+    push_records(&mut out, records, from, to);
+    out
+}
+
+/// Write the records of a bounded range as a JSON array onto `out`.
+fn push_records(out: &mut String, records: &[AuditRecord], from: u64, to: u64) {
+    out.push('[');
     let mut first = true;
     for record in records.iter().filter(|r| r.seq >= from && r.seq <= to) {
         if !first {
             out.push(',');
         }
         first = false;
-        push_record(&mut out, record);
+        push_record(out, record);
     }
     out.push(']');
-    out
 }
 
 /// THE KEY-SET READ: the public keys, so nothing is taken on trust out of band.

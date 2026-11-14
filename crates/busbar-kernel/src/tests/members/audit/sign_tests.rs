@@ -10,9 +10,10 @@ use busbar_contract::{
     ClassDirection,
 };
 
+use super::digest_fields;
 use busbar_kernel_audit::expose;
 use busbar_kernel_audit::heads::{HeadHistory, HEAD_SAMPLE_SECONDS};
-use busbar_kernel_audit::recipe::{digest_fields, digest_over, DigestValue};
+use busbar_kernel_audit::recipe::{digest_over, DigestValue};
 use busbar_kernel_audit::record::{
     Audit, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass, HookApplied, HookHead,
     OpClassId, OutcomeFacts, QuantitySource, Subject, Usage, UsageLine, What,
@@ -749,7 +750,7 @@ fn the_legacy_v4_worked_example_keeps_its_exact_record_hash_and_signature() {
     };
     record.hash = AuditChain::digest_of(&record);
     record.signature = Some(signer().sign_digest(&record.hash));
-    record.key_id = Some(signer().key_id().to_owned());
+    record.key_id = Some(signer().key_id().into());
     let chain = AuditChain::resume(std::slice::from_ref(&record));
     let mut keys = AuditKeySet::new();
     keys.insert(AuditVerifyingKey::from_hex(&signer().public_key_hex()).expect("a public key"));
@@ -817,7 +818,7 @@ fn the_worked_examples_preimage_is_the_length_the_spec_quotes() {
     };
     record.hash = AuditChain::digest_of(&record);
     record.signature = Some(signer().sign_digest(&record.hash));
-    record.key_id = Some(signer().key_id().to_owned());
+    record.key_id = Some(signer().key_id().into());
     let framed: usize = digest_fields(&record)
         .iter()
         .map(|f| {

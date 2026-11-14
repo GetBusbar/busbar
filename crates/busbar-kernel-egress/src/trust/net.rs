@@ -75,8 +75,22 @@ pub fn redact_userinfo(url: &str) -> String {
     };
     let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     match rest[..authority_end].rfind('@') {
-        Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
-        None => url.to_string(),
+        Some(at) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refusal repeats the URL with its credential redacted"
+            )]
+            let redacted = format!("{prefix}<redacted>@{}", &rest[at + 1..]);
+            redacted
+        }
+        None => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a refusal repeats the URL it refused"
+            )]
+            let repeated = url.to_string();
+            repeated
+        }
     }
 }
 
@@ -95,7 +109,14 @@ pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
 fn scheme_of(url: &str) -> String {
     match url.split_once(':') {
-        Some((s, _)) if !s.is_empty() && !s.contains('/') => s.to_ascii_lowercase(),
+        Some((s, _)) if !s.is_empty() && !s.contains('/') => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the refusal names the scheme a URL claimed"
+            )]
+            let scheme = s.to_ascii_lowercase();
+            scheme
+        }
         _ => String::new(),
     }
 }
@@ -117,10 +138,10 @@ pub fn default_port(https: bool) -> u16 {
 /// denylist of any size re-did the whole parse for every candidate of every dial. It is done here,
 /// where the list is stated, and a judgement is then a scan over values already in their final form.
 #[derive(Debug, Default, Clone)]
-struct HostSet {
+struct HostSet<'a> {
     /// Hostname (and verbatim) entries, trimmed, trailing dots dropped, lowercased. Empty and
     /// whitespace-only entries are not kept, so they can never match.
-    names: Vec<String>,
+    names: Vec<std::borrow::Cow<'a, str>>,
     /// The entries that are IPv4 literals, parsed.
     v4: Vec<std::net::Ipv4Addr>,
     /// The entries that are IPv6 literals, parsed.
@@ -140,9 +161,9 @@ pub fn list_entry_host(entry: &str) -> Result<std::borrow::Cow<'_, str>, UrlRefu
     Ok(mapped)
 }
 
-impl HostSet {
+impl<'a> HostSet<'a> {
     /// Canonicalize a list of operator-written entries, each read as a target's host is
-    fn parse(entries: &[String]) -> Self {
+    fn parse(entries: &'a [String]) -> Self {
         let mut set = HostSet::default();
         for entry in entries {
             let Ok(mapped) = list_entry_host(entry) else {
@@ -151,7 +172,15 @@ impl HostSet {
             if judged_host(&mapped).is_err() {
                 continue;
             }
-            let norm = mapped.trim_end_matches('.');
+            let norm = match mapped {
+                std::borrow::Cow::Borrowed(text) => {
+                    std::borrow::Cow::Borrowed(text.trim_end_matches('.'))
+                }
+                std::borrow::Cow::Owned(mut text) => {
+                    text.truncate(text.trim_end_matches('.').len());
+                    std::borrow::Cow::Owned(text)
+                }
+            };
             if norm.is_empty() {
                 continue;
             }
@@ -160,7 +189,7 @@ impl HostSet {
             } else if let Ok(v6) = norm.parse::<std::net::Ipv6Addr>() {
                 set.v6.push(v6);
             }
-            set.names.push(norm.to_ascii_lowercase());
+            set.names.push(norm);
         }
         set
     }
@@ -178,6 +207,7 @@ impl HostSet {
             return false;
         }
 
+        // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
         if self.names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
             return true;
         }
@@ -187,15 +217,18 @@ impl HostSet {
         }
 
         if let Some(expanded) = expand_alternate_ipv4(host) {
+            // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
             if self.v4.contains(&expanded) {
                 return true;
             }
         }
 
+        // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
         match host.parse::<IpAddr>() {
             Ok(IpAddr::V4(v4)) => self.v4.contains(&v4),
             Ok(IpAddr::V6(v6)) => {
                 let embedded = embedded_ipv4(&v6);
+                // busbar:expect(bp::state_scan, reason = "config: the operator's own allow or block list, a handful of hosts")
                 self.v6.contains(&v6) || embedded.is_some_and(|m| self.v4.contains(&m))
             }
             Err(_) => false,
@@ -229,25 +262,24 @@ fn judge_against_lists(
     use std::net::IpAddr;
 
     let host = extract_normalized_host(url).or_else(|| extract_normalized_authority_host(url))?;
-    let host = host.as_str();
 
-    if allow_overrides.matches(host) {
+    if allow_overrides.matches(&host) {
         return None;
     }
 
-    if METADATA_HOSTS.iter().any(|m| m.eq_ignore_ascii_case(host)) {
-        return Some(host.to_string());
+    if METADATA_HOSTS.iter().any(|m| m.eq_ignore_ascii_case(&host)) {
+        return Some(host);
     }
 
-    if extra_blocked.matches(host) {
-        return Some(host.to_string());
+    if extra_blocked.matches(&host) {
+        return Some(host);
     }
 
     host.parse::<IpAddr>()
         .ok()
-        .or_else(|| expand_alternate_ipv4(host).map(IpAddr::V4))
+        .or_else(|| expand_alternate_ipv4(&host).map(IpAddr::V4))
         .filter(ip_is_cloud_metadata)
-        .map(|_| host.to_string())
+        .map(|_| host)
 }
 
 impl std::fmt::Debug for AddressRefusal {

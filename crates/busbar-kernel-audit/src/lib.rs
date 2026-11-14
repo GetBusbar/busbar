@@ -35,13 +35,13 @@ mod wiped;
 
 pub use amend::{
     content_access, Access, Adjust, AmendBody, AmendChain, AmendClass, AmendJournal, AmendSink,
-    Amendment, ClassCounts, NodeAmendments, Reader, AMENDMENTS_RETAINED,
+    Amendment, ClassCounts, NodeAmendments, Reader, SubjectText, AMENDMENTS_RETAINED,
 };
 pub use heads::{HeadHistory, SignedHead, HEAD_SAMPLE_SECONDS};
 pub use journal::{from_journal_body, journal_body, FieldTooLong, JOURNAL_TAG};
 pub use recipe::{
-    digest_fields, digest_over, DigestField, DigestValue, Recipe, DIGEST_RECIPE, DIGEST_RECIPE_V2,
-    DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
+    digest_over, digest_record, visit_fields, DigestField, DigestValue, FieldSink, Recipe,
+    DIGEST_RECIPE, DIGEST_RECIPE_V2, DIGEST_RECIPE_V4, DIGEST_RECIPE_V6,
 };
 pub use record::{
     Audit, AuditBreak, AuditBreakKind, AuditChain, AuditInputs, AuditRecord, Controls, FinishClass,

@@ -62,11 +62,11 @@ pub struct Record {
 
 impl Record {
     /// A record with the given identity and body.
-    pub fn new(node: u64, node_seq: u64, body: impl Into<Vec<u8>>) -> Self {
+    pub fn new(node: u64, node_seq: u64, body: Vec<u8>) -> Self {
         Record {
             node,
             node_seq,
-            body: body.into(),
+            body,
         }
     }
 
@@ -91,26 +91,40 @@ impl Record {
 
     /// Frame this record as a group commit puts it down: when `opens_commit`, its first frame is
     pub fn encode_in_commit(&self, opens_commit: bool) -> Vec<[u8; FRAME_BYTES]> {
-        let parts = self.frame_count();
-        let mut frames = Vec::with_capacity(parts);
-        for index in 0..parts {
-            let start = index * FRAME_PAYLOAD_BYTES;
-            let end = usize::min(start + FRAME_PAYLOAD_BYTES, self.body.len());
-            let payload = if start < self.body.len() {
-                &self.body[start..end]
-            } else {
-                &[][..]
-            };
-            frames.push(encode_frame(
-                self.node,
-                self.node_seq,
-                index as u32,
-                parts as u32,
-                opens_commit && index == 0,
-                payload,
-            ));
+        let mut frames = vec![[0u8; FRAME_BYTES]; self.frame_count()];
+        for (index, slot) in frames.iter_mut().enumerate() {
+            *slot = self.frame(index, opens_commit);
         }
         frames
+    }
+
+    /// Append this record's frames, as a group commit puts them down, to `out`.
+    pub fn encode_in_commit_into(&self, opens_commit: bool, out: &mut Vec<u8>) {
+        let parts = self.frame_count();
+        out.reserve(parts * FRAME_BYTES);
+        for index in 0..parts {
+            out.extend_from_slice(&self.frame(index, opens_commit));
+        }
+    }
+
+    /// Frame `index` of this record.
+    fn frame(&self, index: usize, opens_commit: bool) -> [u8; FRAME_BYTES] {
+        let parts = self.frame_count();
+        let start = index * FRAME_PAYLOAD_BYTES;
+        let end = usize::min(start + FRAME_PAYLOAD_BYTES, self.body.len());
+        let payload = if start < self.body.len() {
+            &self.body[start..end]
+        } else {
+            &[][..]
+        };
+        encode_frame(
+            self.node,
+            self.node_seq,
+            index as u32,
+            parts as u32,
+            opens_commit && index == 0,
+            payload,
+        )
     }
 }
 

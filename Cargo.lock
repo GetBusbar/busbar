@@ -479,6 +479,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "ed25519-dalek",
+ "foldhash",
  "ring",
  "serde_json",
  "zeroize",
@@ -497,6 +498,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-kernel-breaker",
+ "foldhash",
 ]
 
 [[package]]
@@ -521,6 +523,7 @@ name = "busbar-kernel-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "foldhash",
  "ring",
  "sha2",
 ]

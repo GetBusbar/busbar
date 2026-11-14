@@ -23,6 +23,10 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
     };
     let id = plane.identity();
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the authorization server's routes are mounted once, when the node starts"
+    )]
     let router = if id.fapi2() {
         router.route(
             id.par_path().to_string(),
@@ -33,7 +37,11 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
     } else {
         router
     };
-    router
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: the authorization server's routes are mounted once, when the node starts"
+    )]
+    let router = router
         .route(
             id.metadata_path().to_string(),
             RouteMethod::Get,
@@ -99,7 +107,8 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&super::plane::AsPlane>) -
             RouteMethod::Post,
             RouteAuth::None,
             forward,
-        )
+        );
+    router
 }
 
 fn as_plane(app: &busbar_kernel::state::App) -> Option<&super::plane::AsPlane> {
@@ -144,7 +153,7 @@ async fn device_verification(
         let consumed = match (session, csrf) {
             (Some(session), Some(csrf)) if !csrf.is_empty() => {
                 match plane
-                    .consume_device_form(&session, &csrf, ADMIN_SUBJECT)
+                    .consume_device_form(session, &csrf, ADMIN_SUBJECT)
                     .await
                 {
                     Ok(true) => Some(csrf),
@@ -196,7 +205,7 @@ async fn device_verification(
 
 const DEVICE_SESSION_COOKIE: &str = "busbar_as_device";
 
-fn device_session_id(headers: &axum::http::HeaderMap) -> Option<String> {
+fn device_session_id(headers: &axum::http::HeaderMap) -> Option<&str> {
     for raw in headers.get_all(axum::http::header::COOKIE) {
         let raw = raw.to_str().ok()?;
         if let Some((_, value)) = raw
@@ -204,7 +213,7 @@ fn device_session_id(headers: &axum::http::HeaderMap) -> Option<String> {
             .filter_map(|pair| pair.split_once('='))
             .find(|(name, _)| name.trim() == DEVICE_SESSION_COOKIE)
         {
-            return Some(value.trim().to_string());
+            return Some(value.trim());
         }
     }
     None
@@ -317,18 +326,30 @@ fn error_page(response: oauth_as::http::Response) -> Response {
         return into_axum(response);
     }
     let (parts, body) = response.into_parts();
+    #[expect(
+        clippy::disallowed_types,
+        reason = "error: reads the refusal the authorization server answered, to show it"
+    )]
     let error: serde_json::Value = serde_json::from_slice(&body.into_bytes()).unwrap_or_default();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: names the refusal the authorization server answered"
+    )]
     let code = error["error"]
         .as_str()
         .map_or_else(|| format!("HTTP {}", parts.status.as_u16()), str::to_string);
     let description = error["error_description"].as_str().unwrap_or_default();
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the page that shows an authorization refusal"
+    )]
     let page = format!(
         "<!doctype html><meta charset=utf-8><title>busbar — authorization error</title>\
          <h1>Authorization error</h1>\
          <p>error: <code>{code}</code></p>\
          <p>{description}</p>",
-        code = escape(&code),
-        description = escape(description),
+        code = Escaped(&code),
+        description = Escaped(description),
     );
     (
         parts.status,
@@ -358,7 +379,7 @@ async fn consent_screen(
     let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+            axum::response::Html(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -419,7 +440,7 @@ async fn consent_submit(
     let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+            axum::response::Html(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -427,7 +448,7 @@ async fn consent_submit(
     let Some(session) = super::consent::session_id(&headers) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            axum::response::Html(PAGE_NO_REQUEST.to_string()),
+            axum::response::Html(PAGE_NO_REQUEST),
         )
             .into_response();
     };
@@ -438,7 +459,7 @@ async fn consent_submit(
         None | Some(_) => {
             return (
                 axum::http::StatusCode::BAD_REQUEST,
-                axum::response::Html(PAGE_NO_REQUEST.to_string()),
+                axum::response::Html(PAGE_NO_REQUEST),
             )
                 .into_response()
         }
@@ -454,8 +475,8 @@ async fn consent_submit(
     (
         axum::http::StatusCode::FOUND,
         [
-            (axum::http::header::LOCATION, target.to_string()),
-            (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+            (axum::http::header::LOCATION, target),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
         ],
     )
         .into_response()
@@ -624,21 +645,33 @@ fn percent_decode(s: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    match String::from_utf8(out) {
+        Ok(text) => text,
+        Err(invalid) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: a percent-escape decoded to bytes that are not UTF-8"
+            )]
+            let lossy = String::from_utf8_lossy(invalid.as_bytes()).into_owned();
+            lossy
+        }
+    }
 }
 
 fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 32];
-    match ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes) {
-        Ok(()) => Some(bytes.iter().map(|b| format!("{b:02x}")).collect()),
-        Err(_) => None,
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).ok()?;
+    let mut id = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = std::fmt::Write::write_fmt(&mut id, format_args!("{byte:02x}"));
     }
+    Some(id)
 }
 
 fn no_entropy() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        axum::response::Html(PAGE_NO_SESSION.to_string()),
+        axum::response::Html(PAGE_NO_SESSION),
     )
         .into_response()
 }
@@ -646,7 +679,7 @@ fn no_entropy() -> Response {
 fn not_representable() -> Response {
     (
         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-        axum::response::Html(PAGE_NO_SESSION.to_string()),
+        axum::response::Html(PAGE_NO_SESSION),
     )
         .into_response()
 }
@@ -654,7 +687,8 @@ fn not_representable() -> Response {
 fn not_found() -> Response {
     (
         axum::http::StatusCode::NOT_FOUND,
-        axum::Json(serde_json::json!({ "error": "not_found" })),
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        r#"{"error":"not_found"}"#,
     )
         .into_response()
 }
@@ -697,19 +731,32 @@ fn consent_page(return_to: &str, pending: &Pending) -> String {
          <button type=submit id=approve name=answer value=approve>Approve</button>\
          <button type=submit id=deny name=answer value=deny>Deny</button>\
          </form>",
-        client = escape(&pending.client_id),
-        scope = escape(scope),
-        host = escape(redirect_host),
-        ret = escape(return_to),
+        client = Escaped(&pending.client_id),
+        scope = Escaped(scope),
+        host = Escaped(redirect_host),
+        ret = Escaped(return_to),
     )
 }
 
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+/// Text made safe for HTML as it is written into the page.
+struct Escaped<'a>(&'a str);
+
+impl std::fmt::Display for Escaped<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut rest = self.0;
+        while let Some(at) = rest.find(['&', '<', '>', '"', '\'']) {
+            f.write_str(&rest[..at])?;
+            f.write_str(match rest.as_bytes()[at] {
+                b'&' => "&amp;",
+                b'<' => "&lt;",
+                b'>' => "&gt;",
+                b'"' => "&quot;",
+                _ => "&#39;",
+            })?;
+            rest = &rest[at + 1..];
+        }
+        f.write_str(rest)
+    }
 }
 
 #[cfg(test)]

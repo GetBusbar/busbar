@@ -180,25 +180,22 @@ impl Quarantine {
     /// The body of the `ChainBreak` journal record that says, durably, what was set aside: a tag,
     #[must_use]
     pub fn body(&self) -> Vec<u8> {
-        let segment_file = self
-            .segment_file
-            .as_ref()
-            .map_or_else(String::new, |p| p.display().to_string());
-        let kept = match &self.kept {
-            QuarantineKept::File(path) => path.display().to_string(),
-            QuarantineKept::Memory => "in-process".to_string(),
-            QuarantineKept::InPlace(e) => format!("in-place: {e}"),
-        };
         let mut body = crate::journal::BodyWriter::new();
-        body.text(QUARANTINE_BODY_TAG)
-            .text(&segment_file)
-            .num(self.segment)
+        body.text(QUARANTINE_BODY_TAG);
+        match &self.segment_file {
+            Some(path) => body.text_fmt(format_args!("{}", path.display())),
+            None => body.text(""),
+        };
+        body.num(self.segment)
             .num(self.offset)
             .num(self.damage_at)
-            .num(self.bytes)
-            .text(&kept)
-            .num(self.at_unix_ms)
-            .num(self.identities.len() as u64);
+            .num(self.bytes);
+        match &self.kept {
+            QuarantineKept::File(path) => body.text_fmt(format_args!("{}", path.display())),
+            QuarantineKept::Memory => body.text("in-process"),
+            QuarantineKept::InPlace(e) => body.text_fmt(format_args!("in-place: {e}")),
+        };
+        body.num(self.at_unix_ms).num(self.identities.len() as u64);
         let (has_before, before) = self.before.map_or((0, (0, 0)), |id| (1, id));
         let (has_after, after) = self.after.map_or((0, (0, 0)), |id| (1, id));
         body.num(has_before)
@@ -216,13 +213,13 @@ pub const QUARANTINE_BODY_TAG: &str = "journal-quarantine";
 
 impl std::fmt::Display for Quarantine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let segment = self.segment_file.as_ref().map_or_else(
-            || format!("segment {}", self.segment),
-            |p| p.display().to_string(),
-        );
+        match &self.segment_file {
+            Some(path) => write!(f, "journal corruption in {}", path.display())?,
+            None => write!(f, "journal corruption in segment {}", self.segment)?,
+        }
         write!(
             f,
-            "journal corruption in {segment} at byte {}: {} byte(s) from byte {} holding {} \
+            " at byte {}: {} byte(s) from byte {} holding {} \
              record identity(ies) are no longer on the book",
             self.damage_at,
             self.bytes,
@@ -319,7 +316,9 @@ impl Recovered {
 /// Scan `segment` from its beginning and report every complete, verifying record, reading past
 pub fn scan(segment: &Segment) -> io::Result<Recovered> {
     let len = segment.len()?;
+    // busbar:expect(bp::fresh_buffer, reason = "boot: a segment is scanned whole when the log opens or replays")
     let mut records: Vec<Record> = Vec::new();
+    // busbar:expect(bp::fresh_buffer, reason = "error: a hole is only found in a corrupt segment")
     let mut holes: Vec<Hole> = Vec::new();
     let mut from = 0u64;
     loop {
@@ -408,11 +407,16 @@ fn set_aside(segment: &Segment, from: u64, until: u64, mut beyond: Beyond) -> io
 
     for id in set_aside.iter().rev().map(|(r, _)| r.identity()) {
         if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: orders the identities found in a corrupt segment's damaged remainder"
+            )]
             beyond.identities.remove(i);
         }
         beyond.identities.insert(0, id);
     }
 
+    // busbar:expect(bp::fresh_buffer, reason = "error: the identities a corrupt segment's damaged remainder cannot vouch for")
     let mut unverified = Vec::new();
     let vouched = |id: &(u64, u64)| {
         beyond.verified.contains(id)
@@ -425,6 +429,10 @@ fn set_aside(segment: &Segment, from: u64, until: u64, mut beyond: Beyond) -> io
             unverified.push(id);
         }
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "error: the records found in a corrupt segment's damaged remainder"
+    )]
     let damaged = set_aside.into_iter().map(|(r, _)| r).collect();
     Ok(SetAside {
         identities: beyond.identities,
@@ -495,6 +503,7 @@ struct Walk {
 
 /// Walk `segment` from `from`, assembling records across continuation frames, until the writes end,
 fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
+    // busbar:expect(bp::fresh_buffer, reason = "boot: walks the records of a segment the log is opening or replaying")
     let mut records = Vec::new();
     let mut offset: u64 = from;
     let mut durable_end: u64 = from;
@@ -531,12 +540,17 @@ fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
                     stopped_because = Some(mismatch);
                     break;
                 }
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "boot: walks the records of a segment the log is opening or replaying"
+                )]
+                let body = payload.to_vec();
                 partial = Some(Partial {
                     node: header.node,
                     node_seq: header.node_seq,
                     part_count: header.part_count,
                     next_part: 1,
-                    body: payload.to_vec(),
+                    body,
                 });
             }
             Some(open) => {
@@ -600,17 +614,17 @@ pub(crate) fn records_from(
 fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<(Record, bool)>> {
     let mut frame = [0u8; FRAME_BYTES];
     let mut at = from;
+    // busbar:expect(bp::fresh_buffer, reason = "error: reads back the damaged remainder of a corrupt segment")
     let mut records = Vec::new();
     let mut open: Option<(u64, u64, u32, Vec<u8>, bool)> = None;
     while at < len && read_full(segment, at, &mut frame)? {
         at += FRAME_BYTES as u64;
         let read = match decode_frame(&frame) {
-            Ok((header, payload)) => Some((header, payload.to_vec(), true)),
+            Ok((header, payload)) => Some((header, payload, true)),
             Err(_) => checked_header(&frame)
-                .map(|(header, payload)| (header, payload.to_vec(), true))
+                .map(|(header, payload)| (header, payload, true))
                 .or_else(|| {
-                    unchecked_whole(&frame)
-                        .map(|(header, payload)| (header, payload.to_vec(), false))
+                    unchecked_whole(&frame).map(|(header, payload)| (header, payload, false))
                 }),
         };
         let Some((header, payload, checked)) = read else {
@@ -624,11 +638,16 @@ fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<(Rec
                     && header.part_index == *next =>
             {
                 *next += 1;
-                body.extend_from_slice(&payload);
+                body.extend_from_slice(payload);
                 *all_checked &= checked;
             }
             _ if header.part_index == 0 => {
-                open = Some((header.node, header.node_seq, 1, payload, checked));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "error: a record found in the damaged remainder of a corrupt segment"
+                )]
+                let body = payload.to_vec();
+                open = Some((header.node, header.node_seq, 1, body, checked));
             }
             _ => {
                 open = None;
@@ -764,9 +783,11 @@ fn set_aside_in_place(
     }
     let at_unix_ms = clock();
     let segment_file = factory.segment_file(segment.index());
+    // busbar:expect(bp::fresh_buffer, reason = "error: only a corrupt segment has anything to set aside")
     let mut quarantined = Vec::new();
     for hole in &recovered.holes {
         let (bytes, kept) = copy_aside(segment, factory, hole.offset, hole.end, at_unix_ms)?;
+        // busbar:expect(bp::clone_alloc, reason = "error: the quarantine keeps its own copy of what the corrupt hole held")
         quarantined.push(Quarantine {
             segment: segment.index(),
             segment_file: segment_file.clone(),
@@ -787,6 +808,7 @@ fn set_aside_in_place(
         let offset = recovered.durable_end;
         let (bytes, kept) =
             copy_aside(segment, factory, offset, recovered.written_end, at_unix_ms)?;
+        // busbar:expect(bp::clone_alloc, reason = "error: the quarantine keeps its own copy of what the corrupt tail held")
         quarantined.push(Quarantine {
             segment: segment.index(),
             segment_file,
@@ -828,7 +850,14 @@ fn copy_aside(
     let kept = match factory.quarantine(segment.index(), from, at_unix_ms, &copy) {
         Ok(Some(path)) => QuarantineKept::File(path),
         Ok(None) => QuarantineKept::Memory,
-        Err(e) => QuarantineKept::InPlace(e.to_string()),
+        Err(e) => {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "error: the copy of a corrupt segment's remainder failed"
+            )]
+            let why = e.to_string();
+            QuarantineKept::InPlace(why)
+        }
     };
     Ok((copy.len() as u64, kept))
 }
