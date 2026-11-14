@@ -356,6 +356,75 @@ fn actual_submitted_short_fences_release_and_rejects_same_worker_wait() {
     );
 }
 
+/// A caller that polls without a waker (`Verifying::settled`) must not take the recalled
+/// answer while the worker is still retiring that answer's short reply lease: the answer is
+/// published only after RELEASE returned. Deterministic: the probe polls exactly while the
+/// gated RELEASE is held, which is after the worker finished the recall crossing.
+#[test]
+fn a_polling_caller_cannot_take_a_recalled_answer_before_its_short_lease_retires() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let (_, auth) = opened(false);
+    let gate = Arc::new(ReleaseGate::default());
+    *RELEASE_GATE.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
+    let (probed, probe) = mpsc::channel();
+    let caller_gate = gate.clone();
+    let client = std::thread::spawn(move || {
+        let mut call = auth.verify(request());
+        let mut reported = false;
+        loop {
+            let held = {
+                let state = caller_gate
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                state.0 && !state.1
+            };
+            let answer = call.settled();
+            if held && !reported {
+                reported = true;
+                probed.send(answer.is_some()).unwrap();
+            }
+            if let Some(answer) = answer {
+                return answer;
+            }
+            std::thread::yield_now();
+        }
+    });
+    let state = gate.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let (state, _) = gate
+        .changed
+        .wait_timeout_while(state, Duration::from_secs(10), |state| !state.0)
+        .unwrap_or_else(PoisonError::into_inner);
+    let entered = state.0;
+    drop(state);
+    let taken_during_release = probe.recv_timeout(Duration::from_secs(10));
+    gate.state.lock().unwrap_or_else(PoisonError::into_inner).1 = true;
+    gate.changed.notify_all();
+    RELEASE_GATE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let answer = client.join().expect("the polling verify caller completes");
+    assert!(entered, "the actual SDK reply lease reached RELEASE");
+    assert_eq!(
+        taken_during_release,
+        Ok(false),
+        "the recalled answer must not be published before its short lease retires"
+    );
+    let Verified::Identity(identity) = answer.verified else {
+        panic!("identity refused");
+    };
+    assert_eq!(identity.subject, format!("{}judgment-1", SUBJECT.as_str()));
+    assert_eq!(
+        (
+            VERIFIES.load(Ordering::SeqCst),
+            RELEASES.load(Ordering::SeqCst),
+            JUDGMENTS.load(Ordering::SeqCst)
+        ),
+        (2, 1, 1)
+    );
+}
+
 #[test]
 fn an_actual_held_short_lease_is_released_exactly_once_when_its_token_drops() {
     use crate::dispatch::kinds::auth::Auth;
