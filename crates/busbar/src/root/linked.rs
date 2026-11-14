@@ -360,7 +360,7 @@ fn conns() -> Option<busbar_contract::conn::admissions::AdmissionAuthority> {
 pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares).unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     })
 }
 
