@@ -1,0 +1,822 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! The workspace source walk the architecture checks share (CORE-ARCHITECTURE-DIET §7).
+//!
+//! Targets come from `cargo metadata`, never from guesses. Each target root is walked by
+//! following `mod x;`, `#[path]` and `include!("literal")` exactly as rustc resolves them, so
+//! every reached file is classified as production (reached from a lib, bin or build-script root
+//! outside any `cfg(test)` region) or test. Lines are counted with `proc-macro2`, which drops
+//! comments; `syn` finds the `cfg(test)` and doc-attribute ranges. No regex.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use proc_macro2::{Delimiter, Spacing, TokenStream, TokenTree};
+use serde::Deserialize;
+use syn::ext::IdentExt;
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
+use syn::visit::Visit;
+use syn::{Attribute, Expr, Item, Meta, Token};
+
+/// The counting method this walker implements. `ci/loc-bar.json` must name it.
+pub const METHOD: &str = "diet-metrics-v2";
+
+#[derive(Deserialize)]
+struct Metadata {
+    packages: Vec<MetaPackage>,
+    workspace_members: Vec<String>,
+    workspace_root: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct MetaPackage {
+    id: String,
+    name: String,
+    manifest_path: PathBuf,
+    targets: Vec<MetaTarget>,
+    dependencies: Vec<MetaDependency>,
+}
+
+#[derive(Deserialize)]
+struct MetaTarget {
+    kind: Vec<String>,
+    src_path: PathBuf,
+}
+
+#[derive(Deserialize)]
+pub struct MetaDependency {
+    pub name: String,
+    pub kind: Option<String>,
+}
+
+/// One workspace member, as Cargo resolves it.
+pub struct Package {
+    pub name: String,
+    pub dir: PathBuf,
+    pub dependencies: Vec<MetaDependency>,
+    roots: Vec<(PathBuf, Class)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    Production,
+    BuildScript,
+    Test,
+}
+
+/// The whole workspace after the walk.
+pub struct Workspace {
+    pub root: PathBuf,
+    pub packages: Vec<Package>,
+    /// Every reached file, with how it was reached.
+    pub files: BTreeMap<PathBuf, Reached>,
+}
+
+pub struct Reached {
+    /// Index into `Workspace::packages` of the package that owns the file.
+    pub package: usize,
+    pub production: bool,
+    pub build_script: bool,
+    /// The module path below the target root of the first production route to the file.
+    pub module: Vec<String>,
+    /// Production lines, counted once when the file is first reached as production.
+    pub lines: usize,
+    /// Lines of non-literal `include!` sites in its production code.
+    generated: Vec<usize>,
+}
+
+/// One `include!` whose argument is not a string literal, in production code.
+pub struct GeneratedSite {
+    pub file: PathBuf,
+    pub line: usize,
+}
+
+/// `cargo metadata --no-deps` for the workspace that contains this crate.
+pub fn load() -> Workspace {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--no-deps",
+            "--offline",
+            "--format-version",
+            "1",
+        ])
+        .arg("--manifest-path")
+        .arg(&manifest)
+        .output()
+        .expect("run cargo metadata");
+    assert!(
+        output.status.success(),
+        "cargo metadata failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let metadata: Metadata = sonic_rs::from_slice(&output.stdout).expect("cargo metadata JSON");
+    let members: BTreeSet<&str> = metadata
+        .workspace_members
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut packages = Vec::new();
+    for package in metadata.packages {
+        if !members.contains(package.id.as_str()) {
+            continue;
+        }
+        let dir = canonical(package.manifest_path.parent().expect("manifest dir"));
+        let roots = package
+            .targets
+            .iter()
+            .map(|target| {
+                let class = if target.kind.iter().any(|kind| kind == "custom-build") {
+                    Class::BuildScript
+                } else if target
+                    .kind
+                    .iter()
+                    .all(|kind| matches!(kind.as_str(), "test" | "bench" | "example"))
+                {
+                    Class::Test
+                } else {
+                    Class::Production
+                };
+                (canonical(&target.src_path), class)
+            })
+            .collect();
+        packages.push(Package {
+            name: package.name,
+            dir,
+            dependencies: package.dependencies,
+            roots,
+        });
+    }
+    packages.sort_by(|a, b| a.name.cmp(&b.name));
+    Workspace {
+        root: canonical(&metadata.workspace_root),
+        packages,
+        files: BTreeMap::new(),
+    }
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+struct Job {
+    path: PathBuf,
+    production: bool,
+    build_script: bool,
+    /// Children of a root, `mod.rs` or `#[path]` file live in its own directory.
+    mod_rs: bool,
+    module: Vec<String>,
+    package: usize,
+    include: bool,
+}
+
+impl Workspace {
+    /// Walk every target of every member. `test_only` members are test code in full.
+    pub fn walk(&mut self, test_only: &BTreeSet<String>) {
+        let mut queue = Vec::new();
+        for (index, package) in self.packages.iter().enumerate() {
+            let whole_test = test_only.contains(&package.name);
+            for (root, class) in &package.roots {
+                queue.push(Job {
+                    path: root.clone(),
+                    production: !whole_test && *class != Class::Test,
+                    build_script: *class == Class::BuildScript,
+                    mod_rs: true,
+                    module: Vec::new(),
+                    package: index,
+                    include: false,
+                });
+            }
+        }
+        // A file is processed again only when it is first reached as production.
+        let mut seen: BTreeMap<PathBuf, bool> = BTreeMap::new();
+        while let Some(job) = queue.pop() {
+            let path = canonical(&job.path);
+            if !path.starts_with(&self.root) {
+                continue;
+            }
+            match seen.get(&path) {
+                Some(true) => continue,
+                Some(false) if !job.production => continue,
+                _ => {}
+            }
+            seen.insert(path.clone(), job.production);
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let owner = self.owner_of(&path).unwrap_or(job.package);
+            let entry = self.files.entry(path.clone()).or_insert(Reached {
+                package: owner,
+                production: false,
+                build_script: false,
+                module: job.module.clone(),
+                lines: 0,
+                generated: Vec::new(),
+            });
+            if job.production && !entry.production {
+                entry.module = job.module.clone();
+            }
+            entry.production |= job.production;
+            entry.build_script |= job.build_script;
+            let file = Parsed::new(&source);
+            let dir = path.parent().expect("file dir").to_path_buf();
+            let child_dir = if job.mod_rs {
+                dir.clone()
+            } else {
+                dir.join(path.file_stem().expect("file stem"))
+            };
+            let whole_test = file.whole_file_test;
+            let production = job.production && !whole_test;
+            if production {
+                let generated = file
+                    .includes()
+                    .into_iter()
+                    .filter(|include| include.literal.is_none() && !file.excluded(include.line))
+                    .map(|include| include.line)
+                    .collect();
+                let lines = file.count(job.build_script);
+                if let Some(reached) = self.files.get_mut(&path) {
+                    reached.lines = lines;
+                    reached.generated = generated;
+                }
+            }
+            if !job.include {
+                if let Some(syntax) = &file.syntax {
+                    let context = ModContext {
+                        file_dir: &dir,
+                        child_dir: child_dir.clone(),
+                        inline: false,
+                        module: job.module.clone(),
+                    };
+                    walk_items(&syntax.items, &context, !production, &mut |found| {
+                        queue.push(Job {
+                            path: found.path,
+                            production: production && !found.test,
+                            build_script: job.build_script,
+                            mod_rs: found.mod_rs,
+                            module: found.module,
+                            package: job.package,
+                            include: false,
+                        });
+                    });
+                }
+            }
+            for include in file.includes() {
+                if let Some(target) = include.literal {
+                    queue.push(Job {
+                        path: dir.join(target),
+                        production: production && !file.excluded(include.line),
+                        build_script: job.build_script,
+                        mod_rs: true,
+                        module: job.module.clone(),
+                        package: job.package,
+                        include: true,
+                    });
+                }
+            }
+        }
+    }
+
+    fn owner_of(&self, path: &Path) -> Option<usize> {
+        self.packages
+            .iter()
+            .enumerate()
+            .filter(|(_, package)| path.starts_with(&package.dir))
+            .max_by_key(|(_, package)| package.dir.components().count())
+            .map(|(index, _)| index)
+    }
+
+    /// Production lines per file, and every non-literal production `include!`.
+    pub fn count(&self) -> (BTreeMap<PathBuf, usize>, Vec<GeneratedSite>) {
+        let mut lines = BTreeMap::new();
+        let mut generated = Vec::new();
+        for (path, reached) in self.files.iter().filter(|(_, reached)| reached.production) {
+            lines.insert(path.clone(), reached.lines);
+            generated.extend(reached.generated.iter().map(|line| GeneratedSite {
+                file: path.clone(),
+                line: *line,
+            }));
+        }
+        (lines, generated)
+    }
+
+    /// `.rs` files under a member's `src/` that no target reaches.
+    pub fn unreachable(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for package in &self.packages {
+            let mut stack = vec![package.dir.join("src")];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|ext| ext == "rs")
+                        && !self.files.contains_key(&canonical(&path))
+                    {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    pub fn relative(&self, path: &Path) -> String {
+        path.strip_prefix(&self.root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+struct ModContext<'a> {
+    file_dir: &'a Path,
+    child_dir: PathBuf,
+    inline: bool,
+    module: Vec<String>,
+}
+
+struct FoundMod {
+    path: PathBuf,
+    test: bool,
+    mod_rs: bool,
+    module: Vec<String>,
+}
+
+fn walk_items(
+    items: &[Item],
+    context: &ModContext<'_>,
+    test: bool,
+    found: &mut dyn FnMut(FoundMod),
+) {
+    for item in items {
+        match item {
+            Item::Mod(module) => {
+                let test = test || needs_test(&module.attrs);
+                let name = module.ident.unraw().to_string();
+                let path_attr = path_attribute(&module.attrs);
+                let mut child_module = context.module.clone();
+                child_module.push(name.clone());
+                if let Some((_, inner)) = &module.content {
+                    let child_dir = context
+                        .child_dir
+                        .join(path_attr.as_deref().unwrap_or(&name));
+                    let inner_context = ModContext {
+                        file_dir: context.file_dir,
+                        child_dir,
+                        inline: true,
+                        module: child_module,
+                    };
+                    walk_items(inner, &inner_context, test, found);
+                } else {
+                    found(resolve_mod(context, &name, path_attr, test, child_module));
+                }
+            }
+            Item::Macro(mac) => {
+                // `mod x;` written inside an item macro (cfg_if!-style) still declares a file.
+                for name in macro_mods(mac.mac.tokens.clone()) {
+                    let mut child_module = context.module.clone();
+                    child_module.push(name.clone());
+                    found(resolve_mod(context, &name, None, test, child_module));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn resolve_mod(
+    context: &ModContext<'_>,
+    name: &str,
+    path_attr: Option<String>,
+    test: bool,
+    module: Vec<String>,
+) -> FoundMod {
+    match path_attr {
+        Some(relative) => {
+            let base = if context.inline {
+                &context.child_dir
+            } else {
+                context.file_dir
+            };
+            FoundMod {
+                path: base.join(relative),
+                test,
+                mod_rs: true,
+                module,
+            }
+        }
+        None => {
+            let flat = context.child_dir.join(format!("{name}.rs"));
+            let (path, mod_rs) = if flat.is_file() {
+                (flat, false)
+            } else {
+                (context.child_dir.join(name).join("mod.rs"), true)
+            };
+            FoundMod {
+                path,
+                test,
+                mod_rs,
+                module,
+            }
+        }
+    }
+}
+
+fn macro_mods(tokens: TokenStream) -> Vec<String> {
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    let mut out = Vec::new();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) if ident == "mod" => {
+                if let (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(semi))) =
+                    (trees.get(index + 1), trees.get(index + 2))
+                {
+                    if semi.as_char() == ';' {
+                        out.push(name.to_string());
+                    }
+                }
+            }
+            TokenTree::Group(group) => out.extend(macro_mods(group.stream())),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn path_attribute(attrs: &[Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| match &attr.meta {
+        Meta::NameValue(pair) if pair.path.is_ident("path") => match &pair.value {
+            Expr::Lit(lit) => match &lit.lit {
+                syn::Lit::Str(text) => Some(text.value()),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+/// True when the attributes hold a `cfg` that can only be on in a test build.
+pub fn needs_test(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+                .is_ok_and(|metas| metas.iter().any(cfg_needs_test))
+    })
+}
+
+fn cfg_needs_test(meta: &Meta) -> bool {
+    match meta {
+        Meta::Path(path) => path.is_ident("test"),
+        Meta::List(list) => {
+            let Ok(inner) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                inner.iter().any(cfg_needs_test)
+            } else if list.path.is_ident("any") {
+                !inner.is_empty() && inner.iter().all(cfg_needs_test)
+            } else {
+                false
+            }
+        }
+        Meta::NameValue(_) => false,
+    }
+}
+
+struct Include {
+    line: usize,
+    literal: Option<String>,
+}
+
+/// A file lexed for counting, with its excluded line ranges.
+pub struct Parsed {
+    syntax: Option<syn::File>,
+    tokens: Option<TokenStream>,
+    excluded: Vec<(usize, usize)>,
+    whole_file_test: bool,
+}
+
+impl Parsed {
+    pub fn new(source: &str) -> Self {
+        let source = lexable(source);
+        let syntax = syn::parse_file(&source).ok();
+        let tokens = source.parse::<TokenStream>().ok();
+        let mut excluded = Vec::new();
+        let mut whole_file_test = false;
+        if let Some(file) = &syntax {
+            whole_file_test = needs_test(&file.attrs);
+            let mut finder = TestRanges(&mut excluded);
+            finder.visit_file(file);
+        }
+        if let Some(stream) = &tokens {
+            doc_ranges(stream.clone(), &mut excluded);
+        }
+        Self {
+            syntax,
+            tokens,
+            excluded,
+            whole_file_test,
+        }
+    }
+
+    pub fn excluded(&self, line: usize) -> bool {
+        self.excluded
+            .iter()
+            .any(|(start, end)| (*start..=*end).contains(&line))
+    }
+
+    fn count(&self, build_script: bool) -> usize {
+        let Some(stream) = &self.tokens else {
+            return 0;
+        };
+        let mut lines = BTreeSet::new();
+        mark_lines(stream.clone(), build_script, &mut lines);
+        lines
+            .into_iter()
+            .filter(|line| !self.excluded(*line))
+            .count()
+    }
+
+    fn includes(&self) -> Vec<Include> {
+        let mut out = Vec::new();
+        if let Some(stream) = &self.tokens {
+            find_includes(stream.clone(), &mut out);
+        }
+        out
+    }
+}
+
+/// Blank a leading shebang line so the lexer accepts the file without moving line numbers.
+fn lexable(source: &str) -> String {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let shebang = source
+        .strip_prefix("#!")
+        .is_some_and(|rest| !rest.trim_start().starts_with('['));
+    if !shebang {
+        return source.to_string();
+    }
+    let end = source.find('\n').unwrap_or(source.len());
+    let mut out = " ".repeat(end);
+    out.push_str(&source[end..]);
+    out
+}
+
+fn mark_lines(stream: TokenStream, build_script: bool, lines: &mut BTreeSet<usize>) {
+    for tree in stream {
+        match tree {
+            TokenTree::Group(group) => {
+                if group.delimiter() != Delimiter::None {
+                    lines.insert(group.span_open().start().line);
+                    lines.insert(group.span_close().end().line);
+                }
+                mark_lines(group.stream(), build_script, lines);
+            }
+            TokenTree::Literal(literal) => {
+                let span = literal.span();
+                let (start, end) = (span.start().line, span.end().line);
+                if build_script {
+                    lines.extend(start..=end);
+                } else {
+                    lines.insert(start);
+                    lines.insert(end);
+                }
+            }
+            other => {
+                let span = other.span();
+                lines.insert(span.start().line);
+                lines.insert(span.end().line);
+            }
+        }
+    }
+}
+
+/// `#[doc ...]` and `#![doc ...]`, which is also what `///` and `//!` lex to.
+fn doc_ranges(stream: TokenStream, out: &mut Vec<(usize, usize)>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    let mut index = 0;
+    while index < trees.len() {
+        if let TokenTree::Punct(pound) = &trees[index] {
+            if pound.as_char() == '#' {
+                let mut next = index + 1;
+                if let Some(TokenTree::Punct(bang)) = trees.get(next) {
+                    if bang.as_char() == '!' && bang.spacing() == Spacing::Alone {
+                        next += 1;
+                    }
+                }
+                if let Some(TokenTree::Group(group)) = trees.get(next) {
+                    if group.delimiter() == Delimiter::Bracket {
+                        let first = group.stream().into_iter().next();
+                        if matches!(&first, Some(TokenTree::Ident(ident)) if ident == "doc") {
+                            out.push((pound.span().start().line, group.span_close().end().line));
+                            index = next + 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        if let TokenTree::Group(group) = &trees[index] {
+            doc_ranges(group.stream(), out);
+        }
+        index += 1;
+    }
+}
+
+fn find_includes(stream: TokenStream, out: &mut Vec<Include>) {
+    let trees: Vec<TokenTree> = stream.into_iter().collect();
+    for (index, tree) in trees.iter().enumerate() {
+        match tree {
+            TokenTree::Ident(ident) if ident == "include" => {
+                let bang =
+                    matches!(trees.get(index + 1), Some(TokenTree::Punct(p)) if p.as_char() == '!');
+                if let (true, Some(TokenTree::Group(args))) = (bang, trees.get(index + 2)) {
+                    let inner: Vec<TokenTree> = args.stream().into_iter().collect();
+                    let literal = match inner.as_slice() {
+                        [TokenTree::Literal(literal)] => {
+                            syn::parse_str::<syn::LitStr>(&literal.to_string())
+                                .ok()
+                                .map(|text| text.value())
+                        }
+                        _ => None,
+                    };
+                    out.push(Include {
+                        line: ident.span().start().line,
+                        literal,
+                    });
+                }
+            }
+            TokenTree::Group(group) => find_includes(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+/// Every syntax node carrying a test-only `cfg`, as an inclusive line range.
+struct TestRanges<'a>(&'a mut Vec<(usize, usize)>);
+
+impl TestRanges<'_> {
+    fn gated(&mut self, attrs: &[Attribute], node: &dyn Spanned) -> bool {
+        if needs_test(attrs) {
+            let span = node.span();
+            self.0.push((span.start().line, span.end().line));
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for TestRanges<'_> {
+    fn visit_item(&mut self, node: &'ast Item) {
+        if !self.gated(item_attrs(node), node) {
+            syn::visit::visit_item(self, node);
+        }
+    }
+    fn visit_impl_item(&mut self, node: &'ast syn::ImplItem) {
+        let attrs: &[Attribute] = match node {
+            syn::ImplItem::Const(item) => &item.attrs,
+            syn::ImplItem::Fn(item) => &item.attrs,
+            syn::ImplItem::Type(item) => &item.attrs,
+            syn::ImplItem::Macro(item) => &item.attrs,
+            _ => &[],
+        };
+        if !self.gated(attrs, node) {
+            syn::visit::visit_impl_item(self, node);
+        }
+    }
+    fn visit_trait_item(&mut self, node: &'ast syn::TraitItem) {
+        let attrs: &[Attribute] = match node {
+            syn::TraitItem::Const(item) => &item.attrs,
+            syn::TraitItem::Fn(item) => &item.attrs,
+            syn::TraitItem::Type(item) => &item.attrs,
+            syn::TraitItem::Macro(item) => &item.attrs,
+            _ => &[],
+        };
+        if !self.gated(attrs, node) {
+            syn::visit::visit_trait_item(self, node);
+        }
+    }
+    fn visit_foreign_item(&mut self, node: &'ast syn::ForeignItem) {
+        let attrs: &[Attribute] = match node {
+            syn::ForeignItem::Fn(item) => &item.attrs,
+            syn::ForeignItem::Static(item) => &item.attrs,
+            syn::ForeignItem::Type(item) => &item.attrs,
+            syn::ForeignItem::Macro(item) => &item.attrs,
+            _ => &[],
+        };
+        if !self.gated(attrs, node) {
+            syn::visit::visit_foreign_item(self, node);
+        }
+    }
+    fn visit_local(&mut self, node: &'ast syn::Local) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_local(self, node);
+        }
+    }
+    fn visit_stmt_macro(&mut self, node: &'ast syn::StmtMacro) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_stmt_macro(self, node);
+        }
+    }
+    fn visit_expr(&mut self, node: &'ast Expr) {
+        if !self.gated(expr_attrs(node), node) {
+            syn::visit::visit_expr(self, node);
+        }
+    }
+    fn visit_field(&mut self, node: &'ast syn::Field) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_field(self, node);
+        }
+    }
+    fn visit_variant(&mut self, node: &'ast syn::Variant) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_variant(self, node);
+        }
+    }
+    fn visit_arm(&mut self, node: &'ast syn::Arm) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_arm(self, node);
+        }
+    }
+    fn visit_field_value(&mut self, node: &'ast syn::FieldValue) {
+        if !self.gated(&node.attrs, node) {
+            syn::visit::visit_field_value(self, node);
+        }
+    }
+}
+
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
+}
+
+fn expr_attrs(expr: &Expr) -> &[Attribute] {
+    match expr {
+        Expr::Array(e) => &e.attrs,
+        Expr::Assign(e) => &e.attrs,
+        Expr::Async(e) => &e.attrs,
+        Expr::Await(e) => &e.attrs,
+        Expr::Binary(e) => &e.attrs,
+        Expr::Block(e) => &e.attrs,
+        Expr::Break(e) => &e.attrs,
+        Expr::Call(e) => &e.attrs,
+        Expr::Cast(e) => &e.attrs,
+        Expr::Closure(e) => &e.attrs,
+        Expr::Const(e) => &e.attrs,
+        Expr::Continue(e) => &e.attrs,
+        Expr::Field(e) => &e.attrs,
+        Expr::ForLoop(e) => &e.attrs,
+        Expr::Group(e) => &e.attrs,
+        Expr::If(e) => &e.attrs,
+        Expr::Index(e) => &e.attrs,
+        Expr::Let(e) => &e.attrs,
+        Expr::Lit(e) => &e.attrs,
+        Expr::Loop(e) => &e.attrs,
+        Expr::Macro(e) => &e.attrs,
+        Expr::Match(e) => &e.attrs,
+        Expr::MethodCall(e) => &e.attrs,
+        Expr::Paren(e) => &e.attrs,
+        Expr::Path(e) => &e.attrs,
+        Expr::Range(e) => &e.attrs,
+        Expr::Reference(e) => &e.attrs,
+        Expr::Repeat(e) => &e.attrs,
+        Expr::Return(e) => &e.attrs,
+        Expr::Struct(e) => &e.attrs,
+        Expr::Try(e) => &e.attrs,
+        Expr::TryBlock(e) => &e.attrs,
+        Expr::Tuple(e) => &e.attrs,
+        Expr::Unary(e) => &e.attrs,
+        Expr::Unsafe(e) => &e.attrs,
+        Expr::While(e) => &e.attrs,
+        Expr::Yield(e) => &e.attrs,
+        _ => &[],
+    }
+}

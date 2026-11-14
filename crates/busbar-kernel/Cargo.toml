@@ -70,6 +70,9 @@ mallctl = ["dep:tikv-jemalloc-sys", "dep:libc"]
 
 [dev-dependencies]
 busbar-plugin-loader = { path = "../plugin-loader" }
+# The architecture checks (tests/loc_budget.rs) parse sources with syn; they never build core.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
 sha2 = { workspace = true }
 # Integration tests use ordinary production ABI test support, never kernel fixture exports.
 # Dev-only: the test seal is absent from release builds.

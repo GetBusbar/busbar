@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "counting": "diet-metrics-v2",
+  "bar": 55800,
+  "locked": false,
+  "slack_pct": 3,
+  "slack_min": 150,
+  "test_only": [],
+  "decisions": [],
+  "bridges": []
+}
