@@ -382,7 +382,6 @@ dependencies = [
  "async-trait",
  "aws-lc-sys",
  "base64 0.22.1",
- "busbar-yaml",
  "bytes",
  "futures",
  "getrandom 0.3.4",
@@ -402,6 +401,7 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "windows-sys 0.61.2",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -460,7 +460,6 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
- "busbar-yaml",
  "bytes",
  "http",
  "http-body-util",
@@ -471,6 +470,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -529,7 +529,6 @@ dependencies = [
  "busbar-transport-tcp-plugin",
  "busbar-transport-webrtc",
  "busbar-transport-ws",
- "busbar-yaml",
  "bytes",
  "core_affinity",
  "ed25519-dalek",
@@ -567,6 +566,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -696,7 +696,6 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-yaml",
  "bytes",
  "crc32fast",
  "ed25519-dalek",
@@ -727,6 +726,7 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "url",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -792,13 +792,13 @@ dependencies = [
  "busbar-kernel-identity",
  "busbar-kernel-ledger",
  "busbar-kernel-wal",
- "busbar-yaml",
  "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "yaml_serde",
  "zeroize",
 ]
 
@@ -1048,16 +1048,6 @@ dependencies = [
  "httpdate",
  "tungstenite",
  "zeroize",
-]
-
-[[package]]
-name = "busbar-yaml"
-version = "1.6.0"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
 ]
 
 [[package]]
@@ -2093,6 +2083,12 @@ dependencies = [
  "pkg-config",
  "vcpkg",
 ]
+
+[[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 
 [[package]]
 name = "linux-raw-sys"
@@ -4301,6 +4297,19 @@ dependencies = [
  "rusticata-macros",
  "thiserror",
  "time",
+]
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
