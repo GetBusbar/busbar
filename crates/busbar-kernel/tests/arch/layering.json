@@ -8,8 +8,7 @@
     "busbar-kernel-egress",
     "busbar-kernel-identity",
     "busbar-kernel-ledger",
-    "busbar-kernel-wal",
-    "busbar-yaml"
+    "busbar-kernel-wal"
   ],
   "allowed_additions": []
 }
