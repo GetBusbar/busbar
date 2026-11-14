@@ -183,13 +183,6 @@ impl Durability {
     pub fn refuses_money(&self) -> Option<String> {
         self.journal.refuses_money()
     }
-    /// Capture this owner under the book lock, then await outside the lock.
-    pub async fn offer_held_back(journal: &Arc<RuntimeJournal>) -> Result<(), String> {
-        journal
-            .flush()
-            .await
-            .map_err(|error| format!("native journal flush failed: {error:?}"))
-    }
     pub fn stage_entries(&self, entries: &[Entry]) -> Result<Arc<StagedRun>, String> {
         self.journal
             .stage_run(entries)

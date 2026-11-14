@@ -235,11 +235,6 @@ impl Node {
         let _ = self.lane.set(journal);
         let _ = self.book.set(book);
     }
-    pub fn journal_lane(
-        &self,
-    ) -> Option<Arc<busbar_kernel::persistence::journal::runtime::RuntimeJournal>> {
-        self.lane.get().cloned()
-    }
     pub(crate) async fn retry_held_journal(&self) -> Result<(), String> {
         if let Some(journal) = self.lane.get() {
             #[expect(

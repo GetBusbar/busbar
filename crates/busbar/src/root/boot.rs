@@ -87,14 +87,6 @@ fn authorize_native_image(bytes: &[u8], display: &str) -> Result<(), String> {
     }
 }
 
-/// Retained admission owner. Hydration and routing begin only after this has
-/// confirmed the logical format and registered this process's writer.
-pub async fn admit_store(
-    backend: busbar_contract::persistence::axis::OpenedBackend,
-) -> Result<busbar_kernel::persistence::startup::Startup, String> {
-    admit_format(backend, true).await
-}
-
 /// Only the native prepared session may supply a checkpoint-bound recovery backend.
 /// A recovery target must already contain the confirmed current-format manifest.
 pub async fn admit_prepared_store(

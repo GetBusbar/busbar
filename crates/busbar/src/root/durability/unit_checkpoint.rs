@@ -12,18 +12,8 @@ use busbar_kernel::{
     persistence::journal::runtime::RuntimeJournal,
 };
 use busbar_kernel_audit::AuditKeySet;
-use busbar_kernel_wal::{BodyReader, JournalRecord, Record, RecordClass};
 use std::sync::{Arc, Mutex};
 
-pub(super) fn is_checkpoint_record(record: &Record) -> bool {
-    JournalRecord::decode(&record.body).is_ok_and(|record| {
-        record.class == RecordClass::Checkpoint
-            && matches!(
-                BodyReader::new(&record.body).text(),
-                Some("unit.accrued" | "measurement.accrued")
-            )
-    })
-}
 struct AuditAdapter {
     book: Arc<Mutex<Durability>>,
     evidence: Arc<UnitCheckpointEvidence>,

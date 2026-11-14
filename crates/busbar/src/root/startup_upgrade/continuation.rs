@@ -348,14 +348,6 @@ impl StartupContinuation {
         self.state.lock().await.phase
     }
 
-    /// Remove a failed preparation only for real disposal, never for publication.
-    pub async fn take_failed_preparation(&self) -> Option<PreparationFailure> {
-        let mut state = self.state.lock().await;
-        let failure = state.failed_preparation.take()?;
-        state.taken = true;
-        Some(*failure)
-    }
-
     pub async fn pending_reason(&self) -> Option<&'static str> {
         self.state.lock().await.pending_reason
     }
@@ -475,12 +467,6 @@ impl StartupContinuation {
             .await
             .map_err(|_| migration::Error::Verification)?
             .ok_or(migration::Error::ReconciliationRequired)
-    }
-    pub async fn take_current_ready(&self) -> Result<Option<ReadyCandidate>, String> {
-        if !matches!(self.binding, Binding::Current) {
-            return Err("upgraded startup requires its confirmed completion receipt".into());
-        }
-        self.take(None).await
     }
     pub async fn take_ready(
         &self,
