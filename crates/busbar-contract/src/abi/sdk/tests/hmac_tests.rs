@@ -160,12 +160,8 @@ fn precomputed_keys_answer_the_one_shot_macs_over_any_split() {
             let want1 = hmac_sha1(&cred, &[msg]);
             assert_eq!(k256.mac(msg)[..], want256[..], "key {key_len}, length {n}");
             for split in [0, n / 3, n / 2, n] {
-                let parts: [&[u8]; 4] = [
-                    &msg[..split],
-                    b"",
-                    &msg[split..n / 2.max(split)],
-                    &msg[n / 2.max(split)..],
-                ];
+                let mid = (split + n) / 2;
+                let parts: [&[u8]; 4] = [&msg[..split], b"", &msg[split..mid], &msg[mid..]];
                 assert_eq!(
                     k256.mac_parts(&parts)[..],
                     want256[..],
