@@ -146,6 +146,10 @@ allow = [
     { crate = "crypto-common", line = "0.2", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's crypto-common line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "const-oid", line = "0.10", repos = ["busbar-store-postgres"], use = "shipped", reason = "digest 0.11's const-oid line (postgres-protocol >= 0.6.11 SCRAM)" },
     { crate = "wasi", line = "0.14", repos = ["busbar-store-postgres"], use = "tests-only", reason = "the independent `postgres` test client (tokio-postgres 0.7.18 -> whoami 2) the live tests verify the store with; never shipped" },
+    { crate = "zlib-rs", line = "0.6", repos = ["busbar-store-mysql"], use = "shipped", reason = "SMALL-DEP-WINS F.5: flate2's zlib-rs backend for the store's compressed MySQL packet codec (vendored mysql_common), opted in at member level; busbar's own lock holds no zlib-rs while core keeps rust_backend" },
+    { crate = "miniz_oxide", line = "0.9", repos = ["busbar-store-mysql"], use = "tests-only", reason = "SMALL-DEP-WINS F/F.5: the `mysql` test client (minimal-rust = flate2/rust_backend) keeps flate2's miniz_oxide backend in the store's lock if core moves flate2 to zlib-rs; never shipped" },
+    { crate = "adler2", line = "2", repos = ["busbar-store-mysql"], use = "tests-only", reason = "SMALL-DEP-WINS F/F.5: miniz_oxide 0.9's checksum, kept only by the `mysql` test client if core moves flate2 to zlib-rs; never shipped" },
+    { crate = "simd-adler32", line = "0.3", repos = ["busbar-store-mysql"], use = "tests-only", reason = "SMALL-DEP-WINS F/F.5: miniz_oxide 0.9's SIMD checksum, kept only by the `mysql` test client if core moves flate2 to zlib-rs; never shipped" },
 ]
 
 # ── cargo-deny [bans] ─────────────────────────────────────────────────────────────────────────────
