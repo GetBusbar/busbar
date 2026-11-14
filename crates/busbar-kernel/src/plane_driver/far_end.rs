@@ -49,6 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
+use busbar_contract::abi::host::conn::connector::CAUSE_FRAMER;
 use busbar_contract::abi::plane::RefusalCode;
 use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
@@ -56,7 +57,7 @@ use busbar_contract::abi::transport::{
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::caps::{CallId, Pass, ReasonCode, Route};
 use busbar_contract::conn::{
-    ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
+    ConnCause, ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
 use busbar_contract::redacted::Secret;
 use busbar_contract::transport::wire::{WireFault, WireStatus, WireStatusClass};
@@ -338,6 +339,7 @@ impl Egress {
                 probe: None,
                 refused: None,
                 unsent: None,
+                local: None,
                 sent: false,
                 failed: None,
             }),
@@ -377,6 +379,7 @@ impl Egress {
                 probe: Some(member),
                 refused: None,
                 unsent: None,
+                local: None,
                 sent: false,
                 failed: None,
             }),
@@ -477,6 +480,10 @@ struct State {
     refused: Option<ReasonCode>,
 
     unsent: Option<RefusalCode>,
+
+    /// The host's OWN fault refused this unit (its outbound framer could not render the request):
+    /// audited whether or not bytes were handed to the connection, since the member did nothing.
+    local: Option<RefusalCode>,
 
     sent: bool,
 
@@ -1207,6 +1214,40 @@ impl EgressFarEnd<'_> {
         fail_over()
     }
 
+    /// THE HOST'S OWN OUTBOUND FRAMER FAULT before any answer (`cause` names `CAUSE_FRAMER`,
+    /// `outbound`): the host could not render the request, so no member can cure it and none is
+    /// to blame. The attempt settles WITHOUT a breaker charge or a stated upstream failure, the
+    /// walk is refused as internal (500, no Retry-After, no fail-over: every member would meet the
+    /// same framer), the unit is audited `Internal`, and one diagnostic explains it.
+    fn local_fault(&self, _token: &Pass<Route>, cause: &ConnCause) -> FarPiece {
+        let named = self.lock().live.as_ref().map(|live| {
+            (
+                Self::metric_pool(&live.pool, &live.member).to_string(),
+                live.member.name.clone(),
+            )
+        });
+        let (pool, member) = named.unwrap_or_default();
+        tracing::error!(
+            diag = "BUSBAR-EGRESS-LOCAL-FRAMER",
+            pool = %pool,
+            member = %member,
+            error = %cause.text,
+            "the host's own framer could not render the request for the upstream; refused as an \
+             internal error and not charged to the member"
+        );
+        {
+            let mut w = self.lock();
+            w.local = Some(RefusalCode::Internal);
+            if w.walking {
+                w.walk_refusal = Some(Shed::internal());
+            } else {
+                w.walk.refuse(Shed::internal());
+            }
+        }
+        self.settle();
+        fail_over()
+    }
+
     fn attempt_cap(&self) -> u64 {
         let now = self.egress.clock.now_millis();
         let w = self.lock();
@@ -1723,6 +1764,15 @@ impl EgressFarEnd<'_> {
             Ok(Err(err)) if !answered && err.is_auth() => {
                 self.settle();
                 return Some(fail_over());
+            }
+            Ok(Err(ConnError::Fault)) if !answered => {
+                let cause = e.conns.failure_cause(e.caller, conn);
+                return Some(match cause {
+                    Some(cause) if cause.stage == CAUSE_FRAMER && cause.outbound => {
+                        self.local_fault(token, &cause)
+                    }
+                    _ => self.no_answer(token, NoAnswer::of(ConnError::Fault)),
+                });
             }
             Ok(Err(err)) if !answered => {
                 return Some(self.no_answer(token, NoAnswer::of(err)));
@@ -2451,7 +2501,7 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn unsent(&self, _token: &Pass<Route>) -> Option<RefusalCode> {
         let w = self.lock();
-        w.unsent.filter(|_| !w.sent)
+        w.local.or(w.unsent.filter(|_| !w.sent))
     }
 
     fn constrain(&self, _token: &Pass<Route>, constraint: Constraint) {
