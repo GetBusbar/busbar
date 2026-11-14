@@ -1,0 +1,10 @@
+if host
+    .validate_migrated(
+        &site.kind,
+        &site.module,
+        &settings,
+    )
+    .is_err()
+{
+    return;
+}

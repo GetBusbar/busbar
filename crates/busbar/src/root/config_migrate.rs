@@ -7,7 +7,7 @@ use zeroize::Zeroize;
 
 use busbar_contract::abi::sdk::migrate::MigrationAnswer;
 use busbar_kernel::config::PluginsCfg;
-use busbar_migrations::config::migrate_plugins::MigrateHost;
+use busbar_migrations::config::migrate_plugins::{MigrateHost, Shown, Unobtainable, Unvalidated};
 
 use crate::root::loader::PluginRegistry;
 
@@ -44,6 +44,11 @@ fn default_index() -> String {
 }
 
 pub const INDEX_ENV: &str = "BUSBAR_PLUGIN_INDEX";
+
+/// The release downloader the migrate host fetches the index and plugin assets with.
+fn release_download(url: &str) -> Result<Vec<u8>, String> {
+    crate::root::plugin_fetch::downloader(&[])(url)
+}
 
 /// THE RELEASE INDEX: every plugin the index knows, each with its repository, the repositories it
 /// was published from before, its kind, the words a configuration may name it by, and its
@@ -280,7 +285,11 @@ pub struct RootHost {
 
     local: OnceCell<PluginRegistry>,
 
-    index: OnceCell<Result<Index, String>>,
+    index: OnceCell<Result<Index, Unobtainable>>,
+    /// Where the release index is read from: `BUSBAR_PLUGIN_INDEX` if set, else the release default.
+    pub(in crate::root) index_source: String,
+    /// How the index (over https) and plugin assets are downloaded.
+    pub(in crate::root) download: fn(&str) -> Result<Vec<u8>, String>,
 
     fetched: OnceCell<FetchedDir>,
     startup: Option<std::sync::Arc<crate::root::startup_upgrade::documents::Documents>>,
@@ -410,6 +419,8 @@ impl RootHost {
             providers_file,
             local: OnceCell::new(),
             index: OnceCell::new(),
+            index_source: std::env::var(INDEX_ENV).unwrap_or_else(|_| default_index()),
+            download: release_download,
             fetched: OnceCell::new(),
             startup: None,
             templates: Default::default(),
@@ -537,18 +548,27 @@ impl RootHost {
         })
     }
 
-    fn index(&self) -> Result<&Index, String> {
+    fn index(&self) -> Result<&Index, Unobtainable> {
         self.index
             .get_or_init(|| {
-                let source = std::env::var(INDEX_ENV).unwrap_or_else(|_| default_index());
+                let source = &self.index_source;
+                // The reader's text echoes the source (credentials, signed queries): drop it and
+                // show only what `Shown` keeps.
+                let unreachable = |_: String| Unobtainable::IndexUnreachable {
+                    source: Shown::of(source),
+                };
                 let bytes = if source.starts_with(HTTPS_SOURCE_PREFIX)
                     || source.starts_with(HTTP_SOURCE_PREFIX)
                 {
-                    crate::root::plugin_fetch::downloader(&[])(&source)?
+                    (self.download)(source).map_err(unreachable)?
                 } else {
-                    std::fs::read(&source).map_err(|e| format!("{source}: {e}"))?
+                    std::fs::read(source).map_err(|_| Unobtainable::IndexUnreachable {
+                        source: Shown::of(source),
+                    })?
                 };
-                Index::parse(&bytes).map_err(|e| format!("{source}: not a release index: {e}"))
+                Index::parse(&bytes).map_err(|_| Unobtainable::NotAnIndex {
+                    source: Shown::of(source),
+                })
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -595,22 +615,24 @@ impl RootHost {
         Self::linked_door(kind, module).is_some() || self.local().answers(module, kind)
     }
 
-    fn fetch(&self, kind: &str, module: &str) -> Result<PluginRegistry, String> {
+    /// Obtain the current plugin for `kind`/`module` from the release index. Each failure is a
+    /// closed [`Unobtainable`]; no downloader, reader or registry text is carried.
+    fn fetch(&self, kind: &str, module: &str) -> Result<PluginRegistry, Unobtainable> {
         let index = self.index()?;
         let plugin = index
             .by_module(kind, module)
-            .ok_or_else(|| "the release index names no such plugin".to_string())?;
-        let pin = plugin.pin_for_this_core().ok_or_else(|| {
-            format!(
-                "the release index names no release of {} built for this busbar",
-                plugin.repo
-            )
-        })?;
-        let target = crate::root::plugin_fetch::release_asset(&pin)
-            .ok_or_else(|| format!("'{pin}' is not an org/repo@tag pin"))?;
+            .ok_or_else(|| Unobtainable::NoSuchPlugin {
+                source: Shown::of(&self.index_source),
+            })?;
+        let pin = plugin
+            .pin_for_this_core()
+            .ok_or_else(|| Unobtainable::NoReleaseForAbi {
+                repo: Shown::of(&plugin.repo),
+            })?;
+        let target = crate::root::plugin_fetch::release_asset(&pin).ok_or(Unobtainable::BadPin)?;
         if self.fetched.get().is_none() {
-            let dir = FetchedDir::create_in(&std::env::temp_dir())
-                .map_err(|e| format!("creating migration staging directory: {e}"))?;
+            let dir =
+                FetchedDir::create_in(&std::env::temp_dir()).map_err(|_| Unobtainable::Staging)?;
             let _ = self.fetched.set(dir);
         }
         let dir = &self
@@ -618,15 +640,80 @@ impl RootHost {
             .get()
             .expect("the staging directory was created")
             .0;
-        let bytes = crate::root::plugin_fetch::downloader(&[])(&target.url)
-            .map_err(|e| format!("downloading {}: {e}", target.url))?;
-        std::fs::write(dir.join(&target.filename), bytes)
-            .map_err(|e| format!("{}: {e}", dir.display()))?;
+        let bytes = (self.download)(&target.url).map_err(|_| Unobtainable::AssetUnreachable {
+            asset: Shown::of(&target.url),
+        })?;
+        std::fs::write(dir.join(&target.filename), bytes).map_err(|_| Unobtainable::Staging)?;
         let mut cfg = self.plugins.clone().unwrap_or_default();
         cfg.enabled = true;
         cfg.dir = dir.display().to_string();
         crate::root::boot::registry(Vec::new(), Some(&cfg), None, &mut |_| {})
+            .map_err(|_| Unobtainable::NotAdmitted)
     }
+
+    /// Check converted settings with the current plugin, keeping apart a plugin the host could
+    /// not obtain from one that refused them.
+    fn check(&self, kind: &str, module: &str, settings: &serde_json::Value) -> Result<(), Checked> {
+        // Planes receive an owned-plus-borrowed migration envelope, not their lifecycle
+        // settings blob. Full effective plane validation remains the ordinary boot reader's.
+        if kind == busbar_contract::abi::mechanism::kind::PLANE
+            || (kind == busbar_contract::abi::mechanism::kind::AUTH
+                && busbar_kernel::config::is_builtin_identity_module(module))
+        {
+            return Ok(());
+        }
+        let refused = |text: &str| Checked::Refused(text.to_owned());
+        if let Some((_, door)) = Self::linked_door(kind, module) {
+            let row = crate::root::loader::dispatch::LinkedRow::of(door)
+                .map_err(|_| refused("current migration plugin statement is unavailable"))?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+                .map_err(|_| refused("current migration plugin statement is invalid"))?;
+            let probe = self
+                .validation_probe(settings, &statement)
+                .map_err(Checked::Refused)?;
+            return crate::root::loader::dispatch::migrate::validate_migrated_door(
+                crate::root::loader::dispatch::load::raw(door),
+                &probe,
+            )
+            .map_err(Checked::Refused);
+        }
+        let local = self.local();
+        if let Some(row) = local
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+        {
+            let statement = row
+                .statement()
+                .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
+            let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+                .map_err(|_| refused("current migration plugin statement is invalid"))?;
+            let probe = self
+                .validation_probe(settings, &statement)
+                .map_err(Checked::Refused)?;
+            return row.validate_migrated(&probe).map_err(Checked::Refused);
+        }
+        let fetched = self.fetch(kind, module).map_err(Checked::Unavailable)?;
+        let row = fetched
+            .resolve(module)
+            .filter(|row| row.manifest.kind == kind)
+            .ok_or(Checked::Unavailable(Unobtainable::NotServed))?;
+        let statement = row
+            .statement()
+            .ok_or_else(|| refused("current migration plugin statement is unavailable"))?;
+        let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
+            .map_err(|_| refused("current migration plugin statement is invalid"))?;
+        let probe = self
+            .validation_probe(settings, &statement)
+            .map_err(Checked::Refused)?;
+        row.validate_migrated(&probe).map_err(Checked::Refused)
+    }
+}
+
+/// A current-plugin check that did not pass: the plugin could not be obtained, or it (or the
+/// host's probe of its statement) refused the settings with this text.
+enum Checked {
+    Unavailable(Unobtainable),
+    Refused(String),
 }
 
 impl RootHost {
@@ -684,50 +771,28 @@ impl MigrateHost for RootHost {
         module: &str,
         settings: &serde_json::Value,
     ) -> Result<(), String> {
-        // Planes receive an owned-plus-borrowed migration envelope, not their lifecycle
-        // settings blob. Full effective plane validation remains the ordinary boot reader's.
-        if kind == busbar_contract::abi::mechanism::kind::PLANE
-            || (kind == busbar_contract::abi::mechanism::kind::AUTH
-                && busbar_kernel::config::is_builtin_identity_module(module))
-        {
-            return Ok(());
-        }
-        if let Some((_, door)) = Self::linked_door(kind, module) {
-            let row = crate::root::loader::dispatch::LinkedRow::of(door)
-                .map_err(|_| "current migration plugin statement is unavailable")?;
-            let statement = busbar_contract::abi::mechanism::rendering::read(&row.statement)
-                .map_err(|_| "current migration plugin statement is invalid")?;
-            let probe = self.validation_probe(settings, &statement)?;
-            return crate::root::loader::dispatch::migrate::validate_migrated_door(
-                crate::root::loader::dispatch::load::raw(door),
-                &probe,
-            );
-        }
-        let local = self.local();
-        if let Some(row) = local
-            .resolve(module)
-            .filter(|row| row.manifest.kind == kind)
-        {
-            let statement = row
-                .statement()
-                .ok_or("current migration plugin statement is unavailable")?;
-            let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
-                .map_err(|_| "current migration plugin statement is invalid")?;
-            let probe = self.validation_probe(settings, &statement)?;
-            return row.validate_migrated(&probe);
-        }
-        let fetched = self.fetch(kind, module)?;
-        let row = fetched
-            .resolve(module)
-            .filter(|row| row.manifest.kind == kind)
-            .ok_or("current migration plugin is unavailable for validation")?;
-        let statement = row
-            .statement()
-            .ok_or("current migration plugin statement is unavailable")?;
-        let statement = busbar_contract::abi::mechanism::rendering::read(&statement)
-            .map_err(|_| "current migration plugin statement is invalid")?;
-        let probe = self.validation_probe(settings, &statement)?;
-        row.validate_migrated(&probe)
+        self.check(kind, module, settings)
+            .map_err(|answer| match answer {
+                Checked::Unavailable(Unobtainable::NotServed) => {
+                    "current migration plugin is unavailable for validation".to_owned()
+                }
+                Checked::Unavailable(why) => why.to_string(),
+                Checked::Refused(text) => text,
+            })
+    }
+
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        settings: &serde_json::Value,
+    ) -> Result<(), Unvalidated> {
+        // The plugin's own refusal text may echo settings: it is never carried.
+        self.check(kind, module, settings)
+            .map_err(|answer| match answer {
+                Checked::Unavailable(why) => Unvalidated::Unavailable(why),
+                Checked::Refused(_) => Unvalidated::Refused,
+            })
     }
 
     fn externalize_secret(
@@ -874,7 +939,9 @@ impl MigrateHost for RootHost {
         {
             row.migrate_credential(&resolved, from, &seal)?
         } else {
-            let fetched = self.fetch(busbar_contract::abi::mechanism::kind::AUTH, module)?;
+            let fetched = self
+                .fetch(busbar_contract::abi::mechanism::kind::AUTH, module)
+                .map_err(|_| "credential migration owner is unavailable")?;
             let row = fetched
                 .resolve(module)
                 .filter(|row| row.manifest.kind == busbar_contract::abi::mechanism::kind::AUTH)

@@ -1176,3 +1176,131 @@ fn cold_reference_discovery_preserves_owner_scope_and_never_selects_or_rewrites_
     assert_eq!((changes.len(), todos.len(), failures.len()), (1, 1, 0));
     assert!(!format!("{changes:?}{todos:?}").contains("PRIVATE_"));
 }
+
+/// The 1.4 `governance.db_path` shape: it migrates to a sqlite Store whose current plugin must
+/// check the settings before anything is written.
+const GOVERNANCE_14: &str = "governance: {enabled: true, db_path: busbar-governance.db}\n";
+
+/// A host with no migration for the sqlite Store, whose check of it answers `.0`.
+struct StoreCheck(super::Unvalidated);
+
+impl MigrateHost for StoreCheck {
+    fn validate_current(
+        &self,
+        kind: &str,
+        module: &str,
+        _: &serde_json::Value,
+    ) -> Result<(), super::Unvalidated> {
+        if kind == "store" && module == "sqlite" {
+            return Err(self.0.clone());
+        }
+        Ok(())
+    }
+    fn migrate(
+        &self,
+        _: &str,
+        _: &str,
+        _: &serde_json::Value,
+        _: &str,
+    ) -> Result<Option<(String, MigrationAnswer)>, String> {
+        Ok(None)
+    }
+    fn repin(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    fn release_for(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn a_store_whose_current_plugin_cannot_be_obtained_says_why() {
+    let Err(line) = migrate_config_with(
+        GOVERNANCE_14,
+        &StoreCheck(super::Unvalidated::Unavailable(
+            super::Unobtainable::IndexUnreachable {
+                source: super::Shown::of("idx.json"),
+            },
+        )),
+    ) else {
+        panic!("an unchecked Store is not emitted");
+    };
+    assert_eq!(
+        line,
+        "store.settings: the current store plugin 'sqlite' could not be obtained to check these \
+         settings (the plugin index idx.json could not be read); install it in a plugins \
+         directory and set `plugins: {enabled: true, dir: <dir>}` in this config, or make \
+         BUSBAR_PLUGIN_INDEX and the plugin's GitHub release reachable, then retry"
+    );
+    assert!(
+        !line.contains("kit"),
+        "no plugin kit is offered before one exists: {line}"
+    );
+}
+
+#[test]
+fn a_plugin_refusal_prints_no_plugin_text() {
+    // `Refused` carries no plugin text by type; the refused settings themselves hold the
+    // sentinel, so the line must not echo them either.
+    let Err(line) = migrate_config_with(
+        "governance: {enabled: true, db_path: LEAK-sk-123.db}\n",
+        &StoreCheck(super::Unvalidated::Refused),
+    ) else {
+        panic!("refused settings are not emitted");
+    };
+    assert_eq!(
+        line,
+        "store.settings: current plugin validation refused unchanged settings; install the \
+         current plugin or resolve its migration prerequisites before retrying"
+    );
+    assert!(!line.contains("LEAK-sk-123"), "{line}");
+}
+
+#[test]
+fn shown_strips_userinfo_query_and_fragment() {
+    let shown = |s: &str| super::Shown::of(s).to_string();
+    for (value, expected) in [
+        ("https://a:b@h:8/p?q=1#f", "https://h:8/p"),
+        ("https://h/p", "https://h/p"),
+        ("/tmp/idx.json", "/tmp/idx.json"),
+        ("https://x@y@h/p", "https://h/p"),
+        ("HTTPS://a:b@h/p?q#f", "HTTPS://h/p"),
+        ("file://a:b@h/p", "file://h/p"),
+        ("https://a:b@h?q=1", "https://h"),
+        ("https://a:b@h#f", "https://h"),
+        ("https//user:TOK@mirror/p?sig=S", "mirror/p"),
+        ("https://u:ab/cd==@h/p", "https://h/p"),
+        ("https://h/p?e=a@b", "https://<redacted>"),
+        ("https://h/a@b/p", "https://b/p"),
+        ("/tmp/a?b@c", "<redacted>"),
+    ] {
+        assert_eq!(shown(value), expected, "{value}");
+    }
+    for (value, absent) in [
+        ("https://u:p?ss@h/p", &["u:", "ss"][..]),
+        ("https://u:p#ss@h/p", &["u:", "ss"][..]),
+        ("https://ci:pa?ssTOKEN@mirror/x", &["ci", "pa", "TOKEN"][..]),
+        (
+            "https://storage.example/idx.json?X-Goog-Credential=sa@proj.iam.gserviceaccount.com/20261114/auto/storage/goog4_request&X-Goog-Signature=SECRETSIG",
+            &["SECRETSIG", "goog4_request", "proj"][..],
+        ),
+        ("https://h/p#tok@en", &["en"][..]),
+    ] {
+        let got = shown(value);
+        assert_eq!(got, "https://<redacted>", "{value}");
+        for text in absent {
+            assert!(!got.contains(text), "{value} kept {text}: {got}");
+        }
+    }
+    let got = shown("https://ci:ab/cdTOKEN==@mirror.example/plugin-index.json");
+    assert_eq!(got, "https://mirror.example/plugin-index.json");
+    for text in ["ci:", "ab/", "cdTOKEN"] {
+        assert!(!got.contains(text), "{got}");
+    }
+    let got = shown("a:b@c://h@x");
+    assert_eq!(got, "x");
+    assert!(!got.contains("a:b") && !got.contains("c://"), "{got}");
+    for value in ["x/y\n[busbar] forged", "\x1b[31m", "/tmp/a b", "caf\u{e9}"] {
+        assert_eq!(shown(value), "<unprintable source>", "{value:?}");
+    }
+}
