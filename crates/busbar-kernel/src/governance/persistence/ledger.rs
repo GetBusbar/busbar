@@ -384,7 +384,7 @@ impl<'a> Tx<'a> {
         }
     }
     async fn prefetch(&mut self, mut addresses: Vec<Address>) -> Result<()> {
-        addresses.sort_unstable();
+        addresses.sort();
         addresses.dedup();
         #[expect(
             clippy::disallowed_methods,

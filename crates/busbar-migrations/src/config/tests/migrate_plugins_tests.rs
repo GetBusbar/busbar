@@ -532,7 +532,7 @@ providers:
         .iter()
         .filter_map(serde_yaml::Value::as_str)
         .collect();
-    allowed.sort_unstable();
+    allowed.sort();
     assert_eq!(allowed, ["10.0.0.5", "10.0.0.6", "192.168.1.9"]);
 }
 

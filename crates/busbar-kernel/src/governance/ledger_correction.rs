@@ -1450,7 +1450,7 @@ impl GovState {
             .iter()
             .map(|(bucket, _)| self.budget.shard_index(bucket))
             .collect();
-        order.sort_unstable();
+        order.sort();
         order.dedup();
         #[expect(
             clippy::disallowed_methods,
@@ -1759,7 +1759,7 @@ impl GovState {
                 .iter()
                 .map(|(bucket, _)| self.budget.shard_index(bucket))
                 .collect();
-            order.sort_unstable();
+            order.sort();
             order.dedup();
             let pending = {
                 #[expect(

@@ -127,7 +127,7 @@ impl GovState {
             .iter()
             .map(|t| self.budget.shard_index(&t.bucket))
             .collect();
-        shards.sort_unstable();
+        shards.sort();
         shards.dedup();
         let capture = || -> RecordStoreResult<Vec<Option<BudgetCell>>> {
             #[expect(

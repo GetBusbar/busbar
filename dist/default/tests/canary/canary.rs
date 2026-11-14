@@ -201,7 +201,7 @@ pub fn sweep(scenario: &str, canaries: &[Canary], sinks: &[Sink], notes: &[Strin
     let _ = writeln!(report, "# canary scenario: {scenario}");
     let _ = writeln!(report, "# sinks searched: {}", sinks.len());
     let mut names: Vec<&str> = sinks.iter().map(|s| s.name.as_str()).collect();
-    names.sort_unstable();
+    names.sort();
     names.dedup();
     for n in names {
         let _ = writeln!(report, "#   {n}");

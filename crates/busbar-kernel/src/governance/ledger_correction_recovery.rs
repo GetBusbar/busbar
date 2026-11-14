@@ -960,7 +960,7 @@ impl Custody {
             .iter()
             .map(|(bucket, _)| gov.budget.shard_index(bucket))
             .collect();
-        order.sort_unstable();
+        order.sort();
         order.dedup();
         #[expect(
             clippy::disallowed_methods,

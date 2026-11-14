@@ -156,7 +156,7 @@ pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) ->
         }
         addresses.push(&predicate.address);
     }
-    addresses.sort_unstable();
+    addresses.sort();
     let mut controls = 0;
     for mutation in &candidate.mutations {
         let Mutation::Put { address, value } = mutation else {

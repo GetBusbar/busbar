@@ -264,7 +264,7 @@ impl<O> Candidate<O> {
                 }
             }
         }
-        predicates.sort_unstable();
+        predicates.sort();
         if predicates.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(E::DuplicatePredicate);
         }
@@ -300,8 +300,8 @@ impl<O> Candidate<O> {
                 }
             }
         }
-        points.sort_unstable();
-        ranges.sort_unstable();
+        points.sort();
+        ranges.sort();
         if points.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(E::Overlap);
         }

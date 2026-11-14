@@ -73,7 +73,7 @@ pub async fn walk_stored_chains(
         }
     };
     nodes.push(own);
-    nodes.sort_unstable();
+    nodes.sort();
     nodes.dedup();
     for node in nodes {
         walk.chains.push(node);

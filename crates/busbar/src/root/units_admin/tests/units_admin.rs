@@ -1738,7 +1738,7 @@ async fn every_ledger_view_answers_from_the_ledger_and_not_from_the_dispatch() {
         bodies.push(answer.body);
     }
     let mut distinct = bodies.clone();
-    distinct.sort_unstable();
+    distinct.sort();
     distinct.dedup();
     assert_eq!(
         distinct.len(),

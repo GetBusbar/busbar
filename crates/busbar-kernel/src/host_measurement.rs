@@ -407,7 +407,7 @@ impl MeasurementOperation {
         if revision == 0 || revision > MAX_REVISIONS as u64 {
             return Err(Refusal::Malformed);
         }
-        incoming[..length].sort_unstable_by_key(|(index, _)| *index);
+        incoming[..length].sort_by_key(|(index, _)| *index);
         let mut hash = Sha256::new();
         hash.update(b"busbar/measurement-snapshot/v1\0");
         for (index, count) in &incoming[..length] {

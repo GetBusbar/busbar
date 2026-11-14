@@ -195,7 +195,7 @@ pub fn writer_inventory_digest(writers: &[String]) -> Result<[u8; 32], Error> {
         return Err(Error::Invalid);
     }
     let mut sorted: Vec<&str> = writers.iter().map(String::as_str).collect();
-    sorted.sort_unstable();
+    sorted.sort();
     if sorted.windows(2).any(|pair| pair[0] == pair[1]) {
         return Err(Error::Invalid);
     }

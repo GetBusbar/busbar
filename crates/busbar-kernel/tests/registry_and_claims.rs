@@ -57,7 +57,7 @@ fn form_of(selector: &Selector) -> &'static str {
 fn the_fixture_carries_one_selector_of_every_form() {
     let mut named: Vec<&'static str> = every_form().iter().map(form_of).collect();
     let listed = named.len();
-    named.sort_unstable();
+    named.sort();
     named.dedup();
     assert_eq!(
         named.len(),
