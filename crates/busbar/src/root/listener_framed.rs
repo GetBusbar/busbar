@@ -1825,8 +1825,15 @@ fn absorb_wire(out: &mut SecureVec, failed: &mut bool, wire: &[u8]) {
     if *failed {
         return;
     }
-    // RED STUB (TRANSPORT-TLS §8, T7b): the rejected form drops the bytes silently.
-    let _ = out.extend(wire);
+    if let Err(e) = out.extend(wire) {
+        tracing::warn!(
+            target: "busbar::listener",
+            error = %e,
+            "reply buffer allocation failed; connection closed"
+        );
+        *failed = true;
+        out.clear();
+    }
 }
 
 /// One write of the reply buffer's contiguous run; what the peer took is wiped. `false` = the
