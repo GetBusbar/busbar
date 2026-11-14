@@ -13,22 +13,22 @@ const WRITE_TIER_UNITS: [&str; 2] = ["cache_write_30m", "cache_write_12h"];
 /// its rendering) when it is a representable number. A present `cache_write_utok` never falls back
 /// to `input_utok`; a non-number (an uninterpolated `${RATE}`), a negative rate or one finer than a
 /// nano-unit yields `None`, and the units stay unpriced (refused under #42 when hit, audited).
-fn resolved_write_unit_rate(entry: &Mapping) -> (&'static str, Option<(Value, String)>) {
-    let key = if entry.contains_key(Value::from("cache_write_utok")) {
+fn resolved_write_unit_rate(entry: &Pairs) -> (&'static str, Option<(Value, String)>) {
+    let key = if entry.contains_key("cache_write_utok") {
         "cache_write_utok"
     } else {
         "input_utok"
     };
     let rate = entry
-        .get(Value::from(key))
+        .get_key(key)
         .and_then(Value::as_f64)
         .and_then(busbar_kernel_ledger::cost::representable_nano_rate)
         .map(busbar_kernel_ledger::cost::UnitRate::from_nanos)
-        .and_then(|rate| serde_yaml::to_value(rate).ok())
+        .and_then(|rate| busbar_contract::yaml::to_value(rate).ok())
         .map(|value| {
             let shown = match &value {
-                Value::String(text) => text.clone(),
-                other => serde_yaml::to_string(other)
+                Value::Text(text) => text.clone(),
+                other => busbar_contract::yaml::to_string(other)
                     .map(|text| text.trim_end().to_owned())
                     .unwrap_or_default(),
             };
@@ -38,7 +38,7 @@ fn resolved_write_unit_rate(entry: &Mapping) -> (&'static str, Option<(Value, St
 }
 
 pub(super) fn migrate(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
     notices: &mut Vec<String>,
@@ -52,7 +52,7 @@ pub(super) fn migrate(
 }
 
 pub(super) fn migrate_bootstrap(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     notices: &mut Vec<String>,
 ) {
@@ -67,7 +67,7 @@ pub(super) fn migrate_bootstrap(
 /// is a change line and a notice (only the authored model key and fixed text, never a value), which
 /// the startup callers log at WARN because they zeroize change lines. Plane blocks are untouched.
 pub(crate) fn unfold_zero_cache_write(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     notices: &mut Vec<String>,
 ) {
@@ -76,8 +76,8 @@ pub(crate) fn unfold_zero_cache_write(
         return;
     };
     for model in models {
-        if let Some(Value::Mapping(entry)) = card.get_mut(Value::from(model.as_str())) {
-            entry.remove(Value::from("cache_write_utok"));
+        if let Some(Value::Map(entry)) = card.get_key_mut(model.as_str()) {
+            entry.remove_key("cache_write_utok");
             let line = format!(
                 "rate_card.{model}.cache_write_utok: 0 removed (1.5.5 spelling of 'no separate \
                  write tariff'); cache writes price at input_utok"
@@ -141,7 +141,7 @@ fn drop_hostless_metadata_entries(root: &mut Pairs, changes: &mut Vec<String>) {
 /// they hold, and each entry that admitted something is named in a BUSBAR-3411 warning: cloud
 /// metadata is refused for every outbound connection, so a destination it reached is now refused.
 fn retire_metadata_carve_outs(
-    root: &mut Mapping,
+    root: &mut Pairs,
     changes: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
@@ -149,7 +149,7 @@ fn retire_metadata_carve_outs(
         busbar_kernel::diagnostics::MIGRATE_METADATA_CARVE_OUT_REMOVED.banner();
     let mut report = |path: &str, value: Value| {
         let entries: Vec<String> = match &value {
-            Value::Sequence(list) => list
+            Value::Array(list) => list
                 .iter()
                 .map(|e| e.as_str().map_or_else(|| format!("{e:?}"), str::to_owned))
                 .collect(),
@@ -172,7 +172,7 @@ fn retire_metadata_carve_outs(
     };
     if let Some(security) = mapping_mut(root, "security") {
         for key in ["allow_metadata_hosts", "allow_all_metadata"] {
-            if let Some(value) = security.remove(Value::from(key)) {
+            if let Some(value) = security.remove_key(key) {
                 report(&format!("security.{key}"), value);
             }
         }
@@ -182,7 +182,7 @@ fn retire_metadata_carve_outs(
             let (Some(name), Value::Map(provider)) = (name.as_str(), provider) else {
                 continue;
             };
-            if let Some(value) = provider.remove(Value::from("allow_metadata_hosts")) {
+            if let Some(value) = provider.remove_key("allow_metadata_hosts") {
                 report(&format!("providers.{name}.allow_metadata_hosts"), value);
             }
         }
@@ -206,7 +206,7 @@ const PRIVATE_REACH_URLS: &[&[&str]] = &[
 /// one policy for every outbound connection, `advanced.allow_destinations`, so the key is removed
 /// and EXACTLY the hosts that registration dials are listed there (no wildcard, no network). A
 /// metadata or unjudgeable host is never listed. `allow_private: false` said nothing and is dropped.
-fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn retire_private_reach(root: &mut Pairs, changes: &mut Vec<String>, warnings: &mut Vec<String>) {
     const CODE: busbar_contract::diagnostic::Banner =
         busbar_kernel::diagnostics::MIGRATE_PRIVATE_REACH_TO_ALLOWLIST.banner();
     let mut hosts: Vec<(String, String, bool)> = Vec::new();
@@ -215,11 +215,11 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
             continue;
         };
         for (name, entry) in registrations.iter_mut() {
-            let (Some(name), Value::Mapping(entry)) = (name.as_str(), entry) else {
+            let (Some(name), Value::Map(entry)) = (name.as_str(), entry) else {
                 continue;
             };
             let at = format!("{section}.{name}");
-            let Some(value) = entry.remove(Value::from(PRIVATE_REACH_KEY)) else {
+            let Some(value) = entry.remove_key(PRIVATE_REACH_KEY) else {
                 continue;
             };
             if value.as_bool() != Some(true) {
@@ -232,7 +232,7 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
             let urls: Vec<(String, bool)> = PRIVATE_REACH_URLS
                 .iter()
                 .filter_map(|path| {
-                    let mut at: &Value = entry.get(Value::from(path[0]))?;
+                    let mut at: &Value = entry.get_key(path[0])?;
                     for key in &path[1..] {
                         at = at.get(*key)?;
                     }
@@ -265,7 +265,7 @@ fn retire_private_reach(root: &mut Mapping, changes: &mut Vec<String>, warnings:
 
 /// List exactly the host `url` names in `advanced.allow_destinations` for the registration at `at`.
 fn allow_registration_host(
-    root: &mut Mapping,
+    root: &mut Pairs,
     at: &str,
     url: &str,
     changes: &mut Vec<String>,
@@ -331,7 +331,7 @@ pub(crate) fn names_loopback_url(url: &str) -> bool {
     }
 }
 
-fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
+fn price_open_units(root: &mut Pairs, changes: &mut Vec<String>) {
     let open: Vec<&'static str> = busbar_kernel::plane_driver::registry::plane_decls()
         .iter()
         .filter(|d| d.fallback)
@@ -359,22 +359,20 @@ fn price_open_units(root: &mut Mapping, changes: &mut Vec<String>) {
             continue;
         };
         let (write_source, write_rate) = resolved_write_unit_rate(entry);
-        let units = entry
-            .entry(Value::from("units"))
-            .or_insert_with(|| Value::Mapping(Mapping::new()));
-        let Value::Mapping(units) = units else {
+        let units = entry.entry_or_insert_with("units", || Value::Map(Pairs::new()));
+        let Value::Map(units) = units else {
             continue;
         };
         let (written, added): (Vec<&str>, Vec<&str>) = open
             .iter()
             .copied()
-            .filter(|u| !units.contains_key(Value::from(*u)))
+            .filter(|u| !units.contains_key(*u))
             .partition(|u| WRITE_TIER_UNITS.contains(u));
         if !written.is_empty() {
             match &write_rate {
                 Some((rate, shown)) => {
                     for unit in &written {
-                        units.insert(Value::from(*unit), rate.clone());
+                        units.insert_key(*unit, rate.clone());
                     }
                     changes.push(format!(
                         "rate_card.{lane}.units: added {} at {shown} (the entry's cache_write_utok, \

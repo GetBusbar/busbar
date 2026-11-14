@@ -12,11 +12,8 @@ name = "busbar_kernel_wal"
 path = "src/lib.rs"
 
 [dependencies]
-ring = { workspace = true }
+busbar-contract = { path = "../busbar-contract" }
 foldhash = { workspace = true }
-
-[dev-dependencies]
-sha2 = { workspace = true }
 
 [lints]
 workspace = true

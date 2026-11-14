@@ -201,7 +201,12 @@ fn auth_v4_appends_serve_after_target_and_nothing_else() {
     assert_eq!(size_of::<auth::Ops>(), 8 + 8 * auth::SLOTS as usize);
     // `CAP_PROVISION` is a new caps bit; the old bits keep their values.
     assert_eq!(
-        (auth::CAP_INBOUND, auth::CAP_LOGIN, auth::CAP_OUTBOUND, auth::CAP_PROVISION),
+        (
+            auth::CAP_INBOUND,
+            auth::CAP_LOGIN,
+            auth::CAP_OUTBOUND,
+            auth::CAP_PROVISION
+        ),
         (1, 2, 4, 8)
     );
 }
@@ -210,11 +215,29 @@ fn auth_v4_appends_serve_after_target_and_nothing_else() {
 fn the_auth_serve_in_is_the_hook_serve_in_plus_the_verified_client() {
     use std::mem::{offset_of, size_of};
     // Byte for byte the hook shape, then one appended `client`.
-    assert_eq!(offset_of!(auth::ServeIn, method), offset_of!(hook::ServeIn, method));
-    assert_eq!(offset_of!(auth::ServeIn, path), offset_of!(hook::ServeIn, path));
-    assert_eq!(offset_of!(auth::ServeIn, query), offset_of!(hook::ServeIn, query));
-    assert_eq!(offset_of!(auth::ServeIn, headers), offset_of!(hook::ServeIn, headers));
-    assert_eq!(offset_of!(auth::ServeIn, body), offset_of!(hook::ServeIn, body));
-    assert_eq!(offset_of!(auth::ServeIn, client), size_of::<hook::ServeIn>());
+    assert_eq!(
+        offset_of!(auth::ServeIn, method),
+        offset_of!(hook::ServeIn, method)
+    );
+    assert_eq!(
+        offset_of!(auth::ServeIn, path),
+        offset_of!(hook::ServeIn, path)
+    );
+    assert_eq!(
+        offset_of!(auth::ServeIn, query),
+        offset_of!(hook::ServeIn, query)
+    );
+    assert_eq!(
+        offset_of!(auth::ServeIn, headers),
+        offset_of!(hook::ServeIn, headers)
+    );
+    assert_eq!(
+        offset_of!(auth::ServeIn, body),
+        offset_of!(hook::ServeIn, body)
+    );
+    assert_eq!(
+        offset_of!(auth::ServeIn, client),
+        size_of::<hook::ServeIn>()
+    );
     assert_eq!(size_of::<auth::ServeOut>(), size_of::<hook::ServeOut>());
 }

@@ -334,8 +334,9 @@ pub fn migrate_overlay_fragment(
     raw: &str,
     host: &dyn super::migrate_plugins::MigrateHost,
 ) -> Result<MigrateOutput, String> {
-    let mut root: Mapping =
-        serde_yaml::from_str(raw).map_err(|_| "overlay fragment is not a mapping")?;
+    let mut root: Pairs = yaml::mapping_from_str(raw)
+        .map_err(|_| "overlay fragment is not a mapping")?
+        .into();
     let (mut changes, mut todos, mut warnings, mut failures, mut notices) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     migrate_store_module(&mut root, &mut changes, &mut todos);
@@ -353,7 +354,7 @@ pub fn migrate_overlay_fragment(
         return Err(failures.join("; "));
     }
     upgrade_1_6::migrate(&mut root, &mut changes, &mut warnings, &mut notices);
-    let yaml = serde_yaml::to_string(&Value::Mapping(root))
+    let yaml = yaml::to_string(&Value::Map(root))
         .map_err(|_| "cannot serialize converted overlay fragment")?;
     Ok(MigrateOutput {
         yaml,
@@ -1634,12 +1635,12 @@ fn migrate_hooks_block(root: &mut Pairs, changes: &mut Vec<String>, todos: &mut 
 }
 
 /// The top-level `pools:` key is the model plane's alone (a released 1.5.5 key).
-fn check_top_level_pool_plane(root: &Mapping, todos: &mut Vec<String>) {
+fn check_top_level_pool_plane(root: &Pairs, todos: &mut Vec<String>) {
     let pools_key = busbar_contract::section::RESERVED_POOLS_KEY;
     let model = |member: &str| -> bool {
-        matches!(root.get(Value::from(field::MODELS)), Some(Value::Mapping(m)) if m.contains_key(Value::from(member)))
+        matches!(root.get_key(field::MODELS), Some(Value::Map(m)) if m.contains_key(member))
     };
-    let Some(Value::Mapping(pools)) = root.get(Value::from(pools_key)) else {
+    let Some(Value::Map(pools)) = root.get_key(pools_key) else {
         return;
     };
     for (name, def) in pools {

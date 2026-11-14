@@ -22,8 +22,8 @@ fn a_metadata_entry_naming_no_host_is_removed_and_reported() {
     .expect("migrates");
     let d = doc(&out.yaml);
     assert_eq!(
-        d["security"]["blocked_metadata_hosts"],
-        serde_yaml::from_str::<serde_yaml::Value>("['169.254.169.254', 'metadata.corp']").unwrap(),
+        d.at("security").at("blocked_metadata_hosts"),
+        &yaml::from_str::<Value>("['169.254.169.254', 'metadata.corp']").unwrap(),
         "{}",
         out.yaml
     );
@@ -50,19 +50,23 @@ fn the_retired_metadata_carve_outs_are_removed_and_each_entry_is_named() {
     .expect("migrates");
     let d = doc(&out.yaml);
     assert!(
-        d["security"].get("allow_metadata_hosts").is_none(),
+        d.at("security").get("allow_metadata_hosts").is_none(),
         "{}",
         out.yaml
     );
     assert!(
-        d["security"].get("allow_all_metadata").is_none(),
+        d.at("security").get("allow_all_metadata").is_none(),
         "{}",
         out.yaml
     );
-    assert_eq!(d["security"]["blocked_metadata_hosts"][0], "10.9.9.9");
+    assert_eq!(
+        d.at("security").at("blocked_metadata_hosts").at(0_usize),
+        &Value::from("10.9.9.9")
+    );
     for provider in ["gemini", "other"] {
         assert!(
-            d["providers"][provider]
+            d.at("providers")
+                .at(provider)
                 .get("allow_metadata_hosts")
                 .is_none(),
             "{}",
@@ -214,8 +218,8 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
     .expect("migrates");
     let d = doc(&out.yaml);
     assert_eq!(
-        d["advanced"]["allow_destinations"],
-        serde_yaml::from_str::<serde_yaml::Value>(
+        d.at("advanced").at("allow_destinations"),
+        &yaml::from_str::<Value>(
             "['already.internal', 'mcp.tools.internal', '10.1.2.3', 'fd00::7']"
         )
         .unwrap(),
@@ -230,12 +234,15 @@ fn allow_private_becomes_exactly_the_registrations_hosts_in_the_one_allowlist() 
     ] {
         let (section, name) = at.split_once('.').unwrap();
         assert!(
-            d[section][name].get("allow_private").is_none(),
+            d.at(section).at(name).get("allow_private").is_none(),
             "{at}: {}",
             out.yaml
         );
     }
-    assert_eq!(d["tools"]["hooks"][0], "pii-guard");
+    assert_eq!(
+        d.at("tools").at("hooks").at(0_usize),
+        &Value::from("pii-guard")
+    );
     let report = out.changes.join("\n");
     assert!(
         report.contains("BUSBAR-3410: tools.search.allow_private: replaced by advanced.allow_destinations: 'mcp.tools.internal'"),
@@ -284,7 +291,7 @@ fn allow_private_never_lists_a_metadata_host() {
         out.yaml
     );
     for name in ["imds", "gce"] {
-        assert!(d["agents"][name].get("allow_private").is_none());
+        assert!(d.at("agents").at(name).get("allow_private").is_none());
         assert!(
             out.warnings.iter().any(|w| w.starts_with(&format!(
                 "BUSBAR-3410: agents.{name}.allow_private: removed; "
@@ -308,8 +315,8 @@ fn allow_private_on_a_loopback_http_registration_lists_it_without_a_plaintext_wa
     .expect("migrates");
     let d = doc(&out.yaml);
     assert_eq!(
-        d["advanced"]["allow_destinations"],
-        serde_yaml::from_str::<serde_yaml::Value>("['localhost', '127.0.0.1']").unwrap(),
+        d.at("advanced").at("allow_destinations"),
+        &yaml::from_str::<Value>("['localhost', '127.0.0.1']").unwrap(),
         "{}",
         out.yaml
     );
@@ -341,14 +348,14 @@ fn unfold_zero_cache_write_on_every_yaml_path() {
                         cache_write_utok: 0}\n";
     let unfolded = |path: &str, out: &MigrateOutput| {
         let d = doc(&out.yaml);
-        let entry = &d["rate_card"]["m"];
+        let entry = d.at("rate_card").at("m");
         assert!(
             entry.get("cache_write_utok").is_none(),
             "{path}: the 1.5.5 zero is removed:\n{}",
             out.yaml
         );
-        assert_eq!(entry["cache_read_utok"], Value::from(0), "{path}");
-        assert_eq!(entry["input_utok"], Value::from(2.5), "{path}");
+        assert_eq!(entry.at("cache_read_utok"), &Value::from(0), "{path}");
+        assert_eq!(entry.at("input_utok"), &Value::from(2.5), "{path}");
         assert_eq!(
             out.changes.iter().filter(|c| *c == LINE).count(),
             1,
@@ -397,10 +404,13 @@ fn unfold_zero_cache_write_on_every_yaml_path() {
     )
     .expect("migrates");
     let d = doc(&out.yaml);
-    assert_eq!(d["rate_card"]["m"]["cache_write_utok"], Value::from(3.125));
     assert_eq!(
-        d["llm"]["rate_card"]["m"]["cache_write_utok"],
-        Value::from(0)
+        d.at("rate_card").at("m").at("cache_write_utok"),
+        &Value::from(3.125)
+    );
+    assert_eq!(
+        d.at("llm").at("rate_card").at("m").at("cache_write_utok"),
+        &Value::from(0)
     );
     assert!(out.notices.is_empty(), "{:?}", out.notices);
 }

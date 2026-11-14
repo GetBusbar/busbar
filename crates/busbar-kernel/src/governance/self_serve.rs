@@ -42,27 +42,28 @@ pub(crate) fn hold_reason(
 
 impl GovState {
     fn derive_self_subject(seed: &[u8; 32], user_sub: &str, epoch: u64) -> String {
-        /// Streams formatted text straight into the MAC, so the message is never materialized.
-        struct MacText<'a>(&'a mut ring::hmac::Context);
-        impl std::fmt::Write for MacText<'_> {
-            fn write_str(&mut self, text: &str) -> std::fmt::Result {
-                self.0.update(text.as_bytes());
-                Ok(())
-            }
-        }
-        let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, seed);
-        let mut mac = ring::hmac::Context::with_key(&key);
-        std::fmt::Write::write_fmt(
-            &mut MacText(&mut mac),
-            format_args!("{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}"),
-        )
-        .expect("a MAC accepts any text");
-        let tag = mac.sign();
+        // The epoch's decimal digits, written on the stack: the MAC input is the same text as
+        // `{SELF_KEY_GROUP_PREFIX}{user_sub}#{epoch}`, fed in parts so it is never materialized.
+        let mut digits = [0u8; 20];
+        let mut cursor: &mut [u8] = &mut digits;
+        let _ = std::io::Write::write_fmt(&mut cursor, format_args!("{epoch}"));
+        let written = 20 - cursor.len();
+        // PANIC: `seed` is the fixed 32-byte token-signing secret; no backend refuses a 32-byte
+        // HMAC-SHA256 key (FIPS's floor is 14 bytes), so this cannot fail for a running node.
+        let key = busbar_contract::crypto::HmacSha256Key::new(seed).unwrap_or_else(|e| {
+            panic!("crypto backend refused HMAC-SHA256 under a 32-byte key: {e}")
+        });
+        let tag = key.sign_parts(&[
+            SELF_KEY_GROUP_PREFIX.as_bytes(),
+            user_sub.as_bytes(),
+            b"#",
+            &digits[..written],
+        ]);
         #[expect(
             clippy::disallowed_methods,
             reason = "config: a self-serve key id is derived once per self-serve mint (control plane)"
         )]
-        let id = format!("{VK_ID_PREFIX}{}", hex::encode(&tag.as_ref()[..16]));
+        let id = format!("{VK_ID_PREFIX}{}", hex::encode(&tag[..16]));
         id
     }
 

@@ -241,11 +241,12 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         key = key_file.display(),
     );
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).expect("the deployment");
-    let defs: HashMap<String, busbar_kernel::config::ProviderDef> = serde_yaml::from_str(&format!(
-        "oai0:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",
-        opts.dialect.unwrap_or_else(|| word("dialect"))
-    ))
-    .expect("the providers");
+    let defs: HashMap<String, busbar_kernel::config::ProviderDef> =
+        busbar_contract::yaml::from_str(&format!(
+            "oai0:\n  protocol: {}\n  base_url: 'http://127.0.0.1:{port}'\n",
+            opts.dialect.unwrap_or_else(|| word("dialect"))
+        ))
+        .expect("the providers");
     let mut cfg = busbar_kernel::config::resolve(&deploy, &defs)
         .unwrap_or_else(|e| panic!("the configuration resolves: {}", e.join("; ")));
     let providers = provider_routes(
@@ -430,7 +431,7 @@ pub(crate) async fn node_rig(instance: &'static str, port: u16, opts: NodeRigOpt
         gov: Arc::clone(&gov),
         journal: Some(Arc::clone(&post) as Arc<dyn busbar_kernel::plane_driver::HookJournal>),
     };
-    let sections: BTreeMap<&'static str, serde_yaml::Value> = sections;
+    let sections: BTreeMap<&'static str, busbar_contract::yaml::Value> = sections;
     let served = compose_planes_over(
         &crate::LINKED,
         &[(instance.to_string(), plane)],

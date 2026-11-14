@@ -31,7 +31,8 @@ fn glob(pattern: &str, text: &str) -> bool {
 fn native_structured_output(model: &str) -> bool {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../providers.yaml");
     let text = std::fs::read_to_string(&path).expect("the shipped catalog is readable");
-    let catalog: serde_json::Value = serde_yaml::from_str(&text).expect("the catalog is YAML");
+    let catalog: serde_json::Value =
+        busbar_contract::yaml::from_str(&text).expect("the catalog is YAML");
     let entry = &catalog["anthropic"];
     let rule = entry["model_capabilities"]
         .as_array()
@@ -73,7 +74,14 @@ fn every_model_anthropic_lists_for_structured_outputs_is_native_in_the_shipped_c
     ] {
         assert!(native_structured_output(model), "{model}");
     }
-    for model in ["claude-opus-4-1", "claude-opus-4-1-20250805", "claude-3-7-sonnet-latest"] {
-        assert!(!native_structured_output(model), "{model} is not on Anthropic's list");
+    for model in [
+        "claude-opus-4-1",
+        "claude-opus-4-1-20250805",
+        "claude-3-7-sonnet-latest",
+    ] {
+        assert!(
+            !native_structured_output(model),
+            "{model} is not on Anthropic's list"
+        );
     }
 }

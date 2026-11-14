@@ -129,8 +129,7 @@ pub fn migrate_overlay_with(
         }
     }
     let fragment = super::migrate_plugins::yaml_value(&Value::Object(fragment))?;
-    let raw =
-        serde_yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
+    let raw = yaml::to_string(&fragment).map_err(|_| "cannot encode overlay migration input")?;
     let mut converted = super::migrate::migrate_overlay_fragment(&raw, &OverlayHost(host))?;
     if !converted.todos.is_empty() {
         return Err("overlay migration has unresolved plugin or configuration prerequisites; migrate the affected settings before retrying".into());

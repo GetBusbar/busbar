@@ -124,7 +124,8 @@ fn egress_over(pool_name: &str) -> Egress {
 async fn the_caller_secret_is_shared_from_the_door_to_the_far_ends_route() {
     let app = Arc::new(far_end_app().await);
     let facts = door_facts("p", &[], &[], &[], "a", Vec::new());
-    let section: serde_yaml::Value = serde_yaml::from_str("e: {}").expect("yaml");
+    let section: busbar_contract::yaml::Value =
+        busbar_contract::yaml::from_str("e: {}").expect("yaml");
     let pools = DoorPools::of(&section, busbar_contract::section::TOOL_CALL_SECTION_KEY)
         .expect("the pools");
     let records = Arc::new(busbar_kernel::host_units::UnitRecords::default());
