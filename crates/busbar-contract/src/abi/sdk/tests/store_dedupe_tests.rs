@@ -302,25 +302,25 @@ fn an_async_bodys_answer_is_done_replay_or_conflict() {
 #[test]
 fn the_body_is_the_documented_encoding() {
     fn text(h: &mut Sha256, s: &str) {
-        h.update((s.len() as u64).to_le_bytes());
+        h.update(&(s.len() as u64).to_le_bytes());
         h.update(s.as_bytes());
     }
 
     let mut h = Sha256::new();
     text(&mut h, "busbar.store.op/3");
     text(&mut h, "add_usage_batch");
-    h.update(1_u64.to_le_bytes());
+    h.update(&1_u64.to_le_bytes());
     text(&mut h, "b");
-    h.update(60_u64.to_le_bytes());
-    h.update(1_i64.to_le_bytes());
-    h.update(1_i64.to_le_bytes());
-    h.update(1_u64.to_le_bytes());
-    h.update(0_u64.to_le_bytes());
+    h.update(&60_u64.to_le_bytes());
+    h.update(&1_i64.to_le_bytes());
+    h.update(&1_i64.to_le_bytes());
+    h.update(&1_u64.to_le_bytes());
+    h.update(&0_u64.to_le_bytes());
     text(&mut h, "m");
-    h.update(1_u64.to_le_bytes());
+    h.update(&1_u64.to_le_bytes());
     text(&mut h, "input");
-    h.update(7_i128.to_le_bytes());
-    let want: [u8; 32] = h.finalize().into();
+    h.update(&7_i128.to_le_bytes());
+    let want: [u8; 32] = h.finish();
     assert_eq!(Dedupe::usage(&[("b", 60, delta(1))]).body(), &want);
 
     let mut h = Sha256::new();
@@ -328,14 +328,14 @@ fn the_body_is_the_documented_encoding() {
     text(&mut h, "append_plane_record");
     text(&mut h, "task_event");
     text(&mut h, "e-1");
-    h.update([1]);
+    h.update(&[1]);
     text(&mut h, "t-1");
-    h.update(3_u64.to_le_bytes());
-    h.update(1_700_000_000_u64.to_le_bytes());
-    h.update([0]);
-    h.update(1_u64.to_le_bytes());
+    h.update(&3_u64.to_le_bytes());
+    h.update(&1_700_000_000_u64.to_le_bytes());
+    h.update(&[0]);
+    h.update(&1_u64.to_le_bytes());
     h.update(b"x");
-    let want: [u8; 32] = h.finalize().into();
+    let want: [u8; 32] = h.finish();
     assert_eq!(Dedupe::append(record(b"x")).body(), &want);
 }
 
@@ -418,27 +418,27 @@ fn quantity_identity_uses_all_sixteen_bytes_and_signedness() {
 #[test]
 fn narrow_quantity_receipts_conflict_without_applying() {
     fn text(h: &mut Sha256, s: &str) {
-        h.update((s.len() as u64).to_le_bytes());
+        h.update(&(s.len() as u64).to_le_bytes());
         h.update(s.as_bytes());
     }
     for (tag, scale) in [("busbar.store.op/1", 0), ("busbar.store.op/2", 6)] {
         let mut h = Sha256::new();
         text(&mut h, tag);
         text(&mut h, "add_usage_batch");
-        h.update(1_u64.to_le_bytes());
+        h.update(&1_u64.to_le_bytes());
         text(&mut h, "b");
-        h.update(60_u64.to_le_bytes());
-        h.update(1_i64.to_le_bytes());
-        h.update(1_i64.to_le_bytes());
-        h.update(1_u64.to_le_bytes());
+        h.update(&60_u64.to_le_bytes());
+        h.update(&1_i64.to_le_bytes());
+        h.update(&1_i64.to_le_bytes());
+        h.update(&1_u64.to_le_bytes());
         if scale != 0 {
-            h.update(6_u64.to_le_bytes());
+            h.update(&6_u64.to_le_bytes());
         }
         text(&mut h, "m");
-        h.update(1_u64.to_le_bytes());
+        h.update(&1_u64.to_le_bytes());
         text(&mut h, "input");
-        h.update(7_i64.to_le_bytes());
-        let old: Body = h.finalize().into();
+        h.update(&7_i64.to_le_bytes());
+        let old: Body = h.finish();
         let mut cells = [("b", 60, delta(1))];
         cells[0].2.models[0].scale = scale;
         for receipt in [old.to_vec(), hex::encode(old).into_bytes()] {

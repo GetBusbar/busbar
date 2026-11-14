@@ -39,6 +39,8 @@ bytes = { workspace = true }
 http = { workspace = true }
 idna = { workspace = true }
 memchr = { workspace = true }
+percent-encoding = { workspace = true }
+sseer = { workspace = true }
 subtle = { workspace = true }
 tracing = { workspace = true }
 tracing-core = { workspace = true }
