@@ -6,7 +6,6 @@
 use core::fmt;
 
 use serde::de::DeserializeOwned;
-use zeroize::Zeroizing;
 
 use super::{Cred, SealedWrite};
 
@@ -178,9 +177,9 @@ impl SealedJson {
     pub fn encoded(&self) -> Result<SealedWrite, NotJsonText> {
         let mut len = 0;
         self.write(&mut |b| len += b.len())?;
-        let mut buf = Zeroizing::new(Vec::with_capacity(len));
+        let mut buf = crate::secure::SecureVec::from(Vec::with_capacity(len));
         // Sized by the counting pass, so the wiping buffer never grows (LINT-RULES LR-117).
-        self.write(&mut |b| crate::secure::append(&mut buf, b))?;
+        self.write(&mut |b| buf.extend_from_slice(b))?;
         debug_assert_eq!(buf.len(), buf.capacity());
         let secure = self.members.iter().any(|(_, m)| match m {
             Member::Sealed(c) => c.secure_required(),
@@ -216,32 +215,19 @@ impl SealedJson {
 
 /// One JSON-serializable value, encoded whole.
 mod erased {
-    use zeroize::Zeroizing;
-
-    /// A write buffer that grows by moving into a new wiped allocation, so a credential is never
-    /// left in a freed, unwiped block (`serde_json::to_vec` reallocates past 128 bytes).
-    struct Wiping(Zeroizing<Vec<u8>>);
-
-    impl std::io::Write for Wiping {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            crate::secure::append(&mut self.0, buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::secure::SecureVec;
 
     pub(super) trait Json {
-        fn to_json(&self) -> Zeroizing<Vec<u8>>;
+        fn to_json(&self) -> SecureVec;
     }
     impl<T: serde::Serialize + ?Sized> Json for T {
-        fn to_json(&self) -> Zeroizing<Vec<u8>> {
-            let mut out = Wiping(Zeroizing::new(Vec::with_capacity(128)));
+        fn to_json(&self) -> SecureVec {
+            // Growth moves into a new block and wipes the old (`serde_json::to_vec` would not).
+            let mut out = SecureVec::from(Vec::with_capacity(128));
             if serde_json::to_writer(&mut out, self).is_err() {
-                out.0.clear();
+                out.clear();
             }
-            out.0
+            out
         }
     }
 }

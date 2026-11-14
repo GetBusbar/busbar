@@ -5,11 +5,12 @@
 
 use core::fmt;
 
+use crate::secure::{SecureString, SecureVec};
 use serde::de::value::{MapAccessDeserializer, MapDeserializer, SeqDeserializer};
 use serde::de::{self, DeserializeOwned, Expected, IntoDeserializer, Unexpected, Visitor};
 use serde::forward_to_deserialize_any;
 use serde_json::Value;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use super::settings_json::wipe;
 use super::Cred;
@@ -283,10 +284,10 @@ impl<'de> de::Deserializer<'de> for Node {
                 let Value::String(s) = self.take() else {
                     unreachable!()
                 };
-                let s = Zeroizing::new(s);
+                let s = SecureString::from(s);
                 #[cfg(test)]
                 // SAFETY: the String's initialized base prefix stays on this thread and is
-                // wiped by Zeroizing before the allocator observes its current deallocation.
+                // wiped by SecureString before the allocator observes its current deallocation.
                 unsafe {
                     crate::alloc_counter::watch_initialized_payload(s.as_bytes());
                 }
@@ -373,10 +374,10 @@ impl<'de> Visitor<'de> for CredVisitor {
         f.write_str("a string")
     }
     fn visit_str<E: de::Error>(self, s: &str) -> Result<Cred, E> {
-        Ok(Cred::from_bytes(Zeroizing::new(s.as_bytes().to_vec())))
+        Ok(Cred::from_bytes(SecureVec::from(s.as_bytes().to_vec())))
     }
     fn visit_string<E: de::Error>(self, s: String) -> Result<Cred, E> {
-        Ok(Cred::from_bytes(Zeroizing::new(s.into_bytes())))
+        Ok(Cred::from_bytes(SecureVec::from(s.into_bytes())))
     }
 }
 

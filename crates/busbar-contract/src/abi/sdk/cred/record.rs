@@ -8,7 +8,7 @@ use std::cell::Cell;
 use serde::de::Visitor;
 use serde::ser::Error as _;
 use serde::{Deserializer, Serialize, Serializer};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 use super::Cred;
 
@@ -39,11 +39,13 @@ impl Drop for Scope {
 }
 
 /// `value` encoded as a host record's JSON value, its credential fields written. Hand the answer
-pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Zeroizing<Vec<u8>>, serde_json::Error> {
+pub fn to_vec<T: Serialize + ?Sized>(
+    value: &T,
+) -> Result<crate::secure::SecureVec, serde_json::Error> {
     let _scope = Scope::open();
     let mut out = crate::abi::sdk::secret_bytes::SecretBytes::default();
     serde_json::to_writer(&mut out, value)?;
-    Ok(out.into_zeroizing())
+    Ok(out.into_secure())
 }
 
 /// The field's serializer: the credential as a JSON string, inside [`to_vec`] only.
@@ -70,11 +72,13 @@ impl Visitor<'_> for Captured {
     }
 
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Cred, E> {
-        Ok(Cred::captured(Zeroizing::new(v.as_bytes().to_vec())))
+        Ok(Cred::captured(crate::secure::SecureVec::from(
+            v.as_bytes().to_vec(),
+        )))
     }
 
     fn visit_string<E: serde::de::Error>(self, mut v: String) -> Result<Cred, E> {
-        let cred = Cred::captured(Zeroizing::new(v.as_bytes().to_vec()));
+        let cred = Cred::captured(crate::secure::SecureVec::from(v.as_bytes().to_vec()));
         v.zeroize();
         Ok(cred)
     }

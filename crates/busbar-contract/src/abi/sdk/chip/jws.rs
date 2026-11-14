@@ -4,7 +4,6 @@
 //! RS256 (RSASSA-PKCS1-v1_5 over SHA-256) under a PKCS #8 RSA private key the credential holds
 
 use base64::Engine as _;
-use zeroize::Zeroizing;
 
 use super::Refused;
 use crate::abi::sdk::cred::{Cred, Seal};
@@ -39,9 +38,9 @@ impl Cred {
             signing_key(self.wire()).map_err(|_| Refused("the key is not a PKCS #8 RSA key"))?;
         let sig = key
             .sign_pkcs1_sha256(signing_input)
-            .map(Zeroizing::new)
+            .map(crate::secure::SecureVec::from)
             .map_err(|_| Refused("RS256 signing failed"))?;
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&*sig);
-        Ok(self.seal(Zeroizing::new(encoded.into_bytes())))
+        Ok(self.seal(crate::secure::SecureVec::from(encoded.into_bytes())))
     }
 }

@@ -20,7 +20,7 @@ struct Minted {
 }
 
 fn cred(text: &str) -> Cred {
-    Cred::captured(zeroize::Zeroizing::new(text.as_bytes().to_vec()))
+    Cred::captured(crate::secure::SecureVec::from(text.as_bytes().to_vec()))
 }
 
 fn bytes(w: &mut super::SealedWrite) -> Vec<u8> {
@@ -151,7 +151,7 @@ fn the_encoded_buffer_is_allocated_once_at_its_length() {
 
 #[test]
 fn a_credential_that_is_not_text_is_refused_by_name() {
-    let raw = Cred::captured(zeroize::Zeroizing::new(vec![0xff, 0xfe]));
+    let raw = Cred::captured(crate::secure::SecureVec::from(vec![0xff, 0xfe]));
     let e = SealedJson::new()
         .sealed("value", &raw)
         .encoded()
