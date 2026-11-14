@@ -383,10 +383,7 @@ impl DurableFs for RootDurable {
         crate::root::loader::durable::write_with(
             path,
             bytes,
-            crate::root::loader::durable::DurableOpts {
-                mode: opts.mode,
-                exclusive: opts.exclusive,
-            },
+            crate::root::loader::durable::DurableOpts { mode: opts.mode },
         )
     }
 
