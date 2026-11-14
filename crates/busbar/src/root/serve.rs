@@ -3298,7 +3298,7 @@ pub struct DoorRequest {
 
     pub gov: busbar_contract::records::PlaneRequestCtx,
 
-    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    pub credential: Option<busbar_kernel::auth::CallerCredential>,
 
     pub ticket: Option<Vec<u8>>,
 
@@ -5568,10 +5568,7 @@ impl DataRoutes {
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: 0,
-                credential: door.credential.as_ref().map(|credential| {
-                    busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
-                    credential.clone()
-                }),
+                credential: door.credential.clone(),
                 ticket: door.ticket,
             },
         )
@@ -6170,12 +6167,7 @@ impl DataRoutes {
                 arrived: arrived.secs(),
                 records: Some(Arc::clone(served.kernel.units())),
                 depth: nesting.as_ref().map_or(0, |n| n.depth),
-                credential: credential.as_ref().map(|credential| {
-                    busbar_contract::stage_probe::tick(
-                        busbar_contract::stage_probe::Derive::SecretCopy,
-                    );
-                    credential.clone()
-                }),
+                credential: credential.clone(),
                 ticket,
             },
         )
@@ -6369,7 +6361,7 @@ struct DoorFar<'d, 's> {
     steps: &'d DoorSteps<'s>,
     unit: busbar_contract::UnitKey,
 
-    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    credential: Option<busbar_kernel::auth::CallerCredential>,
     authorization: Arc<busbar_kernel::host_units::UnitRecords>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
@@ -6388,12 +6380,7 @@ impl<'d> DoorFar<'d, '_> {
                     pool,
                     connection_required: self.steps.connection_required(),
                     authorization: Some(Arc::clone(&self.authorization)),
-                    caller_credential: self.credential.as_ref().map(|credential| {
-                        busbar_contract::stage_probe::tick(
-                            busbar_contract::stage_probe::Derive::SecretCopy,
-                        );
-                        credential.clone()
-                    }),
+                    caller_credential: self.credential.clone(),
                     once: self.steps.once(),
 
                     wants_stream: self.steps.streamed(),
@@ -6692,7 +6679,7 @@ struct SessionDoor {
     key: Option<Arc<busbar_contract::records::VirtualKey>>,
     open: bool,
 
-    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    credential: Option<busbar_kernel::auth::CallerCredential>,
 
     ticket: Option<Vec<u8>>,
     host_ticket_admission: Option<busbar_kernel::host_services::HostTicketAdmission>,
@@ -7075,7 +7062,7 @@ impl IngressReply {
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
-    Option<busbar_contract::redacted::Secret<Vec<u8>>>,
+    Option<busbar_kernel::auth::CallerCredential>,
     Option<Vec<u8>>,
     Option<busbar_kernel::host_services::HostTicketAdmission>,
 );
