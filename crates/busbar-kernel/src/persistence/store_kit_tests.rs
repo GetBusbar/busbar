@@ -115,7 +115,7 @@ impl PersistenceBackend for Mock {
             if candidate.id.dataset != DATASET {
                 return Err(Failure::Refused);
             }
-            let initialization = control::initialization(candidate, DATASET);
+            let initialization = control::initialization(&prepared, DATASET);
             let blind = self.blind_initialize && initialization;
             // Initialize's emptiness proof ignores the import namespace (FIRST-START-TAKEOVER
             // §2.9 (b)).

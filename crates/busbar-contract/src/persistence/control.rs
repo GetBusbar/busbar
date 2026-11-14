@@ -13,7 +13,7 @@
 //! existing dataset. Physical backend identity metadata grants no execution authority.
 
 use super::{
-    Candidate, DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, CANDIDATE_VERSION,
+    DatasetId, ExpectedValue, Failure, Mutation, NamespaceId, PreparedCandidate, CANDIDATE_VERSION,
 };
 
 /// Reserved metadata namespace, inaccessible to plugin host-record callers.
@@ -114,7 +114,9 @@ pub fn replacement(
 /// the canonical dataset has no records, slot rows or previous authority. Legacy
 /// or partially initialized data is never fresh.
 #[must_use]
-pub fn initialization<O>(candidate: &Candidate<O>, dataset: DatasetId) -> bool {
+pub fn initialization<O>(prepared: &PreparedCandidate<O>, dataset: DatasetId) -> bool {
+    // The prepared candidate is already validated (LINT-RULES R26); this reads its shape only.
+    let candidate = prepared.candidate();
     if candidate.codec != CANDIDATE_VERSION
         || candidate.id.dataset != dataset
         || candidate.id.writer_epoch != 1
@@ -123,7 +125,6 @@ pub fn initialization<O>(candidate: &Candidate<O>, dataset: DatasetId) -> bool {
         || candidate.predicates.len() != candidate.mutations.len()
         || !candidate.result.0.is_empty()
         || candidate.time.is_some()
-        || candidate.validate().is_err()
     {
         return false;
     }
@@ -305,7 +306,14 @@ impl Writer {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Candidate;
     use super::*;
+
+    /// `initialization` over a candidate the way a store sees it: prepared (validated once)
+    /// first. A candidate `PreparedCandidate::new` refuses is never an initialization.
+    fn init(candidate: Candidate, dataset: DatasetId) -> bool {
+        PreparedCandidate::new(candidate).is_ok_and(|prepared| initialization(&prepared, dataset))
+    }
 
     fn initial() -> Candidate {
         use super::super::{Address, AttemptId, Predicate};
@@ -373,20 +381,20 @@ mod tests {
     fn initialization_grants_only_one_absent_root_and_initial_writer() {
         use super::super::Address;
         use crate::Secret;
+        let dataset = initial().id.dataset;
+        assert!(init(initial(), dataset));
         let mut candidate = initial();
-        let dataset = candidate.id.dataset;
-        assert!(initialization(&candidate, dataset));
         candidate.id.execution_epoch = 2;
-        assert!(!initialization(&candidate, dataset));
-        candidate.id.execution_epoch = 1;
+        assert!(!init(candidate, dataset));
+        let mut candidate = initial();
         candidate.predicates[0].expected = ExpectedValue::Exact(Secret::new(Vec::new()));
-        assert!(!initialization(&candidate, dataset));
-        candidate.predicates[0].expected = ExpectedValue::Absent;
+        assert!(!init(candidate, dataset));
+        let mut candidate = initial();
         candidate.mutations.push(Mutation::Delete(Address {
             namespace: [8; 16],
             key: Vec::new(),
         }));
-        assert!(!initialization(&candidate, dataset));
+        assert!(!init(candidate, dataset));
     }
 
     fn initial_with_record() -> Candidate {
@@ -413,9 +421,10 @@ mod tests {
         // Matching is by exact address, independent of either list's order.
         candidate.predicates.rotate_left(1);
         candidate.mutations.reverse();
-        assert!(initialization(&candidate, candidate.id.dataset));
+        let dataset = candidate.id.dataset;
+        assert!(init(candidate, dataset));
         assert!(
-            initialization(&initial(), candidate.id.dataset),
+            init(initial(), dataset),
             "inactive migration bootstrap remains control-only"
         );
     }
@@ -427,7 +436,8 @@ mod tests {
         let rejected = |change: fn(&mut Candidate)| {
             let mut candidate = initial_with_record();
             change(&mut candidate);
-            assert!(!initialization(&candidate, candidate.id.dataset));
+            let dataset = candidate.id.dataset;
+            assert!(!init(candidate, dataset));
         };
         rejected(|c| c.predicates[2].expected = ExpectedValue::Exact(Secret::new(Vec::new())));
         rejected(|c| c.predicates[2].address.key.push(0));
