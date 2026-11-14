@@ -1215,3 +1215,97 @@ async fn with_recorder<F: std::future::Future>(
     })
     .await
 }
+
+/// Counts every store round trip (reads and scans) the scrape makes.
+struct CountingReads {
+    actual: Arc<dyn busbar_contract::persistence::PersistenceBackend>,
+    reads: std::sync::atomic::AtomicUsize,
+}
+impl busbar_contract::persistence::PersistenceBackend for CountingReads {
+    fn info(&self) -> busbar_contract::persistence::BackendInfo {
+        self.actual.info()
+    }
+    fn read(
+        &self,
+        request: Arc<busbar_contract::persistence::Read>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ReadResult> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.actual.read(request)
+    }
+    fn scan(
+        &self,
+        request: Arc<busbar_contract::persistence::Scan>,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Page> {
+        self.reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.actual.scan(request)
+    }
+    fn commit(
+        &self,
+        candidate: busbar_contract::persistence::PreparedCandidate,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::Decision> {
+        self.actual.commit(candidate)
+    }
+    fn clock(
+        &self,
+        dataset: busbar_contract::persistence::DatasetId,
+    ) -> busbar_contract::persistence::Call<'_, busbar_contract::persistence::ClockObservation>
+    {
+        self.actual.clock(dataset)
+    }
+}
+impl CountingReads {
+    fn take(&self) -> usize {
+        self.reads.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// W3: a scrape reads each key's usage cell once, reads the accounting marker
+/// once and never re-reads a key the key listing just returned.
+#[tokio::test]
+async fn scrape_reads_once_per_key() {
+    crate::snapshot::init_for_test(Duration::from_secs(3600));
+    const KEYS: usize = 100;
+    let counting = Arc::new(CountingReads {
+        actual: crate::real_store::native_backend().await,
+        reads: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let store = crate::real_store::core_over(counting.clone()).await;
+    for n in 0..KEYS {
+        store
+            .identity()
+            .put_key(&sample_vkey(&format!("vk_scrape_reads_{n:03}")))
+            .await
+            .unwrap();
+    }
+    let gov = Arc::new(GovState::new_with_core(store, None, None).await.unwrap());
+    let cost = crate::cost::CostModel::flat(1);
+    counting.take();
+    let listed = gov.all_keys_async().await.unwrap();
+    assert_eq!(listed.len(), KEYS);
+    let listing = counting.take();
+
+    let (recorder, handle) = local_source(GAUGE_IDLE_TIMEOUT);
+    with_recorder(&recorder, async {
+        money::refresh_governance_gauges(&gov, &cost, crate::store::now())
+            .await
+            .unwrap()
+    })
+    .await;
+    let scrape = counting.take();
+    // The listing, one usage cell per key, the accounting marker and the
+    // budgets in batches; nothing per key beyond its cell.
+    let bound = listing + KEYS + 1 + KEYS.div_ceil(128);
+    assert!(
+        scrape <= bound,
+        "a scrape of {KEYS} keys made {scrape} store round trips (bound {bound}, listing {listing})"
+    );
+    let out = handle();
+    let spends = out
+        .iter()
+        .flat_map(|family| &family.samples)
+        .filter(|sample| sample.name == KEY_SPEND_CENTS)
+        .count();
+    assert_eq!(spends, KEYS, "every key still gets its spend gauge");
+}
