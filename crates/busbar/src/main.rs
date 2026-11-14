@@ -2409,6 +2409,14 @@ mod tests;
 #[path = "tests/catalogue_tests.rs"]
 mod catalogue_tests;
 
+#[cfg(test)]
+#[path = "../../busbar-contract/tests/source_rules/escapes.rs"]
+mod source_escapes;
+
+#[cfg(test)]
+#[path = "tests/generated_escapes.rs"]
+mod generated_escapes;
+
 #[cfg(all(test, distribution_root))]
 #[path = "../../../dist/default/tests/common/root_install.rs"]
 mod dist_root_install;

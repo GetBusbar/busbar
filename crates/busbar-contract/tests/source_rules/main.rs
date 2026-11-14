@@ -5,6 +5,8 @@
 
 mod config;
 mod credential_typecheck;
+mod escape_scope;
+mod escapes;
 mod secrets;
 mod walk;
 mod workflows;
