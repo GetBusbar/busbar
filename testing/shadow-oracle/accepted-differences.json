@@ -6712,6 +6712,47 @@
         "status": 1
       },
       "rationale": "Owner signed 2026-11-12: the reserved-name refusal is one generic sentence that names the offending word and links the one docs page listing every reserved name (crates/busbar-contract/src/section.rs reserved_name_refusal). CELL: boot.refusal|BOOT-P07|validate (a pool named `hooks`). BYTES MOVED (golden -> candidate): effects.stderr, the refusal sentence only. The transform rewrites that one sentence back to 1.5.5's wording so only it is forgiven; the cell reports ACCEPTED, never PASS, and the golden is untouched."
+    },
+    {
+      "id": "D316-3 GET /v1/models/<model> retrieves a model instead of 405",
+      "kind": "breaking",
+      "changelog": "**`GET /v1/models/<model>` retrieves a model.** 1.5.5 answered every `GET /v1/models/<model>` with 405, although OpenAI clients call it to look a model up. It now answers the OpenAI model object (the same object `GET /v1/models` lists) for a model in the caller's visible catalog, and a 404 `model_not_found` that names nothing hidden for any other name. `GET /v1/models` is unchanged.",
+      "by": "owner (Matthew Jackson), decision 316 (3) 2026-11-14",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-11-14",
+        "ruling": "owner decision 316 (3) 2026-11-14: serve GET /v1/models/<id>; the 1.5.5 405 was a bug that 1.6.0 fixes"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^ops\\.scrape\\|v1modelsid\\|retrieve$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "status": 200
+          },
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "pointer": "/object",
+            "equals": "model"
+          },
+          {
+            "cell": "ops.scrape|v1modelsid|retrieve",
+            "pointer": "/id",
+            "equals": "m-openai-chat"
+          }
+        ]
+      },
+      "rationale": "Owner decision 316 (3), 2026-11-14: serve GET /v1/models/<id>; the 1.5.5 405 was a bug that 1.6.0 fixes. CELL: ops.scrape|v1modelsid|retrieve (GET /v1/models/m-openai-chat on the data listener). BYTES MOVED (golden -> candidate): status 405 -> 200; body, the method-not-allowed error -> the OpenAI model object GET /v1/models already lists for that name; headers, content-length. The route is a busbar-plane-llm catalog claim; a name outside the caller-visible catalog answers 404 model_not_found. REGISTERED `breaking`, NOT `improvement`, only because the differ accepts the `status` class on no other kind; in substance an improvement, presented under Improvements. SCOPE: exactly this one cell."
     }
   ]
 }
