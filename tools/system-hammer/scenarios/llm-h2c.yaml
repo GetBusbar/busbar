@@ -1,6 +1,6 @@
 name: llm-h2c
 group: llm
-description: openai to openai over h2c (prior knowledge) and HTTP/1.1 at c=128.
+description: openai to openai over h2c (prior knowledge) and HTTP/1.1 at c=128, plus an open-loop 500 rps / 64-connection row.
 config: |
   listen: "{LISTEN}"
   admin_listen: "{ADMIN}"
