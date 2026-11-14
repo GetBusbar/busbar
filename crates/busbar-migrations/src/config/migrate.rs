@@ -78,13 +78,11 @@ pub(super) mod vocabulary {
         pub const PROVIDERS_FILE: &str = "providers_file";
         pub(crate) const RATE_CARD: &str = "rate_card";
         pub(crate) const RATE_SWEEP_INTERVAL: &str = "rate_sweep_interval";
-        pub(crate) const REFRESH_TTL: &str = "refresh_ttl";
         pub(crate) const REQUESTS: &str = "requests";
         pub(crate) const RESPONSE_HEADERS: &str = "response_headers";
         pub(crate) const ROLE_BINDINGS: &str = "role_bindings";
         pub(crate) const RPM_LIMIT: &str = "rpm_limit";
         pub(crate) const SERVER_TIMING: &str = "server_timing";
-        pub(crate) const SERVERS: &str = "servers";
         pub const SETTINGS: &str = "settings";
         pub const SHA256: &str = "sha256";
         pub const SIGNALS: &str = "signals";
@@ -93,13 +91,11 @@ pub(super) mod vocabulary {
         pub(crate) const TIMEOUT_SECS: &str = "timeout_secs";
         pub const TOKENS: &str = "tokens";
         pub const TOKEN: &str = "token";
-        pub(crate) const TOOLS: &str = "tools";
         pub(crate) const TPM_LIMIT: &str = "tpm_limit";
         pub const TRIP: &str = "trip";
         pub const URL: &str = "url";
         pub(crate) const USAGE_FLUSH_INTERVAL_MS: &str = "usage_flush_interval_ms";
         pub const USER: &str = "user";
-        pub(crate) const VERIFY_TTL: &str = "verify_ttl";
         pub(crate) const WINDOW_S: &str = "window_s";
         pub(crate) const WINDOW_SECS: &str = "window_secs";
     }
@@ -374,71 +370,6 @@ pub(super) fn swap_remove_key(m: &mut Pairs, key: impl Index) -> Option<Value> {
 
 pub(super) fn take(m: &mut Pairs, k: &str) -> Option<Value> {
     swap_remove_key(m, k)
-}
-
-fn migrate_tools_verify_ttl(
-    root: &mut Pairs,
-    changes: &mut Vec<String>,
-    warnings: &mut Vec<String>,
-) {
-    let Some(Value::Map(tools)) = root.get_key_mut(field::TOOLS) else {
-        return;
-    };
-
-    let flat = rename_refresh_ttl(
-        tools
-            .iter_mut()
-            .map(|(id, def)| (&*id, def))
-            .filter(|(id, _)| id.as_str() != Some(field::SERVERS)),
-        field::TOOLS,
-        warnings,
-    );
-    if flat {
-        changes.push(
-            "tools.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
-             refresh daemon; see the per-server WARNING for the semantics change)"
-                .into(),
-        );
-    }
-    let Some(Value::Map(servers)) = tools.get_key_mut(field::SERVERS) else {
-        return;
-    };
-    if rename_refresh_ttl(
-        servers.iter_mut().map(|(id, def)| (&*id, def)),
-        "tools.servers",
-        warnings,
-    ) {
-        changes.push(
-            "tools.servers.<id>.refresh_ttl -> verify_ttl (verify-on-call replaces the background \
-             refresh daemon; see the per-server WARNING for the semantics change)"
-                .into(),
-        );
-    }
-}
-
-fn rename_refresh_ttl<'a>(
-    entries: impl Iterator<Item = (&'a Value, &'a mut Value)>,
-    prefix: &str,
-    warnings: &mut Vec<String>,
-) -> bool {
-    let mut renamed = false;
-    for (id, def) in entries {
-        let Value::Map(def) = def else { continue };
-        let Some(value) = swap_remove_key(def, field::REFRESH_TTL) else {
-            continue;
-        };
-        let shown = value.as_str().unwrap_or("<non-string>").to_string();
-        def.insert_key(field::VERIFY_TTL, value);
-        renamed = true;
-        warnings.push(
-            busbar_kernel::diagnostics::coded::migrate_refresh_ttl_meaning_changed(
-                format_args!("{prefix}.{}", id.as_str().unwrap_or("?")),
-                &shown,
-            )
-            .into(),
-        );
-    }
-    renamed
 }
 
 fn migrate_store_required(root: &mut Pairs, changes: &mut Vec<String>) {
@@ -2267,8 +2198,7 @@ fn migrate_identity_providers(
                 Value::Text(s) => names.push(Value::from(s)),
                 Value::Map(m) => {
                     let Some((module, body)) = m
-                        .iter()
-                        .next()
+                        .first()
                         .and_then(|(k, v)| Some((k.as_str()?.to_string(), as_map(v.clone()))))
                     else {
                         continue;
