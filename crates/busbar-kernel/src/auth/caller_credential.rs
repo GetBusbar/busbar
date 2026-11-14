@@ -91,6 +91,7 @@ pub struct CallerCredential(std::sync::Arc<zeroize::Zeroizing<Vec<u8>>>);
 
 impl CallerCredential {
     pub(super) fn verified(token: &str) -> Self {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
         Self(std::sync::Arc::new(zeroize::Zeroizing::new(
             token.as_bytes().to_vec(),
         )))
@@ -98,6 +99,7 @@ impl CallerCredential {
 
     #[must_use]
     pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
+        busbar_contract::stage_probe::tick(busbar_contract::stage_probe::Derive::SecretCopy);
         busbar_contract::redacted::Secret::new(self.0.to_vec())
     }
 }
@@ -111,3 +113,7 @@ impl std::fmt::Debug for CallerCredential {
 #[cfg(test)]
 #[path = "tests/caller_credential_tests.rs"]
 mod caller_credential_tests;
+
+#[cfg(test)]
+#[path = "tests/caller_credential_custody.rs"]
+mod caller_credential_custody;

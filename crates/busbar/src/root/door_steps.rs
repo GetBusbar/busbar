@@ -1026,6 +1026,9 @@ impl DriverSteps for DoorSteps<'_> {
                         },
                     );
                     if let Some(credential) = &self.credential {
+                        busbar_contract::stage_probe::tick(
+                            busbar_contract::stage_probe::Derive::SecretCopy,
+                        );
                         records.lend(ctx.key.get(), credential.clone());
                     }
 

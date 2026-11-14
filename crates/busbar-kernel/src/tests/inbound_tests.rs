@@ -18,6 +18,9 @@ mod inbound_peer_points;
 #[path = "inbound_reader_deadline.rs"]
 mod inbound_reader_deadline;
 
+#[path = "inbound_caller_secret.rs"]
+mod inbound_caller_secret;
+
 struct Script {
     points: AuthPoints,
     answer: VerifyAnswer,

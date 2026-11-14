@@ -1261,12 +1261,15 @@ impl EgressFarEnd<'_> {
             },
 
             caller_credential: if binding.passthrough || self.live_passthrough() {
-                Some(
-                    self.route
-                        .caller_credential
-                        .clone()
-                        .unwrap_or_else(|| Secret::new(Vec::new())),
-                )
+                Some(self.route.caller_credential.as_ref().map_or_else(
+                    || Secret::new(Vec::new()),
+                    |credential| {
+                        busbar_contract::stage_probe::tick(
+                            busbar_contract::stage_probe::Derive::SecretCopy,
+                        );
+                        credential.clone()
+                    },
+                ))
             } else {
                 None
             },
