@@ -660,7 +660,9 @@ pub fn run_scenario(env: &Env, s: &Scenario, log: &mut dyn FnMut(&str)) -> Vec<C
     for (rel, content) in &s.files {
         let p = work.join(rel);
         if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                return vec![failed(s, "-", format!("files: {}: {e}", parent.display()))];
+            }
         }
         if let Err(e) = std::fs::write(&p, scenario::fill(content, &vars)) {
             return vec![failed(s, "-", format!("files: {}: {e}", p.display()))];
@@ -1055,6 +1057,27 @@ mod tests {
     fn contains_docs_do_not_claim_sampling() {
         for src in [include_str!("scenario.rs"), include_str!("mock/llm.rs")] {
             assert!(!src.contains("sampled answer") && !src.contains("checks sampled bodies"));
+        }
+    }
+
+    #[test]
+    fn case_setup_never_discards_a_work_dir_write_error() {
+        let src = include_str!("run.rs");
+        let body = src
+            .split("fn run_scenario")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        for bad in [
+            "let _ = std::fs::write(",
+            "let _ = std::fs::create_dir_all(",
+        ] {
+            assert!(
+                !body.contains(bad),
+                "run_scenario discards a setup write error: {bad}"
+            );
         }
     }
 }
