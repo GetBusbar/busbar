@@ -18,7 +18,6 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use busbar_plugin_loader::sign::{Manifest, SigningKey};
-use sha2::{Digest, Sha256};
 
 /// The overlay shape 1.5.5 wrote for one admin-API settings change (the evidence run).
 const L: &str = r#"{"version":1,"root":{"advanced":{"response_headers":{"server_timing":true}}}}"#;
@@ -94,7 +93,7 @@ fn stage_sqlite(work: &Path) -> serde_json::Value {
     std::fs::write(work.join("plugins/sqlite.tar.gz"), &archive).unwrap();
     serde_json::json!({
         "enabled": true, "dir": work.join("plugins"),
-        "fetch": [{"url":"https://legacy-overlay-fixtures.invalid/sqlite.tar.gz", "sha256":hex::encode(Sha256::digest(&archive))}],
+        "fetch": [{"url":"https://legacy-overlay-fixtures.invalid/sqlite.tar.gz", "sha256":hex::encode(busbar_contract::crypto::sha256(&archive))}],
         "trust": {"allow_unsigned":false, "allow_third_party":true, "publishers":[{"name":"legacy-overlay-fixture", "public_key":hex::encode(key.verifying_key().as_bytes())}]}
     })
 }

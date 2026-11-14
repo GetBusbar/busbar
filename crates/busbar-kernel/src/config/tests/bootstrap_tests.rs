@@ -23,7 +23,7 @@ fn captured_interpolation_reuses_the_current_injection_checks() {
 }
 #[test]
 fn store_bootstrap_does_not_refuse_overlay_owned_identity_definitions() {
-    let deploy: DeployCfg = serde_yaml::from_str(
+    let deploy: DeployCfg = busbar_contract::yaml::from_str(
         "auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n",
     )
     .unwrap();
@@ -36,7 +36,7 @@ fn store_bootstrap_does_not_refuse_overlay_owned_identity_definitions() {
 }
 #[test]
 fn complete_resolution_sees_recovered_named_definitions_and_hook_controls() {
-    let mut deploy: DeployCfg = serde_yaml::from_str(
+    let mut deploy: DeployCfg = busbar_contract::yaml::from_str(
         "auth: { chain: [overlay-corp], admin_auth: [overlay-admin] }\nstore: { module: memory }\n",
     )
     .unwrap();
@@ -67,14 +67,15 @@ fn complete_resolution_sees_recovered_named_definitions_and_hook_controls() {
 #[test]
 fn store_bootstrap_checks_security_before_opening_without_requiring_overlay_tls() {
     let deploy: DeployCfg =
-        serde_yaml::from_str("store: { module: memory }\nadmin_require_mtls: true\n").unwrap();
+        busbar_contract::yaml::from_str("store: { module: memory }\nadmin_require_mtls: true\n")
+            .unwrap();
     let cfg = resolve_store_bootstrap(&deploy).unwrap();
     assert!(crate::config_validate::validate_bootstrap_security(&cfg).is_ok());
     for field in ["blocked_metadata_hosts", "allow_metadata_hosts"] {
         for invalid in ["169.254.0.0/16", "not-an-ip.123"] {
             let raw =
                 format!("store: {{ module: memory }}\nsecurity: {{ {field}: ['{invalid}'] }}\n");
-            let deploy: DeployCfg = serde_yaml::from_str(&raw).unwrap();
+            let deploy: DeployCfg = busbar_contract::yaml::from_str(&raw).unwrap();
             let errors = resolve_store_bootstrap(&deploy).unwrap_err();
             assert!(
                 errors.iter().any(|error| error.contains(field)),

@@ -39,13 +39,15 @@ fn localhost_cert() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 
 /// A TLS 1.3 far end that reads 5 bytes, answers `answer`, then finishes as `finish` says.
 async fn tls_far_end(leaf: Vec<u8>, key: Vec<u8>, answer: Vec<u8>, finish: Finish) -> String {
-    let server = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.into()],
-            rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
-        )
-        .unwrap();
+    let server = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::server_config(|b| {
+            b.with_no_client_auth().with_single_cert(
+                vec![leaf.into()],
+                rustls_pki_types::PrivateKeyDer::try_from(key).unwrap(),
+            )
+        })
+        .unwrap(),
+    );
     let acceptor = TlsAcceptor::from(Arc::new(server));
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let far = l.local_addr().unwrap().to_string();
@@ -129,7 +131,6 @@ async fn dialled(finish: Finish, answer: &[u8]) -> Connection {
 /// `tls_out`, and the plaintext answer is read back exactly.
 #[test]
 fn tls_dial_handshake_completes_via_compose() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let c = dialled(Finish::Hold, b"world").await;
         assert!(c.is_open());
@@ -140,7 +141,6 @@ fn tls_dial_handshake_completes_via_compose() {
 /// and the end is still seen, once.
 #[test]
 fn tls_close_notify_with_last_record_is_seen() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let mut c = dialled(Finish::CloseNotify, SECRET).await;
         let end = tokio::time::timeout(Duration::from_secs(5), async {
@@ -164,7 +164,6 @@ fn tls_close_notify_with_last_record_is_seen() {
 /// fails the connection, as today.
 #[test]
 fn tls_fin_without_close_notify_fails() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let mut c = dialled(Finish::BareFin, SECRET).await;
         let end = tokio::time::timeout(Duration::from_secs(5), async {
@@ -185,7 +184,6 @@ fn tls_fin_without_close_notify_fails() {
 /// answer is handed on.
 #[test]
 fn tls_plain_wiped() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let c = dialled(Finish::Hold, SECRET).await;
         let zero = TLS_PLAIN.with(|slot| {
@@ -207,7 +205,6 @@ fn tls_plain_wiped() {
 /// NewSessionTicket records, alone, make no `ingest` call and deliver no piece.
 #[test]
 fn tls_ticket_only_record_makes_no_ingest() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let before = crate::compose::tls_probe::ingests();
         // The far end answers nothing: after the handshake it sends only its session tickets.
@@ -229,7 +226,6 @@ fn tls_ticket_only_record_makes_no_ingest() {
 /// One TLS read of one data record is one `ingest`, however many ticket records surround it.
 #[test]
 fn tls_in_one_ingest_per_read() {
-    crate::tls::install_crypto_provider();
     worker().block_on(async {
         let (calls, _) = crate::compose::tls_probe::ingests();
         let mut c = dialled(Finish::Hold, b"world").await;
@@ -281,11 +277,13 @@ fn tls_out_bytes_identical() {
 
     // A real flight: a ClientHello written through the sink is one well-formed record run whose
     // lengths add up to what was queued.
-    crate::tls::install_crypto_provider();
     let roots = rustls::RootCertStore::empty();
-    let config = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let config = std::sync::Arc::unwrap_or_clone(
+        busbar_contract::crypto::tls::client_config(|b| {
+            Ok(b.with_root_certificates(roots).with_no_client_auth())
+        })
+        .unwrap(),
+    );
     let mut client = rustls::ClientConnection::new(
         Arc::new(config),
         rustls_pki_types::ServerName::try_from("localhost").unwrap(),

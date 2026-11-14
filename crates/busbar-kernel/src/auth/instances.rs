@@ -59,10 +59,11 @@ pub(crate) struct InstanceIdentity {
     secrets: [u8; 32],
 }
 
-fn identity_key() -> &'static ring::hmac::Key {
-    static KEY: OnceLock<ring::hmac::Key> = OnceLock::new();
+fn identity_key() -> &'static busbar_contract::crypto::HmacSha256Key {
+    static KEY: OnceLock<busbar_contract::crypto::HmacSha256Key> = OnceLock::new();
     KEY.get_or_init(|| {
-        ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
+        let seed = busbar_contract::crypto::random::<32>()
+            .map(|bytes| bytes.to_vec())
             .unwrap_or_else(|_| {
                 // No system randomness: a key no two processes share is still required, never a
                 // fixed one. Fall back to the clock and the address of this static.
@@ -71,20 +72,24 @@ fn identity_key() -> &'static ring::hmac::Key {
                     .map_or(0, |d| d.as_nanos());
                 let mut seed = now.to_le_bytes().to_vec();
                 seed.extend_from_slice(&(std::ptr::addr_of!(KEY) as usize).to_le_bytes());
-                ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &seed)
-            })
+                seed
+            });
+        busbar_contract::crypto::HmacSha256Key::new(&seed)
+            .expect("a 24- or 32-byte HMAC-SHA256 key is always accepted")
     })
 }
 
 fn keyed(parts: &[&[u8]]) -> [u8; 32] {
-    let mut ctx = ring::hmac::Context::with_key(identity_key());
-    for part in parts {
-        ctx.update(&(part.len() as u64).to_le_bytes());
-        ctx.update(part);
+    let lengths: Vec<[u8; 8]> = parts
+        .iter()
+        .map(|part| (part.len() as u64).to_le_bytes())
+        .collect();
+    let mut framed: Vec<&[u8]> = Vec::with_capacity(parts.len() * 2);
+    for (length, part) in lengths.iter().zip(parts) {
+        framed.push(length);
+        framed.push(part);
     }
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(ctx.sign().as_ref());
-    out
+    identity_key().sign_parts(&framed)
 }
 
 impl InstanceIdentity {

@@ -1004,7 +1004,10 @@ fn a_kind_op_a_door_does_not_name_is_absent() {
     assert!(secret.check.is_none(), "an unnamed kind op is absent");
     assert!(auth.target.is_none(), "an unnamed kind op is absent");
     // An auth plugin that serves no provisioning routes names no `serve`: the slot is NULL.
-    assert!(auth.serve.is_none(), "an auth door with no routes leaves serve absent");
+    assert!(
+        auth.serve.is_none(),
+        "an auth door with no routes leaves serve absent"
+    );
     assert!(
         secret.resolve.is_some() && auth.verify.is_some(),
         "a named one is present"

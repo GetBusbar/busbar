@@ -72,8 +72,8 @@ impl Keys {
         );
         Keys {
             local_ufrag_prefix,
-            local: hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, local.pwd.as_bytes()),
-            remote: hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, remote.pwd.as_bytes()),
+            local: Zeroizing::new(local.pwd.as_bytes().to_vec()),
+            remote: Zeroizing::new(remote.pwd.as_bytes().to_vec()),
             probe_username,
         }
     }

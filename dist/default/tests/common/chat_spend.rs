@@ -76,12 +76,13 @@ pub fn signing_key(dir: &Path) -> PathBuf {
 
 /// Set the listeners, the admin token login, key auth and a zero request fee on an authored
 /// deployment document, so one chat request's spend is exactly its token classes.
-pub fn serve(doc: &mut serde_yaml::Value, data: u16, admin: u16, signing: &Path) {
+pub fn serve(doc: &mut busbar_contract::yaml::Value, data: u16, admin: u16, signing: &Path) {
+    use busbar_contract::yaml::{MappingExt as _, Pairs, Value as Yaml, ValueExt as _};
     let root = doc.as_mapping_mut().expect("the deployment is a mapping");
-    let set = |root: &mut serde_yaml::Mapping, key: &str, yaml: &str| {
-        root.insert(
-            serde_yaml::Value::from(key),
-            serde_yaml::from_str(yaml).expect("a fixed YAML value"),
+    let set = |root: &mut Pairs, key: &str, yaml: &str| {
+        root.insert_key(
+            Yaml::from(key),
+            busbar_contract::yaml::from_str(yaml).expect("a fixed YAML value"),
         );
     };
     set(root, "listen", &format!("\"127.0.0.1:{data}\""));
@@ -101,15 +102,13 @@ pub fn serve(doc: &mut serde_yaml::Value, data: u16, admin: u16, signing: &Path)
             serde_json::to_string(&signing.display().to_string()).unwrap()
         ),
     );
-    let advanced = root
-        .entry(serde_yaml::Value::from("advanced"))
-        .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+    let advanced = root.entry_or_insert_with("advanced", || Yaml::Map(Pairs::new()));
     advanced
         .as_mapping_mut()
         .expect("advanced is a mapping")
-        .insert(
-            serde_yaml::Value::from("allow_destinations"),
-            serde_yaml::from_str("[\"127.0.0.1\"]").unwrap(),
+        .insert_key(
+            Yaml::from("allow_destinations"),
+            busbar_contract::yaml::from_str("[\"127.0.0.1\"]").unwrap(),
         );
 }
 

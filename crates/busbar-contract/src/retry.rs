@@ -48,7 +48,9 @@ impl Backoff {
     /// Failure `failures`' wait under FULL JITTER: uniform in `[0, ceiling]`, at least `floor`.
     #[must_use]
     pub fn delay(&self, failures: u32, unit: f64) -> Duration {
-        self.ceiling(failures).mul_f64(clamp_unit(unit)).max(self.floor)
+        self.ceiling(failures)
+            .mul_f64(clamp_unit(unit))
+            .max(self.floor)
     }
 
     /// A steady retry at the cap: uniform in `[cap/2, cap]`, at least `floor`.
@@ -79,7 +81,7 @@ fn clamp_unit(unit: f64) -> f64 {
 #[must_use]
 pub fn unit() -> f64 {
     let mut bytes = [0_u8; 8];
-    if getrandom::fill(&mut bytes).is_err() {
+    if crate::crypto::fill(&mut bytes).is_err() {
         return 0.5;
     }
     (u64::from_le_bytes(bytes) >> 11) as f64 / (1_u64 << 53) as f64

@@ -8,13 +8,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::hashing::Sha256;
 use busbar_contract::persistence::{
     control, witness, Address, AttemptId, Candidate, DatasetId, Decision, ExpectedValue, Failure,
     Mutation, NamespaceId, PersistenceBackend, Predicate, PreparedCandidate, Read, ReadResult,
     CANDIDATE_VERSION, MAX_SLOTS,
 };
 use busbar_contract::Secret;
-use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 
 use super::{
@@ -101,7 +101,7 @@ fn progress_digest(birth: &[u8], writer: &[u8], r0: Option<&[u8]>) -> [u8; 32] {
             hash.update(bytes);
         }
     }
-    hash.finalize().into()
+    hash.finalize()
 }
 
 /// Lower-case hex of a writer id, as the boot wait line prints it (32 hex digits).

@@ -1530,7 +1530,10 @@ fn test_reject_cidr_metadata_entries() {
         make_provider(proto_b(), "https://api.vendor-a.example.com", "API_KEY"),
     );
     let mut cfg = make_root_cfg(providers, HashMap::new(), HashMap::new());
-    cfg.blocked_metadata_hosts = vec!["169.254.169.254".to_string(), "metadata.example.com".to_string()];
+    cfg.blocked_metadata_hosts = vec![
+        "169.254.169.254".to_string(),
+        "metadata.example.com".to_string(),
+    ];
     if let Err(errs) = validate(&cfg) {
         assert!(
             !errs.iter().any(|e| e.contains("CIDR")),
@@ -1692,8 +1695,10 @@ fn test_the_retired_metadata_carve_outs_refuse_startup_and_lift_nothing() {
         "provider 'p' allow_metadata_hosts",
     ] {
         assert!(
-            errs.iter().any(|e| e.starts_with(&format!("{key} is retired (BUSBAR-3136): "))
-                && e.contains("no configuration admits it")),
+            errs.iter().any(
+                |e| e.starts_with(&format!("{key} is retired (BUSBAR-3136): "))
+                    && e.contains("no configuration admits it")
+            ),
             "{key}: {errs:?}"
         );
     }
@@ -2864,9 +2869,10 @@ fn test_a_metadata_base_url_is_refused_whatever_is_carved() {
         cfg.allow_all_metadata = true;
         let errs = validate(&cfg).expect_err("a metadata base_url is refused");
         assert!(
-            errs.iter().any(|e| e.contains("targets a blocked cloud-metadata host")
-                && e.contains("no configuration admits them")
-                && !e.contains("allow_metadata_hosts")),
+            errs.iter()
+                .any(|e| e.contains("targets a blocked cloud-metadata host")
+                    && e.contains("no configuration admits them")
+                    && !e.contains("allow_metadata_hosts")),
             "{base}: {errs:?}"
         );
     }
@@ -2916,7 +2922,6 @@ fn test_blocked_metadata_hosts_extends_denylist() {
             .any(|e| e.contains("blocked cloud-metadata host") && e.contains("10.99.99.99")),
         "expected a metadata-host error for the listed host; got: {errs:?}"
     );
-
 }
 
 #[test]

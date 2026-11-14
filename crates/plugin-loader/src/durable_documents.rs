@@ -252,11 +252,7 @@ mod platform {
             Err(e) => return Err(e),
         };
         let mut random = [0; 16];
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: a startup document commit names its temporary file"
-        )]
-        getrandom::fill(&mut random)
+        busbar_contract::crypto::fill(&mut random)
             .map_err(|_| io::Error::other("document temporary entropy failed"))?;
         #[expect(
             clippy::disallowed_methods,
