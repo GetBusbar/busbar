@@ -143,7 +143,7 @@ pub fn check_or_exit(planes: &[LinkedClaims]) {
     let connector = crate::root::connector::the();
     check(planes, &|scheme| connector.framer_for(scheme).is_some()).unwrap_or_else(|refusal| {
         eprintln!("busbar: the composition root did not seal: {refusal}");
-        std::process::exit(2);
+        crate::root::exit::exit(2);
     });
 }
 

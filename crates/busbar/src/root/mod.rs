@@ -113,6 +113,7 @@ pub mod durability;
     )
 )]
 pub mod egress_ports;
+pub mod exit;
 // busbar:request-path
 #[cfg_attr(
     not(test),

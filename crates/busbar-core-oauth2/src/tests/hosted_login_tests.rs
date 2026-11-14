@@ -518,3 +518,152 @@ fn a_held_subject_sees_the_on_hold_page_with_its_coded_reason() {
         );
     }
 }
+
+#[test]
+fn the_login_cookie_is_host_prefixed_with_path_root() {
+    let response = begin_outcome(
+        &seal(),
+        "idp",
+        None,
+        "https://busbar.example.com",
+        "verifier".into(),
+        "state".into(),
+        "nonce".into(),
+        false,
+        LoginOutcome::Authorize("https://idp.example.com/authorize".into()),
+    );
+    let cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+    assert!(cookie.starts_with("__Host-busbar_login="), "{cookie}");
+    assert!(
+        cookie.contains("; Path=/;") && cookie.contains("Secure"),
+        "{cookie}"
+    );
+    assert!(!cookie.contains("Domain"), "{cookie}");
+    assert!(clear_cookie().contains("Path=/;") && clear_cookie().contains("Max-Age=0"));
+}
+
+#[test]
+fn a_forged_or_tampered_login_cookie_is_refused() {
+    use base64::Engine as _;
+    let honest = door_cookie().encode(&seal());
+    assert!(LoginCookie::decode(&honest, &seal()).is_some());
+
+    // 1.6 dev's attack: a hand-written, unsigned cookie naming the attacker's own state.
+    let unsigned = B64.encode(serde_json::to_vec(&door_cookie()).unwrap());
+    assert!(LoginCookie::decode(&unsigned, &seal()).is_none());
+
+    // A signed cookie whose payload was edited (here: `refresh` flipped on).
+    let (payload, tag) = honest.split_once('.').unwrap();
+    let mut edited: serde_json::Value =
+        serde_json::from_slice(&B64.decode(payload).unwrap()).unwrap();
+    edited["refresh"] = serde_json::Value::Bool(true);
+    let edited = format!("{}.{tag}", B64.encode(serde_json::to_vec(&edited).unwrap()));
+    assert!(LoginCookie::decode(&edited, &seal()).is_none());
+
+    // Another deployment's key.
+    let other = CookieSeal {
+        key: Arc::new(StateKey::derive(&[8; 32])),
+        now: NOW,
+    };
+    assert!(LoginCookie::decode(&honest, &other).is_none());
+}
+
+#[test]
+fn a_login_cookie_expires_with_its_issue_time() {
+    let honest = door_cookie().encode(&seal());
+    let later = |secs: u64| CookieSeal {
+        key: Arc::new(StateKey::derive(&[7; 32])),
+        now: NOW + secs,
+    };
+    assert!(LoginCookie::decode(&honest, &later(600)).is_some());
+    assert!(LoginCookie::decode(&honest, &later(601)).is_none());
+    let early = CookieSeal {
+        key: Arc::new(StateKey::derive(&[7; 32])),
+        now: NOW - 3600,
+    };
+    assert!(
+        LoginCookie::decode(&honest, &early).is_none(),
+        "an issue time from the future is refused"
+    );
+}
+
+#[test]
+fn throttled_page_is_branded_and_identical_whichever_limiter_tripped() {
+    let a = verdict_response(
+        "corp-ad",
+        CredentialVerdict::Throttled {
+            retry_after_secs: 900,
+        },
+    )
+    .unwrap_err();
+    let b = verdict_response(
+        "other",
+        CredentialVerdict::Throttled {
+            retry_after_secs: 900,
+        },
+    )
+    .unwrap_err();
+    assert_eq!(a.status().as_u16(), 429);
+    assert_eq!(a.headers()[header::RETRY_AFTER], "900");
+    assert_eq!(a.headers(), b.headers());
+    let body = body_of(*a);
+    assert_eq!(body, body_of(*b));
+    assert_branded_error_page(&body, "Too many sign-in attempts");
+    assert!(body.contains("Please wait a few minutes"));
+    assert!(!body.to_lowercase().contains("locked"), "never says locked");
+}
+
+#[test]
+fn the_limiter_verdicts_render_their_pages() {
+    for (verdict, status, heading) in [
+        (CredentialVerdict::Malformed, 400, "Sign-in didn't finish"),
+        (CredentialVerdict::Declined, 401, "Sign-in was declined"),
+        (
+            CredentialVerdict::Unavailable {
+                retry_after_secs: None,
+            },
+            503,
+            "Couldn't reach your provider",
+        ),
+        (
+            CredentialVerdict::Unavailable {
+                retry_after_secs: Some(30),
+            },
+            503,
+            "Couldn't reach your provider",
+        ),
+        (CredentialVerdict::Unfinished, 502, "Sign-in didn't finish"),
+    ] {
+        let response = verdict_response("idp", verdict.clone()).unwrap_err();
+        assert_eq!(response.status().as_u16(), status, "{verdict:?}");
+        assert!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .any(|v| v.to_str().unwrap().contains("Max-Age=0")),
+            "{verdict:?} clears the cookie"
+        );
+        assert_branded_error_page(&body_of(*response), heading);
+    }
+}
+
+/// DEPENDENCY-LADDER C6 (form_urlencoded) pins the callback query reader before the hand decoder
+/// goes: empty pieces skipped, a bare name kept with an empty value, `+` a space, `%XX` decoded,
+/// a short escape kept, invalid UTF-8 replaced.
+#[test]
+fn the_callback_query_reads_as_a_form() {
+    let pairs = parse_query("code=a%2Fb&&state=x+y%21&bare&bad=%zz%4&lossy=%FF&=v");
+    let expected: Vec<(String, String)> = [
+        ("code", "a/b"),
+        ("state", "x y!"),
+        ("bare", ""),
+        ("bad", "%zz%4"),
+        ("lossy", "\u{fffd}"),
+        ("", "v"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+    .collect();
+    assert_eq!(pairs, expected);
+}
