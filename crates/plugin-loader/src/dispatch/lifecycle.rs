@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON,
+    AbiStr, Blob, InHead, OutHead, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::abi::mechanism::lifecycle::{
     slot as life, OpenIn, OpenOut, ReleaseIn, ValidateIn,
 };
+use busbar_contract::secure::SecureVec;
 
 use super::{in_head, out_head, Called, Frame, Kind, Plugin, NO_BLOB};
 
@@ -181,5 +182,41 @@ pub(crate) fn close<K: Kind>(plugin: &Plugin<K>) {
     let called = plugin.call(life::CLOSE, &mut f);
     if called.outcome != Outcome::Ready {
         tracing::warn!(plugin = plugin.name(), outcome = ?called.outcome, "plugin did not close");
+    }
+}
+
+/// What an OPEN crossing borrows, owned for as long as the dispatcher may still read it (a PENDING
+/// open is resumed later, and an open that outlives its wait is finished or cancelled by the
+/// dispatcher, never against freed memory).
+pub(crate) struct OpenLent {
+    settings: SecureVec,
+    _secrets: Vec<SecureVec>,
+    blobs: Vec<Blob>,
+}
+
+// SAFETY: every blob pointer borrows an immutable allocation this value owns.
+unsafe impl Send for OpenLent {}
+// SAFETY: as above; nothing in it is mutated after construction.
+unsafe impl Sync for OpenLent {}
+
+impl OpenLent {
+    pub(crate) fn new(settings: &[u8], secrets: Vec<SecureVec>) -> Self {
+        let mut blobs = Vec::with_capacity(secrets.len());
+        blobs.extend(secrets.iter().map(|s| blob(s, BLOB_OCTETS, BLOB_SECRET)));
+        Self {
+            settings: SecureVec::from(settings),
+            _secrets: secrets,
+            blobs,
+        }
+    }
+
+    /// The OPEN frame over this lend's settings and secrets; valid while this value lives.
+    pub(crate) fn frame(&self) -> Frame<OpenIn, OpenOut> {
+        let mut f = open_frame(blob(&self.settings, BLOB_JSON, 0));
+        if !self.blobs.is_empty() {
+            f.input.secrets = self.blobs.as_ptr();
+            f.input.secrets_len = self.blobs.len();
+        }
+        f
     }
 }
