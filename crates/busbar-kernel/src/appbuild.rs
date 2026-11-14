@@ -993,18 +993,69 @@ pub async fn build_app_from_config_with_store(
     recover_usage_before_hydration: bool,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     let limits = cfg.limits.clone();
-    let mut future = std::pin::pin!(build_app_native(
-        cfg,
-        plugins_cfg,
-        overlay_path,
-        base_hook_names,
-        base_group_names,
-        config_paths,
-        prior,
-        rules,
-        boot_store,
-        recover_usage_before_hydration
-    ));
+    in_build_scope(
+        limits,
+        build_app_native(
+            cfg,
+            plugins_cfg,
+            overlay_path,
+            base_hook_names,
+            base_group_names,
+            config_paths,
+            prior,
+            rules,
+            boot_store,
+            recover_usage_before_hydration,
+            None,
+        ),
+    )
+    .await
+}
+
+/// The startup continuation's construction of the first application on the admitted boot Store.
+/// `judged` is the semantic pass's one result when boot already judged this exact effective
+/// configuration (the fresh-instance principal transition judges it before it writes its Store
+/// baseline); construction consumes it instead of judging the configuration a second time.
+pub struct BootBuild<'a> {
+    pub cfg: config::RootCfg,
+    pub judged: Option<config_validate::Judged>,
+    pub plugins_cfg: config::PluginsCfg,
+    pub overlay_path: Option<Arc<config::overlay::OverlayStore>>,
+    pub base_hook_names: std::collections::HashSet<String>,
+    pub base_group_names: std::collections::HashSet<String>,
+    pub config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
+    pub rules: &'a Arc<dyn RootRules>,
+    pub boot_store: Arc<crate::persistence::facade::CoreStore>,
+}
+
+pub async fn build_boot_app(
+    boot: BootBuild<'_>,
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    let limits = boot.cfg.limits.clone();
+    in_build_scope(
+        limits,
+        build_app_native(
+            boot.cfg,
+            boot.plugins_cfg,
+            boot.overlay_path,
+            boot.base_hook_names,
+            boot.base_group_names,
+            boot.config_paths,
+            None,
+            boot.rules,
+            Some(boot.boot_store),
+            true,
+            boot.judged,
+        ),
+    )
+    .await
+}
+
+async fn in_build_scope<T>(
+    limits: config::LimitsResolved,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let mut future = std::pin::pin!(future);
     std::future::poll_fn(move |context| {
         let _scope = config::limits::BuildScope::enter(&limits);
         future.as_mut().poll(context)
@@ -1024,6 +1075,7 @@ async fn build_app_native(
     rules: &Arc<dyn RootRules>,
     boot_store: Option<Arc<crate::persistence::facade::CoreStore>>,
     recover_usage_before_hydration: bool,
+    judged: Option<config_validate::Judged>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     config::security_policy::check_candidate(prior, &cfg, &plugins_cfg)?;
     let configured_card = config::card::CardFields::of_root(&cfg);
@@ -1086,8 +1138,9 @@ async fn build_app_native(
 
     let root_rules = |c: &config::RootCfg| rules.check(c);
     let wants_fetch = plugins_cfg.enabled && !plugins_cfg.fetch.is_empty();
-    let plugin_registry = config_validate::check(
+    let plugin_registry = config_validate::check_with(
         &cfg,
+        judged,
         config_validate::Check {
             plugins: &plugins_cfg,
             unset_env_vars: &[],

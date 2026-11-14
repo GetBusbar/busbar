@@ -33,6 +33,9 @@ use crate::root::{durability::NodeBook, linked::Compose};
 pub struct Preparation {
     pub startup: Startup,
     pub config: RootCfg,
+    /// The semantic pass's one result when boot already judged `config` (the fresh-instance
+    /// principal transition); construction consumes it instead of judging again.
+    pub judged: Option<busbar_kernel::config_validate::Judged>,
     pub plugins: PluginsCfg,
     pub overlay: Option<Arc<OverlayStore>>,
     pub deploy: DeployCfg,
@@ -127,6 +130,7 @@ async fn prepare_inner(input: Preparation) -> Result<ReadyCandidate, Box<Prepara
     let Preparation {
         startup,
         config,
+        judged,
         plugins,
         overlay,
         deploy,

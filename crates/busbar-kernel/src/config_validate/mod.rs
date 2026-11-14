@@ -107,6 +107,54 @@ pub fn validate_bootstrap_security(cfg: &RootCfg) -> Result<(), Vec<String>> {
     }
 }
 
+/// The advisories one semantic pass raised, in the order it raised them. The pass never logs them
+/// itself; whoever consumes the pass's result logs them, once, so a configuration judged once warns
+/// once, even when it was judged before logging was up.
+#[derive(Default)]
+struct Advisories(Vec<Box<dyn FnOnce() + Send + Sync>>);
+
+impl Advisories {
+    fn raise(&mut self, advisory: impl FnOnce() + Send + Sync + 'static) {
+        self.0.push(Box::new(advisory));
+    }
+
+    fn log(self) {
+        for advisory in self.0 {
+            advisory();
+        }
+    }
+}
+
+/// The passing result of the one semantic pass over an effective configuration. Only the pass
+/// makes it; construction consumes it (`check_with`) instead of judging that configuration again.
+#[must_use = "construction consumes the one judgement and logs its advisories"]
+pub struct Judged(Advisories);
+
+impl Judged {
+    fn log(self) {
+        self.0.log();
+    }
+}
+
+/// Judge the effective configuration a boot will serve, once, exactly as construction judges it
+/// (no unset environment variables, the deployment's plugin switch). A refusal logs its advisories
+/// with it; a pass keeps them in the result until construction consumes it.
+#[cold]
+#[inline(never)]
+pub fn judge_effective(
+    cfg: &RootCfg,
+    plugins: &crate::config::PluginsCfg,
+) -> Result<Judged, Vec<String>> {
+    let mut advisories = Advisories::default();
+    match judge_with_plugins(cfg, &[], plugins.enabled, &mut advisories) {
+        Ok(()) => Ok(Judged(advisories)),
+        Err(errors) => {
+            advisories.log();
+            Err(errors)
+        }
+    }
+}
+
 /// Test support only: with `BUSBAR_TEST_SEMANTIC_PASS_PROBE` set, each semantic pass over a
 /// configuration writes one line to stderr. Stderr is open before logging is, so a test can count
 /// every pass a boot makes, including one made before the log subscriber is installed.
@@ -124,6 +172,18 @@ pub(super) fn validate_with_plugins(
     cfg: &RootCfg,
     unset_env_vars: &[String],
     plugins_enabled: bool,
+) -> Result<(), Vec<String>> {
+    let mut advisories = Advisories::default();
+    let judged = judge_with_plugins(cfg, unset_env_vars, plugins_enabled, &mut advisories);
+    advisories.log();
+    judged
+}
+
+fn judge_with_plugins(
+    cfg: &RootCfg,
+    unset_env_vars: &[String],
+    plugins_enabled: bool,
+    advisories: &mut Advisories,
 ) -> Result<(), Vec<String>> {
     #[cfg(feature = "test-support")]
     probe_semantic_pass();
@@ -152,7 +212,7 @@ pub(super) fn validate_with_plugins(
         }
     }
 
-    warn_refused_provider_destinations(cfg);
+    refused_provider_destinations(cfg, advisories);
 
     let provider_names: HashSet<&str> = cfg.providers.keys().map(|s| s.as_str()).collect();
 
@@ -961,11 +1021,13 @@ pub(super) fn validate_with_plugins(
             );
         }
         if verifies_signed_keys && auth.admin_auth.is_empty() {
-            diag_warn!(
-                CONFIG_OPEN_ADMIN_MINT,
-                "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
-                 ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
-            );
+            advisories.raise(|| {
+                diag_warn!(
+                    CONFIG_OPEN_ADMIN_MINT,
+                    "auth.chain names `keys` and auth.admin_auth is explicitly empty (open admin) — \
+                     ANYONE can mint virtual keys through the admin API. Acceptable only for dev."
+                )
+            });
         }
 
         let any_passthrough = cfg.upstream_credentials == crate::auth::UpstreamCreds::Passthrough
@@ -981,19 +1043,23 @@ pub(super) fn validate_with_plugins(
                 )
                 .unwrap_or_default();
                 if !resolved_key.expose(&crate::seal::lend()).trim().is_empty() {
-                    diag_warn!(
-                        CONFIG_PASSTHROUGH_UNUSED_APIKEY,
-                        provider = %provider_name,
-                        api_key = %provider_cfg.api_key.describe(),
-                        "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
-                         this provider: under passthrough the upstream key is \
-                         caller_token.unwrap_or(\"\"), so the configured api_key is NEVER forwarded \
-                         (a caller presents their own token, or an unauthenticated caller forwards an \
-                         empty credential the provider rejects). The configured key is inert dead \
-                         config. If you intended static-key gating, use upstream_credentials: own \
-                         (plus an auth chain); otherwise clear the referenced secret (a passthrough \
-                         provider that signs each request per-call needs no static key)."
-                    );
+                    let (provider, api_key) =
+                        (provider_name.to_string(), provider_cfg.api_key.describe());
+                    advisories.raise(move || {
+                        diag_warn!(
+                            CONFIG_PASSTHROUGH_UNUSED_APIKEY,
+                            provider = %provider,
+                            api_key = %api_key,
+                            "upstream_credentials: passthrough with a NON-EMPTY configured api_key for \
+                             this provider: under passthrough the upstream key is \
+                             caller_token.unwrap_or(\"\"), so the configured api_key is NEVER forwarded \
+                             (a caller presents their own token, or an unauthenticated caller forwards an \
+                             empty credential the provider rejects). The configured key is inert dead \
+                             config. If you intended static-key gating, use upstream_credentials: own \
+                             (plus an auth chain); otherwise clear the referenced secret (a passthrough \
+                             provider that signs each request per-call needs no static key)."
+                        )
+                    });
                 }
             }
         }
@@ -1025,7 +1091,7 @@ pub(super) fn validate_with_plugins(
         }
     }
 
-    validate_cost_model(cfg, &mut errors);
+    judge_cost_model(cfg, &mut errors, advisories);
 
     if errors.is_empty() {
         Ok(())
@@ -1380,12 +1446,26 @@ fn unnamed_lanes_refusal(
     )
 }
 
+#[cfg(test)]
 fn validate_plane_card(
     d: &crate::plane_driver::registry::PlaneDeclaration,
     card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
     flat_card: bool,
     lanes: &[String],
     errors: &mut Vec<String>,
+) {
+    let mut advisories = Advisories::default();
+    judge_plane_card(d, card, flat_card, lanes, errors, &mut advisories);
+    advisories.log();
+}
+
+fn judge_plane_card(
+    d: &crate::plane_driver::registry::PlaneDeclaration,
+    card: &std::collections::BTreeMap<String, crate::config::RateEntryCfg>,
+    flat_card: bool,
+    lanes: &[String],
+    errors: &mut Vec<String>,
+    advisories: &mut Advisories,
 ) {
     let own = if d.fallback { "" } else { d.key };
     let on: Vec<_> = card
@@ -1434,18 +1514,23 @@ fn validate_plane_card(
         } else {
             "no rate card is configured for this plane; usage-based pricing is disabled"
         };
-        diag_warn!(
-            CONFIG_RATE_CARD_MISSING,
-            plane = d.key,
-            section = d.config_section,
-            lane,
-            classes = %missing.join(", "),
-            card_present = present,
-            "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
-             {}. Raw counts remain available. Configure a rate for each class \
-             (0 explicitly makes it free).",
-            d.config_section, lane, missing.join(", "), pricing
-        );
+        let (plane, section) = (d.key, d.config_section);
+        let (lane, classes) = (lane.to_owned(), missing.join(", "));
+        advisories.raise(move || {
+            let lane = lane.as_str();
+            diag_warn!(
+                CONFIG_RATE_CARD_MISSING,
+                plane = plane,
+                section = section,
+                lane,
+                classes = %classes,
+                card_present = present,
+                "{}.rate_card has no configured rate for lane '{}' billable class(es) {}; \
+                 {}. Raw counts remain available. Configure a rate for each class \
+                 (0 explicitly makes it free).",
+                section, lane, classes, pricing
+            )
+        });
     }
     if !unnamed.is_empty() {
         errors.push(unnamed_lanes_refusal(d, &unnamed));
@@ -1491,7 +1576,14 @@ fn validate_plane_fees(
     }
 }
 
+#[cfg(test)]
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
+    let mut advisories = Advisories::default();
+    judge_cost_model(cfg, errors, &mut advisories);
+    advisories.log();
+}
+
+fn judge_cost_model(cfg: &RootCfg, errors: &mut Vec<String>, advisories: &mut Advisories) {
     if let Err(error) = crate::config::measurement_rates::validate(&cfg.plugin_rate_cards) {
         errors.push(coded::config_rate_card_invalid(error).into());
     }
@@ -1545,13 +1637,16 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                 && tiers.iter().all(|(_, v)| v.is_finite() && *v == 0.0)
                 && r.units.values().all(|rate| rate.nanos_per_unit() == 0)
             {
-                diag_warn!(
-                    CONFIG_RATE_CARD_ALL_ZERO,
-                    model = %key,
-                    "rate_card entry for model '{key}' prices every tier at zero: its token usage \
-                     meters as FREE and is uncapped by any budget: limit. If intentional, ignore; \
-                     otherwise fill in the model's rate_card rates."
-                );
+                let key = key.to_string();
+                advisories.raise(move || {
+                    diag_warn!(
+                        CONFIG_RATE_CARD_ALL_ZERO,
+                        model = %key,
+                        "rate_card entry for model '{key}' prices every tier at zero: its token \
+                         usage meters as FREE and is uncapped by any budget: limit. If \
+                         intentional, ignore; otherwise fill in the model's rate_card rates."
+                    )
+                });
             }
         }
     }
@@ -1580,7 +1675,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         }
     }
     for d in crate::plane_driver::registry::plane_decls() {
-        validate_plane_card(&d.declaration, card, flat_card, &lanes, errors);
+        judge_plane_card(&d.declaration, card, flat_card, &lanes, errors, advisories);
     }
     // After completeness, as 1.5.5 ordered it: the stub for unnamed models prints first.
     if let Some(card) = cfg.rate_card.as_ref() {
@@ -1801,7 +1896,7 @@ pub fn metadata_entry_names_no_host(entry: &str) -> Option<&'static str> {
     unmappable_metadata_entry(entry).map(|(why, _)| why)
 }
 
-fn warn_refused_provider_destinations(cfg: &RootCfg) {
+fn refused_provider_destinations(cfg: &RootCfg, advisories: &mut Advisories) {
     if !cfg.guard.block_private_addresses {
         return;
     }
@@ -1820,14 +1915,17 @@ fn warn_refused_provider_destinations(cfg: &RootCfg) {
             if destination_allowed(&cfg.guard.allow, &host) {
                 continue;
             }
-            diag_warn!(
-                crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
-                "provider '{name}' {key} names the private or loopback host '{host}': with \
-                 advanced.block_private_addresses on (the default) the destination guard refuses \
-                 every request to it. Add '{host}' to advanced.allow_destinations (busbar \
-                 --migrate-config adds the hosts a provider's plane reports), or set \
-                 advanced.block_private_addresses: false to admit every private address"
-            );
+            let name = name.to_string();
+            advisories.raise(move || {
+                diag_warn!(
+                    crate::diagnostics::CONFIG_PROVIDER_DESTINATION_REFUSED,
+                    "provider '{name}' {key} names the private or loopback host '{host}': with \
+                     advanced.block_private_addresses on (the default) the destination guard \
+                     refuses every request to it. Add '{host}' to advanced.allow_destinations \
+                     (busbar --migrate-config adds the hosts a provider's plane reports), or set \
+                     advanced.block_private_addresses: false to admit every private address"
+                )
+            });
         }
     }
 }
@@ -1921,7 +2019,7 @@ pub(crate) use secret_refs::{keyless_credential_allowed, secret_module, secret_r
 pub(crate) use undeclared_secret_refs::undeclared_secret_refs;
 
 mod check;
-pub use check::{check, no_root_rules, Check, Refusal};
+pub use check::{check, check_with, no_root_rules, Check, Refusal};
 
 fn validate_token_endpoint_fields(
     provider_name: &str,
