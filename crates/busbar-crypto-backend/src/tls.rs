@@ -43,6 +43,19 @@ pub fn webpki_algs() -> &'static [&'static dyn rustls::pki_types::SignatureVerif
     WEBPKI_ALGS
 }
 
+/// Whether `e` is the verifier refusing a CA certificate (CA:TRUE) presented as the end entity.
+#[must_use]
+pub fn ca_used_as_end_entity(e: &rustls::Error) -> bool {
+    matches!(
+        e,
+        rustls::Error::InvalidCertificate(rustls::CertificateError::Other(other))
+            if matches!(
+                other.0.downcast_ref::<webpki::Error>(),
+                Some(webpki::Error::CaUsedAsEndEntity)
+            )
+    )
+}
+
 /// Whether a built client config may be used. The software backend approves every config.
 pub fn approve_client_config(config: &rustls::ClientConfig) -> Result<(), Error> {
     let _ = config;
