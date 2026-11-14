@@ -9,13 +9,13 @@
 //! only Python left on this path is named in [`pysteps`].
 pub mod capabilities;
 pub mod cinputs;
-pub mod confine;
+
 pub mod fixtures;
 pub mod junit;
 pub mod oracle;
 pub mod peers;
 pub mod plugins;
-pub mod product;
+
 pub mod pysteps;
 pub mod release;
 pub mod resources;
@@ -25,9 +25,10 @@ pub mod sources;
 pub mod sp;
 pub mod staged;
 
+use crate::confine::{self, Execution, Roots, digest};
 use crate::json::{self, Value, object};
+use crate::product;
 use crate::sha256;
-use confine::{Execution, Roots, digest};
 use sp::{Dict, Io, Kind, R, Spec, at, key_error, need, violation};
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
@@ -1433,11 +1434,42 @@ impl Q {
         Ok(sdk)
     }
 
-    /// The architecture step (`check.py`, being ported separately).
+    /// The digest-verified busbar-ci binary the bootstrap runs this step runner
+    /// from (`BUSBAR_CI_CONTROLLER`): never a candidate path, and this process.
+    pub fn controller(&self) -> R<String> {
+        let value = std::env::var("BUSBAR_CI_CONTROLLER").unwrap_or_default();
+        let path = Path::new(&value);
+        let executable = std::fs::metadata(path).is_ok_and(|m| m.mode() & 0o111 != 0);
+        let resolved = sp::resolve(path);
+        let this = std::env::current_exe()
+            .ok()
+            .and_then(|exe| std::fs::metadata(exe).ok());
+        let same = std::fs::metadata(path)
+            .ok()
+            .zip(this)
+            .is_some_and(|(a, b)| (a.dev(), a.ino()) == (b.dev(), b.ino()));
+        if value.is_empty()
+            || !path.is_absolute()
+            || sp::is_symlink(path)
+            || !path.is_file()
+            || !executable
+            || !same
+            || [&self.root, &self.work]
+                .iter()
+                .any(|root| resolved.starts_with(root))
+        {
+            return Err(violation("verified busbar-ci controller is unavailable"));
+        }
+        Ok(value)
+    }
+
+    /// The architecture step: this controller's `architecture` command.
     pub fn architecture(&mut self, sdk: Option<&Path>) -> R<()> {
         let scratch = self.harness.join("architecture");
+        let controller = self.controller()?;
         let (context, expected) = self.execution().write_context()?;
-        let command = pysteps::architecture(
+        let command = architecture_command(
+            &controller,
             &self.trusted,
             &self.trusted.join("ci/architecture.toml"),
             &self.repository,
@@ -1458,8 +1490,20 @@ impl Q {
     }
 
     /// Fixed controller tests need neither subject dependencies nor witnesses.
+    /// The controller's own suite runs first so a broken controller fails fast.
+    /// It builds and runs inside the pinned toolchain image (offline, no
+    /// network, trusted source read-only), before any candidate command, into
+    /// a fresh target directory; the controller host needs no Rust toolchain.
     pub fn core_regressions(&mut self) -> R<()> {
         let trusted = self.trusted.clone();
+        let target = self
+            .work
+            .join(format!("controller-tests-{}", sp::uuid_hex()));
+        self.run_in(
+            "architecture-regressions",
+            controller_regressions(&trusted, &target),
+            &trusted,
+        )?;
         for (name, argv) in pysteps::regressions(&trusted) {
             self.run_controller_in(name, argv, &trusted, 3600)?;
         }
@@ -2449,6 +2493,68 @@ pub fn main(args: &[String]) -> i32 {
             1
         }
     }
+}
+
+/// `architecture-regressions`: the controller crate's own unit tests, built
+/// offline from the trusted policy checkout's dependency-free `tools/ci`
+/// (former Python controller suites, `unittest discover scripts/architecture`).
+/// The trusted checkout stays read-only; the build lands in `target`.
+pub fn controller_regressions(trusted: &Path, target: &Path) -> Vec<String> {
+    vec![
+        "cargo".into(),
+        "test".into(),
+        "--offline".into(),
+        "--locked".into(),
+        "--manifest-path".into(),
+        sp::text(&trusted.join("tools/ci/Cargo.toml")),
+        "--target-dir".into(),
+        sp::text(target),
+    ]
+}
+
+/// The architecture step argv (former `check.py`; `busbar-ci architecture`
+/// keeps its CLI). argv[0] is the verified controller path.
+#[allow(clippy::too_many_arguments)]
+pub fn architecture_command(
+    controller: &str,
+    trusted: &Path,
+    policy: &Path,
+    repository: &str,
+    checkout: &Path,
+    scratch: &Path,
+    output: &Path,
+    sdk: Option<&Path>,
+    context: Option<(&Path, &str)>,
+) -> Vec<String> {
+    let t = sp::text;
+    let mut command = vec![
+        controller.to_owned(),
+        "architecture".into(),
+        "--policy".into(),
+        t(policy),
+        "--repository".into(),
+        repository.into(),
+        "--checkout".into(),
+        t(checkout),
+        "--trusted".into(),
+        t(trusted),
+        "--scratch".into(),
+        t(scratch),
+        "--output".into(),
+        t(output),
+    ];
+    if let Some(sdk) = sdk {
+        command.extend(["--sdk".into(), t(sdk)]);
+    }
+    if let Some((path, digest)) = context {
+        command.extend([
+            "--execution-context".into(),
+            t(path),
+            "--execution-context-sha256".into(),
+            digest.into(),
+        ]);
+    }
+    command
 }
 
 #[cfg(test)]

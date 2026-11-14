@@ -7,7 +7,7 @@ use super::graph::{
 use super::sources::{self, core_source_inventory, core_target_roots};
 use super::witness::{self, WITNESS_SEED};
 use super::*;
-use crate::confine::tests::Fixture;
+use crate::confine::lifecycle_tests::Fixture;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -2276,7 +2276,7 @@ fn missing_unknown_or_command_fields_and_invalid_paths_refuse() {
     bad.push(value);
     for value in bad {
         assert!(
-            sources::validate_c_recipe(&value, &f.entry).is_err(),
+            crate::product::validate_c_recipe(&value, &f.entry).is_err(),
             "{}",
             json::dumps(&value, false)
         );
@@ -2319,12 +2319,8 @@ fn source_root_directory_symlink_refuses() {
 
 #[test]
 fn duplicate_recipe_keys_refuse() {
-    assert!(sources::repeats_key_for_test(
-        r#"{"a": 1, "b": {"c": 1, "c": 2}}"#
-    ));
-    assert!(!sources::repeats_key_for_test(
-        r#"{"a": [{"x": 1}, {"x": 2}], "b": "a\"b"}"#
-    ));
+    assert!(crate::product::loads_unique(br#"{"a": 1, "b": {"c": 1, "c": 2}}"#).is_err());
+    assert!(crate::product::loads_unique(br#"{"a": [{"x": 1}, {"x": 2}], "b": "a\"b"}"#).is_ok());
 }
 
 #[test]
@@ -2369,8 +2365,8 @@ fn c_includes_match_the_multiline_pattern() {
         sources::includes("int x; #include <a.h>\n"),
         Vec::<String>::new()
     );
-    assert!(sources::relative_path(&Value::str("owner/a.c")).is_ok());
-    assert!(sources::relative_path(&Value::str("../a.c")).is_err());
+    assert!(crate::product::relative_path(&Value::str("owner/a.c")).is_ok());
+    assert!(crate::product::relative_path(&Value::str("../a.c")).is_err());
 }
 
 #[test]

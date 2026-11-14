@@ -10,6 +10,7 @@ mod json;
 mod pathx;
 mod policy;
 mod proc;
+mod product;
 mod py;
 mod retention;
 mod security;

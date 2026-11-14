@@ -19,6 +19,7 @@ mod tests;
 
 use crate::confine::{self, Done, Env, Execution, Hooks};
 use crate::json::{self, Value};
+use crate::native::sp;
 use crate::pathx::{self, text};
 use crate::proc::{Result, require};
 use crate::py;
@@ -235,8 +236,8 @@ impl Engine for Execution {
             .cwd
             .clone()
             .unwrap_or_else(|| self.roots.checkout.clone());
-        let env = call.env.clone().unwrap_or_else(confine::process_env);
-        self.invocation(
+        let env = dict(call.env.clone().unwrap_or_else(confine::process_env));
+        Ok(self.invocation_with(
             &call.argv,
             &cwd,
             &env,
@@ -251,33 +252,35 @@ impl Engine for Execution {
                     None,
                 )?;
                 if call.check && code != 0 {
-                    return Err(pathx::called_process_error(command, code));
+                    return Err(sp::from_text(pathx::called_process_error(command, code)));
                 }
                 Ok(Done {
                     code,
-                    stdout: pathx::text_mode(&stdout)?,
-                    stderr: pathx::text_mode(&stderr)?,
+                    stdout: pathx::text_mode(&stdout).map_err(sp::from_text)?,
+                    stderr: pathx::text_mode(&stderr).map_err(sp::from_text)?,
                 })
             },
-        )
+        )?)
     }
     fn output(&mut self, call: &Call) -> Result<String> {
         let cwd = call
             .cwd
             .clone()
             .unwrap_or_else(|| self.roots.checkout.clone());
-        let env = call.env.clone().unwrap_or_else(confine::process_env);
-        self.invocation(&call.argv, &cwd, &env, false, |command, client_env| {
-            let (code, stdout, _, _) =
-                confine::spawn(command, Some(client_env), None, true, false, None)?;
-            if code != 0 {
-                return Err(pathx::called_process_error(command, code));
-            }
-            pathx::text_mode(&stdout)
-        })
+        let env = dict(call.env.clone().unwrap_or_else(confine::process_env));
+        Ok(
+            self.invocation_with(&call.argv, &cwd, &env, false, |command, client_env| {
+                let (code, stdout, _, _) =
+                    confine::spawn(command, Some(client_env), None, true, false, None)?;
+                if code != 0 {
+                    return Err(sp::from_text(pathx::called_process_error(command, code)));
+                }
+                pathx::text_mode(&stdout).map_err(sp::from_text)
+            })?,
+        )
     }
     fn pool_check(&mut self) -> Result<()> {
-        self.compiler_pool().map(|_| ())
+        Ok(self.compiler_pool().map(|_| ())?)
     }
     fn pool_map(&mut self, cases: &[Case], case: &CaseFn) -> Result<()> {
         struct Isolate<'a>(&'a mut confine::Slot);
@@ -286,15 +289,21 @@ impl Engine for Execution {
                 self.0.execution.roots.candidate.clone()
             }
             fn run(&mut self, argv: &[String], cwd: &Path) -> Result<Done> {
-                self.0.run(argv, cwd)
+                Ok(self.0.run(argv, cwd)?)
             }
         }
         self.compiler_pool()?
             .map(cases, &|slot: &mut confine::Slot, _, row: &Case| {
-                case(&mut Isolate(slot), row)
+                case(&mut Isolate(slot), row).map_err(sp::from_text)
             })
             .map(|_| ())
+            .map_err(String::from)
     }
+}
+
+/// An architecture environment as the boundary's `os.environ`-shaped mapping.
+fn dict(env: Env) -> sp::Dict {
+    sp::Dict(env.into_iter().collect())
 }
 
 // ---- Python text semantics --------------------------------------------------
@@ -364,13 +373,6 @@ pub fn hex40(value: &str) -> bool {
             .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-pub fn hex64(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-}
-
 /// `dict[key]` with Python's KeyError text.
 pub fn key<'v>(value: &'v Value, name: &str) -> Result<&'v Value> {
     value
@@ -398,56 +400,7 @@ pub fn loads(text: &str) -> Result<Value> {
 
 /// Bound the exact controller-registered generated source, without Git fallback.
 pub fn generated_revision(checkout: &Path) -> Result<String> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    let checkout = confine::checked_directory(checkout)?;
-    let mut inventory = Vec::new();
-    let mut total = 0u64;
-    for (index, path) in pathx::rglob(&checkout, "*").into_iter().enumerate() {
-        require(
-            index < 10000,
-            "generated architecture source exceeds entry count",
-        )?;
-        let info = pathx::io(std::fs::symlink_metadata(&path), &path)?;
-        let relative = path.strip_prefix(&checkout).unwrap_or(&path).to_path_buf();
-        let kind = info.file_type();
-        require(
-            (kind.is_dir() || kind.is_file())
-                && !relative.components().any(|c| c.as_os_str() == ".git"),
-            "generated architecture source contains indirect or Git control files",
-        )?;
-        let mut row = vec![
-            ("path".to_owned(), Value::str(text(&relative))),
-            (
-                "permissions".to_owned(),
-                Value::int(info.permissions().mode() & 0o7777),
-            ),
-            ("kind".to_owned(), Value::str("directory")),
-            ("size".to_owned(), Value::int(0)),
-            ("sha256".to_owned(), Value::Null),
-        ];
-        if kind.is_file() {
-            total += info.len();
-            require(
-                info.nlink() == 1 && info.len() <= 16 << 20 && total <= 128 << 20,
-                "generated architecture source exceeds collection bounds",
-            )?;
-            let payload = pathx::read(&path)?;
-            require(
-                payload.len() as u64 == info.len(),
-                "generated architecture source changed while fingerprinting",
-            )?;
-            row[2].1 = Value::str("file");
-            row[3].1 = Value::int(info.len());
-            row[4].1 = Value::str(sha256::hex(&payload));
-        }
-        inventory.push(Value::Object(row));
-    }
-    inventory.sort_by(|a, b| a.at("path").as_str().cmp(&b.at("path").as_str()));
-    let encoded = json::encoded(&Value::Array(inventory));
-    Ok(format!(
-        "generated-sha256:{}",
-        sha256::hex(&encoded[..encoded.len() - 1])
-    ))
+    Ok(crate::product::generated_revision(checkout)?)
 }
 
 pub struct Args {

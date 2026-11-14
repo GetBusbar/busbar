@@ -1,8 +1,9 @@
 //! Existing plugin checks and canonical scaffolding under trusted native
 //! admission (former `native_plugins`).
 use super::sp::{self, R, at, need, runtime, value_error, violation};
-use super::{Q, git, native_settings, product, pysteps, sanitizer};
+use super::{Q, git, native_settings, pysteps, sanitizer};
 use crate::json::{self, Value, object};
+use crate::product;
 use std::path::{Path, PathBuf};
 
 fn suffix() -> &'static str {
@@ -374,10 +375,10 @@ pub fn qualify_plugin(q: &mut Q, _host: &Path, sdk: &Path) -> R<()> {
         true,
     )?;
     q.receipt
-        .set("library_sha256", super::confine::digest(&collected)?.into());
+        .set("library_sha256", crate::confine::digest(&collected)?.into());
     q.receipt.set(
         "lock_sha256",
-        super::confine::digest(&q.root.join("Cargo.lock"))?.into(),
+        crate::confine::digest(&q.root.join("Cargo.lock"))?.into(),
     );
     q.receipt.set("private", entry.at("private").clone());
     Ok(())
@@ -491,7 +492,7 @@ fn qualify_c(q: &mut Q, _entry: &Value, sdk: &Path) -> R<()> {
     let destination = q.evidence.join(library.file_name().unwrap_or_default());
     let collected = q.collect_output(&library, &destination, 2 << 30, true)?;
     q.receipt
-        .set("library_sha256", super::confine::digest(&collected)?.into());
+        .set("library_sha256", crate::confine::digest(&collected)?.into());
     q.receipt.set("private", false.into());
     Ok(())
 }
@@ -527,7 +528,7 @@ fn generated_architecture_context(q: &mut Q, checkout: &Path, label: &str) -> R<
     }
     let (parent, expected) = execution.write_context()?;
     need(
-        super::confine::digest(&parent)? == expected,
+        crate::confine::digest(&parent)? == expected,
         "parent execution context changed",
     )?;
     let mut context = sp::read_json(&parent)?;
@@ -542,7 +543,7 @@ fn generated_architecture_context(q: &mut Q, checkout: &Path, label: &str) -> R<
         .control
         .join(format!("generated-{label}-execution-context.json"));
     sp::write(&path, json::dumps(&context, true) + "\n")?;
-    let digest = super::confine::digest(&path)?;
+    let digest = crate::confine::digest(&path)?;
     Ok((path, digest))
 }
 
@@ -710,8 +711,10 @@ pub fn qualify_generator(q: &mut Q) -> R<()> {
             let base = sp::read_text(&q.trusted.join("ci/architecture.toml"))?;
             sp::write(&policy_file, base + &addition)?;
             let output = q.evidence.join(format!("{label}-architecture.json"));
+            let controller = q.controller()?;
             let (context, expected) = generated_architecture_context(q, &root, &label)?;
-            let command = pysteps::architecture(
+            let command = super::architecture_command(
+                &controller,
                 &q.trusted,
                 &policy_file,
                 &repo,

@@ -2,9 +2,12 @@
 //!
 //! None of these is controller logic; each is a recorded step whose argv is
 //! part of the receipt and therefore unchanged:
-//! * `architecture` — `check.py`, ported separately to `busbar-ci architecture`;
-//!   switch [`architecture`] alone when that lands.
-//! * the four core regression steps — the trusted Python test suites themselves;
+//! * the Python tooling regression steps — the trusted test suites of the
+//!   tooling that is still Python (owner admission/retained-evidence readers,
+//!   the in-container entry, the isolation diagnostic, CI bootstrap contracts,
+//!   toolchain image/seed/probes, conformance capabilities, confined conformance
+//!   tools); `architecture-regressions` before them is the controller's own
+//!   Rust test suite ([`super::controller_regressions`]);
 //! * `development-artifact-evidence` — `development_artifact.py finalize`, whose
 //!   deterministic gzip archive bytes are CPython zlib output a std-only port
 //!   cannot reproduce byte-for-byte;
@@ -23,49 +26,8 @@ fn t(path: &Path) -> String {
     sp::text(path)
 }
 
-/// The architecture step command (`check.py`).
-#[allow(clippy::too_many_arguments)]
-pub fn architecture(
-    trusted: &Path,
-    policy: &Path,
-    repository: &str,
-    checkout: &Path,
-    scratch: &Path,
-    output: &Path,
-    sdk: Option<&Path>,
-    context: Option<(&Path, &str)>,
-) -> Vec<String> {
-    let mut command = vec![
-        PY.to_owned(),
-        t(&trusted.join("scripts/architecture/check.py")),
-        "--policy".into(),
-        t(policy),
-        "--repository".into(),
-        repository.into(),
-        "--checkout".into(),
-        t(checkout),
-        "--trusted".into(),
-        t(trusted),
-        "--scratch".into(),
-        t(scratch),
-        "--output".into(),
-        t(output),
-    ];
-    if let Some(sdk) = sdk {
-        command.extend(["--sdk".into(), t(sdk)]);
-    }
-    if let Some((path, digest)) = context {
-        command.extend([
-            "--execution-context".into(),
-            t(path),
-            "--execution-context-sha256".into(),
-            digest.into(),
-        ]);
-    }
-    command
-}
-
-/// The fixed controller regression suites, in their former order.
+/// The fixed Python tooling regression suites, in their former order (after
+/// the controller's own `architecture-regressions`).
 pub fn regressions(trusted: &Path) -> Vec<(&'static str, Vec<String>)> {
     let discover = |directory: &str| {
         vec![
@@ -88,7 +50,10 @@ pub fn regressions(trusted: &Path) -> Vec<(&'static str, Vec<String>)> {
         ]
     };
     vec![
-        ("architecture-regressions", discover("scripts/architecture")),
+        (
+            "architecture-tooling-regressions",
+            discover("scripts/architecture"),
+        ),
         (
             "toolchain-regressions",
             discover("scripts/architecture/toolchain"),
@@ -276,19 +241,15 @@ mod tests {
     #[test]
     fn step_programs_keep_their_former_argv() {
         let trusted = Path::new("/t");
-        let command = architecture(
-            trusted,
-            &trusted.join("ci/architecture.toml"),
-            "GetBusbar/busbar",
-            Path::new("/c"),
-            Path::new("/h/architecture"),
-            Path::new("/e/architecture.json"),
-            None,
-            Some((Path::new("/x/execution-context.json"), "ab")),
-        );
+        let names: Vec<&str> = regressions(trusted).iter().map(|(n, _)| *n).collect();
         assert_eq!(
-            command.join(" "),
-            "python3 /t/scripts/architecture/check.py --policy /t/ci/architecture.toml --repository GetBusbar/busbar --checkout /c --trusted /t --scratch /h/architecture --output /e/architecture.json --execution-context /x/execution-context.json --execution-context-sha256 ab"
+            names,
+            [
+                "architecture-tooling-regressions",
+                "toolchain-regressions",
+                "conformance-capability-regressions",
+                "conformance-confined-tools-regressions"
+            ]
         );
         assert_eq!(regressions(trusted)[0].1[0], "/usr/bin/python3");
         assert_eq!(

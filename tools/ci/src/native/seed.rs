@@ -27,8 +27,8 @@ pub fn git_source(source: &str) -> Option<(String, String, String)> {
     let (rev, fragment) = query.split_once('#')?;
     (class(owner)
         && class(name)
-        && super::product::is_revision(rev)
-        && super::product::is_revision(fragment))
+        && crate::product::is_revision(rev)
+        && crate::product::is_revision(fragment))
     .then(|| (url.to_owned(), rev.to_owned(), fragment.to_owned()))
 }
 
@@ -294,7 +294,7 @@ pub fn prepare(q: &mut Q) -> R<()> {
     // Insertion-ordered: the receipt keeps discovery order.
     let mut git_revisions: Vec<(String, BTreeSet<String>)> = Vec::new();
     for (index, (label, input)) in locks.iter().enumerate() {
-        let lock = super::product::toml(&input.data)?;
+        let lock = crate::product::toml(&input.data)?;
         let rows = packages(&lock)?;
         let destination = context.join("locks").join(index.to_string());
         manifest_snapshot(&input.source, &destination, input.revision.as_deref())?;
@@ -614,7 +614,7 @@ pub fn prepare(q: &mut Q) -> R<()> {
             "private dependency seed contains indirect or special files",
         )?;
         let relative = sp::text(path.strip_prefix(&directory).unwrap_or(&path));
-        actual.push((relative, super::confine::digest(&path)?.into()));
+        actual.push((relative, crate::confine::digest(&path)?.into()));
     }
     need(
         Value::Object(actual) == *at(&seed, "files")?,

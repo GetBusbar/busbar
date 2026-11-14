@@ -1,20 +1,23 @@
-//! Explicit candidate execution boundary; controller code never enters its mounts.
+//! Explicit candidate execution boundary (former `native_confinement.Execution`
+//! and its `CompilerPool`), the one implementation both controller commands use.
 //!
-//! The `Execution` contract of scripts/architecture/native_confinement.py as the
-//! architecture controller uses it: `from_context`, per-invocation Docker
-//! containers (create, inspect, attach, state, removal, confirmed absence),
-//! observations with the same keys and digests, and the two-isolate compiler
-//! pool. The step runner keeps its Python implementation for its own steps
-//! until it is ported; both write identical observation rows. Missing images,
-//! weakened runtimes or failed disposal refuse; there is no host fallback.
+//! `native-qualify` constructs it from the protected configuration and writes
+//! the digest-bound execution context; `architecture` reloads that context
+//! (`from_context`) and runs its candidate commands and the two-isolate
+//! compiler pool through the same per-invocation container lifecycle (create,
+//! inspect, attach, state, removal, confirmed absence). Controller code never
+//! enters its mounts; missing images, unsupported fixtures, weakened runtimes
+//! or failed disposal refuse, with no host fallback. The context bytes and the
+//! observation rows keep the former schema exactly.
 use crate::isolation;
 use crate::json::{self, Value, object};
-use crate::pathx::{self, io, text};
-use crate::proc::{self, Result, require};
-use crate::py;
+use crate::native::pysteps;
+use crate::native::sp::{
+    self, Dict, Error, Io, Kind, R, Spec, at, key_error, need_value as require, value_error,
+};
+use crate::proc;
 use crate::sha256;
 use std::collections::BTreeMap;
-use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,67 +25,41 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub type Env = BTreeMap<String, String>;
-
-/// Error text of a cancelled compiler case (`CancelledError`).
-pub const CANCELLED: &str = "compiler pool cancelled";
-
-/// A finished candidate command (`subprocess.CompletedProcess`).
-#[derive(Clone, Debug, Default)]
-pub struct Done {
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
+pub fn digest(path: &Path) -> R<String> {
+    sha256::file(path).map_err(|e| {
+        let error = std::fs::File::open(path).err();
+        match error {
+            Some(error) => sp::os_error(&error, Some(path)),
+            None => value_error(e),
+        }
+    })
 }
 
-pub fn digest(path: &Path) -> Result<String> {
-    Ok(sha256::hex(&pathx::read(path)?))
-}
-
-/// `(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()`.
+/// `canonical(value)`: sorted compact JSON plus newline.
 pub fn canonical(value: &Value) -> Vec<u8> {
     json::encoded(value)
 }
 
-fn canonical_sha(value: &Value) -> String {
+pub fn sha_canonical(value: &Value) -> String {
     sha256::hex(&canonical(value))
 }
 
-/// The process environment as `os.environ` sees it.
-pub fn process_env() -> Env {
-    std::env::vars_os()
-        .map(|(k, v)| {
-            (
-                k.to_string_lossy().into_owned(),
-                v.to_string_lossy().into_owned(),
-            )
-        })
-        .collect()
-}
-
-pub fn checked_directory(value: &Path) -> Result<PathBuf> {
-    let path = value.to_path_buf();
+/// `checked_directory(value)`.
+pub fn checked_directory(path: &Path) -> R<PathBuf> {
     require(
         path.is_absolute()
             && path.is_dir()
-            && !pathx::is_symlink(&path)
-            && path == pathx::resolve(&path)
-            && pathx::norm(&path).components().count() > 2,
+            && !sp::is_symlink(path)
+            && path == sp::resolve(path)
+            && path.components().count() > 2,
         "unsafe execution root",
     )?;
-    require(!text(&path).contains(','), "unsupported mount path")?;
-    Ok(pathx::norm(&path))
+    require(!sp::text(path).contains(','), "unsupported mount path")?;
+    Ok(path.to_owned())
 }
 
-fn mkdir_exist_ok(path: &Path, mode: u32) -> Result<()> {
-    match pathx::mkdir(path, mode) {
-        Ok(()) => Ok(()),
-        Err(_) if path.is_dir() => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-pub fn writable_directory(root: &Path, parts: &[&str]) -> Result<PathBuf> {
+/// `writable_directory(root, *parts)`.
+pub fn writable_directory(root: &Path, parts: &[&str]) -> R<PathBuf> {
     let mut current = checked_directory(root)?;
     for part in parts {
         require(
@@ -90,30 +67,32 @@ pub fn writable_directory(root: &Path, parts: &[&str]) -> Result<PathBuf> {
             "invalid writable directory component",
         )?;
         current = current.join(part);
-        require(!pathx::is_symlink(&current), "indirect writable directory")?;
-        mkdir_exist_ok(&current, 0o777)?;
+        require(!sp::is_symlink(&current), "indirect writable directory")?;
+        sp::mkdir(&current, 0o777, true)?;
         checked_directory(&current)?;
     }
     Ok(current)
 }
 
 fn image_reference(value: &str) -> bool {
-    let digest = match value.split_once('@') {
-        Some((prefix, rest)) => {
-            if prefix.is_empty()
-                || !prefix
+    let digest = |text: &str| {
+        text.strip_prefix("sha256:").is_some_and(|hex| {
+            hex.len() == 64
+                && hex
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        })
+    };
+    match value.rsplit_once('@') {
+        Some((name, rest)) => {
+            !name.is_empty()
+                && name
                     .bytes()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || b"./:_-".contains(&c))
-            {
-                return false;
-            }
-            rest
+                && digest(rest)
         }
-        None => value,
-    };
-    digest
-        .strip_prefix("sha256:")
-        .is_some_and(|h| h.len() == 64 && h.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f')))
+        None => digest(value),
+    }
 }
 
 fn unix_endpoint(value: &str) -> bool {
@@ -127,69 +106,20 @@ pub fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)
 }
 
-fn test_endpoint_key(key: &str) -> bool {
-    let Some(rest) = key.strip_prefix("BUSBAR_TEST_") else {
-        return false;
-    };
-    ["_URL", "_ADDR", "_FIXTURE"].iter().any(|suffix| {
-        rest.len() > suffix.len()
-            && rest.ends_with(suffix)
-            && rest
-                .bytes()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
-    })
+/// An environment mapping as the architecture checks build it.
+pub type Env = BTreeMap<String, String>;
+
+/// The process environment as `os.environ` sees it.
+pub fn process_env() -> Env {
+    Dict::environ().0.into_iter().collect()
 }
 
-fn github_mapping(value: &str) -> bool {
-    value
-        .strip_prefix("https://github.com/GetBusbar/")
-        .is_some_and(|rest| {
-            !rest.is_empty()
-                && rest
-                    .bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
-        })
-}
-
-/// `PurePosixPath.as_uri()`.
-fn file_uri(path: &Path) -> String {
-    let mut out = String::from("file://");
-    for byte in text(path).bytes() {
-        if byte.is_ascii_alphanumeric() || b"_.-~/".contains(&byte) {
-            out.push(byte as char);
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
-/// `int(text)` for the Git mapping count.
-fn py_int(value: &str) -> Result<i64> {
-    let trimmed = value.trim_matches(py_space);
-    let digits = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
-    let valid = !digits.is_empty()
-        && !digits.starts_with('_')
-        && !digits.ends_with('_')
-        && !digits.contains("__")
-        && digits.bytes().all(|c| c.is_ascii_digit() || c == b'_');
-    let parsed = valid
-        .then(|| trimmed.replace('_', "").parse::<i64>().ok())
-        .flatten();
-    parsed.ok_or_else(|| {
-        format!(
-            "invalid literal for int() with base 10: {}",
-            py::repr_str(value)
-        )
-    })
-}
-
-pub type Client = Arc<dyn Fn(&[String], bool) -> Result<(i32, String)> + Send + Sync>;
-pub type PrepareWritable = Arc<dyn Fn(&Value, &[PathBuf], u64, u64) -> Result<Value> + Send + Sync>;
-pub type Userns = Arc<dyn Fn(&Value, &Value, Option<&Value>) -> Result<Value> + Send + Sync>;
+pub type Client = Arc<dyn Fn(&[String], bool) -> R<(i32, Vec<u8>)> + Send + Sync>;
+pub type PrepareWritable = Arc<dyn Fn(&Value, &[PathBuf], u64, u64) -> R<Value> + Send + Sync>;
+pub type Userns = Arc<dyn Fn(&Value, &Value, Option<&Value>) -> R<Value> + Send + Sync>;
 
 /// Host-kernel contracts. Production uses the real Docker client and Linux
-/// checks; unit tests substitute them as the Python tests patch them.
+/// checks; unit tests substitute them as the former Python tests patched them.
 #[derive(Clone, Default)]
 pub struct Hooks {
     pub client: Option<Client>,
@@ -197,6 +127,15 @@ pub struct Hooks {
     pub userns: Option<Userns>,
 }
 
+fn positive_int(value: &Value) -> Option<i128> {
+    value.as_int().filter(|v| *v > 0)
+}
+
+fn is_relative_to(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+/// The four candidate-visible roots, in their former insertion order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Roots {
     pub checkout: PathBuf,
@@ -216,16 +155,18 @@ impl Roots {
     }
 }
 
-struct Attach<'a> {
-    at: usize,
-    name: &'a str,
-    args: &'a [String],
-    mounts: &'a [(PathBuf, PathBuf, bool)],
-    fixture_hosts: &'a [String],
-    resources: &'a Value,
-    daemon: &'a Value,
-    isolation: &'a Value,
-    user: String,
+/// A custom seccomp profile execution (`tsan_linux29_probe.ProfileExecution`).
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub data: Value,
+}
+
+/// The fixed C unit command restriction (`native_sanitizer.CUnitExecution`).
+#[derive(Clone, Debug)]
+pub struct Restriction {
+    pub command: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -233,106 +174,60 @@ pub struct Execution {
     pub config: Value,
     pub control: PathBuf,
     pub roots: Roots,
-    docker: Vec<String>,
-    client_env: Vec<(String, String)>,
-    fixture_directory: PathBuf,
-    fixture_map: PathBuf,
+    /// `Path(native_confinement.__file__).with_name('confinement_entry.py')`.
+    pub entry: PathBuf,
+    pub docker: Vec<String>,
+    pub client_env: Vec<(String, String)>,
+    pub fixture_directory: PathBuf,
+    pub fixture_map: PathBuf,
     pub extra_readonly: Vec<PathBuf>,
     pub observations: Vec<Value>,
-    conformance_mounts: Vec<(PathBuf, PathBuf)>,
-    conformance_inputs_manifest: Option<PathBuf>,
-    dependency_seed: Option<PathBuf>,
-    dependency_seed_sha256: Value,
-    resource_slice: Option<Value>,
-    compiler_readonly: bool,
-    prepared_git: Option<PathBuf>,
-    readonly_candidate_inputs: Option<PathBuf>,
+    pub product_inputs: Dict,
+    pub oracle_inputs: Dict,
+    pub conformance_capabilities: Option<PathBuf>,
+    pub conformance_mounts: Vec<(PathBuf, PathBuf)>,
+    pub conformance_inputs_manifest: Option<PathBuf>,
+    pub dependency_seed: Option<PathBuf>,
+    pub dependency_seed_sha256: Option<String>,
+    pub profile: Option<Profile>,
+    pub restriction: Option<Restriction>,
+    /// Compiler-pool isolate state (`resource_slice`, `compiler_readonly`,
+    /// `prepared_git`, `readonly_candidate_inputs`); unset outside the pool.
+    pub resource_slice: Option<Value>,
+    pub compiler_readonly: bool,
+    pub prepared_git: Option<PathBuf>,
+    pub readonly_candidate_inputs: Option<PathBuf>,
     pub hooks: Hooks,
 }
 
-const CONFIG_KEYS: [&str; 13] = [
-    "schema",
-    "docker",
-    "docker_sha256",
-    "docker_host",
-    "image",
-    "runtime",
-    "uid",
-    "gid",
-    "python",
-    "environment",
-    "resources",
-    "isolation",
-    "collector",
-];
-
-const ALLOWED_ENV: &[&str] = &[
-    "CI",
-    "LANG",
-    "LC_ALL",
-    "RUSTUP_TOOLCHAIN",
-    "RUSTFLAGS",
-    "RUSTDOCFLAGS",
-    "RUSTC_WRAPPER",
-    "RUSTC_WORKSPACE_WRAPPER",
-    "CARGO_TARGET_DIR",
-    "CARGO_BUILD_JOBS",
-    "CARGO_TERM_COLOR",
-    "CARGO_PROFILE_DEV_DEBUG",
-    "CARGO_PROFILE_TEST_DEBUG",
-    "CARGO_NET_GIT_FETCH_WITH_CLI",
-    "TMPDIR",
-    "MODERNCI_CACHE_DIR",
-    "XDG_CACHE_HOME",
-    "GIT_TERMINAL_PROMPT",
-    "CI_SERVER_HOST",
-    "CI_JOB_URL",
-    "CI_JOB_ID",
-    "CI_PIPELINE_ID",
-    "CI_PROJECT_PATH",
-    "CONFORMANCE_OUT",
-    "CONFORMANCE_TIMEOUT_SECONDS",
-    "VALKEY_URL",
-    "BUSBAR_V4_TRANSPORT_URL",
-    "BUSBAR_V4_TEST_TMP",
-    "BUSBAR_VALKEY_SERVER",
-    "BUSBAR_CHECKOUT",
-    "BUSBAR_ADMISSION_CORE_REVISION",
-    "BUSBAR_SDK_CHECKOUT",
-    "BUSBAR_SDK_REVISION",
-    "BUSBAR_SCAFFOLD_OUTPUT",
-    "BUSBAR_PIN",
-    "BUSBAR_TEST_TMP_ROOT",
-    "BUSBAR_TEST_VAULT_TOKEN",
-    "BUSBAR_TEST_MYSQL_ROOT_PASSWORD",
-    "BUSBAR_ARCHITECTURE_SOURCES",
-    "BUSBAR_ARCHITECTURE_POLICY_SOURCES",
-    "BUSBAR_ARCHITECTURE_GENERATED_DIRS",
-    "BUSBAR_C_ABI_SOURCES",
-    "BUSBAR_C_ABI_LIBRARY",
-    "BUSBAR_PLUGIN_CDYLIB",
-    "BUSBAR_BIN",
-    "TSAN_OPTIONS",
-];
-
-const TMPFS: &str = "rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777";
-
-fn int(value: &Value) -> Option<i128> {
-    value.is_int().then(|| value.as_int()).flatten()
-}
-
-fn str_map(value: &Value) -> Option<Vec<(String, String)>> {
-    value
-        .as_object()?
-        .iter()
-        .map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
-        .collect()
+/// One live candidate container; [`Execution::dispose`] must always follow.
+pub struct Invocation {
+    pub name: String,
+    pub command: Vec<String>,
+    pub observation: usize,
+    inspected: bool,
+    disposable_target: Option<PathBuf>,
+    cargo_home: Option<PathBuf>,
 }
 
 impl Execution {
-    pub fn new(config: Value, roots: &Value, control: &Path, hooks: Hooks) -> Result<Execution> {
+    pub fn new(config: Value, roots: Roots, control: &Path, entry: PathBuf) -> R<Execution> {
         require(
-            config.has_keys(&CONFIG_KEYS),
+            config.has_keys(&[
+                "schema",
+                "docker",
+                "docker_sha256",
+                "docker_host",
+                "image",
+                "runtime",
+                "uid",
+                "gid",
+                pysteps::INTERPRETER_KEY,
+                "environment",
+                "resources",
+                "isolation",
+                "collector",
+            ]),
             "unknown isolation configuration",
         )?;
         require(
@@ -342,17 +237,16 @@ impl Execution {
         let docker = config.at("docker").as_str().unwrap_or("").to_owned();
         require(
             Path::new(&docker).is_absolute()
-                && digest(Path::new(&docker))?.as_str()
-                    == config.at("docker_sha256").as_str().unwrap_or("\0"),
+                && digest(Path::new(&docker))?
+                    == config.at("docker_sha256").as_str().unwrap_or("-"),
             "Docker client is not the pinned executable",
         )?;
-        let docker_host = config.at("docker_host").as_str().unwrap_or("").to_owned();
         require(
-            unix_endpoint(&docker_host),
+            unix_endpoint(config.at("docker_host").as_str().unwrap_or("")),
             "local Unix Docker endpoint required",
         )?;
         require(
-            config.at("image").as_str().is_some_and(image_reference),
+            image_reference(config.at("image").as_str().unwrap_or("")),
             "immutable toolchain image required",
         )?;
         require(
@@ -360,215 +254,200 @@ impl Execution {
             "unsupported candidate runtime",
         )?;
         require(
-            int(config.at("uid")).is_some_and(|v| v > 0)
-                && int(config.at("gid")).is_some_and(|v| v > 0),
+            positive_int(config.at("uid")).is_some() && positive_int(config.at("gid")).is_some(),
             "candidate must use a nonroot identity",
         )?;
         require(
-            config
-                .at("python")
-                .as_str()
-                .is_some_and(|p| Path::new(p).is_absolute()),
+            Path::new(config.at(pysteps::INTERPRETER_KEY).as_str().unwrap_or("")).is_absolute(),
             "pinned-image Python path required",
         )?;
-        let environment = str_map(config.at("environment"));
+        let environment = config.at("environment");
+        let allowed = [
+            "PATH",
+            "CARGO_HOME",
+            "RUSTUP_HOME",
+            "GOROOT",
+            "RUSTC",
+            "RUSTDOC",
+        ];
         require(
-            environment.as_ref().is_some_and(|env| {
-                env.iter().all(|(k, _)| {
-                    [
-                        "PATH",
-                        "CARGO_HOME",
-                        "RUSTUP_HOME",
-                        "GOROOT",
-                        "RUSTC",
-                        "RUSTDOC",
-                    ]
-                    .contains(&k.as_str())
-                }) && env.iter().any(|(k, _)| k == "PATH")
+            environment.as_object().is_some_and(|rows| {
+                rows.iter()
+                    .all(|(k, v)| allowed.contains(&k.as_str()) && v.as_str().is_some())
+                    && rows.iter().any(|(k, _)| k == "PATH")
             }),
             "unexpected toolchain environment",
         )?;
-        isolation::validate_configuration(config.at("isolation"))?;
+        isolation::validate_configuration(config.at("isolation")).map_err(sp::from_text)?;
         let collector = config.at("collector");
         let isolation = config.at("isolation");
-        let mapped = |key: &str, id: &str| -> Option<i128> {
-            Some(int(isolation.at(key).index(1))? + int(config.at(id))?)
+        let mapped = |map: &str, id: &str| {
+            isolation
+                .at(map)
+                .index(1)
+                .as_int()
+                .zip(config.at(id).as_int())
+                .map(|(a, b)| a + b)
         };
         require(
-            (collector.has_keys(&["docker_host", "uid", "gid"])
-                || collector.has_keys(&["docker_host", "uid", "gid", "image"]))
-                && collector
-                    .get("image")
-                    .unwrap_or(config.at("image"))
-                    .as_str()
-                    .is_some_and(image_reference)
-                && collector
-                    .at("docker_host")
-                    .as_str()
-                    .is_some_and(unix_endpoint)
-                && py::eq(
-                    collector.at("uid"),
-                    &mapped("uid_map", "uid").map_or(Value::Null, Value::int),
+            collector.is_object()
+                && (collector.has_keys(&["docker_host", "uid", "gid"])
+                    || collector.has_keys(&["docker_host", "uid", "gid", "image"]))
+                && image_reference(
+                    collector
+                        .get("image")
+                        .unwrap_or(config.at("image"))
+                        .as_str()
+                        .unwrap_or(""),
                 )
-                && py::eq(
-                    collector.at("gid"),
-                    &mapped("gid_map", "gid").map_or(Value::Null, Value::int),
-                ),
+                && unix_endpoint(collector.at("docker_host").as_str().unwrap_or(""))
+                && collector.at("uid").as_int().is_some()
+                && collector.at("uid").as_int() == mapped("uid_map", "uid")
+                && collector.at("gid").as_int() == mapped("gid_map", "gid"),
             "invalid protected dependency collector identity",
         )?;
         let resources = config.at("resources");
-        let resource = |key: &str| int(resources.at(key));
         require(
             resources.has_keys(&["cpus", "memory_bytes", "pids"])
                 && ["cpus", "memory_bytes", "pids"]
                     .iter()
-                    .all(|k| resource(k).is_some_and(|v| v > 0))
-                && resource("cpus").unwrap_or(0) <= 64
-                && resource("memory_bytes").unwrap_or(0) <= 256 << 30
-                && resource("pids").unwrap_or(0) <= 65536,
+                    .all(|k| positive_int(resources.at(k)).is_some())
+                && resources.at("cpus").as_int() <= Some(64)
+                && resources.at("memory_bytes").as_int() <= Some(256 << 30)
+                && resources.at("pids").as_int() <= Some(65536),
             "invalid confinement resource caps",
         )?;
         let control = checked_directory(control)?;
-        require(
-            roots.has_keys(&["checkout", "candidate", "trusted", "harness"]),
-            "unexpected execution roots",
-        )?;
-        let root = |key: &str| -> Result<PathBuf> {
-            checked_directory(Path::new(
-                roots.at(key).as_str().ok_or("unsafe execution root")?,
-            ))
-        };
         let roots = Roots {
-            checkout: root("checkout")?,
-            candidate: root("candidate")?,
-            trusted: root("trusted")?,
-            harness: root("harness")?,
+            checkout: checked_directory(&roots.checkout)?,
+            candidate: checked_directory(&roots.candidate)?,
+            trusted: checked_directory(&roots.trusted)?,
+            harness: checked_directory(&roots.harness)?,
         };
-        for writable in [&roots.checkout, &roots.candidate] {
+        for root in [&roots.checkout, &roots.candidate] {
             require(
-                !control.starts_with(writable),
+                !is_relative_to(&control, root),
                 "controller is beneath candidate access",
             )?;
         }
-        for readonly in [&roots.trusted, &roots.harness] {
+        for root in [&roots.trusted, &roots.harness] {
             require(
-                !control.starts_with(readonly),
+                !is_relative_to(&control, root),
                 "controller is exposed through readonly root",
             )?;
             for writable in [&roots.checkout, &roots.candidate] {
                 require(
-                    !readonly.starts_with(writable) && !writable.starts_with(readonly),
+                    !is_relative_to(root, writable) && !is_relative_to(writable, root),
                     "trusted source overlaps candidate roots",
                 )?;
             }
         }
         require(
-            !roots.candidate.starts_with(&roots.checkout)
-                && !roots.checkout.starts_with(&roots.candidate),
+            !is_relative_to(&roots.candidate, &roots.checkout)
+                && !is_relative_to(&roots.checkout, &roots.candidate),
             "candidate roots overlap",
         )?;
-        let omitted = [
-            roots.checkout.join(".git"),
-            roots.checkout.join("target"),
-            roots.checkout.join("dist/default/target"),
-        ];
-        let mut pending = vec![roots.checkout.clone()];
-        while let Some(directory) = pending.pop() {
-            let Ok(entries) = fs::read_dir(&directory) else {
-                continue; // os.walk ignores unreadable directories
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(metadata) = fs::symlink_metadata(&path) else {
-                    continue;
-                };
-                require(
-                    !metadata.file_type().is_symlink(),
-                    "candidate source contains symlinks",
-                )?;
-                if metadata.is_dir() && !omitted.contains(&path) {
-                    pending.push(path);
-                }
-            }
-        }
-        let resolved_docker = pathx::resolve(Path::new(&docker));
+        source_without_links(&roots.checkout)?;
+        let resolved_docker = sp::resolve(Path::new(&docker));
         require(
-            !resolved_docker.starts_with(&roots.checkout)
-                && !resolved_docker.starts_with(&roots.candidate),
+            !is_relative_to(&resolved_docker, &roots.checkout)
+                && !is_relative_to(&resolved_docker, &roots.candidate),
             "Docker client is candidate writable",
         )?;
-        let candidate_writable =
-            |path: &Path| path.starts_with(&roots.candidate) || path.starts_with(&roots.checkout);
-        for (key, value) in environment.unwrap_or_default() {
+        let writable = |path: &Path| {
+            is_relative_to(path, &roots.candidate) || is_relative_to(path, &roots.checkout)
+        };
+        for (key, value) in environment.as_object().into_iter().flatten() {
+            let value = value.as_str().unwrap_or("");
             if key == "PATH" {
                 require(
                     value.split(':').all(|part| {
-                        let path = Path::new(if part.is_empty() { "." } else { part });
-                        path.is_absolute() && !path.starts_with("/tmp") && !candidate_writable(path)
+                        let part = Path::new(part);
+                        part.is_absolute()
+                            && !is_relative_to(part, Path::new("/tmp"))
+                            && !writable(part)
                     }),
                     "relative or candidate writable tool search path",
                 )?;
                 continue;
             }
-            let path = Path::new(if value.is_empty() { "." } else { &value });
+            let path = Path::new(value);
             require(
-                path.is_absolute() && !path.starts_with("/tmp") && !candidate_writable(path),
+                path.is_absolute() && !is_relative_to(path, Path::new("/tmp")) && !writable(path),
                 "toolchain or Cargo seed path is candidate writable",
             )?;
         }
         let client_home = control.join("docker-client");
-        mkdir_exist_ok(&client_home, 0o700)?;
-        let client_env = vec![
-            ("PATH".to_owned(), "/bin:/usr/bin".to_owned()),
-            ("HOME".to_owned(), text(&client_home)),
-            ("DOCKER_CONFIG".to_owned(), text(&client_home)),
-        ];
+        sp::mkdir(&client_home, 0o700, true)?;
         let fixture_directory = control.join("fixture-sockets");
-        mkdir_exist_ok(&fixture_directory, 0o755)?;
+        sp::mkdir(&fixture_directory, 0o755, true)?;
         let fixture_map = control.join("fixture-map.json");
         if !fixture_map.exists() {
-            pathx::write(&fixture_map, b"[]\n")?;
+            sp::write(&fixture_map, b"[]\n")?;
         }
+        let docker_host = config.at("docker_host").as_str().unwrap_or("").to_owned();
+        let home = sp::text(&client_home);
         Ok(Execution {
             docker: vec![docker, "--host".into(), docker_host],
+            client_env: vec![
+                ("PATH".into(), "/bin:/usr/bin".into()),
+                ("HOME".into(), home.clone()),
+                ("DOCKER_CONFIG".into(), home),
+            ],
+            fixture_directory,
+            fixture_map,
             config,
             control,
             roots,
-            client_env,
-            fixture_directory,
-            fixture_map,
+            entry,
             extra_readonly: Vec::new(),
             observations: Vec::new(),
+            product_inputs: Dict::default(),
+            oracle_inputs: Dict::default(),
+            conformance_capabilities: None,
             conformance_mounts: Vec::new(),
             conformance_inputs_manifest: None,
             dependency_seed: None,
-            dependency_seed_sha256: Value::Null,
+            dependency_seed_sha256: None,
+            profile: None,
+            restriction: None,
             resource_slice: None,
             compiler_readonly: false,
             prepared_git: None,
             readonly_candidate_inputs: None,
-            hooks,
+            hooks: Hooks::default(),
         })
     }
 
-    pub fn from_context(path: &Path, expected: &str, hooks: Hooks) -> Result<Execution> {
+    /// `Execution.from_context(path, expected)`: the digest-bound context the
+    /// step runner wrote, reloaded by the architecture command.
+    pub fn from_context(path: &Path, expected: &str, hooks: Hooks) -> R<Execution> {
         require(
             digest(path)? == expected,
             "controller execution context digest differs",
         )?;
-        let data = py::loads(pathx::read_text(path)?.as_bytes()).map_err(|e| e.message)?;
-        let mut execution = Execution::new(
-            data.get("configuration")
-                .cloned()
-                .ok_or("KeyError: 'configuration'")?,
-            data.get("roots").ok_or("KeyError: 'roots'")?,
-            Path::new(
-                data.get("control")
-                    .and_then(Value::as_str)
-                    .ok_or("KeyError: 'control'")?,
-            ),
-            hooks,
+        let data = sp::read_json(path)?;
+        let roots = at(&data, "roots")?;
+        require(
+            roots.has_keys(&["checkout", "candidate", "trusted", "harness"]),
+            "unexpected execution roots",
         )?;
+        let root = |key: &str| PathBuf::from(roots.at(key).as_str().unwrap_or(""));
+        let roots = Roots {
+            checkout: root("checkout"),
+            candidate: root("candidate"),
+            trusted: root("trusted"),
+            harness: root("harness"),
+        };
+        // `Path(native_confinement.__file__).with_name('confinement_entry.py')`:
+        // the policy checkout's own entry, as the step runner mounts it.
+        let entry = roots
+            .trusted
+            .join("scripts/architecture/confinement_entry.py");
+        let control = PathBuf::from(at(&data, "control")?.as_str().unwrap_or(""));
+        let mut execution =
+            Execution::new(at(&data, "configuration")?.clone(), roots, &control, entry)?;
+        execution.hooks = hooks;
         for value in data.at("extra_readonly").as_array().unwrap_or(&[]) {
             execution
                 .extra_readonly
@@ -591,71 +470,238 @@ impl Execution {
             execution.dependency_seed = Some(checked_directory(Path::new(
                 data.at("dependency_seed").as_str().unwrap_or(""),
             ))?);
-            execution.dependency_seed_sha256 = data.at("dependency_seed_sha256").clone();
+            execution.dependency_seed_sha256 = Some(
+                at(&data, "dependency_seed_sha256")?
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            );
         }
         Ok(execution)
     }
 
-    fn client(&self, argv: &[String], capture: bool) -> Result<(i32, String)> {
-        if let Some(client) = &self.hooks.client {
-            return client(argv, capture);
-        }
-        let mut command = self.docker.clone();
-        command.extend(argv.iter().cloned());
-        let output = proc::run(
-            &command,
-            &proc::Options {
-                env: self.client_env.clone(),
-                capture: true,
-                timeout: Some(Duration::from_secs(60)),
-                ..Default::default()
-            },
-        )?;
-        let stdout = if capture {
-            pathx::text_mode(&output.stdout)?
-        } else {
-            String::new()
-        };
-        Ok((pathx::returncode(output.status), stdout))
+    /// `readonly_candidate_inputs or roots['candidate']`.
+    fn inputs_root(&self) -> &Path {
+        self.readonly_candidate_inputs
+            .as_deref()
+            .unwrap_or(&self.roots.candidate)
     }
 
-    /// Expose source history without GitLab clone credentials, hooks or host config.
-    pub fn sanitize_git(&mut self) -> Result<PathBuf> {
+    /// One `_client` call, through the test hook when one is installed.
+    fn raw_client(&self, args: &[String], capture: bool) -> R<sp::Done> {
+        if let Some(client) = &self.hooks.client {
+            let (code, stdout) = client(args, capture)?;
+            let mut argv = self.docker.clone();
+            argv.extend(args.iter().cloned());
+            return Ok(sp::Done {
+                argv,
+                code,
+                stdout,
+                stderr: Vec::new(),
+            });
+        }
+        let spec = self.client_spec(args)?;
+        sp::run(if capture {
+            spec.capture()
+        } else {
+            spec.quiet()
+        })
+    }
+
+    fn userns(&self, isolation: &Value, daemon: &Value, inspected: Option<&Value>) -> R<Value> {
+        if let Some(hook) = &self.hooks.userns {
+            return hook(isolation, daemon, inspected);
+        }
+        match inspected {
+            None => isolation::validate_userns(isolation, daemon),
+            Some(actual) => isolation::validate_userns_inspected(isolation, daemon, actual),
+        }
+        .map_err(sp::from_text)
+    }
+
+    pub fn uid(&self) -> i128 {
+        self.config.at("uid").as_int().unwrap_or(0)
+    }
+    pub fn gid(&self) -> i128 {
+        self.config.at("gid").as_int().unwrap_or(0)
+    }
+    pub fn mapped_uid(&self) -> i128 {
+        self.config
+            .at("isolation")
+            .at("uid_map")
+            .index(1)
+            .as_int()
+            .unwrap_or(0)
+            + self.uid()
+    }
+    pub fn image(&self) -> &str {
+        self.config.at("image").as_str().unwrap_or("")
+    }
+    pub fn python(&self) -> &str {
+        self.config
+            .at(pysteps::INTERPRETER_KEY)
+            .as_str()
+            .unwrap_or("")
+    }
+    pub fn docker_host(&self) -> &str {
+        self.config.at("docker_host").as_str().unwrap_or("")
+    }
+
+    /// `write_context()`: the digest-bound context the architecture step reads.
+    pub fn write_context(&self) -> R<(PathBuf, String)> {
+        let path = self.control.join("execution-context.json");
+        let texts =
+            |paths: &[PathBuf]| Value::Array(paths.iter().map(|p| sp::text(p).into()).collect());
+        let optional = |value: &Option<PathBuf>| match value {
+            Some(path) => Value::from(sp::text(path)),
+            None => Value::Null,
+        };
+        let context = object([
+            ("configuration", self.config.clone()),
+            (
+                "roots",
+                Value::Object(
+                    self.roots
+                        .all()
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), sp::text(v).into()))
+                        .collect(),
+                ),
+            ),
+            ("control", sp::text(&self.control).into()),
+            ("extra_readonly", texts(&self.extra_readonly)),
+            (
+                "conformance_mounts",
+                Value::Array(
+                    self.conformance_mounts
+                        .iter()
+                        .map(|(s, t)| Value::Array(vec![sp::text(s).into(), sp::text(t).into()]))
+                        .collect(),
+                ),
+            ),
+            (
+                "conformance_inputs_manifest",
+                optional(&self.conformance_inputs_manifest),
+            ),
+            ("dependency_seed", optional(&self.dependency_seed)),
+            (
+                "dependency_seed_sha256",
+                self.dependency_seed_sha256
+                    .clone()
+                    .map_or(Value::Null, Value::from),
+            ),
+        ]);
+        sp::write(&path, canonical(&context))?;
+        let expected = digest(&path)?;
+        Ok((path, expected))
+    }
+
+    /// The candidate daemon client invocation (`_client`), 60 s by default.
+    pub fn client_spec(&self, args: &[String]) -> R<Spec> {
+        let mut args = args.to_vec();
+        if let Some(profile) = &self.profile
+            && args.first().map(String::as_str) == Some("create")
+        {
+            require(
+                digest(&profile.path)? == profile.sha256,
+                "profile changed before launch",
+            )?;
+            args.splice(
+                1..1,
+                [
+                    "--security-opt".to_owned(),
+                    format!("seccomp={}", sp::text(&profile.path)),
+                ],
+            );
+        }
+        let mut argv = self.docker.clone();
+        argv.extend(args);
+        Ok(Spec::new(argv).env(&self.client_env).timeout(60))
+    }
+
+    /// `_client(args, capture_output=True, text=True)`.
+    pub fn client(&self, args: &[String]) -> R<sp::Done> {
+        let done = self.raw_client(args, true)?;
+        self.check_profile_inspect(args, &done)?;
+        Ok(done)
+    }
+
+    /// A custom profile must be retained exactly by the runtime.
+    pub fn check_profile_inspect(&self, args: &[String], done: &sp::Done) -> R<()> {
+        let Some(profile) = &self.profile else {
+            return Ok(());
+        };
+        if args.first().map(String::as_str) != Some("inspect")
+            || args.iter().any(|a| a == "--format")
+            || done.code != 0
+        {
+            return Ok(());
+        }
+        let rows = sp::loads(&done.stdout)?;
+        let options = at(at(rows.index(0), "HostConfig")?, "SecurityOpt")?;
+        let options = options.as_array().unwrap_or(&[]);
+        let policies: Vec<&str> = options
+            .iter()
+            .filter_map(Value::as_str)
+            .filter_map(|v| v.strip_prefix("seccomp="))
+            .collect();
+        require(
+            policies.len() == 1 && sp::loads(policies[0].as_bytes())? == profile.data,
+            "runtime did not retain the exact local seccomp profile",
+        )?;
+        require(options.len() == 2, "unexpected additional security option")
+    }
+
+    /// `collector_client(args, ...)`: only trusted fetch code uses the network daemon.
+    pub fn collector_spec(&self, args: &[String]) -> Spec {
+        let mut argv = vec![
+            self.docker[0].clone(),
+            "--host".into(),
+            self.config
+                .at("collector")
+                .at("docker_host")
+                .as_str()
+                .unwrap_or("")
+                .into(),
+        ];
+        argv.extend(args.iter().cloned());
+        Spec::new(argv).env(&self.client_env).timeout(60)
+    }
+
+    /// `sanitize_git()`: source history without clone credentials, hooks or host config.
+    pub fn sanitize_git(&self) -> R<PathBuf> {
         if let Some(prepared) = &self.prepared_git {
             return checked_directory(prepared);
         }
         let source = self.roots.checkout.join(".git");
         require(
-            source.is_dir() && !pathx::is_symlink(&source),
+            source.is_dir() && !sp::is_symlink(&source),
             "CI checkout must have a regular Git directory",
         )?;
         require(
-            fs::symlink_metadata(source.join("objects/info/alternates")).is_err()
-                && !source.join("objects/info/alternates").exists(),
+            !source.join("objects/info/alternates").exists(),
             "external Git object store",
         )?;
         let destination = self.control.join("candidate-git");
         if !destination.exists() {
-            pathx::mkdir(&destination, 0o777)?;
+            sp::mkdir(&destination, 0o777, false)?;
             for name in ["objects", "refs", "HEAD", "packed-refs", "shallow", "index"] {
                 let path = source.join(name);
                 if !path.exists() {
                     continue;
                 }
-                require(!pathx::is_symlink(&path), "indirect Git metadata")?;
+                require(!sp::is_symlink(&path), "indirect Git metadata")?;
                 if path.is_dir() {
                     require(
-                        !pathx::rglob(&path, "*")
-                            .iter()
-                            .any(|p| pathx::is_symlink(p)),
+                        !sp::rglob(&path).iter().any(|p| sp::is_symlink(p)),
                         "indirect Git objects",
                     )?;
-                    pathx::copytree(&path, &destination.join(name))?;
+                    sp::copytree(&path, &destination.join(name))?;
                 } else {
-                    pathx::copyfile(&path, &destination.join(name))?;
+                    std::fs::copy(&path, destination.join(name)).at(&path)?;
                 }
             }
-            pathx::write(
+            sp::write(
                 &destination.join("config"),
                 "[core]\nrepositoryformatversion = 0\nbare = false\n",
             )?;
@@ -663,58 +709,233 @@ impl Execution {
         Ok(destination)
     }
 
-    fn inputs_root(&self) -> &Path {
-        self.readonly_candidate_inputs
-            .as_deref()
-            .unwrap_or(&self.roots.candidate)
+    /// `register_generated(path)`: a bounded readonly generated project.
+    pub fn register_generated(&mut self, path: &Path) -> R<()> {
+        let root = checked_directory(path)?;
+        require(
+            is_relative_to(&root, &self.roots.candidate.join("generated")),
+            "generated project escapes its registered output root",
+        )?;
+        let mut total = 0u64;
+        for entry in sp::rglob(&root) {
+            use std::os::unix::fs::MetadataExt;
+            let info = std::fs::symlink_metadata(&entry).at(&entry)?;
+            let kind = info.file_type();
+            require(
+                kind.is_dir() || kind.is_file(),
+                "generated project contains indirect or special files",
+            )?;
+            if kind.is_file() {
+                total += info.len();
+                require(
+                    info.nlink() == 1 && info.len() <= 16 << 20 && total <= 128 << 20,
+                    "generated source exceeds its collection bounds",
+                )?;
+            }
+            require(
+                !entry
+                    .strip_prefix(&root)
+                    .unwrap_or(&entry)
+                    .components()
+                    .any(|c| c.as_os_str() == ".git"),
+                "generated projects must not supply Git control metadata",
+            )?;
+        }
+        self.extra_readonly.push(root);
+        Ok(())
     }
 
-    pub fn environment(&self, env: &Env) -> Result<Env> {
-        let allowed = |key: &str| ALLOWED_ENV.contains(&key) || test_endpoint_key(key);
-        let mut result: Env = env
+    /// `set_conformance_capabilities(manifest, repository, source, expected)`.
+    pub fn set_conformance_capabilities(
+        &mut self,
+        manifest: Option<&Path>,
+        repository: &str,
+        source: &str,
+        expected: Option<&str>,
+    ) -> R<String> {
+        let data = match manifest {
+            None => object([
+                ("schema", "busbar.conformance.capabilities/1".into()),
+                ("repo", repository.into()),
+                ("source", source.into()),
+                ("toolchain_ready", false.into()),
+                ("suites", Value::Object(Vec::new())),
+            ]),
+            Some(manifest) => {
+                require(
+                    expected.is_some_and(|e| !e.is_empty())
+                        && digest(manifest)? == expected.unwrap_or(""),
+                    "protected conformance capabilities digest differs",
+                )?;
+                let resolved = sp::resolve(manifest);
+                require(
+                    !sp::is_symlink(manifest)
+                        && !is_relative_to(&resolved, &self.roots.checkout)
+                        && !is_relative_to(&resolved, &self.roots.candidate),
+                    "candidate supplied conformance capabilities",
+                )?;
+                sp::read_json(manifest)?
+            }
+        };
+        require(
+            data.has_keys(&["schema", "repo", "source", "toolchain_ready", "suites"])
+                && data.at("schema").as_str() == Some("busbar.conformance.capabilities/1")
+                && data.at("repo").as_str() == Some(repository)
+                && data.at("source").as_str() == Some(source)
+                && data.at("toolchain_ready").as_bool().is_some()
+                && data.at("suites").is_object(),
+            "conformance capability identity or schema differs",
+        )?;
+        for (name, row) in data.at("suites").as_object().into_iter().flatten() {
+            let mut chars = name.chars();
+            let reason = row.get("reason");
+            require(
+                chars
+                    .next()
+                    .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                    && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                    && row.is_object()
+                    && row
+                        .keys()
+                        .iter()
+                        .all(|k| matches!(*k, "available" | "reason"))
+                    && row.at("available").as_bool().is_some()
+                    && reason.is_none_or(|r| r.as_str().is_some_and(|t| t.chars().count() <= 2000)),
+                "invalid conformance suite capability",
+            )?;
+        }
+        let path = self.control.join("conformance-capabilities.json");
+        sp::write(&path, canonical(&data))?;
+        sp::chmod(&path, 0o444)?;
+        self.conformance_capabilities = Some(path.clone());
+        digest(&path)
+    }
+
+    /// `environment(env)`: the allowlisted candidate environment.
+    pub fn environment(&self, env: &Dict) -> R<BTreeMap<String, String>> {
+        const ALLOWED: &[&str] = &[
+            "CI",
+            "LANG",
+            "LC_ALL",
+            "RUSTUP_TOOLCHAIN",
+            "RUSTFLAGS",
+            "RUSTDOCFLAGS",
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_TARGET_DIR",
+            "CARGO_BUILD_JOBS",
+            "CARGO_TERM_COLOR",
+            "CARGO_PROFILE_DEV_DEBUG",
+            "CARGO_PROFILE_TEST_DEBUG",
+            "CARGO_NET_GIT_FETCH_WITH_CLI",
+            "TMPDIR",
+            "MODERNCI_CACHE_DIR",
+            "XDG_CACHE_HOME",
+            "GIT_TERMINAL_PROMPT",
+            "CI_SERVER_HOST",
+            "CI_JOB_URL",
+            "CI_JOB_ID",
+            "CI_PIPELINE_ID",
+            "CI_PROJECT_PATH",
+            "CONFORMANCE_OUT",
+            "CONFORMANCE_TIMEOUT_SECONDS",
+            "VALKEY_URL",
+            "BUSBAR_V4_TRANSPORT_URL",
+            "BUSBAR_V4_TEST_TMP",
+            "BUSBAR_VALKEY_SERVER",
+            "BUSBAR_CHECKOUT",
+            "BUSBAR_ADMISSION_CORE_REVISION",
+            "BUSBAR_SDK_CHECKOUT",
+            "BUSBAR_SDK_REVISION",
+            "BUSBAR_SCAFFOLD_OUTPUT",
+            "BUSBAR_PIN",
+            "BUSBAR_TEST_TMP_ROOT",
+            "BUSBAR_TEST_VAULT_TOKEN",
+            "BUSBAR_TEST_MYSQL_ROOT_PASSWORD",
+            "BUSBAR_ARCHITECTURE_SOURCES",
+            "BUSBAR_ARCHITECTURE_POLICY_SOURCES",
+            "BUSBAR_ARCHITECTURE_GENERATED_DIRS",
+            "BUSBAR_C_ABI_SOURCES",
+            "BUSBAR_C_ABI_LIBRARY",
+            "BUSBAR_PLUGIN_CDYLIB",
+            "BUSBAR_BIN",
+            "TSAN_OPTIONS",
+        ];
+        let fixture_key = |key: &str| {
+            key.strip_prefix("BUSBAR_TEST_").is_some_and(|rest| {
+                ["_URL", "_ADDR", "_FIXTURE"].iter().any(|suffix| {
+                    rest.len() > suffix.len()
+                        && rest.ends_with(suffix)
+                        && rest[..rest.len() - suffix.len()]
+                            .bytes()
+                            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == b'_')
+                })
+            })
+        };
+        let mut result: BTreeMap<String, String> = env
+            .0
             .iter()
-            .filter(|(k, _)| allowed(k))
+            .filter(|(k, _)| ALLOWED.contains(&k.as_str()) || fixture_key(k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let count = py_int(env.get("GIT_CONFIG_COUNT").map_or("0", String::as_str))?;
+        for (key, value) in self
+            .product_inputs
+            .0
+            .iter()
+            .chain(self.oracle_inputs.0.iter())
+        {
+            if let Some(actual) = env.get(key) {
+                require(actual == value, "registered product input was overridden")?;
+                result.insert(key.clone(), value.clone());
+            }
+        }
+        let mut count = sp::py_int(env.get("GIT_CONFIG_COUNT").unwrap_or("0"))?;
         require((0..=1000).contains(&count), "invalid Git mapping count")?;
         result.insert("GIT_CONFIG_COUNT".into(), count.to_string());
-        let prefix = format!(
-            "url.{}/",
-            file_uri(&self.inputs_root().join("canonical-inputs"))
-        );
+        let inputs = self.inputs_root();
+        let prefix = format!("url.{}/", sp::as_uri(&inputs.join("canonical-inputs")));
         for index in 0..count {
-            let key_name = format!("GIT_CONFIG_KEY_{index}");
-            let value_name = format!("GIT_CONFIG_VALUE_{index}");
             let key = env
-                .get(&key_name)
-                .ok_or_else(|| format!("KeyError: '{key_name}'"))?;
+                .get(&format!("GIT_CONFIG_KEY_{index}"))
+                .ok_or_else(|| key_error(&format!("GIT_CONFIG_KEY_{index}")))?;
             let value = env
-                .get(&value_name)
-                .ok_or_else(|| format!("KeyError: '{value_name}'"))?;
+                .get(&format!("GIT_CONFIG_VALUE_{index}"))
+                .ok_or_else(|| key_error(&format!("GIT_CONFIG_VALUE_{index}")))?;
+            let repository = value.strip_prefix("https://github.com/GetBusbar/");
             require(
-                key.starts_with(&prefix) && key.ends_with(".insteadOf") && github_mapping(value),
+                key.starts_with(&prefix)
+                    && key.ends_with(".insteadOf")
+                    && repository.is_some_and(|r| {
+                        !r.is_empty()
+                            && r.bytes()
+                                .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+                    }),
                 "unexpected Git setting in candidate environment",
             )?;
-            result.insert(key_name, key.clone());
-            result.insert(value_name, value.clone());
+            result.insert(format!("GIT_CONFIG_KEY_{index}"), key.to_owned());
+            result.insert(format!("GIT_CONFIG_VALUE_{index}"), value.to_owned());
         }
         let mut git_roots = vec![self.roots.checkout.clone(), self.roots.trusted.clone()];
         for relative in ["host", "sdk", "c-witness"] {
-            let path = self.inputs_root().join(relative);
+            let path = inputs.join(relative);
             if path.exists() {
                 git_roots.push(checked_directory(&path)?);
             }
         }
-        let mut count = count;
         for path in git_roots {
             result.insert(format!("GIT_CONFIG_KEY_{count}"), "safe.directory".into());
-            result.insert(format!("GIT_CONFIG_VALUE_{count}"), text(&path));
+            result.insert(format!("GIT_CONFIG_VALUE_{count}"), sp::text(&path));
             count += 1;
         }
         result.insert("GIT_CONFIG_COUNT".into(), count.to_string());
-        for (key, value) in str_map(self.config.at("environment")).unwrap_or_default() {
-            result.insert(key, value);
+        for (key, value) in self
+            .config
+            .at("environment")
+            .as_object()
+            .into_iter()
+            .flatten()
+        {
+            result.insert(key.clone(), value.as_str().unwrap_or("").to_owned());
         }
         if self.conformance_inputs_manifest.is_some() {
             result.insert(
@@ -725,7 +946,16 @@ impl Execution {
         if self.dependency_seed.is_some() {
             result.insert("CARGO_HOME".into(), "/__busbar_job_seed".into());
         }
-        result.insert("HOME".into(), text(&self.roots.candidate.join("home")));
+        if let Some(capabilities) = &self.conformance_capabilities {
+            result.insert(
+                "CONFORMANCE_CAPABILITIES".into(),
+                "/__busbar_conformance_capabilities.json".into(),
+            );
+            let identity = sp::read_json(capabilities)?;
+            let repo = at(&identity, "repo")?;
+            result.insert("MODERNCI_REPO".into(), crate::py::str(repo));
+        }
+        result.insert("HOME".into(), sp::text(&self.roots.candidate.join("home")));
         result.insert("GIT_CONFIG_GLOBAL".into(), "/dev/null".into());
         result.insert("GIT_CONFIG_NOSYSTEM".into(), "1".into());
         result.insert("CARGO_NET_OFFLINE".into(), "true".into());
@@ -734,39 +964,40 @@ impl Execution {
         Ok(result)
     }
 
-    pub fn cargo_environment(&self, argv: &[String], env: &Env) -> Result<Env> {
+    /// `cargo_environment(argv, env)`: trusted harness manifests keep their
+    /// sources read-only, with a private lockfile and fresh target.
+    pub fn cargo_environment(&self, argv: &[String], env: &Dict) -> R<BTreeMap<String, String>> {
         let mut result = self.environment(env)?;
         if let Some(index) = argv.iter().position(|a| a == "--manifest-path") {
-            let value = argv
-                .get(index + 1)
-                .ok_or("IndexError: list index out of range")?;
-            let manifest = pathx::resolve(Path::new(value));
-            if manifest.starts_with(&self.roots.harness) {
-                // Stable since Cargo 1.97: trusted harness directories stay read-only.
-                let name = format!(
+            let manifest = sp::resolve(Path::new(
+                argv.get(index + 1)
+                    .ok_or_else(|| value_error("list index out of range"))?,
+            ));
+            if is_relative_to(&manifest, &self.roots.harness) {
+                let label = format!(
                     "{}-{}",
-                    sha256::hex(text(&manifest).as_bytes()),
-                    pathx::uuid4()
+                    sha256::hex(sp::text(&manifest).as_bytes()),
+                    sp::uuid_hex()
                 );
                 let location =
-                    writable_directory(&self.roots.candidate, &["harness-locks", &name])?;
+                    writable_directory(&self.roots.candidate, &["harness-locks", &label])?;
                 let lock = location.join("Cargo.lock");
-                require(!pathx::is_symlink(&lock), "indirect harness lockfile")?;
+                require(!sp::is_symlink(&lock), "indirect harness lockfile")?;
                 let original = manifest
                     .parent()
                     .unwrap_or(Path::new("/"))
                     .join("Cargo.lock");
                 if !lock.exists() && original.is_file() {
-                    pathx::copyfile(&original, &lock)?;
+                    std::fs::copy(&original, &lock).at(&original)?;
                 }
-                require(!pathx::is_symlink(&lock), "indirect harness lockfile")?;
-                result.insert("CARGO_RESOLVER_LOCKFILE_PATH".into(), text(&lock));
+                require(!sp::is_symlink(&lock), "indirect harness lockfile")?;
+                result.insert("CARGO_RESOLVER_LOCKFILE_PATH".into(), sp::text(&lock));
                 let fresh = self
                     .roots
                     .candidate
-                    .join(format!("harness-target-{}", pathx::uuid4()));
-                pathx::mkdir(&fresh, 0o777)?;
-                result.insert("CARGO_TARGET_DIR".into(), text(&fresh));
+                    .join(format!("harness-target-{}", sp::uuid_hex()));
+                sp::mkdir(&fresh, 0o777, false)?;
+                result.insert("CARGO_TARGET_DIR".into(), sp::text(&fresh));
                 for key in [
                     "RUSTFLAGS",
                     "RUSTDOCFLAGS",
@@ -780,7 +1011,8 @@ impl Execution {
         Ok(result)
     }
 
-    fn prepare_command(&self, argv: Vec<String>, cwd: &Path) -> Result<Vec<String>> {
+    /// `prepare_command(argv, cwd)`: cargo-vet receives a fresh policy store copy.
+    pub fn prepare_command(&self, argv: Vec<String>, cwd: &Path) -> R<Vec<String>> {
         if argv.len() < 2 || argv[0] != "cargo" || argv[1] != "vet" {
             return Ok(argv);
         }
@@ -792,7 +1024,7 @@ impl Execution {
         if let Some(index) = argv.iter().position(|a| a == "--manifest-path") {
             manifest = PathBuf::from(
                 argv.get(index + 1)
-                    .ok_or("IndexError: list index out of range")?,
+                    .ok_or_else(|| value_error("list index out of range"))?,
             );
             if !manifest.is_absolute() {
                 manifest = cwd.join(manifest);
@@ -804,117 +1036,72 @@ impl Execution {
             .join("supply-chain");
         require(
             store.is_dir()
-                && !pathx::is_symlink(&store)
-                && !pathx::rglob(&store, "*")
-                    .iter()
-                    .any(|p| pathx::is_symlink(p)),
+                && !sp::is_symlink(&store)
+                && !sp::rglob(&store).iter().any(|p| sp::is_symlink(p)),
             "missing or indirect vet policy store",
         )?;
         let destination = self
             .roots
             .candidate
-            .join(format!("vet-store-{}", pathx::uuid4()));
-        pathx::copytree(&store, &destination)?;
+            .join(format!("vet-store-{}", sp::uuid_hex()));
+        sp::copytree(&store, &destination)?;
         let mut argv = argv;
-        argv.extend(["--store-path".into(), text(&destination)]);
+        argv.push("--store-path".into());
+        argv.push(sp::text(&destination));
         Ok(argv)
     }
 
-    fn mounts(&mut self) -> Result<Vec<(PathBuf, PathBuf, bool)>> {
-        let roots = self.roots.clone();
-        let target = roots.checkout.join("target");
-        if !self.compiler_readonly {
-            mkdir_exist_ok(&target, 0o777)?;
-            checked_directory(&target)?;
-        }
-        let mut mounts = vec![
-            (roots.checkout.clone(), roots.checkout.clone(), false),
-            (roots.candidate.clone(), roots.candidate.clone(), true),
-            (roots.trusted.clone(), roots.trusted.clone(), false),
-            (roots.harness.clone(), roots.harness.clone(), false),
-            (self.sanitize_git()?, roots.checkout.join(".git"), false),
-            (
-                self.fixture_directory.clone(),
-                PathBuf::from("/__busbar_fixtures"),
-                false,
-            ),
-            (
-                self.fixture_map.clone(),
-                PathBuf::from("/__busbar_fixture_map.json"),
-                false,
-            ),
-            (
-                roots
-                    .trusted
-                    .join("scripts/architecture/confinement_entry.py"),
-                PathBuf::from("/__busbar_entry.py"),
-                false,
-            ),
-        ];
-        if !self.compiler_readonly {
-            mounts.push((target.clone(), target, true));
-        }
-        for relative in ["canonical-inputs", "host", "sdk", "c-witness"] {
-            let path = self.inputs_root().join(relative);
-            if path.exists() {
-                mounts.push((checked_directory(&path)?, path, false));
-            }
-        }
-        let nested = roots.checkout.join("dist/default/target");
-        if nested.parent().is_some_and(Path::is_dir) && !self.compiler_readonly {
-            mkdir_exist_ok(&nested, 0o777)?;
-            checked_directory(&nested)?;
-            mounts.push((nested.clone(), nested, true));
-        }
-        for path in &self.extra_readonly {
-            mounts.push((checked_directory(path)?, path.clone(), false));
-        }
-        for (source, target) in &self.conformance_mounts {
-            mounts.push((source.clone(), target.clone(), false));
-        }
-        if let Some(seed) = &self.dependency_seed {
-            mounts.push((seed.clone(), PathBuf::from("/__busbar_job_seed"), false));
-        }
-        Ok(mounts)
-    }
-
-    /// One disposable candidate container around `body`, which receives the
-    /// attach command and the Docker client environment.
-    pub fn invocation<T>(
+    /// Enter one candidate container (`invocation(...)`'s body up to `yield`).
+    /// A failure after the container is named disposes it before returning.
+    pub fn invocation(
         &mut self,
         argv: &[String],
         cwd: &Path,
-        env: &Env,
+        env: &Dict,
         discard_harness_target: bool,
-        body: impl FnOnce(&[String], &[(String, String)]) -> Result<T>,
-    ) -> Result<T> {
+    ) -> R<Invocation> {
+        if let Some(restriction) = &self.restriction {
+            require(
+                argv == restriction.command.as_slice(),
+                "sanitizer profile is restricted to the fixed C unit command",
+            )?;
+            require(
+                sp::resolve(cwd) == self.roots.checkout,
+                "sanitizer cwd differs from the qualified checkout",
+            )?;
+            require(
+                env.get("TSAN_OPTIONS") == Some("halt_on_error=1"),
+                "sanitizer error handling differs",
+            )?;
+        }
         require(
             argv.first().is_some_and(|a| !a.starts_with('-')),
             "missing candidate executable",
         )?;
         if discard_harness_target {
-            let manifest = argv
-                .iter()
-                .position(|a| a == "--manifest-path")
-                .and_then(|i| argv.get(i + 1));
+            let index = argv.iter().position(|a| a == "--manifest-path");
             require(
                 argv[0] == "cargo"
-                    && manifest.is_some_and(|m| {
-                        pathx::resolve(Path::new(m)).starts_with(&self.roots.harness)
+                    && index.is_some_and(|i| {
+                        i + 1 < argv.len()
+                            && is_relative_to(
+                                &sp::resolve(Path::new(&argv[i + 1])),
+                                &self.roots.harness,
+                            )
                     }),
                 "disposable target requires a trusted harness manifest",
             )?;
         }
-        let cwd = pathx::resolve(cwd);
+        let cwd = sp::resolve(cwd);
         require(
             self.roots
                 .all()
                 .iter()
-                .any(|(_, root)| cwd.starts_with(root)),
+                .any(|(_, root)| is_relative_to(&cwd, root)),
             "candidate cwd escapes execution roots",
         )?;
         let argv = self.prepare_command(argv.to_vec(), &cwd)?;
-        let name = format!("busbar-candidate-{}", pathx::uuid4());
+        let name = format!("busbar-candidate-{}", sp::uuid_hex());
         let aggregate = self.config.at("resources").clone();
         let resources = self
             .resource_slice
@@ -926,83 +1113,146 @@ impl Execution {
                 self.compiler_readonly
                     && resources.has_keys(&keys)
                     && keys.iter().all(|k| {
-                        int(resources.at(k)).is_some_and(|v| {
-                            v > 0 && int(aggregate.at(k)).is_some_and(|a| v * 2 <= a)
-                        })
+                        let value = resources.at(k);
+                        value.is_int()
+                            && value.as_int().is_some_and(|v| {
+                                v > 0 && aggregate.at(k).as_int().is_some_and(|a| v * 2 <= a)
+                            })
                     }),
                 "compiler slices exceed the aggregate resource budget",
             )?;
         }
-        let mounts = self.mounts()?;
-        let fixture_hosts: Vec<String> = {
-            let mut hosts = Vec::new();
-            let has = |target: &str| {
-                self.conformance_mounts
-                    .iter()
-                    .any(|(_, t)| t == Path::new(target))
-            };
-            if has("/opt/busbar-conformance/oidf") {
-                hosts.extend([
-                    "localhost.emobix.co.uk:127.0.0.1".to_owned(),
-                    "busbar.oidf.test:127.0.0.1".to_owned(),
-                ]);
+        let target = self.roots.checkout.join("target");
+        if !self.compiler_readonly {
+            sp::mkdir(&target, 0o777, true)?;
+            checked_directory(&target)?;
+        }
+        let checkout = self.roots.checkout.clone();
+        let mut mounts: Vec<(PathBuf, PathBuf, bool)> = vec![
+            (checkout.clone(), checkout.clone(), false),
+            (
+                self.roots.candidate.clone(),
+                self.roots.candidate.clone(),
+                true,
+            ),
+            (
+                self.roots.trusted.clone(),
+                self.roots.trusted.clone(),
+                false,
+            ),
+            (
+                self.roots.harness.clone(),
+                self.roots.harness.clone(),
+                false,
+            ),
+            (self.sanitize_git()?, checkout.join(".git"), false),
+            (
+                self.fixture_directory.clone(),
+                "/__busbar_fixtures".into(),
+                false,
+            ),
+            (
+                self.fixture_map.clone(),
+                "/__busbar_fixture_map.json".into(),
+                false,
+            ),
+            (self.entry.clone(), "/__busbar_entry.py".into(), false),
+        ];
+        if !self.compiler_readonly {
+            mounts.push((target.clone(), target, true));
+        }
+        for relative in ["canonical-inputs", "host", "sdk", "c-witness"] {
+            let path = self.inputs_root().join(relative);
+            if path.exists() {
+                mounts.push((checked_directory(&path)?, path, false));
             }
-            if has("/opt/busbar-conformance/a2a-tools") {
-                hosts.extend([
-                    "example.com:104.20.23.154".to_owned(),
-                    "example.com:172.66.147.243".to_owned(),
-                ]);
-            }
-            hosts
+        }
+        let nested = checkout.join("dist/default/target");
+        if nested.parent().is_some_and(Path::is_dir) && !self.compiler_readonly {
+            sp::mkdir(&nested, 0o777, true)?;
+            checked_directory(&nested)?;
+            mounts.push((nested.clone(), nested, true));
+        }
+        for path in &self.extra_readonly {
+            mounts.push((checked_directory(path)?, path.clone(), false));
+        }
+        for (source, target) in &self.conformance_mounts {
+            mounts.push((source.clone(), target.clone(), false));
+        }
+        if let Some(capabilities) = &self.conformance_capabilities {
+            mounts.push((
+                capabilities.clone(),
+                "/__busbar_conformance_capabilities.json".into(),
+                false,
+            ));
+        }
+        if let Some(seed) = &self.dependency_seed {
+            mounts.push((seed.clone(), "/__busbar_job_seed".into(), false));
+        }
+        let mounted = |target: &str| {
+            self.conformance_mounts
+                .iter()
+                .any(|(_, t)| t == Path::new(target))
         };
-        let number = |key: &str| int(resources.at(key)).unwrap_or(0);
-        let uid = int(self.config.at("uid")).unwrap_or(0);
-        let gid = int(self.config.at("gid")).unwrap_or(0);
-        let runtime = self.config.at("runtime").as_str().unwrap_or("").to_owned();
-        let mut args: Vec<String> = [
-            "create",
-            "--name",
-            &name,
+        let mut fixture_hosts: Vec<String> = if mounted("/opt/busbar-conformance/oidf") {
+            sp::strings(&[
+                "localhost.emobix.co.uk:127.0.0.1",
+                "busbar.oidf.test:127.0.0.1",
+            ])
+        } else {
+            Vec::new()
+        };
+        if mounted("/opt/busbar-conformance/a2a-tools") {
+            fixture_hosts.extend(sp::strings(&[
+                "example.com:104.20.23.154",
+                "example.com:172.66.147.243",
+            ]));
+        }
+        let int = |key: &str| resources.at(key).as_int().unwrap_or(0);
+        let mut args = sp::strings(&["create", "--name"]);
+        args.push(name.clone());
+        args.extend(sp::strings(&[
             "--pull=never",
             "--read-only",
             "--network=none",
             "--runtime",
-            &runtime,
-            "--user",
-            &format!("{uid}:{gid}"),
+        ]));
+        args.push(self.config.at("runtime").as_str().unwrap_or("").into());
+        args.push("--user".into());
+        args.push(format!("{}:{}", self.uid(), self.gid()));
+        args.extend(sp::strings(&[
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
             "--ipc=private",
             "--cgroupns=private",
-            &format!("--pids-limit={}", number("pids")),
-            &format!("--memory={}", number("memory_bytes")),
-            &format!("--memory-swap={}", number("memory_bytes")),
-            &format!("--cpus={}", number("cpus")),
-            "--init",
-            "--workdir",
-            &text(&cwd),
+        ]));
+        args.push(format!("--pids-limit={}", int("pids")));
+        args.push(format!("--memory={}", int("memory_bytes")));
+        args.push(format!("--memory-swap={}", int("memory_bytes")));
+        args.push(format!("--cpus={}", int("cpus")));
+        args.extend(sp::strings(&["--init", "--workdir"]));
+        args.push(sp::text(&cwd));
+        args.extend(sp::strings(&[
             "--tmpfs",
-            &format!("/tmp:{TMPFS}"),
+            "/tmp:rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777",
             "--shm-size=64m",
             "--entrypoint",
             "/usr/bin/env",
-        ]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
+        ]));
         for alias in &fixture_hosts {
-            args.extend(["--add-host".to_owned(), alias.clone()]);
+            args.push("--add-host".into());
+            args.push(alias.clone());
         }
         for (source, destination, writable) in &mounts {
             require(
-                !text(source).contains(',') && !text(destination).contains(','),
+                !sp::text(source).contains(',') && !sp::text(destination).contains(','),
                 "unsupported bind path",
             )?;
             args.push("--mount".into());
             args.push(format!(
                 "type=bind,src={},dst={}{}",
-                text(source),
-                text(destination),
+                sp::text(source),
+                sp::text(destination),
                 if *writable { "" } else { ",readonly" }
             ));
         }
@@ -1015,42 +1265,44 @@ impl Execution {
                     .cloned()
                     .unwrap_or_default(),
             );
-            let valid_name = target
+            let name = target
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .and_then(|n| n.strip_prefix("harness-target-").map(str::to_owned))
-                .is_some_and(|hex| {
-                    hex.len() == 32 && hex.bytes().all(|c| matches!(c, b'0'..=b'9' | b'a'..=b'f'))
-                });
+                .unwrap_or_default();
             require(
                 target.parent() == Some(self.roots.candidate.as_path())
-                    && valid_name
-                    && !pathx::is_symlink(&target),
+                    && name.strip_prefix("harness-target-").is_some_and(|hex| {
+                        hex.len() == 32
+                            && hex
+                                .bytes()
+                                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+                    })
+                    && !sp::is_symlink(&target),
                 "invalid disposable harness target",
             )?;
             disposable_target = Some(target);
         }
         let mut cargo_home = None;
         if safe_env.get("CARGO_HOME").is_some_and(|v| !v.is_empty()) {
-            // Stable dependency paths preserve Cargo target fingerprints. The
-            // contents remain fresh for every invocation and are removed below.
-            let home = self.roots.candidate.join("cargo-home-invocation");
-            pathx::mkdir(&home, 0o700)?;
-            safe_env.insert("BUSBAR_INVOCATION_CARGO_HOME".into(), text(&home));
-            cargo_home = Some(home);
+            let path = self.roots.candidate.join("cargo-home-invocation");
+            sp::mkdir(&path, 0o700, false)?;
+            safe_env.insert("BUSBAR_INVOCATION_CARGO_HOME".into(), sp::text(&path));
+            cargo_home = Some(path);
         }
         let isolation = self.config.at("isolation").clone();
         let writable: Vec<PathBuf> = mounts.iter().filter(|m| m.2).map(|m| m.0.clone()).collect();
+        let (uid, gid) = (self.uid() as u64, self.gid() as u64);
         let mut storage = match &self.hooks.prepare_writable {
-            Some(hook) => hook(&isolation, &writable, uid as u64, gid as u64)?,
-            None => isolation::prepare_writable(&isolation, &writable, uid as u64, gid as u64)?,
+            Some(hook) => hook(&isolation, &writable, uid, gid)?,
+            None => isolation::prepare_writable(&isolation, &writable, uid, gid)
+                .map_err(sp::from_text)?,
         };
-        let (code, info) = self.client(
-            &["info".into(), "--format".into(), "{{json .}}".into()],
-            true,
+        let daemon_result = self.client(&sp::strings(&["info", "--format", "{{json .}}"]))?;
+        require(
+            daemon_result.code == 0,
+            "candidate daemon identity unavailable",
         )?;
-        require(code == 0, "candidate daemon identity unavailable")?;
-        let daemon = py::loads(info.as_bytes()).map_err(|e| e.message)?;
+        let daemon = sp::loads(&daemon_result.stdout)?;
         let user_namespace = self.userns(&isolation, &daemon, None)?;
         safe_env.insert(
             "BUSBAR_EXPECTED_UID_MAP".into(),
@@ -1060,193 +1312,179 @@ impl Execution {
             "BUSBAR_EXPECTED_GID_MAP".into(),
             json::dumps(isolation.at("gid_map"), false),
         );
-        storage.set("tmp_bytes", Value::int(1i64 << 30));
-        storage.set("tmp_inodes", Value::int(65536));
-        storage.set("shm_bytes", Value::int(64i64 << 20));
-        args.push(self.config.at("image").as_str().unwrap_or("").to_owned());
+        storage.set("tmp_bytes", (1u64 << 30).into());
+        storage.set("tmp_inodes", 65536u64.into());
+        storage.set("shm_bytes", (64u64 << 20).into());
+        args.push(self.image().into());
         args.push("-i".into());
         args.extend(safe_env.iter().map(|(k, v)| format!("{k}={v}")));
-        args.push(self.config.at("python").as_str().unwrap_or("").to_owned());
-        args.extend(["-I", "-B", "/__busbar_entry.py", "--"].map(String::from));
+        args.push(self.python().into());
+        args.extend(sp::strings(&["-I", "-B", "/__busbar_entry.py", "--"]));
         args.extend(argv.iter().cloned());
-        let argv_value = Value::Array(argv.iter().map(|a| Value::str(a.clone())).collect());
         let env_value = Value::Object(
             safe_env
                 .iter()
-                .map(|(k, v)| (k.clone(), Value::str(v.clone())))
+                .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
                 .collect(),
         );
         let mut observation = object([
-            ("name", Value::str(name.clone())),
-            ("image", self.config.at("image").clone()),
+            ("name", name.as_str().into()),
+            ("image", self.image().into()),
             ("runtime", self.config.at("runtime").clone()),
             ("candidate_uid", self.config.at("uid").clone()),
             ("disposed", false.into()),
-            ("command_sha256", canonical_sha(&argv_value).into()),
-            ("environment_sha256", canonical_sha(&env_value).into()),
-            ("working_directory", text(&cwd).into()),
+            (
+                "command_sha256",
+                sha_canonical(&Value::Array(
+                    argv.iter().map(|a| a.as_str().into()).collect(),
+                ))
+                .into(),
+            ),
+            ("environment_sha256", sha_canonical(&env_value).into()),
+            ("working_directory", sp::text(&cwd).into()),
             (
                 "docker_client_sha256",
                 self.config.at("docker_sha256").clone(),
             ),
-            ("configuration_sha256", canonical_sha(&self.config).into()),
+            ("configuration_sha256", sha_canonical(&self.config).into()),
             ("resources", resources.clone()),
             (
                 "dependency_seed_sha256",
-                self.dependency_seed_sha256.clone(),
+                self.dependency_seed_sha256
+                    .clone()
+                    .map_or(Value::Null, Value::from),
             ),
             ("storage", storage),
             ("user_namespace", user_namespace),
             (
                 "fixture_hosts",
-                Value::Array(
-                    fixture_hosts
-                        .iter()
-                        .map(|h| Value::str(h.clone()))
-                        .collect(),
-                ),
+                Value::Array(fixture_hosts.iter().map(|h| h.as_str().into()).collect()),
             ),
         ]);
         if self.resource_slice.is_some() {
             observation.set("aggregate_resources", aggregate.clone());
-            observation.set("compiler_pool_width", Value::int(2));
+            observation.set("compiler_pool_width", 2u64.into());
         }
         self.observations.push(observation);
-        let at = self.observations.len() - 1;
-        let attach = Attach {
-            at,
-            name: &name,
-            args: &args,
-            mounts: &mounts,
-            fixture_hosts: &fixture_hosts,
-            resources: &resources,
-            daemon: &daemon,
-            isolation: &isolation,
-            user: format!("{uid}:{gid}"),
+        let mut invocation = Invocation {
+            name: name.clone(),
+            command: Vec::new(),
+            observation: self.observations.len() - 1,
+            inspected: false,
+            disposable_target,
+            cargo_home,
         };
-        let outcome = self.attach(&attach, body);
-        let cleanup = self.dispose(
-            at,
-            &name,
-            disposable_target.as_deref(),
-            cargo_home.as_deref(),
-        );
-        match cleanup {
-            Err(error) => Err(error),
-            Ok(()) => outcome,
+        match self.start(
+            &mut invocation,
+            &args,
+            &daemon,
+            &mounts,
+            &fixture_hosts,
+            &resources,
+        ) {
+            Ok(()) => {
+                let mut command = self.docker.clone();
+                command.extend(sp::strings(&["start", "--attach"]));
+                command.push(name);
+                invocation.command = command;
+                if let Some(profile) = &self.profile
+                    && self.restriction.is_some()
+                {
+                    let row = &mut self.observations[invocation.observation];
+                    row.set("sanitizer_profile_sha256", profile.sha256.as_str().into());
+                    row.set("sanitizer_scope", "c-unit-tsan".into());
+                }
+                Ok(invocation)
+            }
+            Err(error) => Err(self.dispose(invocation).err().unwrap_or(error)),
         }
     }
 
-    fn userns(
-        &self,
-        isolation: &Value,
-        daemon: &Value,
-        inspected: Option<&Value>,
-    ) -> Result<Value> {
-        match &self.hooks.userns {
-            Some(hook) => hook(isolation, daemon, inspected),
-            None => match inspected {
-                None => isolation::validate_userns(isolation, daemon),
-                Some(actual) => isolation::validate_userns_inspected(isolation, daemon, actual),
-            },
-        }
-    }
-
-    fn attach<T>(
+    fn start(
         &mut self,
-        a: &Attach,
-        body: impl FnOnce(&[String], &[(String, String)]) -> Result<T>,
-    ) -> Result<T> {
-        let number = |resources: &Value, key: &str| int(resources.at(key)).unwrap_or(0);
-        let (code, _) = self.client(a.args, true)?;
-        require(code == 0, "candidate container creation failed")?;
-        let (code, inspection) = self.client(&["inspect".into(), a.name.to_owned()], true)?;
-        require(code == 0, "candidate inspection failed")?;
-        let actual = py::loads(inspection.as_bytes()).map_err(|e| e.message)?;
-        let actual = actual.index(0).clone();
-        self.userns(a.isolation, a.daemon, Some(&actual))?;
-        let host = actual.at("HostConfig");
-        let empty = |v: &Value| !py::truthy(v);
+        invocation: &mut Invocation,
+        args: &[String],
+        daemon: &Value,
+        mounts: &[(PathBuf, PathBuf, bool)],
+        fixture_hosts: &[String],
+        resources: &Value,
+    ) -> R<()> {
+        let created = self.client(args)?;
+        require(created.code == 0, "candidate container creation failed")?;
+        let inspection = self.client(&["inspect".to_owned(), invocation.name.clone()])?;
+        require(inspection.code == 0, "candidate inspection failed")?;
+        let rows = sp::loads(&inspection.stdout)?;
+        let actual = rows
+            .as_array()
+            .and_then(|r| r.first())
+            .ok_or_else(|| Error::new(Kind::Value, "list index out of range"))?
+            .clone();
+        let isolation = self.config.at("isolation").clone();
+        self.userns(&isolation, daemon, Some(&actual))?;
+        let host = at(&actual, "HostConfig")?;
+        let field = |key: &str| at(host, key);
+        let int = |key: &str| resources.at(key).as_int().unwrap_or(0);
+        let expected_hosts =
+            Value::Array(fixture_hosts.iter().map(|h| h.as_str().into()).collect());
         let extra_hosts = match host.get("ExtraHosts") {
-            Some(v) if py::truthy(v) => v.clone(),
+            Some(v) if v.truthy() => v.clone(),
             _ => Value::Array(Vec::new()),
         };
-        let expected_hosts = Value::Array(
-            a.fixture_hosts
-                .iter()
-                .map(|h| Value::str(h.clone()))
-                .collect(),
-        );
-        let tmpfs = object([("/tmp", TMPFS.into())]);
-        require(
-            host.at("NetworkMode").as_str() == Some("none")
-                && matches!(host.at("ReadonlyRootfs"), Value::Bool(true))
-                && matches!(host.at("Privileged"), Value::Bool(false))
-                && matches!(host.at("PidMode").as_str(), Some("" | "private"))
-                && host.at("IpcMode").as_str() == Some("private")
-                && host.at("CgroupnsMode").as_str() == Some("private")
-                && py::eq(host.at("Runtime"), self.config.at("runtime"))
-                && actual.at("Config").at("User").as_str() == Some(a.user.as_str())
-                && py::eq(host.at("CapDrop"), &Value::Array(vec!["ALL".into()]))
-                && host.get("CapAdd").is_none_or(empty)
-                && py::eq(host.at("PidsLimit"), a.resources.at("pids"))
-                && py::eq(host.at("Memory"), a.resources.at("memory_bytes"))
-                && py::eq(
-                    host.at("NanoCpus"),
-                    &Value::int(number(a.resources, "cpus") * 1_000_000_000),
-                )
-                && host.get("Devices").is_none_or(empty)
-                && host.get("DeviceRequests").is_none_or(empty)
-                && py::eq(&extra_hosts, &expected_hosts)
-                && host
-                    .get("ShmSize")
-                    .is_some_and(|v| py::eq(v, &Value::int(64i64 << 20)))
-                && host.get("Tmpfs").is_some_and(|v| py::eq(v, &tmpfs)),
-            "runtime weakened candidate isolation",
-        )?;
-        let swap_bound = isolation::validate_swap_bound(
-            a.daemon,
-            host,
-            number(a.resources, "memory_bytes") as u64,
-        )?;
-        let expected: Vec<(String, String, bool)> = {
-            let mut rows: Vec<_> = a
-                .mounts
-                .iter()
-                .map(|(s, d, w)| (text(s), text(d), *w))
-                .collect();
-            rows.sort();
-            rows.dedup();
-            rows
-        };
-        let mounts_list = actual.at("Mounts").as_array().unwrap_or(&[]);
-        require(
-            mounts_list
-                .iter()
-                .all(|m| matches!(m.at("Type").as_str(), Some("bind" | "tmpfs"))),
-            "unexpected image volume",
-        )?;
-        let mut observed: Vec<(String, String, bool)> = Vec::new();
-        for m in mounts_list
+        let user = format!("{}:{}", self.uid(), self.gid());
+        let ok = field("NetworkMode")?.as_str() == Some("none")
+            && field("ReadonlyRootfs")?.as_bool() == Some(true)
+            && field("Privileged")?.as_bool() == Some(false)
+            && matches!(field("PidMode")?.as_str(), Some("" | "private"))
+            && field("IpcMode")?.as_str() == Some("private")
+            && field("CgroupnsMode")?.as_str() == Some("private")
+            && field("Runtime")? == self.config.at("runtime")
+            && at(at(&actual, "Config")?, "User")?.as_str() == Some(user.as_str())
+            && *field("CapDrop")? == Value::Array(vec!["ALL".into()])
+            && !host.at("CapAdd").truthy()
+            && field("PidsLimit")?.as_int() == Some(int("pids"))
+            && field("Memory")?.as_int() == Some(int("memory_bytes"))
+            && field("NanoCpus")?.as_int() == Some(int("cpus") * 1_000_000_000)
+            && !host.at("Devices").truthy()
+            && !host.at("DeviceRequests").truthy()
+            && extra_hosts == expected_hosts
+            && host.at("ShmSize").as_int() == Some(64 << 20)
+            && *host.at("Tmpfs")
+                == object([(
+                    "/tmp",
+                    "rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777".into(),
+                )]);
+        require(ok, "runtime weakened candidate isolation")?;
+        let memory = int("memory_bytes") as u64;
+        let swap_bound =
+            isolation::validate_swap_bound(daemon, host, memory).map_err(sp::from_text)?;
+        let mut expected: Vec<(String, String, bool)> = mounts
             .iter()
-            .filter(|m| m.at("Type").as_str() == Some("bind"))
-        {
-            let row = (
-                m.at("Source").as_str().unwrap_or("\0").to_owned(),
-                m.at("Destination").as_str().unwrap_or("\0").to_owned(),
-                m.at("RW").as_bool().unwrap_or(false),
-            );
-            require(
-                m.at("RW").as_bool().is_some(),
-                "runtime candidate mounts differ",
-            )?;
-            observed.push(row);
+            .map(|(s, d, w)| (sp::text(s), sp::text(d), *w))
+            .collect();
+        expected.sort();
+        expected.dedup();
+        let rows = at(&actual, "Mounts")?.as_array().unwrap_or(&[]).to_vec();
+        let mut observed = Vec::new();
+        for row in &rows {
+            if at(row, "Type")?.as_str() == Some("bind") {
+                observed.push((
+                    at(row, "Source")?.as_str().unwrap_or("").to_owned(),
+                    at(row, "Destination")?.as_str().unwrap_or("").to_owned(),
+                    at(row, "RW")?.as_bool().unwrap_or(false),
+                ));
+            }
         }
         observed.sort();
         observed.dedup();
-        require(observed == expected, "runtime candidate mounts differ")?;
         require(
-            host.at("SecurityOpt").as_array().is_some_and(|rows| {
+            rows.iter()
+                .all(|m| matches!(m.at("Type").as_str(), Some("bind" | "tmpfs"))),
+            "unexpected image volume",
+        )?;
+        require(observed == expected, "runtime candidate mounts differ")?;
+        let options = field("SecurityOpt")?;
+        require(
+            options.as_array().is_some_and(|rows| {
                 rows.iter().any(|v| {
                     matches!(
                         v.as_str(),
@@ -1256,134 +1494,188 @@ impl Execution {
             }),
             "runtime permits privilege gain",
         )?;
-        let mounts_value = Value::Array(
+        let sorted = Value::Array(
             expected
                 .iter()
                 .map(|(s, d, w)| {
-                    Value::Array(vec![s.clone().into(), d.clone().into(), (*w).into()])
+                    Value::Array(vec![s.as_str().into(), d.as_str().into(), (*w).into()])
                 })
                 .collect(),
         );
-        let row = &mut self.observations[a.at];
-        row.set("container_id", actual.at("Id").clone());
-        row.set("image_id", actual.at("Image").clone());
+        let security = options.clone();
+        let row = &mut self.observations[invocation.observation];
+        row.set("container_id", at(&actual, "Id")?.clone());
+        row.set("image_id", at(&actual, "Image")?.clone());
         row.set("network", "none".into());
         row.set("inspected", true.into());
-        row.set("mounts_sha256", canonical_sha(&mounts_value).into());
-        row.set("security_options", host.at("SecurityOpt").clone());
+        row.set("mounts_sha256", sha_canonical(&sorted).into());
+        row.set("security_options", security);
         row.set("swap_bound", swap_bound);
-        let mut command = self.docker.clone();
-        command.extend(["start".into(), "--attach".into(), a.name.to_owned()]);
-        body(&command, &self.client_env)
+        invocation.inspected = true;
+        Ok(())
     }
 
-    fn dispose(
-        &mut self,
-        at: usize,
-        name: &str,
-        disposable_target: Option<&Path>,
-        cargo_home: Option<&Path>,
-    ) -> Result<()> {
-        // Read process state from the engine before deleting the container.
-        // These controller observations are still not an independent host attestation.
-        let mut state_error = false;
-        if self.observations[at].at("inspected").truthy() {
-            let state = (|| -> Result<Value> {
-                let (code, text) = self.client(
-                    &[
-                        "inspect".into(),
-                        "--format".into(),
-                        "{{json .State}}".into(),
-                        name.into(),
-                    ],
-                    true,
-                )?;
-                require(code == 0, "candidate process state unavailable")?;
-                let actual = py::loads(text.as_bytes()).map_err(|e| e.message)?;
-                let keys = [
-                    "Status",
-                    "Running",
-                    "ExitCode",
-                    "OOMKilled",
-                    "Error",
-                    "StartedAt",
-                    "FinishedAt",
-                ];
+    /// The invocation's `finally`: observe state, remove, confirm absence, then
+    /// remove disposable controller-created candidate directories.
+    pub fn dispose(&mut self, invocation: Invocation) -> R<()> {
+        let name = invocation.name.clone();
+        let index = invocation.observation;
+        let mut state_error = None;
+        if invocation.inspected {
+            let observed = (|| -> R<Value> {
+                let state = self.client(&sp::strings(&[
+                    "inspect",
+                    "--format",
+                    "{{json .State}}",
+                    &name,
+                ]))?;
+                require(state.code == 0, "candidate process state unavailable")?;
+                let actual = sp::loads(&state.stdout)?;
                 Ok(Value::Object(
-                    keys.iter()
-                        .map(|k| ((*k).to_owned(), actual.at(k).clone()))
-                        .collect(),
+                    [
+                        "Status",
+                        "Running",
+                        "ExitCode",
+                        "OOMKilled",
+                        "Error",
+                        "StartedAt",
+                        "FinishedAt",
+                    ]
+                    .iter()
+                    .map(|k| ((*k).to_owned(), actual.at(k).clone()))
+                    .collect(),
                 ))
             })();
-            match state {
-                Ok(value) => self.observations[at].set("state_before_disposal", value),
+            match observed {
+                Ok(state) => self.observations[index].set("state_before_disposal", state),
+                Err(error) if error.kind == Kind::Interrupted => return Err(error),
                 Err(error) => {
-                    state_error = true;
-                    let kind = if error.contains("unavailable") {
-                        "ValueError"
-                    } else {
-                        "JSONDecodeError"
+                    let class = match error.kind {
+                        Kind::Timeout => "TimeoutExpired",
+                        Kind::Os => "OSError",
+                        Kind::Key => "KeyError",
+                        _ if error.message.contains(": line ") => "JSONDecodeError",
+                        _ => "ValueError",
                     };
-                    self.observations[at].set("state_observation_error", kind.into());
+                    self.observations[index].set("state_observation_error", class.into());
+                    state_error = Some(error);
                 }
             }
         }
-        let removed = self
-            .client(&["rm".into(), "--force".into(), name.into()], false)?
-            .0;
-        let (code, listing) = self.client(
-            &[
-                "container".into(),
-                "ls".into(),
-                "--all".into(),
-                "--quiet".into(),
-                "--filter".into(),
-                format!("name=^/{name}$"),
-            ],
-            true,
-        )?;
-        let inspected = self.observations[at].at("inspected").truthy();
+        let removed = self.raw_client(&sp::strings(&["rm", "--force", &name]), false)?;
+        let filter = format!("name=^/{name}$");
+        let absent = self.client(&sp::strings(&[
+            "container",
+            "ls",
+            "--all",
+            "--quiet",
+            "--filter",
+            &filter,
+        ]))?;
         require(
-            code == 0 && listing.trim_matches(py_space).is_empty() && (removed == 0 || !inspected),
+            absent.code == 0
+                && absent.text().trim().is_empty()
+                && (removed.code == 0 || !invocation.inspected),
             "candidate disposal was not confirmed",
         )?;
-        self.observations[at].set("disposed", true.into());
-        if let Some(target) = disposable_target {
-            // The container is gone before touching candidate-owned artifacts.
-            // Unlink a replaced top-level symlink instead of following it.
-            if pathx::is_symlink(target) {
-                io(fs::remove_file(target), target)?;
+        self.observations[index].set("disposed", true.into());
+        if let Some(target) = &invocation.disposable_target {
+            if sp::is_symlink(target) {
+                std::fs::remove_file(target).at(target)?;
             } else if target.exists() {
-                pathx::rmtree(target)?;
+                sp::rmtree(target)?;
             }
-            self.observations[at].set("harness_target_removed", true.into());
-            self.observations[at].set(
+            self.observations[index].set("harness_target_removed", true.into());
+            self.observations[index].set(
                 "harness_target_path_sha256",
-                sha256::hex(text(target).as_bytes()).into(),
+                sha256::hex(sp::text(target).as_bytes()).into(),
             );
         }
-        if let Some(home) = cargo_home {
-            if pathx::is_symlink(home) {
-                io(fs::remove_file(home), home)?;
+        if let Some(home) = &invocation.cargo_home {
+            if sp::is_symlink(home) {
+                std::fs::remove_file(home).at(home)?;
             } else if home.exists() {
-                pathx::rmtree(home)?;
+                sp::rmtree(home)?;
             }
-            self.observations[at].set("private_cargo_cache_removed", true.into());
+            self.observations[index].set("private_cargo_cache_removed", true.into());
         }
-        if self.observations[at].get("swap_bound").is_some() {
-            let mut proof = self.observations[at].at("swap_bound").clone();
-            isolation::recheck_swap_bound(&mut proof)?;
-            self.observations[at].set("swap_bound", proof);
+        if let Some(proof) = self.observations[index].get_mut("swap_bound") {
+            isolation::recheck_swap_bound(proof).map_err(sp::from_text)?;
         }
-        require(!state_error, "candidate process state observation failed")
+        match state_error {
+            Some(_) => Err(value_error("candidate process state observation failed")),
+            None => Ok(()),
+        }
     }
 
-    pub fn compiler_pool(&mut self) -> Result<CompilerPool<'_>> {
+    /// `run(argv, cwd=..., env=..., capture_output=True, text=True, timeout=...)`.
+    pub fn run_captured(
+        &mut self,
+        argv: &[String],
+        cwd: &Path,
+        env: &Dict,
+        timeout: u64,
+    ) -> R<sp::Done> {
+        let invocation = self.invocation(argv, cwd, env, false)?;
+        let spec = Spec::new(invocation.command.clone())
+            .env(&self.client_env)
+            .capture()
+            .timeout(timeout);
+        let result = sp::run(spec);
+        // The invocation's `finally`: a disposal failure replaces the result.
+        self.dispose(invocation)?;
+        result
+    }
+
+    /// `check_output(argv, cwd=..., env=..., text=True)`.
+    pub fn check_output(&mut self, argv: &[String], cwd: &Path, env: &Dict) -> R<String> {
+        let invocation = self.invocation(argv, cwd, env, false)?;
+        let mut spec = Spec::new(invocation.command.clone()).env(&self.client_env);
+        spec.stdout = sp::Output::Capture;
+        let result = sp::run(spec).and_then(sp::Done::checked);
+        self.dispose(invocation)?;
+        Ok(result?.text())
+    }
+
+    /// `with invocation(argv, cwd, env) as (command, client_env, _): body`.
+    /// A disposal failure replaces the body's outcome, as the former `finally`.
+    pub fn invocation_with<T>(
+        &mut self,
+        argv: &[String],
+        cwd: &Path,
+        env: &Dict,
+        discard_harness_target: bool,
+        body: impl FnOnce(&[String], &[(String, String)]) -> R<T>,
+    ) -> R<T> {
+        let invocation = self.invocation(argv, cwd, env, discard_harness_target)?;
+        let outcome = body(&invocation.command, &self.client_env);
+        self.dispose(invocation)?;
+        outcome
+    }
+
+    pub fn compiler_pool(&mut self) -> R<CompilerPool<'_>> {
         CompilerPool::new(self)
     }
 }
 
-/// Spawn a client command in this process group, as `subprocess` does.
+/// Error text of a cancelled compiler case (`CancelledError`).
+pub const CANCELLED: &str = "compiler pool cancelled";
+
+fn cancelled() -> Error {
+    value_error(CANCELLED)
+}
+
+/// A finished architecture candidate command (`subprocess.CompletedProcess`
+/// with text-mode streams).
+#[derive(Clone, Debug, Default)]
+pub struct Done {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Spawn a command in this process group, as `subprocess` does; `cancel` is
+/// polled and kills the attach client (its container is removed by disposal).
 pub fn spawn(
     argv: &[String],
     env: Option<&[(String, String)]>,
@@ -1391,8 +1683,10 @@ pub fn spawn(
     capture_stdout: bool,
     capture_stderr: bool,
     cancel: Option<&dyn Fn() -> bool>,
-) -> Result<(i32, Vec<u8>, Vec<u8>, bool)> {
-    let (program, args) = argv.split_first().ok_or("missing candidate executable")?;
+) -> R<(i32, Vec<u8>, Vec<u8>, bool)> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| value_error("missing candidate executable"))?;
     let mut command = Command::new(program);
     command.args(args);
     if let Some(env) = env {
@@ -1410,7 +1704,7 @@ pub fn spawn(
     }
     let mut child = command
         .spawn()
-        .map_err(|e| pathx::os_error(&e, Some(Path::new(program))))?;
+        .map_err(|e| sp::os_error(&e, Some(Path::new(program))))?;
     let reader = |stream: Option<Box<dyn Read + Send>>| {
         stream.map(|mut stream| {
             std::thread::spawn(move || {
@@ -1432,17 +1726,18 @@ pub fn spawn(
             .take()
             .map(|s| Box::new(s) as Box<dyn Read + Send>),
     );
-    let mut cancelled = false;
+    let wait_error = |e: std::io::Error| sp::os_error(&e, None);
+    let mut was_cancelled = false;
     let status = match cancel {
-        None => child.wait().map_err(|e| e.to_string())?,
+        None => child.wait().map_err(wait_error)?,
         Some(stop) => loop {
-            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            if let Some(status) = child.try_wait().map_err(wait_error)? {
                 break status;
             }
             if stop() {
                 let _ = child.kill();
-                cancelled = true;
-                break child.wait().map_err(|e| e.to_string())?;
+                was_cancelled = true;
+                break child.wait().map_err(wait_error)?;
             }
             std::thread::sleep(Duration::from_millis(50));
         },
@@ -1453,7 +1748,11 @@ pub fn spawn(
     let stderr = err
         .map(|h| h.join().unwrap_or_default())
         .unwrap_or_default();
-    Ok((pathx::returncode(status), stdout, stderr, cancelled))
+    Ok((sp::returncode(status), stdout, stderr, was_cancelled))
+}
+
+fn text_mode(data: &[u8]) -> R<String> {
+    crate::pathx::text_mode(data).map_err(sp::from_text)
 }
 
 /// Two compiler isolates sharing only readonly inputs and an aggregate quota.
@@ -1480,11 +1779,11 @@ impl Slot {
     }
 
     /// `CompilerPool.run`: one confined compiler command, cancellable.
-    pub fn run(&mut self, argv: &[String], cwd: &Path) -> Result<Done> {
+    pub fn run(&mut self, argv: &[String], cwd: &Path) -> R<Done> {
         if self.cancelled() {
-            return Err(CANCELLED.into());
+            return Err(cancelled());
         }
-        let mut env = process_env();
+        let mut env = Dict::environ();
         for (key, value) in [
             ("TMPDIR", "/tmp"),
             ("BUSBAR_TEST_TMP_ROOT", "/tmp/tests"),
@@ -1492,33 +1791,33 @@ impl Slot {
             ("MODERNCI_CACHE_DIR", "/tmp/cache"),
             ("CARGO_BUILD_JOBS", "2"),
         ] {
-            env.insert(key.into(), value.into());
+            env.set(key, value);
         }
         let cancel = self.cancel.clone();
         self.execution
-            .invocation(argv, cwd, &env, true, |command, client_env| {
+            .invocation_with(argv, cwd, &env, true, |command, client_env| {
                 let stop = || cancel.load(Ordering::SeqCst) || proc::interrupted().is_some();
                 if stop() {
-                    return Err(CANCELLED.into());
+                    return Err(cancelled());
                 }
-                let (code, stdout, stderr, cancelled) =
+                let (code, stdout, stderr, was_cancelled) =
                     spawn(command, Some(client_env), None, true, true, Some(&stop))?;
-                if cancelled {
-                    return Err(CANCELLED.into());
+                if was_cancelled {
+                    return Err(cancelled());
                 }
                 Ok(Done {
                     code,
-                    stdout: pathx::text_mode(&stdout)?,
-                    stderr: pathx::text_mode(&stderr)?,
+                    stdout: text_mode(&stdout)?,
+                    stderr: text_mode(&stderr)?,
                 })
             })
     }
 }
 
 impl<'a> CompilerPool<'a> {
-    pub fn new(execution: &'a mut Execution) -> Result<CompilerPool<'a>> {
+    pub fn new(execution: &'a mut Execution) -> R<CompilerPool<'a>> {
         let resources = execution.config.at("resources").clone();
-        let value = |key: &str| int(resources.at(key)).unwrap_or(0);
+        let value = |key: &str| resources.at(key).as_int().unwrap_or(0);
         require(
             value("cpus") >= 4 && value("memory_bytes") >= 6 << 30 && value("pids") >= 2,
             "compiler pool requires the measured resource budget",
@@ -1526,8 +1825,8 @@ impl<'a> CompilerPool<'a> {
         // Deliberately cap the pool at the measured 4 CPU / 6 GiB even on larger
         // runners. Container memory includes its tmpfs and shared memory charges.
         let slice = object([
-            ("cpus", Value::int(2)),
-            ("memory_bytes", Value::int(3i64 << 30)),
+            ("cpus", 2u64.into()),
+            ("memory_bytes", (3u64 << 30).into()),
             ("pids", Value::int(value("pids") / 2)),
         ]);
         Ok(CompilerPool {
@@ -1540,11 +1839,11 @@ impl<'a> CompilerPool<'a> {
 
     /// Run every case on at most two isolates, in submission order; observations
     /// merge in case order; the first non-cancellation failure is reported.
-    pub fn map<C: Sync, R: Send>(
+    pub fn map<C: Sync, T: Send>(
         &mut self,
         cases: &[C],
-        function: &(dyn Fn(&mut Slot, usize, &C) -> Result<R> + Sync),
-    ) -> Result<Vec<R>> {
+        function: &(dyn Fn(&mut Slot, usize, &C) -> R<T> + Sync),
+    ) -> R<Vec<T>> {
         require(!self.used, "compiler pool cannot be reused")?;
         self.used = true;
         let prepared_git = self.execution.sanitize_git()?;
@@ -1552,25 +1851,25 @@ impl<'a> CompilerPool<'a> {
         let resources = self.resources.clone();
         let cancel = self.cancel.clone();
         let next = std::sync::Mutex::new(0usize);
-        type Outcome<R> = (Result<R>, Vec<Value>);
-        let outcomes: std::sync::Mutex<BTreeMap<usize, Outcome<R>>> = Default::default();
+        type Outcome<T> = (R<T>, Vec<Value>);
+        let outcomes: std::sync::Mutex<BTreeMap<usize, Outcome<T>>> = Default::default();
         proc::install_signal_handlers();
-        let invoke = |index: usize, case: &C| -> Outcome<R> {
+        let invoke = |index: usize, case: &C| -> Outcome<T> {
             if cancel.load(Ordering::SeqCst) || proc::interrupted().is_some() {
                 cancel.store(true, Ordering::SeqCst);
-                return (Err(CANCELLED.into()), Vec::new());
+                return (Err(cancelled()), Vec::new());
             }
             let base = parent
                 .roots
                 .candidate
                 .parent()
                 .unwrap_or(Path::new("/"))
-                .join(format!("compiler-isolate-{}", pathx::uuid4()));
-            let prepare = || -> Result<Execution> {
-                pathx::mkdir(&base, 0o755)?;
+                .join(format!("compiler-isolate-{}", sp::uuid_hex()));
+            let prepare = || -> R<Execution> {
+                sp::mkdir(&base, 0o755, false)?;
                 let (candidate, control) = (base.join("candidate"), base.join("control"));
-                pathx::mkdir(&candidate, 0o755)?;
-                pathx::mkdir(&control, 0o700)?;
+                sp::mkdir(&candidate, 0o755, false)?;
+                sp::mkdir(&control, 0o700, false)?;
                 let mut child = parent.clone();
                 child.roots.candidate = candidate;
                 child.control = control.clone();
@@ -1582,9 +1881,9 @@ impl<'a> CompilerPool<'a> {
                 // Compiler checks receive no service capabilities or mutable parent
                 // candidate mount. Their source is the readonly core checkout.
                 child.fixture_directory = control.join("fixture-sockets");
-                pathx::mkdir(&child.fixture_directory, 0o755)?;
+                sp::mkdir(&child.fixture_directory, 0o755, false)?;
                 child.fixture_map = control.join("fixture-map.json");
-                pathx::write(&child.fixture_map, "[]\n")?;
+                sp::write(&child.fixture_map, "[]\n")?;
                 Ok(child)
             };
             let mut slot = match prepare() {
@@ -1603,12 +1902,12 @@ impl<'a> CompilerPool<'a> {
             }
             let mut rows = std::mem::take(&mut slot.execution.observations);
             for row in &mut rows {
-                row.set("compiler_case_index", Value::int(index as i64));
+                row.set("compiler_case_index", (index as u64).into());
             }
             // Never delete artifacts while a container could still hold
             // them. A failed disposal retains the entire private root.
             if rows.iter().all(|row| row.at("disposed").truthy())
-                && let Err(error) = pathx::rmtree(&base)
+                && let Err(error) = sp::rmtree(&base)
             {
                 cancel.store(true, Ordering::SeqCst);
                 result = Err(error);
@@ -1646,23 +1945,299 @@ impl<'a> CompilerPool<'a> {
             }
         }
         if let Some(signal) = proc::interrupted() {
-            return Err(format!("compiler pool interrupted by signal {signal}"));
+            return Err(Error::new(
+                Kind::Os,
+                format!("compiler pool interrupted by signal {signal}"),
+            ));
         }
         if !errors.is_empty() {
             let first = errors
                 .iter()
-                .find(|e| *e != CANCELLED)
-                .unwrap_or(&errors[0]);
-            return Err(first.clone());
+                .position(|e| e.message != CANCELLED)
+                .unwrap_or(0);
+            return Err(errors.swap_remove(first));
         }
         Ok(results)
     }
 }
 
+/// `os.walk(checkout)` refusing links outside Git/target directories.
+fn source_without_links(root: &Path) -> R<()> {
+    let omitted = [
+        root.join(".git"),
+        root.join("target"),
+        root.join("dist/default/target"),
+    ];
+    fn walk(directory: &Path, omitted: &[PathBuf]) -> R<()> {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return Ok(());
+        };
+        let mut subdirectories = Vec::new();
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            require(!sp::is_symlink(&path), "candidate source contains symlinks")?;
+            if path.is_dir() && !omitted.contains(&path) {
+                subdirectories.push(path);
+            }
+        }
+        for path in subdirectories {
+            walk(&path, omitted)?;
+        }
+        Ok(())
+    }
+    walk(root, &omitted)
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    pub fn config(docker: &Path, storage: &Path) -> Value {
+        let sha = sha256::file(docker).unwrap();
+        crate::json::parse(
+            format!(
+                r#"{{"schema":"busbar.native-confinement/2","docker":"{}","docker_sha256":"{sha}",
+                "docker_host":"unix:///var/run/docker.sock","image":"sha256:{}","runtime":"runc",
+                "uid":1000,"gid":1000,"python":"/usr/bin/python3","environment":{{"PATH":"/usr/local/cargo/bin:/usr/bin:/bin"}},
+                "resources":{{"cpus":4,"memory_bytes":6442450944,"pids":4096}},
+                "isolation":{{"storage_kind":"tmpfs","storage_root":"{}","storage_bytes":1073741824,
+                "storage_inodes":100000,"storage_reserve_bytes":0,"uid_map":[0,524288,65536],"gid_map":[0,524288,65536]}},
+                "collector":{{"docker_host":"unix:///var/run/docker.sock","uid":525288,"gid":525288}}}}"#,
+                docker.display(),
+                "a".repeat(64),
+                storage.display()
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    pub struct Fixture {
+        pub base: PathBuf,
+        pub roots: Roots,
+        pub control: PathBuf,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    pub fn fixture(label: &str) -> Fixture {
+        let base = sp::resolve(&std::env::temp_dir())
+            .join(format!("busbar-ci-confine-{label}-{}", sp::uuid_hex()));
+        let roots = Roots {
+            checkout: base.join("checkout"),
+            candidate: base.join("candidate"),
+            trusted: base.join("trusted"),
+            harness: base.join("harness"),
+        };
+        for path in [
+            &roots.checkout,
+            &roots.candidate,
+            &roots.trusted,
+            &roots.harness,
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        std::fs::create_dir_all(roots.checkout.join(".git/objects")).unwrap();
+        std::fs::write(roots.checkout.join(".git/HEAD"), "ref: refs/heads/dev\n").unwrap();
+        let control = base.join("control");
+        std::fs::create_dir_all(&control).unwrap();
+        Fixture {
+            base,
+            roots,
+            control,
+        }
+    }
+
+    fn execution(f: &Fixture) -> Execution {
+        Execution::new(
+            config(Path::new("/bin/echo"), &f.base.join("storage")),
+            f.roots.clone(),
+            &f.control,
+            f.roots
+                .trusted
+                .join("scripts/architecture/confinement_entry.py"),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn requires_pinned_client_image_nonroot_and_private_roots() {
+        let f = fixture("refuse");
+        let base = config(Path::new("/bin/echo"), &f.base.join("storage"));
+        let cases: [(&str, Value, &str); 6] = [
+            (
+                "docker_sha256",
+                "0".repeat(64).into(),
+                "Docker client is not the pinned executable",
+            ),
+            (
+                "docker_host",
+                "tcp://host:2375".into(),
+                "local Unix Docker endpoint required",
+            ),
+            (
+                "image",
+                "rust:latest".into(),
+                "immutable toolchain image required",
+            ),
+            ("uid", 0u64.into(), "candidate must use a nonroot identity"),
+            ("runtime", "kata".into(), "unsupported candidate runtime"),
+            (
+                "python",
+                "python3".into(),
+                "pinned-image Python path required",
+            ),
+        ];
+        for (key, value, message) in cases {
+            let mut config = base.clone();
+            config.set(key, value);
+            let error = Execution::new(config, f.roots.clone(), &f.control, PathBuf::from("/x"))
+                .err()
+                .unwrap();
+            assert_eq!(error.message, message, "{key}");
+        }
+        let overlapping = Roots {
+            candidate: f.roots.checkout.join("inner"),
+            ..f.roots.clone()
+        };
+        std::fs::create_dir_all(&overlapping.candidate).unwrap();
+        assert_eq!(
+            Execution::new(base.clone(), overlapping, &f.control, PathBuf::from("/x"))
+                .err()
+                .unwrap()
+                .message,
+            "candidate roots overlap"
+        );
+        std::os::unix::fs::symlink("/etc", f.roots.checkout.join("link")).unwrap();
+        assert_eq!(
+            Execution::new(base, f.roots.clone(), &f.control, PathBuf::from("/x"))
+                .err()
+                .unwrap()
+                .message,
+            "candidate source contains symlinks"
+        );
+    }
+
+    #[test]
+    fn context_is_digest_bound_and_sorted() {
+        let f = fixture("context");
+        let mut execution = execution(&f);
+        execution.extra_readonly.push(f.roots.harness.clone());
+        execution.dependency_seed_sha256 = Some("b".repeat(64));
+        let (path, expected) = execution.write_context().unwrap();
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(sha256::hex(&data), expected);
+        let text = String::from_utf8(data).unwrap();
+        assert!(text.starts_with("{\"configuration\":{\"collector\":"));
+        assert!(text.contains("\"conformance_inputs_manifest\":null,\"conformance_mounts\":[]"));
+        assert!(text.ends_with(&("\"dependency_seed_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"extra_readonly\":[\"".to_owned() + &sp::text(&f.roots.harness) + "\"],\"roots\":{\"candidate\":\"" + &sp::text(&f.roots.candidate) + "\",\"checkout\":\"" + &sp::text(&f.roots.checkout) + "\",\"harness\":\"" + &sp::text(&f.roots.harness) + "\",\"trusted\":\"" + &sp::text(&f.roots.trusted) + "\"}}\n")));
+    }
+
+    #[test]
+    fn environment_is_allowlisted_and_git_auth_cannot_cross() {
+        let f = fixture("environment");
+        let execution = execution(&f);
+        let mut env = Dict::default();
+        for (k, v) in [
+            ("CI", "1"),
+            ("CI_JOB_TOKEN", "secret"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+            ("BUSBAR_TEST_POSTGRES_URL", "postgres://127.0.0.1:1/x"),
+            ("BUSBAR_TEST__URL", "x"),
+        ] {
+            env.set(k, v);
+        }
+        let result = execution.environment(&env).unwrap();
+        assert!(result.contains_key("CI") && result.contains_key("BUSBAR_TEST_POSTGRES_URL"));
+        assert!(
+            !result.contains_key("CI_JOB_TOKEN") && !result.contains_key("AWS_SECRET_ACCESS_KEY")
+        );
+        assert!(!result.contains_key("BUSBAR_TEST__URL"));
+        assert_eq!(result["GIT_CONFIG_COUNT"], "2");
+        assert_eq!(result["GIT_CONFIG_KEY_0"], "safe.directory");
+        assert_eq!(result["GIT_CONFIG_VALUE_1"], sp::text(&f.roots.trusted));
+        assert_eq!(result["CARGO_NET_OFFLINE"], "true");
+        env.set("GIT_CONFIG_COUNT", "1");
+        env.set("GIT_CONFIG_KEY_0", "http.https://git.example/.extraheader");
+        env.set("GIT_CONFIG_VALUE_0", "Authorization: Basic x");
+        assert_eq!(
+            execution.environment(&env).unwrap_err().message,
+            "unexpected Git setting in candidate environment"
+        );
+        let mut overridden = Execution { ..execution };
+        overridden.product_inputs.set("BUSBAR_PLUGIN_CDYLIB", "/a");
+        env.set("GIT_CONFIG_COUNT", "0");
+        env.set("BUSBAR_PLUGIN_CDYLIB", "/b");
+        assert_eq!(
+            overridden.environment(&env).unwrap_err().message,
+            "registered product input was overridden"
+        );
+    }
+
+    #[test]
+    fn conformance_manifest_is_controller_pinned() {
+        let f = fixture("capabilities");
+        let mut execution = execution(&f);
+        let digest = execution
+            .set_conformance_capabilities(None, "GetBusbar/busbar", &"c".repeat(40), None)
+            .unwrap();
+        let path = f.control.join("conformance-capabilities.json");
+        assert_eq!(sha256::file(&path).unwrap(), digest);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            format!(
+                "{{\"repo\":\"GetBusbar/busbar\",\"schema\":\"busbar.conformance.capabilities/1\",\"source\":\"{}\",\"suites\":{{}},\"toolchain_ready\":false}}\n",
+                "c".repeat(40)
+            )
+        );
+        let candidate = f.roots.candidate.join("caps.json");
+        std::fs::write(&candidate, "{}").unwrap();
+        let sha = sha256::file(&candidate).unwrap();
+        assert_eq!(
+            execution
+                .set_conformance_capabilities(Some(&candidate), "GetBusbar/busbar", "x", Some(&sha))
+                .unwrap_err()
+                .message,
+            "candidate supplied conformance capabilities"
+        );
+    }
+
+    #[test]
+    fn image_references_are_immutable() {
+        assert!(image_reference(&format!("sha256:{}", "a".repeat(64))));
+        assert!(image_reference(&format!(
+            "mirror.gcr.io/library/rust:1@sha256:{}",
+            "a".repeat(64)
+        )));
+        assert!(!image_reference("rust:latest"));
+        assert!(!image_reference(&format!(
+            "UPPER@sha256:{}",
+            "a".repeat(64)
+        )));
+        assert!(unix_endpoint("unix:///var/run/docker.sock"));
+        assert!(!unix_endpoint("unix:///a b"));
+    }
+}
+
+/// The former `test_compiler_storage.py` / `test_compiler_parallel.py` and the
+/// architecture context cases: invocation lifecycle against a fake engine.
+#[cfg(test)]
+pub mod lifecycle_tests {
+    use super::*;
+    use crate::native::sp::text;
+    use crate::py;
+    use std::fs;
     use std::sync::Mutex;
+
+    const TMPFS: &str = "rw,nosuid,nodev,size=1g,nr_inodes=65536,mode=1777";
+
+    fn no_env() -> Dict {
+        Dict::default()
+    }
 
     /// The Python `Fixture`: four roots, a control directory and a confinement
     /// configuration whose Docker client is `/bin/echo`.
@@ -1676,7 +2251,7 @@ pub mod tests {
     impl Fixture {
         pub fn new() -> Fixture {
             let base =
-                pathx::resolve(&std::env::temp_dir().join(format!("confine-{}", pathx::uuid4())));
+                sp::resolve(&std::env::temp_dir()).join(format!("confine-{}", sp::uuid_hex()));
             let roots = Roots {
                 checkout: base.join("checkout"),
                 candidate: base.join("candidate"),
@@ -1732,13 +2307,17 @@ pub mod tests {
         }
 
         pub fn execution(&self, hooks: Hooks) -> Execution {
-            Execution::new(
+            let mut execution = Execution::new(
                 self.config.clone(),
-                &self.roots_value(),
+                self.roots.clone(),
                 &self.control,
-                hooks,
+                self.roots
+                    .trusted
+                    .join("scripts/architecture/confinement_entry.py"),
             )
-            .unwrap()
+            .unwrap();
+            execution.hooks = hooks;
+            execution
         }
     }
 
@@ -1775,7 +2354,10 @@ pub mod tests {
         pub fn hooks(self: &Arc<Engine>) -> Hooks {
             let engine = self.clone();
             Hooks {
-                client: Some(Arc::new(move |argv: &[String], _| Ok(engine.client(argv)))),
+                client: Some(Arc::new(move |argv: &[String], _| {
+                    let (code, payload) = engine.client(argv);
+                    Ok((code, payload.into_bytes()))
+                })),
                 prepare_writable: Some(Arc::new(|config: &Value, _: &[PathBuf], _, _| {
                     Ok(object([
                         ("root", config.at("storage_root").clone()),
@@ -1909,7 +2491,7 @@ pub mod tests {
         let argv = harness_argv(&fixture);
         for _ in 0..3 {
             execution
-                .invocation(&argv, &fixture.roots.checkout, &Env::new(), true, |_, _| {
+                .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
                     assert!(engine.targets.lock().unwrap().last().unwrap().exists());
                     Ok(())
                 })
@@ -1940,13 +2522,9 @@ pub mod tests {
         let mut execution = fixture.execution(engine.hooks());
         let argv = harness_argv(&fixture);
         execution
-            .invocation(
-                &argv,
-                &fixture.roots.checkout,
-                &Env::new(),
-                false,
-                |_, _| Ok(()),
-            )
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), false, |_, _| {
+                Ok(())
+            })
             .unwrap();
         assert!(
             engine
@@ -1974,11 +2552,16 @@ pub mod tests {
         let engine = Engine::new(2 << 30);
         let mut execution = fixture.execution(engine.hooks());
         let argv = harness_argv(&fixture);
-        let result: Result<()> =
-            execution.invocation(&argv, &fixture.roots.checkout, &Env::new(), true, |_, _| {
-                Err(pathx::called_process_error(&argv, 1))
+        let result: R<()> =
+            execution.invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
+                Err(sp::from_text(crate::pathx::called_process_error(&argv, 1)))
             });
-        assert!(result.unwrap_err().contains("non-zero exit status 1"));
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("non-zero exit status 1")
+        );
         assert!(!engine.targets.lock().unwrap().last().unwrap().exists());
     }
 
@@ -1990,11 +2573,11 @@ pub mod tests {
         let mut execution = fixture.execution(engine.hooks());
         let argv = harness_argv(&fixture);
         let error = execution
-            .invocation(&argv, &fixture.roots.checkout, &Env::new(), true, |_, _| {
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
                 Ok(())
             })
             .unwrap_err();
-        assert!(error.contains("disposal"));
+        assert!(error.message.contains("disposal"));
         assert!(engine.targets.lock().unwrap().last().unwrap().exists());
         let row = execution.observations.last().unwrap();
         assert!(!row.at("disposed").truthy());
@@ -2011,7 +2594,7 @@ pub mod tests {
         fs::write(&sentinel, "controller evidence").unwrap();
         let control = fixture.control.clone();
         execution
-            .invocation(&argv, &fixture.roots.checkout, &Env::new(), true, |_, _| {
+            .invocation_with(&argv, &fixture.roots.checkout, &no_env(), true, |_, _| {
                 let target = engine.targets.lock().unwrap().last().unwrap().clone();
                 fs::remove_dir_all(&target).unwrap();
                 std::os::unix::fs::symlink(&control, &target).unwrap();
@@ -2019,7 +2602,7 @@ pub mod tests {
             })
             .unwrap();
         let target = engine.targets.lock().unwrap().last().unwrap().clone();
-        assert!(!pathx::is_symlink(&target));
+        assert!(!sp::is_symlink(&target));
         assert_eq!(
             fs::read_to_string(&sentinel).unwrap(),
             "controller evidence"
@@ -2034,15 +2617,15 @@ pub mod tests {
         let mut argv = harness_argv(&fixture);
         *argv.last_mut().unwrap() = text(&fixture.roots.checkout.join("Cargo.toml"));
         let error = execution
-            .invocation(
+            .invocation_with(
                 &argv,
                 &fixture.roots.checkout,
-                &Env::new(),
+                &no_env(),
                 true,
-                |_, _| -> Result<()> { panic!("candidate manifest accepted") },
+                |_, _| -> R<()> { panic!("candidate manifest accepted") },
             )
             .unwrap_err();
-        assert!(error.contains("trusted harness"));
+        assert!(error.message.contains("trusted harness"));
         assert!(engine.created.lock().unwrap().is_empty());
     }
 
@@ -2061,8 +2644,8 @@ pub mod tests {
             .flatten()
             .map(|e| e.path())
             .collect();
-        let error = execution.cargo_environment(&argv, &Env::new()).unwrap_err();
-        assert!(error.contains("indirect writable"));
+        let error = execution.cargo_environment(&argv, &no_env()).unwrap_err();
+        assert!(error.message.contains("indirect writable"));
         let after: Vec<_> = fs::read_dir(&fixture.control)
             .unwrap()
             .flatten()
@@ -2086,25 +2669,22 @@ pub mod tests {
             assert!(
                 Execution::new(
                     config,
-                    &fixture.roots_value(),
+                    fixture.roots.clone(),
                     &fixture.control,
-                    Hooks::default()
+                    PathBuf::from("/entry.py")
                 )
                 .is_err()
             );
         }
-        let mut roots = fixture.roots_value();
-        roots.set(
-            "candidate",
-            text(&fixture.roots.checkout.join("nested")).into(),
-        );
+        let mut roots = fixture.roots.clone();
+        roots.candidate = fixture.roots.checkout.join("nested");
         fs::create_dir(fixture.roots.checkout.join("nested")).unwrap();
         assert!(
             Execution::new(
                 fixture.config.clone(),
-                &roots,
+                roots,
                 &fixture.control,
-                Hooks::default()
+                PathBuf::from("/entry.py")
             )
             .is_err()
         );
@@ -2183,7 +2763,7 @@ pub mod tests {
                     .unwrap()
                     .push(slot.execution.roots.candidate.clone());
                 slot.execution
-                    .invocation(&argv, &harness, &Env::new(), true, |_, _| {
+                    .invocation_with(&argv, &harness, &no_env(), true, |_, _| {
                         barrier.wait();
                         if *index == 0 {
                             std::thread::sleep(Duration::from_millis(30));
@@ -2220,7 +2800,7 @@ pub mod tests {
         for row in rows {
             assert_eq!(
                 row.at("configuration_sha256").as_str().unwrap(),
-                canonical_sha(&fixture.config)
+                sha_canonical(&fixture.config)
             );
             assert!(py::eq(
                 row.at("aggregate_resources"),
@@ -2255,12 +2835,12 @@ pub mod tests {
                     .compiler_pool()
                     .unwrap()
                     .map(&[0usize], &|slot: &mut Slot, _, _| {
-                        slot.execution.invocation(
+                        slot.execution.invocation_with(
                             &argv,
                             &harness,
-                            &Env::new(),
+                            &no_env(),
                             true,
-                            |_, _| -> Result<()> { panic!("weakened engine limits were accepted") },
+                            |_, _| -> R<()> { panic!("weakened engine limits were accepted") },
                         )
                     });
             assert!(result.is_err(), "{field}");
@@ -2279,10 +2859,10 @@ pub mod tests {
             .unwrap()
             .map(&[0usize], &|slot: &mut Slot, _, _| {
                 slot.execution
-                    .invocation(&argv, &harness, &Env::new(), true, |_, _| Ok(()))
+                    .invocation_with(&argv, &harness, &no_env(), true, |_, _| Ok(()))
             })
             .unwrap_err();
-        assert!(error.contains("disposal"));
+        assert!(error.message.contains("disposal"));
         assert_eq!(isolates(&fixture), 1);
         assert!(!parent.observations.last().unwrap().at("disposed").truthy());
     }
@@ -2298,15 +2878,16 @@ pub mod tests {
             .map(&[0usize, 1, 2, 3], &|slot: &mut Slot,
                                        index,
                                        _|
-             -> Result<Option<i32>> {
+             -> R<Option<i32>> {
                 if index == 0 {
                     let script = format!("echo $$ > {}; exec sleep 60", text(&ready));
                     let argv = ["/bin/sh", "-c", &script].map(String::from);
                     let stop = || slot.cancel.load(Ordering::SeqCst);
-                    let (_, _, _, cancelled) = spawn(&argv, None, None, true, true, Some(&stop))?;
+                    let (_, _, _, was_cancelled) =
+                        spawn(&argv, None, None, true, true, Some(&stop))?;
                     *disposed.lock().unwrap() += 1;
-                    return if cancelled {
-                        Err(CANCELLED.into())
+                    return if was_cancelled {
+                        Err(cancelled())
                     } else {
                         Ok(None)
                     };
@@ -2317,10 +2898,10 @@ pub mod tests {
                 }
                 assert!(ready.exists(), "attach client never started");
                 std::thread::sleep(Duration::from_millis(50));
-                Err("wrong compiler diagnostic".into())
+                Err(value_error("wrong compiler diagnostic"))
             })
             .unwrap_err();
-        assert_eq!(error, "wrong compiler diagnostic");
+        assert_eq!(error.message, "wrong compiler diagnostic");
         assert!(cancel.load(Ordering::SeqCst));
         let pid: i32 = fs::read_to_string(&ready).unwrap().trim().parse().unwrap();
         std::thread::sleep(Duration::from_millis(100));
@@ -2348,7 +2929,7 @@ pub mod tests {
                 ]),
             );
             let error = CompilerPool::new(&mut parent).err().unwrap();
-            assert!(error.contains("resource budget"));
+            assert!(error.message.contains("resource budget"));
         }
         assert!(engine.created.lock().unwrap().is_empty());
         drop(fixture);
