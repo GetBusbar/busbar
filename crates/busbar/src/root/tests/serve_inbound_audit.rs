@@ -477,7 +477,9 @@ async fn without_an_authorization_server_a_dpop_presentation_never_falls_through
         assert!(
             matches!(
                 busbar_kernel::auth::admitted_context(&admission).await,
-                Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint)
+                Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint(
+                    busbar_kernel::auth::dpop::Refusal::Unverifiable
+                ))
             ),
             "a DPoP presentation this deployment cannot verify is refused (x-api-key {second})"
         );
@@ -554,7 +556,9 @@ async fn dpop_replay_body_and_cancel_refusals_retain_signed_audit_through_store_
     let admission = ingress.claim(1, &dpop, head);
     assert!(matches!(
         busbar_kernel::auth::admitted_context(&admission).await,
-        Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint)
+        Err(busbar_kernel::auth::AdmittedRefusal::SenderConstraint(
+            busbar_kernel::auth::dpop::Refusal::BoundBearer
+        ))
     ));
     ingress.host.stream_ended(OWNER, FRAMING, 1);
     drop(admission);

@@ -30,24 +30,32 @@ pub(crate) async fn exchange(
 
     let candidate = app.auth.extract_client_token(req.headers());
 
-    let judged = if app.oauth_as.is_some() {
-        crate::auth::dpop::judge(
-            &app,
-            req.method(),
-            req.uri().path(),
-            req.headers(),
-            candidate.as_deref(),
-            &mut None,
-        )
-        .await
-    } else {
-        crate::auth::dpop::SenderConstraint::Unconstrained
-    };
+    // Always judged: a bound token must never be swapped for an unbound key, AS or not.
+    let judged = crate::auth::dpop::judge(
+        &app,
+        req.method(),
+        req.uri().path(),
+        req.headers(),
+        crate::auth::dpop::Surface::Exchange,
+    )
+    .await;
     let candidate = match judged {
         crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
         crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
-        crate::auth::dpop::SenderConstraint::Refused => {
-            return refusal(ExchangeError::Unauthorized);
+        crate::auth::dpop::SenderConstraint::Refused(reason) => {
+            if let Some(admission) = req.extensions().get::<crate::inbound::RequestAdmission>() {
+                admission.refuse(
+                    busbar_contract::caps::StepName::Authenticate,
+                    busbar_contract::caps::ReasonCode::Unauthenticated,
+                );
+            }
+            // With no authorization server no proof can help, so the caller is told so.
+            let reason = if app.oauth_as.is_none() {
+                crate::auth::dpop::Refusal::Unverifiable
+            } else {
+                reason
+            };
+            return refusal(ExchangeError::SenderConstraint(reason));
         }
     };
     let (judged, _, claim) = AuthMiddleware::judge_chain_on_request_path_naming(
@@ -155,6 +163,16 @@ fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {
 
 fn refusal(e: ExchangeError) -> Response {
     let (status, msg) = match e {
+        ExchangeError::SenderConstraint(reason) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "sender_constrained",
+                    "error_description": reason.description(false),
+                })),
+            )
+                .into_response();
+        }
         ExchangeError::StaticKeyPresented => (
             StatusCode::BAD_REQUEST,
             "present an IdP identity, not a busbar key",

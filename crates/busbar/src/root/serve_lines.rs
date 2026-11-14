@@ -104,6 +104,12 @@ pub(crate) async fn session(
                 ));
             }
         }
+        if busbar_kernel::auth::dpop::refuse_bound_session(token, app.oauth_as.is_none()) {
+            return Err(format!(
+                "the credential in {env} is DPoP-bound (cnf.jkt), and a {carrier} session cannot \
+                 carry a DPoP proof (RFC 9449), so it is refused. Set {env} to an unbound token."
+            ));
+        }
     }
 
     let admitted = busbar_kernel::auth::admit::admit_session(

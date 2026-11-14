@@ -793,6 +793,17 @@ A credential under a scheme configured with a credential-family table contains b
 
 **What to do:** Fix the credential's configured value (strip the control character, often a trailing newline from a file or env source). Requests omit the credential until it is fixed and may be refused by the upstream.
 
+<a id="auth-sender-constraint-refused"></a>
+### BUSBAR-4032 — Sender-constrained (DPoP) credential refused
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `auth-sender-constraint-refused`
+
+A DPoP-bound token or DPoP presentation was refused because its sender constraint was not met or cannot be verified here
+
+**What to do:** Have the client present a DPoP proof (with `oauth_as` configured) or an unbound token; if the IdP binds tokens for bearer-only clients, change the IdP client
+
 ## 5xxx — Proxy & routing
 
 <a id="usage-tap-reassembly-cap-exceeded"></a>

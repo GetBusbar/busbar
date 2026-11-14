@@ -972,6 +972,40 @@ async fn a_dpop_bound_token_reaches_the_resource_with_its_proof() {
     }
 }
 
+#[tokio::test]
+async fn with_an_authorization_server_a_bound_token_is_admitted_only_with_its_proof() {
+    let s = serve(true).await;
+    let dpop = Key::new("dpop");
+    let token = bound_token(&s, &dpop).await;
+    assert_eq!(
+        resource(&s, &format!("Bearer {token}"), &[]).await,
+        401,
+        "a bound token presented as a bearer is refused (bound_bearer)"
+    );
+    let failing = s
+        .client
+        .get(format!("{}/stats", s.origin))
+        .header("authorization", "DPoP x")
+        .header("DPoP", "not-a-proof")
+        .header("x-api-key", &token)
+        .send()
+        .await
+        .expect("resource")
+        .status()
+        .as_u16();
+    assert_eq!(
+        failing, 401,
+        "a failing proof never falls through to a bound x-api-key (proof_failed)"
+    );
+    let htu = format!("{}/stats", s.origin);
+    let proof = dpop.resource_proof("GET", &htu, Some(&ath(&token)), now());
+    assert_eq!(
+        resource(&s, &format!("DPoP {token}"), &[proof]).await,
+        200,
+        "a proven presentation still admits"
+    );
+}
+
 struct InboundCandidate {
     calls: Arc<dyn busbar_contract::auth_calls::AuthCalls>,
     expected: busbar_contract::redacted::Secret<Vec<u8>>,

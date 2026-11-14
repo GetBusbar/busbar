@@ -1988,3 +1988,30 @@ async fn presented_credentials_keep_challenge_error_descriptions_and_scope_rules
         );
     }
 }
+
+#[tokio::test]
+async fn a_sender_constraint_refusal_without_resource_metadata_names_its_reason_natively() {
+    let description = dpop::Refusal::BoundBearer.description(true);
+    for ingress in [
+        crate::plane_driver::dispatch::Ingress::Fallback(None),
+        crate::plane_driver::dispatch::Ingress::Mounted("mcp"),
+    ] {
+        let response = sender_constraint_native(ingress, description);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{ingress:?}");
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let named = match ingress {
+            crate::plane_driver::dispatch::Ingress::Mounted(_) => {
+                assert_eq!(body["error"]["code"], -32600, "{body}");
+                body["error"]["message"].as_str()
+            }
+            crate::plane_driver::dispatch::Ingress::Fallback(_) => body
+                .to_string()
+                .contains(description)
+                .then_some(description),
+        };
+        assert_eq!(named, Some(description), "{ingress:?}: {body}");
+    }
+}
