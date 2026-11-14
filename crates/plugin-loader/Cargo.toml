@@ -92,6 +92,7 @@ crate-type = ["cdylib"]
 [dependencies]
 ring = { workspace = true }
 arc-swap = { workspace = true }
+foldhash = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }

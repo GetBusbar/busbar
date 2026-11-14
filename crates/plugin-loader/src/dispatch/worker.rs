@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use busbar_contract::abi::mechanism::call::{DeadlineClass, InHead, OutHead, Outcome, FLAG_RESUME};
 use busbar_contract::abi::mechanism::lifecycle::{slot, TickIn, TickOut};
@@ -486,21 +488,18 @@ impl<I, O> std::fmt::Debug for Reply<I, O> {
 
 impl<I: InFrame, O: OutFrame> Reply<I, O> {
     pub fn wait(&self, timeout: Duration) -> Option<Done<I, O>> {
-        let until = Instant::now() + timeout;
         let mut g = self.slot.lock();
-        loop {
-            if let Some(d) = g.value.take() {
-                drop(g);
-                return Some(d.take());
-            }
-            let left = until.checked_duration_since(Instant::now())?;
+        if g.value.is_none() && !timeout.is_zero() {
             g = self
                 .slot
                 .cv
-                .wait_timeout(g, left)
+                .wait_timeout_while(g, timeout, |s| s.value.is_none())
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
         }
+        let d = g.value.take()?;
+        drop(g);
+        Some(d.take())
     }
 
     pub fn wait_done(&self) -> Done<I, O> {
@@ -934,18 +933,16 @@ impl Driven {
     }
 
     pub fn answered_after(&self, seen: u64, timeout: Duration) -> Option<Outcome> {
-        let until = Instant::now() + timeout;
-        let mut a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
-        loop {
-            if a.0 > seen && a.1 != Some(Outcome::Pending) {
-                return a.1;
-            }
-            let left = until.checked_duration_since(Instant::now())?;
-            a = self
-                .answered
-                .wait_timeout(a, left)
-                .unwrap_or_else(|e| e.into_inner())
-                .0;
+        let answered = |a: &(u64, Option<Outcome>)| a.0 > seen && a.1 != Some(Outcome::Pending);
+        let a = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        let (a, _) = self
+            .answered
+            .wait_timeout_while(a, timeout, |a| !answered(a))
+            .unwrap_or_else(|e| e.into_inner());
+        if answered(&a) {
+            a.1
+        } else {
+            None
         }
     }
 
@@ -1052,6 +1049,8 @@ pub(crate) struct WorkerState {
     /// [`Worker::judge_forgeries`] once the lock is let go (#74): a quarantine takes the
     /// instance's own locks and never runs under the worker's.
     forged: Vec<Option<&'static super::ticket::InstanceWake>>,
+    /// The timers each turn found due, reused turn after turn ([`Worker::timers`]).
+    due: Vec<(u32, Action)>,
 }
 
 pub(crate) enum Msg {
@@ -1186,12 +1185,20 @@ impl Worker {
     ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
 
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a worker's table is built once, at dispatcher start or watchdog replacement"
+        )]
         let mut free: Vec<u32> = counts
             .iter()
             .zip(0u32..)
             .filter_map(|(c, idx)| c.map(|_| idx))
             .collect();
         free.reverse();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a worker's table is built once, at dispatcher start or watchdog replacement"
+        )]
         let state = WorkerState {
             entries: counts
                 .into_iter()
@@ -1526,7 +1533,7 @@ impl Worker {
             c = Crossed::host(Outcome::Fault);
         } else if c.short {
             e.short_slot = Some(cur.meta.slot);
-            e.short_measurement = cur.meta.measurement.clone();
+            e.short_measurement.clone_from(&cur.meta.measurement);
             let lease = std::mem::take(&mut c.short_lease);
             if lease != 0 {
                 let owner = Arc::new(ShortLease {
@@ -1571,10 +1578,13 @@ impl Worker {
         }
     }
 
-    fn timers(&self, st: &mut WorkerState, now: u64, env: &Env) -> Duration {
+    /// Fire every deadline and wake that is due, at the turn's one clock reading, and answer how
+    /// long the worker may sleep before the next.
+    fn timers(&self, st: &mut WorkerState, env: &Env) -> Duration {
+        let now = now_ns();
         let mut without_wake = 0_u64;
         let mut next = u64::MAX;
-        let mut due = Vec::new();
+        let mut due = std::mem::take(&mut st.due);
         for (idx, e) in st.entries.iter_mut().enumerate() {
             // Admission can park a queued job without entering the plugin (for example,
             // REFRESH waiting for a binding crossing). Its deadline still belongs to us.
@@ -1639,9 +1649,10 @@ impl Worker {
                 }
             }
         }
-        for (idx, a) in due {
+        for (idx, a) in due.drain(..) {
             Self::schedule(st, idx, a);
         }
+        st.due = due;
         if without_wake > 0 {
             env.stats
                 .deadline_without_wake
@@ -2231,7 +2242,7 @@ pub(crate) fn next_count(count: u32) -> Option<u32> {
     count.checked_add(1)
 }
 
-pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
+pub(crate) fn run(w: &Worker, rx: &Receiver<Msg>, env: &Env) {
     let _let_go = LetGo::arm();
 
     let mut entered = None;
@@ -2253,9 +2264,9 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         }
         let mut stop = false;
         while let Ok(m) = rx.try_recv() {
-            stop |= !w.apply(&mut st, m, &env);
+            stop |= !w.apply(&mut st, m, env);
         }
-        st = w.judge_forgeries(st, &env);
+        st = w.judge_forgeries(st, env);
         if stop {
             st.dead = true;
             let gone = Worker::fault_all(&mut st);
@@ -2263,9 +2274,9 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
             drop(gone);
             return;
         }
-        let wait = w.timers(&mut st, now_ns(), &env);
+        let wait = w.timers(&mut st, env);
         if let Some(idx) = st.runnable.pop_front() {
-            match w.run_one(st, idx, &env) {
+            match w.run_one(st, idx, env) {
                 Some(g) => st = g,
                 None => return,
             }
@@ -2278,14 +2289,14 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         st = w.lock();
         match m {
             Ok(m) => {
-                if !w.apply(&mut st, m, &env) {
+                if !w.apply(&mut st, m, env) {
                     st.dead = true;
                     let gone = Worker::fault_all(&mut st);
                     drop(st);
                     drop(gone);
                     return;
                 }
-                st = w.judge_forgeries(st, &env);
+                st = w.judge_forgeries(st, env);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -2316,13 +2327,17 @@ impl Drop for ActingFor {
 }
 
 pub(crate) fn spawn_worker(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "boot: a dispatch worker thread is named once, when it starts"
+    )]
     let name = format!("busbar-dispatch-{}", w.index);
     let me = (Arc::as_ptr(&env) as usize, w.index);
     std::thread::Builder::new()
         .name(name)
         .spawn(move || {
             ON_WORKER.with(|c| c.set(Some(me)));
-            run(w, rx, env);
+            run(&w, &rx, &env);
         })
         .expect("spawn a dispatch worker");
 }
@@ -2424,6 +2439,7 @@ impl Dispatcher {
         authority: Arc<dyn super::measurement::Authority>,
     ) -> Result<(), Arc<dyn super::measurement::Authority>> {
         let adopted = self.pool.adopted.lock().unwrap_or_else(|e| e.into_inner());
+        // busbar:expect(bp::state_scan, reason = "boot: the measurement authority is installed once, at boot")
         if adopted
             .iter()
             .filter_map(Weak::upgrade)
@@ -2437,14 +2453,21 @@ impl Dispatcher {
     /// Snapshot the immutable declarations of currently bound instances, including plugins
     /// declaring no classes. Used by the host to reject unknown configured namespaces.
     pub fn measurement_bindings(&self) -> Vec<super::measurement::Binding> {
-        self.pool
+        // busbar:expect(bp::state_scan, reason = "config: the bound declarations are listed once per config check")
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "config: the bound declarations are listed once per config check"
+        )]
+        let bindings = self
+            .pool
             .adopted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter_map(Weak::upgrade)
             .map(|instance| instance.measurement_binding.clone())
-            .collect()
+            .collect();
+        bindings
     }
 
     pub fn new(
@@ -2581,7 +2604,12 @@ impl Dispatcher {
             latch: std::sync::OnceLock::new(),
             seal: std::sync::OnceLock::new(),
         });
+        // busbar:expect(bp::fresh_buffer, reason = "boot: a dispatcher's workers start once, when it is built")
         let mut started = Vec::new();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: a dispatcher's workers start once, when it is built"
+        )]
         let slots = (0..n)
             .map(|i| {
                 let (w, rx) = Worker::new(i, Vec::new(), ticket_key);
@@ -2825,7 +2853,10 @@ impl Dispatcher {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+    )]
     pub fn submit_lent<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2849,7 +2880,10 @@ impl Dispatcher {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+    )]
     pub fn submit_watched<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2874,7 +2908,10 @@ impl Dispatcher {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+    )]
     pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -2949,7 +2986,10 @@ impl Dispatcher {
         reply
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a submission names its plugin, ticket, slot, frame, class, deadline and loans apart"
+    )]
     fn submit_with<K: Kind, I: InFrame, O: OutFrame>(
         &self,
         plugin: &Plugin<K>,
@@ -3046,13 +3086,14 @@ impl Dispatcher {
         }
     }
 
+    #[cfg(test)]
     pub fn drain<K: Kind>(&self, plugin: &Plugin<K>, timeout: Duration) -> bool {
-        let until = Instant::now() + timeout;
+        let until = std::time::Instant::now() + timeout;
         loop {
             if plugin.inner.drainable.load(Ordering::Acquire) == 0 {
                 return true;
             }
-            if Instant::now() >= until {
+            if std::time::Instant::now() >= until {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(1));
