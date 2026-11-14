@@ -4,7 +4,7 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The authenticate step as a unit: the credential chain, the challenge, and the protocol-claim ladder."
+description = "The identity types around the kernel auth chain: the operator credential, the caller reference and the revocation view."
 license = "Apache-2.0"
 
 [lib]

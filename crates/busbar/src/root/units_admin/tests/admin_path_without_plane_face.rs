@@ -138,7 +138,7 @@ struct ANodeWhoseChainThisCellReads {
 async fn mounted_over(
     inner: axum::Router,
     request_body_max_bytes: usize,
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
     tweak: impl FnOnce(&mut crate::root::kernel::ProductionUnits),
 ) -> axum::Router {
     let fixture = crate::root::durability::tests::NativeFixture::new(7).await;
@@ -150,10 +150,7 @@ async fn mounted_over(
         request_body_max_bytes,
         move |dispatch| {
             let mut units = crate::root::kernel::ProductionUnits::admin_only_sharing(
-                dispatch,
-                crate::root::units_admin::door_of_chain(door),
-                held,
-                None,
+                dispatch, door, held, None,
             )
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 ADirectoryThatMintedIt,
@@ -1196,7 +1193,7 @@ impl busbar_kernel_identity::module::AuthModule for IdentifiesATenant {
 }
 
 async fn a_q71_node(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
 ) -> (
     axum::Router,
     Arc<std::sync::Mutex<Vec<busbar_contract::records::PlaneRecord>>>,
@@ -1205,7 +1202,7 @@ async fn a_q71_node(
 }
 
 async fn a_q71_node_trusting(
-    door: busbar_kernel_identity::AuthChain,
+    door: crate::root::units_admin::AdminDoorFn,
     trust: crate::root::units_admin::TrustDesk,
 ) -> (
     axum::Router,
@@ -1825,13 +1822,7 @@ async fn the_four_q71_verbs_refuse_an_unauthorized_caller_by_text() {
         );
     }
 
-    let tenant = busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-a-tenant".to_string(),
-            module: Box::new(IdentifiesATenant),
-        }],
-        false,
-    );
+    let tenant = crate::root::units_admin::door_identifying(THE_OPERATORS_CREDENTIAL, "a-tenant");
     let (tenants_node, tenants_kept) = a_q71_node(tenant).await;
     for (method, path, body) in the_q71_verbs() {
         let needed = if method == "GET" { "read-only" } else { "full" };

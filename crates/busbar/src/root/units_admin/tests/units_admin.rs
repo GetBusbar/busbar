@@ -656,7 +656,7 @@ fn a_door_that_identifies_the_operator() -> busbar_kernel_identity::AuthChain {
 async fn answer_under_denylist(revoked: bool) -> AdminAnswer {
     let units = crate::root::kernel::ProductionUnits::admin_only(
         Arc::new(AnsweringDispatch),
-        door_of_chain(a_door_that_identifies_the_operator()),
+        a_door_that_identifies_the_operator(),
     )
     .await
     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
@@ -789,13 +789,7 @@ async fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() 
 
 #[tokio::test]
 async fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
-    let door = busbar_kernel_identity::AuthChain::new(
-        vec![busbar_kernel_identity::chain::ChainEntry {
-            provider: "identifies-somebody-else".to_string(),
-            module: Box::new(IdentifiesSomebodyElse),
-        }],
-        false,
-    );
+    let door = door_identifying("a-tenants-token", "acct:not-the-operator");
     let refused = answer_at_the_closed_door(door, Some("a-tenants-token")).await;
     assert_eq!(
         refused.status, 403,
@@ -2051,7 +2045,7 @@ async fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_u
         request.credential = credential.map(ToString::to_string);
 
         let door = if revoked {
-            door_of_chain(a_door_that_identifies_the_operator())
+            a_door_that_identifies_the_operator()
         } else {
             open_door()
         };

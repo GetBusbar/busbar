@@ -1560,28 +1560,36 @@ pub(crate) fn open_door() -> AdminDoorFn {
     })
 }
 
+/// A test door answering each presented credential (`None` = none presented) through `f`.
 #[cfg(test)]
-pub(crate) fn door_of_chain(chain: busbar_kernel_identity::AuthChain) -> AdminDoorFn {
-    use busbar_kernel::auth::AdminDoor;
-    use busbar_kernel_identity::chain::ChainVerdict;
+pub(crate) fn door_of(
+    f: impl Fn(Option<&str>) -> busbar_kernel::auth::AdminDoor + Send + Sync + 'static,
+) -> AdminDoorFn {
     Arc::new(
         move |request: &AdminRequest| -> busbar_kernel::auth::AdminVerdict {
-            match chain.run_chain(request.credential.as_deref()) {
-                ChainVerdict::Open => AdminDoor::Open,
-                ChainVerdict::Denied => AdminDoor::Denied,
-                ChainVerdict::Identified { principal, .. } => {
-                    let grants = if principal.id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
-                        busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
-                    } else {
-                        busbar_contract::authz::Grants::default()
-                    };
-                    let principal = busbar_contract::auth::Principal::from_id(principal.id);
-                    AdminDoor::Identified(principal, grants)
-                }
-            }
-            .into()
+            f(request.credential.as_deref()).into()
         },
     )
+}
+
+/// A test door that identifies exactly one credential as `id` and denies everything else; the
+/// operator principal is granted `Full`, any other identity no scope.
+#[cfg(test)]
+pub(crate) fn door_identifying(token: &'static str, id: &'static str) -> AdminDoorFn {
+    door_of(move |credential| {
+        if credential != Some(token) {
+            return busbar_kernel::auth::AdminDoor::Denied;
+        }
+        let grants = if id == crate::root::auth_bindings::ADMIN_PRINCIPAL_ID {
+            busbar_contract::authz::Grants::of(busbar_contract::authz::Scope::Full)
+        } else {
+            busbar_contract::authz::Grants::default()
+        };
+        busbar_kernel::auth::AdminDoor::Identified(
+            busbar_contract::auth::Principal::from_id(id),
+            grants,
+        )
+    })
 }
 
 pub type EffectAdmission = Arc<
