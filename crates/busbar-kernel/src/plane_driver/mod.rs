@@ -68,6 +68,7 @@ pub use money::{
     EndPost, FeeRefund, MeasurementRequestGuard, MeasurementRequestState, ObservationPolicy,
     ObservationRuntimeError, ParentMoney, PlaneMoney, ReservedRequestLineage,
     ReturnedTicketReservation, SpentTicketReservation, TicketReservation, UnitEnd, UnitMoney,
+    UsageFold,
 };
 pub use needs::{resolve_member_needs, MemberAuth, NeedRefusal};
 pub use probe::PlaneProbes;
