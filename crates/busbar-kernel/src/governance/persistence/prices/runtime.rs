@@ -18,6 +18,9 @@ use std::{
 };
 
 pub const RESCAN_INTERVAL: Duration = Duration::from_secs(5);
+/// The generation probe failing is reported once per process; every such
+/// rescan still runs the full scan and never assumes "unchanged".
+static GUARD_FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
 pub const CARD_ALARMS_TOTAL: &str = "busbar_card_history_alarms_total";
 const SKEW_MS: u64 = 5 * 60 * 1000;
 fn now_ms() -> u64 {
@@ -213,6 +216,7 @@ impl ConfirmedCard {
                 state.snapshot.activations.insert(held, activation);
             }
             state.snapshot.entries.insert(held, entry);
+            state.snapshot.generation = None;
             state.pending.remove(&held);
         }
         assert!(
@@ -591,6 +595,37 @@ impl CardStore {
         Ok(())
     }
     pub async fn rescan(&self, _deadline: Option<Instant>) -> Result<bool, String> {
+        let held = {
+            let state = self.lock();
+            if state.pending.is_empty() && state.voiding.is_empty() {
+                state.snapshot.generation
+            } else {
+                None
+            }
+        };
+        if let Some(generation) = held {
+            match self.store.prices().unchanged_since(generation).await {
+                Ok(true) => {
+                    let mut state = self.lock();
+                    if state.snapshot.generation == Some(generation)
+                        && state.pending.is_empty()
+                        && state.voiding.is_empty()
+                    {
+                        self.check_alarms(&mut state);
+                        return Ok(false);
+                    }
+                }
+                Ok(false) => {}
+                Err(failure) => {
+                    if !GUARD_FALLBACK_REPORTED.swap(true, Ordering::Relaxed) {
+                        tracing::warn!(
+                            audit = "price_rescan_guard_fallback",
+                            "price rescan generation probe failed ({failure:?}); falling back to a full scan"
+                        );
+                    }
+                }
+            }
+        }
         let mut snapshot = self.store.prices().snapshot().await.map_err(error)?;
         let mut state = self.lock();
         for (key, intent) in &snapshot.intents {
@@ -627,6 +662,9 @@ impl CardStore {
         }
         // A canonical read cannot confirm a local pending operation or publish a
         // generation whose configuration has not crossed ConfirmedCard::commit.
+        if !state.pending.is_empty() || !state.voiding.is_empty() {
+            snapshot.generation = None;
+        }
         for key in state.pending.keys() {
             snapshot.entries.remove(key);
             snapshot.activations.remove(key);
@@ -660,6 +698,9 @@ impl CardStore {
         let mut snapshot = self.store.prices().snapshot().await.map_err(error)?;
         {
             let mut state = self.lock();
+            if !state.pending.is_empty() || !state.voiding.is_empty() {
+                snapshot.generation = None;
+            }
             for key in state.pending.keys() {
                 snapshot.entries.remove(key);
                 snapshot.activations.remove(key);
@@ -1034,6 +1075,7 @@ impl CardStore {
         }
         let mut state = self.lock();
         state.snapshot.voids.push(pending.record.clone());
+        state.snapshot.generation = None;
         state.voiding.remove(&key);
         self.publish(&state);
         Ok(())
