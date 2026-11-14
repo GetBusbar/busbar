@@ -90,40 +90,23 @@ impl<'r> ExportRows<'r> {
         opening: Option<u32>,
     ) -> Result<Plugin<Export>, String> {
         let name = &row.manifest.name;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the export plugin that did not load"
-        )]
-        let refused = |e: crate::dispatch::LoadError| format!("export plugin '{name}': {e}");
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "boot: names the export plugin that has no door"
-        )]
-        let image = match row.door() {
-            Some(door) => Image::Linked(LinkedRow::of_raw(door).map_err(refused)?),
-            None => match row.manifest.stated_rendering()? {
-                Some(stated) => Image::Dropped(stated),
-                None => return Err(format!("export plugin '{name}': {NO_DOOR}")),
-            },
-        };
-
-        let sink: Arc<dyn EnvelopeSink> = match opening {
-            None => Arc::new(NoSink),
-            Some(_) => {
-                let envelope = self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink));
-                match self.logs {
-                    Some(logs) => Arc::new(logs.sink(label, KindCode::Export, envelope)?),
-                    None => envelope,
+        let bind = || -> Result<Bind, String> {
+            let sink: Arc<dyn EnvelopeSink> = match opening {
+                None => Arc::new(NoSink),
+                Some(_) => {
+                    let envelope = self.envelope.clone().unwrap_or_else(|| Arc::new(NoSink));
+                    match self.logs {
+                        Some(logs) => Arc::new(logs.sink(label, KindCode::Export, envelope)?),
+                        None => envelope,
+                    }
                 }
-            }
-        };
-        let max_inflight_cap = opening.unwrap_or(DEFAULT_INFLIGHT);
-        // busbar:expect(bp::into_alloc, reason = "boot: a loaded export instance keeps its label")
-        let bind = Bind {
-            instance: Arc::from(label),
-            max_inflight_cap,
-            sink,
-            dispatcher: self.dispatcher.adopter(),
+            };
+            // busbar:expect(bp::into_alloc, reason = "boot: a loaded export instance keeps its label")
+            Ok(Bind {
+                instance: Arc::from(label),
+                max_inflight_cap: opening.unwrap_or(DEFAULT_INFLIGHT),
+                sink,
+                dispatcher: self.dispatcher.adopter(),
 
                 conns: if opening.is_some() {
                     ConnTable::serving(self.conns.clone())
@@ -132,11 +115,16 @@ impl<'r> ExportRows<'r> {
                 },
             })
         };
-        open_loadable::<Export>(row, name, bind).map_err(|e| match e {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "boot: names the export plugin that did not load"
+        )]
+        let refused = |e: RowRefusal| match e {
             RowRefusal::Stated(e) | RowRefusal::Bind(e) => e,
             RowRefusal::NoDoor => format!("export plugin '{name}': {NO_DOOR}"),
             RowRefusal::Load(e) => format!("export plugin '{name}': {e}"),
-        })
+        };
+        open_loadable::<Export>(row, name, bind).map_err(refused)
     }
 
     #[must_use]
