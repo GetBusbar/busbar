@@ -104,6 +104,7 @@ impl AuthBindings {
         AuthBindings { directory: None }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn keys(&self) -> Option<&dyn KeyVerifier> {
         self.directory.as_ref().map(|d| d as &dyn KeyVerifier)

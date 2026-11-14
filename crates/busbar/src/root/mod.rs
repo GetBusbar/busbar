@@ -42,6 +42,7 @@ pub mod serve;
 pub mod settings_public;
 pub mod shutdown;
 pub mod startup_upgrade;
+#[cfg(any(test, distribution_root))]
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;

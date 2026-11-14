@@ -128,6 +128,7 @@ impl AdminDispatch for AdmittedDispatch {
     }
 }
 
+#[cfg(test)]
 /// The dispatch a node has before it has mounted an admin surface.
 ///
 /// It refuses every operation, which is the correct answer rather than a placeholder: a root that
@@ -137,6 +138,7 @@ impl AdminDispatch for AdmittedDispatch {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RefusingDispatch;
 
+#[cfg(test)]
 #[async_trait::async_trait]
 impl AdminDispatch for RefusingDispatch {
     async fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
@@ -1043,8 +1045,10 @@ pub struct AmendAttribution {
 
 pub const AMENDMENT_RECORD_TAG: &str = "busbar/rate-amendment/v4";
 
+#[cfg(test)]
 const AMENDMENT_RECORD_TAG_V3: &str = "busbar/rate-amendment/v3";
 
+#[cfg(test)]
 const AMENDMENT_RECORD_TAG_V2: &str = "busbar/rate-amendment/v2";
 
 const AMENDMENT_RECORD_TAG_V1: &str = "busbar/rate-amendment/v1";
@@ -1055,8 +1059,10 @@ pub enum AmendmentVersion {
     /// Unbased records with implicitly priced cells.
     V1,
     /// Unbased records with explicit cell pricing markers.
+    #[cfg(test)]
     V2,
     /// Records sealed over an original chain-local ordinal.
+    #[cfg(test)]
     V3,
     /// Records sealed over an actual fleet entry key.
     V4,
@@ -1124,7 +1130,9 @@ pub fn amendment_body(
         (AmendmentVersion::V1, None) if record.rates.iter().all(|(_, _, rate)| rate.is_some()) => {
             AMENDMENT_RECORD_TAG_V1
         }
+        #[cfg(test)]
         (AmendmentVersion::V2, None) => AMENDMENT_RECORD_TAG_V2,
+        #[cfg(test)]
         (AmendmentVersion::V3, Some(CorrectionBase::LegacyOrdinal { .. })) => {
             AMENDMENT_RECORD_TAG_V3
         }
@@ -1142,6 +1150,7 @@ pub fn amendment_body(
             body.bytes(key.as_bytes());
             body.bytes(&card_digest);
         }
+        #[cfg(test)]
         Some(CorrectionBase::LegacyOrdinal { seq, card_digest }) => {
             body.num(seq.get());
             body.bytes(&card_digest);
@@ -1167,10 +1176,12 @@ pub fn amendment_body(
     Ok(body.finish())
 }
 
+#[cfg(test)]
 #[must_use]
 pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
     struct Reader<'a>(&'a [u8]);
     impl<'a> Reader<'a> {
+        #[cfg(test)]
         fn take(&mut self, n: usize) -> Option<&'a [u8]> {
             if self.0.len() < n {
                 return None;
@@ -1179,16 +1190,20 @@ pub fn amendment_from_body(body: &[u8]) -> Option<AmendmentRecord> {
             self.0 = tail;
             Some(head)
         }
+        #[cfg(test)]
         fn num(&mut self) -> Option<u64> {
             Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
         }
+        #[cfg(test)]
         fn figure(&mut self) -> Option<i128> {
             Some(i128::from_le_bytes(self.take(16)?.try_into().ok()?))
         }
+        #[cfg(test)]
         fn bytes(&mut self) -> Option<&'a [u8]> {
             let len = usize::try_from(self.num()?).ok()?;
             self.take(len)
         }
+        #[cfg(test)]
         fn text(&mut self) -> Option<String> {
             String::from_utf8(self.bytes()?.to_vec()).ok()
         }
@@ -1275,6 +1290,7 @@ impl AmendmentJournal {
         AmendmentJournal { book, token }
     }
 
+    #[cfg(test)]
     pub async fn record(
         &self,
         record: &AmendmentRecord,
@@ -1321,6 +1337,7 @@ impl AmendmentJournal {
         Ok((sealed.node_seq, sealed.hash))
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn sealed_through(&self) -> u64 {
         self.book
@@ -1661,18 +1678,21 @@ impl AdminBinding {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_pools(mut self, pools: PoolKnown) -> Self {
         self.pools = pools;
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
         self
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_audit_view(mut self, audit: Arc<dyn AuditView>) -> Self {
         self.audit = Some(audit);

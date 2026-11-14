@@ -1526,8 +1526,8 @@ async fn plane_router(
         .expect("the actual configured root declares its physical listener assignments");
     let framer_for = |scheme: &str| crate::root::connector::the().framer_for(scheme);
     let plan = crate::root::serve::ListenerPlan::new(initial, offers.clone(), &framer_for);
-    let (routes, sessions, refusals, refuse_by_path) =
-        crate::root::serve::data_mounts_with_listeners(
+    let ((routes, sessions, refusals, refuse_by_path), _) =
+        crate::root::serve::data_routes_with_dispatch(
             served,
             &app,
             &plan,

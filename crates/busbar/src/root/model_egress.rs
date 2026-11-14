@@ -25,6 +25,7 @@ pub struct LiveApp {
 #[derive(Clone)]
 enum AppFallback {
     Borrowed(std::sync::Weak<busbar_kernel::state::App>),
+    #[cfg(test)]
     Fixed(Arc<busbar_kernel::state::App>),
 }
 
@@ -32,6 +33,7 @@ impl AppFallback {
     fn load(&self) -> Option<Arc<busbar_kernel::state::App>> {
         match self {
             Self::Borrowed(app) => app.upgrade(),
+            #[cfg(test)]
             Self::Fixed(app) => Some(Arc::clone(app)),
         }
     }
@@ -49,6 +51,7 @@ impl LiveApp {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn fixed(app: Arc<busbar_kernel::state::App>) -> Self {
         LiveApp {
