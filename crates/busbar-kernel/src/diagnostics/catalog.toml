@@ -22,7 +22,7 @@ slug = "deprecated-env-var-honored"
 title = "A deprecated environment variable is set and still honored — RETIRED"
 severity = "Actionable"
 summary = "RETIRED. Serving no longer applies deprecated operational environment overrides. Use --migrate-config with the old deployment environment and working directory to capture provider, worker and upstream HTTP settings; old file-overlay selection is migration input only."
-action = "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md."
+action = "Run the 1.6 migration before serving, review and validate its output, then remove the retired variables from launchers. See docs/migration-1.6.md. See BUSBAR-3029."
 since = "1.5.0"
 retired = true
 
@@ -1745,3 +1745,14 @@ title = "--generate-signing-key could not mint a key (OS entropy source unavaila
 severity = "Actionable"
 summary = "`busbar --generate-signing-key` could not mint a fresh ed25519 signing secret because the OS entropy source was unavailable, so it printed nothing and exited non-zero. No key was generated and nothing was written."
 action = "Retry on a host with a working RNG (`/dev/urandom` / `getrandom`). A persistent failure points at a broken or blocked entropy source in the environment."
+
+[[diagnostic]]
+name = "RETIRED_ENV_VAR_IGNORED"
+doc = "A retired 1.5.x launch environment variable is set; 1.6 ignores it."
+code = 3029
+class = "Config"
+slug = "retired-env-var-ignored"
+title = "A retired launch environment variable is set and IGNORED"
+severity = "Actionable"
+summary = "busbar 1.6 no longer reads BUSBAR_PROVIDERS, BUSBAR_WORKER_THREADS, BUSBAR_UPSTREAM_HTTP1_ONLY or BUSBAR_UPSTREAM_H2_PRIOR_KNOWLEDGE. A set one has NO effect: the config key (or its default) is in force. Emitted pre-tracing, to stderr, at boot and by --validate."
+action = "Run busbar --migrate-config in the old launch environment to write the value into config.yaml, validate, then remove the variable from the launcher."
