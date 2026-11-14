@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[path = "inbound_single_path.rs"]
 mod single_path;
 
+#[path = "inbound_caller_secret.rs"]
+mod caller_secret;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Seen {
     name: &'static str,
@@ -191,6 +194,15 @@ impl Kit {
     }
 }
 fn mixed(reader: Arc<Probe>, providers: &[Arc<Probe>]) -> Kit {
+    mixed_bound(reader, providers, crate::config::RoleBindings::default())
+}
+
+/// [`mixed`], resolving its identities under `role_bindings`.
+fn mixed_bound(
+    reader: Arc<Probe>,
+    providers: &[Arc<Probe>],
+    role_bindings: crate::config::RoleBindings,
+) -> Kit {
     let registry: Arc<dyn busbar_contract::plugin_rows::PluginRows> =
         Arc::new(busbar_plugin_loader::registry::PluginRegistry::empty());
     let secret_resolver = Arc::new(crate::config::secret::SecretResolver::builtins_only());
@@ -249,7 +261,7 @@ fn mixed(reader: Arc<Probe>, providers: &[Arc<Probe>]) -> Kit {
         plane_slots: Default::default(),
         plane_sections: Default::default(),
         auth_scope_caps: Default::default(),
-        role_bindings: Default::default(),
+        role_bindings,
         config_path: Default::default(),
         providers_path: Default::default(),
         overlay_path: Default::default(),
